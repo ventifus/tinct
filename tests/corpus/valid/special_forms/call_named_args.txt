@@ -1,0 +1,1 @@
+[call $fetch "https://example.com" timeout: 60 retries: 3]

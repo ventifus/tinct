@@ -1,0 +1,23 @@
+[package]
+name = "lazy_lisp_transformer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "lazy_lisp_transformer"
+path = "src/main.rs"
+
+[lib]
+name = "lazy_lisp_transformer"
+path = "src/lib.rs"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+
+[dependencies]
+indexmap = "2.7"
+pest = "2.8"
+pest_derive = "2.8"

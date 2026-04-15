@@ -1,0 +1,1 @@
+[Fn@[type: Number  doc: "returns a number"] [a b]]

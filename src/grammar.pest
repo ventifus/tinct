@@ -1,0 +1,223 @@
+// LLT Grammar -- pest PEG
+// See SPEC.md for the formal specification.
+
+// === Implicit whitespace and comments ===
+// Skipped automatically between tokens in non-atomic rules.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }  // NEWLINE is a pest built-in rule
+
+// === File and Document Structure ===
+
+file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
+document      = { expression* }
+expression    = { !doc_separator ~ value }
+doc_separator = @{ "---" ~ !bare_word_char }
+
+// === Values ===
+
+value = { access_expr | bracket_expr | atom }
+
+atom = { float_lit | int_lit | bool_lit | quoted_string | var_ref | annotated_bare | bare_word }
+
+// Generalized annotation: bare_word@value or bare_word@[prop dict]
+// Compound-atomic prevents whitespace between word and @
+annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
+
+// === Bracket expressions ===
+// The parser examines the first token to determine the form.
+// PEG ordered choice tries special forms first.
+
+bracket_expr = {
+    "[" ~ "]"
+    | "[" ~ type_assert_body ~ "]"
+    | "[" ~ special_form ~ "]"
+    | "[" ~ dict_entries ~ "]"
+}
+
+// === Special forms ===
+
+special_form = {
+    call_form
+    | fn_form
+    | type_form
+}
+
+call_form = {
+    keyword_call ~ value ~ call_args
+}
+
+call_args = { (named_arg | value)* }
+
+named_arg = { named_arg_key ~ ":" ~ value }
+
+named_arg_key = @{
+    "$" ~ var_ident
+    | bare_word
+}
+
+fn_form = {
+    keyword_fn ~ fn_annotation? ~ param_list ~ value
+}
+
+type_form = {
+    keyword_type ~ value
+}
+
+// === Keywords ===
+// Atomic rules that match the keyword text,
+// reject if followed by identifier chars or by whitespace+colon.
+
+keyword_call    = @{ "call"    ~ !ident_char ~ !colon_ahead }
+keyword_fn      = @{ "fn"      ~ !ident_char ~ !colon_ahead }
+keyword_type    = @{ "type"    ~ !ident_char ~ !colon_ahead }
+// Lookahead: optional whitespace then colon
+colon_ahead = _{ ws_chars* ~ ":" }
+ws_chars    = _{ " " | "\t" }
+
+// Used for keyword lookaheads: "call" must not be followed by ident_char.
+// Matches bare_word_char so that e.g. "call!" is a bare word, not keyword + "!".
+ident_char = _{
+    !(
+        WHITESPACE
+        | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$"
+    )
+    ~ ANY
+}
+
+// === Type assertions ===
+
+type_assert_body = { "@" ~ annotation_value ~ value }
+
+// === Function annotations and parameters ===
+
+fn_annotation = ${ "@" ~ annotation_value }
+
+param_list = { "[" ~ (variadic_param | param)* ~ "]" }
+
+param = ${ param_name ~ param_annotation? }
+
+param_name = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
+}
+
+param_annotation = ${ "@" ~ annotation_value }
+
+variadic_param = !{ "..." ~ param_name }
+
+annotation_value = !{ bracket_expr | annotation_word }
+
+// A bare word in annotation context (e.g., Number, String, a, b)
+annotation_word = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
+}
+
+// === Dict entries ===
+
+dict_entries = { (entry ~ semicolon?)* }
+
+entry = { keyed_entry | auto_entry }
+
+keyed_entry = { key ~ ":" ~ value }
+
+auto_entry = { value }
+
+key = { bracket_expr | var_ref | quoted_string | bare_token }
+
+bare_token = { float_lit | int_lit | bool_lit | bare_word }
+
+semicolon = _{ ";" }
+
+// === Access chains ===
+// Compound-atomic: no implicit whitespace between var_ref and the chain.
+// This makes $a.b parse as one access_expr, but $a .b as two separate tokens.
+
+access_expr = ${ var_ref ~ access_chain+ }
+
+access_chain = ${ dot_access | bracket_access_chain }
+
+dot_access = ${ "." ~ access_field }
+
+access_field = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
+}
+
+bracket_access_chain = ${ "[" ~ bracket_access_inner ~ "]" }
+
+bracket_access_inner = { range_expr | value }
+
+range_expr = { range_value? ~ ".." ~ range_value? }
+
+// Values inside range expressions — limited to atoms (no nested brackets in ranges)
+range_value = { float_lit | int_lit | var_ref }
+
+// === Literals ===
+
+var_ref = @{ "$" ~ var_ident }
+
+// Denylist approach: allow any character except structural delimiters and dot (access operator).
+var_ident = @{ var_ident_char+ }
+
+var_ident_char = _{
+    !(
+        WHITESPACE
+        | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "."
+    )
+    ~ ANY
+}
+
+float_lit = @{
+    "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+
+}
+
+int_lit = @{
+    "-"? ~ ASCII_DIGIT+
+}
+
+bool_lit = @{
+    ("true" | "false") ~ !ident_char
+}
+
+quoted_string = ${ "\"" ~ inner_string ~ "\"" }
+
+inner_string = @{ (escape_seq | !("\"" | "\\") ~ ANY)* }
+
+escape_seq = @{ "\\" ~ ("\"" | "\\" | "n" | "t" | "r") }
+
+// === Bare words ===
+// The fallback literal. Anything that doesn't match a prior rule.
+
+bare_word = @{
+    bare_word_start ~ bare_word_cont*
+}
+
+bare_word_start = _{
+    !(
+        "$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@"
+        | " " | "\t" | "\r" | "\n"
+        | "..."
+    )
+    ~ bare_word_char
+}
+
+// No "..." negative lookahead needed here (unlike bare_word_start): "..." is
+// the variadic sigil and can only appear at the start of a token in param_list
+// context.  A bare word continuation by definition cannot start a new token.
+bare_word_cont = _{
+    !(
+        " " | "\t" | "\r" | "\n"
+        | "[" | "]" | ":" | ";" | "#" | "\"" | "@"
+    )
+    ~ bare_word_char
+}
+
+// Denylist approach: allow any character except structural delimiters and $.
+// $ is excluded because it starts var_refs.
+// . is allowed in bare words (e.g., file.txt, 3.14-beta) but not in var_ident.
+bare_word_char = _{
+    !(
+        WHITESPACE
+        | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$"
+    )
+    ~ ANY
+}

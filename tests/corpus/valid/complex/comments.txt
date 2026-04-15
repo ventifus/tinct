@@ -1,0 +1,6 @@
+# This is a comment
+[
+    # Config section
+    name: my-app
+    port: 8080 # inline comment
+]

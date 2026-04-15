@@ -1,0 +1,4 @@
+[
+    transform: [fn [x] [call $uppercase $x]]
+    filter: [fn [item] $item.active?]
+]

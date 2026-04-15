@@ -1,0 +1,3 @@
+[slice: $data[2..5]]
+===
+["slice": $data[2..5]]

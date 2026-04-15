@@ -1,0 +1,1 @@
+[hello some.file.txt path/to/file my-key "email@example.com" config..bak]
