@@ -5,12 +5,42 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{Document, Expr, File, Position, Span, Spanned};
+use crate::ast::{Annotation, Document, Expr, File, NamedArg, Param, Position, Span, Spanned};
 use crate::error::EvalError;
 use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 
 const MAX_EVAL_DEPTH: usize = 256;
 const RANGE_KEY_TYPE_ERROR: &str = "range access requires comparable key types";
+
+/// Check whether `k` falls in the half-open range `[start, end)`.
+/// `None` bounds are treated as unbounded (i.e. negative/positive infinity).
+/// Returns an error when `k` is not comparable with the bound (mixed key types).
+fn key_in_range(
+    k: &Key,
+    start: Option<&Key>,
+    end: Option<&Key>,
+    span: Span,
+) -> Result<bool, Box<EvalError>> {
+    let after_start = match start {
+        Some(s) => {
+            let ord = k
+                .partial_cmp(s)
+                .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, span))?;
+            ord != std::cmp::Ordering::Less
+        }
+        None => true,
+    };
+    let before_end = match end {
+        Some(e) => {
+            let ord = k
+                .partial_cmp(e)
+                .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, span))?;
+            ord == std::cmp::Ordering::Less
+        }
+        None => true,
+    };
+    Ok(after_start && before_end)
+}
 
 // --- Evaluation ---
 
@@ -32,6 +62,14 @@ pub fn eval(
         )
         .into());
     }
+    // $_ implicit lambda desugaring: if the expression directly contains VarRef("_")
+    // and `_` is not already bound in the current environment (i.e., we're not inside
+    // the body of a lambda that already captured `_`), wrap it in [fn [_] <expr>].
+    if should_desugar_underscore(&expr.node) && env.borrow().get("_").is_none() {
+        let lambda = wrap_in_lambda(expr);
+        return eval(&lambda, env, depth + 1);
+    }
+
     match &expr.node {
         Expr::Int(n) => Ok(Rc::new(Thunk::new_materialized(Value::Int(*n), expr.span))),
         Expr::Float(f) => Ok(Rc::new(Thunk::new_materialized(
@@ -52,7 +90,7 @@ pub fn eval(
                 }
             }
         }
-        Expr::Dict(entries) => eval_dict(entries, &env, &expr.span, depth),
+        Expr::Dict(entries) => eval_dict(entries, &env, &expr.span, depth + 1),
         Expr::DotAccess {
             expr: target,
             field,
@@ -84,10 +122,33 @@ pub fn eval(
                 expr.span,
             )))
         }
-        Expr::Call { .. } => Err(EvalError::new("not yet implemented: Call", expr.span).into()),
-        Expr::Fn { .. } => Err(EvalError::new("not yet implemented: Fn", expr.span).into()),
-        Expr::TypeAlias(_) => {
-            Err(EvalError::new("not yet implemented: TypeAlias", expr.span).into())
+        Expr::Fn {
+            return_ann,
+            params,
+            body,
+        } => {
+            let fn_params: Vec<Param> = params.iter().map(|p| p.node.clone()).collect();
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Function {
+                    params: Rc::new(fn_params),
+                    body: Rc::new(*body.clone()),
+                    env: Rc::clone(&env),
+                    return_ann: return_ann.clone(),
+                },
+                expr.span,
+            )))
+        }
+        Expr::Call {
+            func,
+            args,
+            named_args,
+        } => eval_call(func, args, named_args, &env, &expr.span, depth),
+        Expr::TypeAlias(_inner) => {
+            // Type aliases are a Phase 2a concern. Evaluate as unit (empty dict).
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                expr.span,
+            )))
         }
     }
 }
@@ -280,6 +341,304 @@ fn value_to_key(value: &Value, span: &Span) -> Result<Key, Box<EvalError>> {
     }
 }
 
+// --- Function Call ---
+
+/// Evaluate a call expression: materialize the function, bind arguments, wrap body as thunk.
+fn eval_call(
+    func_expr: &Spanned<Expr>,
+    args: &[Spanned<Expr>],
+    named_args: &[Spanned<NamedArg>],
+    env: &Rc<RefCell<Environment>>,
+    call_span: &Span,
+    depth: usize,
+) -> Result<Rc<Thunk>, Box<EvalError>> {
+    // Evaluate and materialize the function
+    let func_thunk = eval(func_expr, Rc::clone(env), depth + 1)?;
+    let func_val = materialize(&func_thunk, Some(call_span), depth + 1)?;
+
+    match func_val {
+        Value::Function {
+            params,
+            body,
+            env: closure_env,
+            ..
+        } => {
+            let call_env = bind_args(
+                &params,
+                args,
+                named_args,
+                env,
+                &closure_env,
+                call_span,
+                depth,
+            )?;
+            // Wrap the body as an unevaluated thunk in the call environment
+            Ok(Rc::new(Thunk::new_unevaluated(
+                (*body).clone(),
+                call_env,
+                *call_span,
+            )))
+        }
+        Value::Builtin { func, .. } => {
+            // Evaluate positional args as thunks (lazy)
+            let mut pos_thunks = Vec::with_capacity(args.len());
+            for arg in args {
+                pos_thunks.push(eval(arg, Rc::clone(env), depth + 1)?);
+            }
+            // Evaluate named args as thunks
+            let mut named_thunks = IndexMap::new();
+            for na in named_args {
+                let thunk = eval(&na.node.value, Rc::clone(env), depth + 1)?;
+                named_thunks.insert(na.node.name.clone(), thunk);
+            }
+            let result = func(&pos_thunks, &named_thunks)?;
+            Ok(Rc::new(Thunk::new_materialized(result, *call_span)))
+        }
+        _ => Err(
+            EvalError::type_mismatch("Function or Builtin", func_val.type_name(), *call_span)
+                .into(),
+        ),
+    }
+}
+
+/// Bind call arguments to function parameters. Returns the new call environment.
+///
+/// Handles positional args, named args (params with `default:` annotation),
+/// and variadic params (`...name`).
+fn bind_args(
+    params: &[Param],
+    args: &[Spanned<Expr>],
+    named_args: &[Spanned<NamedArg>],
+    caller_env: &Rc<RefCell<Environment>>,
+    closure_env: &Rc<RefCell<Environment>>,
+    call_span: &Span,
+    depth: usize,
+) -> Result<Rc<RefCell<Environment>>, Box<EvalError>> {
+    let call_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+        closure_env,
+    ))));
+
+    // Separate the variadic param (if any) from regular params
+    let (regular_params, variadic_param) = split_variadic(params);
+
+    // Count required positional params (those without default: annotation)
+    let required_count = regular_params
+        .iter()
+        .filter(|p| get_default(p).is_none())
+        .count();
+    let max_positional = regular_params.len();
+
+    if variadic_param.is_some() {
+        // With variadic: need at least required_count positional args
+        if args.len() < required_count {
+            return Err(EvalError::arity_mismatch(required_count, args.len(), *call_span).into());
+        }
+    } else {
+        // Without variadic: positional args must be between required_count and max_positional
+        if args.len() < required_count {
+            return Err(EvalError::arity_mismatch(required_count, args.len(), *call_span).into());
+        }
+        if args.len() > max_positional {
+            return Err(EvalError::arity_mismatch(max_positional, args.len(), *call_span).into());
+        }
+    }
+
+    // Bind positional args to regular params
+    for (i, param) in regular_params.iter().enumerate() {
+        let thunk = if i < args.len() {
+            // Positional arg provided
+            eval(&args[i], Rc::clone(caller_env), depth + 1)?
+        } else if let Some(default_val) = get_default(param) {
+            // Check if a named arg was provided for this param
+            if let Some(na) = named_args.iter().find(|na| na.node.name == param.name) {
+                eval(&na.node.value, Rc::clone(caller_env), depth + 1)?
+            } else {
+                // Use default
+                eval(&default_val, Rc::clone(caller_env), depth + 1)?
+            }
+        } else {
+            // This shouldn't happen due to arity check above
+            return Err(EvalError::arity_mismatch(required_count, args.len(), *call_span).into());
+        };
+        call_env.borrow_mut().insert(param.name.clone(), thunk);
+    }
+
+    // Check for named args that target params already bound positionally
+    for na in named_args {
+        if let Some(idx) = regular_params.iter().position(|p| p.name == na.node.name) {
+            if idx < args.len() {
+                return Err(EvalError::new(
+                    format!(
+                        "parameter '{}' received both positional and named argument",
+                        na.node.name
+                    ),
+                    *call_span,
+                )
+                .into());
+            }
+        }
+    }
+
+    // Handle named args that weren't consumed by positional binding
+    for na in named_args {
+        let already_bound = call_env.borrow().bindings.contains_key(&na.node.name);
+        if !already_bound {
+            // Check that the named arg corresponds to a param with default:
+            let is_valid_param = regular_params
+                .iter()
+                .any(|p| p.name == na.node.name && get_default(p).is_some());
+            if !is_valid_param {
+                return Err(EvalError::new(
+                    format!("unexpected named argument: {}", na.node.name),
+                    *call_span,
+                )
+                .into());
+            }
+            let thunk = eval(&na.node.value, Rc::clone(caller_env), depth + 1)?;
+            call_env.borrow_mut().insert(na.node.name.clone(), thunk);
+        }
+    }
+
+    // Bind variadic param: collect remaining positional args into a dict with int keys
+    if let Some(var_param) = variadic_param {
+        let mut var_map: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
+        for (i, arg) in args.iter().enumerate().skip(max_positional) {
+            let thunk = eval(arg, Rc::clone(caller_env), depth + 1)?;
+            var_map.insert(Key::Int(i as i64 - max_positional as i64), thunk);
+        }
+        let var_thunk = Rc::new(Thunk::new_materialized(Value::Dict(var_map), *call_span));
+        call_env
+            .borrow_mut()
+            .insert(var_param.name.clone(), var_thunk);
+    }
+
+    Ok(call_env)
+}
+
+/// Split params into (regular, optional variadic).
+fn split_variadic(params: &[Param]) -> (&[Param], Option<&Param>) {
+    match params.last() {
+        Some(p) if p.variadic => (&params[..params.len() - 1], Some(p)),
+        _ => (params, None),
+    }
+}
+
+/// Look up a property by string key in an annotation's PropertyDict.
+/// Returns a reference to the value expression if found, None otherwise.
+fn get_annotation_property<'a>(ann: &'a Annotation, key: &str) -> Option<&'a Spanned<Expr>> {
+    match ann {
+        Annotation::PropertyDict(entries) => {
+            for entry in entries {
+                if let Some(ref key_expr) = entry.node.key {
+                    if let Expr::Str(ref name) = key_expr.node {
+                        if name == key {
+                            return Some(&entry.node.value);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Annotation::Simple(_) => None,
+    }
+}
+
+/// Extract the default value expression from a param's annotation, if present.
+/// default: is specified via PropertyDict annotation with a "default" key.
+fn get_default(param: &Param) -> Option<Spanned<Expr>> {
+    param
+        .annotation
+        .as_ref()
+        .and_then(|ann| get_annotation_property(&ann.node, "default"))
+        .cloned()
+}
+
+// --- Implicit Lambda ($_ desugaring) ---
+
+/// Check if an expression directly contains VarRef("_") (not nested in inner brackets).
+fn contains_direct_underscore(expr: &Expr) -> bool {
+    match expr {
+        Expr::VarRef(name) => name == "_",
+        // Access chains on $_ count as direct (e.g., $_.name)
+        Expr::DotAccess { expr: inner, .. } => contains_direct_underscore(&inner.node),
+        Expr::BracketAccess { expr: inner, .. } => contains_direct_underscore(&inner.node),
+        Expr::RangeAccess { expr: inner, .. } => contains_direct_underscore(&inner.node),
+        // Dict/Call/Fn create a new bracket boundary -- $_ inside them is NOT direct
+        Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } => false,
+        // Literals, TypeAlias, TypeAssert, Annotated cannot contain $_
+        _ => false,
+    }
+}
+
+/// Check if a Call expression has any direct $_ references in its args/named_args.
+fn call_has_direct_underscore(args: &[Spanned<Expr>], named_args: &[Spanned<NamedArg>]) -> bool {
+    args.iter().any(|a| contains_direct_underscore(&a.node))
+        || named_args
+            .iter()
+            .any(|na| contains_direct_underscore(&na.node.value.node))
+}
+
+/// Determine if an expression should be desugared into an implicit lambda.
+/// This applies when the expression directly contains $_ and is NOT itself
+/// a bare VarRef("_") (which would be just looking up the variable).
+fn should_desugar_underscore(expr: &Expr) -> bool {
+    match expr {
+        // A bare $_ is just a variable reference, not an implicit lambda
+        Expr::VarRef(_) => false,
+        // Access chains rooted at $_ → implicit lambda
+        Expr::DotAccess { expr: inner, .. }
+        | Expr::BracketAccess { expr: inner, .. }
+        | Expr::RangeAccess { expr: inner, .. } => contains_direct_underscore(&inner.node),
+        // Call with $_ in args → implicit lambda
+        Expr::Call {
+            args, named_args, ..
+        } => call_has_direct_underscore(args, named_args),
+        // Dict with $_ in entries → implicit lambda
+        Expr::Dict(entries) => entries
+            .iter()
+            .any(|e| contains_direct_underscore(&e.node.value.node)),
+        _ => false,
+    }
+}
+
+/// Wrap an expression in `[fn [_] <expr>]`.
+fn wrap_in_lambda(expr: &Spanned<Expr>) -> Spanned<Expr> {
+    Spanned::new(
+        Expr::Fn {
+            return_ann: None,
+            params: vec![Spanned::new(
+                Param {
+                    name: "_".to_string(),
+                    annotation: None,
+                    variadic: false,
+                },
+                expr.span,
+            )],
+            body: Box::new(expr.clone()),
+        },
+        expr.span,
+    )
+}
+
+// --- Access Chain Helpers ---
+
+/// Evaluate a target expression, materialize, and return the inner IndexMap if
+/// it's a Dict, otherwise return a type-mismatch error. Shared by all access
+/// chain functions (dot, bracket, range).
+fn eval_as_dict(
+    target: &Spanned<Expr>,
+    env: &Rc<RefCell<Environment>>,
+    access_span: &Span,
+    depth: usize,
+) -> Result<IndexMap<Key, Rc<Thunk>>, Box<EvalError>> {
+    let target_thunk = eval(target, Rc::clone(env), depth + 1)?;
+    let target_val = materialize(&target_thunk, Some(access_span), depth + 1)?;
+    match target_val {
+        Value::Dict(map) => Ok(map),
+        _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
+    }
+}
+
 // --- Access Chains ---
 
 /// DotAccess: materialize target, look up string key in dict.
@@ -290,17 +649,11 @@ fn eval_dot_access(
     access_span: &Span,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    let target_thunk = eval(target, Rc::clone(env), depth + 1)?;
-    let target_val = materialize(&target_thunk, Some(access_span), depth + 1)?;
-    match target_val {
-        Value::Dict(map) => {
-            let key = Key::String(field.to_string());
-            match map.get(&key) {
-                Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(EvalError::key_not_found(field, *access_span).into()),
-            }
-        }
-        _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
+    let map = eval_as_dict(target, env, access_span, depth)?;
+    let key = Key::String(field.to_string());
+    match map.get(&key) {
+        Some(thunk) => Ok(Rc::clone(thunk)),
+        None => Err(EvalError::key_not_found(field, *access_span).into()),
     }
 }
 
@@ -312,17 +665,11 @@ fn eval_bracket_access(
     access_span: &Span,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    let target_thunk = eval(target, Rc::clone(env), depth + 1)?;
-    let target_val = materialize(&target_thunk, Some(access_span), depth + 1)?;
-    match target_val {
-        Value::Dict(map) => {
-            let key = eval_key(key_expr, env, depth)?;
-            match map.get(&key) {
-                Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(EvalError::key_not_found(&key.to_string(), *access_span).into()),
-            }
-        }
-        _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
+    let map = eval_as_dict(target, env, access_span, depth)?;
+    let key = eval_key(key_expr, env, depth)?;
+    match map.get(&key) {
+        Some(thunk) => Ok(Rc::clone(thunk)),
+        None => Err(EvalError::key_not_found(&key.to_string(), *access_span).into()),
     }
 }
 
@@ -337,51 +684,21 @@ fn eval_range_access(
     access_span: &Span,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    let target_thunk = eval(target, Rc::clone(env), depth + 1)?;
-    let target_val = materialize(&target_thunk, Some(access_span), depth + 1)?;
-    match target_val {
-        Value::Dict(map) => {
-            let start_key = start.map(|e| eval_key(e, env, depth)).transpose()?;
-            let end_key = end.map(|e| eval_key(e, env, depth)).transpose()?;
+    let map = eval_as_dict(target, env, access_span, depth)?;
+    let start_key = start.map(|e| eval_key(e, env, depth)).transpose()?;
+    let end_key = end.map(|e| eval_key(e, env, depth)).transpose()?;
 
-            let mut result: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
-            for (k, v) in &map {
-                let include = match (&start_key, &end_key) {
-                    (Some(s), Some(e)) => {
-                        let ge_start = k
-                            .partial_cmp(s)
-                            .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, *access_span))?;
-                        let lt_end = k
-                            .partial_cmp(e)
-                            .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, *access_span))?;
-                        ge_start != std::cmp::Ordering::Less && lt_end == std::cmp::Ordering::Less
-                    }
-                    (Some(s), None) => {
-                        let cmp = k
-                            .partial_cmp(s)
-                            .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, *access_span))?;
-                        cmp != std::cmp::Ordering::Less
-                    }
-                    (None, Some(e)) => {
-                        let cmp = k
-                            .partial_cmp(e)
-                            .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, *access_span))?;
-                        cmp == std::cmp::Ordering::Less
-                    }
-                    (None, None) => true, // unbounded: include everything
-                };
-                if include {
-                    result.insert(k.clone(), Rc::clone(v));
-                }
-            }
-
-            Ok(Rc::new(Thunk::new_materialized(
-                Value::Dict(result),
-                *access_span,
-            )))
+    let mut result: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
+    for (k, v) in &map {
+        if key_in_range(k, start_key.as_ref(), end_key.as_ref(), *access_span)? {
+            result.insert(k.clone(), Rc::clone(v));
         }
-        _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
     }
+
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Dict(result),
+        *access_span,
+    )))
 }
 
 // --- Materialization ---
@@ -863,18 +1180,695 @@ mod tests {
         );
     }
 
-    // --- Unimplemented Expr ---
+    // --- Fn Evaluation ---
 
     #[test]
-    fn test_unimplemented_call() {
-        let expr = sp(Expr::Call {
+    fn test_fn_creates_function_value() {
+        // [fn [x] $x] → Function
+        let expr = sp(Expr::Fn {
+            return_ann: None,
+            params: vec![sp(Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            })],
+            body: Box::new(sp(Expr::VarRef("x".into()))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Function { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_captures_closure_env() {
+        // outer: 42 is in env, [fn [] $outer] should capture it
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "outer".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 5),
+            )),
+        );
+        let fn_expr = sp(Expr::Fn {
+            return_ann: None,
+            params: vec![],
+            body: Box::new(sp(Expr::VarRef("outer".into()))),
+        });
+        let fn_thunk = eval(&fn_expr, Rc::clone(&env), 0).unwrap();
+        let fn_val = materialize(&fn_thunk, None, 0).unwrap();
+
+        // Call it: [call $f]
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![],
             named_args: vec![],
         });
+        let result_thunk = eval(&call_expr, env, 0).unwrap();
+        let result = materialize(&result_thunk, None, 0).unwrap();
+        assert_eq!(result, Value::Int(42));
+    }
+
+    // --- Call Evaluation ---
+
+    #[test]
+    fn test_call_simple() {
+        // Define identity function and call it
+        // f: [fn [x] $x]
+        // [call $f 42]
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(42))],
+            named_args: vec![],
+        });
+        let thunk = eval(&call_expr, env, 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn test_call_multiple_args() {
+        // f: [fn [a b] $b]  -- returns second arg
+        // [call $f 10 20] → 20
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "a".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "b".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+            ]),
+            body: Rc::new(sp(Expr::VarRef("b".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(10)), sp(Expr::Int(20))],
+            named_args: vec![],
+        });
+        let thunk = eval(&call_expr, env, 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(20));
+    }
+
+    #[test]
+    fn test_call_on_non_function() {
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "x".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 5),
+            )),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("x".into()))),
+            args: vec![],
+            named_args: vec![],
+        });
+        let err = eval(&call_expr, env, 0).unwrap_err();
+        assert!(
+            err.message.contains("type mismatch"),
+            "got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("Function or Builtin"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    // --- Arity Checking ---
+
+    #[test]
+    fn test_call_too_few_args() {
+        // f: [fn [x y] $x]
+        // [call $f 1] → arity mismatch
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "y".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+            ]),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+        let err = eval(&call_expr, env, 0).unwrap_err();
+        assert!(
+            err.message.contains("arity mismatch"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_call_too_many_args() {
+        // f: [fn [x] $x]
+        // [call $f 1 2] → arity mismatch
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1)), sp(Expr::Int(2))],
+            named_args: vec![],
+        });
+        let err = eval(&call_expr, env, 0).unwrap_err();
+        assert!(
+            err.message.contains("arity mismatch"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    // --- Named Arguments ---
+
+    #[test]
+    fn test_call_named_arg_with_default() {
+        // f: [fn [x  y@[default: 99]] [result: $y]]
+        // [call $f 1] → y defaults to 99
+        let env = empty_env();
+        let default_entry = sp(Entry {
+            key: Some(sp(Expr::Str("default".into()))),
+            value: sp(Expr::Int(99)),
+        });
+        let fn_val = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "y".into(),
+                    annotation: Some(sp(Annotation::PropertyDict(vec![default_entry]))),
+                    variadic: false,
+                },
+            ]),
+            body: Rc::new(sp(Expr::VarRef("y".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        // Call without named arg — y should default to 99
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+        let thunk = eval(&call_expr, Rc::clone(&env), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(99));
+    }
+
+    #[test]
+    fn test_call_named_arg_overridden() {
+        // f: [fn [x  y@[default: 99]] $y]
+        // [call $f 1 y: 42] → y = 42
+        let env = empty_env();
+        let default_entry = sp(Entry {
+            key: Some(sp(Expr::Str("default".into()))),
+            value: sp(Expr::Int(99)),
+        });
+        let fn_val = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "y".into(),
+                    annotation: Some(sp(Annotation::PropertyDict(vec![default_entry]))),
+                    variadic: false,
+                },
+            ]),
+            body: Rc::new(sp(Expr::VarRef("y".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![sp(NamedArg {
+                name: "y".into(),
+                value: sp(Expr::Int(42)),
+            })],
+        });
+        let thunk = eval(&call_expr, env, 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn test_call_unexpected_named_arg() {
+        // f: [fn [x] $x]
+        // [call $f 1 z: 2] → error: unexpected named argument
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![sp(NamedArg {
+                name: "z".into(),
+                value: sp(Expr::Int(2)),
+            })],
+        });
+        let err = eval(&call_expr, env, 0).unwrap_err();
+        assert!(
+            err.message.contains("unexpected named argument: z"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_call_duplicate_positional_and_named_error() {
+        // f: [fn [x y@[default: 99]] $y]
+        // [call $f 1 2 y: 42] → error: y received both positional and named argument
+        let env = empty_env();
+        let default_entry = sp(Entry {
+            key: Some(sp(Expr::Str("default".into()))),
+            value: sp(Expr::Int(99)),
+        });
+        let fn_val = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "y".into(),
+                    annotation: Some(sp(Annotation::PropertyDict(vec![default_entry]))),
+                    variadic: false,
+                },
+            ]),
+            body: Rc::new(sp(Expr::VarRef("y".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1)), sp(Expr::Int(2))],
+            named_args: vec![sp(NamedArg {
+                name: "y".into(),
+                value: sp(Expr::Int(42)),
+            })],
+        });
+        let err = eval(&call_expr, env, 0).unwrap_err();
+        assert!(
+            err.message
+                .contains("received both positional and named argument"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    // --- Variadic Parameters ---
+
+    #[test]
+    fn test_call_variadic() {
+        // f: [fn [x ...rest] $rest]
+        // [call $f 1 2 3] → rest = Dict({0: 2, 1: 3})
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "rest".into(),
+                    annotation: None,
+                    variadic: true,
+                },
+            ]),
+            body: Rc::new(sp(Expr::VarRef("rest".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1)), sp(Expr::Int(2)), sp(Expr::Int(3))],
+            named_args: vec![],
+        });
+        let thunk = eval(&call_expr, env, 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 2);
+                assert_eq!(
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap(),
+                    Value::Int(2)
+                );
+                assert_eq!(
+                    materialize(map.get(&Key::Int(1)).unwrap(), None, 0).unwrap(),
+                    Value::Int(3)
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_call_variadic_empty() {
+        // f: [fn [x ...rest] $rest]
+        // [call $f 1] → rest = Dict({})
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "rest".into(),
+                    annotation: None,
+                    variadic: true,
+                },
+            ]),
+            body: Rc::new(sp(Expr::VarRef("rest".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+        let thunk = eval(&call_expr, env, 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => assert_eq!(map.len(), 0),
+            other => panic!("expected empty Dict, got {other:?}"),
+        }
+    }
+
+    // --- Builtin Calls ---
+
+    #[test]
+    fn test_call_builtin() {
+        fn add_builtin(
+            args: &[Rc<Thunk>],
+            _named: &IndexMap<String, Rc<Thunk>>,
+        ) -> Result<Value, Box<EvalError>> {
+            let a = materialize(&args[0], None, 0)?;
+            let b = materialize(&args[1], None, 0)?;
+            match (a, b) {
+                (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
+                _ => panic!("test expects Int args"),
+            }
+        }
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "add".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Builtin {
+                    name: "add",
+                    func: add_builtin,
+                },
+                test_span(1, 1, 1, 5),
+            )),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("add".into()))),
+            args: vec![sp(Expr::Int(3)), sp(Expr::Int(4))],
+            named_args: vec![],
+        });
+        let thunk = eval(&call_expr, env, 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(7));
+    }
+
+    // --- TypeAlias ---
+
+    #[test]
+    fn test_type_alias_returns_empty_dict() {
+        let expr = sp(Expr::TypeAlias(Box::new(sp(Expr::VarRef("MyType".into())))));
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => assert_eq!(map.len(), 0),
+            other => panic!("expected empty Dict, got {other:?}"),
+        }
+    }
+
+    // --- $_ Implicit Lambda ---
+
+    #[test]
+    fn test_underscore_access_chain_becomes_lambda() {
+        // $_.name → [fn [_] $_.name]
+        // Evaluating this should produce a Function, not look up $_
+        let expr = sp(Expr::DotAccess {
+            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            field: "name".into(),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Function { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "_");
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_underscore_in_call_becomes_lambda() {
+        // [call $f $_] where $f is in scope → should produce a lambda
+        // The outer [call ...] contains $_ directly → wraps in [fn [_] [call $f $_]]
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::VarRef("_".into()))],
+            named_args: vec![],
+        });
+        let thunk = eval(&call_expr, Rc::clone(&env), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Function { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "_");
+            }
+            other => panic!("expected Function from $_ desugaring, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_underscore_lambda_callable() {
+        // Create $_.name as a lambda, then call it with a dict that has name: "alice"
+        let env = empty_env();
+        // Build the $_.name expression → becomes [fn [_] $_.name]
+        let getter_expr = sp(Expr::DotAccess {
+            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            field: "name".into(),
+        });
+        let getter_thunk = eval(&getter_expr, Rc::clone(&env), 0).unwrap();
+        let getter_val = materialize(&getter_thunk, None, 0).unwrap();
+        env.borrow_mut().insert(
+            "getter".into(),
+            Rc::new(Thunk::new_materialized(getter_val, test_span(1, 1, 1, 10))),
+        );
+
+        // Call it with [name: alice]
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("getter".into()))),
+            args: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("name".into()))),
+                value: sp(Expr::Str("alice".into())),
+            })]))],
+            named_args: vec![],
+        });
+        let result_thunk = eval(&call_expr, env, 0).unwrap();
+        let result = materialize(&result_thunk, None, 0).unwrap();
+        assert_eq!(result, Value::String("alice".into()));
+    }
+
+    #[test]
+    fn test_underscore_in_dict_entry() {
+        // [a: $_.name] → desugars to [fn [_] [a: $_.name]]
+        // Dict with $_ in a value position should desugar to an implicit lambda
+        let expr = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("a".into()))),
+            value: sp(Expr::DotAccess {
+                expr: Box::new(sp(Expr::VarRef("_".into()))),
+                field: "name".into(),
+            }),
+        })]));
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Function { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "_");
+            }
+            other => panic!("expected Function from $_ dict desugaring, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_underscore_in_named_arg() {
+        // [call $f x: $_] → desugars to [fn [_] [call $f x: $_]]
+        // Call with $_ in a named arg value should desugar to an implicit lambda
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![],
+            named_args: vec![sp(NamedArg {
+                name: "x".into(),
+                value: sp(Expr::VarRef("_".into())),
+            })],
+        });
+        let thunk = eval(&call_expr, Rc::clone(&env), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Function { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "_");
+            }
+            other => panic!("expected Function from $_ named arg desugaring, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_bare_underscore_is_not_lambda() {
+        // $_ alone is just a VarRef, not an implicit lambda
+        // It should fail with "undefined variable" if not in scope
+        let expr = sp(Expr::VarRef("_".into()));
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message.contains("not yet implemented: Call"),
+            err.message.contains("undefined variable: $_"),
             "got: {}",
             err.message
         );
@@ -1492,40 +2486,6 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
-    }
-
-    // --- Unimplemented Fn ---
-
-    #[test]
-    fn test_unimplemented_fn() {
-        let expr = sp(Expr::Fn {
-            return_ann: None,
-            params: vec![sp(Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            })],
-            body: Box::new(sp(Expr::VarRef("x".into()))),
-        });
-        let err = eval(&expr, empty_env(), 0).unwrap_err();
-        assert!(
-            err.message.contains("not yet implemented: Fn"),
-            "got: {}",
-            err.message
-        );
-    }
-
-    // --- Unimplemented TypeAlias ---
-
-    #[test]
-    fn test_unimplemented_type_alias() {
-        let expr = sp(Expr::TypeAlias(Box::new(sp(Expr::VarRef("MyType".into())))));
-        let err = eval(&expr, empty_env(), 0).unwrap_err();
-        assert!(
-            err.message.contains("not yet implemented: TypeAlias"),
-            "got: {}",
-            err.message
-        );
     }
 
     // --- value_to_key with invalid types ---

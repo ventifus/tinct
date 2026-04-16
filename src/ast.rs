@@ -49,51 +49,59 @@ pub struct Document {
 /// The central expression type
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    // Literals
+    /// Integer literal, e.g. `42` or `-1`
     Int(i64),
+    /// Float literal, e.g. `3.14`
     Float(f64),
+    /// Boolean literal: `true` or `false`
     Bool(bool),
+    /// String literal (bare word or quoted), e.g. `hello` or `"hello"`
     Str(String),
 
-    // References and access
+    /// Variable reference, e.g. `$x` or `$$`
     VarRef(String),
+    /// Dot access on an expression, e.g. `$a.b`
     DotAccess {
         expr: Box<Spanned<Expr>>,
         field: String,
     },
+    /// Bracket key access, e.g. `$a[0]` or `$a[$key]`
     BracketAccess {
         expr: Box<Spanned<Expr>>,
         key: Box<Spanned<Expr>>,
     },
+    /// Key-range slice, e.g. `$a[2..5]` or `$a[2..]`
     RangeAccess {
         expr: Box<Spanned<Expr>>,
         start: Option<Box<Spanned<Expr>>>,
         end: Option<Box<Spanned<Expr>>>,
     },
 
-    // Data
+    /// Dict/list literal with keyed and/or auto-indexed entries
     Dict(Vec<Spanned<Entry>>),
 
-    // Special forms
+    /// Function application via `[call $f ...]`
     Call {
         func: Box<Spanned<Expr>>,
         args: Vec<Spanned<Expr>>,
         named_args: Vec<Spanned<NamedArg>>,
     },
+    /// Function definition via `[fn [params] body]`
     Fn {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<Param>>,
         body: Box<Spanned<Expr>>,
     },
+    /// Type alias declaration via `[type expr]`
     TypeAlias(Box<Spanned<Expr>>),
 
-    // Type expressions
+    /// Type assertion, e.g. `[@Number $expr]`
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Box<Spanned<Expr>>,
     },
 
-    // Generalized annotation in value position
+    /// Annotated bare word in value position, e.g. `Fn@Number`
     Annotated {
         name: String,
         annotation: Spanned<Annotation>,
@@ -276,18 +284,14 @@ mod tests {
     use super::*;
     use crate::test_util::sp;
 
-    fn test_spanned<T>(node: T) -> Spanned<T> {
-        sp(node)
-    }
-
     // -- Expr::Display tests --
 
     #[test]
     fn test_display_range_access_full() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(test_spanned(Expr::VarRef("list".into()))),
-            start: Some(Box::new(test_spanned(Expr::Int(1)))),
-            end: Some(Box::new(test_spanned(Expr::Int(5)))),
+            expr: Box::new(sp(Expr::VarRef("list".into()))),
+            start: Some(Box::new(sp(Expr::Int(1)))),
+            end: Some(Box::new(sp(Expr::Int(5)))),
         };
         assert_eq!(format!("{expr}"), "$list[1..5]");
     }
@@ -295,8 +299,8 @@ mod tests {
     #[test]
     fn test_display_range_access_start_only() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(test_spanned(Expr::VarRef("list".into()))),
-            start: Some(Box::new(test_spanned(Expr::Int(2)))),
+            expr: Box::new(sp(Expr::VarRef("list".into()))),
+            start: Some(Box::new(sp(Expr::Int(2)))),
             end: None,
         };
         assert_eq!(format!("{expr}"), "$list[2..]");
@@ -305,9 +309,9 @@ mod tests {
     #[test]
     fn test_display_range_access_end_only() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(test_spanned(Expr::VarRef("list".into()))),
+            expr: Box::new(sp(Expr::VarRef("list".into()))),
             start: None,
-            end: Some(Box::new(test_spanned(Expr::Int(10)))),
+            end: Some(Box::new(sp(Expr::Int(10)))),
         };
         assert_eq!(format!("{expr}"), "$list[..10]");
     }
@@ -315,7 +319,7 @@ mod tests {
     #[test]
     fn test_display_range_access_unbounded() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(test_spanned(Expr::VarRef("list".into()))),
+            expr: Box::new(sp(Expr::VarRef("list".into()))),
             start: None,
             end: None,
         };
@@ -325,8 +329,8 @@ mod tests {
     #[test]
     fn test_display_type_assert() {
         let expr = Expr::TypeAssert {
-            annotation: test_spanned(Annotation::Simple("Number".into())),
-            expr: Box::new(test_spanned(Expr::Int(42))),
+            annotation: sp(Annotation::Simple("Number".into())),
+            expr: Box::new(sp(Expr::Int(42))),
         };
         assert_eq!(format!("{expr}"), "[@Number 42]");
     }
@@ -334,18 +338,18 @@ mod tests {
     #[test]
     fn test_display_type_assert_with_property_dict() {
         let entries = vec![
-            test_spanned(Entry {
-                key: Some(test_spanned(Expr::VarRef("type".into()))),
-                value: test_spanned(Expr::VarRef("Number".into())),
+            sp(Entry {
+                key: Some(sp(Expr::VarRef("type".into()))),
+                value: sp(Expr::VarRef("Number".into())),
             }),
-            test_spanned(Entry {
-                key: Some(test_spanned(Expr::VarRef("min".into()))),
-                value: test_spanned(Expr::Int(0)),
+            sp(Entry {
+                key: Some(sp(Expr::VarRef("min".into()))),
+                value: sp(Expr::Int(0)),
             }),
         ];
         let expr = Expr::TypeAssert {
-            annotation: test_spanned(Annotation::PropertyDict(entries)),
-            expr: Box::new(test_spanned(Expr::VarRef("x".into()))),
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::VarRef("x".into()))),
         };
         assert_eq!(format!("{expr}"), "[@[$type: $Number  $min: 0] $x]");
     }
@@ -354,20 +358,20 @@ mod tests {
     fn test_display_annotated() {
         let expr = Expr::Annotated {
             name: "Config".into(),
-            annotation: test_spanned(Annotation::Simple("ConfigType".into())),
+            annotation: sp(Annotation::Simple("ConfigType".into())),
         };
         assert_eq!(format!("{expr}"), "Config@ConfigType");
     }
 
     #[test]
     fn test_display_annotated_with_property_dict() {
-        let entries = vec![test_spanned(Entry {
-            key: Some(test_spanned(Expr::VarRef("required".into()))),
-            value: test_spanned(Expr::Bool(true)),
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::VarRef("required".into()))),
+            value: sp(Expr::Bool(true)),
         })];
         let expr = Expr::Annotated {
             name: "port".into(),
-            annotation: test_spanned(Annotation::PropertyDict(entries)),
+            annotation: sp(Annotation::PropertyDict(entries)),
         };
         assert_eq!(format!("{expr}"), "port@[$required: true]");
     }
@@ -375,7 +379,7 @@ mod tests {
     #[test]
     fn test_display_call_no_args() {
         let expr = Expr::Call {
-            func: Box::new(test_spanned(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![],
             named_args: vec![],
         };
@@ -385,8 +389,8 @@ mod tests {
     #[test]
     fn test_display_call_with_args() {
         let expr = Expr::Call {
-            func: Box::new(test_spanned(Expr::VarRef("add".into()))),
-            args: vec![test_spanned(Expr::Int(1)), test_spanned(Expr::Int(2))],
+            func: Box::new(sp(Expr::VarRef("add".into()))),
+            args: vec![sp(Expr::Int(1)), sp(Expr::Int(2))],
             named_args: vec![],
         };
         assert_eq!(format!("{expr}"), "[call $add 1 2]");
@@ -395,11 +399,11 @@ mod tests {
     #[test]
     fn test_display_call_with_named_args() {
         let expr = Expr::Call {
-            func: Box::new(test_spanned(Expr::VarRef("config".into()))),
+            func: Box::new(sp(Expr::VarRef("config".into()))),
             args: vec![],
-            named_args: vec![test_spanned(NamedArg {
+            named_args: vec![sp(NamedArg {
                 name: "port".into(),
-                value: test_spanned(Expr::Int(8080)),
+                value: sp(Expr::Int(8080)),
             })],
         };
         assert_eq!(format!("{expr}"), "[call $config port: 8080]");
@@ -408,11 +412,11 @@ mod tests {
     #[test]
     fn test_display_call_with_both_arg_types() {
         let expr = Expr::Call {
-            func: Box::new(test_spanned(Expr::VarRef("deploy".into()))),
-            args: vec![test_spanned(Expr::Str("prod".into()))],
-            named_args: vec![test_spanned(NamedArg {
+            func: Box::new(sp(Expr::VarRef("deploy".into()))),
+            args: vec![sp(Expr::Str("prod".into()))],
+            named_args: vec![sp(NamedArg {
                 name: "replicas".into(),
-                value: test_spanned(Expr::Int(3)),
+                value: sp(Expr::Int(3)),
             })],
         };
         assert_eq!(format!("{expr}"), "[call $deploy \"prod\" replicas: 3]");
@@ -423,7 +427,7 @@ mod tests {
         let expr = Expr::Fn {
             return_ann: None,
             params: vec![],
-            body: Box::new(test_spanned(Expr::Int(42))),
+            body: Box::new(sp(Expr::Int(42))),
         };
         assert_eq!(format!("{expr}"), "[fn [] 42]");
     }
@@ -433,18 +437,18 @@ mod tests {
         let expr = Expr::Fn {
             return_ann: None,
             params: vec![
-                test_spanned(Param {
+                sp(Param {
                     name: "x".into(),
                     annotation: None,
                     variadic: false,
                 }),
-                test_spanned(Param {
+                sp(Param {
                     name: "y".into(),
                     annotation: None,
                     variadic: false,
                 }),
             ],
-            body: Box::new(test_spanned(Expr::VarRef("x".into()))),
+            body: Box::new(sp(Expr::VarRef("x".into()))),
         };
         assert_eq!(format!("{expr}"), "[fn [x y] $x]");
     }
@@ -452,9 +456,9 @@ mod tests {
     #[test]
     fn test_display_fn_with_return_annotation() {
         let expr = Expr::Fn {
-            return_ann: Some(test_spanned(Annotation::Simple("Number".into()))),
+            return_ann: Some(sp(Annotation::Simple("Number".into()))),
             params: vec![],
-            body: Box::new(test_spanned(Expr::Int(0))),
+            body: Box::new(sp(Expr::Int(0))),
         };
         assert_eq!(format!("{expr}"), "[fn@Number [] 0]");
     }
@@ -463,12 +467,12 @@ mod tests {
     fn test_display_fn_with_annotated_params() {
         let expr = Expr::Fn {
             return_ann: None,
-            params: vec![test_spanned(Param {
+            params: vec![sp(Param {
                 name: "x".into(),
-                annotation: Some(test_spanned(Annotation::Simple("Int".into()))),
+                annotation: Some(sp(Annotation::Simple("Int".into()))),
                 variadic: false,
             })],
-            body: Box::new(test_spanned(Expr::VarRef("x".into()))),
+            body: Box::new(sp(Expr::VarRef("x".into()))),
         };
         assert_eq!(format!("{expr}"), "[fn [x@Int] $x]");
     }
@@ -477,12 +481,12 @@ mod tests {
     fn test_display_fn_with_variadic_param() {
         let expr = Expr::Fn {
             return_ann: None,
-            params: vec![test_spanned(Param {
+            params: vec![sp(Param {
                 name: "args".into(),
                 annotation: None,
                 variadic: true,
             })],
-            body: Box::new(test_spanned(Expr::VarRef("args".into()))),
+            body: Box::new(sp(Expr::VarRef("args".into()))),
         };
         assert_eq!(format!("{expr}"), "[fn [...args] $args]");
     }
@@ -496,13 +500,13 @@ mod tests {
     #[test]
     fn test_display_dict_with_keyed_entries() {
         let expr = Expr::Dict(vec![
-            test_spanned(Entry {
-                key: Some(test_spanned(Expr::VarRef("a".into()))),
-                value: test_spanned(Expr::Int(1)),
+            sp(Entry {
+                key: Some(sp(Expr::VarRef("a".into()))),
+                value: sp(Expr::Int(1)),
             }),
-            test_spanned(Entry {
-                key: Some(test_spanned(Expr::VarRef("b".into()))),
-                value: test_spanned(Expr::Int(2)),
+            sp(Entry {
+                key: Some(sp(Expr::VarRef("b".into()))),
+                value: sp(Expr::Int(2)),
             }),
         ]);
         assert_eq!(format!("{expr}"), "[$a: 1  $b: 2]");
@@ -511,13 +515,13 @@ mod tests {
     #[test]
     fn test_display_dict_with_auto_indexed_entries() {
         let expr = Expr::Dict(vec![
-            test_spanned(Entry {
+            sp(Entry {
                 key: None,
-                value: test_spanned(Expr::Int(10)),
+                value: sp(Expr::Int(10)),
             }),
-            test_spanned(Entry {
+            sp(Entry {
                 key: None,
-                value: test_spanned(Expr::Int(20)),
+                value: sp(Expr::Int(20)),
             }),
         ]);
         assert_eq!(format!("{expr}"), "[10  20]");
@@ -540,13 +544,13 @@ mod tests {
     #[test]
     fn test_display_annotation_property_dict_with_entries() {
         let ann = Annotation::PropertyDict(vec![
-            test_spanned(Entry {
-                key: Some(test_spanned(Expr::VarRef("type".into()))),
-                value: test_spanned(Expr::VarRef("Number".into())),
+            sp(Entry {
+                key: Some(sp(Expr::VarRef("type".into()))),
+                value: sp(Expr::VarRef("Number".into())),
             }),
-            test_spanned(Entry {
-                key: Some(test_spanned(Expr::VarRef("default".into()))),
-                value: test_spanned(Expr::Int(42)),
+            sp(Entry {
+                key: Some(sp(Expr::VarRef("default".into()))),
+                value: sp(Expr::Int(42)),
             }),
         ]);
         assert_eq!(format!("{ann}"), "[$type: $Number  $default: 42]");
@@ -557,7 +561,7 @@ mod tests {
     #[test]
     fn test_display_document_single_expression() {
         let doc = Document {
-            expressions: vec![test_spanned(Expr::Int(42))],
+            expressions: vec![sp(Expr::Int(42))],
         };
         assert_eq!(format!("{doc}"), "42");
     }
@@ -566,9 +570,9 @@ mod tests {
     fn test_display_document_multiple_expressions() {
         let doc = Document {
             expressions: vec![
-                test_spanned(Expr::VarRef("x".into())),
-                test_spanned(Expr::Int(10)),
-                test_spanned(Expr::Bool(true)),
+                sp(Expr::VarRef("x".into())),
+                sp(Expr::Int(10)),
+                sp(Expr::Bool(true)),
             ],
         };
         assert_eq!(format!("{doc}"), "$x\n10\ntrue");
@@ -585,8 +589,8 @@ mod tests {
     #[test]
     fn test_display_file_single_document() {
         let file = File {
-            documents: vec![test_spanned(Document {
-                expressions: vec![test_spanned(Expr::Int(1))],
+            documents: vec![sp(Document {
+                expressions: vec![sp(Expr::Int(1))],
             })],
         };
         assert_eq!(format!("{file}"), "1");
@@ -596,11 +600,11 @@ mod tests {
     fn test_display_file_multiple_documents() {
         let file = File {
             documents: vec![
-                test_spanned(Document {
-                    expressions: vec![test_spanned(Expr::Int(1))],
+                sp(Document {
+                    expressions: vec![sp(Expr::Int(1))],
                 }),
-                test_spanned(Document {
-                    expressions: vec![test_spanned(Expr::Int(2))],
+                sp(Document {
+                    expressions: vec![sp(Expr::Int(2))],
                 }),
             ],
         };

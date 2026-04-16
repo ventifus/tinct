@@ -1,0 +1,5 @@
+[outer: 10  f: [fn [] $outer]]
+
+[call $f]
+===
+Int(10)

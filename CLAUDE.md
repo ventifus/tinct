@@ -6,7 +6,7 @@ A **unified data representation and transformation language** combining JSON-lik
 
 **Vision:** One language for both data representation (like JSON/YAML) and data transformation (like JSONnet/jq), with lazy evaluation and strong composition principles.
 
-**Current State:** Phase 0 (parser) complete. Phase 1a-1d (evaluator foundation + core eval + access chains + document evaluation) complete. Phase 1e (functions) is next.
+**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator foundation + core eval + access chains + document evaluation + functions) complete. Phase 2a (core types) is next.
 
 ## Key Documents
 
@@ -26,7 +26,7 @@ The parser is built on [pest](https://pest.rs/) (PEG-based grammar in a separate
 | `src/grammar.pest` | PEG grammar (lexical + syntactic rules) |
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/parser.rs` | pest pairs to AST conversion + unit tests |
-| `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, depth limit (256) |
+| `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, depth limit (256) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain) |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, stack frames |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
@@ -43,7 +43,7 @@ The parser is built on [pest](https://pest.rs/) (PEG-based grammar in a separate
 ## Testing
 
 ### Unit Tests
-250 tests across `parser.rs`, `ast.rs`, `value.rs`, `error.rs`, `eval.rs`, and shared helpers in `test_util.rs`. Coverage includes every AST node type, Display/Debug formatting, access chains, special forms, annotations, document structure, static constraints, error cases, evaluator foundation types, core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), eval depth limiting, materialization span propagation, and error path coverage (non-dict access, string key ranges, invalid key types).
+270 tests across `parser.rs`, `ast.rs`, `value.rs`, `error.rs`, `eval.rs`, and shared helpers in `test_util.rs`. Coverage includes every AST node type, Display/Debug formatting, access chains, special forms, annotations, document structure, static constraints, error cases, evaluator foundation types, core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn` creates closures, `call` with arity checking, named args with defaults, variadics, builtin calls, `$_` implicit lambda desugaring, TypeAlias), eval depth limiting, materialization span propagation, and error path coverage (non-dict access, string key ranges, invalid key types).
 
 ### Corpus Tests (`tests/corpus/`)
 File-based test suite with auto-discovery. Each `.txt` file is parsed; valid inputs must succeed, invalid inputs must fail. Uses `===` as the delimiter between input and expected output (not `---`, which is a valid LLT document separator).

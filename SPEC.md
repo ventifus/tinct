@@ -163,7 +163,7 @@ bare_word_char = _{
 }
 ```
 
-`bare_word_char` uses a denylist — any character except structural delimiters and `$` (which starts variable references). `bare_word_start` and `bare_word_cont` have different exclusion sets. `bare_word_start` additionally excludes `$` and `"..."`. `bare_word_cont` excludes `#` but not `$` or `...`, since those are only significant at the start of a token. `@` and `$` are excluded from `bare_word_char` entirely.
+`bare_word_char` uses a denylist — any character except structural delimiters and `$` (which starts variable references). Both `@` and `$` are excluded from `bare_word_char`, meaning they are excluded from `bare_word_cont` as well (since `bare_word_cont` requires `bare_word_char`). `bare_word_start` and `bare_word_cont` add additional exclusions on top of `bare_word_char`: `bare_word_start` additionally excludes `$`, `"..."`, and `#`; `bare_word_cont` additionally excludes `#`. The `"..."` exclusion is only needed at token start (variadic sigil context).
 
 **Bare word terminators** — a bare word ends at:
 - Whitespace (space, tab, newline)
@@ -353,6 +353,8 @@ bare_token = { float_lit | int_lit | bool_lit | bare_word }
 ```
 
 Quoted strings are valid as keys, allowing keys that contain spaces, colons, or other special characters: `["my key": value]`.
+
+**Note on key types:** The `bare_token` rule in `key` allows `float_lit` and `bool_lit` to parse successfully as keys. However, the evaluator only accepts `String` and `Int` as runtime key types and will reject `Float` and `Bool` keys with a type error. The parser is intentionally permissive here for forward compatibility — if future language versions support additional key types, no grammar changes will be needed.
 
 **Value boundary rule:** every entry's value is exactly one token or one bracket expression. After parsing a key's value, the next whitespace-separated token starts a new entry.
 
@@ -607,6 +609,8 @@ Duplicate keys within a single `[]` literal are parse errors:
 ```
 
 Duplicate detection applies to explicit keys only. Auto-indexed entries cannot duplicate because the counter always increments.
+
+**Note:** The parser detects duplicates among literal keys at parse time. The evaluator performs a second duplicate check at evaluation time to catch computed keys (e.g., `[$k1: a  $k2: b]` where `$k1` and `$k2` resolve to the same value). Both checks produce errors with source locations.
 
 ### 5.4 `fn` Parameter List Structure
 

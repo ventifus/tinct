@@ -448,6 +448,8 @@ safe: [call $try-or [fn [] [call $/ 1 0]] 0]   # → 0
 
 **Why:** Dicts are the fundamental unit — they shouldn't be order-dependent. Lazy evaluation makes this free: all bindings are thunks referencing a shared environment. This matches Haskell's `let`/`where` and Nix's attribute sets.
 
+**Key evaluation scope:** Dict keys are evaluated in the *parent* scope, not the dict's own letrec scope. This means key expressions cannot reference sibling bindings within the same dict. This is intentional for letrec correctness: keys must be deterministic regardless of entry order, and allowing keys to depend on sibling values (which are still unevaluated thunks) would introduce order-dependence or require eager evaluation of referenced entries.
+
 **Circular dependencies** are detected at materialization-time and reported with a clear cycle trace.
 
 **Nested dicts create new scopes.** Each `[]` dict introduces a new lexical scope. Inner scopes see all bindings from outer scopes, and inner bindings shadow outer bindings of the same name within that inner dict. Scoping is lexical, not dynamic — closures capture their defining environment, not the calling environment. This matches Haskell's `let`/`where` and Nix's attribute sets.
@@ -557,11 +559,15 @@ $data: [alice bob carol dave]
 # → [x: 1  z: 3]
 ```
 
-**`$conj` on sparse data:** `$conj` on sparse data is always safe — it uses max existing key + 1, keeping keys monotonically increasing.
+**`$conj` on sparse data:** `$conj` delegates to `$append`, which uses `$length` as the new key. This is correct for the intended list semantics (dense 0..n keys). On sparse data, the new key equals the entry count, not max key + 1, which may collide with an existing key. Use `$reindex` first to make sparse data dense before appending.
 
 ```lisp
+# Dense list — $conj works as expected
+[call $conj [a b c] d]                  # → [0: a  1: b  2: c  3: d]
+
+# Sparse data — reindex first
 $sparse: [0: a  5: b  10: c]
-[call $conj $sparse d]                  # → [0: a  5: b  10: c  11: d]
+[call $conj [call $reindex $sparse] d]  # → [0: a  1: b  2: c  3: d]
 ```
 
 ### No Null — Missing Keys Are Errors
@@ -895,6 +901,18 @@ add: [fn@Number [x@Number y@Number] [call $+ $x $y]]
 [call $add $_ 1]               # → [fn [_] [call $add $_ 1]]
 [call $> $_.age 30]            # → [fn [_] [call $> $_.age 30]]
 $_.name                        # → [fn [_] $_.name]  (access chain, no brackets)
+```
+
+**`$_` in dict values:** `$_` desugaring also applies to dict literals. If any entry value directly contains `$_`, the entire dict is wrapped in an implicit lambda:
+
+```lisp
+[name: $_.name  age: $_.age]   # → [fn [_] [name: $_.name  age: $_.age]]
+```
+
+This is useful for creating projection functions in pipelines:
+
+```lisp
+[call $map [name: $_.name  age: $_.age] $users]
 ```
 
 **Scoping rule:** The lambda boundary is the innermost `[...]` that directly contains `$_`. Nested bracket expressions that contain their own `$_` create separate lambdas:

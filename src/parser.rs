@@ -37,7 +37,7 @@ pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
         }
     }
 
-    // Empty file → one document with no expressions (empty dict)
+    // Empty file → one document with no expressions
     if documents.is_empty() {
         documents.push(Spanned::new(
             Document {
@@ -174,7 +174,7 @@ fn build_value(
 ) -> Result<Spanned<Expr>, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError {
-            message: "maximum nesting depth exceeded".into(),
+            message: format!("maximum nesting depth exceeded ({MAX_DEPTH})"),
             span: Some(make_span(&pair, lines)),
         });
     }
@@ -1559,7 +1559,7 @@ mod tests {
     fn test_error_depth_limit_message_format() {
         // Verify ParseError Display formatting with and without span
         let err_with_span = ParseError {
-            message: "maximum nesting depth exceeded".into(),
+            message: format!("maximum nesting depth exceeded ({MAX_DEPTH})"),
             span: Some(Span::new(
                 Position {
                     offset: 0,

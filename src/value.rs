@@ -10,6 +10,8 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, Expr, Param, Span, Spanned};
 use crate::error::EvalError;
 
+/// Signature for built-in functions: receives positional args and named args,
+/// returns a `Value` or an evaluation error.
 pub type BuiltinFn =
     fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>) -> Result<Value, Box<EvalError>>;
 
@@ -52,23 +54,28 @@ impl fmt::Display for Key {
 
 // --- Value ---
 
+/// A materialized runtime value.
 #[derive(Clone)]
 pub enum Value {
+    /// 64-bit signed integer
     Int(i64),
+    /// 64-bit IEEE 754 float
     Float(f64),
+    /// UTF-8 string (from bare words or quoted literals)
     String(String),
+    /// Boolean (`true` or `false`)
     Bool(bool),
+    /// Ordered key-value map with lazy (thunked) values
     Dict(IndexMap<Key, Rc<Thunk>>),
+    /// User-defined function (closure capturing its defining environment)
     Function {
-        params: Vec<Param>,
-        body: Spanned<Expr>,
+        params: Rc<Vec<Param>>,
+        body: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
         return_ann: Option<Spanned<Annotation>>,
     },
-    Builtin {
-        name: &'static str,
-        func: BuiltinFn,
-    },
+    /// Rust-native built-in function
+    Builtin { name: &'static str, func: BuiltinFn },
 }
 
 impl Value {
@@ -378,8 +385,8 @@ mod tests {
     fn test_value_partial_eq_function_always_false() {
         // Function values are intentionally non-comparable
         let f = Value::Function {
-            params: vec![],
-            body: Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1)),
+            params: Rc::new(vec![]),
+            body: Rc::new(Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
             return_ann: None,
         };
@@ -561,7 +568,7 @@ mod tests {
     #[test]
     fn test_value_display_function() {
         let span = test_span(1, 1, 1, 5);
-        let params = vec![
+        let params = Rc::new(vec![
             Param {
                 name: "x".into(),
                 annotation: None,
@@ -572,8 +579,8 @@ mod tests {
                 annotation: None,
                 variadic: false,
             },
-        ];
-        let body = Spanned::new(Expr::Int(0), span);
+        ]);
+        let body = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
         let func = Value::Function {
             params,
@@ -648,7 +655,7 @@ mod tests {
     #[test]
     fn test_value_debug_function() {
         let span = test_span(1, 1, 1, 5);
-        let params = vec![
+        let params = Rc::new(vec![
             Param {
                 name: "a".into(),
                 annotation: None,
@@ -659,8 +666,8 @@ mod tests {
                 annotation: None,
                 variadic: false,
             },
-        ];
-        let body = Spanned::new(Expr::Int(0), span);
+        ]);
+        let body = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
         let func = Value::Function {
             params,

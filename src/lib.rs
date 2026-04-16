@@ -4,7 +4,7 @@
 //! [`parse_expression`] is a convenience wrapper that parses a single expression.
 
 pub mod ast;
-// Phase 1a-1d evaluator modules: pub(crate) until public API is designed (Phase 3b).
+// Evaluator modules: pub(crate) until public API is designed (Phase 3b).
 #[allow(dead_code)]
 pub(crate) mod error;
 #[allow(dead_code)]

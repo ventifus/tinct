@@ -74,16 +74,16 @@ Depends on 1b-1c. After this step, multi-expression scope chains and `$$` pipeli
 - [x] `$$` starts as `[]` (empty dict) for the first document
 - [x] `$$` passes lazily between documents (no materialization at `---` boundary)
 
-### 1e: Functions
+### 1e: Functions — Complete
 
 Depends on 1b. After this step, `[fn [x] $x]` and `[call $f $x]` work.
 
-- [ ] `fn` evaluation: capture params + body + current env as `Value::Function`
-- [ ] `call` evaluation: materialize function, bind args to params in new env, wrap body as thunk
-- [ ] `$_` implicit lambda: evaluator wraps `[...]` containing VarRef("_") in `[fn [_] [...]]`
-- [ ] Named argument binding: match named args to params with `default:` annotations
-- [ ] Arity checking: wrong argument count is an error
-- [ ] Variadic params: collect remaining positional args into a dict with integer keys
+- [x] `fn` evaluation: capture params + body + current env as `Value::Function`
+- [x] `call` evaluation: materialize function, bind args to params in new env, wrap body as thunk
+- [x] `$_` implicit lambda: evaluator wraps `[...]` containing VarRef("_") in `[fn [_] [...]]`
+- [x] Named argument binding: match named args to params with `default:` annotations
+- [x] Arity checking: wrong argument count is an error
+- [x] Variadic params: collect remaining positional args into a dict with integer keys
 
 ## Phase 2: Type System
 

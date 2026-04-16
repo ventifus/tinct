@@ -181,6 +181,7 @@ fn test_corpus_structure() {
         "tests/corpus/valid/edge_cases",
         "tests/corpus/invalid/syntax_errors",
         "tests/corpus/eval",
+        "tests/corpus/eval/errors",
     ];
 
     for dir in &required_dirs {
@@ -193,8 +194,12 @@ fn test_corpus_structure() {
 #[test]
 fn test_eval_corpus() {
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval");
+    let errors_dir = corpus_dir.join("errors");
 
-    let test_files = find_test_files(&corpus_dir);
+    let test_files: Vec<_> = find_test_files(&corpus_dir)
+        .into_iter()
+        .filter(|p| !p.starts_with(&errors_dir))
+        .collect();
     assert!(
         !test_files.is_empty(),
         "No test files found in {}",
@@ -249,5 +254,61 @@ fn test_eval_corpus() {
             eprintln!("  - {}: {}", path.display(), error);
         }
         panic!("Eval corpus tests failed");
+    }
+}
+
+#[test]
+fn test_eval_error_corpus() {
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval/errors");
+
+    let test_files = find_test_files(&corpus_dir);
+    assert!(
+        !test_files.is_empty(),
+        "No test files found in {}",
+        corpus_dir.display()
+    );
+
+    let mut failed = Vec::new();
+
+    for test_file in &test_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+        let relative_path = test_file
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(test_file);
+
+        let (input, expected) = split_test_file(&content);
+
+        match eval_source(input) {
+            Ok(actual) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!("Expected eval to fail, but got success: {}", actual.trim()),
+                ));
+            }
+            Err(e) => {
+                if let Some(expected_substr) = expected {
+                    let error_msg = format!("{}", e);
+                    if !error_msg.contains(expected_substr) {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            format!(
+                                "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
+                                expected_substr, error_msg
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n{} eval error test(s) failed:", failed.len());
+        for (path, error) in &failed {
+            eprintln!("  - {}: {}", path.display(), error);
+        }
+        panic!("Eval error corpus tests failed");
     }
 }

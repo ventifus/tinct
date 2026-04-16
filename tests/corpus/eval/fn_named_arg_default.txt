@@ -1,0 +1,5 @@
+[f: [fn [x  y@[default: 99]] $y]]
+
+[call $f 1]
+===
+Int(99)

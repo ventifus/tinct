@@ -1,0 +1,5 @@
+[second: [fn [a b] $b]]
+
+[call $second 10 20]
+===
+Int(20)
