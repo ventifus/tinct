@@ -6,7 +6,7 @@ A **unified data representation and transformation language** combining JSON-lik
 
 **Vision:** One language for both data representation (like JSON/YAML) and data transformation (like JSONnet/jq), with lazy evaluation and strong composition principles.
 
-**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator) complete. Phase 2a (core types & inference) complete. Phase 2b (polymorphism) is next.
+**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator) complete. Phase 2a (core types & inference) complete. Phase 2b (polymorphism) complete. Phase 3a (Rust-native builtins) is next. Hand-written parser (E2) deferred to Phase 6.
 
 ## Key Documents
 
@@ -24,13 +24,13 @@ The parser is built on [pest](https://pest.rs/) (PEG-based grammar in a separate
 | File | Purpose |
 |------|---------|
 | `src/grammar.pest` | PEG grammar (lexical + syntactic rules) |
-| `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
+| `src/ast.rs` | AST types: `File`, `Document`, `Expr` (including `Rest` for `...`/`...name`), `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/parser.rs` | pest pairs to AST conversion + unit tests |
 | `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, depth limit (256) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain) |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, stack frames |
-| `src/types.rs` | Type system: `Type` enum (Int, IntLiteral, Float, String, StringLiteral, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` (Rc-based scope chain), `TypeError` |
-| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion |
+| `src/types.rs` | Type system: `Type` enum (Int, IntLiteral, Float, String, StringLiteral, Bool, Number, Record, Function, TypeVar, Any), `RowRest` (Closed, Open, RowVar), `Substitution` (type variable bindings with `apply()`/`unify()`), `instantiate()` (fresh type variables per call site), `TypeEnv` (Rc-based scope chain with alias registry), `TypeError` |
+| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call` (instantiate + unify + apply), `Fn@Return [Params]` resolution, row polymorphism (open/closed/row-var records) |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
 | `src/lib.rs` | Public API: `parse(input) -> Result<Spanned<File>, ParseError>`, `parse_expression` convenience |
 | `src/main.rs` | CLI: read file (max 10MB), parse, print AST |
@@ -45,7 +45,7 @@ The parser is built on [pest](https://pest.rs/) (PEG-based grammar in a separate
 ## Testing
 
 ### Unit Tests
-351 tests across `parser.rs`, `ast.rs`, `value.rs`, `error.rs`, `eval.rs`, `types.rs`, `typecheck.rs`, and shared helpers in `test_util.rs`. Coverage includes every AST node type, Display/Debug formatting, access chains, special forms, annotations, document structure, static constraints, error cases, evaluator foundation types, core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn` creates closures, `call` with arity checking, named args with defaults, variadics, builtin calls, `$_` implicit lambda desugaring, TypeAlias), eval depth limiting, materialization span propagation, error path coverage (non-dict access, string key ranges, invalid key types), type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), subtyping (Number, structural records, function variance), TypeAssert enforcement, type alias resolution, and annotation interpretation.
+432 tests across `parser.rs`, `ast.rs`, `value.rs`, `error.rs`, `eval.rs`, `types.rs`, `typecheck.rs`, and shared helpers in `test_util.rs`. Coverage includes every AST node type, Display/Debug formatting, access chains, special forms, annotations, document structure, static constraints, error cases, evaluator foundation types, core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn` creates closures, `call` with arity checking, named args with defaults, variadics, builtin calls, `$_` implicit lambda desugaring, TypeAlias), eval depth limiting, materialization span propagation, error path coverage (non-dict access, string key ranges, invalid key types), type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), subtyping (Number, structural records, function variance, open/closed/row-var records), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions (one-param, two-param, concrete types, higher-order, error cases), row polymorphism (`...` rest entries, open record access, closed record rejection), type variable unification (Hindley-Milner, instantiation, substitution application, literal promotions), and polymorphic function call checking (identity, multi-type-var, return-only type vars, arity mismatch fallthrough).
 
 ### Corpus Tests (`tests/corpus/`)
 File-based test suite with auto-discovery. Each `.txt` file is parsed; valid inputs must succeed, invalid inputs must fail. Uses `===` as the delimiter between input and expected output (not `---`, which is a valid LLT document separator).

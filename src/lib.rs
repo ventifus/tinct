@@ -4,19 +4,16 @@
 //! [`parse_expression`] is a convenience wrapper that parses a single expression.
 
 pub mod ast;
-// Evaluator modules: pub(crate) until public API is designed (Phase 3b).
-#[allow(dead_code)]
 pub(crate) mod error;
-#[allow(dead_code)]
 pub(crate) mod eval;
 pub mod parser;
 #[cfg(test)]
 pub(crate) mod test_util;
+// Type system modules: pub(crate) with dead_code allowed until public API is designed (Phase 3b).
 #[allow(dead_code)]
 pub(crate) mod typecheck;
 #[allow(dead_code)]
 pub(crate) mod types;
-#[allow(dead_code)]
 pub(crate) mod value;
 
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
@@ -51,14 +48,8 @@ fn deep_materialize_to_string(
 ) -> Result<String, Box<error::EvalError>> {
     if depth > eval::MAX_EVAL_DEPTH {
         return Err(error::EvalError::new(
-            format!(
-                "maximum display depth exceeded ({})",
-                eval::MAX_EVAL_DEPTH
-            ),
-            ast::Span {
-                start: ast::Position { offset: 0, line: 0, column: 0 },
-                end: ast::Position { offset: 0, line: 0, column: 0 },
-            },
+            format!("maximum display depth exceeded ({})", eval::MAX_EVAL_DEPTH),
+            ast::Span::origin(),
         )
         .into());
     }

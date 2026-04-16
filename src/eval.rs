@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
+use crate::ast::{Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::error::EvalError;
 use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 
@@ -57,7 +57,7 @@ pub fn eval(
     env: Rc<RefCell<Environment>>,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    if depth > MAX_EVAL_DEPTH {
+    if depth >= MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
             expr.span,
@@ -145,13 +145,15 @@ pub fn eval(
             args,
             named_args,
         } => eval_call(func, args, named_args, &env, &expr.span, depth),
-        Expr::TypeAlias(_inner) => {
-            // Type aliases are handled by the type checker (typecheck.rs). Evaluate as unit (empty dict).
-            Ok(Rc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                expr.span,
-            )))
-        }
+        Expr::TypeAlias(_inner) => Ok(Rc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            expr.span,
+        ))),
+        Expr::Rest(_) => Err(EvalError::new(
+            "rest marker (...) is only valid inside type expressions",
+            expr.span,
+        )
+        .into()),
     }
 }
 
@@ -222,12 +224,7 @@ fn empty_dict_thunk(span: Span) -> Rc<Thunk> {
 }
 
 fn origin_span() -> Span {
-    let pos = Position {
-        offset: 0,
-        line: 1,
-        column: 1,
-    };
-    Span::new(pos, pos)
+    Span::origin()
 }
 
 /// Evaluate a file: one or more documents separated by `---`.
@@ -431,19 +428,14 @@ fn bind_args(
         .count();
     let max_positional = regular_params.len();
 
-    if variadic_param.is_some() {
-        // With variadic: need at least required_count positional args
-        if args.len() < required_count {
-            return Err(EvalError::arity_mismatch(required_count, args.len(), *call_span).into());
-        }
-    } else {
-        // Without variadic: positional args must be between required_count and max_positional
-        if args.len() < required_count {
-            return Err(EvalError::arity_mismatch(required_count, args.len(), *call_span).into());
-        }
-        if args.len() > max_positional {
-            return Err(EvalError::arity_mismatch(max_positional, args.len(), *call_span).into());
-        }
+    // Both variadic and non-variadic require at least required_count positional args
+    if args.len() < required_count {
+        return Err(EvalError::arity_mismatch(required_count, args.len(), *call_span).into());
+    }
+
+    // Without variadic: positional args must not exceed max_positional
+    if variadic_param.is_none() && args.len() > max_positional {
+        return Err(EvalError::arity_mismatch(max_positional, args.len(), *call_span).into());
     }
 
     // Bind positional args to regular params
@@ -703,7 +695,7 @@ pub fn materialize(
     mat_span: Option<&Span>,
     depth: usize,
 ) -> Result<Value, Box<EvalError>> {
-    if depth > MAX_EVAL_DEPTH {
+    if depth >= MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
             thunk.span,
@@ -1696,6 +1688,32 @@ mod tests {
             Value::Dict(map) => assert_eq!(map.len(), 0),
             other => panic!("expected empty Dict, got {other:?}"),
         }
+    }
+
+    // --- Rest Marker ---
+
+    #[test]
+    fn test_rest_marker_anonymous_errors() {
+        let expr = sp(Expr::Rest(None));
+        let err = eval(&expr, empty_env(), 0).unwrap_err();
+        assert!(
+            err.message
+                .contains("rest marker (...) is only valid inside type expressions"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_rest_marker_named_errors() {
+        let expr = sp(Expr::Rest(Some("x".into())));
+        let err = eval(&expr, empty_env(), 0).unwrap_err();
+        assert!(
+            err.message
+                .contains("rest marker (...) is only valid inside type expressions"),
+            "got: {}",
+            err.message
+        );
     }
 
     // --- $_ Implicit Lambda ---

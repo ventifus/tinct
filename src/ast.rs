@@ -21,6 +21,19 @@ impl Span {
     pub fn new(start: Position, end: Position) -> Self {
         Self { start, end }
     }
+
+    /// A synthetic span representing the origin of the source text (offset 0, line 1, column 1).
+    ///
+    /// Used for errors generated outside of any particular source location, such as
+    /// display depth limits and initial `$$` values.
+    pub fn origin() -> Self {
+        let pos = Position {
+            offset: 0,
+            line: 1,
+            column: 1,
+        };
+        Self::new(pos, pos)
+    }
 }
 
 /// AST node with source location
@@ -108,6 +121,9 @@ pub enum Expr {
         name: String,
         annotation: Spanned<Annotation>,
     },
+
+    /// Row variable / open record marker, e.g. `...` or `...rest`
+    Rest(Option<String>),
 }
 
 /// A dict entry (keyed or auto-indexed)
@@ -262,6 +278,8 @@ impl fmt::Display for Expr {
             Expr::Annotated { name, annotation } => {
                 write!(f, "{name}@{}", annotation.node)
             }
+            Expr::Rest(None) => write!(f, "..."),
+            Expr::Rest(Some(name)) => write!(f, "...{name}"),
         }
     }
 }
@@ -628,5 +646,17 @@ mod tests {
             ],
         };
         assert_eq!(format!("{file}"), "1\n---\n2");
+    }
+
+    #[test]
+    fn test_display_rest_anonymous() {
+        let expr = Expr::Rest(None);
+        assert_eq!(format!("{expr}"), "...");
+    }
+
+    #[test]
+    fn test_display_rest_named() {
+        let expr = Expr::Rest(Some("extra".into()));
+        assert_eq!(format!("{expr}"), "...extra");
     }
 }

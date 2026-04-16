@@ -33,6 +33,7 @@ impl EvalError {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_frame(mut self, label: impl Into<String>, span: Span) -> Self {
         self.stack.push(StackFrame {
             label: label.into(),
@@ -41,6 +42,7 @@ impl EvalError {
         self
     }
 
+    #[allow(dead_code)]
     pub fn push_frame(&mut self, label: impl Into<String>, span: Span) {
         self.stack.push(StackFrame {
             label: label.into(),

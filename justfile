@@ -5,7 +5,7 @@
 container := "podman"
 
 # Rust version to use
-rust_version := "1.83"
+rust_version := "1.85"
 
 # Container image
 rust_image := "rust:" + rust_version

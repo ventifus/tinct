@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phase 0 (parser), Phase 1a-1e (evaluator), and Phase 2a (core types & inference) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, type inference and checking, comprehensive test suite (351 tests + file-based corpus). Phase 2b (polymorphism) is next.
+**Status:** Phase 0 (parser), Phase 1a-1e (evaluator), Phase 2a (core types & inference), and Phase 2b (polymorphism) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, comprehensive test suite (441 unit tests + 5 corpus tests). Phase 3a (Rust-native builtins) is next.
 
 ## Syntax at a Glance
 
@@ -53,6 +53,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Function evaluation** -- `fn`/`call` with closures, `$_` implicit lambda desugaring, named args with defaults, variadics, arity checking (Phase 1e)
 - **Type system** -- `Type` enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` scope chain, `TypeError` reporting (Phase 2a)
 - **Type checker** -- `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion (Phase 2a)
+- **Polymorphism** -- Hindley-Milner unification, `Fn@Return [Params]` function type expressions, row polymorphism (open/closed/row-var records), type variable instantiation per call site (Phase 2b)
 - **Error reporting** -- `EvalError` with definition-site span, materialization-site span, and `StackFrame` traces
 - **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in LLT itself
 - **Corpus testing** -- file-based test suite in `tests/corpus/` with `===` delimiter for expected output
@@ -130,8 +131,8 @@ cargo run -- test_input.txt
 | `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, depth limit (256) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain) |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces |
-| `src/types.rs` | Type system: `Type` enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` (Rc-based scope chain), `TypeError` |
-| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion |
+| `src/types.rs` | Type system: `Type` enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any), `RowRest` (Closed, Open, RowVar), `Substitution` (unification), `TypeEnv` (Rc-based scope chain), `TypeError` |
+| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, `Fn@Return [Params]` resolution, row polymorphism |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
 | `src/lib.rs` | Public API: `parse(input) -> Result<Spanned<File>, ParseError>`, `parse_expression` convenience |
 | `src/main.rs` | CLI: read file (max 10MB), parse, print AST |
@@ -146,14 +147,14 @@ cargo run -- test_input.txt
 
 ### Unit Tests
 
-351 tests across multiple modules covering:
+441 tests across multiple modules covering:
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
 - **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `$_` implicit lambda desugaring), depth limiting, and materialization span propagation
 - **value.rs** -- Value, Thunk, and Environment types (evaluator foundation)
 - **error.rs** -- `EvalError` and `StackFrame` formatting with definition-site and materialization-site spans
-- **types.rs** -- Type enum, TypeEnv scope chain, subtyping (Number, structural records, function variance)
-- **typecheck.rs** -- type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), TypeAssert enforcement, type alias resolution, annotation interpretation
+- **types.rs** -- Type enum, TypeEnv scope chain, subtyping (Number, structural records, function variance, open/closed/row-var records), unification (Hindley-Milner, type variable instantiation, substitution application, literal promotions, occurs check)
+- **typecheck.rs** -- type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions, row polymorphism, polymorphic function call checking (instantiate + unify + apply)
 
 ### Corpus Tests (`tests/corpus/`)
 

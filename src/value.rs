@@ -72,9 +72,11 @@ pub enum Value {
         params: Rc<Vec<Param>>,
         body: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        #[allow(dead_code)]
         return_ann: Option<Spanned<Annotation>>,
     },
     /// Rust-native built-in function
+    #[allow(dead_code)]
     Builtin { name: &'static str, func: BuiltinFn },
 }
 

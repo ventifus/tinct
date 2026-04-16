@@ -341,9 +341,11 @@ dict_entries = { (entry ~ semicolon?)* }
 
 semicolon = _{ ";" }
 
-entry = { keyed_entry | auto_entry }
+entry = { keyed_entry | rest_entry | auto_entry }
 
 keyed_entry = { key ~ ":" ~ value }
+
+rest_entry = @{ "..." ~ annotation_word? }
 
 auto_entry = { value }
 
@@ -351,6 +353,8 @@ key = { bracket_expr | var_ref | quoted_string | bare_token }
 
 bare_token = { float_lit | int_lit | bool_lit | bare_word }
 ```
+
+The `rest_entry` rule is atomic (`@`) to prevent whitespace between `...` and the optional name. `...` alone produces `Expr::Rest(None)` (anonymous open record marker). `...name` produces `Expr::Rest(Some("name"))` (named row variable). Rest entries are used in type expressions to indicate open records and row polymorphism.
 
 Quoted strings are valid as keys, allowing keys that contain spaces, colons, or other special characters: `["my key": value]`.
 
@@ -524,6 +528,9 @@ enum Expr {
         name: String,
         annotation: Spanned<Annotation>,
     },
+
+    // Row polymorphism marker in type expressions
+    Rest(Option<String>),       // ... or ...name
 }
 ```
 
@@ -768,7 +775,9 @@ dict_entries = { (entry ~ semicolon?)* }
 
 semicolon = _{ ";" }
 
-entry = { keyed_entry | auto_entry }
+entry = { keyed_entry | rest_entry | auto_entry }
+
+rest_entry = @{ "..." ~ annotation_word? }
 
 keyed_entry = { key ~ ":" ~ value }
 auto_entry  = { value }

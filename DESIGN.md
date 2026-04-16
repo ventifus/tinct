@@ -392,11 +392,11 @@ double: [fn@String [x@Number] [call $* $x 2]]    # Error: body returns Number, n
 
 **Dict values are never type-annotated.** Always inferred from literals/expressions.
 
-**Type inference for letrec dicts:** Dict entries form a letrec scope where all keys are visible to all values. The type checker handles this in three passes: (0) resolve key names -- literal keys extracted directly, computed keys resolved via type inference in parent scope, (1) bind all resolved key names to `Any`, (2) register type aliases sequentially (each sees previously registered siblings), (3) infer actual value types. Forward references resolve to `Any` in Phase 2a; unification-based inference is deferred to Phase 2b. Computed keys whose type is not a literal are excluded from the Record's fields but their values are still type-checked.
+**Type inference for letrec dicts:** Dict entries form a letrec scope where all keys are visible to all values. The type checker handles this in four passes: (0) resolve key names -- literal keys extracted directly, computed keys resolved via type inference in parent scope, (1) bind all resolved key names to `Any`, (2) register type aliases sequentially (each sees previously registered siblings), (3) infer actual value types. Forward references resolve to `Any`. Polymorphic function calls use Hindley-Milner unification: each call site instantiates fresh type variables, unification binds them against argument types, and the substitution is applied to determine the return type. Computed keys whose type is not a literal are excluded from the Record's fields but their values are still type-checked.
 
 **Type alias entries are excluded from record fields.** A `[type ...]` entry registers an alias in the type environment but does not contribute a field to the enclosing record's type. This matches the evaluator, which returns an empty dict for type alias entries.
 
-**Function type param lists:** `[Fn@Return [ParamTypes]]` is the full function type syntax, but Phase 2a only resolves the return type annotation. Param type list parsing is deferred to Phase 2b when arg type checking is implemented.
+**Function type param lists:** `[Fn@Return [ParamTypes]]` is the full function type syntax. The type checker resolves both the return type annotation and parameter type list, producing `Type::Function { params, ret }`. All types in the param list must be specified explicitly.
 
 ### Exceptions by Default, `$try` in Stdlib
 

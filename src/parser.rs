@@ -660,7 +660,7 @@ fn build_dict_entries(
                     }
                     seen_keys.insert(key_text);
                 }
-            } else if saw_keyed {
+            } else if saw_keyed && !matches!(&entry.node.value.node, Expr::Rest(_)) {
                 return Err(ParseError {
                     message: "positional entry after named entry".to_string(),
                     span: Some(entry_span),
@@ -716,6 +716,17 @@ fn build_entry(
                 },
                 span,
             ))
+        }
+        Rule::rest_entry => {
+            let raw = inner.as_str();
+            let name = raw.strip_prefix("...").expect("rest_entry starts with ...");
+            let rest_name = if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            };
+            let value = Spanned::new(Expr::Rest(rest_name), span);
+            Ok(Spanned::new(Entry { key: None, value }, span))
         }
         Rule::auto_entry => {
             let val_pair = inner
@@ -2760,6 +2771,92 @@ mod tests {
                 assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "value"));
             }
             other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    // -- Rest entries --
+
+    #[test]
+    fn test_rest_entry_anonymous() {
+        let ast = parse_ok("[a: 1 ...]");
+        match &ast.node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 2);
+                assert!(matches!(&entries[1].node.value.node, Expr::Rest(None)));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rest_entry_named() {
+        let ast = parse_ok("[a: 1 ...extra]");
+        match &ast.node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 2);
+                assert!(
+                    matches!(&entries[1].node.value.node, Expr::Rest(Some(ref n)) if n == "extra")
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rest_entry_only() {
+        let ast = parse_ok("[...]");
+        match &ast.node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert!(matches!(&entries[0].node.value.node, Expr::Rest(None)));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rest_entry_after_keyed_entries_allowed() {
+        let ast = parse_ok("[name: String  age: Number ...]");
+        match &ast.node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 3);
+                assert!(entries[0].node.key.is_some());
+                assert!(entries[1].node.key.is_some());
+                assert!(matches!(&entries[2].node.value.node, Expr::Rest(None)));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rest_in_type_context() {
+        let ast = parse_ok("[type [name: String ...]]");
+        match &ast.node {
+            Expr::TypeAlias(inner) => match &inner.node {
+                Expr::Dict(entries) => {
+                    assert_eq!(entries.len(), 2);
+                    assert!(matches!(&entries[1].node.value.node, Expr::Rest(None)));
+                }
+                other => panic!("expected Dict, got {other:?}"),
+            },
+            other => panic!("expected TypeAlias, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rest_named_in_type_context() {
+        let ast = parse_ok("[type [name: String ...rest]]");
+        match &ast.node {
+            Expr::TypeAlias(inner) => match &inner.node {
+                Expr::Dict(entries) => {
+                    assert_eq!(entries.len(), 2);
+                    assert!(
+                        matches!(&entries[1].node.value.node, Expr::Rest(Some(ref n)) if n == "rest")
+                    );
+                }
+                other => panic!("expected Dict, got {other:?}"),
+            },
+            other => panic!("expected TypeAlias, got {other:?}"),
         }
     }
 }

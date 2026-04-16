@@ -1,6 +1,8 @@
 //! Runtime type representations, type environments with scoped alias registries,
+//! substitutions/unification for Hindley-Milner polymorphism,
 //! and type error definitions for the type checker.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::rc::Rc;
 use std::string::String as StdString;
@@ -8,6 +10,13 @@ use std::string::String as StdString;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RowRest {
+    Closed,
+    Open,
+    RowVar(StdString),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::enum_variant_names)]
@@ -19,13 +28,14 @@ pub enum Type {
     StringLiteral(StdString),
     Bool,
     Number,
-    Record(IndexMap<StdString, Type>),
+    Record(IndexMap<StdString, Type>, RowRest),
     Function { params: Vec<Type>, ret: Box<Type> },
     TypeVar(StdString),
     Any,
 }
 
 impl Type {
+    /// Recursive without a depth guard; safe because type nesting is bounded by the parser's MAX_DEPTH (256).
     pub fn is_subtype(sub: &Type, sup: &Type) -> bool {
         if matches!(sub, Type::Any) || matches!(sup, Type::Any) {
             return true;
@@ -35,12 +45,19 @@ impl Type {
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::String) => true,
             (Type::Int | Type::Float, Type::Number) => true,
-            (Type::Record(sub_fields), Type::Record(sup_fields)) => {
-                sup_fields.iter().all(|(k, sup_ty)| {
+            (Type::Record(sub_fields, _sub_rest), Type::Record(sup_fields, sup_rest)) => {
+                let fields_ok = sup_fields.iter().all(|(k, sup_ty)| {
                     sub_fields
                         .get(k)
-                        .map_or(false, |sub_ty| Type::is_subtype(sub_ty, sup_ty))
-                })
+                        .is_some_and(|sub_ty| Type::is_subtype(sub_ty, sup_ty))
+                });
+                if !fields_ok {
+                    return false;
+                }
+                match sup_rest {
+                    RowRest::Closed => sub_fields.keys().all(|k| sup_fields.contains_key(k)),
+                    RowRest::Open | RowRest::RowVar(_) => true,
+                }
             }
             (
                 Type::Function {
@@ -62,6 +79,231 @@ impl Type {
             _ => false,
         }
     }
+
+    pub fn collect_type_vars(&self, vars: &mut BTreeSet<StdString>) {
+        match self {
+            Type::TypeVar(name) => {
+                vars.insert(name.clone());
+            }
+            Type::Record(fields, rest) => {
+                for ty in fields.values() {
+                    ty.collect_type_vars(vars);
+                }
+                if let RowRest::RowVar(name) = rest {
+                    vars.insert(name.clone());
+                }
+            }
+            Type::Function { params, ret } => {
+                for p in params {
+                    p.collect_type_vars(vars);
+                }
+                ret.collect_type_vars(vars);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn has_type_vars(&self) -> bool {
+        match self {
+            Type::TypeVar(_) => true,
+            Type::Record(fields, rest) => {
+                matches!(rest, RowRest::RowVar(_)) || fields.values().any(|ty| ty.has_type_vars())
+            }
+            Type::Function { params, ret } => {
+                params.iter().any(|p| p.has_type_vars()) || ret.has_type_vars()
+            }
+            _ => false,
+        }
+    }
+}
+
+// --- Substitution ---
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Substitution {
+    map: IndexMap<StdString, Type>,
+}
+
+impl Substitution {
+    pub fn new() -> Self {
+        Self {
+            map: IndexMap::new(),
+        }
+    }
+
+    pub fn apply(&self, ty: &Type) -> Type {
+        match ty {
+            Type::TypeVar(name) => match self.map.get(name) {
+                Some(bound) => self.apply(bound),
+                None => ty.clone(),
+            },
+            Type::Record(fields, rest) => {
+                let new_fields: IndexMap<StdString, Type> = fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), self.apply(v)))
+                    .collect();
+                match rest {
+                    RowRest::RowVar(name) => match self.map.get(name) {
+                        Some(bound) => {
+                            let resolved = self.apply(bound);
+                            match resolved {
+                                Type::Record(extra_fields, resolved_rest) => {
+                                    let mut merged = new_fields;
+                                    merged.extend(extra_fields);
+                                    Type::Record(merged, resolved_rest)
+                                }
+                                Type::TypeVar(new_name) => {
+                                    Type::Record(new_fields, RowRest::RowVar(new_name))
+                                }
+                                _ => Type::Record(new_fields, rest.clone()),
+                            }
+                        }
+                        None => Type::Record(new_fields, rest.clone()),
+                    },
+                    _ => Type::Record(new_fields, rest.clone()),
+                }
+            }
+            Type::Function { params, ret } => Type::Function {
+                params: params.iter().map(|p| self.apply(p)).collect(),
+                ret: Box::new(self.apply(ret)),
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Type> {
+        self.map.get(name)
+    }
+}
+
+impl Default for Substitution {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// --- Unification ---
+
+fn occurs_in(var_name: &str, ty: &Type) -> bool {
+    match ty {
+        Type::TypeVar(name) => name == var_name,
+        Type::Record(fields, rest) => {
+            fields.values().any(|t| occurs_in(var_name, t))
+                || matches!(rest, RowRest::RowVar(r) if r == var_name)
+        }
+        Type::Function { params, ret } => {
+            params.iter().any(|p| occurs_in(var_name, p)) || occurs_in(var_name, ret)
+        }
+        _ => false,
+    }
+}
+
+pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result<(), TypeError> {
+    let a = subst.apply(a);
+    let b = subst.apply(b);
+
+    if a == b {
+        return Ok(());
+    }
+
+    match (&a, &b) {
+        (Type::Any, _) | (_, Type::Any) => Ok(()),
+
+        (Type::TypeVar(name), _) => {
+            if occurs_in(name, &b) {
+                return Err(TypeError::new(
+                    format!("infinite type: {name} occurs in {b}"),
+                    span,
+                ));
+            }
+            subst.map.insert(name.clone(), b);
+            Ok(())
+        }
+        (_, Type::TypeVar(name)) => {
+            if occurs_in(name, &a) {
+                return Err(TypeError::new(
+                    format!("infinite type: {name} occurs in {a}"),
+                    span,
+                ));
+            }
+            subst.map.insert(name.clone(), a);
+            Ok(())
+        }
+
+        // Literal-to-parent promotions
+        (Type::IntLiteral(_), Type::Int | Type::Number) | (Type::Int, Type::Number) => Ok(()),
+        (Type::Int | Type::Number, Type::IntLiteral(_)) | (Type::Number, Type::Int) => Ok(()),
+        (Type::Float, Type::Number) | (Type::Number, Type::Float) => Ok(()),
+        (Type::StringLiteral(_), Type::String) | (Type::String, Type::StringLiteral(_)) => Ok(()),
+        (Type::IntLiteral(_), Type::IntLiteral(_)) => Ok(()),
+        (Type::StringLiteral(_), Type::StringLiteral(_)) => Ok(()),
+        (Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => Ok(()),
+
+        (
+            Type::Function {
+                params: p1,
+                ret: r1,
+            },
+            Type::Function {
+                params: p2,
+                ret: r2,
+            },
+        ) => {
+            if p1.len() != p2.len() {
+                return Err(TypeError::new(
+                    format!(
+                        "function arity mismatch: expected {} params, got {}",
+                        p1.len(),
+                        p2.len()
+                    ),
+                    span,
+                ));
+            }
+            for (pa, pb) in p1.iter().zip(p2.iter()) {
+                unify(pa, pb, subst, span)?;
+            }
+            unify(r1, r2, subst, span)
+        }
+
+        (Type::Record(f1, r1), Type::Record(f2, r2)) => {
+            if matches!(r1, RowRest::Closed) && matches!(r2, RowRest::Closed) {
+                let keys1: BTreeSet<&StdString> = f1.keys().collect();
+                let keys2: BTreeSet<&StdString> = f2.keys().collect();
+                if keys1 != keys2 {
+                    return Err(TypeError::new(
+                        format!("closed record field mismatch: expected [{}], got [{}]",
+                            f1.keys().cloned().collect::<Vec<_>>().join(", "),
+                            f2.keys().cloned().collect::<Vec<_>>().join(", ")),
+                        span,
+                    ));
+                }
+            }
+            for (key, ty1) in f1 {
+                if let Some(ty2) = f2.get(key) {
+                    unify(ty1, ty2, subst, span)?;
+                }
+            }
+            Ok(())
+        }
+
+        _ => Err(TypeError::type_mismatch(&a, &b, span)),
+    }
+}
+
+// --- Instantiation ---
+
+pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
+    let mut vars = BTreeSet::new();
+    ty.collect_type_vars(&mut vars);
+
+    let mut renaming = Substitution::new();
+    for var in vars {
+        let fresh = format!("_t{counter}");
+        *counter += 1;
+        renaming.map.insert(var, Type::TypeVar(fresh));
+    }
+
+    (renaming.apply(ty), renaming)
 }
 
 impl fmt::Display for Type {
@@ -76,13 +318,28 @@ impl fmt::Display for Type {
             Type::Number => write!(f, "Number"),
             Type::Any => write!(f, "Any"),
             Type::TypeVar(name) => write!(f, "{name}"),
-            Type::Record(fields) => {
+            Type::Record(fields, rest) => {
                 write!(f, "[")?;
                 for (i, (key, ty)) in fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, "  ")?;
                     }
                     write!(f, "{key}: {ty}")?;
+                }
+                match rest {
+                    RowRest::Closed => {}
+                    RowRest::Open => {
+                        if !fields.is_empty() {
+                            write!(f, "  ")?;
+                        }
+                        write!(f, "...")?;
+                    }
+                    RowRest::RowVar(name) => {
+                        if !fields.is_empty() {
+                            write!(f, "  ")?;
+                        }
+                        write!(f, "...{name}")?;
+                    }
                 }
                 write!(f, "]")
             }
@@ -239,7 +496,10 @@ mod tests {
 
     #[test]
     fn test_display_string_literal() {
-        assert_eq!(format!("{}", Type::StringLiteral("hello".into())), "\"hello\"");
+        assert_eq!(
+            format!("{}", Type::StringLiteral("hello".into())),
+            "\"hello\""
+        );
     }
 
     #[test]
@@ -253,14 +513,45 @@ mod tests {
         fields.insert("name".into(), Type::String);
         fields.insert("age".into(), Type::Int);
         assert_eq!(
-            format!("{}", Type::Record(fields)),
+            format!("{}", Type::Record(fields, RowRest::Closed)),
             "[name: String  age: Int]"
         );
     }
 
     #[test]
     fn test_display_record_empty() {
-        assert_eq!(format!("{}", Type::Record(IndexMap::new())), "[]");
+        assert_eq!(
+            format!("{}", Type::Record(IndexMap::new(), RowRest::Closed)),
+            "[]"
+        );
+    }
+
+    #[test]
+    fn test_display_record_open() {
+        let mut fields = IndexMap::new();
+        fields.insert("name".into(), Type::String);
+        assert_eq!(
+            format!("{}", Type::Record(fields, RowRest::Open)),
+            "[name: String  ...]"
+        );
+    }
+
+    #[test]
+    fn test_display_record_open_empty() {
+        assert_eq!(
+            format!("{}", Type::Record(IndexMap::new(), RowRest::Open)),
+            "[...]"
+        );
+    }
+
+    #[test]
+    fn test_display_record_row_var() {
+        let mut fields = IndexMap::new();
+        fields.insert("name".into(), Type::String);
+        assert_eq!(
+            format!("{}", Type::Record(fields, RowRest::RowVar("rest".into()))),
+            "[name: String  ...rest]"
+        );
     }
 
     #[test]
@@ -298,8 +589,14 @@ mod tests {
 
     #[test]
     fn test_subtype_int_literal() {
-        assert!(Type::is_subtype(&Type::IntLiteral(42), &Type::IntLiteral(42)));
-        assert!(!Type::is_subtype(&Type::IntLiteral(42), &Type::IntLiteral(99)));
+        assert!(Type::is_subtype(
+            &Type::IntLiteral(42),
+            &Type::IntLiteral(42)
+        ));
+        assert!(!Type::is_subtype(
+            &Type::IntLiteral(42),
+            &Type::IntLiteral(99)
+        ));
         assert!(Type::is_subtype(&Type::IntLiteral(42), &Type::Int));
         assert!(Type::is_subtype(&Type::IntLiteral(42), &Type::Number));
         assert!(!Type::is_subtype(&Type::Int, &Type::IntLiteral(42)));
@@ -315,8 +612,14 @@ mod tests {
             &Type::StringLiteral("a".into()),
             &Type::StringLiteral("b".into())
         ));
-        assert!(Type::is_subtype(&Type::StringLiteral("a".into()), &Type::String));
-        assert!(!Type::is_subtype(&Type::String, &Type::StringLiteral("a".into())));
+        assert!(Type::is_subtype(
+            &Type::StringLiteral("a".into()),
+            &Type::String
+        ));
+        assert!(!Type::is_subtype(
+            &Type::String,
+            &Type::StringLiteral("a".into())
+        ));
     }
 
     #[test]
@@ -338,7 +641,10 @@ mod tests {
         sup.insert("name".into(), Type::String);
         sup.insert("age".into(), Type::Int);
 
-        assert!(Type::is_subtype(&Type::Record(sub), &Type::Record(sup),));
+        assert!(Type::is_subtype(
+            &Type::Record(sub, RowRest::Closed),
+            &Type::Record(sup, RowRest::Open),
+        ));
     }
 
     #[test]
@@ -350,7 +656,10 @@ mod tests {
         sup.insert("name".into(), Type::String);
         sup.insert("age".into(), Type::Int);
 
-        assert!(!Type::is_subtype(&Type::Record(sub), &Type::Record(sup),));
+        assert!(!Type::is_subtype(
+            &Type::Record(sub, RowRest::Closed),
+            &Type::Record(sup, RowRest::Closed),
+        ));
     }
 
     #[test]
@@ -398,7 +707,7 @@ mod tests {
         assert!(!Type::is_subtype(&Type::Bool, &Type::Float));
         assert!(!Type::is_subtype(
             &Type::Int,
-            &Type::Record(IndexMap::new())
+            &Type::Record(IndexMap::new(), RowRest::Closed)
         ));
     }
 
@@ -420,22 +729,146 @@ mod tests {
         inner_sub.insert("x".into(), Type::Int);
         inner_sub.insert("y".into(), Type::Int);
         let mut outer_sub = IndexMap::new();
-        outer_sub.insert("point".into(), Type::Record(inner_sub));
+        outer_sub.insert("point".into(), Type::Record(inner_sub, RowRest::Closed));
 
         let mut inner_sup = IndexMap::new();
         inner_sup.insert("x".into(), Type::Number);
         let mut outer_sup = IndexMap::new();
-        outer_sup.insert("point".into(), Type::Record(inner_sup));
+        outer_sup.insert("point".into(), Type::Record(inner_sup, RowRest::Open));
 
         assert!(Type::is_subtype(
-            &Type::Record(outer_sub),
-            &Type::Record(outer_sup)
+            &Type::Record(outer_sub, RowRest::Closed),
+            &Type::Record(outer_sup, RowRest::Open)
         ));
     }
 
     #[test]
     fn test_subtype_number_reflexive() {
         assert!(Type::is_subtype(&Type::Number, &Type::Number));
+    }
+
+    #[test]
+    fn test_subtype_closed_sub_open_sup() {
+        let mut sub = IndexMap::new();
+        sub.insert("name".into(), Type::String);
+        sub.insert("age".into(), Type::Int);
+
+        let mut sup = IndexMap::new();
+        sup.insert("name".into(), Type::String);
+
+        assert!(Type::is_subtype(
+            &Type::Record(sub, RowRest::Closed),
+            &Type::Record(sup, RowRest::Open),
+        ));
+    }
+
+    #[test]
+    fn test_subtype_closed_sub_closed_sup_extra_fields_rejected() {
+        let mut sub = IndexMap::new();
+        sub.insert("name".into(), Type::String);
+        sub.insert("age".into(), Type::Int);
+
+        let mut sup = IndexMap::new();
+        sup.insert("name".into(), Type::String);
+
+        assert!(!Type::is_subtype(
+            &Type::Record(sub, RowRest::Closed),
+            &Type::Record(sup, RowRest::Closed),
+        ));
+    }
+
+    #[test]
+    fn test_subtype_closed_exact_match() {
+        let mut sub = IndexMap::new();
+        sub.insert("name".into(), Type::String);
+
+        let mut sup = IndexMap::new();
+        sup.insert("name".into(), Type::String);
+
+        assert!(Type::is_subtype(
+            &Type::Record(sub, RowRest::Closed),
+            &Type::Record(sup, RowRest::Closed),
+        ));
+    }
+
+    #[test]
+    fn test_subtype_open_sub_open_sup() {
+        let mut sub = IndexMap::new();
+        sub.insert("name".into(), Type::String);
+        sub.insert("age".into(), Type::Int);
+
+        let mut sup = IndexMap::new();
+        sup.insert("name".into(), Type::String);
+
+        assert!(Type::is_subtype(
+            &Type::Record(sub, RowRest::Open),
+            &Type::Record(sup, RowRest::Open),
+        ));
+    }
+
+    #[test]
+    fn test_subtype_row_var_behaves_like_open() {
+        let mut sub = IndexMap::new();
+        sub.insert("name".into(), Type::String);
+        sub.insert("age".into(), Type::Int);
+
+        let mut sup = IndexMap::new();
+        sup.insert("name".into(), Type::String);
+
+        assert!(Type::is_subtype(
+            &Type::Record(sub, RowRest::Closed),
+            &Type::Record(sup, RowRest::RowVar("r".into())),
+        ));
+    }
+
+    // -- Type::has_type_vars --
+
+    #[test]
+    fn test_has_type_vars_primitive() {
+        assert!(!Type::Int.has_type_vars());
+        assert!(!Type::String.has_type_vars());
+        assert!(!Type::Any.has_type_vars());
+    }
+
+    #[test]
+    fn test_has_type_vars_type_var() {
+        assert!(Type::TypeVar("a".into()).has_type_vars());
+    }
+
+    #[test]
+    fn test_has_type_vars_function() {
+        let with = Type::Function {
+            params: vec![Type::TypeVar("a".into())],
+            ret: Box::new(Type::Int),
+        };
+        let without = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::String),
+        };
+        assert!(with.has_type_vars());
+        assert!(!without.has_type_vars());
+    }
+
+    #[test]
+    fn test_has_type_vars_record() {
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::TypeVar("a".into()));
+        assert!(Type::Record(fields, RowRest::Closed).has_type_vars());
+    }
+
+    // -- Type::collect_type_vars --
+
+    #[test]
+    fn test_collect_type_vars() {
+        let ty = Type::Function {
+            params: vec![Type::TypeVar("a".into()), Type::TypeVar("b".into())],
+            ret: Box::new(Type::TypeVar("a".into())),
+        };
+        let mut vars = BTreeSet::new();
+        ty.collect_type_vars(&mut vars);
+        assert!(vars.contains("a"));
+        assert!(vars.contains("b"));
+        assert_eq!(vars.len(), 2);
     }
 
     // -- TypeEnv --
@@ -475,8 +908,14 @@ mod tests {
         let mut env = TypeEnv::new();
         let mut fields = IndexMap::new();
         fields.insert("name".into(), Type::String);
-        env.insert_type_alias("Person".into(), Type::Record(fields.clone()));
-        assert_eq!(env.get_type_alias("Person"), Some(&Type::Record(fields)));
+        env.insert_type_alias(
+            "Person".into(),
+            Type::Record(fields.clone(), RowRest::Closed),
+        );
+        assert_eq!(
+            env.get_type_alias("Person"),
+            Some(&Type::Record(fields, RowRest::Closed))
+        );
     }
 
     #[test]
@@ -517,7 +956,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut fields = IndexMap::new();
         fields.insert("a".into(), Type::Int);
-        let err = TypeError::field_not_found("b", &Type::Record(fields), span);
+        let err = TypeError::field_not_found("b", &Type::Record(fields, RowRest::Closed), span);
         assert_eq!(err.message, "field 'b' not found in [a: Int]");
     }
 
@@ -547,5 +986,505 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = TypeError::not_a_function(&Type::String, span);
         assert_eq!(err.message, "expected function type, got String");
+    }
+
+    // -- Substitution --
+
+    #[test]
+    fn test_substitution_empty_apply() {
+        let subst = Substitution::new();
+        assert_eq!(subst.apply(&Type::Int), Type::Int);
+        assert_eq!(
+            subst.apply(&Type::TypeVar("a".into())),
+            Type::TypeVar("a".into())
+        );
+    }
+
+    #[test]
+    fn test_substitution_apply_bound() {
+        let mut subst = Substitution::new();
+        subst.map.insert("a".into(), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+    }
+
+    #[test]
+    fn test_substitution_apply_chain() {
+        let mut subst = Substitution::new();
+        subst.map.insert("a".into(), Type::TypeVar("b".into()));
+        subst.map.insert("b".into(), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+    }
+
+    #[test]
+    fn test_substitution_apply_in_function() {
+        let mut subst = Substitution::new();
+        subst.map.insert("a".into(), Type::Int);
+        subst.map.insert("b".into(), Type::String);
+        let ty = Type::Function {
+            params: vec![Type::TypeVar("a".into())],
+            ret: Box::new(Type::TypeVar("b".into())),
+        };
+        assert_eq!(
+            subst.apply(&ty),
+            Type::Function {
+                params: vec![Type::Int],
+                ret: Box::new(Type::String),
+            }
+        );
+    }
+
+    #[test]
+    fn test_substitution_apply_in_record() {
+        let mut subst = Substitution::new();
+        subst.map.insert("a".into(), Type::Int);
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::TypeVar("a".into()));
+        fields.insert("y".into(), Type::String);
+        let ty = Type::Record(fields, RowRest::Closed);
+
+        let mut expected = IndexMap::new();
+        expected.insert("x".into(), Type::Int);
+        expected.insert("y".into(), Type::String);
+        assert_eq!(subst.apply(&ty), Type::Record(expected, RowRest::Closed));
+    }
+
+    #[test]
+    fn test_substitution_leaves_unbound_alone() {
+        let mut subst = Substitution::new();
+        subst.map.insert("a".into(), Type::Int);
+        assert_eq!(
+            subst.apply(&Type::TypeVar("b".into())),
+            Type::TypeVar("b".into())
+        );
+    }
+
+    // -- Unification --
+
+    #[test]
+    fn test_unify_identical_concrete() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        assert!(unify(&Type::Int, &Type::Int, &mut subst, span).is_ok());
+        assert!(unify(&Type::String, &Type::String, &mut subst, span).is_ok());
+        assert!(unify(&Type::Bool, &Type::Bool, &mut subst, span).is_ok());
+    }
+
+    #[test]
+    fn test_unify_typevar_with_concrete() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        unify(&Type::TypeVar("a".into()), &Type::Int, &mut subst, span).unwrap();
+        assert_eq!(subst.get("a"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn test_unify_concrete_with_typevar() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        unify(&Type::Int, &Type::TypeVar("a".into()), &mut subst, span).unwrap();
+        assert_eq!(subst.get("a"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn test_unify_two_typevars() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        unify(
+            &Type::TypeVar("a".into()),
+            &Type::TypeVar("b".into()),
+            &mut subst,
+            span,
+        )
+        .unwrap();
+        let resolved = subst.apply(&Type::TypeVar("a".into()));
+        assert_eq!(resolved, subst.apply(&Type::TypeVar("b".into())));
+    }
+
+    #[test]
+    fn test_unify_typevar_already_bound_compatible() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        unify(&Type::TypeVar("a".into()), &Type::Int, &mut subst, span).unwrap();
+        unify(&Type::TypeVar("a".into()), &Type::Int, &mut subst, span).unwrap();
+    }
+
+    #[test]
+    fn test_unify_typevar_already_bound_incompatible() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        unify(&Type::TypeVar("a".into()), &Type::Int, &mut subst, span).unwrap();
+        let result = unify(&Type::TypeVar("a".into()), &Type::String, &mut subst, span);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unify_function_types() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let f1 = Type::Function {
+            params: vec![Type::TypeVar("a".into())],
+            ret: Box::new(Type::TypeVar("b".into())),
+        };
+        let f2 = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::String),
+        };
+        unify(&f1, &f2, &mut subst, span).unwrap();
+        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("b".into())), Type::String);
+    }
+
+    #[test]
+    fn test_unify_function_arity_mismatch() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let f1 = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+        };
+        let f2 = Type::Function {
+            params: vec![Type::Int, Type::Int],
+            ret: Box::new(Type::Bool),
+        };
+        let result = unify(&f1, &f2, &mut subst, span);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("function arity mismatch"));
+    }
+
+    #[test]
+    fn test_unify_record_types() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut f1 = IndexMap::new();
+        f1.insert("x".into(), Type::TypeVar("a".into()));
+        let mut f2 = IndexMap::new();
+        f2.insert("x".into(), Type::Int);
+        unify(
+            &Type::Record(f1, RowRest::Closed),
+            &Type::Record(f2, RowRest::Closed),
+            &mut subst,
+            span,
+        )
+        .unwrap();
+        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+    }
+
+    #[test]
+    fn test_unify_closed_record_extra_fields_rejected() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut f1 = IndexMap::new();
+        f1.insert("x".into(), Type::Int);
+        let mut f2 = IndexMap::new();
+        f2.insert("x".into(), Type::Int);
+        f2.insert("y".into(), Type::String);
+        let result = unify(
+            &Type::Record(f1, RowRest::Closed),
+            &Type::Record(f2, RowRest::Closed),
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("closed record field mismatch"));
+    }
+
+    #[test]
+    fn test_unify_open_record_extra_fields_accepted() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut f1 = IndexMap::new();
+        f1.insert("x".into(), Type::Int);
+        let mut f2 = IndexMap::new();
+        f2.insert("x".into(), Type::Int);
+        f2.insert("y".into(), Type::String);
+        assert!(unify(
+            &Type::Record(f1, RowRest::Open),
+            &Type::Record(f2, RowRest::Closed),
+            &mut subst,
+            span,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_unify_any_with_anything() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        assert!(unify(&Type::Any, &Type::Int, &mut subst, span).is_ok());
+        assert!(unify(&Type::String, &Type::Any, &mut subst, span).is_ok());
+    }
+
+    #[test]
+    fn test_unify_int_literal_with_int() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        assert!(unify(&Type::IntLiteral(42), &Type::Int, &mut subst, span).is_ok());
+        assert!(unify(&Type::Int, &Type::IntLiteral(99), &mut subst, span).is_ok());
+    }
+
+    #[test]
+    fn test_unify_int_literal_with_number() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        assert!(unify(&Type::IntLiteral(42), &Type::Number, &mut subst, span).is_ok());
+    }
+
+    #[test]
+    fn test_unify_string_literal_with_string() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        assert!(unify(
+            &Type::StringLiteral("hi".into()),
+            &Type::String,
+            &mut subst,
+            span
+        )
+        .is_ok());
+        assert!(unify(
+            &Type::String,
+            &Type::StringLiteral("lo".into()),
+            &mut subst,
+            span
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_unify_incompatible_concrete() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let result = unify(&Type::Int, &Type::String, &mut subst, span);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unify_int_with_bool() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        assert!(unify(&Type::Int, &Type::Bool, &mut subst, span).is_err());
+    }
+
+    // -- Instantiation --
+
+    #[test]
+    fn test_instantiate_no_vars() {
+        let ty = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::String),
+        };
+        let mut counter = 0;
+        let (result, _) = instantiate(&ty, &mut counter);
+        assert_eq!(result, ty);
+        assert_eq!(counter, 0);
+    }
+
+    #[test]
+    fn test_instantiate_with_vars() {
+        let ty = Type::Function {
+            params: vec![Type::TypeVar("a".into())],
+            ret: Box::new(Type::TypeVar("a".into())),
+        };
+        let mut counter = 0;
+        let (result, _) = instantiate(&ty, &mut counter);
+        assert_eq!(counter, 1);
+        assert!(!matches!(&result, Type::Function { params, .. }
+            if params[0] == Type::TypeVar("a".into())));
+        match &result {
+            Type::Function { params, ret } => assert_eq!(params[0], **ret),
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_instantiate_multiple_vars() {
+        let ty = Type::Function {
+            params: vec![Type::TypeVar("a".into()), Type::TypeVar("b".into())],
+            ret: Box::new(Type::TypeVar("a".into())),
+        };
+        let mut counter = 0;
+        let (result, _) = instantiate(&ty, &mut counter);
+        assert_eq!(counter, 2);
+        match &result {
+            Type::Function { params, ret } => {
+                assert_ne!(params[0], params[1]);
+                assert_eq!(params[0], **ret);
+            }
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_instantiate_counter_increments() {
+        let ty = Type::TypeVar("x".into());
+        let mut counter = 5;
+        let (result, _) = instantiate(&ty, &mut counter);
+        assert_eq!(result, Type::TypeVar("_t5".into()));
+        assert_eq!(counter, 6);
+    }
+
+    #[test]
+    fn test_unify_nested_function_types() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let f1 = Type::Function {
+            params: vec![Type::TypeVar("a".into())],
+            ret: Box::new(Type::Function {
+                params: vec![Type::TypeVar("a".into())],
+                ret: Box::new(Type::TypeVar("b".into())),
+            }),
+        };
+        let f2 = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Function {
+                params: vec![Type::Int],
+                ret: Box::new(Type::String),
+            }),
+        };
+        unify(&f1, &f2, &mut subst, span).unwrap();
+        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("b".into())), Type::String);
+    }
+
+    // -- Occurs check (M1) --
+
+    #[test]
+    fn test_unify_occurs_check_direct() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let result = unify(
+            &Type::TypeVar("a".into()),
+            &Type::Function {
+                params: vec![Type::TypeVar("a".into())],
+                ret: Box::new(Type::Int),
+            },
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("infinite type"));
+    }
+
+    #[test]
+    fn test_unify_occurs_check_nested() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::TypeVar("a".into()));
+        let result = unify(
+            &Type::TypeVar("a".into()),
+            &Type::Record(fields, RowRest::Closed),
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("infinite type"));
+    }
+
+    #[test]
+    fn test_unify_occurs_check_reverse() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let result = unify(
+            &Type::Function {
+                params: vec![Type::TypeVar("a".into())],
+                ret: Box::new(Type::Int),
+            },
+            &Type::TypeVar("a".into()),
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("infinite type"));
+    }
+
+    // -- RowVar substitution (M2) --
+
+    #[test]
+    fn test_substitution_apply_row_var_to_record() {
+        let mut subst = Substitution::new();
+        let mut extra = IndexMap::new();
+        extra.insert("y".into(), Type::String);
+        subst
+            .map
+            .insert("r".into(), Type::Record(extra, RowRest::Closed));
+
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::Int);
+        let ty = Type::Record(fields, RowRest::RowVar("r".into()));
+        let result = subst.apply(&ty);
+
+        let mut expected = IndexMap::new();
+        expected.insert("x".into(), Type::Int);
+        expected.insert("y".into(), Type::String);
+        assert_eq!(result, Type::Record(expected, RowRest::Closed));
+    }
+
+    #[test]
+    fn test_substitution_apply_row_var_to_type_var() {
+        let mut subst = Substitution::new();
+        subst
+            .map
+            .insert("r".into(), Type::TypeVar("s".into()));
+
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::Int);
+        let ty = Type::Record(fields, RowRest::RowVar("r".into()));
+        let result = subst.apply(&ty);
+
+        let mut expected = IndexMap::new();
+        expected.insert("x".into(), Type::Int);
+        assert_eq!(result, Type::Record(expected, RowRest::RowVar("s".into())));
+    }
+
+    #[test]
+    fn test_substitution_apply_row_var_unbound() {
+        let subst = Substitution::new();
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::Int);
+        let ty = Type::Record(fields.clone(), RowRest::RowVar("r".into()));
+        let result = subst.apply(&ty);
+        assert_eq!(result, Type::Record(fields, RowRest::RowVar("r".into())));
+    }
+
+    // -- Closed record key matching (M5) --
+
+    #[test]
+    fn test_unify_closed_records_same_keys() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut f1 = IndexMap::new();
+        f1.insert("a".into(), Type::Int);
+        f1.insert("b".into(), Type::String);
+        let mut f2 = IndexMap::new();
+        f2.insert("a".into(), Type::Int);
+        f2.insert("b".into(), Type::String);
+        assert!(unify(
+            &Type::Record(f1, RowRest::Closed),
+            &Type::Record(f2, RowRest::Closed),
+            &mut subst,
+            span,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_unify_closed_records_different_keys() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut f1 = IndexMap::new();
+        f1.insert("a".into(), Type::Int);
+        let mut f2 = IndexMap::new();
+        f2.insert("b".into(), Type::Int);
+        let result = unify(
+            &Type::Record(f1, RowRest::Closed),
+            &Type::Record(f2, RowRest::Closed),
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("closed record field mismatch"));
     }
 }

@@ -24,7 +24,8 @@ fn main() {
     if content.len() > MAX_INPUT_SIZE {
         eprintln!(
             "error: input file is {} bytes, which exceeds the 10 MB limit ({} bytes)",
-            content.len(), MAX_INPUT_SIZE
+            content.len(),
+            MAX_INPUT_SIZE
         );
         process::exit(1);
     }

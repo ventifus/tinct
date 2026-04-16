@@ -116,7 +116,9 @@ annotation_word = @{
 
 dict_entries = { (entry ~ semicolon?)* }
 
-entry = { keyed_entry | auto_entry }
+entry = { keyed_entry | rest_entry | auto_entry }
+
+rest_entry = @{ "..." ~ annotation_word? }
 
 keyed_entry = { key ~ ":" ~ value }
 

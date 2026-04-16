@@ -108,64 +108,13 @@ Depends on 1e (full evaluation model must be stable). After this step, the type 
 
 Depends on 2a. After this step, polymorphic functions and open records work.
 
-- [ ] Function type inference from params + body + annotations
-- [ ] `Fn@Return [Params]` type interpretation
-- [ ] Type variable introduction (lowercase names: `a`, `b`, `k`, `v`)
-- [ ] Type variable unification (Hindley-Milner style)
-- [ ] Row polymorphism: open records with `...`, named row variables (`...rest`)
-- [ ] Polymorphic function type checking (e.g., `map: Fn@[b] [Fn@b [a]  [a]]`)
-- [ ] `Any` as escape hatch with `[@Type $expr]` as the way back to concrete types
-
-## Phase 2c: Hand-Written Parser (E2)
-
-Replace pest's recursive descent with a hand-written lexer + iterative parser using an explicit stack. The pest parser stays as a reference implementation for comparison until the new parser graduates.
-
-**Goal:** Identical AST output from both parsers, selectable at parse time. Once the new parser passes the full test suite and matches pest output on all corpus files, it becomes the default and pest is removed.
-
-### Lexer (`src/lexer.rs`)
-
-Tokenizer producing a flat token stream. Whitespace-sensitivity for access chains handled here.
-
-- [ ] Token enum: OpenBracket, CloseBracket, Colon, Semicolon, Dot, Range, At, Ellipsis, DocSeparator, Int(i64), Float(f64), BareWord(String), QuotedString(String), VarRef(String), BoolLit(bool)
-- [ ] Single-pass tokenization with source spans on every token
-- [ ] Whitespace-sensitive access detection: Dot/OpenBracket immediately after VarRef or CloseBracket (no whitespace) emits access-context tokens
-- [ ] Comment skipping (`#` to EOL)
-- [ ] String escapes (`\"`, `\\`, `\n`, `\t`, `\r`)
-- [ ] Bare word denylist matching grammar.pest rules
-
-### Iterative parser (`src/parser2.rs`)
-
-Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed without recursion.
-
-- [ ] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert (one variant per bracket form)
-- [ ] On `[`: push frame, determine form from first token (keyword detection)
-- [ ] On `]`: pop frame, construct AST node
-- [ ] Between brackets: parse atoms, access chains, annotations (all non-recursive)
-- [ ] MAX_DEPTH check on `stack.len()` (policy, not safety)
-- [ ] Static constraints: positional-before-named, duplicate keys, variadic rules
-- [ ] Error messages with precise context ("expected value after `:`", "unclosed bracket at line 5")
-
-### Integration
-
-- [ ] `parse()` API accepts parser selection (enum or feature flag)
-- [ ] Both parsers produce identical `Spanned<File>` output
-- [ ] Comparison test: parse every corpus file with both parsers, assert AST equality
-- [ ] Benchmark: compare parse time on large inputs
-
-### Graduation criteria
-
-- [ ] Full test suite passes (all unit + corpus tests)
-- [ ] AST output matches pest parser on every corpus file
-- [ ] Error messages are equal or better quality
-- [ ] No stack overflow on any nesting depth up to MAX_DEPTH
-
-### Cleanup (post-graduation)
-
-- [ ] Remove `pest` and `pest_derive` dependencies from Cargo.toml
-- [ ] Remove `src/grammar.pest`
-- [ ] Remove pest-specific code from `src/parser.rs`
-- [ ] Rename `src/parser2.rs` to `src/parser.rs`
-- [ ] Update CLAUDE.md, README.md, SPEC.md references
+- [x] Function type inference from params + body + annotations
+- [x] `Fn@Return [Params]` type interpretation
+- [x] Type variable introduction (lowercase names: `a`, `b`, `k`, `v`)
+- [x] Type variable unification (Hindley-Milner style)
+- [x] Row polymorphism: open records with `...`, named row variables (`...rest`)
+- [x] Polymorphic function type checking (e.g., `map: Fn@[b] [Fn@b [a]  [a]]`)
+- [x] `Any` as escape hatch with `[@Type $expr]` as the way back to concrete types
 
 ## Phase 3: Runtime Pipeline
 
@@ -266,3 +215,67 @@ These are already in `stdlib/prelude.llt` and will work once the evaluator suppo
 - [ ] LSP server (tower-lsp)
 - [ ] tree-sitter grammar for syntax highlighting
 - [ ] Formatter/pretty-printer
+
+
+## Phase 6: Hand-Written Parser (E2)
+
+Replace pest's recursive descent with a hand-written lexer + iterative parser using an explicit stack. The pest parser stays as a reference implementation for comparison until the new parser graduates.
+
+**Goal:** Identical AST output from both parsers, selectable at parse time. Once the new parser passes the full test suite and matches pest output on all corpus files, it becomes the default and pest is removed.
+
+### Lexer (`src/lexer.rs`)
+
+Tokenizer producing a flat token stream. Whitespace-sensitivity for access chains handled here.
+
+- [ ] Token enum: OpenBracket, CloseBracket, Colon, Semicolon, Dot, Range, At, Ellipsis, DocSeparator, Int(i64), Float(f64), BareWord(String), QuotedString(String), VarRef(String), BoolLit(bool)
+- [ ] Single-pass tokenization with source spans on every token
+- [ ] Whitespace-sensitive access detection: Dot/OpenBracket immediately after VarRef or CloseBracket (no whitespace) emits access-context tokens
+- [ ] Comment skipping (`#` to EOL)
+- [ ] String escapes (`\"`, `\\`, `\n`, `\t`, `\r`)
+- [ ] Bare word denylist matching grammar.pest rules
+
+### Iterative parser (`src/parser2.rs`)
+
+Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed without recursion.
+
+- [ ] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert (one variant per bracket form)
+- [ ] On `[`: push frame, determine form from first token (keyword detection)
+- [ ] On `]`: pop frame, construct AST node
+- [ ] Between brackets: parse atoms, access chains, annotations (all non-recursive)
+- [ ] MAX_DEPTH check on `stack.len()` (policy, not safety)
+- [ ] Static constraints: positional-before-named, duplicate keys, variadic rules
+- [ ] Error messages with precise context ("expected value after `:`", "unclosed bracket at line 5")
+
+### Integration
+
+- [ ] `parse()` API accepts parser selection (enum or feature flag)
+- [ ] Both parsers produce identical `Spanned<File>` output
+- [ ] Comparison test: parse every corpus file with both parsers, assert AST equality
+- [ ] Benchmark: compare parse time on large inputs
+
+### Graduation criteria
+
+- [ ] Full test suite passes (all unit + corpus tests)
+- [ ] AST output matches pest parser on every corpus file
+- [ ] Error messages are equal or better quality
+- [ ] No stack overflow on any nesting depth up to MAX_DEPTH
+
+### Cleanup (post-graduation)
+
+- [ ] Remove `pest` and `pest_derive` dependencies from Cargo.toml
+- [ ] Remove `src/grammar.pest`
+- [ ] Remove pest-specific code from `src/parser.rs`
+- [ ] Rename `src/parser2.rs` to `src/parser.rs`
+- [ ] Update CLAUDE.md, README.md, SPEC.md references
+
+## Phase 7: Full Row-Variable Unification (Remy-Style)
+
+Replace the current closed-strict/open-lenient record unification with full Remy-style row-variable unification. Row variables become first-class participants in type inference, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
+
+- [ ] Extend `Substitution::apply` to splice bound row variable fields into records (e.g., `[a: Int | ...r]` with `r → [b: String]` produces `[a: Int, b: String]`)
+- [ ] Unify row rests: `RowVar` vs `RowVar` binds one to the other, `RowVar` vs `Closed` binds the var to the leftover fields as a closed record
+- [ ] Handle "remainder" binding: `unify([a: Int | ...r], [a: Int, b: String | Closed])` binds `r → [b: String | Closed]`
+- [ ] Extend `Type` representation if needed to support partial-row bindings (row var bound to fields + another row var)
+- [ ] Update `instantiate` to freshen row variables alongside type variables
+- [ ] Test inference through polymorphic functions that extend/restrict records (e.g., `[fn add-id [r@[...rest]] [id: 1  ...rest]]`)
+- [ ] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
