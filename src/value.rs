@@ -1,4 +1,4 @@
-// Evaluator foundation -- used starting Phase 1b
+// Runtime value types
 
 use std::cell::{Ref, RefCell};
 use std::fmt;
@@ -440,7 +440,7 @@ mod tests {
     fn test_environment_get_shadow() {
         let mut parent = Environment::new();
         let span = test_span(1, 1, 1, 5);
-        let parent_thunk = Rc::new(Thunk::new_materialized(Value::Int(1), span.clone()));
+        let parent_thunk = Rc::new(Thunk::new_materialized(Value::Int(1), span));
         parent.insert("x".into(), Rc::clone(&parent_thunk));
 
         let parent_rc = Rc::new(RefCell::new(parent));
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn test_thunk_transition() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Spanned::new(Expr::Int(0), span.clone());
+        let expr = Spanned::new(Expr::Int(0), span);
         let env = Rc::new(RefCell::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, span);
 
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn test_thunk_debug_borrowed_state() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Spanned::new(Expr::Int(0), span.clone());
+        let expr = Spanned::new(Expr::Int(0), span);
         let env = Rc::new(RefCell::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, span);
 
@@ -548,7 +548,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         map.insert(
             Key::String("x".into()),
-            Rc::new(Thunk::new_materialized(Value::Int(1), span.clone())),
+            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
         );
         map.insert(
             Key::Int(0),
@@ -631,7 +631,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         map.insert(
             Key::String("x".into()),
-            Rc::new(Thunk::new_materialized(Value::Int(1), span.clone())),
+            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
         );
         map.insert(
             Key::Int(0),

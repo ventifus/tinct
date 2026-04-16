@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phase 0 (parser) and Phase 1a-1c (evaluator foundation + core eval + access chains) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, comprehensive test suite (228 unit tests + file-based corpus). Phase 1d (document evaluation) is next.
+**Status:** Phase 0 (parser) and Phase 1a-1d (evaluator foundation + core eval + access chains + document evaluation) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, comprehensive test suite (250 unit tests + file-based corpus). Phase 1e (functions) is next.
 
 ## Syntax at a Glance
 
@@ -49,6 +49,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Evaluator foundation** -- `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain) types (Phase 1a)
 - **Core evaluation** -- literals, VarRef, dict construction with letrec semantics, cycle detection, depth limit (256) (Phase 1b)
 - **Access chains** -- dot access, bracket access, range expressions, type assertions, annotated access (Phase 1c)
+- **Document evaluation** -- multi-expression scope chains, multi-document `$$` pipeline with lazy passing (Phase 1d)
 - **Error reporting** -- `EvalError` with definition-site span, materialization-site span, and `StackFrame` traces
 - **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in LLT itself
 - **Corpus testing** -- file-based test suite in `tests/corpus/` with `===` delimiter for expected output
@@ -140,10 +141,10 @@ cargo run -- test_input.txt
 
 ### Unit Tests
 
-228 tests across multiple modules covering:
+250 tests across multiple modules covering:
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
-- **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), depth limiting, and materialization span propagation
+- **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), depth limiting, and materialization span propagation
 - **value.rs** -- Value, Thunk, and Environment types (evaluator foundation)
 - **error.rs** -- `EvalError` and `StackFrame` formatting with definition-site and materialization-site spans
 

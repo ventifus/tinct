@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{Expr, Span, Spanned};
+use crate::ast::{Document, Expr, File, Position, Span, Spanned};
 use crate::error::EvalError;
 use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 
@@ -28,36 +28,28 @@ pub fn eval(
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
-            expr.span.clone(),
+            expr.span,
         )
         .into());
     }
     match &expr.node {
-        Expr::Int(n) => Ok(Rc::new(Thunk::new_materialized(
-            Value::Int(*n),
-            expr.span.clone(),
-        ))),
+        Expr::Int(n) => Ok(Rc::new(Thunk::new_materialized(Value::Int(*n), expr.span))),
         Expr::Float(f) => Ok(Rc::new(Thunk::new_materialized(
             Value::Float(*f),
-            expr.span.clone(),
+            expr.span,
         ))),
-        Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(
-            Value::Bool(*b),
-            expr.span.clone(),
-        ))),
+        Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
         Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(
             Value::String(s.clone()),
-            expr.span.clone(),
+            expr.span,
         ))),
         Expr::VarRef(name) => {
             let found = env.borrow().get(name);
             match found {
                 Some(thunk) => Ok(thunk),
-                None => Err(EvalError::new(
-                    format!("undefined variable: ${name}"),
-                    expr.span.clone(),
-                )
-                .into()),
+                None => {
+                    Err(EvalError::new(format!("undefined variable: ${name}"), expr.span).into())
+                }
             }
         }
         Expr::Dict(entries) => eval_dict(entries, &env, &expr.span, depth),
@@ -89,17 +81,122 @@ pub fn eval(
             // Phase 1c: evaluate as the bare string. Type checker interprets in Phase 2a.
             Ok(Rc::new(Thunk::new_materialized(
                 Value::String(name.clone()),
-                expr.span.clone(),
+                expr.span,
             )))
         }
-        Expr::Call { .. } => {
-            Err(EvalError::new("not yet implemented: Call", expr.span.clone()).into())
-        }
-        Expr::Fn { .. } => Err(EvalError::new("not yet implemented: Fn", expr.span.clone()).into()),
+        Expr::Call { .. } => Err(EvalError::new("not yet implemented: Call", expr.span).into()),
+        Expr::Fn { .. } => Err(EvalError::new("not yet implemented: Fn", expr.span).into()),
         Expr::TypeAlias(_) => {
-            Err(EvalError::new("not yet implemented: TypeAlias", expr.span.clone()).into())
+            Err(EvalError::new("not yet implemented: TypeAlias", expr.span).into())
         }
     }
+}
+
+// --- Document Evaluation (scope chains) ---
+
+/// Evaluate a document: a sequence of expressions forming a scope chain.
+///
+/// Each intermediate expression is materialized and must produce a `Value::Dict`.
+/// The dict's string-keyed entries become bindings in a new child environment that
+/// serves as the scope for the next expression. The last expression is returned
+/// as-is (lazy, any type). An empty document returns an empty dict.
+pub fn eval_document(
+    doc: &Spanned<Document>,
+    env: Rc<RefCell<Environment>>,
+    depth: usize,
+) -> Result<Rc<Thunk>, Box<EvalError>> {
+    let exprs = &doc.node.expressions;
+
+    if exprs.is_empty() {
+        return Ok(Rc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            doc.span,
+        )));
+    }
+
+    let mut current_env = env;
+
+    for (i, expr) in exprs.iter().enumerate() {
+        let is_last = i == exprs.len() - 1;
+
+        if is_last {
+            // Last expression: return its thunk as-is (lazy, any type)
+            return eval(expr, current_env, depth);
+        }
+
+        // Intermediate expression: materialize and extract dict bindings
+        let thunk = eval(expr, Rc::clone(&current_env), depth)?;
+        let value = materialize(&thunk, Some(&expr.span), depth)?;
+
+        match value {
+            Value::Dict(map) => {
+                let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+                    &current_env,
+                ))));
+                for (key, val_thunk) in &map {
+                    if let Key::String(name) = key {
+                        child_env
+                            .borrow_mut()
+                            .insert(name.clone(), Rc::clone(val_thunk));
+                    }
+                }
+                current_env = child_env;
+            }
+            _ => {
+                return Err(EvalError::type_mismatch("Dict", value.type_name(), expr.span).into());
+            }
+        }
+    }
+
+    unreachable!("document has expressions but loop did not return")
+}
+
+// --- File Evaluation (multi-document pipeline) ---
+
+fn empty_dict_thunk(span: Span) -> Rc<Thunk> {
+    Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), span))
+}
+
+fn origin_span() -> Span {
+    let pos = Position {
+        offset: 0,
+        line: 1,
+        column: 1,
+    };
+    Span::new(pos, pos)
+}
+
+/// Evaluate a file: one or more documents separated by `---`.
+///
+/// Documents are totally isolated -- they share no scope. Data flows between
+/// documents via `$$` (the variable `$`), which is injected into each
+/// document's root scope containing the previous document's output.
+///
+/// - For the first document, `$$` is an empty dict.
+/// - For subsequent documents, `$$` is the previous document's result thunk
+///   (lazy -- no materialization at the `---` boundary).
+/// - The last document's result is the file's output.
+/// - An empty file (zero documents) returns an empty dict.
+pub fn eval_file(
+    file: &File,
+    env: Rc<RefCell<Environment>>,
+    depth: usize,
+) -> Result<Rc<Thunk>, Box<EvalError>> {
+    // $$ starts as empty dict for first document
+    let mut prev_output = empty_dict_thunk(origin_span());
+
+    for doc in &file.documents {
+        // Each document gets a fresh scope with only $$ bound
+        let doc_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
+        doc_env
+            .borrow_mut()
+            .insert("$".to_string(), Rc::clone(&prev_output));
+
+        let result = eval_document(doc, doc_env, depth)?;
+        prev_output = result; // lazy: no materialization at boundary
+    }
+
+    Ok(prev_output)
 }
 
 // --- Dict Construction (letrec) ---
@@ -131,13 +228,13 @@ fn eval_dict(
         };
 
         if dict_map.contains_key(&key) {
-            return Err(EvalError::new(format!("duplicate key: {key}"), entry.span.clone()).into());
+            return Err(EvalError::new(format!("duplicate key: {key}"), entry.span).into());
         }
 
         let thunk = Rc::new(Thunk::new_unevaluated(
             entry.node.value.clone(),
             Rc::clone(&dict_env),
-            entry.node.value.span.clone(),
+            entry.node.value.span,
         ));
 
         // String keys become bindings so sibling entries can reference via $name
@@ -152,7 +249,7 @@ fn eval_dict(
 
     Ok(Rc::new(Thunk::new_materialized(
         Value::Dict(dict_map),
-        dict_span.clone(),
+        *dict_span,
     )))
 }
 
@@ -179,7 +276,7 @@ fn value_to_key(value: &Value, span: &Span) -> Result<Key, Box<EvalError>> {
     match value {
         Value::String(s) => Ok(Key::String(s.clone())),
         Value::Int(n) => Ok(Key::Int(*n)),
-        _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), span.clone()).into()),
+        _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), *span).into()),
     }
 }
 
@@ -200,12 +297,10 @@ fn eval_dot_access(
             let key = Key::String(field.to_string());
             match map.get(&key) {
                 Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(EvalError::key_not_found(field, access_span.clone()).into()),
+                None => Err(EvalError::key_not_found(field, *access_span).into()),
             }
         }
-        _ => Err(
-            EvalError::type_mismatch("Dict", target_val.type_name(), access_span.clone()).into(),
-        ),
+        _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
     }
 }
 
@@ -224,12 +319,10 @@ fn eval_bracket_access(
             let key = eval_key(key_expr, env, depth)?;
             match map.get(&key) {
                 Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(EvalError::key_not_found(&key.to_string(), access_span.clone()).into()),
+                None => Err(EvalError::key_not_found(&key.to_string(), *access_span).into()),
             }
         }
-        _ => Err(
-            EvalError::type_mismatch("Dict", target_val.type_name(), access_span.clone()).into(),
-        ),
+        _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
     }
 }
 
@@ -255,24 +348,24 @@ fn eval_range_access(
             for (k, v) in &map {
                 let include = match (&start_key, &end_key) {
                     (Some(s), Some(e)) => {
-                        let ge_start = k.partial_cmp(s).ok_or_else(|| {
-                            EvalError::new(RANGE_KEY_TYPE_ERROR, access_span.clone())
-                        })?;
-                        let lt_end = k.partial_cmp(e).ok_or_else(|| {
-                            EvalError::new(RANGE_KEY_TYPE_ERROR, access_span.clone())
-                        })?;
+                        let ge_start = k
+                            .partial_cmp(s)
+                            .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, *access_span))?;
+                        let lt_end = k
+                            .partial_cmp(e)
+                            .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, *access_span))?;
                         ge_start != std::cmp::Ordering::Less && lt_end == std::cmp::Ordering::Less
                     }
                     (Some(s), None) => {
-                        let cmp = k.partial_cmp(s).ok_or_else(|| {
-                            EvalError::new(RANGE_KEY_TYPE_ERROR, access_span.clone())
-                        })?;
+                        let cmp = k
+                            .partial_cmp(s)
+                            .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, *access_span))?;
                         cmp != std::cmp::Ordering::Less
                     }
                     (None, Some(e)) => {
-                        let cmp = k.partial_cmp(e).ok_or_else(|| {
-                            EvalError::new(RANGE_KEY_TYPE_ERROR, access_span.clone())
-                        })?;
+                        let cmp = k
+                            .partial_cmp(e)
+                            .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, *access_span))?;
                         cmp == std::cmp::Ordering::Less
                     }
                     (None, None) => true, // unbounded: include everything
@@ -284,12 +377,10 @@ fn eval_range_access(
 
             Ok(Rc::new(Thunk::new_materialized(
                 Value::Dict(result),
-                access_span.clone(),
+                *access_span,
             )))
         }
-        _ => Err(
-            EvalError::type_mismatch("Dict", target_val.type_name(), access_span.clone()).into(),
-        ),
+        _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
     }
 }
 
@@ -315,7 +406,7 @@ pub fn materialize(
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
-            thunk.span.clone(),
+            thunk.span,
         )
         .into());
     }
@@ -326,9 +417,9 @@ pub fn materialize(
         match &*state {
             ThunkState::Materialized(v) => return Ok(v.clone()),
             ThunkState::InProgress => {
-                let mut err = EvalError::circular_dependency("thunk", thunk.span.clone());
+                let mut err = EvalError::circular_dependency("thunk", thunk.span);
                 if let Some(span) = mat_span {
-                    err = err.with_materialization_span(span.clone());
+                    err = err.with_materialization_span(*span);
                 }
                 return Err(err.into());
             }
@@ -341,28 +432,33 @@ pub fn materialize(
         .take_unevaluated()
         .expect("state must be Unevaluated after check");
 
-    // Evaluate and recursively materialize
-    let result_thunk = eval(&expr, env, depth + 1).map_err(|mut e| {
+    // Evaluate and recursively materialize. On failure, restore the thunk
+    // to Unevaluated so it can be retried (avoids thunk poisoning where a
+    // failed thunk permanently reports "circular dependency").
+    let attach_mat_span = |mut e: Box<EvalError>| -> Box<EvalError> {
         if e.materialization_span.is_none() {
             if let Some(span) = mat_span {
-                e.materialization_span = Some(span.clone());
+                e.materialization_span = Some(*span);
             }
         }
         e
-    })?;
-    let value = materialize(&result_thunk, mat_span, depth + 1).map_err(|mut e| {
-        if e.materialization_span.is_none() {
-            if let Some(span) = mat_span {
-                e.materialization_span = Some(span.clone());
-            }
+    };
+    let result = (|| {
+        let result_thunk = eval(&expr, Rc::clone(&env), depth + 1).map_err(attach_mat_span)?;
+        materialize(&result_thunk, mat_span, depth + 1).map_err(attach_mat_span)
+    })();
+
+    match result {
+        Ok(value) => {
+            thunk.transition(|_| ThunkState::Materialized(value.clone()));
+            Ok(value)
         }
-        e
-    })?;
-
-    // Memoize
-    thunk.transition(|_| ThunkState::Materialized(value.clone()));
-
-    Ok(value)
+        Err(e) => {
+            // Restore thunk so it can be retried
+            thunk.transition(|_| ThunkState::Unevaluated { expr, env });
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -660,6 +756,49 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
+    }
+
+    // --- Thunk Poisoning Prevention ---
+
+    #[test]
+    fn test_thunk_retryable_after_error() {
+        // [x: $missing] -- materializing x fails because $missing is undefined.
+        // After failure, the thunk must be restored to Unevaluated, not left
+        // as InProgress. A second materialize attempt should produce the same
+        // "undefined variable" error, NOT "circular dependency".
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("x".into()))),
+            value: sp(Expr::VarRef("missing".into())),
+        })];
+        let dict = sp(Expr::Dict(entries));
+        let env = empty_env();
+        let dict_thunk = eval(&dict, Rc::clone(&env), 0).unwrap();
+        let dict_val = materialize(&dict_thunk, None, 0).unwrap();
+
+        let x_thunk = match &dict_val {
+            Value::Dict(map) => Rc::clone(map.get(&Key::String("x".into())).unwrap()),
+            other => panic!("expected Dict, got {other:?}"),
+        };
+
+        // First attempt: should fail with "undefined variable"
+        let err1 = materialize(&x_thunk, None, 0).unwrap_err();
+        assert!(
+            err1.message.contains("undefined variable: $missing"),
+            "first attempt: got: {}",
+            err1.message
+        );
+
+        // Second attempt: should produce the SAME error, not "circular dependency"
+        let err2 = materialize(&x_thunk, None, 0).unwrap_err();
+        assert!(
+            err2.message.contains("undefined variable: $missing"),
+            "second attempt should not be poisoned, got: {}",
+            err2.message
+        );
+        assert!(
+            !err2.message.contains("circular dependency"),
+            "thunk was poisoned: got circular dependency on retry"
+        );
     }
 
     // --- Nested Dict Scope ---
@@ -1433,5 +1572,591 @@ mod tests {
             err.message
         );
         assert!(err.message.contains("got Float"), "got: {}", err.message);
+    }
+
+    // --- Document Evaluation ---
+
+    #[test]
+    fn test_eval_document_single_expression() {
+        // A document with one dict expression returns that dict
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: sp(Expr::Int(1)),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("y".into()))),
+                value: sp(Expr::Int(2)),
+            }),
+        ];
+        let doc = sp(Document {
+            expressions: vec![sp(Expr::Dict(entries))],
+        });
+        let thunk = eval_document(&doc, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 2);
+                assert_eq!(
+                    materialize(map.get(&Key::String("x".into())).unwrap(), None, 0).unwrap(),
+                    Value::Int(1)
+                );
+                assert_eq!(
+                    materialize(map.get(&Key::String("y".into())).unwrap(), None, 0).unwrap(),
+                    Value::Int(2)
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_document_scope_chain() {
+        // Two expressions: expr 1 defines x, expr 2 references $x
+        // Expr 1: [x: 10]
+        // Expr 2: [y: $x]
+        let expr1 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("x".into()))),
+            value: sp(Expr::Int(10)),
+        })]));
+        let expr2 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("y".into()))),
+            value: sp(Expr::VarRef("x".into())),
+        })]));
+        let doc = sp(Document {
+            expressions: vec![expr1, expr2],
+        });
+        let thunk = eval_document(&doc, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let y_thunk = map.get(&Key::String("y".into())).unwrap();
+                assert_eq!(materialize(y_thunk, None, 0).unwrap(), Value::Int(10));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_document_scope_chain_shadowing() {
+        // Expr 1: [x: 1]
+        // Expr 2: [x: 2  y: $x]
+        // y should be 2 (local letrec wins over parent scope)
+        let expr1 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("x".into()))),
+            value: sp(Expr::Int(1)),
+        })]));
+        let expr2 = sp(Expr::Dict(vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: sp(Expr::Int(2)),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("y".into()))),
+                value: sp(Expr::VarRef("x".into())),
+            }),
+        ]));
+        let doc = sp(Document {
+            expressions: vec![expr1, expr2],
+        });
+        let thunk = eval_document(&doc, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let y_thunk = map.get(&Key::String("y".into())).unwrap();
+                assert_eq!(materialize(y_thunk, None, 0).unwrap(), Value::Int(2));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_document_intermediate_non_dict_error() {
+        // Two expressions where expr 1 is a literal (not a dict). Should error.
+        let expr1 = sp(Expr::Int(42));
+        let expr2 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("x".into()))),
+            value: sp(Expr::Int(1)),
+        })]));
+        let doc = sp(Document {
+            expressions: vec![expr1, expr2],
+        });
+        let err = eval_document(&doc, empty_env(), 0).unwrap_err();
+        assert!(
+            err.message.contains("type mismatch"),
+            "got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("expected Dict"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_eval_document_empty() {
+        // A document with zero expressions returns an empty dict
+        let doc = sp(Document {
+            expressions: vec![],
+        });
+        let thunk = eval_document(&doc, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 0);
+            }
+            other => panic!("expected empty Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_document_three_expressions() {
+        // Three expressions chaining scope:
+        // Expr 1: [a: 1]
+        // Expr 2: [b: 2]
+        // Expr 3: [sum_ref_a: $a  sum_ref_b: $b]
+        // Expr 3 should see both $a (from expr 1 via grandparent) and $b (from expr 2 via parent)
+        let expr1 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("a".into()))),
+            value: sp(Expr::Int(1)),
+        })]));
+        let expr2 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("b".into()))),
+            value: sp(Expr::Int(2)),
+        })]));
+        let expr3 = sp(Expr::Dict(vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("ref_a".into()))),
+                value: sp(Expr::VarRef("a".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("ref_b".into()))),
+                value: sp(Expr::VarRef("b".into())),
+            }),
+        ]));
+        let doc = sp(Document {
+            expressions: vec![expr1, expr2, expr3],
+        });
+        let thunk = eval_document(&doc, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 2);
+                let ref_a = map.get(&Key::String("ref_a".into())).unwrap();
+                assert_eq!(materialize(ref_a, None, 0).unwrap(), Value::Int(1));
+                let ref_b = map.get(&Key::String("ref_b".into())).unwrap();
+                assert_eq!(materialize(ref_b, None, 0).unwrap(), Value::Int(2));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_document_inherits_parent_env() {
+        // A document evaluated with a pre-populated parent env.
+        // The document's expressions should see the parent's bindings.
+        let parent_env = empty_env();
+        parent_env.borrow_mut().insert(
+            "external".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Int(999),
+                test_span(1, 1, 1, 5),
+            )),
+        );
+
+        let expr = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("local".into()))),
+            value: sp(Expr::VarRef("external".into())),
+        })]));
+        let doc = sp(Document {
+            expressions: vec![expr],
+        });
+        let thunk = eval_document(&doc, parent_env, 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let local = map.get(&Key::String("local".into())).unwrap();
+                assert_eq!(materialize(local, None, 0).unwrap(), Value::Int(999));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_document_single_non_dict_expression() {
+        // A document with a single Int expression (not a dict).
+        // The last expression can be any type.
+        let doc = sp(Document {
+            expressions: vec![sp(Expr::Int(42))],
+        });
+        let thunk = eval_document(&doc, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn test_eval_document_integer_keys_skipped_in_scope_chain() {
+        // Expr 1: [10 20 30] (auto-indexed: keys Int(0), Int(1), Int(2))
+        // Expr 2: [result: 99]
+        // Integer keys from expr 1 should not become scope bindings.
+        let expr1 = sp(Expr::Dict(vec![
+            sp(Entry {
+                key: None,
+                value: sp(Expr::Int(10)),
+            }),
+            sp(Entry {
+                key: None,
+                value: sp(Expr::Int(20)),
+            }),
+            sp(Entry {
+                key: None,
+                value: sp(Expr::Int(30)),
+            }),
+        ]));
+        let expr2 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("result".into()))),
+            value: sp(Expr::Int(99)),
+        })]));
+        let doc = sp(Document {
+            expressions: vec![expr1, expr2],
+        });
+        let thunk = eval_document(&doc, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let result_thunk = map.get(&Key::String("result".into())).unwrap();
+                assert_eq!(materialize(result_thunk, None, 0).unwrap(), Value::Int(99));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_document_scope_chain_plus_letrec() {
+        // Expr 1: [x: 1]
+        // Expr 2: [y: $x  z: $y]
+        // y references x from the scope chain, z references y via letrec.
+        // Verify z resolves to 1.
+        let expr1 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("x".into()))),
+            value: sp(Expr::Int(1)),
+        })]));
+        let expr2 = sp(Expr::Dict(vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("y".into()))),
+                value: sp(Expr::VarRef("x".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("z".into()))),
+                value: sp(Expr::VarRef("y".into())),
+            }),
+        ]));
+        let doc = sp(Document {
+            expressions: vec![expr1, expr2],
+        });
+        let thunk = eval_document(&doc, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let z_thunk = map.get(&Key::String("z".into())).unwrap();
+                assert_eq!(materialize(z_thunk, None, 0).unwrap(), Value::Int(1));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    // --- File Evaluation ---
+
+    #[test]
+    fn test_eval_file_single_document() {
+        // A file with one document containing [x: 1]. Verify x=1.
+        let doc = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: sp(Expr::Int(1)),
+            })]))],
+        });
+        let file = File {
+            documents: vec![doc],
+        };
+        let thunk = eval_file(&file, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 1);
+                assert_eq!(
+                    materialize(map.get(&Key::String("x".into())).unwrap(), None, 0).unwrap(),
+                    Value::Int(1)
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_dollar_dollar_is_empty_for_first_doc() {
+        // A file with one document containing [prev: $$].
+        // $$ is VarRef("$"), should resolve to empty dict for first doc.
+        let doc = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("prev".into()))),
+                value: sp(Expr::VarRef("$".into())),
+            })]))],
+        });
+        let file = File {
+            documents: vec![doc],
+        };
+        let thunk = eval_file(&file, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let prev_thunk = map.get(&Key::String("prev".into())).unwrap();
+                let prev_val = materialize(prev_thunk, None, 0).unwrap();
+                match prev_val {
+                    Value::Dict(inner) => assert_eq!(inner.len(), 0),
+                    other => panic!("expected empty Dict for $$, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_dollar_dollar_pipeline() {
+        // Doc 1: [x: 10]
+        // Doc 2: [y: $$.x]  (access previous doc's x via $$)
+        // Verify y=10.
+        let doc1 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: sp(Expr::Int(10)),
+            })]))],
+        });
+        let doc2 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("y".into()))),
+                value: sp(Expr::DotAccess {
+                    expr: Box::new(sp(Expr::VarRef("$".into()))),
+                    field: "x".into(),
+                }),
+            })]))],
+        });
+        let file = File {
+            documents: vec![doc1, doc2],
+        };
+        let thunk = eval_file(&file, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let y_thunk = map.get(&Key::String("y".into())).unwrap();
+                assert_eq!(materialize(y_thunk, None, 0).unwrap(), Value::Int(10));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_non_dict_dollar_dollar() {
+        // Doc 1: 42 (a bare Int, not a dict)
+        // Doc 2: [prev: $$]
+        // Verify that prev resolves to Int(42).
+        let doc1 = sp(Document {
+            expressions: vec![sp(Expr::Int(42))],
+        });
+        let doc2 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("prev".into()))),
+                value: sp(Expr::VarRef("$".into())),
+            })]))],
+        });
+        let file = File {
+            documents: vec![doc1, doc2],
+        };
+        let thunk = eval_file(&file, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let prev_thunk = map.get(&Key::String("prev".into())).unwrap();
+                assert_eq!(materialize(prev_thunk, None, 0).unwrap(), Value::Int(42));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_dollar_dollar_lazy() {
+        // Verify that $$ is lazy: Doc 1 contains a value that would error if
+        // materialized. Doc 2 accesses a DIFFERENT key from $$, so the error
+        // value is never forced.
+        // Doc 1: [good: 1  bad: $missing]
+        // Doc 2: [result: $$.good]
+        // Verify result=1.
+        let doc1 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![
+                sp(Entry {
+                    key: Some(sp(Expr::Str("good".into()))),
+                    value: sp(Expr::Int(1)),
+                }),
+                sp(Entry {
+                    key: Some(sp(Expr::Str("bad".into()))),
+                    value: sp(Expr::VarRef("missing".into())),
+                }),
+            ]))],
+        });
+        let doc2 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("result".into()))),
+                value: sp(Expr::DotAccess {
+                    expr: Box::new(sp(Expr::VarRef("$".into()))),
+                    field: "good".into(),
+                }),
+            })]))],
+        });
+        let file = File {
+            documents: vec![doc1, doc2],
+        };
+        let thunk = eval_file(&file, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let result_thunk = map.get(&Key::String("result".into())).unwrap();
+                assert_eq!(materialize(result_thunk, None, 0).unwrap(), Value::Int(1));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_three_documents() {
+        // Three documents piped:
+        // Doc 1: [a: 1]
+        // Doc 2: [b: $$.a  c: 2]
+        // Doc 3: [result: $$.b]
+        // Verify result=1 (piped through two boundaries).
+        let doc1 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("a".into()))),
+                value: sp(Expr::Int(1)),
+            })]))],
+        });
+        let doc2 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![
+                sp(Entry {
+                    key: Some(sp(Expr::Str("b".into()))),
+                    value: sp(Expr::DotAccess {
+                        expr: Box::new(sp(Expr::VarRef("$".into()))),
+                        field: "a".into(),
+                    }),
+                }),
+                sp(Entry {
+                    key: Some(sp(Expr::Str("c".into()))),
+                    value: sp(Expr::Int(2)),
+                }),
+            ]))],
+        });
+        let doc3 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("result".into()))),
+                value: sp(Expr::DotAccess {
+                    expr: Box::new(sp(Expr::VarRef("$".into()))),
+                    field: "b".into(),
+                }),
+            })]))],
+        });
+        let file = File {
+            documents: vec![doc1, doc2, doc3],
+        };
+        let thunk = eval_file(&file, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let result_thunk = map.get(&Key::String("result".into())).unwrap();
+                assert_eq!(materialize(result_thunk, None, 0).unwrap(), Value::Int(1));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_documents_isolated() {
+        // Verify documents don't share scope:
+        // Doc 1: [x: 42]
+        // Doc 2: [y: $x]  (NOT $$.x, just $x -- should fail)
+        let doc1 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: sp(Expr::Int(42)),
+            })]))],
+        });
+        let doc2 = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("y".into()))),
+                value: sp(Expr::VarRef("x".into())),
+            })]))],
+        });
+        let file = File {
+            documents: vec![doc1, doc2],
+        };
+        // eval_file succeeds (dict is lazy), but materializing y should fail
+        let thunk = eval_file(&file, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let y_thunk = map.get(&Key::String("y".into())).unwrap();
+                let err = materialize(y_thunk, None, 0).unwrap_err();
+                assert!(
+                    err.message.contains("undefined variable: $x"),
+                    "got: {}",
+                    err.message
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_empty() {
+        // A file with zero documents. Should return an empty dict.
+        let file = File { documents: vec![] };
+        let thunk = eval_file(&file, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => assert_eq!(map.len(), 0),
+            other => panic!("expected empty Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_inherits_env() {
+        // A file evaluated with a pre-populated parent env.
+        // Document expressions should see the parent's bindings.
+        let parent_env = empty_env();
+        parent_env.borrow_mut().insert(
+            "external".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Int(777),
+                test_span(1, 1, 1, 5),
+            )),
+        );
+
+        let doc = sp(Document {
+            expressions: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("val".into()))),
+                value: sp(Expr::VarRef("external".into())),
+            })]))],
+        });
+        let file = File {
+            documents: vec![doc],
+        };
+        let thunk = eval_file(&file, parent_env, 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let val_thunk = map.get(&Key::String("val".into())).unwrap();
+                assert_eq!(materialize(val_thunk, None, 0).unwrap(), Value::Int(777));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
     }
 }

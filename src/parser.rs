@@ -5,7 +5,7 @@ use crate::ast::*;
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
-pub struct LltParser;
+pub(crate) struct LltParser;
 
 /// Maximum nesting depth for bracket expressions.
 const MAX_DEPTH: usize = 256;
@@ -66,7 +66,7 @@ pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
     let file = parse(input)?;
     let doc = &file.node.documents[0];
     if doc.node.expressions.is_empty() {
-        Ok(Spanned::new(Expr::Dict(vec![]), doc.span.clone()))
+        Ok(Spanned::new(Expr::Dict(vec![]), doc.span))
     } else if doc.node.expressions.len() == 1 {
         Ok(doc.node.expressions[0].clone())
     } else {
@@ -198,7 +198,7 @@ fn build_value(
             let span = make_span(&pair, lines);
             let n: i64 = pair.as_str().parse().map_err(|e| ParseError {
                 message: format!("invalid integer: {e}"),
-                span: Some(span.clone()),
+                span: Some(span),
             })?;
             Ok(Spanned::new(Expr::Int(n), span))
         }
@@ -206,7 +206,7 @@ fn build_value(
             let span = make_span(&pair, lines);
             let n: f64 = pair.as_str().parse().map_err(|e| ParseError {
                 message: format!("invalid float: {e}"),
-                span: Some(span.clone()),
+                span: Some(span),
             })?;
             Ok(Spanned::new(Expr::Float(n), span))
         }
@@ -542,7 +542,7 @@ fn build_param_list(
                         span: Some(p_span),
                     });
                 }
-                saw_variadic = Some(p_span.clone());
+                saw_variadic = Some(p_span);
                 let name_pair = child
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::param_name)
@@ -649,7 +649,7 @@ fn build_dict_entries(
                     if seen_keys.contains(&key_text) {
                         return Err(ParseError {
                             message: format!("duplicate key \"{}\"", key_text),
-                            span: Some(key_expr.span.clone()),
+                            span: Some(key_expr.span),
                         });
                     }
                     seen_keys.insert(key_text);
@@ -760,7 +760,7 @@ fn build_access_expr(
                     .expect("grammar guarantees dot_access has field name");
                 let field = field_pair.as_str().to_string();
                 let new_span = Span {
-                    start: current.span.start.clone(),
+                    start: current.span.start,
                     end: lines.offset_to_position(field_pair.as_span().end()),
                 };
                 current = Spanned::new(
@@ -786,7 +786,7 @@ fn build_access_expr(
                     Rule::range_expr => {
                         let (start_expr, end_expr) = build_range_expr(access_inner, lines, depth)?;
                         let new_span = Span {
-                            start: current.span.start.clone(),
+                            start: current.span.start,
                             end: chain_end,
                         };
                         current = Spanned::new(
@@ -801,7 +801,7 @@ fn build_access_expr(
                     _ => {
                         let key = build_value(access_inner, lines, depth)?;
                         let new_span = Span {
-                            start: current.span.start.clone(),
+                            start: current.span.start,
                             end: chain_end,
                         };
                         current = Spanned::new(
@@ -841,7 +841,7 @@ fn build_range_expr(
     let dot_dot_offset = pair_start
         + raw.find("..").ok_or_else(|| ParseError {
             message: "range_expr must contain '..'".to_string(),
-            span: Some(span.clone()),
+            span: Some(span),
         })?;
 
     let mut start = None;

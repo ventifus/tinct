@@ -65,14 +65,14 @@ Depends on 1b. After this step, `$data.name` and `$data[0]` work.
 - [x] TypeAssert: evaluate as identity (type checker enforces in Phase 2a)
 - [x] Annotated: evaluate as the bare string (type checker interprets in Phase 2a)
 
-### 1d: Document Evaluation
+### 1d: Document Evaluation — Complete
 
 Depends on 1b-1c. After this step, multi-expression scope chains and `$$` pipeline work.
 
-- [ ] Multi-expression documents: each expression's result dict becomes parent scope for the next
-- [ ] Multi-document files: `---` resets scope, previous document's output becomes `$$`
-- [ ] `$$` starts as `[]` (empty dict) for the first document
-- [ ] `$$` passes lazily between documents (no materialization at `---` boundary)
+- [x] Multi-expression documents: each expression's result dict becomes parent scope for the next
+- [x] Multi-document files: `---` resets scope, previous document's output becomes `$$`
+- [x] `$$` starts as `[]` (empty dict) for the first document
+- [x] `$$` passes lazily between documents (no materialization at `---` boundary)
 
 ### 1e: Functions
 

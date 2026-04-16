@@ -1,4 +1,4 @@
-use lazy_lisp_transformer::{parse, parse_expression};
+use lazy_lisp_transformer::{eval_source, parse, parse_expression};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -138,14 +138,27 @@ fn test_invalid_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (input, _expected) = split_test_file(&content);
+        let (input, expected) = split_test_file(&content);
 
         match parse(input) {
             Ok(_) => failed.push((
                 relative_path.to_path_buf(),
                 "Expected parse to fail".to_string(),
             )),
-            Err(_) => {}
+            Err(e) => {
+                if let Some(expected_substr) = expected {
+                    let error_msg = format!("{}", e);
+                    if !error_msg.contains(expected_substr) {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            format!(
+                                "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
+                                expected_substr, error_msg
+                            ),
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -167,11 +180,74 @@ fn test_corpus_structure() {
         "tests/corpus/valid/complex",
         "tests/corpus/valid/edge_cases",
         "tests/corpus/invalid/syntax_errors",
+        "tests/corpus/eval",
     ];
 
     for dir in &required_dirs {
         let path = manifest_dir.join(dir);
         assert!(path.exists(), "Required test directory missing: {}", dir);
         assert!(path.is_dir(), "Path is not a directory: {}", dir);
+    }
+}
+
+#[test]
+fn test_eval_corpus() {
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval");
+
+    let test_files = find_test_files(&corpus_dir);
+    assert!(
+        !test_files.is_empty(),
+        "No test files found in {}",
+        corpus_dir.display()
+    );
+
+    let mut failed = Vec::new();
+
+    for test_file in &test_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+        let relative_path = test_file
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(test_file);
+
+        let (input, expected) = split_test_file(&content);
+
+        let expected_output = match expected {
+            Some(e) => e,
+            None => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    "eval corpus test file missing expected output after ===".to_string(),
+                ));
+                continue;
+            }
+        };
+
+        match eval_source(input) {
+            Ok(actual) => {
+                if actual.trim() != expected_output {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "eval output mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
+                            expected_output,
+                            actual.trim()
+                        ),
+                    ));
+                }
+            }
+            Err(e) => {
+                failed.push((relative_path.to_path_buf(), format!("eval error: {e}")));
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n{} eval test(s) failed:", failed.len());
+        for (path, error) in &failed {
+            eprintln!("  - {}: {}", path.display(), error);
+        }
+        panic!("Eval corpus tests failed");
     }
 }

@@ -1,7 +1,7 @@
 use std::fmt;
 
 /// Byte offset + line/column position in source text
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     pub offset: usize,
     pub line: usize,
@@ -9,7 +9,7 @@ pub struct Position {
 }
 
 /// Source span (start..end)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: Position,
     pub end: Position,

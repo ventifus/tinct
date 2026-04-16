@@ -1,4 +1,4 @@
-// Evaluator foundation -- used starting Phase 1b
+// Evaluator error types
 
 use std::fmt;
 
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn test_eval_error_new() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::new("something broke", span.clone());
+        let err = EvalError::new("something broke", span);
         assert_eq!(err.message, "something broke");
         assert_eq!(err.definition_span, span);
         assert_eq!(err.materialization_span, None);
@@ -108,7 +108,7 @@ mod tests {
     fn test_eval_error_with_materialization_span() {
         let def_span = test_span(1, 1, 1, 5);
         let mat_span = test_span(10, 3, 10, 8);
-        let err = EvalError::new("lazy fail", def_span).with_materialization_span(mat_span.clone());
+        let err = EvalError::new("lazy fail", def_span).with_materialization_span(mat_span);
         assert_eq!(err.materialization_span, Some(mat_span));
     }
 
@@ -116,7 +116,7 @@ mod tests {
     fn test_eval_error_with_frame() {
         let span = test_span(1, 1, 1, 5);
         let frame_span = test_span(5, 1, 5, 10);
-        let err = EvalError::new("err", span).with_frame("my_function", frame_span.clone());
+        let err = EvalError::new("err", span).with_frame("my_function", frame_span);
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "my_function");
         assert_eq!(err.stack[0].span, frame_span);
@@ -189,7 +189,7 @@ bad value (defined at 3:5-3:10) (materialized at 20:1-20:5)
 
         // Push a frame directly
         let frame_span = test_span(5, 1, 5, 10);
-        err.push_frame("first_function", frame_span.clone());
+        err.push_frame("first_function", frame_span);
 
         // Verify frame was added
         assert_eq!(err.stack.len(), 1);
@@ -198,7 +198,7 @@ bad value (defined at 3:5-3:10) (materialized at 20:1-20:5)
 
         // Push a second frame
         let frame2_span = test_span(10, 3, 10, 15);
-        err.push_frame("second_function", frame2_span.clone());
+        err.push_frame("second_function", frame2_span);
 
         // Verify both frames are present
         assert_eq!(err.stack.len(), 2);
