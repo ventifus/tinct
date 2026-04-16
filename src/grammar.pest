@@ -148,7 +148,7 @@ bracket_access_inner = { range_expr | value }
 
 range_expr = { range_value? ~ ".." ~ range_value? }
 
-// Values inside range expressions — limited to atoms (no nested brackets in ranges)
+// Values inside range expressions -- limited to atoms (no nested brackets in ranges)
 range_value = { float_lit | int_lit | var_ref }
 
 // === Literals ===

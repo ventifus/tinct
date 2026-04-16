@@ -1,4 +1,4 @@
-// Evaluator error types
+//! Evaluator error types with definition-site spans, materialization-site spans, and stack frames.
 
 use std::fmt;
 
@@ -184,14 +184,12 @@ bad value (defined at 3:5-3:10) (materialized at 20:1-20:5)
         let span = test_span(1, 1, 1, 5);
         let mut err = EvalError::new("error", span);
 
-        // Verify initial state has no frames
         assert!(err.stack.is_empty());
 
         // Push a frame directly
         let frame_span = test_span(5, 1, 5, 10);
         err.push_frame("first_function", frame_span);
 
-        // Verify frame was added
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "first_function");
         assert_eq!(err.stack[0].span, frame_span);
@@ -200,7 +198,6 @@ bad value (defined at 3:5-3:10) (materialized at 20:1-20:5)
         let frame2_span = test_span(10, 3, 10, 15);
         err.push_frame("second_function", frame2_span);
 
-        // Verify both frames are present
         assert_eq!(err.stack.len(), 2);
         assert_eq!(err.stack[1].label, "second_function");
         assert_eq!(err.stack[1].span, frame2_span);

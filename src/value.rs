@@ -1,4 +1,4 @@
-// Runtime value types
+//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
 
 use std::cell::{Ref, RefCell};
 use std::fmt;

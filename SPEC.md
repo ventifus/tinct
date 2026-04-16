@@ -419,9 +419,9 @@ Type expressions appear in type annotations and `[type ...]` declarations. They 
 [Fn@c [a b]]            # two-arg function
 ```
 
-The parser handles this via the `annotated_bare` rule — `Fn@b` parses as `Annotated { name: "Fn", annotation: Simple("b") }`. The type checker (Phase 4) interprets `Fn` as a function type constructor. All types in a type definition must be explicit — there is no body to infer from.
+The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annotated { name: "Fn", annotation: Simple("b") }`. The type checker interprets `Fn` as a function type constructor. All types in a type definition must be explicit -- there is no body to infer from.
 
-The following feature is **deferred to Phase 4** (type system):
+The following feature is **deferred to Phase 2b** (polymorphism):
 
 - **Row polymorphism:** `[name: String ...]` for open record types, `...rest` for named row variables
 
@@ -651,7 +651,7 @@ Entries without explicit keys receive auto-incrementing integer keys. The counte
 | Surface syntax | Logical structure |
 |---------------|------------------|
 | `[a b c]` | `[0: a  1: b  2: c]` |
-| `[call $f $x timeout: 60]` | `[0: call  1: $f  2: $x  timeout: 60]` |
+| `[greet Andrew timeout: 60]` | `[0: greet  1: Andrew  timeout: 60]` |
 
 In the AST, auto-indexed entries have `key: None`. The integer keys are assigned during evaluation, not parsing.
 
@@ -1102,7 +1102,7 @@ Entry {
 }
 ```
 
-The type checker (Phase 4) interprets `Annotated { name: "Fn", ... }` as a function type constructor.
+The type checker interprets `Annotated { name: "Fn", ... }` as a function type constructor.
 
 ### 8.12 Comments
 

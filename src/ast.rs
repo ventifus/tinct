@@ -1,3 +1,5 @@
+//! AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>`.
+
 use std::fmt;
 
 /// Byte offset + line/column position in source text
@@ -34,13 +36,13 @@ impl<T> Spanned<T> {
     }
 }
 
-/// A complete LLT file — one or more documents separated by ---
+/// A complete LLT file -- one or more documents separated by ---
 #[derive(Debug, Clone, PartialEq)]
 pub struct File {
     pub documents: Vec<Spanned<Document>>,
 }
 
-/// A document — one or more expressions forming a scope chain
+/// A document -- one or more expressions forming a scope chain
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
     pub expressions: Vec<Spanned<Expr>>,
@@ -135,6 +137,23 @@ pub struct Param {
 pub enum Annotation {
     Simple(String),
     PropertyDict(Vec<Spanned<Entry>>),
+}
+
+impl Annotation {
+    /// Look up a property by string key in a PropertyDict annotation.
+    /// Returns a reference to the value expression if found, None for Simple annotations.
+    pub fn get_property(&self, key: &str) -> Option<&Spanned<Expr>> {
+        match self {
+            Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
+                let key_expr = entry.node.key.as_ref()?;
+                match &key_expr.node {
+                    Expr::Str(name) if name == key => Some(&entry.node.value),
+                    _ => None,
+                }
+            }),
+            Annotation::Simple(_) => None,
+        }
+    }
 }
 
 // --- Display implementations for display and error reporting ---

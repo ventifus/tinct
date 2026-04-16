@@ -1,0 +1,3 @@
+[call 42]
+===
+type mismatch: expected Function or Builtin

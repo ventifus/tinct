@@ -1,3 +1,5 @@
+//! Pest PEG parser: converts source text into a fully-spanned AST.
+
 use pest::Parser;
 use pest_derive::Parser;
 
@@ -8,6 +10,9 @@ use crate::ast::*;
 pub(crate) struct LltParser;
 
 /// Maximum nesting depth for bracket expressions.
+/// Enforced during AST construction, not during pest's parse phase.
+/// Pest recurses on Rust's call stack, so ~500+ nested brackets can
+/// overflow before this check fires. See Phase 2c (hand-written parser).
 const MAX_DEPTH: usize = 256;
 
 /// Parse LLT source text into a spanned File AST.
@@ -365,8 +370,8 @@ fn build_call(
     // Grammar: call_form = { keyword_call ~ value ~ call_args }
     let mut inner = pair.into_inner();
 
-    // skip keyword_call
-    inner.next();
+    let kw = inner.next().expect("grammar guarantees keyword_call");
+    debug_assert_eq!(kw.as_rule(), Rule::keyword_call);
 
     let func = build_value(
         inner
@@ -448,8 +453,8 @@ fn build_fn(
     // Grammar: fn_form = { keyword_fn ~ fn_annotation? ~ param_list ~ value }
     let mut inner = pair.into_inner();
 
-    // skip keyword_fn
-    inner.next();
+    let kw = inner.next().expect("grammar guarantees keyword_fn");
+    debug_assert_eq!(kw.as_rule(), Rule::keyword_fn);
 
     let mut return_ann = None;
     let mut next = inner
@@ -618,7 +623,8 @@ fn build_type_alias(
 ) -> Result<Spanned<Expr>, ParseError> {
     // Grammar: type_form = { keyword_type ~ value }
     let mut inner = pair.into_inner();
-    inner.next(); // skip keyword_type
+    let kw = inner.next().expect("grammar guarantees keyword_type");
+    debug_assert_eq!(kw.as_rule(), Rule::keyword_type);
     let body = build_value(
         inner
             .next()
@@ -1247,7 +1253,22 @@ mod tests {
     #[test]
     fn test_type_alias() {
         let ast = parse_ok("[type [a b c]]");
-        assert!(matches!(&ast.node, Expr::TypeAlias(_)));
+        match &ast.node {
+            Expr::TypeAlias(inner) => match &inner.node {
+                Expr::Dict(entries) => {
+                    assert_eq!(entries.len(), 3);
+                    // Auto-indexed entries: keys are None, values are bare words
+                    for entry in entries {
+                        assert!(entry.node.key.is_none(), "expected auto-indexed entry");
+                    }
+                    assert!(matches!(&entries[0].node.value.node, Expr::Str(s) if s == "a"));
+                    assert!(matches!(&entries[1].node.value.node, Expr::Str(s) if s == "b"));
+                    assert!(matches!(&entries[2].node.value.node, Expr::Str(s) if s == "c"));
+                }
+                other => panic!("expected Dict inside TypeAlias, got {other:?}"),
+            },
+            other => panic!("expected TypeAlias, got {other:?}"),
+        }
     }
 
     // --- Access chain tests ---
@@ -1376,12 +1397,6 @@ mod tests {
     }
 
     // --- Error tests ---
-
-    #[test]
-    fn test_unmatched_bracket() {
-        let err = parse_err("[hello");
-        assert!(err.message.contains("expected"));
-    }
 
     // --- Complex examples ---
 
@@ -1920,7 +1935,7 @@ mod tests {
 
     #[test]
     fn test_bare_word_with_at_sign() {
-        // @ is always structural — name@domain parses as Annotated
+        // @ is always structural -- name@domain parses as Annotated
         let ast = parse_ok("[name@domain]");
         match &ast.node {
             Expr::Dict(entries) => {

@@ -1,0 +1,5 @@
+[x: 42]
+
+$x[0..2]
+===
+type mismatch: expected Dict

@@ -1,16 +1,18 @@
-// Core evaluation module
+//! Core evaluation module: lazy evaluation with letrec dict scoping, document
+//! pipelines, function evaluation, and `$_` implicit lambda desugaring.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, Document, Expr, File, NamedArg, Param, Position, Span, Spanned};
+use crate::ast::{Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
 use crate::error::EvalError;
 use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 
-const MAX_EVAL_DEPTH: usize = 256;
+pub(crate) const MAX_EVAL_DEPTH: usize = 256;
 const RANGE_KEY_TYPE_ERROR: &str = "range access requires comparable key types";
+const DEFAULT_ANNOTATION_KEY: &str = "default";
 
 /// Check whether `k` falls in the half-open range `[start, end)`.
 /// `None` bounds are treated as unbounded (i.e. negative/positive infinity).
@@ -112,11 +114,11 @@ pub fn eval(
             depth,
         ),
         Expr::TypeAssert { expr: inner, .. } => {
-            // Phase 1c: evaluate as identity. Type checker enforces in Phase 2a.
+            // Evaluate as identity; the type checker (typecheck.rs) validates the assertion.
             eval(inner, env, depth + 1)
         }
         Expr::Annotated { name, .. } => {
-            // Phase 1c: evaluate as the bare string. Type checker interprets in Phase 2a.
+            // Evaluate as the bare string; the type checker (typecheck.rs) interprets annotations.
             Ok(Rc::new(Thunk::new_materialized(
                 Value::String(name.clone()),
                 expr.span,
@@ -144,7 +146,7 @@ pub fn eval(
             named_args,
         } => eval_call(func, args, named_args, &env, &expr.span, depth),
         Expr::TypeAlias(_inner) => {
-            // Type aliases are a Phase 2a concern. Evaluate as unit (empty dict).
+            // Type aliases are handled by the type checker (typecheck.rs). Evaluate as unit (empty dict).
             Ok(Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 expr.span,
@@ -195,6 +197,7 @@ pub fn eval_document(
                     &current_env,
                 ))));
                 for (key, val_thunk) in &map {
+                    // Only string keys become scope bindings; int keys are positional, not named.
                     if let Key::String(name) = key {
                         child_env
                             .borrow_mut()
@@ -263,7 +266,7 @@ pub fn eval_file(
 // --- Dict Construction (letrec) ---
 
 fn eval_dict(
-    entries: &[Spanned<crate::ast::Entry>],
+    entries: &[Spanned<Entry>],
     parent_env: &Rc<RefCell<Environment>>,
     dict_span: &Span,
     depth: usize,
@@ -523,33 +526,13 @@ fn split_variadic(params: &[Param]) -> (&[Param], Option<&Param>) {
     }
 }
 
-/// Look up a property by string key in an annotation's PropertyDict.
-/// Returns a reference to the value expression if found, None otherwise.
-fn get_annotation_property<'a>(ann: &'a Annotation, key: &str) -> Option<&'a Spanned<Expr>> {
-    match ann {
-        Annotation::PropertyDict(entries) => {
-            for entry in entries {
-                if let Some(ref key_expr) = entry.node.key {
-                    if let Expr::Str(ref name) = key_expr.node {
-                        if name == key {
-                            return Some(&entry.node.value);
-                        }
-                    }
-                }
-            }
-            None
-        }
-        Annotation::Simple(_) => None,
-    }
-}
-
 /// Extract the default value expression from a param's annotation, if present.
 /// default: is specified via PropertyDict annotation with a "default" key.
 fn get_default(param: &Param) -> Option<Spanned<Expr>> {
     param
         .annotation
         .as_ref()
-        .and_then(|ann| get_annotation_property(&ann.node, "default"))
+        .and_then(|ann| ann.node.get_property(DEFAULT_ANNOTATION_KEY))
         .cloned()
 }
 
@@ -1440,7 +1423,7 @@ mod tests {
             "f".into(),
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
-        // Call without named arg — y should default to 99
+        // Call without named arg -- y should default to 99
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![sp(Expr::Int(1))],

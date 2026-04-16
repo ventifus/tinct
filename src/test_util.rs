@@ -1,3 +1,5 @@
+//! Shared test helpers: `test_span()` and `sp()` for constructing test fixtures.
+
 use crate::ast::{Position, Span, Spanned};
 
 pub fn test_span(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> Span {

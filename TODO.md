@@ -93,16 +93,16 @@ Separate AST pass that runs between parsing and evaluation (see DESIGN.md pipeli
 
 Depends on 1e (full evaluation model must be stable). After this step, the type checker infers types for all data forms and validates annotations.
 
-- [ ] Type representation: Type enum (Int, Float, String, Bool, Record, Function, TypeVar, Any)
-- [ ] Type environment: maps names to types, scope chain mirroring evaluation's Environment
-- [ ] Literal type inference (Int, Float, Bool, String)
-- [ ] Record type construction from dict entries (structural typing)
-- [ ] Access chain type checking: dot access verifies field exists in record type, bracket access checks key type
-- [ ] Document-level type inference: scope chain across expressions within a document, `$$` typing across documents
-- [ ] TypeAssert enforcement: `[@Type $expr]` validates type at compile time
-- [ ] Annotated node interpretation: `x@Number` in type context
-- [ ] Type alias expansion: `[type ...]` textual expansion with free variables
-- [ ] Type error reporting with source spans
+- [x] Type representation: Type enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any)
+- [x] Type environment: maps names to types, Rc-based scope chain mirroring evaluation's Environment
+- [x] Literal type inference (Int, Float, Bool, String)
+- [x] Record type construction from dict entries (three-pass letrec: bind all to Any, register aliases, infer values)
+- [x] Access chain type checking: dot access verifies field exists, bracket access checks key type, range access validates bounds
+- [x] Document-level type inference: scope chain across expressions within a document, `$$` typing across documents
+- [x] TypeAssert enforcement: `[@Type $expr]` validates subtype at compile time
+- [x] Annotated node interpretation: `x@Number` in type context, `Fn@Return` for function types
+- [x] Type alias expansion: `[type ...]` registers alias in TypeEnv, excluded from record fields
+- [x] Type error reporting with source spans (TypeError with message + Span)
 
 ### 2b: Polymorphism & Function Types
 
@@ -115,6 +115,57 @@ Depends on 2a. After this step, polymorphic functions and open records work.
 - [ ] Row polymorphism: open records with `...`, named row variables (`...rest`)
 - [ ] Polymorphic function type checking (e.g., `map: Fn@[b] [Fn@b [a]  [a]]`)
 - [ ] `Any` as escape hatch with `[@Type $expr]` as the way back to concrete types
+
+## Phase 2c: Hand-Written Parser (E2)
+
+Replace pest's recursive descent with a hand-written lexer + iterative parser using an explicit stack. The pest parser stays as a reference implementation for comparison until the new parser graduates.
+
+**Goal:** Identical AST output from both parsers, selectable at parse time. Once the new parser passes the full test suite and matches pest output on all corpus files, it becomes the default and pest is removed.
+
+### Lexer (`src/lexer.rs`)
+
+Tokenizer producing a flat token stream. Whitespace-sensitivity for access chains handled here.
+
+- [ ] Token enum: OpenBracket, CloseBracket, Colon, Semicolon, Dot, Range, At, Ellipsis, DocSeparator, Int(i64), Float(f64), BareWord(String), QuotedString(String), VarRef(String), BoolLit(bool)
+- [ ] Single-pass tokenization with source spans on every token
+- [ ] Whitespace-sensitive access detection: Dot/OpenBracket immediately after VarRef or CloseBracket (no whitespace) emits access-context tokens
+- [ ] Comment skipping (`#` to EOL)
+- [ ] String escapes (`\"`, `\\`, `\n`, `\t`, `\r`)
+- [ ] Bare word denylist matching grammar.pest rules
+
+### Iterative parser (`src/parser2.rs`)
+
+Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed without recursion.
+
+- [ ] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert (one variant per bracket form)
+- [ ] On `[`: push frame, determine form from first token (keyword detection)
+- [ ] On `]`: pop frame, construct AST node
+- [ ] Between brackets: parse atoms, access chains, annotations (all non-recursive)
+- [ ] MAX_DEPTH check on `stack.len()` (policy, not safety)
+- [ ] Static constraints: positional-before-named, duplicate keys, variadic rules
+- [ ] Error messages with precise context ("expected value after `:`", "unclosed bracket at line 5")
+
+### Integration
+
+- [ ] `parse()` API accepts parser selection (enum or feature flag)
+- [ ] Both parsers produce identical `Spanned<File>` output
+- [ ] Comparison test: parse every corpus file with both parsers, assert AST equality
+- [ ] Benchmark: compare parse time on large inputs
+
+### Graduation criteria
+
+- [ ] Full test suite passes (all unit + corpus tests)
+- [ ] AST output matches pest parser on every corpus file
+- [ ] Error messages are equal or better quality
+- [ ] No stack overflow on any nesting depth up to MAX_DEPTH
+
+### Cleanup (post-graduation)
+
+- [ ] Remove `pest` and `pest_derive` dependencies from Cargo.toml
+- [ ] Remove `src/grammar.pest`
+- [ ] Remove pest-specific code from `src/parser.rs`
+- [ ] Rename `src/parser2.rs` to `src/parser.rs`
+- [ ] Update CLAUDE.md, README.md, SPEC.md references
 
 ## Phase 3: Runtime Pipeline
 

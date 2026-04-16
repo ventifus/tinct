@@ -122,7 +122,7 @@ bench:
 
 # Audit dependencies for security vulnerabilities
 audit:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "cargo install cargo-audit && cargo audit"
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "cargo install cargo-audit@0.21.2 && cargo audit"
 
 # Watch for changes and run tests (requires cargo-watch)
 watch:

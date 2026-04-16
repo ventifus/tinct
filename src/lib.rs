@@ -13,6 +13,10 @@ pub mod parser;
 #[cfg(test)]
 pub(crate) mod test_util;
 #[allow(dead_code)]
+pub(crate) mod typecheck;
+#[allow(dead_code)]
+pub(crate) mod types;
+#[allow(dead_code)]
 pub(crate) mod value;
 
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
@@ -31,14 +35,33 @@ pub fn eval_source(input: &str) -> Result<String, String> {
     let env = Rc::new(RefCell::new(value::Environment::new()));
     let thunk = eval::eval_file(&file.node, env, 0).map_err(|e| format!("{e}"))?;
     let val = eval::materialize(&thunk, None, 0).map_err(|e| format!("{e}"))?;
-    deep_materialize_to_string(&val).map_err(|e| format!("{e}"))
+    deep_materialize_to_string(&val, 0).map_err(|e| format!("{e}"))
 }
 
 /// Recursively materialize a Value into a displayable string.
 ///
 /// Unlike `Value::Debug`, this fully materializes dict values so the output
 /// shows the complete structure, not just keys.
-fn deep_materialize_to_string(val: &value::Value) -> Result<String, Box<error::EvalError>> {
+///
+/// `depth` tracks recursion depth to prevent stack overflow from deeply nested
+/// dict-of-dicts structures. Uses the same limit as `eval::MAX_EVAL_DEPTH`.
+fn deep_materialize_to_string(
+    val: &value::Value,
+    depth: usize,
+) -> Result<String, Box<error::EvalError>> {
+    if depth > eval::MAX_EVAL_DEPTH {
+        return Err(error::EvalError::new(
+            format!(
+                "maximum display depth exceeded ({})",
+                eval::MAX_EVAL_DEPTH
+            ),
+            ast::Span {
+                start: ast::Position { offset: 0, line: 0, column: 0 },
+                end: ast::Position { offset: 0, line: 0, column: 0 },
+            },
+        )
+        .into());
+    }
     match val {
         value::Value::Int(n) => Ok(format!("Int({n})")),
         value::Value::Float(f) => Ok(format!("Float({f})")),
@@ -47,12 +70,12 @@ fn deep_materialize_to_string(val: &value::Value) -> Result<String, Box<error::E
         value::Value::Dict(map) => {
             let mut parts = Vec::new();
             for (key, thunk) in map {
-                let v = eval::materialize(thunk, None, 0)?;
+                let v = eval::materialize(thunk, None, depth)?;
                 let key_str = match key {
                     value::Key::Int(n) => format!("{n}"),
                     value::Key::String(s) => format!("{s:?}"),
                 };
-                let val_str = deep_materialize_to_string(&v)?;
+                let val_str = deep_materialize_to_string(&v, depth + 1)?;
                 parts.push(format!("{key_str}: {val_str}"));
             }
             Ok(format!("Dict({{{}}})", parts.join(", ")))

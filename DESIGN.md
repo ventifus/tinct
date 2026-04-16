@@ -152,6 +152,8 @@ Compare to JSON where every field must be repeated:
 
 **Allowed by default.** Integer and string keys can coexist in the same dict. Quoted strings are valid as keys, allowing keys with spaces or special characters: `["my key": value  "another:key": 42]`.
 
+**Computed keys and the type checker:** Dict keys can be variable references (`[$k: value]`). The evaluator resolves computed keys at runtime. The type checker resolves them at compile time via literal types: if `$k` has type `StringLiteral("name")`, the field name is `"name"`. If the type is not a literal (e.g., plain `String`), the field is excluded from the Record type. See "Literal types enable computed key resolution" in the Type System section.
+
 ### Two Map Variants
 
 - `map` — transforms values, preserves keys
@@ -374,7 +376,27 @@ double: [fn@String [x@Number] [call $* $x 2]]    # Error: body returns Number, n
 - `[@Type $expr]`: type assertion / runtime cast from `Any`
 - `[Fn@Return [ParamTypes]]`: function type (mirrors `fn@Return [params]`)
 
+**Literal types.** Integer and string literals carry their value in the type: `42` has type `IntLiteral(42)`, `"hello"` has type `StringLiteral("hello")`. Literal types are subtypes of their base types: `IntLiteral(n)` <: `Int` <: `Number`, `StringLiteral(s)` <: `String`. All bindings in LLT are immutable, so literal types never widen implicitly -- they widen only when an annotation demands the base type. Float and Bool literals do not need literal type variants because they cannot be used as dict keys.
+
+**Literal types enable computed key resolution.** When a dict has a computed key like `[$k: 42]`, the type checker infers the type of `$k` in the parent scope. If it resolves to a literal type (e.g., `StringLiteral("name")`), the type checker extracts the literal value and uses it as the field name. If the key expression resolves to a non-literal type (e.g., `String`) or `Any`, the type checker cannot determine the field name statically -- the entry's value is still type-checked, but the field is excluded from the Record type. This is the conservative correct behavior: the Record only contains fields whose names are statically known.
+
+```lisp
+[k: hello  $k: 42]       # type: [k: StringLiteral("hello")  hello: IntLiteral(42)]
+                          # $k resolves to StringLiteral("hello") → field name "hello"
+
+[k: hello]
+[$k: 42]                  # scope chain: $k resolves from parent → field "hello"
+
+[k: $dynamic  $k: 42]    # $k has type String (not literal) → field excluded from Record
+```
+
 **Dict values are never type-annotated.** Always inferred from literals/expressions.
+
+**Type inference for letrec dicts:** Dict entries form a letrec scope where all keys are visible to all values. The type checker handles this in three passes: (0) resolve key names -- literal keys extracted directly, computed keys resolved via type inference in parent scope, (1) bind all resolved key names to `Any`, (2) register type aliases sequentially (each sees previously registered siblings), (3) infer actual value types. Forward references resolve to `Any` in Phase 2a; unification-based inference is deferred to Phase 2b. Computed keys whose type is not a literal are excluded from the Record's fields but their values are still type-checked.
+
+**Type alias entries are excluded from record fields.** A `[type ...]` entry registers an alias in the type environment but does not contribute a field to the enclosing record's type. This matches the evaluator, which returns an empty dict for type alias entries.
+
+**Function type param lists:** `[Fn@Return [ParamTypes]]` is the full function type syntax, but Phase 2a only resolves the return type annotation. Param type list parsing is deferred to Phase 2b when arg type checking is implemented.
 
 ### Exceptions by Default, `$try` in Stdlib
 
@@ -635,7 +657,7 @@ Everything else can be a regular function in the stdlib:
 
 ### Numeric Types — `Int`, `Float`, `Number`
 
-**Two concrete types: `Int(i64)` and `Float(f64)`.** `Number` is the supertype that accepts either.
+**Two concrete types: `Int(i64)` and `Float(f64)`.** `Number` is the supertype that accepts either. Integer literals carry their value: `42` has type `IntLiteral(42)`, which is a subtype of `Int`. Float literals do not have a literal type variant because floats cannot be dict keys.
 
 ```lisp
 port: 8080                      # Int — no decimal point
@@ -820,11 +842,11 @@ Fn@[Fn@c [b]]           # nested: function returning a function type
 
 Bare words are unquoted string literals. They follow these rules:
 
-**Valid characters:** `[a-zA-Z0-9_/.-]` and most Unicode (any codepoint above U+007F). Bare words are the default — anything that isn't a recognized special token is a bare word.
+**Valid characters (denylist approach):** Like variable identifiers (see [Tokenization Rules](#tokenization-rules)), bare words use a denylist — any character is valid *except* structural delimiters: whitespace, `[`, `]`, `:`, `;`, `#`, `"`, `@`, and `$`. This means `[a-zA-Z0-9_/.-]`, Unicode, and most other characters are all valid in bare words. Bare words are the default — anything that isn't a recognized special token is a bare word.
 
-**Cannot start with:** `$`, `@`, `#`, `[`, `]`, `:`, `;`, or `"`. These characters have special meaning at the start of a token.
+**Cannot start with:** `$`, `@`, `#`, `[`, `]`, `:`, `;`, `"`, or `...` (variadic sigil). These characters have special meaning at the start of a token.
 
-**Terminators — bare words end at:**
+**Terminators — bare words end at the first structural delimiter:**
 
 | Character | Effect |
 |-----------|--------|
@@ -835,6 +857,7 @@ Bare words are unquoted string literals. They follow these rules:
 | `;` | Ends the bare word (entry separator) |
 | `#` | Ends the bare word (starts comment) |
 | `@` | Ends the bare word (starts annotation) |
+| `$` | Ends the bare word (starts variable reference) |
 
 ```lisp
 hello                    # Bare word: "hello"
@@ -915,6 +938,10 @@ This is useful for creating projection functions in pipelines:
 [call $map [name: $_.name  age: $_.age] $users]
 ```
 
+**`$_` in func position:** `$_` in the function position of `[call $_ ...]` does **not** trigger implicit lambda desugaring. Only `$_` in arguments, named arguments, dict values, and access chains triggers desugaring. `[call $_ $x]` is a call where the function is looked up from the variable `_`, not an implicit lambda.
+
+**`$_` in access chain keys/bounds:** `$_` in the key position of bracket access (e.g., `$data[$_]`) or in range bounds (e.g., `$data[$_..5]`) does **not** trigger desugaring. Only `$_` as the *target* of an access chain (e.g., `$_[0]`, `$_.name`) triggers implicit lambda wrapping.
+
 **Scoping rule:** The lambda boundary is the innermost `[...]` that directly contains `$_`. Nested bracket expressions that contain their own `$_` create separate lambdas:
 
 ```lisp
@@ -970,7 +997,7 @@ LLT has one scoping mechanism -- lexical scope with parent chains -- applied at 
 
 1. **Within a dict (letrec):** All entries in a single `[...]` share one environment. Entries can reference each other regardless of order, including mutual recursion. This is the same as Haskell's `let`/`where` or OCaml's `let rec`.
 
-2. **Between sequential expressions:** Each expression's result dict becomes the parent scope for the next expression. Names from earlier expressions are visible but can be shadowed. This is analogous to a sequence of `let` blocks in ML-family languages, or nested `letrec` in Scheme.
+2. **Between sequential expressions:** Each expression's result dict becomes the parent scope for the next expression. Names from earlier expressions are visible but can be shadowed. Only string-keyed entries become named bindings in the scope chain; int-keyed entries remain accessible via bracket access on the result but do not introduce variable bindings. This is analogous to a sequence of `let` blocks in ML-family languages, or nested `letrec` in Scheme.
 
 These are not two different mechanisms. They are the same parent-chain lookup applied at different granularities. Variable lookup always walks the parent chain until it finds a match.
 
