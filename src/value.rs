@@ -1,5 +1,4 @@
 // Evaluator foundation -- used starting Phase 1b
-#![allow(dead_code)]
 
 use std::cell::{Ref, RefCell};
 use std::fmt;
@@ -11,7 +10,8 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, Expr, Param, Span, Spanned};
 use crate::error::EvalError;
 
-pub type BuiltinFn = fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>) -> Result<Value, EvalError>;
+pub type BuiltinFn =
+    fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>) -> Result<Value, Box<EvalError>>;
 
 // --- Key ---
 
@@ -19,6 +19,16 @@ pub type BuiltinFn = fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>) -> Result<Va
 pub enum Key {
     Int(i64),
     String(String),
+}
+
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Key::Int(a), Key::Int(b)) => a.partial_cmp(b),
+            (Key::String(a), Key::String(b)) => a.partial_cmp(b),
+            _ => None, // mixed types are incomparable
+        }
+    }
 }
 
 impl Hash for Key {
@@ -59,6 +69,21 @@ pub enum Value {
         name: &'static str,
         func: BuiltinFn,
     },
+}
+
+impl Value {
+    /// Returns the human-readable type name for error messages.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Int(_) => "Int",
+            Value::Float(_) => "Float",
+            Value::String(_) => "String",
+            Value::Bool(_) => "Bool",
+            Value::Dict(_) => "Dict",
+            Value::Function { .. } => "Function",
+            Value::Builtin { .. } => "Builtin",
+        }
+    }
 }
 
 impl fmt::Debug for Value {
@@ -134,7 +159,10 @@ impl PartialEq for Value {
 
 #[derive(Debug, Clone)]
 pub enum ThunkState {
-    Unevaluated,
+    Unevaluated {
+        expr: Spanned<Expr>,
+        env: Rc<RefCell<Environment>>,
+    },
     InProgress,
     Materialized(Value),
 }
@@ -143,13 +171,13 @@ pub enum ThunkState {
 
 pub struct Thunk {
     state: RefCell<ThunkState>,
-    pub span: Span,
+    pub(crate) span: Span,
 }
 
 impl Thunk {
-    pub fn new_unevaluated(span: Span) -> Self {
+    pub fn new_unevaluated(expr: Spanned<Expr>, env: Rc<RefCell<Environment>>, span: Span) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Unevaluated),
+            state: RefCell::new(ThunkState::Unevaluated { expr, env }),
             span,
         }
     }
@@ -165,35 +193,44 @@ impl Thunk {
         self.state.borrow()
     }
 
-    pub fn set_state(&self, state: ThunkState) {
-        *self.state.borrow_mut() = state;
-    }
-
     /// Atomically read the current state, compute a new state, and write it back.
     ///
     /// The closure receives an immutable reference to the current [`ThunkState`].
     /// The `Ref` from `borrow()` is dropped **before** `borrow_mut()` is called,
-    /// so this avoids the double-borrow panic that occurs when callers write:
+    /// so this avoids the double-borrow panic that occurs when callers hold a
+    /// `state()` borrow while trying to mutate:
     ///
     /// ```ignore
-    /// match &*thunk.state() {           // borrows
-    ///     ThunkState::Unevaluated => {
-    ///         thunk.set_state(InProgress); // borrow_mut while borrow is live → panic
-    ///     }
+    /// // BAD: borrow_mut while borrow is live → panic
+    /// match &*thunk.state() {
+    ///     ThunkState::Unevaluated { .. } => { /* mutate thunk here */ }
     /// }
     /// ```
     ///
-    /// Use this instead:
+    /// Use `transition` instead:
     ///
     /// ```ignore
     /// thunk.transition(|s| match s {
-    ///     ThunkState::Unevaluated => ThunkState::InProgress,
+    ///     ThunkState::Unevaluated { .. } => ThunkState::InProgress,
     ///     other => other.clone(),
     /// });
     /// ```
     pub fn transition(&self, f: impl FnOnce(&ThunkState) -> ThunkState) {
         let new_state = f(&self.state.borrow());
         *self.state.borrow_mut() = new_state;
+    }
+
+    /// Take ownership of unevaluated data, atomically setting state to InProgress.
+    /// Returns None if the thunk is not in the Unevaluated state.
+    pub fn take_unevaluated(&self) -> Option<(Spanned<Expr>, Rc<RefCell<Environment>>)> {
+        let mut state = self.state.borrow_mut();
+        match std::mem::replace(&mut *state, ThunkState::InProgress) {
+            ThunkState::Unevaluated { expr, env } => Some((expr, env)),
+            other => {
+                *state = other;
+                None
+            }
+        }
     }
 }
 
@@ -218,8 +255,8 @@ impl fmt::Debug for Thunk {
 
 #[derive(Debug, Clone)]
 pub struct Environment {
-    pub bindings: IndexMap<String, Rc<Thunk>>,
-    pub parent: Option<Rc<RefCell<Environment>>>,
+    pub(crate) bindings: IndexMap<String, Rc<Thunk>>,
+    pub(crate) parent: Option<Rc<RefCell<Environment>>>,
 }
 
 impl Environment {
@@ -247,14 +284,20 @@ impl Environment {
     /// the program will panic at runtime.
     ///
     /// The scope chain must form a DAG -- circular parent links will cause an
-    /// infinite loop (and eventually a stack overflow).
-    // TODO(Phase 1b): Convert recursive implementation to iterative to avoid stack overflow on deep scope chains
+    /// infinite loop.
     pub fn get(&self, name: &str) -> Option<Rc<Thunk>> {
+        // Check current scope first
         if let Some(thunk) = self.bindings.get(name) {
             return Some(Rc::clone(thunk));
         }
-        if let Some(parent) = &self.parent {
-            return parent.borrow().get(name);
+        // Walk parent chain iteratively
+        let mut current = self.parent.as_ref().map(Rc::clone);
+        while let Some(env_rc) = current {
+            let env = env_rc.borrow();
+            if let Some(thunk) = env.bindings.get(name) {
+                return Some(Rc::clone(thunk));
+            }
+            current = env.parent.as_ref().map(Rc::clone);
         }
         None
     }
@@ -273,22 +316,7 @@ impl Default for Environment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Position;
-
-    fn test_span(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> Span {
-        Span::new(
-            Position {
-                offset: 0,
-                line: start_line,
-                column: start_col,
-            },
-            Position {
-                offset: 0,
-                line: end_line,
-                column: end_col,
-            },
-        )
-    }
+    use crate::test_util::test_span;
 
     // -- Key tests --
 
@@ -360,7 +388,10 @@ mod tests {
 
     #[test]
     fn test_value_partial_eq_builtin_always_false() {
-        fn dummy(_: &[Rc<Thunk>], _: &IndexMap<String, Rc<Thunk>>) -> Result<Value, EvalError> {
+        fn dummy(
+            _: &[Rc<Thunk>],
+            _: &IndexMap<String, Rc<Thunk>>,
+        ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
         let b = Value::Builtin {
@@ -439,14 +470,16 @@ mod tests {
     #[test]
     fn test_thunk_transition() {
         let span = test_span(1, 1, 1, 5);
-        let thunk = Thunk::new_unevaluated(span);
+        let expr = Spanned::new(Expr::Int(0), span.clone());
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let thunk = Thunk::new_unevaluated(expr, env, span);
 
         // Verify initial state
-        assert!(matches!(&*thunk.state(), ThunkState::Unevaluated));
+        assert!(matches!(&*thunk.state(), ThunkState::Unevaluated { .. }));
 
         // Transition to InProgress
         thunk.transition(|s| match s {
-            ThunkState::Unevaluated => ThunkState::InProgress,
+            ThunkState::Unevaluated { .. } => ThunkState::InProgress,
             other => other.clone(),
         });
 
@@ -456,7 +489,9 @@ mod tests {
     #[test]
     fn test_thunk_debug_borrowed_state() {
         let span = test_span(1, 1, 1, 5);
-        let thunk = Thunk::new_unevaluated(span);
+        let expr = Spanned::new(Expr::Int(0), span.clone());
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let thunk = Thunk::new_unevaluated(expr, env, span);
 
         // Hold a mutable borrow while formatting Debug
         let _guard = thunk.state.borrow_mut();
@@ -554,7 +589,7 @@ mod tests {
         fn dummy_builtin(
             _args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
-        ) -> Result<Value, EvalError> {
+        ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
         let builtin = Value::Builtin {
@@ -641,7 +676,7 @@ mod tests {
         fn dummy_builtin(
             _args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
-        ) -> Result<Value, EvalError> {
+        ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
         let builtin = Value::Builtin {

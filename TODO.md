@@ -46,24 +46,24 @@ Foundation types. No evaluation logic yet.
 
 Evaluate literals, variable references, and dict construction. After this step, `[x: 1 y: hello]` produces a dict.
 
-- [ ] `eval(ast, env) -> Result<Rc<Thunk>, EvalError>` — wraps AST nodes in thunks
-- [ ] `materialize(thunk) -> Result<Value, EvalError>` — forces a thunk, memoizes result
-- [ ] Literal evaluation: Int, Float, Bool, Str -> immediate `Materialized` thunks
-- [ ] VarRef lookup: walk the environment parent chain
-- [ ] Dict evaluation: create new `Environment` from entries, all values are thunks sharing it (letrec)
-- [ ] Auto-indexing: unkeyed entries get integer keys 0, 1, 2, ...
-- [ ] Keyed entries: evaluate key expression, insert with explicit key
-- [ ] Cycle detection: `InProgress` state triggers circular dependency error on re-entry
+- [x] `eval(ast, env) -> Result<Rc<Thunk>, Box<EvalError>>` — wraps AST nodes in thunks
+- [x] `materialize(thunk) -> Result<Value, Box<EvalError>>` — forces a thunk, memoizes result
+- [x] Literal evaluation: Int, Float, Bool, Str -> immediate `Materialized` thunks
+- [x] VarRef lookup: walk the environment parent chain
+- [x] Dict evaluation: create new `Environment` from entries, all values are thunks sharing it (letrec)
+- [x] Auto-indexing: unkeyed entries get integer keys 0, 1, 2, ...
+- [x] Keyed entries: evaluate key expression, insert with explicit key
+- [x] Cycle detection: `InProgress` state triggers circular dependency error on re-entry
 
-### 1c: Access Chains
+### 1c: Access Chains — Complete
 
 Depends on 1b. After this step, `$data.name` and `$data[0]` work.
 
-- [ ] DotAccess: materialize expr, look up string key in dict
-- [ ] BracketAccess: materialize expr, evaluate key, look up in dict
-- [ ] RangeAccess: materialize expr, filter dict entries by key range
-- [ ] TypeAssert: evaluate as identity (defer enforcement to Phase 3)
-- [ ] Annotated: evaluate as the bare string (defer to Phase 3)
+- [x] DotAccess: materialize expr, look up string key in dict
+- [x] BracketAccess: materialize expr, evaluate key, look up in dict
+- [x] RangeAccess: materialize expr, filter dict entries by key range
+- [x] TypeAssert: evaluate as identity (type checker enforces in Phase 2a)
+- [x] Annotated: evaluate as the bare string (type checker interprets in Phase 2a)
 
 ### 1d: Document Evaluation
 
@@ -85,24 +85,68 @@ Depends on 1b. After this step, `[fn [x] $x]` and `[call $f $x]` work.
 - [ ] Arity checking: wrong argument count is an error
 - [ ] Variadic params: collect remaining positional args into a dict with integer keys
 
-### 1f: Core Builtins
+## Phase 2: Type System
 
-Depends on 1e. Populate root environment with builtins for basic computation.
+Separate AST pass that runs between parsing and evaluation (see DESIGN.md pipeline). Moved up from original Phase 3 to ensure all subsequent phases get proper types from the start.
 
-- [ ] Builtin registration: populate root environment with `Value::Builtin` entries
+### 2a: Core Types & Inference
+
+Depends on 1e (full evaluation model must be stable). After this step, the type checker infers types for all data forms and validates annotations.
+
+- [ ] Type representation: Type enum (Int, Float, String, Bool, Record, Function, TypeVar, Any)
+- [ ] Type environment: maps names to types, scope chain mirroring evaluation's Environment
+- [ ] Literal type inference (Int, Float, Bool, String)
+- [ ] Record type construction from dict entries (structural typing)
+- [ ] Access chain type checking: dot access verifies field exists in record type, bracket access checks key type
+- [ ] Document-level type inference: scope chain across expressions within a document, `$$` typing across documents
+- [ ] TypeAssert enforcement: `[@Type $expr]` validates type at compile time
+- [ ] Annotated node interpretation: `x@Number` in type context
+- [ ] Type alias expansion: `[type ...]` textual expansion with free variables
+- [ ] Type error reporting with source spans
+
+### 2b: Polymorphism & Function Types
+
+Depends on 2a. After this step, polymorphic functions and open records work.
+
+- [ ] Function type inference from params + body + annotations
+- [ ] `Fn@Return [Params]` type interpretation
+- [ ] Type variable introduction (lowercase names: `a`, `b`, `k`, `v`)
+- [ ] Type variable unification (Hindley-Milner style)
+- [ ] Row polymorphism: open records with `...`, named row variables (`...rest`)
+- [ ] Polymorphic function type checking (e.g., `map: Fn@[b] [Fn@b [a]  [a]]`)
+- [ ] `Any` as escape hatch with `[@Type $expr]` as the way back to concrete types
+
+## Phase 3: Runtime Pipeline
+
+Build the end-to-end runtime. Builtins get proper type signatures from Phase 2.
+
+### 3a: Rust-Native Builtins
+
+Depends on 1e + 2b. The 33 builtins that MUST be Rust (see DESIGN.md "Rust-Native vs LLT-Implemented Boundary"). Everything else is LLT in `stdlib/prelude.llt`.
+
+- [ ] Builtin registration: populate root environment with `Value::Builtin` entries, each with a type signature
 - [ ] Arithmetic: `+`, `-`, `*`, `/`, `div`, `mod` with auto-promotion (Int+Int=Int, mixed=Float)
 - [ ] Comparison: `=`, `<`, `>`, `<=`, `>=`
-- [ ] Logic: `if` (short-circuit), `and`, `or`, `not`
-- [ ] Dict: `get`, `get-or`, `has?`, `merge`, `keys`, `values`, `length`, `empty?`
-- [ ] Strings: `str` (concat)
-- [ ] `$eval` — recursively force all thunks
-- [ ] `$apply` — call function with list entries spread as positional args
-- [ ] `identity` — return argument unchanged
-- [ ] `error` — construct error value
+- [ ] Logic: `if` (selective materialization — only chosen branch), `not`
+- [ ] Dict primitives: `keys`, `length`, `merge` (right-biased)
+- [ ] Strings: `str` (concat/toString), `split`, `join`, `replace`, `upper`, `lower`, `trim`, `words`
+- [ ] Numeric conversion: `to-int`, `to-float`, `floor`, `ceil`, `round`
+- [ ] Evaluation control: `eval`, `error`, `try`, `apply`
+- [ ] Type introspection: `type-of`
+- [ ] I/O: `from-json`
 
-### 1g: CLI + JSON Output
+### 3a-llt: LLT Stdlib Loading
 
-Depends on 1f. After this step, `llt eval input.llt` produces JSON.
+Depends on 3a. Load `stdlib/prelude.llt` to provide the rest of the stdlib.
+
+- [ ] `include_str!("../stdlib/prelude.llt")` to bundle at compile time
+- [ ] Parse and evaluate prelude with Rust builtins as parent environment
+- [ ] User code inherits from stdlib environment
+- [ ] Verify all prelude functions work end-to-end
+
+### 3b: CLI + JSON Output
+
+Depends on 3a. After this step, `llt eval input.llt` produces JSON.
 
 - [ ] JSON serialization of Value (new dependency: `serde_json`)
 - [ ] `llt eval input.llt` — evaluate file, serialize final value as JSON to stdout
@@ -111,7 +155,7 @@ Depends on 1f. After this step, `llt eval input.llt` produces JSON.
 - [ ] `--format` flag: output as JSON (default), YAML, or LLT
 - [ ] `--eval` flag: deep-force all thunks before serializing (surface errors before partial output)
 
-### 1h: `$include`
+### 3c: `$include`
 
 Depends on 1b. Complex enough to be its own step: file I/O, cycle detection, scope merging.
 
@@ -121,77 +165,51 @@ Depends on 1b. Complex enough to be its own step: file I/O, cycle detection, sco
 - [ ] Cycle detection: error on circular includes
 - [ ] Path resolution relative to including file
 
-### 1i: Error Reporting Polish
+### 3d: Error Reporting Polish
 
-Ongoing throughout Phase 1, but final polish here.
+Ongoing throughout earlier phases, but final polish here.
 
 - [ ] Call stack reconstruction: chain of materialization sites
 - [ ] Clear messages: "key not found", "type mismatch", "arity mismatch", "circular dependency"
 - [ ] Source spans on all errors (definition-site + materialization-site)
 
-## Phase 2: Stdlib Expansion
+## Pre-Phase 4: Stdlib Boundary Analysis — Complete
 
-Expand builtins to cover the full stdlib listed in DESIGN.md.
+- [x] Identify the minimal set of builtins that MUST be implemented in Rust (33 total: arithmetic, comparison, if/not, keys/length/merge, string ops, numeric conversion, eval/error/try/apply, type-of, from-json)
+- [x] Identify which stdlib functions CAN be implemented as LLT code (all control flow, collection ops, composition, list ops, sorting, sequences, assertions — implemented in `stdlib/prelude.llt`)
+- [x] Document the boundary in DESIGN.md with rationale for each Rust-native builtin (see "Rust-Native vs LLT-Implemented Boundary" section)
+- [x] Design the stdlib loading mechanism (`include_str!` prelude, Rust builtins → LLT stdlib → user code environment chain)
+- [x] Update Phase 4 task list to reflect the split: Rust-native builtins vs LLT stdlib (Phase 3a = Rust builtins, Phase 4 = LLT already in prelude.llt)
 
-### List operations (integer keys, renumber)
+## Phase 4: Stdlib Validation & Expansion
 
-- [ ] `first`, `rest`, `cons`, `conj`, `concat`, `reverse`
-- [ ] `sort`, `sort-by` (materializing)
-- [ ] `reindex`
+The LLT stdlib is already sketched in `stdlib/prelude.llt` (parses but untested). This phase validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in Phase 3a. LLT-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
 
-### Universal collection operations
+### Validate prelude functions
 
-- [ ] `map`, `map-entries` (lazy-transforming)
-- [ ] `filter` (materializing predicates, lazy on values)
-- [ ] `reduce`, `fold` (materializing)
-- [ ] `nth`, `last`, `slice`, `take`, `drop`
-- [ ] `zip`, `flatten`, `find-deep`
+- [ ] Run prelude end-to-end with evaluator and fix any runtime bugs
+- [ ] Test each LLT stdlib function against expected behavior
+- [ ] Performance check: identify any functions that need Rust reimplementation for practical use
 
-### Dict operations
+### Remaining items not yet in prelude
 
-- [ ] `get-in`, `set`, `remove`, `update`, `entries`
+- [ ] `lazy-seq` — lazy infinite sequence constructor (may need Rust support)
 
-### Threading and composition
+### Deferred to stdlib
 
-- [ ] `->` (threading/pipeline)
-- [ ] `compose`
+These are already in `stdlib/prelude.llt` and will work once the evaluator supports functions:
+- Logic: `and`, `or`
+- Control flow: `cond`, `when`, `unless`
+- Dict utilities: `get`, `get-or`, `get-in`, `has?`, `values`, `entries`, `empty?`, `set`, `remove`, `update`
+- List ops: `first`, `rest`, `nth`, `last`, `cons`, `conj`, `concat`, `reverse`, `reindex`, `sort`, `sort-by`
+- Collection ops: `map`, `map-entries`, `filter`, `reduce`, `fold`, `slice`, `take`, `drop`, `zip`, `flatten`, `find-deep`
+- Composition: `compose`, `->` (threading)
+- Error handling: `try-or`
+- Sequences: `range`, `repeat`, `cycle`
+- Assertions: `assert`
+- Identity: `identity`
 
-### Control flow
-
-- [ ] `cond` (multi-branch conditional)
-- [ ] `when`, `unless` (single-arm conditional)
-
-### Error handling
-
-- [ ] `try`, `try-or`
-
-### Numeric utilities
-
-- [ ] `to-int`, `to-float`, `floor`, `ceil`, `round`
-
-### String utilities
-
-- [ ] `words`, `join`, `split`, `replace`, `upper`, `lower`, `trim`
-
-### Sequences
-
-- [ ] `range`, `repeat`, `cycle`, `lazy-seq`
-
-### Introspection
-
-- [ ] `type-of`, `assert`
-
-## Phase 3: Type System
-
-- [ ] Type inference engine
-- [ ] Row polymorphism for dicts
-- [ ] Type alias expansion
-- [ ] Type error reporting
-- [ ] Function type interpretation (`Fn@Return [Params]` in type checker)
-- [ ] `Annotated` node interpretation in type context
-- [ ] TypeAssert enforcement (identity in Phase 1)
-
-## Phase 4: Tooling
+## Phase 5: Tooling
 
 - [ ] REPL
 - [ ] LSP server (tower-lsp)

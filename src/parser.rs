@@ -18,7 +18,10 @@ pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
         span: None,
     })?;
 
-    let file_pair = pairs.into_iter().next().unwrap();
+    let file_pair = pairs
+        .into_iter()
+        .next()
+        .expect("grammar guarantees file rule produces a pair");
     let lines = LineTable::new(input);
     let file_span = make_span(&file_pair, &lines);
 
@@ -68,7 +71,12 @@ pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
         Ok(doc.node.expressions[0].clone())
     } else {
         // Multiple expressions: return the last one
-        Ok(doc.node.expressions.last().unwrap().clone())
+        Ok(doc
+            .node
+            .expressions
+            .last()
+            .expect("len > 1 so last() is Some")
+            .clone())
     }
 }
 
@@ -81,7 +89,10 @@ fn build_document(
 
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::expression {
-            let expr_pair = inner.into_inner().next().unwrap();
+            let expr_pair = inner
+                .into_inner()
+                .next()
+                .expect("grammar guarantees expression has inner value");
             expressions.push(build_value(expr_pair, lines, 0)?);
         }
     }
@@ -170,11 +181,17 @@ fn build_value(
 
     match pair.as_rule() {
         Rule::value => {
-            let inner = pair.into_inner().next().unwrap();
+            let inner = pair
+                .into_inner()
+                .next()
+                .expect("grammar guarantees value has inner pair");
             build_value(inner, lines, depth)
         }
         Rule::atom => {
-            let inner = pair.into_inner().next().unwrap();
+            let inner = pair
+                .into_inner()
+                .next()
+                .expect("grammar guarantees atom has inner pair");
             build_value(inner, lines, depth)
         }
         Rule::int_lit => {
@@ -209,7 +226,11 @@ fn build_value(
         }
         Rule::var_ref => {
             let span = make_span(&pair, lines);
-            let name = pair.as_str().strip_prefix('$').unwrap().to_string();
+            let name = pair
+                .as_str()
+                .strip_prefix('$')
+                .expect("grammar guarantees var_ref starts with $")
+                .to_string();
             Ok(Spanned::new(Expr::VarRef(name), span))
         }
         Rule::bare_word => {
@@ -220,7 +241,10 @@ fn build_value(
         Rule::bracket_expr => build_bracket_expr(pair, lines, depth + 1),
         Rule::access_expr => build_access_expr(pair, lines, depth),
         Rule::bare_token => {
-            let inner = pair.into_inner().next().unwrap();
+            let inner = pair
+                .into_inner()
+                .next()
+                .expect("grammar guarantees bare_token has inner pair");
             build_value(inner, lines, depth)
         }
         rule => Err(ParseError {
@@ -245,15 +269,20 @@ fn build_bracket_expr(
 
     match first.as_rule() {
         Rule::type_assert_body => {
-            let first = inner.next().unwrap();
+            let first = inner.next().expect("peek succeeded so next is Some");
             build_type_assert(first, span, lines, depth)
         }
         Rule::special_form => {
-            let sf = inner.next().unwrap().into_inner().next().unwrap();
+            let sf = inner
+                .next()
+                .expect("peek succeeded so next is Some")
+                .into_inner()
+                .next()
+                .expect("grammar guarantees special_form has inner pair");
             build_special_form(sf, span, lines, depth)
         }
         Rule::dict_entries => {
-            let first = inner.next().unwrap();
+            let first = inner.next().expect("peek succeeded so next is Some");
             let entries = build_dict_entries(first, lines, depth)?;
             Ok(Spanned::new(Expr::Dict(entries), span))
         }
@@ -272,8 +301,12 @@ fn build_type_assert(
 ) -> Result<Spanned<Expr>, ParseError> {
     // Grammar: type_assert_body = { "@" ~ annotation_value ~ value }
     let mut inner = pair.into_inner();
-    let ann_pair = inner.next().unwrap(); // annotation_value
-    let expr_pair = inner.next().unwrap(); // value
+    let ann_pair = inner
+        .next()
+        .expect("grammar guarantees type_assert_body has annotation_value");
+    let expr_pair = inner
+        .next()
+        .expect("grammar guarantees type_assert_body has value");
 
     let annotation = build_annotation_value(ann_pair, lines, depth)?;
     let expr = build_value(expr_pair, lines, depth)?;
@@ -295,9 +328,13 @@ fn build_annotated_bare(
     // Grammar: annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
     let span = make_span(&pair, lines);
     let mut inner = pair.into_inner();
-    let name_pair = inner.next().unwrap(); // bare_word
+    let name_pair = inner
+        .next()
+        .expect("grammar guarantees annotated_bare has bare_word");
     let name = name_pair.as_str().to_string();
-    let ann_pair = inner.next().unwrap(); // annotation_value
+    let ann_pair = inner
+        .next()
+        .expect("grammar guarantees annotated_bare has annotation_value");
     let annotation = build_annotation_value(ann_pair, lines, depth)?;
     Ok(Spanned::new(Expr::Annotated { name, annotation }, span))
 }
@@ -331,9 +368,17 @@ fn build_call(
     // skip keyword_call
     inner.next();
 
-    let func = build_value(inner.next().unwrap(), lines, depth)?;
+    let func = build_value(
+        inner
+            .next()
+            .expect("grammar guarantees call_form has function value"),
+        lines,
+        depth,
+    )?;
 
-    let call_args_pair = inner.next().unwrap(); // call_args
+    let call_args_pair = inner
+        .next()
+        .expect("grammar guarantees call_form has call_args");
     let mut args = Vec::new();
     let mut named_args = Vec::new();
     let mut saw_named = false;
@@ -377,13 +422,19 @@ fn build_named_arg(
 ) -> Result<Spanned<NamedArg>, ParseError> {
     let span = make_span(&pair, lines);
     let mut inner = pair.into_inner();
-    let key_pair = inner.next().unwrap(); // named_arg_key
+    let key_pair = inner.next().expect("grammar guarantees named_arg has key");
     let name = key_pair.as_str().to_string();
     // named_arg_key can match either `$var` (var_ref) or `bare_word`;
     // strip the `$` prefix so the stored name is always bare.
     let name = name.strip_prefix('$').map(String::from).unwrap_or(name);
 
-    let value = build_value(inner.next().unwrap(), lines, depth)?;
+    let value = build_value(
+        inner
+            .next()
+            .expect("grammar guarantees named_arg has value"),
+        lines,
+        depth,
+    )?;
 
     Ok(Spanned::new(NamedArg { name, value }, span))
 }
@@ -401,20 +452,31 @@ fn build_fn(
     inner.next();
 
     let mut return_ann = None;
-    let mut next = inner.next().unwrap();
+    let mut next = inner
+        .next()
+        .expect("grammar guarantees fn_form has token after keyword");
 
     // Check for fn_annotation
     if next.as_rule() == Rule::fn_annotation {
-        let ann_inner = next.into_inner().next().unwrap(); // annotation_value
+        let ann_inner = next
+            .into_inner()
+            .next()
+            .expect("grammar guarantees fn_annotation has annotation_value");
         return_ann = Some(build_annotation_value(ann_inner, lines, depth)?);
-        next = inner.next().unwrap();
+        next = inner
+            .next()
+            .expect("grammar guarantees fn_form has param_list after annotation");
     }
 
     // next should be param_list
     let params = build_param_list(next, lines, depth)?;
 
     // body
-    let body = build_value(inner.next().unwrap(), lines, depth)?;
+    let body = build_value(
+        inner.next().expect("grammar guarantees fn_form has body"),
+        lines,
+        depth,
+    )?;
 
     Ok(Spanned::new(
         Expr::Fn {
@@ -447,12 +509,17 @@ fn build_param_list(
                 }
                 let p_span = make_span(&child, lines);
                 let mut p_inner = child.into_inner();
-                let name_pair = p_inner.next().unwrap();
+                let name_pair = p_inner
+                    .next()
+                    .expect("grammar guarantees param has param_name");
                 let name = name_pair.as_str().to_string();
 
                 let annotation = if let Some(ann_pair) = p_inner.next() {
                     // param_annotation = ${ "@" ~ annotation_value }
-                    let ann_inner = ann_pair.into_inner().next().unwrap();
+                    let ann_inner = ann_pair
+                        .into_inner()
+                        .next()
+                        .expect("grammar guarantees param_annotation has annotation_value");
                     Some(build_annotation_value(ann_inner, lines, depth)?)
                 } else {
                     None
@@ -479,7 +546,7 @@ fn build_param_list(
                 let name_pair = child
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::param_name)
-                    .unwrap();
+                    .expect("grammar guarantees variadic_param has param_name");
                 let name = name_pair.as_str().to_string();
 
                 params.push(Spanned::new(
@@ -503,7 +570,10 @@ fn build_annotation_value(
     depth: usize,
 ) -> Result<Spanned<Annotation>, ParseError> {
     let span = make_span(&pair, lines);
-    let inner = pair.into_inner().next().unwrap();
+    let inner = pair
+        .into_inner()
+        .next()
+        .expect("grammar guarantees annotation_value has inner pair");
     match inner.as_rule() {
         Rule::bracket_expr => {
             let bracket_span = make_span(&inner, lines);
@@ -511,7 +581,9 @@ fn build_annotation_value(
             match bracket_inner.peek().map(|p| p.as_rule()) {
                 None => Ok(Spanned::new(Annotation::PropertyDict(vec![]), bracket_span)),
                 Some(Rule::dict_entries) => {
-                    let first = bracket_inner.next().unwrap();
+                    let first = bracket_inner
+                        .next()
+                        .expect("peek succeeded so next is Some");
                     let entries = build_dict_entries(first, lines, depth)?;
                     Ok(Spanned::new(
                         Annotation::PropertyDict(entries),
@@ -547,7 +619,13 @@ fn build_type_alias(
     // Grammar: type_form = { keyword_type ~ value }
     let mut inner = pair.into_inner();
     inner.next(); // skip keyword_type
-    let body = build_value(inner.next().unwrap(), lines, depth)?;
+    let body = build_value(
+        inner
+            .next()
+            .expect("grammar guarantees type_form has body value"),
+        lines,
+        depth,
+    )?;
     Ok(Spanned::new(Expr::TypeAlias(Box::new(body)), span))
 }
 
@@ -607,16 +685,22 @@ fn build_entry(
     depth: usize,
 ) -> Result<Spanned<Entry>, ParseError> {
     let span = make_span(&pair, lines);
-    let inner = pair.into_inner().next().unwrap();
+    let inner = pair
+        .into_inner()
+        .next()
+        .expect("grammar guarantees entry has inner pair");
 
     match inner.as_rule() {
         Rule::keyed_entry => {
             let mut kv = inner.into_inner();
-            let key_pair = kv.next().unwrap(); // key
-            let key_inner = key_pair.into_inner().next().unwrap();
+            let key_pair = kv.next().expect("grammar guarantees keyed_entry has key");
+            let key_inner = key_pair
+                .into_inner()
+                .next()
+                .expect("grammar guarantees key has inner value");
             let key = build_value(key_inner, lines, depth)?;
 
-            let val_pair = kv.next().unwrap(); // value
+            let val_pair = kv.next().expect("grammar guarantees keyed_entry has value");
             let value = build_value(val_pair, lines, depth)?;
 
             Ok(Spanned::new(
@@ -628,7 +712,10 @@ fn build_entry(
             ))
         }
         Rule::auto_entry => {
-            let val_pair = inner.into_inner().next().unwrap();
+            let val_pair = inner
+                .into_inner()
+                .next()
+                .expect("grammar guarantees auto_entry has value");
             let value = build_value(val_pair, lines, depth)?;
             Ok(Spanned::new(Entry { key: None, value }, span))
         }
@@ -648,17 +735,29 @@ fn build_access_expr(
     let mut inner = pair.into_inner();
 
     // First child is var_ref
-    let var_pair = inner.next().unwrap();
+    let var_pair = inner
+        .next()
+        .expect("grammar guarantees access_expr has var_ref");
     let var_span = make_span(&var_pair, lines);
-    let var_name = var_pair.as_str().strip_prefix('$').unwrap().to_string();
+    let var_name = var_pair
+        .as_str()
+        .strip_prefix('$')
+        .expect("grammar guarantees var_ref starts with $")
+        .to_string();
     let mut current = Spanned::new(Expr::VarRef(var_name), var_span);
 
     // Remaining children are access_chain elements
     for chain in inner {
-        let chain_inner = chain.into_inner().next().unwrap();
+        let chain_inner = chain
+            .into_inner()
+            .next()
+            .expect("grammar guarantees access_chain has inner pair");
         match chain_inner.as_rule() {
             Rule::dot_access => {
-                let field_pair = chain_inner.into_inner().next().unwrap();
+                let field_pair = chain_inner
+                    .into_inner()
+                    .next()
+                    .expect("grammar guarantees dot_access has field name");
                 let field = field_pair.as_str().to_string();
                 let new_span = Span {
                     start: current.span.start.clone(),
@@ -674,9 +773,15 @@ fn build_access_expr(
             }
             Rule::bracket_access_chain => {
                 let chain_end = lines.offset_to_position(chain_inner.as_span().end());
-                let bracket_inner = chain_inner.into_inner().next().unwrap();
+                let bracket_inner = chain_inner
+                    .into_inner()
+                    .next()
+                    .expect("grammar guarantees bracket_access_chain has inner pair");
                 // bracket_access_inner: range_expr | value
-                let access_inner = bracket_inner.into_inner().next().unwrap();
+                let access_inner = bracket_inner
+                    .into_inner()
+                    .next()
+                    .expect("grammar guarantees bracket_access_inner has inner pair");
                 match access_inner.as_rule() {
                     Rule::range_expr => {
                         let (start_expr, end_expr) = build_range_expr(access_inner, lines, depth)?;
@@ -744,7 +849,10 @@ fn build_range_expr(
     for child in pair.into_inner() {
         if child.as_rule() == Rule::range_value {
             let child_start = child.as_span().start();
-            let val_inner = child.into_inner().next().unwrap();
+            let val_inner = child
+                .into_inner()
+                .next()
+                .expect("grammar guarantees range_value has inner value");
             let val = build_value(val_inner, lines, depth)?;
             if child_start < dot_dot_offset {
                 start = Some(val);

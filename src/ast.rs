@@ -274,24 +274,10 @@ impl fmt::Display for Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_span(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> Span {
-        Span::new(
-            Position {
-                offset: 0,
-                line: start_line,
-                column: start_col,
-            },
-            Position {
-                offset: 0,
-                line: end_line,
-                column: end_col,
-            },
-        )
-    }
+    use crate::test_util::sp;
 
     fn test_spanned<T>(node: T) -> Spanned<T> {
-        Spanned::new(node, test_span(1, 1, 1, 5))
+        sp(node)
     }
 
     // -- Expr::Display tests --

@@ -1,0 +1,449 @@
+# ============================================================================
+# LLT Standard Library (Prelude)
+# ============================================================================
+#
+# A single top-level dict containing all stdlib functions implementable in LLT.
+#
+# These functions depend on the following Rust-native builtins being available
+# in the parent environment:
+#
+#   Arithmetic:  +  -  *  /  div  mod
+#   Comparison:  =  <  >  <=  >=
+#   Control:     if
+#   Logic:       not
+#   Dict:        keys  length  merge
+#   Strings:     str  split  join  replace  upper  lower  trim  words
+#   Conversion:  to-int  to-float  floor  ceil  round
+#   Runtime:     eval  error  try  apply  type-of  from-json
+#
+# Helper functions use a -impl suffix to distinguish them from public API.
+# All functions in this dict can reference each other (letrec semantics).
+# ============================================================================
+
+[
+
+# ============================================================================
+# Internal Helpers
+# ============================================================================
+
+# Construct a single-entry dict from a computed key and value.
+# Access expressions like $ks[$i] can't appear in key position syntactically;
+# passing through function params makes the key a plain $k var_ref.
+make-entry: [fn [k v] [$k: $v]]
+
+# Append a value to the end of a list (integer-indexed dict).
+# Uses length as the new key, which is correct for dense 0..n keys.
+append: [fn [xs x] [call $merge $xs [call $make-entry [call $length $xs] $x]]]
+
+# ============================================================================
+# Identity
+# ============================================================================
+
+# Returns its argument unchanged.
+identity: [fn [x] $x]
+
+# ============================================================================
+# Logic
+# ============================================================================
+
+# Short-circuit AND: if a is false, b is never evaluated.
+and: [fn [a b] [call $if $a $b false]]
+
+# Short-circuit OR: if a is true, b is never evaluated.
+or: [fn [a b] [call $if $a true $b]]
+
+# ============================================================================
+# Control Flow
+# ============================================================================
+
+# Evaluates body if pred is true, otherwise returns [].
+when: [fn [pred body] [call $if $pred $body []]]
+
+# Evaluates body if pred is false, otherwise returns [].
+unless: [fn [pred body] [call $if $pred [] $body]]
+
+# Multi-branch conditional. Takes a list of [condition result] pairs.
+# Usage: [call $cond [
+#   [[call $> $x 10] big]
+#   [[call $> $x 0]  positive]
+#   [true            other]
+# ]]
+cond: [fn [pairs] [call $cond-impl $pairs 0]]
+
+cond-impl: [fn [pairs i]
+    [call $if [call $>= $i [call $length $pairs]]
+        []
+        [call $cond-check $pairs $i $pairs[$i][0] $pairs[$i][1]]]]
+
+cond-check: [fn [pairs i condition result]
+    [call $if $condition
+        $result
+        [call $cond-impl $pairs [call $+ $i 1]]]]
+
+# ============================================================================
+# Dict Utilities
+# ============================================================================
+
+# Get value by key from a dict.
+get: [fn [xs k] $xs[$k]]
+
+# Check if a key exists in a dict. Uses $try around bracket access.
+has?: [fn [xs k]
+    [call $has?-impl [call $try [fn [] $xs[$k]]]]]
+
+has?-impl: [fn [result]
+    [call $= [call $first [call $keys $result]] ok]]
+
+# Get value by key with a default if key is missing.
+get-or: [fn [xs k default]
+    [call $if [call $has? $xs $k] $xs[$k] $default]]
+
+# Traverse nested dicts by a list of keys.
+# Usage: [call $get-in $data [key1 key2 key3]]
+get-in: [fn [xs path]
+    [call $if [call $= [call $length $path] 0]
+        $xs
+        [call $get-in $xs[$path[0]] [call $rest $path]]]]
+
+# Check if a collection is empty.
+empty?: [fn [xs] [call $= [call $length $xs] 0]]
+
+# Set a key in a dict (returns new dict with key added/updated).
+set: [fn [xs k v] [call $merge $xs [call $make-entry $k $v]]]
+
+# Remove a key from a dict (preserves remaining keys).
+remove: [fn [xs k] [call $remove-impl $xs [call $keys $xs] $k 0 []]]
+
+remove-impl: [fn [xs ks exclude i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $remove-step $xs $ks $exclude $i $acc $ks[$i]]]]
+
+remove-step: [fn [xs ks exclude i acc current-key]
+    [call $if [call $= $current-key $exclude]
+        [call $remove-impl $xs $ks $exclude [call $+ $i 1] $acc]
+        [call $remove-impl $xs $ks $exclude [call $+ $i 1]
+            [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]]
+
+# Update a key by applying a function to its current value.
+update: [fn [xs k f]
+    [call $set $xs $k [call $f $xs[$k]]]]
+
+# Get all values from a dict as an integer-indexed list.
+values: [fn [xs] [call $values-impl $xs [call $keys $xs] 0 []]]
+
+values-impl: [fn [xs ks i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $values-step $xs $ks $i $acc $ks[$i]]]]
+
+values-step: [fn [xs ks i acc current-key]
+    [call $values-impl $xs $ks [call $+ $i 1]
+        [call $append $acc $xs[$current-key]]]]
+
+# Get all entries as a list of [key: k  value: v] dicts.
+entries: [fn [xs] [call $entries-impl $xs [call $keys $xs] 0 []]]
+
+entries-impl: [fn [xs ks i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $entries-step $xs $ks $i $acc $ks[$i]]]]
+
+entries-step: [fn [xs ks i acc current-key]
+    [call $entries-impl $xs $ks [call $+ $i 1]
+        [call $append $acc [key: $current-key value: $xs[$current-key]]]]]
+
+# ============================================================================
+# List Operations (integer keys, dense 0..n output)
+# ============================================================================
+
+# Get the first element of a list.
+first: [fn [xs] $xs[0]]
+
+# Get the nth element of a list.
+nth: [fn [xs n] $xs[$n]]
+
+# Get the last element of a list.
+last: [fn [xs] $xs[[call $- [call $length $xs] 1]]]
+
+# All elements except the first, reindexed from 0.
+rest: [fn [xs] [call $rest-impl $xs 1 [call $length $xs] []]]
+
+rest-impl: [fn [xs i len acc]
+    [call $if [call $>= $i $len]
+        $acc
+        [call $rest-impl $xs [call $+ $i 1] $len
+            [call $append $acc $xs[$i]]]]]
+
+# Prepend an element to a list, reindexing from 0.
+cons: [fn [x xs] [call $cons-impl $x $xs 0 [call $length $xs] [0: $x]]]
+
+cons-impl: [fn [x xs i len acc]
+    [call $if [call $>= $i $len]
+        $acc
+        [call $cons-impl $x $xs [call $+ $i 1] $len
+            [call $append $acc $xs[$i]]]]]
+
+# Append an element to the end of a list.
+conj: [fn [xs x] [call $append $xs $x]]
+
+# Concatenate two lists, reindexing the second.
+concat: [fn [xs ys] [call $concat-impl $xs $ys 0 [call $length $ys]]]
+
+concat-impl: [fn [acc ys i len]
+    [call $if [call $>= $i $len]
+        $acc
+        [call $concat-impl [call $append $acc $ys[$i]] $ys [call $+ $i 1] $len]]]
+
+# Reverse a list.
+reverse: [fn [xs] [call $reverse-impl $xs [call $- [call $length $xs] 1] []]]
+
+reverse-impl: [fn [xs i acc]
+    [call $if [call $< $i 0]
+        $acc
+        [call $reverse-impl $xs [call $- $i 1]
+            [call $append $acc $xs[$i]]]]]
+
+# Rebuild a collection with dense 0..n integer keys.
+reindex: [fn [xs] [call $reindex-impl $xs [call $keys $xs] 0 []]]
+
+reindex-impl: [fn [xs ks i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $reindex-step $xs $ks $i $acc $ks[$i]]]]
+
+reindex-step: [fn [xs ks i acc current-key]
+    [call $reindex-impl $xs $ks [call $+ $i 1]
+        [call $append $acc $xs[$current-key]]]]
+
+# ============================================================================
+# Sorting (Mergesort)
+# ============================================================================
+
+# Sort a list using natural ordering.
+sort: [fn [xs]
+    [call $sort-by [fn [a b] [call $< $a $b]] $xs]]
+
+# Sort a list using a custom comparator.
+sort-by: [fn [cmp xs]
+    [call $if [call $<= [call $length $xs] 1]
+        $xs
+        [call $sort-merge $cmp
+            [call $sort-by $cmp [call $take [call $div [call $length $xs] 2] $xs]]
+            [call $sort-by $cmp [call $drop [call $div [call $length $xs] 2] $xs]]]]]
+
+sort-merge: [fn [cmp left right]
+    [call $if [call $empty? $left]
+        $right
+        [call $if [call $empty? $right]
+            $left
+            [call $if [call $cmp $left[0] $right[0]]
+                [call $cons $left[0] [call $sort-merge $cmp [call $rest $left] $right]]
+                [call $cons $right[0] [call $sort-merge $cmp $left [call $rest $right]]]]]]]
+
+# ============================================================================
+# Universal Collection Operations (preserve keys)
+# ============================================================================
+
+# Apply a function to every value, preserving keys.
+map: [fn [f xs] [call $map-impl $f $xs [call $keys $xs] 0 []]]
+
+map-impl: [fn [f xs ks i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $map-step $f $xs $ks $i $acc $ks[$i]]]]
+
+map-step: [fn [f xs ks i acc current-key]
+    [call $map-impl $f $xs $ks [call $+ $i 1]
+        [call $merge $acc [call $make-entry $current-key [call $f $xs[$current-key]]]]]]
+
+# Apply a function to every [key value] pair, returning new values under same keys.
+map-entries: [fn [f xs] [call $map-entries-impl $f $xs [call $keys $xs] 0 []]]
+
+map-entries-impl: [fn [f xs ks i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $map-entries-step $f $xs $ks $i $acc $ks[$i]]]]
+
+map-entries-step: [fn [f xs ks i acc current-key]
+    [call $map-entries-impl $f $xs $ks [call $+ $i 1]
+        [call $merge $acc
+            [call $make-entry $current-key
+                [call $f [key: $current-key value: $xs[$current-key]]]]]]]
+
+# Keep only entries where the predicate returns true for the value.
+filter: [fn [pred xs] [call $filter-impl $pred $xs [call $keys $xs] 0 []]]
+
+filter-impl: [fn [pred xs ks i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $filter-step $pred $xs $ks $i $acc $ks[$i]]]]
+
+filter-step: [fn [pred xs ks i acc current-key]
+    [call $if [call $pred $xs[$current-key]]
+        [call $filter-impl $pred $xs $ks [call $+ $i 1]
+            [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]
+        [call $filter-impl $pred $xs $ks [call $+ $i 1] $acc]]]
+
+# Left fold over a collection.
+reduce: [fn [f init xs] [call $reduce-impl $f $init $xs [call $keys $xs] 0]]
+
+reduce-impl: [fn [f acc xs ks i]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $reduce-step $f $acc $xs $ks $i $ks[$i]]]]
+
+reduce-step: [fn [f acc xs ks i current-key]
+    [call $reduce-impl $f [call $f $acc $xs[$current-key]] $xs $ks [call $+ $i 1]]]
+
+# Alias for reduce.
+fold: [fn [f init xs] [call $reduce $f $init $xs]]
+
+# Take a slice by position (start inclusive, end exclusive). Preserves keys.
+slice: [fn [xs start end] [call $slice-impl $xs [call $keys $xs] $start $end 0 []]]
+
+slice-impl: [fn [xs ks start end i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $if [call $and [call $>= $i $start] [call $< $i $end]]
+            [call $slice-step $xs $ks $start $end $i $acc $ks[$i]]
+            [call $slice-impl $xs $ks $start $end [call $+ $i 1] $acc]]]]
+
+slice-step: [fn [xs ks start end i acc current-key]
+    [call $slice-impl $xs $ks $start $end [call $+ $i 1]
+        [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
+
+# Take the first n entries. Preserves keys.
+take: [fn [n xs] [call $take-impl $xs [call $keys $xs] $n 0 []]]
+
+take-impl: [fn [xs ks n i acc]
+    [call $if [call $or [call $>= $i [call $length $ks]] [call $>= $i $n]]
+        $acc
+        [call $take-step $xs $ks $n $i $acc $ks[$i]]]]
+
+take-step: [fn [xs ks n i acc current-key]
+    [call $take-impl $xs $ks $n [call $+ $i 1]
+        [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
+
+# Skip the first n entries. Preserves keys.
+drop: [fn [n xs] [call $drop-impl $xs [call $keys $xs] $n 0 []]]
+
+drop-impl: [fn [xs ks n i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $if [call $< $i $n]
+            [call $drop-impl $xs $ks $n [call $+ $i 1] $acc]
+            [call $drop-step $xs $ks $n $i $acc $ks[$i]]]]]
+
+drop-step: [fn [xs ks n i acc current-key]
+    [call $drop-impl $xs $ks $n [call $+ $i 1]
+        [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
+
+# Pair entries from two collections by position. Returns a list of pairs.
+zip: [fn [xs ys]
+    [call $zip-impl $xs $ys [call $keys $xs] [call $keys $ys] 0 []]]
+
+zip-impl: [fn [xs ys xks yks i acc]
+    [call $if [call $or [call $>= $i [call $length $xks]] [call $>= $i [call $length $yks]]]
+        $acc
+        [call $zip-step $xs $ys $xks $yks $i $acc $xks[$i] $yks[$i]]]]
+
+zip-step: [fn [xs ys xks yks i acc xk yk]
+    [call $zip-impl $xs $ys $xks $yks [call $+ $i 1]
+        [call $append $acc [$xs[$xk] $ys[$yk]]]]]
+
+# Flatten nested lists one level deep.
+flatten: [fn [xs] [call $flatten-impl $xs [call $keys $xs] 0 []]]
+
+flatten-impl: [fn [xs ks i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $flatten-step $xs $ks $i $acc $ks[$i]]]]
+
+flatten-step: [fn [xs ks i acc current-key]
+    [call $if [call $= [call $type-of $xs[$current-key]] Dict]
+        [call $flatten-impl $xs $ks [call $+ $i 1]
+            [call $concat $acc [call $reindex $xs[$current-key]]]]
+        [call $flatten-impl $xs $ks [call $+ $i 1]
+            [call $append $acc $xs[$current-key]]]]]
+
+# Recursively search for a key in nested dicts.
+find-deep: [fn [xs target]
+    [call $find-deep-impl $xs $target [call $keys $xs] 0]]
+
+find-deep-impl: [fn [xs target ks i]
+    [call $if [call $>= $i [call $length $ks]]
+        [call $error [call $str "key not found: " $target]]
+        [call $find-deep-check $xs $target $ks $i $ks[$i]]]]
+
+find-deep-check: [fn [xs target ks i current-key]
+    [call $if [call $= $current-key $target]
+        $xs[$current-key]
+        [call $if [call $= [call $type-of $xs[$current-key]] Dict]
+            [call $find-deep-try $xs[$current-key] $target $xs $ks $i]
+            [call $find-deep-impl $xs $target $ks [call $+ $i 1]]]]]
+
+find-deep-try: [fn [subtree target parent ks i]
+    [call $find-deep-try-check
+        [call $try [fn [] [call $find-deep $subtree $target]]]
+        $parent $target $ks $i]]
+
+find-deep-try-check: [fn [result parent target ks i]
+    [call $if [call $= [call $first [call $keys $result]] ok]
+        $result.ok
+        [call $find-deep-impl $parent $target $ks [call $+ $i 1]]]]
+
+# ============================================================================
+# Composition
+# ============================================================================
+
+# Compose two functions: (compose f g)(x) = f(g(x)).
+compose: [fn [f g] [fn [x] [call $f [call $g $x]]]]
+
+# Thread a value through a series of functions.
+# Usage: [call $-> $data $step1 $step2 $step3]
+->: [fn [x ...stages] [call $reduce [fn [acc f] [call $f $acc]] $x $stages]]
+
+# ============================================================================
+# Error Handling
+# ============================================================================
+
+# Call a function; if it errors, return the default value.
+try-or: [fn [f default]
+    [call $try-or-impl [call $try $f] $default]]
+
+try-or-impl: [fn [result default]
+    [call $if [call $= [call $first [call $keys $result]] ok]
+        $result.ok
+        $default]]
+
+# ============================================================================
+# Sequences
+# ============================================================================
+
+# Generate a range of integers from start (inclusive) to end (exclusive).
+range: [fn [start end]
+    [call $if [call $>= $start $end]
+        []
+        [call $cons $start [call $range [call $+ $start 1] $end]]]]
+
+# Create a list of n copies of a value.
+repeat: [fn [n val]
+    [call $if [call $<= $n 0]
+        []
+        [call $cons $val [call $repeat [call $- $n 1] $val]]]]
+
+# Repeat a list n times.
+cycle: [fn [n xs]
+    [call $if [call $<= $n 0]
+        []
+        [call $concat $xs [call $cycle [call $- $n 1] $xs]]]]
+
+# ============================================================================
+# Assertions
+# ============================================================================
+
+# Assert a condition; if false, raise an error with the given message.
+assert: [fn [cond msg] [call $if $cond true [call $error $msg]]]
+
+]

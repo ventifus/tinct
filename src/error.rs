@@ -1,5 +1,4 @@
 // Evaluator foundation -- used starting Phase 1b
-#![allow(dead_code)]
 
 use std::fmt;
 
@@ -93,22 +92,7 @@ impl std::error::Error for EvalError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Position;
-
-    fn test_span(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> Span {
-        Span::new(
-            Position {
-                offset: 0,
-                line: start_line,
-                column: start_col,
-            },
-            Position {
-                offset: 0,
-                line: end_line,
-                column: end_col,
-            },
-        )
-    }
+    use crate::test_util::test_span;
 
     #[test]
     fn test_eval_error_new() {

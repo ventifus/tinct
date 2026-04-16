@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phase 0 (parser) complete, Phase 1a (evaluator foundation) complete -- pest PEG grammar, fully spanned AST, comprehensive test suite (190+ unit tests + file-based corpus). Evaluator and transformation engine are next.
+**Status:** Phase 0 (parser) and Phase 1a-1c (evaluator foundation + core eval + access chains) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, comprehensive test suite (228 unit tests + file-based corpus). Phase 1d (document evaluation) is next.
 
 ## Syntax at a Glance
 
@@ -46,7 +46,11 @@ A **unified data representation and transformation language** that combines JSON
 
 - **Parser** -- pest PEG grammar with whitespace-sensitive access chains
 - **AST** -- `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, and `Spanned<T>` node types
-- **Evaluator foundation** -- `Value`, `Thunk`, `Environment` types for lazy evaluation (Phase 1a)
+- **Evaluator foundation** -- `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain) types (Phase 1a)
+- **Core evaluation** -- literals, VarRef, dict construction with letrec semantics, cycle detection, depth limit (256) (Phase 1b)
+- **Access chains** -- dot access, bracket access, range expressions, type assertions, annotated access (Phase 1c)
+- **Error reporting** -- `EvalError` with definition-site span, materialization-site span, and `StackFrame` traces
+- **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in LLT itself
 - **Corpus testing** -- file-based test suite in `tests/corpus/` with `===` delimiter for expected output
 
 ## Examples
@@ -119,10 +123,13 @@ cargo run -- test_input.txt
 | `src/grammar.pest` | PEG grammar (lexical + syntactic rules) |
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/parser.rs` | pest pairs to AST conversion + comprehensive unit tests |
-| `src/value.rs` | Evaluator foundation: `Value`, `Thunk`, `Environment` types (Phase 1a) |
-| `src/error.rs` | Error types: `EvalError`, `ErrorContext`, `ErrorKind` with Display formatting |
-| `src/lib.rs` | Public API: `parse(input) -> Result<Spanned<File>, ParseError>` |
-| `src/main.rs` | CLI: read file, parse, print AST |
+| `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, depth limit (256) |
+| `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain) |
+| `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces |
+| `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
+| `src/lib.rs` | Public API: `parse(input) -> Result<Spanned<File>, ParseError>`, `parse_expression` convenience |
+| `src/main.rs` | CLI: read file (max 10MB), parse, print AST |
+| `stdlib/prelude.llt` | LLT standard library: stdlib functions written in LLT itself |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
 | `test_input.txt` | Example input demonstrating syntax |
@@ -133,11 +140,12 @@ cargo run -- test_input.txt
 
 ### Unit Tests
 
-A comprehensive test suite (190+ tests) across multiple modules covering:
-- **parser.rs** -- every AST node type, access chains, special forms, annotations, and error cases
+228 tests across multiple modules covering:
+- **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
+- **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), depth limiting, and materialization span propagation
 - **value.rs** -- Value, Thunk, and Environment types (evaluator foundation)
-- **error.rs** -- error formatting and context propagation
+- **error.rs** -- `EvalError` and `StackFrame` formatting with definition-site and materialization-site spans
 
 ### Corpus Tests (`tests/corpus/`)
 
@@ -156,6 +164,7 @@ tests/corpus/
     special_forms/  -- call, fn, type, partial
     access/         -- dot, bracket, chained, range, space-prevents-access
     annotations/    -- type assert (simple + dict)
+    documents/      -- multi-expression, multi-document, --- separator
     complex/        -- full config, pipeline, conditionals, comments, semicolons
     simple/         -- basic key-value pairs, nesting
     edge_cases/     -- empty input, whitespace
@@ -176,7 +185,7 @@ Add a test by creating a `.txt` file in the appropriate directory, then run `jus
 
 ## Documentation
 
-- **[DESIGN.md](DESIGN.md)** -- Language design: vision, 60+ confirmed decisions, open questions, roadmap
+- **[DESIGN.md](DESIGN.md)** -- Language design: vision, 61 confirmed decisions, open questions, roadmap
 - **[SPEC.md](SPEC.md)** -- Formal parser specification: lexical/syntactic grammar (PEG), AST node types, static constraints
 - **[TODO.md](TODO.md)** -- Implementation roadmap with current status
 - **[CLAUDE.md](CLAUDE.md)** -- Development guide and implementation details

@@ -1271,6 +1271,53 @@ names: [call $map [fn [u] $u.name] $users]
 $names[0]                   # Only this user's name is materialized
 ```
 
+### Rust-Native vs LLT-Implemented Boundary
+
+**Principle:** Only implement in Rust what cannot be expressed in LLT itself. Everything else is LLT code loaded from a prelude file at startup.
+
+**Rust-native builtins (33 total):**
+
+| Group | Functions | Rationale |
+|-------|-----------|-----------|
+| Arithmetic | `+`, `-`, `*`, `/`, `div`, `mod` | Operate on host numeric types (i64, f64); no LLT primitive can perform arithmetic. |
+| Comparison | `=`, `<`, `>`, `<=`, `>=` | Compare host values; cross-type Int/Float comparison requires host-level coercion. |
+| Logic | `if`, `not` | `if` requires selective materialization (only materialize the chosen branch); `not` operates on host Bool. |
+| Dict primitives | `keys`, `length`, `merge` | Operate on the IndexMap directly: `keys` extracts the key set, `length` reads `IndexMap::len()`, `merge` right-biased combines two IndexMaps. |
+| Strings | `str`, `split`, `join`, `replace`, `upper`, `lower`, `trim`, `words` | Strings are opaque values; all operations that inspect or transform string content require Rust. |
+| Numeric conversion | `to-int`, `to-float`, `floor`, `ceil`, `round` | Host-type coercion between i64 and f64. |
+| Evaluation control | `eval`, `error`, `try`, `apply` | `eval` deep-forces thunks (evaluator access); `error` constructs EvalError; `try` catches materialization errors; `apply` spreads a dict as positional args. |
+| Type introspection | `type-of` | Inspects the Value enum variant; no LLT expression can determine a value's type. |
+| I/O | `from-json` | Parses a JSON string into an LLT dict; requires a JSON parser (serde_json). |
+
+Note: `and` and `or` are **not** Rust-native -- `[fn [a b] [call $if $a $b false]]` works via lazy args, giving short-circuit semantics for free. Similarly, `get` is not Rust-native -- bracket access (`$xs[$k]`) is a language-level operation and `get` is just `[fn [xs k] $xs[$k]]`.
+
+**LLT-implemented stdlib:**
+
+Everything else is implemented in LLT using the Rust builtins above plus language features (bracket access, dict literals, `fn`, `call`, recursion via letrec). Key implementation patterns:
+
+- **Short-circuit logic** via lazy args: `and` = `[fn [a b] [call $if $a $b false]]`.
+- **Dict iteration** via `keys` + bracket access + recursion: `map`, `filter`, `reduce` all follow the pattern of getting `keys`, iterating with a recursive helper, building results with `merge`.
+- **Dict utilities** as wrappers: `get` = `[fn [xs k] $xs[$k]]`, `empty?` = `[fn [xs] [call $= [call $length $xs] 0]]`, `has?` wraps `try` around bracket access.
+- **Control flow** from `if`: `cond` = nested `if`, `when`/`unless` = single-arm `if`.
+- **Composition** is pure LLT: `identity` = `[fn [x] $x]`, `compose` = `[fn [f g] [fn [x] [call $f [call $g $x]]]]`.
+- **List operations** use `keys` + `length` + `merge` + recursion to build new integer-keyed dicts.
+
+**Loading mechanism:**
+
+The LLT stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `include_str!`. At startup:
+
+1. Create root environment with Rust-native builtins
+2. Parse and evaluate `prelude.llt` with root environment as parent
+3. User code's environment inherits from the stdlib environment
+
+This ensures Rust builtins are available to LLT stdlib code (e.g., `and` references `$if`), and user code sees both layers:
+
+```
+Rust builtins ($+, $if, $keys, $merge, ...)
+  └── LLT stdlib ($and, $map, $filter, $compose, ...)
+        └── User code
+```
+
 ---
 
 ## Open Questions / TODO
