@@ -1,1 +1,3 @@
 [call $fetch "https://example.com" timeout: 60 retries: 3]
+===
+[call $fetch "https://example.com" timeout: 60 retries: 3]

@@ -6,11 +6,12 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
+use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::error::EvalError;
 use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 
-pub(crate) const MAX_EVAL_DEPTH: usize = 256;
+pub const MAX_EVAL_DEPTH: usize = 256;
+/// Shared error message for range access with mixed key types (used in `key_in_range`).
 const RANGE_KEY_TYPE_ERROR: &str = "range access requires comparable key types";
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
@@ -65,8 +66,7 @@ pub fn eval(
         .into());
     }
     // $_ implicit lambda desugaring: if the expression directly contains VarRef("_")
-    // and `_` is not already bound in the current environment (i.e., we're not inside
-    // the body of a lambda that already captured `_`), wrap it in [fn [_] <expr>].
+    // and `_` is not already bound in the current environment, wrap it in [fn [_] <expr>].
     if should_desugar_underscore(&expr.node) && env.borrow().get("_").is_none() {
         let lambda = wrap_in_lambda(expr);
         return eval(&lambda, env, depth + 1);
@@ -113,9 +113,43 @@ pub fn eval(
             &expr.span,
             depth,
         ),
-        Expr::TypeAssert { expr: inner, .. } => {
-            // Evaluate as identity; the type checker (typecheck.rs) validates the assertion.
-            eval(inner, env, depth + 1)
+        Expr::TypeAssert {
+            expr: inner,
+            annotation,
+        } => {
+            let thunk = eval(inner, env, depth + 1)?;
+            let value = materialize(&thunk, Some(&expr.span), depth + 1)?;
+
+            // Extract the expected type name from the annotation
+            let expected_type = match &annotation.node {
+                Annotation::Simple(name) => Some(name.as_str()),
+                Annotation::PropertyDict(_) => {
+                    annotation.node.get_property("type").and_then(|type_expr| {
+                        match &type_expr.node {
+                            Expr::Str(s) => Some(s.as_str()),
+                            _ => None,
+                        }
+                    })
+                }
+            };
+
+            if let Some(expected) = expected_type {
+                let actual = value.type_name();
+                let matches = if expected == "Number" {
+                    actual == "Int" || actual == "Float"
+                } else {
+                    actual == expected
+                };
+                if !matches {
+                    return Err(EvalError::new(
+                        format!("type assertion failed: expected {expected}, got {actual}"),
+                        expr.span,
+                    )
+                    .into());
+                }
+            }
+
+            Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
         }
         Expr::Annotated { name, .. } => {
             // Evaluate as the bare string; the type checker (typecheck.rs) interprets annotations.
@@ -235,11 +269,27 @@ pub fn eval_file(
     env: Rc<RefCell<Environment>>,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    // $$ starts as empty dict for first document
-    let mut prev_output = Rc::new(Thunk::new_materialized(
-        Value::Dict(IndexMap::new()),
-        Span::origin(),
-    ));
+    eval_file_with_input(file, env, None, depth)
+}
+
+/// Evaluate a parsed [`File`], optionally injecting an initial `$$` value for the first document.
+///
+/// When `initial_input` is `Some(thunk)`, that thunk becomes `$$` for the first
+/// document instead of the default empty dict. This supports the CLI's stdin
+/// JSON injection: `cat data.json | llt eval file.llt`.
+pub fn eval_file_with_input(
+    file: &File,
+    env: Rc<RefCell<Environment>>,
+    initial_input: Option<Rc<Thunk>>,
+    depth: usize,
+) -> Result<Rc<Thunk>, Box<EvalError>> {
+    // $$ starts as the provided input, or empty dict if none given
+    let mut prev_output = initial_input.unwrap_or_else(|| {
+        Rc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            Span::origin(),
+        ))
+    });
 
     for doc in &file.documents {
         // Each document gets a fresh scope with only $$ bound
@@ -278,6 +328,7 @@ fn eval_dict(
             Some(key_expr) => eval_key(key_expr, parent_env, depth)?,
             None => {
                 let k = Key::Int(auto_index);
+                // Overflow unreachable: MAX_EVAL_DEPTH bounds nesting, so entry count << i64::MAX.
                 auto_index += 1;
                 k
             }
@@ -351,50 +402,53 @@ fn eval_call(
     let func_thunk = eval(func_expr, Rc::clone(env), depth + 1)?;
     let func_val = materialize(&func_thunk, Some(call_span), depth + 1)?;
 
+    // Wrap arguments as unevaluated thunks (lazy). This ensures expressions
+    // like $xs[$i] in unselected $if branches are never evaluated.
+    let pos_thunks: Vec<Rc<Thunk>> = args
+        .iter()
+        .map(|arg| {
+            Rc::new(Thunk::new_unevaluated(
+                (*arg).clone(),
+                Rc::clone(env),
+                arg.span,
+            ))
+        })
+        .collect();
+    let mut named_thunks = IndexMap::new();
+    for na in named_args {
+        named_thunks.insert(
+            na.node.name.clone(),
+            Rc::new(Thunk::new_unevaluated(
+                na.node.value.clone(),
+                Rc::clone(env),
+                na.node.value.span,
+            )),
+        );
+    }
+
     match func_val {
         Value::Function {
             params,
             body,
             env: closure_env,
             ..
-        } => {
-            // Evaluate positional args as thunks
-            let mut pos_thunks = Vec::with_capacity(args.len());
-            for arg in args {
-                pos_thunks.push(eval(arg, Rc::clone(env), depth + 1)?);
-            }
-            // Evaluate named args as thunks
-            let mut named_thunks = IndexMap::new();
-            for na in named_args {
-                let thunk = eval(&na.node.value, Rc::clone(env), depth + 1)?;
-                named_thunks.insert(na.node.name.clone(), thunk);
-            }
-            invoke_function(
-                &params,
-                &body,
-                &closure_env,
-                &pos_thunks,
-                &named_thunks,
-                env,
-                *call_span,
-                depth,
-            )
-        }
-        Value::Builtin { func, .. } => {
-            // Evaluate positional args as thunks (lazy)
-            let mut pos_thunks = Vec::with_capacity(args.len());
-            for arg in args {
-                pos_thunks.push(eval(arg, Rc::clone(env), depth + 1)?);
-            }
-            // Evaluate named args as thunks
-            let mut named_thunks = IndexMap::new();
-            for na in named_args {
-                let thunk = eval(&na.node.value, Rc::clone(env), depth + 1)?;
-                named_thunks.insert(na.node.name.clone(), thunk);
-            }
-            let result = func(&pos_thunks, &named_thunks, depth + 1)?;
-            Ok(Rc::new(Thunk::new_materialized(result, *call_span)))
-        }
+        } => invoke_function(
+            &params,
+            &body,
+            &closure_env,
+            &pos_thunks,
+            &named_thunks,
+            env,
+            *call_span,
+            depth,
+        ),
+        Value::Builtin { func, .. } => Ok(Rc::new(Thunk::new_pending_builtin(
+            func,
+            pos_thunks,
+            named_thunks,
+            depth + 1,
+            *call_span,
+        ))),
         _ => Err(EvalError::type_mismatch("Function", func_val.type_name(), *call_span).into()),
     }
 }
@@ -408,6 +462,8 @@ fn eval_call(
 /// `default_env` is the environment used to evaluate default expressions for
 /// optional params. For normal calls this is the caller's environment; for
 /// `apply` it is the closure environment.
+// Needs all these parameters to thread positional args, named args, defaults,
+// and variadic binding through a single pass (delegated to bind_args_thunks).
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_function(
     params: &[Param],
@@ -749,18 +805,10 @@ pub fn materialize(
                 }
                 return Err(err.into());
             }
-            ThunkState::Unevaluated { .. } => {} // continue below
+            ThunkState::Unevaluated { .. } | ThunkState::PendingBuiltin { .. } => {}
         }
     }
 
-    // Take the unevaluated data, atomically setting state to InProgress
-    let (expr, env) = thunk
-        .take_unevaluated()
-        .expect("state must be Unevaluated after check");
-
-    // Evaluate and recursively materialize. On failure, restore the thunk
-    // to Unevaluated so it can be retried (avoids thunk poisoning where a
-    // failed thunk permanently reports "circular dependency").
     let attach_mat_span = |mut e: Box<EvalError>| -> Box<EvalError> {
         if e.materialization_span.is_none() {
             if let Some(span) = mat_span {
@@ -769,21 +817,79 @@ pub fn materialize(
         }
         e
     };
-    let result = (|| {
-        let result_thunk = eval(&expr, Rc::clone(&env), depth + 1).map_err(attach_mat_span)?;
-        materialize(&result_thunk, mat_span, depth + 1).map_err(attach_mat_span)
-    })();
 
-    match result {
-        Ok(value) => {
-            thunk.transition(|_| ThunkState::Materialized(value.clone()));
-            Ok(value)
+    if let Some((expr, env)) = thunk.take_unevaluated() {
+        let result = (|| {
+            let result_thunk = eval(&expr, Rc::clone(&env), depth + 1).map_err(attach_mat_span)?;
+            materialize(&result_thunk, mat_span, depth + 1).map_err(attach_mat_span)
+        })();
+
+        match result {
+            Ok(value) => {
+                thunk.transition(|_| ThunkState::Materialized(value.clone()));
+                Ok(value)
+            }
+            Err(e) => {
+                thunk.transition(|_| ThunkState::Unevaluated { expr, env });
+                Err(e)
+            }
         }
-        Err(e) => {
-            // Restore thunk so it can be retried
-            thunk.transition(|_| ThunkState::Unevaluated { expr, env });
-            Err(e)
+    } else if let Some((func, args, named, pending_depth)) = thunk.take_pending_builtin() {
+        match func(&args, &named, pending_depth).map_err(attach_mat_span) {
+            Ok(value) => {
+                thunk.transition(|_| ThunkState::Materialized(value.clone()));
+                Ok(value)
+            }
+            Err(e) => {
+                thunk.transition(|_| ThunkState::PendingBuiltin {
+                    func,
+                    args,
+                    named,
+                    depth: pending_depth,
+                });
+                Err(e)
+            }
         }
+    } else {
+        unreachable!("state must be Unevaluated or PendingBuiltin after check")
+    }
+}
+
+/// Recursively force all thunks in a value tree.
+///
+/// - Primitives (Int, Float, String, Bool) are returned as-is.
+/// - Dict values are fully materialized: each thunk entry is forced via
+///   [`materialize`], then deep-materialized recursively. The returned Dict
+///   wraps every value as [`Thunk::new_materialized`].
+/// - Functions (user-defined and builtins) are returned as-is -- they are
+///   opaque values, not collections to traverse.
+///
+/// `depth` is checked against [`MAX_EVAL_DEPTH`] to prevent stack overflow on
+/// deeply nested or cyclic structures. On infinite/cyclic structures without a
+/// depth bound, this function will diverge (see DESIGN.md on `$eval`).
+pub fn deep_materialize(val: &Value, depth: usize) -> Result<Value, Box<EvalError>> {
+    if depth >= MAX_EVAL_DEPTH {
+        return Err(EvalError::new(
+            format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
+            Span::origin(),
+        )
+        .into());
+    }
+    match val {
+        Value::Dict(map) => {
+            let mut result = IndexMap::new();
+            for (key, thunk) in map {
+                let v = materialize(thunk, None, depth)?;
+                let forced = deep_materialize(&v, depth + 1)?;
+                result.insert(
+                    key.clone(),
+                    Rc::new(Thunk::new_materialized(forced, thunk.span)),
+                );
+            }
+            Ok(Value::Dict(result))
+        }
+        // Primitives and functions are already fully materialized
+        other => Ok(other.clone()),
     }
 }
 
@@ -2271,11 +2377,35 @@ mod tests {
         );
     }
 
-    // --- TypeAssert (identity) ---
+    // --- TypeAssert (runtime check) ---
 
     #[test]
-    fn test_type_assert_identity() {
-        // [@Number 42] -> 42
+    fn test_type_assert_int_passes() {
+        // [@Int 42] -> 42
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Int".into())),
+            expr: Box::new(sp(Expr::Int(42))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn test_type_assert_string_passes() {
+        // [@String hello] -> "hello"
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("String".into())),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_type_assert_number_accepts_int() {
+        // [@Number 42] -> 42 (Number accepts Int)
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Number".into())),
             expr: Box::new(sp(Expr::Int(42))),
@@ -2283,6 +2413,114 @@ mod tests {
         let thunk = eval(&expr, empty_env(), 0).unwrap();
         let val = materialize(&thunk, None, 0).unwrap();
         assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn test_type_assert_number_accepts_float() {
+        // [@Number 3.14] -> 3.14 (Number accepts Float)
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Number".into())),
+            expr: Box::new(sp(Expr::Float(3.14))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Float(3.14));
+    }
+
+    #[test]
+    fn test_type_assert_int_fails_on_string() {
+        // [@Int hello] -> error
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Int".into())),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+        });
+        let err = eval(&expr, empty_env(), 0).unwrap_err();
+        assert!(
+            err.message
+                .contains("type assertion failed: expected Int, got String"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_assert_string_fails_on_int() {
+        // [@String 42] -> error
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("String".into())),
+            expr: Box::new(sp(Expr::Int(42))),
+        });
+        let err = eval(&expr, empty_env(), 0).unwrap_err();
+        assert!(
+            err.message
+                .contains("type assertion failed: expected String, got Int"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_assert_bool_passes() {
+        // [@Bool true] -> true
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Bool".into())),
+            expr: Box::new(sp(Expr::Bool(true))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_type_assert_property_dict_with_type() {
+        // [@[type: Int] 42] -> 42
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("type".into()))),
+            value: sp(Expr::Str("Int".into())),
+        })];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Int(42))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn test_type_assert_property_dict_type_mismatch() {
+        // [@[type: Int] hello] -> error
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("type".into()))),
+            value: sp(Expr::Str("Int".into())),
+        })];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+        });
+        let err = eval(&expr, empty_env(), 0).unwrap_err();
+        assert!(
+            err.message
+                .contains("type assertion failed: expected Int, got String"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_assert_property_dict_without_type_passes() {
+        // [@[default: 0] hello] -> "hello" (no type key, no check performed)
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("default".into()))),
+            value: sp(Expr::Int(0)),
+        })];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::String("hello".into()));
     }
 
     // --- Annotated (bare string) ---
@@ -3147,6 +3385,350 @@ mod tests {
             Value::Dict(map) => {
                 let val_thunk = map.get(&Key::String("val".into())).unwrap();
                 assert_eq!(materialize(val_thunk, None, 0).unwrap(), Value::Int(777));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    // --- deep_materialize tests ---
+
+    #[test]
+    fn test_deep_materialize_int() {
+        let val = Value::Int(42);
+        let result = deep_materialize(&val, 0).unwrap();
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_deep_materialize_float() {
+        let val = Value::Float(3.14);
+        let result = deep_materialize(&val, 0).unwrap();
+        assert_eq!(result, Value::Float(3.14));
+    }
+
+    #[test]
+    fn test_deep_materialize_string() {
+        let val = Value::String("hello".into());
+        let result = deep_materialize(&val, 0).unwrap();
+        assert_eq!(result, Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_deep_materialize_bool() {
+        let val = Value::Bool(true);
+        let result = deep_materialize(&val, 0).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_deep_materialize_empty_dict() {
+        let val = Value::Dict(IndexMap::new());
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Dict(map) => assert!(map.is_empty()),
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_flat_dict() {
+        let span = test_span(1, 1, 1, 5);
+        let mut map = IndexMap::new();
+        map.insert(
+            Key::String("a".into()),
+            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
+        );
+        map.insert(
+            Key::String("b".into()),
+            Rc::new(Thunk::new_materialized(Value::Int(2), span)),
+        );
+        let val = Value::Dict(map);
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 2);
+                let a = materialize(&map[&Key::String("a".into())], None, 0).unwrap();
+                assert_eq!(a, Value::Int(1));
+                let b = materialize(&map[&Key::String("b".into())], None, 0).unwrap();
+                assert_eq!(b, Value::Int(2));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_nested_dict() {
+        let span = test_span(1, 1, 1, 5);
+        let mut inner = IndexMap::new();
+        inner.insert(
+            Key::String("y".into()),
+            Rc::new(Thunk::new_materialized(Value::Int(42), span)),
+        );
+        let mut outer = IndexMap::new();
+        outer.insert(
+            Key::String("x".into()),
+            Rc::new(Thunk::new_materialized(Value::Dict(inner), span)),
+        );
+        let val = Value::Dict(outer);
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Dict(outer_map) => {
+                let x_val = materialize(&outer_map[&Key::String("x".into())], None, 0).unwrap();
+                match x_val {
+                    Value::Dict(inner_map) => {
+                        let y_val =
+                            materialize(&inner_map[&Key::String("y".into())], None, 0).unwrap();
+                        assert_eq!(y_val, Value::Int(42));
+                    }
+                    other => panic!("expected inner Dict, got {other:?}"),
+                }
+            }
+            other => panic!("expected outer Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_forces_unevaluated_thunks() {
+        let span = test_span(1, 1, 1, 5);
+        let expr = Spanned::new(Expr::Int(99), span);
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let unevaluated = Rc::new(Thunk::new_unevaluated(expr, env, span));
+
+        let mut map = IndexMap::new();
+        map.insert(Key::String("val".into()), unevaluated);
+        let val = Value::Dict(map);
+
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let v = materialize(&map[&Key::String("val".into())], None, 0).unwrap();
+                assert_eq!(v, Value::Int(99));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_function_passthrough() {
+        let span = test_span(1, 1, 1, 5);
+        let val = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(Spanned::new(Expr::Int(0), span)),
+            env: Rc::new(RefCell::new(Environment::new())),
+            return_ann: None,
+        };
+        let result = deep_materialize(&val, 0).unwrap();
+        // Functions are opaque -- returned as-is
+        match result {
+            Value::Function { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_builtin_passthrough() {
+        fn dummy(
+            _: &[Rc<Thunk>],
+            _: &IndexMap<String, Rc<Thunk>>,
+            _: usize,
+        ) -> Result<Value, Box<EvalError>> {
+            Ok(Value::Int(0))
+        }
+        let val = Value::Builtin {
+            name: "test",
+            func: dummy,
+        };
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Builtin { name, .. } => assert_eq!(name, "test"),
+            other => panic!("expected Builtin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_depth_limit() {
+        let err = deep_materialize(&Value::Int(1), MAX_EVAL_DEPTH).unwrap_err();
+        assert!(
+            err.message.contains("maximum evaluation depth exceeded"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_deep_materialize_depth_just_under() {
+        // One below the limit should still succeed for a leaf value
+        let result = deep_materialize(&Value::Int(1), MAX_EVAL_DEPTH - 1);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_deep_materialize_dict_with_int_keys() {
+        let span = test_span(1, 1, 1, 5);
+        let mut map = IndexMap::new();
+        map.insert(
+            Key::Int(0),
+            Rc::new(Thunk::new_materialized(Value::String("zero".into()), span)),
+        );
+        map.insert(
+            Key::Int(1),
+            Rc::new(Thunk::new_materialized(Value::String("one".into()), span)),
+        );
+        let val = Value::Dict(map);
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 2);
+                let v0 = materialize(&map[&Key::Int(0)], None, 0).unwrap();
+                assert_eq!(v0, Value::String("zero".into()));
+                let v1 = materialize(&map[&Key::Int(1)], None, 0).unwrap();
+                assert_eq!(v1, Value::String("one".into()));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_preserves_key_order() {
+        let span = test_span(1, 1, 1, 5);
+        let mut map = IndexMap::new();
+        map.insert(
+            Key::String("c".into()),
+            Rc::new(Thunk::new_materialized(Value::Int(3), span)),
+        );
+        map.insert(
+            Key::String("a".into()),
+            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
+        );
+        map.insert(
+            Key::String("b".into()),
+            Rc::new(Thunk::new_materialized(Value::Int(2), span)),
+        );
+        let val = Value::Dict(map);
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let keys: Vec<&Key> = map.keys().collect();
+                assert_eq!(
+                    keys,
+                    vec![
+                        &Key::String("c".into()),
+                        &Key::String("a".into()),
+                        &Key::String("b".into()),
+                    ]
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_dict_containing_function() {
+        // Dict with a function value -- function should pass through, not be traversed
+        let span = test_span(1, 1, 1, 5);
+        let func_val = Value::Function {
+            params: Rc::new(vec![]),
+            body: Rc::new(Spanned::new(Expr::Int(0), span)),
+            env: Rc::new(RefCell::new(Environment::new())),
+            return_ann: None,
+        };
+        let mut map = IndexMap::new();
+        map.insert(
+            Key::String("f".into()),
+            Rc::new(Thunk::new_materialized(func_val, span)),
+        );
+        map.insert(
+            Key::String("v".into()),
+            Rc::new(Thunk::new_materialized(Value::Int(10), span)),
+        );
+        let val = Value::Dict(map);
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let f = materialize(&map[&Key::String("f".into())], None, 0).unwrap();
+                assert!(matches!(f, Value::Function { .. }));
+                let v = materialize(&map[&Key::String("v".into())], None, 0).unwrap();
+                assert_eq!(v, Value::Int(10));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_three_levels_deep() {
+        let span = test_span(1, 1, 1, 5);
+
+        // Build [a: [b: [c: 99]]]
+        let mut level3 = IndexMap::new();
+        level3.insert(
+            Key::String("c".into()),
+            Rc::new(Thunk::new_materialized(Value::Int(99), span)),
+        );
+        let mut level2 = IndexMap::new();
+        level2.insert(
+            Key::String("b".into()),
+            Rc::new(Thunk::new_materialized(Value::Dict(level3), span)),
+        );
+        let mut level1 = IndexMap::new();
+        level1.insert(
+            Key::String("a".into()),
+            Rc::new(Thunk::new_materialized(Value::Dict(level2), span)),
+        );
+        let val = Value::Dict(level1);
+
+        let result = deep_materialize(&val, 0).unwrap();
+        // Navigate three levels deep
+        match result {
+            Value::Dict(l1) => {
+                let a = materialize(&l1[&Key::String("a".into())], None, 0).unwrap();
+                match a {
+                    Value::Dict(l2) => {
+                        let b = materialize(&l2[&Key::String("b".into())], None, 0).unwrap();
+                        match b {
+                            Value::Dict(l3) => {
+                                let c =
+                                    materialize(&l3[&Key::String("c".into())], None, 0).unwrap();
+                                assert_eq!(c, Value::Int(99));
+                            }
+                            other => panic!("expected level 3 Dict, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected level 2 Dict, got {other:?}"),
+                }
+            }
+            other => panic!("expected level 1 Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_result_thunks_are_materialized() {
+        // Verify that after deep_materialize, all thunks in the result dict
+        // are in the Materialized state (not Unevaluated or PendingBuiltin)
+        let span = test_span(1, 1, 1, 5);
+        let expr = Spanned::new(Expr::Int(7), span);
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let unevaluated = Rc::new(Thunk::new_unevaluated(expr, env, span));
+
+        let mut map = IndexMap::new();
+        map.insert(Key::String("x".into()), unevaluated);
+        let val = Value::Dict(map);
+
+        let result = deep_materialize(&val, 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let thunk = &map[&Key::String("x".into())];
+                // The thunk in the result should be in Materialized state
+                assert!(matches!(
+                    &*thunk.state(),
+                    ThunkState::Materialized(Value::Int(7))
+                ));
             }
             other => panic!("expected Dict, got {other:?}"),
         }

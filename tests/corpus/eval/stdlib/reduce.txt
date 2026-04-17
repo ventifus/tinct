@@ -1,0 +1,4 @@
+# reduce: left fold a list with an accumulator
+[call $reduce [fn [acc x] [call $+ $acc $x]] 0 [1 2 3 4 5]]
+===
+Int(15)

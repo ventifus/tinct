@@ -78,29 +78,38 @@ fn test_valid_corpus() {
 
         let (input, expected) = split_test_file(&content);
 
+        let expected_output = match expected {
+            Some(e) => e,
+            None => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    "valid corpus test file missing expected AST output after ===".to_string(),
+                ));
+                continue;
+            }
+        };
+
         // Use parse (full file) to verify the input is valid.
         // For expected output comparison, use parse_expression (single expr).
         match parse(input) {
             Ok(_) => {
-                if let Some(expected_output) = expected {
-                    // Expected output is compared against single-expression format
-                    match parse_expression(input) {
-                        Ok(ast) => {
-                            let actual = format!("{}", ast.node);
-                            if actual.trim() != expected_output {
-                                failed.push((
-                                    relative_path.to_path_buf(),
-                                    format!(
-                                        "AST mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
-                                        expected_output,
-                                        actual.trim()
-                                    ),
-                                ));
-                            }
+                // Expected output is compared against single-expression format
+                match parse_expression(input) {
+                    Ok(ast) => {
+                        let actual = format!("{}", ast.node);
+                        if actual.trim() != expected_output {
+                            failed.push((
+                                relative_path.to_path_buf(),
+                                format!(
+                                    "AST mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
+                                    expected_output,
+                                    actual.trim()
+                                ),
+                            ));
                         }
-                        Err(e) => {
-                            failed.push((relative_path.to_path_buf(), format!("parse error: {e}")))
-                        }
+                    }
+                    Err(e) => {
+                        failed.push((relative_path.to_path_buf(), format!("parse error: {e}")))
                     }
                 }
             }
@@ -140,23 +149,32 @@ fn test_invalid_corpus() {
 
         let (input, expected) = split_test_file(&content);
 
+        let expected_substr = match expected {
+            Some(e) => e,
+            None => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    "invalid corpus test file missing expected error substring after ===".to_string(),
+                ));
+                continue;
+            }
+        };
+
         match parse(input) {
             Ok(_) => failed.push((
                 relative_path.to_path_buf(),
                 "Expected parse to fail".to_string(),
             )),
             Err(e) => {
-                if let Some(expected_substr) = expected {
-                    let error_msg = format!("{}", e);
-                    if !error_msg.contains(expected_substr) {
-                        failed.push((
-                            relative_path.to_path_buf(),
-                            format!(
-                                "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
-                                expected_substr, error_msg
-                            ),
-                        ));
-                    }
+                let error_msg = format!("{}", e);
+                if !error_msg.contains(expected_substr) {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
+                            expected_substr, error_msg
+                        ),
+                    ));
                 }
             }
         }
@@ -280,6 +298,17 @@ fn test_eval_error_corpus() {
 
         let (input, expected) = split_test_file(&content);
 
+        let expected_substr = match expected {
+            Some(e) => e,
+            None => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    "eval error corpus test file missing expected error substring after ===".to_string(),
+                ));
+                continue;
+            }
+        };
+
         match eval_source(input) {
             Ok(actual) => {
                 failed.push((
@@ -288,17 +317,15 @@ fn test_eval_error_corpus() {
                 ));
             }
             Err(e) => {
-                if let Some(expected_substr) = expected {
-                    let error_msg = format!("{}", e);
-                    if !error_msg.contains(expected_substr) {
-                        failed.push((
-                            relative_path.to_path_buf(),
-                            format!(
-                                "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
-                                expected_substr, error_msg
-                            ),
-                        ));
-                    }
+                let error_msg = format!("{}", e);
+                if !error_msg.contains(expected_substr) {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
+                            expected_substr, error_msg
+                        ),
+                    ));
                 }
             }
         }

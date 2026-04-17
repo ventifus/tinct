@@ -5,8 +5,9 @@ edition = "2021"
 license = "MIT"
 
 [[bin]]
-name = "lazy_lisp_transformer"
+name = "llt"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [lib]
 name = "lazy_lisp_transformer"
@@ -17,7 +18,12 @@ panic = "abort"
 lto = true
 codegen-units = 1
 
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
+
 [dependencies]
+clap = { version = "4.6", features = ["derive"], optional = true }
 indexmap = "2.7"
 pest = "2.8"
 pest_derive = "2.8"

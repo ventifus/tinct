@@ -1,1 +1,3 @@
 [type [a b c]]
+===
+[type ["a"  "b"  "c"]]

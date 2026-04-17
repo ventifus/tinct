@@ -1,0 +1,4 @@
+# assert: returns true when condition passes
+[call $assert true "should pass"]
+===
+Bool(true)

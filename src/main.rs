@@ -1,47 +1,191 @@
-use lazy_lisp_transformer::parse;
-use std::env;
-use std::fs;
+//! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
+
+use clap::{Parser, Subcommand, ValueEnum};
+use lazy_lisp_transformer::{
+    create_stdlib_env, deep_materialize, eval_file_with_input, json_to_value, materialize, parse,
+    value_to_display_string, value_to_json, Thunk, Value,
+};
+use std::io::{self, IsTerminal, Read};
 use std::process;
+use std::rc::Rc;
 
 /// Maximum input file size: 10 MB.
-const MAX_INPUT_SIZE: usize = 10 * 1024 * 1024;
+const MAX_INPUT_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Lazy Lisp Transformer — a unified data representation and transformation language.
+#[derive(Parser)]
+#[command(name = "llt", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Evaluate an LLT file and output the result.
+    Eval {
+        /// Output format.
+        #[arg(short, long, default_value = "json", value_enum)]
+        format: OutputFormat,
+
+        /// Deep-force all thunks before serializing (surfaces errors before partial output).
+        #[arg(long)]
+        eval: bool,
+
+        /// Input LLT file. Use `-` to read LLT source from stdin.
+        file: String,
+    },
+}
+
+#[derive(Clone, ValueEnum)]
+enum OutputFormat {
+    /// JSON output (default).
+    Json,
+    /// LLT display format (Int(42), Dict({...}), etc.).
+    Llt,
+}
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <input_file>", args[0]);
-        process::exit(1);
-    }
+    let cli = Cli::parse();
 
-    let file_size = match fs::metadata(&args[1]) {
-        Ok(m) => m.len() as usize,
-        Err(e) => {
-            eprintln!("error reading file: {e}");
-            process::exit(1);
-        }
-    };
+    // Spawn the main work on a thread with a 64 MB stack to handle deeply
+    // nested inputs that overflow pest's recursive descent on the default
+    // 8 MB stack (see CLAUDE.md: "Pest stack overflow on deep nesting").
+    let result = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || match cli.command {
+            Commands::Eval { format, eval, file } => run_eval(&file, &format, eval),
+        })
+        .expect("failed to spawn worker thread")
+        .join();
 
-    if file_size > MAX_INPUT_SIZE {
-        eprintln!(
-            "error: input file is {} bytes, which exceeds the 10 MB limit ({} bytes)",
-            file_size, MAX_INPUT_SIZE
-        );
-        process::exit(1);
-    }
-
-    let content = match fs::read_to_string(&args[1]) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error reading file: {e}");
-            process::exit(1);
-        }
-    };
-
-    match parse(&content) {
-        Ok(ast) => println!("{:#?}", ast),
-        Err(e) => {
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
             eprintln!("{e}");
             process::exit(1);
         }
+        Err(_) => {
+            eprintln!("internal error: worker thread panicked");
+            process::exit(2);
+        }
     }
+}
+
+fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<(), String> {
+    // Read the LLT source
+    let source = read_source(file_path)?;
+
+    // Check for piped stdin JSON (only when file is not stdin itself)
+    let stdin_input = if file_path != "-" {
+        read_stdin_json()?
+    } else {
+        None
+    };
+
+    // Parse
+    let ast = parse(&source).map_err(|e| format!("{e}"))?;
+
+    // Create stdlib environment
+    let env = create_stdlib_env()?;
+
+    // Convert stdin JSON to initial $$ thunk
+    let initial_input = stdin_input.map(|val| {
+        Rc::new(Thunk::new_materialized(
+            val,
+            lazy_lisp_transformer::Span::origin(),
+        ))
+    });
+
+    // Evaluate
+    let thunk =
+        eval_file_with_input(&ast.node, env, initial_input, 0).map_err(|e| format!("{e}"))?;
+
+    // Materialize the result
+    let val = materialize(&thunk, None, 0).map_err(|e| format!("{e}"))?;
+
+    // Optionally deep-force all thunks
+    let val = if force_eval {
+        deep_materialize(&val, 0).map_err(|e| format!("{e}"))?
+    } else {
+        val
+    };
+
+    // Serialize and output
+    match format {
+        OutputFormat::Json => {
+            let json = value_to_json(&val, 0).map_err(|e| format!("{e}"))?;
+            let output = serde_json::to_string_pretty(&json)
+                .map_err(|e| format!("JSON serialization error: {e}"))?;
+            println!("{output}");
+        }
+        OutputFormat::Llt => {
+            // Deep-materialize for display (value_to_display_string needs it)
+            let forced = deep_materialize(&val, 0).map_err(|e| format!("{e}"))?;
+            let output = value_to_display_string(&forced, 0).map_err(|e| format!("{e}"))?;
+            println!("{output}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Read LLT source from a file path or stdin (when path is `-`).
+fn read_source(file_path: &str) -> Result<String, String> {
+    if file_path == "-" {
+        let mut buf = String::new();
+        io::stdin()
+            .take(MAX_INPUT_SIZE + 1)
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("error reading stdin: {e}"))?;
+        if buf.len() as u64 > MAX_INPUT_SIZE {
+            return Err(format!(
+                "stdin input exceeds the 10 MB limit ({} bytes)",
+                MAX_INPUT_SIZE
+            ));
+        }
+        Ok(buf)
+    } else {
+        let metadata =
+            std::fs::metadata(file_path).map_err(|e| format!("error reading file: {e}"))?;
+        if metadata.len() > MAX_INPUT_SIZE {
+            return Err(format!(
+                "input file is {} bytes, which exceeds the 10 MB limit ({} bytes)",
+                metadata.len(),
+                MAX_INPUT_SIZE
+            ));
+        }
+        std::fs::read_to_string(file_path).map_err(|e| format!("error reading file: {e}"))
+    }
+}
+
+/// If stdin is not a terminal (i.e., data is piped), read it as JSON and convert
+/// to an LLT Value for injection as `$$` in the first document.
+fn read_stdin_json() -> Result<Option<Value>, String> {
+    if io::stdin().is_terminal() {
+        return Ok(None);
+    }
+
+    let mut buf = String::new();
+    io::stdin()
+        .take(MAX_INPUT_SIZE + 1)
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("error reading stdin: {e}"))?;
+
+    if buf.len() as u64 > MAX_INPUT_SIZE {
+        return Err(format!(
+            "stdin JSON input exceeds the 10 MB limit ({} bytes)",
+            MAX_INPUT_SIZE
+        ));
+    }
+
+    if buf.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(&buf).map_err(|e| format!("error parsing stdin JSON: {e}"))?;
+
+    let val = json_to_value(&json, 0).map_err(|e| format!("{e}"))?;
+    Ok(Some(val))
 }

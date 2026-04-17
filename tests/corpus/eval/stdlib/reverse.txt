@@ -1,0 +1,4 @@
+# reverse: reverse a list
+[call $reverse [a b c]]
+===
+Dict({0: String("c"), 1: String("b"), 2: String("a")})

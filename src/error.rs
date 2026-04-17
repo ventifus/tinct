@@ -4,12 +4,15 @@ use std::fmt;
 
 use crate::ast::Span;
 
+/// A single frame in an evaluation stack trace (function name + source location).
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackFrame {
     pub label: String,
     pub span: Span,
 }
 
+/// Evaluation error with definition-site span, optional materialization-site span,
+/// and a stack trace of enclosing function calls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvalError {
     pub message: String,

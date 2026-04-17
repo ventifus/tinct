@@ -676,17 +676,17 @@ z@Number                        # accepts either
 | Float | any | Int | Float |
 | Float | any | Float | Float |
 | any | `$/` | any | Float (always) |
-| Int | `$div`, `$mod` | Int | Int |
+| Int | `$quot`, `$mod` | Int | Int |
 
 ```lisp
 [call $+ 5 3]                   # → 8 (Int)
 [call $+ 5 3.0]                 # → 8.0 (Float)
 [call $/ 10 3]                  # → 3.333... (Float — $/ always returns Float)
-[call $div 10 3]                # → 3 (Int — integer division)
+[call $quot 10 3]               # → 3 (Int — truncated integer division, prelude function using $trunc)
 [call $mod 10 3]                # → 1 (Int — remainder)
 ```
 
-**Integer arithmetic uses wrapping semantics.** `Int` operations (`$+`, `$-`, `$*`) use Rust's `wrapping_add`/`wrapping_sub`/`wrapping_mul`, so overflow wraps around silently within the `i64` range rather than panicking. This matches host-language behavior and avoids runtime panics on large values. Overflow checking is deferred to the contracts system (width-specific types like `Int32` could enforce range constraints).
+**Integer arithmetic uses checked semantics.** `Int` operations (`$+`, `$-`, `$*`) use Rust's `checked_add`/`checked_sub`/`checked_mul`, so overflow returns an error rather than wrapping or panicking. This prevents silent data corruption on large values. Width-specific types like `Int32` could enforce narrower range constraints via the contracts system.
 
 **Dict key integration:** `Int` values are directly usable as dict keys. `Float` values cannot be used as keys (deferred — precision issues).
 
@@ -1115,13 +1115,13 @@ LLT is a pure data transformation language with no in-language side effects. The
 
 ```
 llt eval file.llt              # evaluate, output result as JSON
-llt eval -f yaml file.llt      # output as YAML
+llt eval -f yaml file.llt      # output as YAML (not yet implemented — deferred)
 cat data.json | llt eval file.llt  # stdin parsed and injected as $$ for first document
 ```
 
 This is the Jsonnet/Nix model: the language produces data, an external tool handles I/O. Unreferenced dict entries are never computed. There is no `$write`, `$read`, `$stdout`, `$stdin`, or channel system.
 
-`$eval` is a runtime-supported function that recursively forces all thunks in its argument. It performs full materialization: the entire structure is forced into memory. On infinite or cyclic structures, `$eval` will diverge (loop forever). Use `$take` to bound infinite sequences before passing them to `$eval`.
+`$eval` is a runtime-supported function that recursively forces all thunks in its argument. It performs full materialization: the entire structure is forced into memory. The implementation caps recursion at depth 256 and returns an error if exceeded. On infinite or cyclic structures, `$eval` will hit the depth limit rather than diverging. Use `$take` to bound infinite sequences before passing them to `$eval`.
 
 ```lisp
 # Without $eval: CLI serializes lazily (streaming, may partially output then hit an error)
@@ -1266,8 +1266,8 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 
 **Arithmetic & comparison** (materializing — must evaluate operands):
 - `+`, `-`, `*` (auto-promote: Int op Int → Int, mixed → Float)
-- `/` (always returns Float), `div`, `mod` (Int only, return Int)
-- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String; cross-type Int/Float comparison allowed)
+- `/` (always returns Float), `quot`, `mod` (Int only, return Int; both are prelude functions)
+- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed)
 - `to-int`, `to-float`, `floor`, `ceil`, `round` (numeric conversions)
 
 **Strings** (materializing — must evaluate arguments):
@@ -1322,11 +1322,11 @@ $names[0]                   # Only this user's name is materialized
 
 **Principle:** Only implement in Rust what cannot be expressed in LLT itself. Everything else is LLT code loaded from a prelude file at startup.
 
-**Rust-native builtins (28 total):**
+**Rust-native builtins (27 total):**
 
 | Group | Functions | Rationale |
 |-------|-----------|-----------|
-| Arithmetic | `+`, `-`, `*`, `/`, `div` | Operate on host numeric types (i64, f64); no LLT primitive can perform arithmetic. `mod` is derived: `[fn [a b] [call $- $a [call $* [call $div $a $b] $b]]]`. |
+| Arithmetic | `+`, `-`, `*`, `/` | Operate on host numeric types (i64, f64); no LLT primitive can perform arithmetic. |
 | Comparison | `=`, `<` | Compare host values; cross-type Int/Float comparison requires host-level coercion. `>`, `<=`, `>=` are derived from `<` and `not`. |
 | Control | `if` | Requires selective materialization (only materialize the chosen branch). `not` is derived: `[fn [x] [call $if $x false true]]`. |
 | Dict primitives | `keys`, `length`, `merge`, `append` | Operate on the IndexMap directly: `keys` extracts the key set, `length` reads `IndexMap::len()`, `merge` right-biased combines two IndexMaps, `append` inserts a value at the next integer key. |
@@ -1345,7 +1345,8 @@ $names[0]                   # Only this user's name is materialized
 | `>` | `[fn [a b] [call $< $b $a]]` | Argument swap |
 | `<=` | `[fn [a b] [call $not [call $< $b $a]]]` | Negated `>` |
 | `>=` | `[fn [a b] [call $not [call $< $a $b]]]` | Negated `<` |
-| `mod` | `[fn [a b] [call $- $a [call $* [call $div $a $b] $b]]]` | Algebraic identity: `a - (a div b) * b` |
+| `quot` | `[fn [a b] [call $trunc [call $/ $a $b]]]` | Truncation toward zero (Clojure semantics) |
+| `mod` | `[fn [a b] [call $- $a [call $* [call $quot $a $b] $b]]]` | Algebraic identity: `a - (a quot b) * b` |
 | `ceil` | `[fn [x] [call $- 0 [call $floor [call $- 0 $x]]]]` | `ceil(x) = -floor(-x)` |
 | `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
 | `join` | Recursive accumulation with `str` | String concatenation via `str` + recursion |
@@ -1517,6 +1518,8 @@ Evaluate these later:
 │     CLI      │  Input parsing, $eval, output serialization
 └─────────────┘
 ```
+
+> **Note:** The type checker (Phase 2a/2b) is implemented but not yet called at runtime. Type checking is a separate AST pass that will be integrated into the pipeline in future work. Currently, only the evaluator runs after parsing.
 
 ### Implementation Roadmap
 

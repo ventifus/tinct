@@ -1,1 +1,3 @@
 [[complex key]: value]
+===
+[["complex"  "key"]: "value"]

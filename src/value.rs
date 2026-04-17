@@ -18,6 +18,7 @@ pub type BuiltinFn =
 
 // --- Key ---
 
+/// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Int(i64),
@@ -173,12 +174,20 @@ pub enum ThunkState {
         expr: Spanned<Expr>,
         env: Rc<RefCell<Environment>>,
     },
+    PendingBuiltin {
+        func: BuiltinFn,
+        args: Vec<Rc<Thunk>>,
+        named: IndexMap<String, Rc<Thunk>>,
+        depth: usize,
+    },
     InProgress,
     Materialized(Value),
 }
 
 // --- Thunk ---
 
+/// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
+/// or a materialized value with memoization (evaluate-at-most-once semantics).
 pub struct Thunk {
     state: RefCell<ThunkState>,
     pub(crate) span: Span,
@@ -195,6 +204,24 @@ impl Thunk {
     pub fn new_materialized(value: Value, span: Span) -> Self {
         Self {
             state: RefCell::new(ThunkState::Materialized(value)),
+            span,
+        }
+    }
+
+    pub fn new_pending_builtin(
+        func: BuiltinFn,
+        args: Vec<Rc<Thunk>>,
+        named: IndexMap<String, Rc<Thunk>>,
+        depth: usize,
+        span: Span,
+    ) -> Self {
+        Self {
+            state: RefCell::new(ThunkState::PendingBuiltin {
+                func,
+                args,
+                named,
+                depth,
+            }),
             span,
         }
     }
@@ -242,6 +269,32 @@ impl Thunk {
             }
         }
     }
+
+    // Return type is a one-shot destructured tuple only used in materialize();
+    // a type alias would add indirection without clarity.
+    #[allow(clippy::type_complexity)]
+    pub fn take_pending_builtin(
+        &self,
+    ) -> Option<(
+        BuiltinFn,
+        Vec<Rc<Thunk>>,
+        IndexMap<String, Rc<Thunk>>,
+        usize,
+    )> {
+        let mut state = self.state.borrow_mut();
+        match std::mem::replace(&mut *state, ThunkState::InProgress) {
+            ThunkState::PendingBuiltin {
+                func,
+                args,
+                named,
+                depth,
+            } => Some((func, args, named, depth)),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
 }
 
 impl fmt::Debug for Thunk {
@@ -263,6 +316,7 @@ impl fmt::Debug for Thunk {
 
 // --- Environment ---
 
+/// Lexical scope chain: bindings in the current scope plus an optional parent link.
 #[derive(Debug, Clone)]
 pub struct Environment {
     pub(crate) bindings: IndexMap<String, Rc<Thunk>>,

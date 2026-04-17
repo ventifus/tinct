@@ -1,0 +1,4 @@
+# filter: keep elements where predicate is true (preserves original keys)
+[call $filter [fn [x] [call $> $x 2]] [1 2 3 4 5]]
+===
+Dict({2: Int(3), 3: Int(4), 4: Int(5)})

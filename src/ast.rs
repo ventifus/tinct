@@ -172,7 +172,7 @@ impl Annotation {
     }
 }
 
-// --- Display implementations for display and error reporting ---
+// --- Display implementations for pretty-printing and error reporting ---
 
 impl fmt::Display for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

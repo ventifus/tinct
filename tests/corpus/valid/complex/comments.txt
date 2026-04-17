@@ -4,3 +4,5 @@
     name: my-app
     port: 8080 # inline comment
 ]
+===
+["name": "my-app"  "port": 8080]

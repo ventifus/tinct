@@ -122,10 +122,10 @@ Build the end-to-end runtime. Builtins get proper type signatures from Phase 2.
 
 ### 3a: Rust-Native Builtins
 
-Depends on 1e + 2b. The 23 true primitives that MUST be Rust: operations LLT cannot express. Everything else is derived in LLT in `stdlib/prelude.llt`.
+Depends on 1e + 2b. The 27 true primitives that MUST be Rust: operations LLT cannot express. Everything else is derived in LLT in `stdlib/prelude.llt`.
 
 - [x] Builtin registration: populate root environment with `Value::Builtin` entries
-- [x] Arithmetic: `+`, `-`, `*`, `/`, `div` with auto-promotion (Int+Int=Int, mixed=Float)
+- [x] Arithmetic: `+`, `-`, `*`, `/` with auto-promotion (Int+Int=Int, mixed=Float)
 - [x] Comparison: `<`, `=`
 - [x] Control: `if` (selective materialization: only chosen branch evaluated)
 - [x] Dict primitives: `keys`, `length`, `merge` (right-biased)
@@ -149,11 +149,11 @@ Depends on 3a. Load `stdlib/prelude.llt` to provide the rest of the stdlib.
 
 Depends on 3a. After this step, `llt eval input.llt` produces JSON.
 
-- [ ] JSON serialization of Value (`serde_json` already added)
-- [ ] `llt eval input.llt` — evaluate file, serialize final value as JSON to stdout
-- [ ] Stdin input: parse stdin as JSON, inject as `$$` for the first document
-- [ ] `--format` flag: output as JSON (default), YAML, or LLT
-- [ ] `--eval` flag: deep-force all thunks before serializing (surface errors before partial output)
+- [x] JSON serialization of Value (`value_to_json` in `lib.rs`, `serde_json`)
+- [x] `llt eval input.llt` — evaluate file, serialize final value as JSON to stdout (clap CLI)
+- [x] Stdin input: parse stdin as JSON, inject as `$$` for the first document (`eval_file_with_input`)
+- [x] `--format` flag: output as JSON (default) or LLT (YAML deferred — would require `serde_yaml` dependency)
+- [x] `--eval` flag: deep-force all thunks before serializing (surface errors before partial output)
 
 ### 3c: `$include`
 
@@ -172,10 +172,12 @@ Ongoing throughout earlier phases, but final polish here.
 - [ ] Call stack reconstruction: chain of materialization sites
 - [ ] Clear messages: "key not found", "type mismatch", "arity mismatch", "circular dependency"
 - [ ] Source spans on all errors (definition-site + materialization-site)
+- [ ] TypeAssert `default:` fallback support
+- [ ] Thread call-site spans through BuiltinFn signature (resolve Span::origin sentinel in builtin errors)
 
 ## Pre-Phase 4: Stdlib Boundary Analysis — Complete
 
-- [x] Identify the minimal set of builtins that MUST be implemented in Rust (28 total: arithmetic, comparison, if, keys/length/merge/append, string ops, numeric conversion, eval/error/try/apply, type-of, from-json)
+- [x] Identify the minimal set of builtins that MUST be implemented in Rust (27 total: arithmetic, comparison, if, keys/length/merge/append, string ops, numeric conversion, eval/error/try/apply, type-of, from-json)
 - [x] Identify which stdlib functions CAN be implemented as LLT code (all control flow, collection ops, composition, list ops, sorting, sequences, assertions — implemented in `stdlib/prelude.llt`)
 - [x] Document the boundary in DESIGN.md with rationale for each Rust-native builtin (see "Rust-Native vs LLT-Implemented Boundary" section)
 - [x] Design the stdlib loading mechanism (`include_str!` prelude, Rust builtins → LLT stdlib → user code environment chain)
@@ -183,11 +185,11 @@ Ongoing throughout earlier phases, but final polish here.
 
 ## Phase 4: Stdlib Validation & Expansion
 
-The LLT stdlib is already sketched in `stdlib/prelude.llt` (parses but untested). This phase validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in Phase 3a. LLT-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
+The LLT stdlib is implemented in `stdlib/prelude.llt` (already working; 61 corpus test files cover stdlib functions). This phase validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in Phase 3a. LLT-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
 
 ### Validate prelude functions
 
-- [ ] Run prelude end-to-end with evaluator and fix any runtime bugs
+- [x] Run prelude end-to-end with evaluator and fix any runtime bugs
 - [ ] Test each LLT stdlib function against expected behavior
 - [ ] Performance check: identify any functions that need Rust reimplementation for practical use
 
@@ -197,7 +199,7 @@ The LLT stdlib is already sketched in `stdlib/prelude.llt` (parses but untested)
 
 ### Deferred to stdlib
 
-These are already in `stdlib/prelude.llt` and will work once the evaluator supports functions:
+These are already in `stdlib/prelude.llt` and loaded via `create_stdlib_env()`:
 - Logic: `and`, `or`
 - Control flow: `cond`, `when`, `unless`
 - Dict utilities: `get`, `get-or`, `get-in`, `has?`, `values`, `entries`, `empty?`, `set`, `remove`, `update`

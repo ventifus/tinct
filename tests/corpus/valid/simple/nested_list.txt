@@ -1,1 +1,3 @@
 [outer: [inner: value]]
+===
+["outer": ["inner": "value"]]

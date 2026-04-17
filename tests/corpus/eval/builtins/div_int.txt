@@ -1,4 +1,0 @@
-# div : integer division (truncates toward zero)
-[call $div 10 3]
-===
-Int(3)

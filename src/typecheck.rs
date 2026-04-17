@@ -7,8 +7,10 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::ast::*;
-use crate::types::*;
+use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
+use crate::types::{
+    instantiate, unify, RowRest, Substitution, Type, TypeEnv, TypeError,
+};
 
 // --- Public API ---
 
@@ -398,7 +400,7 @@ fn check_call(
 
             let (inst_params, inst_ret) = match &inst_ty {
                 Type::Function { params, ret } => (params, ret),
-                _ => unreachable!(),
+                _ => unreachable!("instantiate preserves Function variant"),
             };
 
             if !params.is_empty() {
@@ -550,7 +552,54 @@ fn resolve_property_dict_as_record(
     env: &TypeEnv,
     span: Span,
 ) -> Result<Type, TypeError> {
-    resolve_type_dict(entries, env, span).or(Ok(Type::Any))
+    resolve_type_dict(entries, env, span).or_else(|e| {
+        if entries_look_like_type_dict(entries) {
+            Err(e)
+        } else {
+            Ok(Type::Any)
+        }
+    })
+}
+
+/// Check whether property dict entries structurally look like they could be a
+/// type dict (record type or function type expression). Returns true when all
+/// entries look like record-type fields (string key + type-expression value),
+/// or when the first entry matches the `Fn@Return [Params]` function type
+/// pattern. When entries contain literal values (Int, Float, Bool) or
+/// auto-indexed non-function entries, they are annotation metadata rather than
+/// type definitions, and type resolution errors should be swallowed.
+fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
+    // Detect `[Fn@Return [Params]]` function type pattern: first entry is
+    // auto-indexed with an Annotated node whose name is "Fn".
+    if let Some(first) = entries.first() {
+        if first.node.key.is_none() {
+            if let Expr::Annotated { name, .. } = &first.node.value.node {
+                if name == "Fn" {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Record type pattern: every entry has a string key and a type-shaped value.
+    entries.iter().all(|entry| {
+        // Rest entries (`...` / `...name`) are valid in type dicts
+        if matches!(&entry.node.value.node, Expr::Rest(_)) {
+            return true;
+        }
+        // Every entry must have a string key
+        let has_str_key = entry
+            .node
+            .key
+            .as_ref()
+            .is_some_and(|k| matches!(&k.node, Expr::Str(_)));
+        // Value must be a form that could be a type expression
+        let value_is_type_shaped = matches!(
+            &entry.node.value.node,
+            Expr::Str(_) | Expr::VarRef(_) | Expr::Dict(_) | Expr::Annotated { .. }
+        );
+        has_str_key && value_is_type_shaped
+    })
 }
 
 fn resolve_type_name(name: &str, env: &TypeEnv, span: Span) -> Result<Type, TypeError> {
@@ -1173,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn test_property_dict_unresolvable_type_falls_back_to_any() {
+    fn test_property_dict_unresolvable_type_propagates_error() {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 10);
         let sp = |node: Expr| Spanned::new(node, span);
@@ -1184,7 +1233,52 @@ mod tests {
             },
             span,
         )]);
+        let result = resolve_annotation(&ann, &env, span);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("undefined type: NoSuchType"));
+    }
+
+    #[test]
+    fn test_property_dict_literal_value_falls_back_to_any() {
+        let env = Rc::new(TypeEnv::new());
+        let span = crate::test_util::test_span(1, 1, 1, 10);
+        let sp = |node: Expr| Spanned::new(node, span);
+        let ann = Annotation::PropertyDict(vec![Spanned::new(
+            Entry {
+                key: Some(sp(Expr::Str("default".into()))),
+                value: sp(Expr::Int(30)),
+            },
+            span,
+        )]);
         assert_eq!(resolve_annotation(&ann, &env, span).unwrap(), Type::Any);
+    }
+
+    #[test]
+    fn test_property_dict_fn_type_error_propagates() {
+        let env = Rc::new(TypeEnv::new());
+        let span = crate::test_util::test_span(1, 1, 1, 10);
+        let sp = |node: Expr| Spanned::new(node, span);
+        // [Fn@Int] -- function type pattern detected (Fn@ prefix) but wrong
+        // number of entries: should propagate, not fall back to Any.
+        let ann = Annotation::PropertyDict(vec![Spanned::new(
+            Entry {
+                key: None,
+                value: sp(Expr::Annotated {
+                    name: "Fn".into(),
+                    annotation: Spanned::new(Annotation::Simple("Int".into()), span),
+                }),
+            },
+            span,
+        )]);
+        let result = resolve_annotation(&ann, &env, span);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("function type"));
     }
 
     // -- Type alias in scope --

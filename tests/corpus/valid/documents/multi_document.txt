@@ -1,3 +1,5 @@
 [data: [name: Alice  age: 30]]
 ---
 [result: $_.data]
+===
+["data": ["name": "Alice"  "age": 30]]

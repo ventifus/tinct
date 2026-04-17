@@ -1,0 +1,4 @@
+# quot: exact division
+[call $quot 10 2]
+===
+Int(5)

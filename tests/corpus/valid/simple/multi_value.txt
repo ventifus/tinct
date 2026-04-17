@@ -1,1 +1,3 @@
 [value1 value2 key: value3]
+===
+["value1"  "value2"  "key": "value3"]

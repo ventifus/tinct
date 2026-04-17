@@ -6,7 +6,7 @@ A **unified data representation and transformation language** combining JSON-lik
 
 **Vision:** One language for both data representation (like JSON/YAML) and data transformation (like JSONnet/jq), with lazy evaluation and strong composition principles.
 
-**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator) complete. Phase 2a (core types & inference) complete. Phase 2b (polymorphism) complete. Phase 3a (Rust-native builtins) + 3a-llt (stdlib loading) complete. Phase 3b (CLI + JSON output) is next. Hand-written parser (E2) deferred to Phase 6.
+**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator) complete. Phase 2a (core types & inference) complete. Phase 2b (polymorphism) complete. Phase 3a (Rust-native builtins) + 3a-llt (stdlib loading) complete. Phase 3b (CLI + JSON output) complete. Phase 3c ($include) is next. Hand-written parser (E2) deferred to Phase 6.
 
 ## Key Documents
 
@@ -26,28 +26,29 @@ The parser is built on [pest](https://pest.rs/) (PEG-based grammar in a separate
 | `src/grammar.pest` | PEG grammar (lexical + syntactic rules) |
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr` (including `Rest` for `...`/`...name`), `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/parser.rs` | pest pairs to AST conversion + unit tests |
-| `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, depth limit (256) |
-| `src/builtins.rs` | 28 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O), `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
-| `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
+| `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), fully lazy argument evaluation (call args wrapped as unevaluated thunks, builtin calls deferred via `PendingBuiltin`), `$_` implicit lambda desugaring, named args, variadics, arity checking, depth limit (256) |
+| `src/builtins.rs` | 27 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O), `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
+| `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization with `Unevaluated`, `PendingBuiltin`, `InProgress`, `Materialized` states), `Environment` (lexical scope chain), `BuiltinFn` signature |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, stack frames |
 | `src/types.rs` | Type system: `Type` enum (Int, IntLiteral, Float, String, StringLiteral, Bool, Number, Record, Function, TypeVar, Any), `RowRest` (Closed, Open, RowVar), `Substitution` (type variable bindings with `apply()`/`unify()`), `instantiate()` (fresh type variables per call site), `TypeEnv` (Rc-based scope chain with alias registry), `TypeError` |
 | `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call` (instantiate + unify + apply), `Fn@Return [Params]` resolution, row polymorphism (open/closed/row-var records) |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
-| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()` (parse + eval with stdlib env + display) |
-| `src/main.rs` | CLI: read file (max 10MB), parse, print AST |
+| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
+| `src/main.rs` | CLI (`llt` binary): `llt eval [OPTIONS] <FILE>` — evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing |
 | `stdlib/prelude.llt` | LLT standard library: all stdlib functions implementable in LLT itself |
 | `test_input.txt` | Example input demonstrating syntax |
 
 ### Dependencies
 
+- `clap 4` (derive) — CLI argument parsing
 - `pest 2.8` / `pest_derive 2.8` — PEG parser generator
 - `indexmap 2.7` — insertion-ordered maps for dict entries
-- `serde_json 1` — JSON parsing for `from-json` builtin
+- `serde_json 1` — JSON parsing/serialization for `from-json` builtin and CLI output
 
 ## Testing
 
 ### Unit Tests
-730 tests across `parser.rs`, `ast.rs`, `value.rs`, `error.rs`, `eval.rs`, `builtins.rs`, `types.rs`, `typecheck.rs`, and shared helpers in `test_util.rs`. Coverage includes every AST node type, Display/Debug formatting, access chains, special forms, annotations, document structure, static constraints, error cases, evaluator foundation types, core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn` creates closures, `call` with arity checking, named args with defaults, variadics, builtin calls, `$_` implicit lambda desugaring, TypeAlias), eval depth limiting, materialization span propagation, error path coverage (non-dict access, string key ranges, invalid key types), all 28 Rust-native builtins (arithmetic auto-promotion, division by zero, comparison cross-type, `if` selective materialization, dict operations, string operations, numeric floor/round with NaN/infinity guards, string parsing, eval/error/try/apply, type-of, from-json), stdlib env loading (root env + prelude), type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), subtyping (Number, structural records, function variance, open/closed/row-var records), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions (one-param, two-param, concrete types, higher-order, error cases), row polymorphism (`...` rest entries, open record access, closed record rejection), type variable unification (Hindley-Milner, instantiation, substitution application, literal promotions), and polymorphic function call checking (identity, multi-type-var, return-only type vars, arity mismatch fallthrough).
+825 tests across `parser.rs`, `ast.rs`, `value.rs`, `error.rs`, `eval.rs`, `builtins.rs`, `types.rs`, `typecheck.rs`, `lib.rs`, and shared helpers in `test_util.rs`. Coverage includes every AST node type, Display/Debug formatting, access chains, special forms, annotations, document structure, static constraints, error cases, evaluator foundation types, core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn` creates closures, `call` with arity checking, named args with defaults, variadics, builtin calls, `$_` implicit lambda desugaring, TypeAlias), eval depth limiting, materialization span propagation, error path coverage (non-dict access, string key ranges, invalid key types), all 27 Rust-native builtins (arithmetic auto-promotion, division by zero, comparison cross-type, `if` selective materialization, dict operations, string operations, numeric floor/round with NaN/infinity guards, string parsing, eval/error/try/apply, type-of, from-json), stdlib env loading (root env + prelude), type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), subtyping (Number, structural records, function variance, open/closed/row-var records), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions (one-param, two-param, concrete types, higher-order, error cases), row polymorphism (`...` rest entries, open record access, closed record rejection), type variable unification (Hindley-Milner, instantiation, substitution application, literal promotions), polymorphic function call checking (identity, multi-type-var, return-only type vars, arity mismatch fallthrough), and end-to-end pipeline integration (eval_file_with_input, JSON output, stdin JSON injection, display format, deep materialization).
 
 ### Corpus Tests (`tests/corpus/`)
 File-based test suite with auto-discovery. Each `.txt` file is parsed; valid inputs must succeed, invalid inputs must fail. Uses `===` as the delimiter between input and expected output (not `---`, which is a valid LLT document separator).
@@ -65,6 +66,10 @@ tests/corpus/
     edge_cases/     — empty input, whitespace
   invalid/
     syntax_errors/  — missing bracket, extra tokens, unexpected colon, missing value
+  eval/
+    builtins/       — builtin function evaluation
+    errors/         — expected eval failures
+    stdlib/         — stdlib function evaluation
 ```
 
 Add a test: create a `.txt` file in the appropriate directory, then `just test-corpus`.
@@ -77,7 +82,10 @@ All commands use containers (podman) — no local Rust installation required.
 just build          # Build (debug)
 just test           # Run all tests (unit + corpus)
 just test-corpus    # Run only corpus tests
-just run            # Parse test_input.txt
+just run            # Eval test_input.txt, output JSON
+just run-file FILE  # Eval a specific file
+just run-llt FILE   # Eval with LLT display format
+just run-json JSON FILE  # Eval with piped JSON stdin
 just check          # Fast compile check
 just fmt            # Format code
 just shell          # Interactive container shell

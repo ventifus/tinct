@@ -7,7 +7,7 @@
 # These functions depend on the following Rust-native builtins being available
 # in the parent environment:
 #
-#   Arithmetic:  +  -  *  /  div
+#   Arithmetic:  +  -  *  /
 #   Comparison:  <  =
 #   Control:     if
 #   Dict:        keys  length  merge  append
@@ -63,10 +63,14 @@ or: [fn [a b] [call $if $a true $b]]
 >=: [fn [a b] [call $not [call $< $a $b]]]
 
 # ============================================================================
-# Arithmetic (derived from +, -, *, /, div)
+# Arithmetic (derived from +, -, *, /)
 # ============================================================================
 
-mod: [fn [a b] [call $- $a [call $* [call $div $a $b] $b]]]
+# Integer quotient: truncates toward zero (like Clojure's quot).
+# Uses $/ (float division) then $trunc (toward-zero truncation to Int).
+quot: [fn [a b] [call $trunc [call $/ $a $b]]]
+
+mod: [fn [a b] [call $- $a [call $* [call $quot $a $b] $b]]]
 
 # ============================================================================
 # Numeric Conversion (derived from floor, round, +)
@@ -278,8 +282,8 @@ sort-by: [fn [cmp xs]
     [call $if [call $<= [call $length $xs] 1]
         $xs
         [call $sort-merge $cmp
-            [call $sort-by $cmp [call $take [call $div [call $length $xs] 2] $xs]]
-            [call $sort-by $cmp [call $drop [call $div [call $length $xs] 2] $xs]]]]]
+            [call $sort-by $cmp [call $take [call $quot [call $length $xs] 2] $xs]]
+            [call $sort-by $cmp [call $reindex [call $drop [call $quot [call $length $xs] 2] $xs]]]]]]
 
 sort-merge: [fn [cmp left right]
     [call $if [call $empty? $left]

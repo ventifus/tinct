@@ -1,0 +1,4 @@
+# words: split a string into words
+[call $words "hello world"]
+===
+Dict({0: String("hello"), 1: String("world")})

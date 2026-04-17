@@ -10,9 +10,13 @@ tests/corpus/
 │   ├── simple/      # Basic key-value pairs and simple structures
 │   ├── complex/     # Nested structures, metadata, larger examples
 │   └── edge_cases/  # Empty inputs, whitespace handling, etc.
-└── invalid/         # Inputs that should fail to parse
-    ├── syntax_errors/    # Bracket mismatches, unexpected tokens
-    └── semantic_errors/  # Future: Type errors, constraint violations
+├── invalid/         # Inputs that should fail to parse
+│   ├── syntax_errors/    # Bracket mismatches, unexpected tokens
+│   └── semantic_errors/  # Future: Type errors, constraint violations
+└── eval/            # Evaluator tests
+    ├── builtins/    # Builtin function evaluation
+    ├── errors/      # Expected eval failures
+    └── stdlib/      # Stdlib function evaluation
 ```
 
 ## Adding Tests
@@ -53,7 +57,7 @@ a valid LLT document separator.)
 ```
 [name: Alice]
 ===
-Dict([Entry { key: "name", value: "Alice" }])
+Dict({"name": String("Alice")})
 ```
 
 If no `===` delimiter is present, the test only checks that the input parses
