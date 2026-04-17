@@ -1,0 +1,4 @@
+# mod: remainder
+[call $mod 10 3]
+===
+Int(1)

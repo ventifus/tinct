@@ -1,0 +1,4 @@
+# not: negation
+[call $not true]
+===
+Bool(false)

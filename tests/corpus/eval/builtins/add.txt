@@ -1,0 +1,4 @@
+# + : integer addition
+[call $+ 3 4]
+===
+Int(7)

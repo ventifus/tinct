@@ -1,0 +1,4 @@
+# <=: less than or equal
+[call $<= 3 5]
+===
+Bool(true)

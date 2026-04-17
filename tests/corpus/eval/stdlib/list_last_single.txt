@@ -1,0 +1,4 @@
+# last: single element list
+[call $last [42]]
+===
+Int(42)

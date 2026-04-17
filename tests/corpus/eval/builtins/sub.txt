@@ -1,0 +1,4 @@
+# - : integer subtraction
+[call $- 10 3]
+===
+Int(7)

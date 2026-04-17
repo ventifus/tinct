@@ -1,0 +1,4 @@
+# lower : convert string to lowercase
+[call $lower "HELLO"]
+===
+String("hello")

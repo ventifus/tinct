@@ -1,0 +1,4 @@
+# try-or: successful computation returns result
+[call $try-or [fn [] 42] 0]
+===
+Int(42)

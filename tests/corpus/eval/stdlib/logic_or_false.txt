@@ -1,0 +1,4 @@
+# or: both false
+[call $or false false]
+===
+Bool(false)

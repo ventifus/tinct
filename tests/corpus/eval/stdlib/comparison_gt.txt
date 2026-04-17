@@ -1,0 +1,4 @@
+# >: greater than
+[call $> 5 3]
+===
+Bool(true)

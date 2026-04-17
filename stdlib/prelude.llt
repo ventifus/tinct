@@ -7,13 +7,13 @@
 # These functions depend on the following Rust-native builtins being available
 # in the parent environment:
 #
-#   Arithmetic:  +  -  *  /  div  mod
-#   Comparison:  =  <  >  <=  >=
+#   Arithmetic:  +  -  *  /  div
+#   Comparison:  <  =
 #   Control:     if
-#   Logic:       not
-#   Dict:        keys  length  merge
-#   Strings:     str  split  join  replace  upper  lower  trim  words
-#   Conversion:  to-int  to-float  floor  ceil  round
+#   Dict:        keys  length  merge  append
+#   String:      str  split  replace  upper  lower  trim
+#   Numeric:     floor  round
+#   Parsing:     to-int  to-float  (string-to-number only)
 #   Runtime:     eval  error  try  apply  type-of  from-json
 #
 # Helper functions use a -impl suffix to distinguish them from public API.
@@ -31,9 +31,7 @@
 # passing through function params makes the key a plain $k var_ref.
 make-entry: [fn [k v] [$k: $v]]
 
-# Append a value to the end of a list (integer-indexed dict).
-# Uses length as the new key, which is correct for dense 0..n keys.
-append: [fn [xs x] [call $merge $xs [call $make-entry [call $length $xs] $x]]]
+# `append` is a Rust-native builtin (O(1) amortized insert vs O(n) merge).
 
 # ============================================================================
 # Identity
@@ -46,11 +44,56 @@ identity: [fn [x] $x]
 # Logic
 # ============================================================================
 
+not: [fn [x] [call $if $x false true]]
+
 # Short-circuit AND: if a is false, b is never evaluated.
 and: [fn [a b] [call $if $a $b false]]
 
 # Short-circuit OR: if a is true, b is never evaluated.
 or: [fn [a b] [call $if $a true $b]]
+
+# ============================================================================
+# Comparison (derived from < and =)
+# ============================================================================
+
+>: [fn [a b] [call $< $b $a]]
+
+<=: [fn [a b] [call $not [call $< $b $a]]]
+
+>=: [fn [a b] [call $not [call $< $a $b]]]
+
+# ============================================================================
+# Arithmetic (derived from +, -, *, /, div)
+# ============================================================================
+
+mod: [fn [a b] [call $- $a [call $* [call $div $a $b] $b]]]
+
+# ============================================================================
+# Numeric Conversion (derived from floor, round, +)
+# ============================================================================
+
+ceil: [fn [x] [call $- 0 [call $floor [call $- 0 $x]]]]
+
+# Truncate toward zero.
+trunc: [fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]
+
+# ============================================================================
+# String (derived from str, split, filter)
+# ============================================================================
+
+join: [fn [sep xs]
+    [call $if [call $= [call $length $xs] 0]
+        ""
+        [call $join-impl $sep $xs [call $keys $xs] 1 [call $str $xs[0]]]]]
+
+join-impl: [fn [sep xs ks i acc]
+    [call $if [call $>= $i [call $length $ks]]
+        $acc
+        [call $join-impl $sep $xs $ks [call $+ $i 1]
+            [call $str $acc $sep [call $str $xs[$ks[$i]]]]]]]
+
+words: [fn [s]
+    [call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]]
 
 # ============================================================================
 # Control Flow
@@ -160,11 +203,17 @@ entries-step: [fn [xs ks i acc current-key]
 # Get the first element of a list.
 first: [fn [xs] $xs[0]]
 
-# Get the nth element of a list.
-nth: [fn [xs n] $xs[$n]]
+# Get the nth element by insertion-order position.
+# Supports negative indices: -1 is last, -2 is second-to-last, etc.
+nth: [fn [xs n]
+    [call $nth-impl $xs [call $keys $xs] $n [call $length $xs]]]
 
-# Get the last element of a list.
-last: [fn [xs] $xs[[call $- [call $length $xs] 1]]]
+nth-impl: [fn [xs ks n len]
+    [call $get $xs [call $get $ks [call $if [call $< $n 0] [call $+ $len $n] $n]]]]
+
+# Get the last element by insertion-order position.
+last: [fn [xs]
+    [call $get $xs [call $get [call $keys $xs] [call $- [call $length $xs] 1]]]]
 
 # All elements except the first, reindexed from 0.
 rest: [fn [xs] [call $rest-impl $xs 1 [call $length $xs] []]]

@@ -1,0 +1,4 @@
+# not false returns true
+[call $not false]
+===
+Bool(true)

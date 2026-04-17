@@ -321,7 +321,7 @@ mod tests {
     use super::*;
     use crate::test_util::sp;
 
-    // -- Expr::Display tests --
+    // --- Expr::Display tests ---
 
     #[test]
     fn test_display_range_access_full() {
@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(format!("{expr}"), "[10  20]");
     }
 
-    // -- Annotation::PropertyDict::Display tests --
+    // --- Annotation::PropertyDict::Display tests ---
 
     #[test]
     fn test_display_annotation_simple() {
@@ -593,7 +593,7 @@ mod tests {
         assert_eq!(format!("{ann}"), "[$type: $Number  $default: 42]");
     }
 
-    // -- Document::Display tests --
+    // --- Document::Display tests ---
 
     #[test]
     fn test_display_document_single_expression() {

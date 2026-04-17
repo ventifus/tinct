@@ -1,0 +1,4 @@
+# < : less-than comparison
+[call $< 3 10]
+===
+Bool(true)

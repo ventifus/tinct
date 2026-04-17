@@ -1,0 +1,4 @@
+# trim : remove leading and trailing whitespace
+[call $trim "  hello  "]
+===
+String("hello")

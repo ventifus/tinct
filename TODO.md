@@ -122,35 +122,35 @@ Build the end-to-end runtime. Builtins get proper type signatures from Phase 2.
 
 ### 3a: Rust-Native Builtins
 
-Depends on 1e + 2b. The 33 builtins that MUST be Rust (see DESIGN.md "Rust-Native vs LLT-Implemented Boundary"). Everything else is LLT in `stdlib/prelude.llt`.
+Depends on 1e + 2b. The 23 true primitives that MUST be Rust: operations LLT cannot express. Everything else is derived in LLT in `stdlib/prelude.llt`.
 
-- [ ] Builtin registration: populate root environment with `Value::Builtin` entries, each with a type signature
-- [ ] Arithmetic: `+`, `-`, `*`, `/`, `div`, `mod` with auto-promotion (Int+Int=Int, mixed=Float)
-- [ ] Comparison: `=`, `<`, `>`, `<=`, `>=`
-- [ ] Logic: `if` (selective materialization — only chosen branch), `not`
-- [ ] Dict primitives: `keys`, `length`, `merge` (right-biased)
-- [ ] Strings: `str` (concat/toString), `split`, `join`, `replace`, `upper`, `lower`, `trim`, `words`
-- [ ] Numeric conversion: `to-int`, `to-float`, `floor`, `ceil`, `round`
-- [ ] Evaluation control: `eval`, `error`, `try`, `apply`
-- [ ] Type introspection: `type-of`
-- [ ] I/O: `from-json`
+- [x] Builtin registration: populate root environment with `Value::Builtin` entries
+- [x] Arithmetic: `+`, `-`, `*`, `/`, `div` with auto-promotion (Int+Int=Int, mixed=Float)
+- [x] Comparison: `<`, `=`
+- [x] Control: `if` (selective materialization: only chosen branch evaluated)
+- [x] Dict primitives: `keys`, `length`, `merge` (right-biased)
+- [x] String: `str` (concat/toString), `split`, `replace`, `upper`, `lower`, `trim`
+- [x] Numeric: `floor`, `round` (Rust's f64::round, half-away-from-zero)
+- [x] Parsing: `to-int`, `to-float` (string-to-number only; numeric conversion is LLT)
+- [x] Evaluation control: `eval`, `error`, `try`, `apply`
+- [x] Type introspection: `type-of`
+- [x] I/O: `from-json`
 
 ### 3a-llt: LLT Stdlib Loading
 
 Depends on 3a. Load `stdlib/prelude.llt` to provide the rest of the stdlib.
 
-- [ ] `include_str!("../stdlib/prelude.llt")` to bundle at compile time
-- [ ] Parse and evaluate prelude with Rust builtins as parent environment
-- [ ] User code inherits from stdlib environment
-- [ ] Verify all prelude functions work end-to-end
+- [x] `include_str!("../stdlib/prelude.llt")` to bundle at compile time
+- [x] Parse and evaluate prelude with Rust builtins as parent environment
+- [x] User code inherits from stdlib environment
+- [x] Verify all prelude functions work end-to-end
 
 ### 3b: CLI + JSON Output
 
 Depends on 3a. After this step, `llt eval input.llt` produces JSON.
 
-- [ ] JSON serialization of Value (new dependency: `serde_json`)
+- [ ] JSON serialization of Value (`serde_json` already added)
 - [ ] `llt eval input.llt` — evaluate file, serialize final value as JSON to stdout
-- [ ] `$from-json` builtin — parse JSON string into LLT dict
 - [ ] Stdin input: parse stdin as JSON, inject as `$$` for the first document
 - [ ] `--format` flag: output as JSON (default), YAML, or LLT
 - [ ] `--eval` flag: deep-force all thunks before serializing (surface errors before partial output)
@@ -175,7 +175,7 @@ Ongoing throughout earlier phases, but final polish here.
 
 ## Pre-Phase 4: Stdlib Boundary Analysis — Complete
 
-- [x] Identify the minimal set of builtins that MUST be implemented in Rust (33 total: arithmetic, comparison, if/not, keys/length/merge, string ops, numeric conversion, eval/error/try/apply, type-of, from-json)
+- [x] Identify the minimal set of builtins that MUST be implemented in Rust (28 total: arithmetic, comparison, if, keys/length/merge/append, string ops, numeric conversion, eval/error/try/apply, type-of, from-json)
 - [x] Identify which stdlib functions CAN be implemented as LLT code (all control flow, collection ops, composition, list ops, sorting, sequences, assertions — implemented in `stdlib/prelude.llt`)
 - [x] Document the boundary in DESIGN.md with rationale for each Rust-native builtin (see "Rust-Native vs LLT-Implemented Boundary" section)
 - [x] Design the stdlib loading mechanism (`include_str!` prelude, Rust builtins → LLT stdlib → user code environment chain)

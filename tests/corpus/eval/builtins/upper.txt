@@ -1,0 +1,4 @@
+# upper : convert string to uppercase
+[call $upper "hello"]
+===
+String("HELLO")

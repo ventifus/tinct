@@ -1,0 +1,4 @@
+# empty?: empty dict
+[call $empty? []]
+===
+Bool(true)

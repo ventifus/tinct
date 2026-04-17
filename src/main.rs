@@ -13,22 +13,29 @@ fn main() {
         process::exit(1);
     }
 
-    let content = match fs::read_to_string(&args[1]) {
-        Ok(c) => c,
+    let file_size = match fs::metadata(&args[1]) {
+        Ok(m) => m.len() as usize,
         Err(e) => {
-            eprintln!("error: reading file: {e}");
+            eprintln!("error reading file: {e}");
             process::exit(1);
         }
     };
 
-    if content.len() > MAX_INPUT_SIZE {
+    if file_size > MAX_INPUT_SIZE {
         eprintln!(
             "error: input file is {} bytes, which exceeds the 10 MB limit ({} bytes)",
-            content.len(),
-            MAX_INPUT_SIZE
+            file_size, MAX_INPUT_SIZE
         );
         process::exit(1);
     }
+
+    let content = match fs::read_to_string(&args[1]) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error reading file: {e}");
+            process::exit(1);
+        }
+    };
 
     match parse(&content) {
         Ok(ast) => println!("{:#?}", ast),

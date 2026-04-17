@@ -1,0 +1,4 @@
+# ceil: integer passes through (floor returns int, negation preserves)
+[call $ceil 5]
+===
+Int(5)

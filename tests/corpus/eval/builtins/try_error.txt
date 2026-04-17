@@ -1,0 +1,4 @@
+# try + error : catch an error raised by error builtin
+[call $try [fn [] [call $error "boom"]]]
+===
+Dict({"err": String("boom")})

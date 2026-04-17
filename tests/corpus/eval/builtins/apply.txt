@@ -1,0 +1,6 @@
+# apply : call a function with args from a dict
+[f: [fn [x y] [call $+ $x $y]]]
+
+[call $apply $f [0: 3  1: 4]]
+===
+Int(7)

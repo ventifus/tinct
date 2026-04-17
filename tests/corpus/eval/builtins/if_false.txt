@@ -1,0 +1,4 @@
+# if : selects false branch
+[call $if false 1 2]
+===
+Int(2)

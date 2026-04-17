@@ -219,14 +219,6 @@ pub fn eval_document(
 
 // --- File Evaluation (multi-document pipeline) ---
 
-fn empty_dict_thunk(span: Span) -> Rc<Thunk> {
-    Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), span))
-}
-
-fn origin_span() -> Span {
-    Span::origin()
-}
-
 /// Evaluate a file: one or more documents separated by `---`.
 ///
 /// Documents are totally isolated -- they share no scope. Data flows between
@@ -244,7 +236,10 @@ pub fn eval_file(
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
     // $$ starts as empty dict for first document
-    let mut prev_output = empty_dict_thunk(origin_span());
+    let mut prev_output = Rc::new(Thunk::new_materialized(
+        Value::Dict(IndexMap::new()),
+        Span::origin(),
+    ));
 
     for doc in &file.documents {
         // Each document gets a fresh scope with only $$ bound
@@ -363,21 +358,27 @@ fn eval_call(
             env: closure_env,
             ..
         } => {
-            let call_env = bind_args(
+            // Evaluate positional args as thunks
+            let mut pos_thunks = Vec::with_capacity(args.len());
+            for arg in args {
+                pos_thunks.push(eval(arg, Rc::clone(env), depth + 1)?);
+            }
+            // Evaluate named args as thunks
+            let mut named_thunks = IndexMap::new();
+            for na in named_args {
+                let thunk = eval(&na.node.value, Rc::clone(env), depth + 1)?;
+                named_thunks.insert(na.node.name.clone(), thunk);
+            }
+            invoke_function(
                 &params,
-                args,
-                named_args,
-                env,
+                &body,
                 &closure_env,
-                call_span,
-                depth,
-            )?;
-            // Wrap the body as an unevaluated thunk in the call environment
-            Ok(Rc::new(Thunk::new_unevaluated(
-                (*body).clone(),
-                call_env,
+                &pos_thunks,
+                &named_thunks,
+                env,
                 *call_span,
-            )))
+                depth,
+            )
         }
         Value::Builtin { func, .. } => {
             // Evaluate positional args as thunks (lazy)
@@ -391,25 +392,58 @@ fn eval_call(
                 let thunk = eval(&na.node.value, Rc::clone(env), depth + 1)?;
                 named_thunks.insert(na.node.name.clone(), thunk);
             }
-            let result = func(&pos_thunks, &named_thunks)?;
+            let result = func(&pos_thunks, &named_thunks, depth + 1)?;
             Ok(Rc::new(Thunk::new_materialized(result, *call_span)))
         }
-        _ => Err(
-            EvalError::type_mismatch("Function or Builtin", func_val.type_name(), *call_span)
-                .into(),
-        ),
+        _ => Err(EvalError::type_mismatch("Function", func_val.type_name(), *call_span).into()),
     }
 }
 
-/// Bind call arguments to function parameters. Returns the new call environment.
+/// Invoke a user-defined function with pre-evaluated thunks.
+///
+/// Binds positional and named args to function params (respecting defaults and
+/// variadics), then wraps the body as an unevaluated thunk. This is the shared
+/// call path for both `eval_call` and `builtin_apply`.
+///
+/// `default_env` is the environment used to evaluate default expressions for
+/// optional params. For normal calls this is the caller's environment; for
+/// `apply` it is the closure environment.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_function(
+    params: &[Param],
+    body: &Rc<Spanned<Expr>>,
+    closure_env: &Rc<RefCell<Environment>>,
+    positional: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    default_env: &Rc<RefCell<Environment>>,
+    call_span: Span,
+    depth: usize,
+) -> Result<Rc<Thunk>, Box<EvalError>> {
+    let call_env = bind_args_thunks(
+        params,
+        positional,
+        named,
+        default_env,
+        closure_env,
+        &call_span,
+        depth,
+    )?;
+    // Wrap the body as an unevaluated thunk in the call environment
+    let body_expr: Spanned<Expr> = body.as_ref().clone();
+    Ok(Rc::new(Thunk::new_unevaluated(
+        body_expr, call_env, call_span,
+    )))
+}
+
+/// Bind pre-evaluated thunks to function parameters. Returns the new call environment.
 ///
 /// Handles positional args, named args (params with `default:` annotation),
 /// and variadic params (`...name`).
-fn bind_args(
+fn bind_args_thunks(
     params: &[Param],
-    args: &[Spanned<Expr>],
-    named_args: &[Spanned<NamedArg>],
-    caller_env: &Rc<RefCell<Environment>>,
+    positional: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    default_env: &Rc<RefCell<Environment>>,
     closure_env: &Rc<RefCell<Environment>>,
     call_span: &Span,
     depth: usize,
@@ -429,43 +463,45 @@ fn bind_args(
     let max_positional = regular_params.len();
 
     // Both variadic and non-variadic require at least required_count positional args
-    if args.len() < required_count {
-        return Err(EvalError::arity_mismatch(required_count, args.len(), *call_span).into());
+    if positional.len() < required_count {
+        return Err(EvalError::arity_mismatch(required_count, positional.len(), *call_span).into());
     }
 
     // Without variadic: positional args must not exceed max_positional
-    if variadic_param.is_none() && args.len() > max_positional {
-        return Err(EvalError::arity_mismatch(max_positional, args.len(), *call_span).into());
+    if variadic_param.is_none() && positional.len() > max_positional {
+        return Err(EvalError::arity_mismatch(max_positional, positional.len(), *call_span).into());
     }
 
     // Bind positional args to regular params
     for (i, param) in regular_params.iter().enumerate() {
-        let thunk = if i < args.len() {
+        let thunk = if i < positional.len() {
             // Positional arg provided
-            eval(&args[i], Rc::clone(caller_env), depth + 1)?
+            Rc::clone(&positional[i])
         } else if let Some(default_val) = get_default(param) {
             // Check if a named arg was provided for this param
-            if let Some(na) = named_args.iter().find(|na| na.node.name == param.name) {
-                eval(&na.node.value, Rc::clone(caller_env), depth + 1)?
+            if let Some(named_thunk) = named.get(&param.name) {
+                Rc::clone(named_thunk)
             } else {
                 // Use default
-                eval(&default_val, Rc::clone(caller_env), depth + 1)?
+                eval(&default_val, Rc::clone(default_env), depth + 1)?
             }
         } else {
             // This shouldn't happen due to arity check above
-            return Err(EvalError::arity_mismatch(required_count, args.len(), *call_span).into());
+            return Err(
+                EvalError::arity_mismatch(required_count, positional.len(), *call_span).into(),
+            );
         };
         call_env.borrow_mut().insert(param.name.clone(), thunk);
     }
 
     // Check for named args that target params already bound positionally
-    for na in named_args {
-        if let Some(idx) = regular_params.iter().position(|p| p.name == na.node.name) {
-            if idx < args.len() {
+    for (name, _) in named {
+        if let Some(idx) = regular_params.iter().position(|p| &p.name == name) {
+            if idx < positional.len() {
                 return Err(EvalError::new(
                     format!(
                         "parameter '{}' received both positional and named argument",
-                        na.node.name
+                        name
                     ),
                     *call_span,
                 )
@@ -475,31 +511,29 @@ fn bind_args(
     }
 
     // Handle named args that weren't consumed by positional binding
-    for na in named_args {
-        let already_bound = call_env.borrow().bindings.contains_key(&na.node.name);
+    for (name, thunk) in named {
+        let already_bound = call_env.borrow().bindings.contains_key(name);
         if !already_bound {
             // Check that the named arg corresponds to a param with default:
             let is_valid_param = regular_params
                 .iter()
-                .any(|p| p.name == na.node.name && get_default(p).is_some());
+                .any(|p| &p.name == name && get_default(p).is_some());
             if !is_valid_param {
                 return Err(EvalError::new(
-                    format!("unexpected named argument: {}", na.node.name),
+                    format!("unexpected named argument: {}", name),
                     *call_span,
                 )
                 .into());
             }
-            let thunk = eval(&na.node.value, Rc::clone(caller_env), depth + 1)?;
-            call_env.borrow_mut().insert(na.node.name.clone(), thunk);
+            call_env.borrow_mut().insert(name.clone(), Rc::clone(thunk));
         }
     }
 
     // Bind variadic param: collect remaining positional args into a dict with int keys
     if let Some(var_param) = variadic_param {
         let mut var_map: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
-        for (i, arg) in args.iter().enumerate().skip(max_positional) {
-            let thunk = eval(arg, Rc::clone(caller_env), depth + 1)?;
-            var_map.insert(Key::Int(i as i64 - max_positional as i64), thunk);
+        for (i, thunk) in positional.iter().enumerate().skip(max_positional) {
+            var_map.insert(Key::Int(i as i64 - max_positional as i64), Rc::clone(thunk));
         }
         let var_thunk = Rc::new(Thunk::new_materialized(Value::Dict(var_map), *call_span));
         call_env
@@ -1303,11 +1337,7 @@ mod tests {
             "got: {}",
             err.message
         );
-        assert!(
-            err.message.contains("Function or Builtin"),
-            "got: {}",
-            err.message
-        );
+        assert!(err.message.contains("Function"), "got: {}", err.message);
     }
 
     // --- Arity Checking ---
@@ -1648,6 +1678,7 @@ mod tests {
         fn add_builtin(
             args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
+            _depth: usize,
         ) -> Result<Value, Box<EvalError>> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;

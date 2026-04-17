@@ -1,0 +1,4 @@
+# = : equality comparison
+[call $= 5 5]
+===
+Bool(true)

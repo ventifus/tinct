@@ -1,0 +1,4 @@
+# from-json : parse JSON string into LLT value
+[call $from-json "{\"x\": 1, \"y\": true}"]
+===
+Dict({"x": Int(1), "y": Bool(true)})

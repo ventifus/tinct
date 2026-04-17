@@ -12,7 +12,7 @@ pub(crate) struct LltParser;
 /// Maximum nesting depth for bracket expressions.
 /// Enforced during AST construction, not during pest's parse phase.
 /// Pest recurses on Rust's call stack, so ~500+ nested brackets can
-/// overflow before this check fires. See Phase 2c (hand-written parser).
+/// overflow before this check fires. See Phase 6 (hand-written parser).
 const MAX_DEPTH: usize = 256;
 
 /// Parse LLT source text into a spanned File AST.

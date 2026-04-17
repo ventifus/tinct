@@ -10,10 +10,11 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, Expr, Param, Span, Spanned};
 use crate::error::EvalError;
 
-/// Signature for built-in functions: receives positional args and named args,
-/// returns a `Value` or an evaluation error.
+/// Signature for built-in functions: receives positional args, named args,
+/// and the current evaluation depth (for propagating `MAX_EVAL_DEPTH`
+/// through `materialize` calls).
 pub type BuiltinFn =
-    fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>) -> Result<Value, Box<EvalError>>;
+    fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize) -> Result<Value, Box<EvalError>>;
 
 // --- Key ---
 
@@ -72,11 +73,11 @@ pub enum Value {
         params: Rc<Vec<Param>>,
         body: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        /// Stored for future type-checking of function return types (Phase 3d).
         #[allow(dead_code)]
         return_ann: Option<Spanned<Annotation>>,
     },
     /// Rust-native built-in function
-    #[allow(dead_code)]
     Builtin { name: &'static str, func: BuiltinFn },
 }
 
@@ -90,7 +91,7 @@ impl Value {
             Value::Bool(_) => "Bool",
             Value::Dict(_) => "Dict",
             Value::Function { .. } => "Function",
-            Value::Builtin { .. } => "Builtin",
+            Value::Builtin { .. } => "Function",
         }
     }
 }
@@ -327,7 +328,7 @@ mod tests {
     use super::*;
     use crate::test_util::test_span;
 
-    // -- Key tests --
+    // --- Key tests ---
 
     #[test]
     fn test_key_hash_consistency() {
@@ -351,7 +352,7 @@ mod tests {
         assert_eq!(format!("{}", Key::String("hello".into())), "hello");
     }
 
-    // -- Value PartialEq tests --
+    // --- Value PartialEq tests ---
 
     #[test]
     fn test_value_partial_eq_primitives() {
@@ -400,6 +401,7 @@ mod tests {
         fn dummy(
             _: &[Rc<Thunk>],
             _: &IndexMap<String, Rc<Thunk>>,
+            _: usize,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
@@ -410,7 +412,7 @@ mod tests {
         assert_ne!(b.clone(), b);
     }
 
-    // -- Environment tests --
+    // --- Environment tests ---
 
     #[test]
     fn test_environment_get_current_scope() {
@@ -463,7 +465,7 @@ mod tests {
         assert!(!Rc::ptr_eq(&found, &parent_thunk));
     }
 
-    // -- Thunk tests --
+    // --- Thunk tests ---
 
     #[test]
     fn test_thunk_new_materialized() {
@@ -513,7 +515,7 @@ mod tests {
         );
     }
 
-    // -- Value::Display tests --
+    // --- Value::Display tests ---
 
     #[test]
     fn test_value_display_int() {
@@ -598,6 +600,7 @@ mod tests {
         fn dummy_builtin(
             _args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
+            _depth: usize,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
@@ -608,7 +611,7 @@ mod tests {
         assert_eq!(format!("{builtin}"), "<builtin test_fn>");
     }
 
-    // -- Value::Debug tests --
+    // --- Value::Debug tests ---
 
     #[test]
     fn test_value_debug_int() {
@@ -685,6 +688,7 @@ mod tests {
         fn dummy_builtin(
             _args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
+            _depth: usize,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }

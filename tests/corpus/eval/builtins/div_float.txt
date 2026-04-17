@@ -1,0 +1,4 @@
+# / : float division
+[call $/ 10 4]
+===
+Float(2.5)

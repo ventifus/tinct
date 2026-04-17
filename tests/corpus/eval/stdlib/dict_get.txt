@@ -1,0 +1,4 @@
+# get: access dict value by key
+[call $get [x: 1 y: 2] x]
+===
+Int(1)

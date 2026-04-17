@@ -1,0 +1,4 @@
+# has?: check integer key exists in list
+[call $has? [10 20 30] 1]
+===
+Bool(true)

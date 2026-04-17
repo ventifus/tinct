@@ -1,0 +1,4 @@
+# set: add/update key in dict
+[call $set [x: 1] y 2]
+===
+Dict({"x": Int(1), "y": Int(2)})

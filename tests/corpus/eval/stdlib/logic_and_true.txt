@@ -1,0 +1,4 @@
+# and: both true
+[call $and true true]
+===
+Bool(true)

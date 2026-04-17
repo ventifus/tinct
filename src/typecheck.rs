@@ -65,8 +65,7 @@ fn typecheck_document(
                             for (name, field_ty) in fields {
                                 new_env.insert(name.clone(), field_ty.clone());
                             }
-                            let mut alias_errs =
-                                register_type_aliases(expr, &mut new_env, &env);
+                            let mut alias_errs = register_type_aliases(expr, &mut new_env, &env);
                             errors.append(&mut alias_errs);
                             env = Rc::new(new_env);
                         }
@@ -451,8 +450,7 @@ fn infer_fn(
 
     let ret_type = match return_ann {
         Some(ann) => {
-            let declared =
-                resolve_annotation(&ann.node, env, ann.span).map_err(|e| vec![e])?;
+            let declared = resolve_annotation(&ann.node, env, ann.span).map_err(|e| vec![e])?;
             let inferred = infer_expr(body, &fn_env, counter)?;
             if !Type::is_subtype(&inferred, &declared) {
                 return Err(vec![TypeError::type_mismatch(&declared, &inferred, span)]);

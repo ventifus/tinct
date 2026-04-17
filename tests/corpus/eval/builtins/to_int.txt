@@ -1,0 +1,4 @@
+# to-int : parse string to integer
+[call $to-int "42"]
+===
+Int(42)

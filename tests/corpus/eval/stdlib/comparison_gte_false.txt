@@ -1,0 +1,4 @@
+# >=: less than
+[call $>= 3 5]
+===
+Bool(false)

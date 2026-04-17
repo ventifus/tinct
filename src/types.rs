@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::rc::Rc;
-use std::string::String as StdString;
+use std::string::String as StdString; // Alias avoids shadowing by Type::String
 
 use indexmap::IndexMap;
 
@@ -19,7 +19,7 @@ pub enum RowRest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::enum_variant_names)]
+#[allow(clippy::enum_variant_names)] // TypeVar starts with "Type"; renaming would hurt readability
 pub enum Type {
     Int,
     IntLiteral(i64),
@@ -271,9 +271,11 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
                 let keys2: BTreeSet<&StdString> = f2.keys().collect();
                 if keys1 != keys2 {
                     return Err(TypeError::new(
-                        format!("closed record field mismatch: expected [{}], got [{}]",
+                        format!(
+                            "closed record field mismatch: expected [{}], got [{}]",
                             f1.keys().cloned().collect::<Vec<_>>().join(", "),
-                            f2.keys().cloned().collect::<Vec<_>>().join(", ")),
+                            f2.keys().cloned().collect::<Vec<_>>().join(", ")
+                        ),
                         span,
                     ));
                 }
@@ -477,7 +479,7 @@ mod tests {
     use super::*;
     use crate::test_util::test_span;
 
-    // -- Type::Display --
+    // --- Type::Display ---
 
     #[test]
     fn test_display_primitives() {
@@ -572,7 +574,7 @@ mod tests {
         assert_eq!(format!("{ty}"), "Fn@Int []");
     }
 
-    // -- Type::is_subtype --
+    // --- Type::is_subtype ---
 
     #[test]
     fn test_subtype_same() {
@@ -821,7 +823,7 @@ mod tests {
         ));
     }
 
-    // -- Type::has_type_vars --
+    // --- Type::has_type_vars ---
 
     #[test]
     fn test_has_type_vars_primitive() {
@@ -856,7 +858,7 @@ mod tests {
         assert!(Type::Record(fields, RowRest::Closed).has_type_vars());
     }
 
-    // -- Type::collect_type_vars --
+    // --- Type::collect_type_vars ---
 
     #[test]
     fn test_collect_type_vars() {
@@ -871,7 +873,7 @@ mod tests {
         assert_eq!(vars.len(), 2);
     }
 
-    // -- TypeEnv --
+    // --- TypeEnv ---
 
     #[test]
     fn test_env_get_current() {
@@ -935,7 +937,7 @@ mod tests {
         assert_eq!(child.get_type_alias("T"), Some(&Type::String));
     }
 
-    // -- TypeError --
+    // --- TypeError ---
 
     #[test]
     fn test_type_error_display() {
@@ -988,7 +990,7 @@ mod tests {
         assert_eq!(err.message, "expected function type, got String");
     }
 
-    // -- Substitution --
+    // --- Substitution ---
 
     #[test]
     fn test_substitution_empty_apply() {
@@ -1058,7 +1060,7 @@ mod tests {
         );
     }
 
-    // -- Unification --
+    // --- Unification ---
 
     #[test]
     fn test_unify_identical_concrete() {
@@ -1188,7 +1190,10 @@ mod tests {
             span,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("closed record field mismatch"));
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("closed record field mismatch"));
     }
 
     #[test]
@@ -1267,7 +1272,7 @@ mod tests {
         assert!(unify(&Type::Int, &Type::Bool, &mut subst, span).is_err());
     }
 
-    // -- Instantiation --
+    // --- Instantiation ---
 
     #[test]
     fn test_instantiate_no_vars() {
@@ -1348,7 +1353,7 @@ mod tests {
         assert_eq!(subst.apply(&Type::TypeVar("b".into())), Type::String);
     }
 
-    // -- Occurs check (M1) --
+    // --- Occurs check (M1) ---
 
     #[test]
     fn test_unify_occurs_check_direct() {
@@ -1400,7 +1405,7 @@ mod tests {
         assert!(result.unwrap_err().message.contains("infinite type"));
     }
 
-    // -- RowVar substitution (M2) --
+    // --- RowVar substitution (M2) ---
 
     #[test]
     fn test_substitution_apply_row_var_to_record() {
@@ -1425,9 +1430,7 @@ mod tests {
     #[test]
     fn test_substitution_apply_row_var_to_type_var() {
         let mut subst = Substitution::new();
-        subst
-            .map
-            .insert("r".into(), Type::TypeVar("s".into()));
+        subst.map.insert("r".into(), Type::TypeVar("s".into()));
 
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
@@ -1449,7 +1452,7 @@ mod tests {
         assert_eq!(result, Type::Record(fields, RowRest::RowVar("r".into())));
     }
 
-    // -- Closed record key matching (M5) --
+    // --- Closed record key matching (M5) ---
 
     #[test]
     fn test_unify_closed_records_same_keys() {
@@ -1485,6 +1488,9 @@ mod tests {
             span,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("closed record field mismatch"));
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("closed record field mismatch"));
     }
 }

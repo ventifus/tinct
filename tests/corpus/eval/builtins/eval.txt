@@ -1,0 +1,4 @@
+# eval : deep-force all thunks
+[call $eval [x: [call $+ 1 2]]]
+===
+Dict({"x": Int(3)})

@@ -6,7 +6,7 @@ A **unified data representation and transformation language** combining JSON-lik
 
 **Vision:** One language for both data representation (like JSON/YAML) and data transformation (like JSONnet/jq), with lazy evaluation and strong composition principles.
 
-**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator) complete. Phase 2a (core types & inference) complete. Phase 2b (polymorphism) complete. Phase 3a (Rust-native builtins) is next. Hand-written parser (E2) deferred to Phase 6.
+**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator) complete. Phase 2a (core types & inference) complete. Phase 2b (polymorphism) complete. Phase 3a (Rust-native builtins) + 3a-llt (stdlib loading) complete. Phase 3b (CLI + JSON output) is next. Hand-written parser (E2) deferred to Phase 6.
 
 ## Key Documents
 
@@ -27,12 +27,13 @@ The parser is built on [pest](https://pest.rs/) (PEG-based grammar in a separate
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr` (including `Rest` for `...`/`...name`), `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/parser.rs` | pest pairs to AST conversion + unit tests |
 | `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, depth limit (256) |
-| `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain) |
+| `src/builtins.rs` | 28 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O), `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
+| `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, stack frames |
 | `src/types.rs` | Type system: `Type` enum (Int, IntLiteral, Float, String, StringLiteral, Bool, Number, Record, Function, TypeVar, Any), `RowRest` (Closed, Open, RowVar), `Substitution` (type variable bindings with `apply()`/`unify()`), `instantiate()` (fresh type variables per call site), `TypeEnv` (Rc-based scope chain with alias registry), `TypeError` |
 | `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call` (instantiate + unify + apply), `Fn@Return [Params]` resolution, row polymorphism (open/closed/row-var records) |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
-| `src/lib.rs` | Public API: `parse(input) -> Result<Spanned<File>, ParseError>`, `parse_expression` convenience |
+| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()` (parse + eval with stdlib env + display) |
 | `src/main.rs` | CLI: read file (max 10MB), parse, print AST |
 | `stdlib/prelude.llt` | LLT standard library: all stdlib functions implementable in LLT itself |
 | `test_input.txt` | Example input demonstrating syntax |
@@ -41,11 +42,12 @@ The parser is built on [pest](https://pest.rs/) (PEG-based grammar in a separate
 
 - `pest 2.8` / `pest_derive 2.8` — PEG parser generator
 - `indexmap 2.7` — insertion-ordered maps for dict entries
+- `serde_json 1` — JSON parsing for `from-json` builtin
 
 ## Testing
 
 ### Unit Tests
-432 tests across `parser.rs`, `ast.rs`, `value.rs`, `error.rs`, `eval.rs`, `types.rs`, `typecheck.rs`, and shared helpers in `test_util.rs`. Coverage includes every AST node type, Display/Debug formatting, access chains, special forms, annotations, document structure, static constraints, error cases, evaluator foundation types, core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn` creates closures, `call` with arity checking, named args with defaults, variadics, builtin calls, `$_` implicit lambda desugaring, TypeAlias), eval depth limiting, materialization span propagation, error path coverage (non-dict access, string key ranges, invalid key types), type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), subtyping (Number, structural records, function variance, open/closed/row-var records), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions (one-param, two-param, concrete types, higher-order, error cases), row polymorphism (`...` rest entries, open record access, closed record rejection), type variable unification (Hindley-Milner, instantiation, substitution application, literal promotions), and polymorphic function call checking (identity, multi-type-var, return-only type vars, arity mismatch fallthrough).
+730 tests across `parser.rs`, `ast.rs`, `value.rs`, `error.rs`, `eval.rs`, `builtins.rs`, `types.rs`, `typecheck.rs`, and shared helpers in `test_util.rs`. Coverage includes every AST node type, Display/Debug formatting, access chains, special forms, annotations, document structure, static constraints, error cases, evaluator foundation types, core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn` creates closures, `call` with arity checking, named args with defaults, variadics, builtin calls, `$_` implicit lambda desugaring, TypeAlias), eval depth limiting, materialization span propagation, error path coverage (non-dict access, string key ranges, invalid key types), all 28 Rust-native builtins (arithmetic auto-promotion, division by zero, comparison cross-type, `if` selective materialization, dict operations, string operations, numeric floor/round with NaN/infinity guards, string parsing, eval/error/try/apply, type-of, from-json), stdlib env loading (root env + prelude), type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), subtyping (Number, structural records, function variance, open/closed/row-var records), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions (one-param, two-param, concrete types, higher-order, error cases), row polymorphism (`...` rest entries, open record access, closed record rejection), type variable unification (Hindley-Milner, instantiation, substitution application, literal promotions), and polymorphic function call checking (identity, multi-type-var, return-only type vars, arity mismatch fallthrough).
 
 ### Corpus Tests (`tests/corpus/`)
 File-based test suite with auto-discovery. Each `.txt` file is parsed; valid inputs must succeed, invalid inputs must fail. Uses `===` as the delimiter between input and expected output (not `---`, which is a valid LLT document separator).
@@ -82,7 +84,7 @@ just shell          # Interactive container shell
 just clean          # Clean build artifacts
 ```
 
-Container: Rust 1.83, named volumes for `target/` and cargo cache, host UID/GID.
+Container: Rust 1.85, named volumes for `target/` and cargo cache, host UID/GID.
 
 ## Parser Design Notes
 
@@ -94,4 +96,4 @@ Key implementation details for anyone modifying the grammar or parser:
 - **`var_ident` and `bare_word_char` use denylist**: Any character except structural delimiters (whitespace, `[]`, `:`, `;`, `#`, `"`, `@`) is valid. `var_ident` also excludes `.` (dot access). `bare_word_char` also excludes `$` (var_ref sigil). This means `$$` is VarRef("$"), `$$foo` is VarRef("$foo"), `$0` is valid, etc.
 - **Document structure**: `file > document > expression`. `---` separates documents (total isolation, `$$` carries output). Sequential expressions within a document form a scope chain.
 - **`doc_separator` uses `!bare_word_char` lookahead**: Prevents `----` from matching as a separator. The `!doc_separator` lookahead in `expression` stops documents from consuming `---`.
-- **Pest stack overflow on deep nesting**: Pest recurses on Rust's call stack for nested brackets (`value -> bracket_expr -> dict_entries -> entry -> value`). The app-level `MAX_DEPTH` (256) check fires during AST construction, not during pest's parse phase. Inputs with ~500+ nested brackets can overflow the 8MB default stack before any app check fires. Accepted limitation of pest; resolved by Phase 2c (hand-written iterative parser).
+- **Pest stack overflow on deep nesting**: Pest recurses on Rust's call stack for nested brackets (`value -> bracket_expr -> dict_entries -> entry -> value`). The app-level `MAX_DEPTH` (256) check fires during AST construction, not during pest's parse phase. Inputs with ~500+ nested brackets can overflow the 8MB default stack before any app check fires. Accepted limitation of pest; resolved by Phase 6 (hand-written iterative parser).

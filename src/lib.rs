@@ -1,7 +1,8 @@
-//! Parser and evaluator for the Lazy Lisp Transformer language.
+//! Parser, evaluator, type system, and builtins for the Lazy Lisp Transformer language.
 //!
 //! [`parse`] takes an input string and returns a fully-spanned `File` AST (one or more documents).
 //! [`parse_expression`] is a convenience wrapper that parses a single expression.
+//! [`eval_source`] parses and evaluates LLT source with the standard library environment.
 
 pub mod ast;
 pub(crate) mod error;
@@ -15,12 +16,11 @@ pub(crate) mod typecheck;
 #[allow(dead_code)]
 pub(crate) mod types;
 pub(crate) mod value;
+// Phase 3a: Rust-native builtin functions.
+pub(crate) mod builtins;
 
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
 pub use parser::{parse, parse_expression, ParseError};
-
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// Parse and evaluate LLT source, returning the materialized result as a displayable string.
 ///
@@ -29,7 +29,7 @@ use std::rc::Rc;
 /// eval API will be designed in Phase 3b.
 pub fn eval_source(input: &str) -> Result<String, String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
-    let env = Rc::new(RefCell::new(value::Environment::new()));
+    let env = builtins::create_stdlib_env()?;
     let thunk = eval::eval_file(&file.node, env, 0).map_err(|e| format!("{e}"))?;
     let val = eval::materialize(&thunk, None, 0).map_err(|e| format!("{e}"))?;
     deep_materialize_to_string(&val, 0).map_err(|e| format!("{e}"))
@@ -46,7 +46,7 @@ fn deep_materialize_to_string(
     val: &value::Value,
     depth: usize,
 ) -> Result<String, Box<error::EvalError>> {
-    if depth > eval::MAX_EVAL_DEPTH {
+    if depth >= eval::MAX_EVAL_DEPTH {
         return Err(error::EvalError::new(
             format!("maximum display depth exceeded ({})", eval::MAX_EVAL_DEPTH),
             ast::Span::origin(),

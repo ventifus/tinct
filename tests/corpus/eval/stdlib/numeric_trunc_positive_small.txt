@@ -1,0 +1,4 @@
+# trunc: truncate small positive float
+[call $trunc 0.9]
+===
+Int(0)

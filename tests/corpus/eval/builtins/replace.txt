@@ -1,0 +1,4 @@
+# replace : replace substring
+[call $replace "world" "LLT" "hello world"]
+===
+String("hello LLT")

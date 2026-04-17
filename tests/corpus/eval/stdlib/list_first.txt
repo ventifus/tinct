@@ -1,0 +1,4 @@
+# first: get first element
+[call $first [10 20 30]]
+===
+Int(10)
