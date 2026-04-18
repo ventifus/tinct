@@ -139,7 +139,8 @@ pub fn eval(
                     actual == expected
                 };
                 if !matches {
-                    if let Some(default_expr) = annotation.node.get_property("default") {
+                    if let Some(default_expr) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                    {
                         return eval(default_expr, env, depth + 1);
                     }
                     return Err(EvalError::new(
@@ -318,7 +319,7 @@ fn eval_dict(
             Some(key_expr) => eval_key(key_expr, parent_env, depth)?,
             None => {
                 let k = Key::Int(auto_index);
-                // Overflow unreachable: MAX_EVAL_DEPTH bounds nesting, so entry count << i64::MAX.
+                // Overflow unreachable: memory exhaustion prevents a single dict from reaching i64::MAX entries.
                 auto_index += 1;
                 k
             }
@@ -599,7 +600,10 @@ fn bind_args_thunks(
     if let Some(var_param) = variadic_param {
         let mut var_map: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
         for (i, thunk) in positional.iter().enumerate().skip(max_positional) {
-            var_map.insert(Key::Int(i as i64 - max_positional as i64), Rc::clone(thunk));
+            var_map.insert(
+                Key::Int(i64::try_from(i - max_positional).expect("collection too large")),
+                Rc::clone(thunk),
+            );
         }
         let var_thunk = Rc::new(Thunk::new_materialized(Value::Dict(var_map), *call_span));
         call_env

@@ -2,9 +2,9 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use lazy_lisp_transformer::{
-    create_stdlib_env, deep_materialize, eval_file_with_input, json_to_value, materialize, parse,
-    set_include_context, value_to_display_string, value_to_json, IncludeContext, Thunk, Value,
-    MAX_FILE_SIZE,
+    clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
+    json_to_value, materialize, parse, set_include_context, value_to_display_string, value_to_json,
+    IncludeContext, Thunk, Value, MAX_FILE_SIZE,
 };
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -12,7 +12,9 @@ use std::io::{self, IsTerminal, Read};
 use std::process;
 use std::rc::Rc;
 
-/// Lazy Lisp Transformer — a unified data representation and transformation language.
+const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+/// Lazy Lisp Transformer -- a unified data representation and transformation language.
 #[derive(Parser)]
 #[command(name = "llt", version, about)]
 struct Cli {
@@ -48,11 +50,8 @@ enum OutputFormat {
 fn main() {
     let cli = Cli::parse();
 
-    // Spawn the main work on a thread with a 64 MB stack to handle deeply
-    // nested inputs that overflow pest's recursive descent on the default
-    // 8 MB stack (see CLAUDE.md: "Pest stack overflow on deep nesting").
     let result = std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
+        .stack_size(WORKER_STACK_SIZE)
         .spawn(move || match cli.command {
             Commands::Eval { format, eval, file } => run_eval(&file, &format, eval),
         })
@@ -110,45 +109,57 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
         stdlib_env: Rc::clone(&env),
     });
 
-    // Convert stdin JSON to initial $$ thunk
-    let initial_input = stdin_input.map(|val| {
-        Rc::new(Thunk::new_materialized(
-            val,
-            lazy_lisp_transformer::Span::origin(),
-        ))
-    });
+    // Wrap evaluation logic in a closure so that clear_include_context() runs
+    // on all exit paths (success and error), preventing stale thread-local state.
+    let result = (|| {
+        // Convert stdin JSON to initial $$ thunk
+        let initial_input = stdin_input.map(|val| {
+            Rc::new(Thunk::new_materialized(
+                val,
+                lazy_lisp_transformer::Span::origin(),
+            ))
+        });
 
-    // Evaluate
-    let thunk =
-        eval_file_with_input(&ast.node, env, initial_input, 0).map_err(|e| format!("{e}"))?;
+        // Evaluate
+        let thunk =
+            eval_file_with_input(&ast.node, env, initial_input, 0).map_err(|e| format!("{e}"))?;
 
-    // Materialize the result
-    let val = materialize(&thunk, None, 0).map_err(|e| format!("{e}"))?;
+        // Materialize the result
+        let val = materialize(&thunk, None, 0).map_err(|e| format!("{e}"))?;
 
-    // Optionally deep-force all thunks
-    let val = if force_eval {
-        deep_materialize(&val, 0).map_err(|e| format!("{e}"))?
-    } else {
-        val
-    };
+        // Optionally deep-force all thunks
+        let val = if force_eval {
+            deep_materialize(&val, 0).map_err(|e| format!("{e}"))?
+        } else {
+            val
+        };
 
-    // Serialize and output
-    match format {
-        OutputFormat::Json => {
-            let json = value_to_json(&val, 0).map_err(|e| format!("{e}"))?;
-            let output = serde_json::to_string_pretty(&json)
-                .map_err(|e| format!("JSON serialization error: {e}"))?;
-            println!("{output}");
+        // Serialize and output
+        match format {
+            OutputFormat::Json => {
+                let json = value_to_json(&val, 0).map_err(|e| format!("{e}"))?;
+                let output = serde_json::to_string_pretty(&json)
+                    .map_err(|e| format!("JSON serialization error: {e}"))?;
+                println!("{output}");
+            }
+            OutputFormat::Llt => {
+                // Deep-materialize for display (value_to_display_string needs it).
+                // Skip if --eval already deep-materialized above.
+                let display_val = if force_eval {
+                    &val
+                } else {
+                    &deep_materialize(&val, 0).map_err(|e| format!("{e}"))?
+                };
+                let output = value_to_display_string(display_val, 0).map_err(|e| format!("{e}"))?;
+                println!("{output}");
+            }
         }
-        OutputFormat::Llt => {
-            // Deep-materialize for display (value_to_display_string needs it)
-            let forced = deep_materialize(&val, 0).map_err(|e| format!("{e}"))?;
-            let output = value_to_display_string(&forced, 0).map_err(|e| format!("{e}"))?;
-            println!("{output}");
-        }
-    }
 
-    Ok(())
+        Ok(())
+    })();
+
+    clear_include_context();
+    result
 }
 
 /// Read LLT source from a file path or stdin (when path is `-`).

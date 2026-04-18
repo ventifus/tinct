@@ -1,0 +1,4 @@
+# get-or: returns value when key is present
+[call $get-or [a: 1] a 99]
+===
+Int(1)

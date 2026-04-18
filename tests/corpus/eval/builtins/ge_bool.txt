@@ -1,0 +1,4 @@
+# >= : greater-than-or-equal on Bool (derived from <)
+[call $>= true true]
+===
+Bool(true)

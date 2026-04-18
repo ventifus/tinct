@@ -1,28 +1,25 @@
+# Helper functions (scope chain -- not in output)
 [
-    # Configuration example
+    double: [fn [x] [call $* $x 2]]
+]
+
+# Data output
+[
     base: [timeout: 30  retries: 3]
     dev:  [call $merge $base [env: dev]]
     prod: [call $merge $base [env: prod  timeout: 60]]
 
-    # Function definition
-    double: [fn@Number [x@Number] [call $* $x 2]]
-
-    # Pipeline
-    active-names: [call $-> $data.users
-        [partial $where active $= true]
-        [partial $pluck name]
-        $sort]
-
-    # Conditional (stdlib function, returns body or [])
-    debug: [call $when $is-dev? [trace: on  verbose: true]]
-
-    # Type assertion
-    port: [@Number $config.port]
-
-    # Data
     users: [
         [name: Alice  age: 30  active: true]
         [name: Bob    age: 25  active: false]
         [name: Carol  age: 35  active: true]
     ]
+
+    active-names: [call $sort
+        [call $map [fn [u] $u.name]
+            [call $filter [fn [u] $u.active] $users]]]
+
+    port: [@Number 8080]
+    doubled-timeout: [call $double $base.timeout]
+    user-count: [call $length $users]
 ]

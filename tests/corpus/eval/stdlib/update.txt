@@ -1,0 +1,4 @@
+# update: apply a function to a key's value in a dict
+[call $update [x: 1] x [fn [v] [call $+ $v 10]]]
+===
+Dict({"x": Int(11)})

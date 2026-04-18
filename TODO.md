@@ -128,7 +128,7 @@ Depends on 1e + 2b. The 28 true primitives that MUST be Rust: operations LLT can
 - [x] Arithmetic: `+`, `-`, `*`, `/` with auto-promotion (Int+Int=Int, mixed=Float)
 - [x] Comparison: `<`, `=`
 - [x] Control: `if` (selective materialization: only chosen branch evaluated)
-- [x] Dict primitives: `keys`, `length`, `merge` (right-biased)
+- [x] Dict primitives: `keys`, `length`, `merge` (right-biased), `append`
 - [x] String: `str` (concat/toString), `split`, `replace`, `upper`, `lower`, `trim`
 - [x] Numeric: `floor`, `round` (Rust's f64::round, half-away-from-zero)
 - [x] Parsing: `to-int`, `to-float` (string-to-number only; numeric conversion is LLT)
@@ -185,17 +185,19 @@ Ongoing throughout earlier phases, but final polish here.
 
 ## Phase 4: Stdlib Validation & Expansion
 
-The LLT stdlib is implemented in `stdlib/prelude.llt` (already working; 61 corpus test files cover stdlib functions). This phase validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in Phase 3a. LLT-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
+The LLT stdlib is implemented in `stdlib/prelude.llt` (already working; 79 corpus test files cover stdlib functions). This phase validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in Phase 3a. LLT-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
 
 ### Validate prelude functions
 
 - [x] Run prelude end-to-end with evaluator and fix any runtime bugs
-- [ ] Test each LLT stdlib function against expected behavior
-- [ ] Performance check: identify any functions that need Rust reimplementation for practical use
+- [x] Test each LLT stdlib function against expected behavior (79 corpus tests covering all public stdlib functions)
+- [x] Performance check: identify any functions that need Rust reimplementation for practical use (see below)
+- [x] Unify `value_to_display_string` and `value_to_json` via shared visitor pattern (analyzed: kept separate — divergent leaf rendering, error handling, and dict assembly means a visitor adds more code than it removes)
+- [x] Clear thread-local `INCLUDE_CTX` after evaluation for library API safety (`clear_include_context()`)
 
 ### Remaining items not yet in prelude
 
-- [ ] `lazy-seq` — lazy infinite sequence constructor (may need Rust support)
+- [ ] `lazy-seq` — lazy infinite sequence constructor (needs new `Value::LazySeq` variant with cons-cell approach: lazy head + lazy tail thunk; fundamentally changes the "everything is a dict" invariant — requires design work)
 
 ### Deferred to stdlib
 
@@ -270,6 +272,16 @@ Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed w
 - [ ] Rename `src/parser2.rs` to `src/parser.rs`
 - [ ] Update CLAUDE.md, README.md, SPEC.md references
 
+## Performance: Stdlib Rust Reimplementations
+
+Nearly all accumulator-based stdlib functions are O(n²) due to `merge`/`append` materializing and cloning the growing accumulator IndexMap on every iteration. Sort is O(n² log n) because `sort-merge` uses `cons` (O(n)) per element.
+
+Highest-impact Rust reimplementations:
+- `map`, `filter`, `reduce` — universal collection ops, used everywhere
+- `rest`, `cons`, `concat`, `reverse` — list primitives, used by sort
+- `range` — frequently used for index generation
+- `sort-by` / `sort-merge` — single Rust builtin using Vec::sort_by would be O(n log n)
+
 ## Phase 7: Full Row-Variable Unification (Remy-Style)
 
 Replace the current closed-strict/open-lenient record unification with full Remy-style row-variable unification. Row variables become first-class participants in type inference, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
@@ -296,3 +308,26 @@ Design and implement filesystem sandboxing for `$include` and any future I/O ope
 - [ ] Test: `../` traversal beyond sandbox root fails
 - [ ] Test: absolute paths outside sandbox fail
 - [ ] Test: symlinks pointing outside sandbox fail
+
+## Documentation Divergences (DESIGN.md / SPEC.md / Code)
+
+Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-18).
+
+### DESIGN.md vs Code
+
+- [x] **`<` does not work on Bool** — Added Bool support to `builtin_lt` with `false < true` ordering (consistent with Haskell, Python, Rust). Since `>`, `<=`, `>=` derive from `<`, all comparison operators now work on Bool.
+- [x] **`--eval` CLI flag undocumented** — Added to DESIGN.md CLI examples section.
+- [x] **`-` stdin source undocumented** — Added to DESIGN.md CLI examples section.
+- [x] **`type-of` Builtin→Function mapping undocumented** — Documented in DESIGN.md materialization behavior table.
+- [x] **JSON null→empty dict mapping undocumented** — Documented in DESIGN.md "No Null" section.
+- [x] **Dict equality always false undocumented** — Documented in DESIGN.md comparison operator description.
+- [x] **`make-entry` documentation inconsistency** — Renamed "Internal Helpers" to "Utility Functions" with clarification.
+
+### SPEC.md vs Code
+
+- [x] **Row polymorphism marked as "deferred to Phase 2b"** — Updated to document row polymorphism as implemented.
+- [x] **Rest entry exemption from positional-before-named** — Added exemption note to SPEC Section 5.1.
+- [x] **MAX_PARSE_DEPTH not in SPEC Section 5** — Added as SPEC Section 5.5.
+- [x] **Annotation bracket restriction undocumented** — Added as SPEC Section 5.6.
+- [x] **Parameter-after-variadic implicit** — Added explicit error case to SPEC Section 5.4.
+- [x] **Duplicate VarRef key detection extends SPEC 5.3** — Updated SPEC Section 5.3 to document VarRef key duplicate detection.

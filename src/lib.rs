@@ -8,10 +8,12 @@
 //! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
-//! - [`set_include_context`] / [`IncludeContext`] -- configure `$include` for file-based evaluation
+//! - [`set_include_context`] / [`clear_include_context`] / [`IncludeContext`] -- configure `$include` for file-based evaluation
 //! - [`json_to_value`] -- convert `serde_json::Value` to LLT `Value`
 //! - [`value_to_json`] -- convert LLT `Value` to `serde_json::Value`
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
+//! - [`MAX_EVAL_DEPTH`] -- recursion limit for evaluation (256)
+//! - [`MAX_FILE_SIZE`] -- file size limit for `$include` and stdin (10 MB)
 
 pub mod ast;
 pub(crate) mod error;
@@ -35,7 +37,8 @@ pub use eval::{deep_materialize, eval_file, eval_file_with_input, materialize, M
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, and include context.
 pub use builtins::{
-    create_stdlib_env, json_to_value, set_include_context, IncludeContext, MAX_FILE_SIZE,
+    clear_include_context, create_stdlib_env, json_to_value, set_include_context, IncludeContext,
+    MAX_FILE_SIZE,
 };
 
 /// Error types with source spans and stack traces.
@@ -44,8 +47,9 @@ pub use error::{EvalError, StackFrame};
 pub use value::{Environment, Key, Thunk, Value};
 
 /// Parse and evaluate LLT source, returning the result in **LLT display format**
-/// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) — not JSON.
+/// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) -- not JSON.
 ///
+/// Runs advisory type checking before evaluation (type errors are ignored).
 /// The output format recursively materializes all values (including dict entries)
 /// into a readable representation. Primarily used for testing and corpus validation.
 /// For JSON output, use [`value_to_json`] after evaluation instead.
@@ -59,6 +63,8 @@ pub fn eval_source(input: &str) -> Result<String, String> {
     let forced = eval::deep_materialize(&val, 0).map_err(|e| format!("{e}"))?;
     value_to_display_string(&forced, 0).map_err(|e| format!("{e}"))
 }
+
+// value_to_json and value_to_display_string are kept separate; their logic diverges too much for a shared visitor.
 
 /// Convert a materialized [`Value`](value::Value) to a [`serde_json::Value`].
 ///
@@ -351,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_json_dict_array_starting_at_one() {
-        // Keys 1, 2, 3 — not starting from 0, so object
+        // Keys 1, 2, 3 -- not starting from 0, so object
         let mut map = IndexMap::new();
         map.insert(Key::Int(1), thunk(Value::Int(10)));
         map.insert(Key::Int(2), thunk(Value::Int(20)));

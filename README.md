@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phase 0 (parser), Phase 1a-1e (evaluator), Phase 2a (core types & inference), Phase 2b (polymorphism), Phase 3a (Rust-native builtins), Phase 3a-llt (stdlib loading), Phase 3b (CLI + JSON output), Phase 3c ($include), and Phase 3d (error reporting polish) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, LLT standard library, comprehensive test suite (925 tests: 871 unit + 49 CLI integration + 5 corpus). Phase 4 (stdlib validation & expansion) is next.
+**Status:** Phases 0-4 complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, LLT standard library (79 corpus tests covering all public functions), comprehensive test suite (929 tests: 875 unit + 49 CLI integration + 5 corpus). Phase 5 (tooling) is next.
 
 ## Syntax at a Glance
 
@@ -21,10 +21,9 @@ A **unified data representation and transformation language** that combines JSON
     double: [fn@Number [x@Number] [call $* $x 2]]
 
     # Pipelines -- chain transformations
-    active-names: [call $-> $users
-        [call $where active $= true]
-        [call $pluck name]
-        $sort]
+    active-names: [call $sort
+        [call $map [fn [u] $u.name]
+            [call $filter [fn [u] $u.active] $users]]]
 ]
 ```
 
@@ -51,7 +50,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Access chains** -- dot access, bracket access, range expressions, type assertions, annotated access (Phase 1c)
 - **Document evaluation** -- multi-expression scope chains, multi-document `$$` pipeline with lazy passing (Phase 1d)
 - **Function evaluation** -- `fn`/`call` with closures, `$_` implicit lambda desugaring, named args with defaults, variadics, arity checking (Phase 1e)
-- **Type system** -- `Type` enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` scope chain, `TypeError` reporting (Phase 2a)
+- **Type system** -- `Type` enum (Int, IntLiteral, Float, Str, StringLiteral, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` scope chain, `TypeError` reporting (Phase 2a)
 - **Type checker** -- `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion (Phase 2a)
 - **Polymorphism** -- Hindley-Milner unification, `Fn@Return [Params]` function type expressions, row polymorphism (open/closed/row-var records), type variable instantiation per call site (Phase 2b)
 - **Rust-native builtins** -- 28 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O) with `standard_builtins()` registry (Phase 3a + 3c)
@@ -88,12 +87,17 @@ A **unified data representation and transformation language** that combines JSON
     # Compose environments via merge
     production: [call $merge $base [timeout: 60  env: production]]
 
+    # Inline data
+    users: [
+        [name: Alice  role: admin  active: true]
+        [name: Bob    role: user   active: false]
+        [name: Carol  role: admin  active: true]
+    ]
+
     # Transform data -- lazy, only computed when accessed
-    users: [call $from-json [call $read-file "users.json"]]
-    admin-names: [call $-> $users
-        [call $where role $= admin]
-        [call $pluck name]
-        $sort]
+    active-admins: [call $sort
+        [call $map [fn [u] $u.name]
+            [call $filter [fn [u] [call $and $u.active [call $= $u.role admin]]] $users]]]
 ]
 ```
 
@@ -140,7 +144,7 @@ echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as $$
 | `src/types.rs` | Type system: `Type` enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any), `RowRest` (Closed, Open, RowVar), `Substitution` (unification), `TypeEnv` (Rc-based scope chain), `TypeError` |
 | `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, `Fn@Return [Params]` resolution, row polymorphism |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
-| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `set_include_context()`, `IncludeContext`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
+| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `set_include_context()`, `clear_include_context()`, `IncludeContext`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
 | `src/main.rs` | CLI (`llt` binary): `llt eval [OPTIONS] <FILE>` -- evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing, `$include` context setup |
 | `stdlib/prelude.llt` | LLT standard library: stdlib functions written in LLT itself |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
@@ -154,7 +158,7 @@ echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as $$
 
 ### Unit Tests
 
-925 tests (871 unit + 49 CLI integration + 5 corpus) across multiple modules covering:
+929 tests (875 unit + 49 CLI integration + 5 corpus) across multiple modules covering:
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
 - **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `$_` implicit lambda desugaring, TypeAlias), depth limiting, and materialization span propagation

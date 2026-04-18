@@ -1,0 +1,4 @@
+# when: returns empty dict when predicate is false
+[call $when false 42]
+===
+Dict({})

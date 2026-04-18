@@ -1,0 +1,4 @@
+# reindex: rebuild collection with dense 0..n integer keys
+[call $reindex [a: 1 b: 2]]
+===
+Dict({0: Int(1), 1: Int(2)})

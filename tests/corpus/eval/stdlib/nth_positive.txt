@@ -1,0 +1,4 @@
+# nth: get element by positive index
+[call $nth [a b c] 1]
+===
+String("b")

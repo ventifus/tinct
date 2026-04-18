@@ -1,0 +1,4 @@
+# unless: returns empty dict when predicate is true
+[call $unless true 42]
+===
+Dict({})

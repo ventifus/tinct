@@ -31,13 +31,13 @@ use crate::value::{BuiltinFn, Environment, Key, Thunk, Value};
 /// Maximum file size for reading LLT files: 10 MB.
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
-/// Thread-local context for `$include` — provides filesystem paths, cycle
+/// Thread-local context for `$include` -- provides filesystem paths, cycle
 /// detection, and the stdlib environment to the builtin without changing the
 /// `BuiltinFn` signature.
 pub struct IncludeContext {
     /// Directory of the currently-evaluating file (for relative path resolution).
     pub base_dir: PathBuf,
-    /// Canonical paths currently being included — push before recursing, pop after.
+    /// Canonical paths currently being included -- push before recursing, pop after.
     pub include_guard: Rc<RefCell<HashSet<PathBuf>>>,
     /// The stdlib environment to use when evaluating included files.
     pub stdlib_env: Rc<RefCell<Environment>>,
@@ -54,6 +54,16 @@ thread_local! {
 pub fn set_include_context(ctx: IncludeContext) {
     INCLUDE_CTX.with(|cell| {
         *cell.borrow_mut() = Some(ctx);
+    });
+}
+
+/// Remove the [`IncludeContext`] from the current thread.
+///
+/// Call this after evaluation completes to prevent state from leaking between
+/// evaluations when LLT is used as a library.
+pub fn clear_include_context() {
+    INCLUDE_CTX.with(|cell| {
+        *cell.borrow_mut() = None;
     });
 }
 
@@ -308,12 +318,13 @@ pub fn builtin_lt(
         (Value::Int(a), Value::Int(b)) => a < b,
         (Value::Float(a), Value::Float(b)) => a < b,
         (Value::String(a), Value::String(b)) => a < b,
+        (Value::Bool(a), Value::Bool(b)) => !a && *b, // false < true
         // Cross-type: Int/Float promotion
         (Value::Int(a), Value::Float(b)) => (*a as f64) < *b,
         (Value::Float(a), Value::Int(b)) => *a < (*b as f64),
         _ => {
             return Err(EvalError::type_mismatch(
-                "Int, Float, or String (same or compatible types)",
+                "Int, Float, String, or Bool (same or compatible types)",
                 &format!("{} and {}", left.type_name(), right.type_name()),
                 call_span,
             )
@@ -374,7 +385,7 @@ pub fn builtin_keys(
             Key::String(s) => Value::String(s.clone()),
         };
         result.insert(
-            Key::Int(i as i64),
+            Key::Int(i64::try_from(i).expect("collection too large")),
             Rc::new(Thunk::new_materialized(key_value, origin)),
         );
     }
@@ -512,7 +523,7 @@ pub fn builtin_split(
     let mut map = IndexMap::new();
     for (i, part) in parts.into_iter().enumerate() {
         map.insert(
-            Key::Int(i as i64),
+            Key::Int(i64::try_from(i).expect("collection too large")),
             Rc::new(Thunk::new_materialized(
                 Value::String(part.to_string()),
                 call_span,
@@ -890,9 +901,12 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize) -> Result<Value, Bo
             } else if let Some(f) = n.as_f64() {
                 Ok(Value::Float(f))
             } else {
-                // Fallback for u64 values outside i64 range; as_f64() succeeds
-                // for all serde_json Numbers parsed from valid JSON, so unwrap() is safe here.
-                Ok(Value::Float(n.as_f64().unwrap()))
+                // Unreachable with default serde_json: as_f64() covers all
+                // non-i64 numbers. Return error instead of panicking.
+                Err(
+                    EvalError::new("JSON number outside representable range", Span::origin())
+                        .into(),
+                )
             }
         }
         serde_json::Value::String(s) => Ok(Value::String(s.clone())),
@@ -901,7 +915,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize) -> Result<Value, Bo
             for (i, item) in arr.iter().enumerate() {
                 let val = json_to_value(item, depth + 1)?;
                 map.insert(
-                    Key::Int(i as i64),
+                    Key::Int(i64::try_from(i).expect("collection too large")),
                     Rc::new(Thunk::new_materialized(val, Span::origin())),
                 );
             }
@@ -5470,15 +5484,51 @@ mod tests {
     }
 
     #[test]
-    fn lt_bool_error() {
-        let e = builtin_lt(
+    fn lt_bool_false_lt_true() {
+        let r = builtin_lt(
+            &[thunk(Value::Bool(false)), thunk(Value::Bool(true))],
+            &no_named(),
+            0,
+            call_span(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(true));
+    }
+
+    #[test]
+    fn lt_bool_true_lt_false() {
+        let r = builtin_lt(
             &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap_err();
-        assert!(e.message.contains("type mismatch"), "got: {}", e.message);
+        .unwrap();
+        assert_eq!(r, Value::Bool(false));
+    }
+
+    #[test]
+    fn lt_bool_false_lt_false() {
+        let r = builtin_lt(
+            &[thunk(Value::Bool(false)), thunk(Value::Bool(false))],
+            &no_named(),
+            0,
+            call_span(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(false));
+    }
+
+    #[test]
+    fn lt_bool_true_lt_true() {
+        let r = builtin_lt(
+            &[thunk(Value::Bool(true)), thunk(Value::Bool(true))],
+            &no_named(),
+            0,
+            call_span(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(false));
     }
 
     #[test]

@@ -1,0 +1,4 @@
+# nth: get element by negative index (-1 is last)
+[call $nth [a b c] -1]
+===
+String("c")

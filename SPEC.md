@@ -425,9 +425,12 @@ Type expressions appear in type annotations and `[type ...]` declarations. They 
 
 The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annotated { name: "Fn", annotation: Simple("b") }`. The type checker interprets `Fn` as a function type constructor. All types in a type definition must be explicit -- there is no body to infer from.
 
-The following feature is **deferred to Phase 2b** (polymorphism):
+**Row polymorphism** is supported via `rest_entry` syntax in type expressions. `...` marks an open record type (any additional fields are permitted), and `...name` introduces a named row variable for polymorphic record operations:
 
-- **Row polymorphism:** `[name: String ...]` for open record types, `...rest` for named row variables
+```
+[name: String ...]            # open record: has name, allows other fields
+[name: String ...r]           # named row variable r captures the remaining fields
+```
 
 **Type conventions** (not enforced by parser, enforced by type checker):
 - Uppercase first letter = concrete type (`String`, `Number`, `Person`, `Fn`)
@@ -598,6 +601,8 @@ Within any `[]` (dict entries or call arguments), all positional (auto-indexed) 
 [a key: val b]        # ERROR: positional b after named key
 ```
 
+Rest entries (`...` and `...name`) are exempt from positional-before-named ordering -- they may appear at any position within a bracket expression. For example, `[name: String ...]` is valid even though `...` is an unkeyed entry appearing after a keyed entry.
+
 ### 5.2 Special Form Arity
 
 | Form | Minimum args | Notes |
@@ -617,7 +622,7 @@ Duplicate keys within a single `[]` literal are parse errors:
 
 Duplicate detection applies to explicit keys only. Auto-indexed entries cannot duplicate because the counter always increments.
 
-**Note:** The parser detects duplicates among literal keys at parse time. The evaluator performs a second duplicate check at evaluation time to catch computed keys (e.g., `[$k1: a  $k2: b]` where `$k1` and `$k2` resolve to the same value). Both checks produce errors with source locations.
+**Note:** The parser detects duplicates among literal keys and VarRef keys at parse time. VarRef keys are compared by variable name -- `[$k: a  $k: b]` is a parse error because `$k` appears twice as a key, regardless of what value `$k` might resolve to at runtime. The evaluator performs a second duplicate check at evaluation time to catch computed keys (e.g., `[$k1: a  $k2: b]` where `$k1` and `$k2` resolve to the same value). Both checks produce errors with source locations.
 
 ### 5.4 `fn` Parameter List Structure
 
@@ -628,7 +633,22 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 [fn [x@Number y] body]            # valid: x has annotation
 [fn [x ...rest] body]             # valid: variadic
 [fn [...a ...b] body]             # ERROR: multiple variadics
+[fn [...rest x] body]             # ERROR: parameter after variadic
 [fn [$x] body]                    # ERROR: $x is a var ref, not a param name
+```
+
+### 5.5 Bracket Nesting Depth Limit
+
+Bracket nesting is limited to 256 levels (`MAX_PARSE_DEPTH`). Inputs exceeding this depth produce a parse error. This limit is enforced during AST construction, not during pest's parse phase -- pest recurses on Rust's call stack, so deeply nested inputs (~500+ levels) may overflow the call stack before this check fires. See Phase 6 (hand-written parser) for a planned resolution.
+
+### 5.6 Annotation Bracket Restriction
+
+Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) must contain only dict entries. Special forms within annotations are parse errors:
+
+```
+x@[type: Number  default: 30]    # valid: dict entries
+x@Number                         # valid: simple annotation
+x@[call $f $x]                   # ERROR: special form in annotation bracket
 ```
 
 ---

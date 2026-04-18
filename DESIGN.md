@@ -108,7 +108,7 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
     # Won't run unless `result` is actually used
     result: [call $expensive-computation $data]
 
-    # Infinite structures are fine — only evaluate what we take
+    # Infinite structures (not yet implemented)
     fibonacci: [call $lazy-seq 0 1]
 
     # Short-circuit: if condition is true, never evaluate the else branch
@@ -613,6 +613,8 @@ $sparse: [0: a  5: b  10: c]
 - **No null confusion.** Can't confuse "key exists with null" vs "key is missing." Every key that exists has a real value.
 - **Clean data representation.** Config files have no `null` noise — every key is meaningful.
 
+**JSON null mapping:** Since LLT has no null value, `$from-json` (and CLI stdin JSON injection) maps JSON `null` to `[]` (empty dict). This means it is impossible to distinguish "was null" from "was empty object" after conversion. This is an intentional trade-off -- LLT's "no null" design prioritizes simplicity over round-trip fidelity with JSON.
+
 ### Special Forms vs Stdlib Functions
 
 **Lazy evaluation means most "control flow" is just regular functions.** In an eager language, `if` must be a special form because both branches would be evaluated before `if` runs. In LLT, all arguments are thunks — the unused branch is never materialized.
@@ -1115,8 +1117,10 @@ LLT is a pure data transformation language with no in-language side effects. The
 
 ```
 llt eval file.llt              # evaluate, output result as JSON
-llt eval -f yaml file.llt      # output as YAML (not yet implemented — deferred)
-cat data.json | llt eval file.llt  # stdin parsed and injected as $$ for first document
+llt eval -f yaml file.llt      # output as YAML (not yet implemented -- deferred)
+llt eval --eval file.llt       # deep-force all thunks before serializing (surfaces errors before partial output)
+llt eval -                     # read LLT source from stdin
+cat data.json | llt eval file.llt  # stdin JSON parsed and injected as $$ for first document
 ```
 
 This is the Jsonnet/Nix model: the language produces data, an external tool handles I/O. Unreferenced dict entries are never computed. There is no `$write`, `$read`, `$stdout`, `$stdin`, or channel system.
@@ -1267,7 +1271,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Arithmetic & comparison** (materializing — must evaluate operands):
 - `+`, `-`, `*` (auto-promote: Int op Int → Int, mixed → Float)
 - `/` (always returns Float), `quot`, `mod` (Int only, return Int; both are prelude functions)
-- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed)
+- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values -- there is no structural/deep equality. This will be revisited when typeclasses are added.
 - `to-int`, `to-float`, `floor`, `ceil`, `round` (numeric conversions)
 
 **Strings** (materializing — must evaluate arguments):
@@ -1282,14 +1286,14 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 
 **Sequences** (structural — produces lazy thunks):
 - `range`, `repeat`, `cycle`
-- `lazy-seq`
+- `lazy-seq` (not yet implemented)
 
 **Utility:**
 
 | Function | Materialization behavior |
 |----------|------------------------|
 | `identity` | Structural — returns its argument as-is |
-| `type-of` | **Materializing** — must evaluate to determine type |
+| `type-of` | **Materializing** — must evaluate to determine type. Returns `"Function"` for both user-defined functions and Rust-native builtins (intentionally indistinguishable to user code). |
 | `assert` | **Materializing** — must evaluate condition |
 | `error` | Structural — constructs error value, not materialized until propagated |
 | `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[ok: value]` on success or `[err: message]` on failure (tagged dict, not a special type). |
@@ -1384,9 +1388,11 @@ Rust builtins ($+, $-, $<, $=, $if, $keys, $merge, $str, $floor, ...)
 
 ### Stdlib Function Reference
 
-All functions below are implemented in LLT itself in `stdlib/prelude.llt`. They are loaded at startup via `create_stdlib_env()` and available to all user code. Internal helper functions (suffixed with `-impl`) are omitted.
+All functions below are implemented in LLT itself in `stdlib/prelude.llt`. They are loaded at startup via `create_stdlib_env()` and available to all user code. Private implementation details (functions suffixed with `-impl`) are omitted.
 
-**Internal Helpers:**
+**Utility Functions:**
+
+Functions primarily used internally by other stdlib functions, but also available to user code.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
