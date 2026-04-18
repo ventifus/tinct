@@ -190,7 +190,7 @@ fn reject_named(
 }
 
 /// `+`: Addition with auto-promotion. Int + Int -> Int, any Float operand -> Float.
-pub fn builtin_add(
+fn builtin_add(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -207,7 +207,7 @@ pub fn builtin_add(
 }
 
 /// `-`: Subtraction with auto-promotion. Int - Int -> Int, any Float operand -> Float.
-pub fn builtin_sub(
+fn builtin_sub(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -224,7 +224,7 @@ pub fn builtin_sub(
 }
 
 /// `*`: Multiplication with auto-promotion. Int * Int -> Int, any Float operand -> Float.
-pub fn builtin_mul(
+fn builtin_mul(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -241,7 +241,7 @@ pub fn builtin_mul(
 }
 
 /// `/`: Float division. ALWAYS returns Float, even for Int / Int. Division by zero produces an error.
-pub fn builtin_div_float(
+fn builtin_div_float(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -270,7 +270,7 @@ pub fn builtin_div_float(
 /// Works on Int, Float, String, Bool. Cross-type Int/Float comparison
 /// promotes Int to Float. Dict/Function/Builtin are never equal (returns false,
 /// not an error).
-pub fn builtin_eq(
+fn builtin_eq(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -301,7 +301,7 @@ pub fn builtin_eq(
 /// Works on Int, Float, String. Cross-type Int/Float comparison promotes
 /// Int to Float. String comparison is lexicographic. Incompatible types
 /// (e.g. Int vs String, Bool vs anything) produce a type error.
-pub fn builtin_lt(
+fn builtin_lt(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -340,7 +340,7 @@ pub fn builtin_lt(
 /// Materializes ONLY the condition, then materializes ONLY the chosen branch.
 /// The unchosen branch's thunk is never materialized -- this preserves lazy
 /// semantics because `eval_call` wraps each arg as a thunk before calling.
-pub fn builtin_if(
+fn builtin_if(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -364,7 +364,7 @@ pub fn builtin_if(
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
 /// String values). Insertion order is preserved.
-pub fn builtin_keys(
+fn builtin_keys(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -393,7 +393,7 @@ pub fn builtin_keys(
 }
 
 /// `length`: Takes 1 arg (a Dict). Returns an Int with the number of entries.
-pub fn builtin_length(
+fn builtin_length(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -412,7 +412,7 @@ pub fn builtin_length(
 /// entries from the left dict, then all entries from the right dict. If both
 /// have the same key, right wins. Values remain as thunks (no materialization
 /// of values).
-pub fn builtin_merge(
+fn builtin_merge(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -448,7 +448,7 @@ pub fn builtin_merge(
 /// This is O(n) for the clone but O(1) amortized for the insert itself,
 /// compared to the old LLT `append` which did a full `merge` (copying the
 /// entire accumulator into a new dict via two-dict iteration).
-pub fn builtin_append(
+fn builtin_append(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -484,7 +484,7 @@ pub fn builtin_append(
 ///
 /// Materializes each argument and concatenates their string representations.
 /// With zero args, returns an empty string.
-pub fn builtin_str(
+fn builtin_str(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -503,7 +503,7 @@ pub fn builtin_str(
 ///
 /// Takes 2 args: `separator` (String), `input` (String).
 /// Returns a Dict with integer keys `0..n` mapping to the split substrings.
-pub fn builtin_split(
+fn builtin_split(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -537,7 +537,7 @@ pub fn builtin_split(
 ///
 /// Takes 3 args: `pattern` (String), `replacement` (String), `input` (String).
 /// Returns a new String with all occurrences of `pattern` replaced by `replacement`.
-pub fn builtin_replace(
+fn builtin_replace(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -559,7 +559,7 @@ pub fn builtin_replace(
 }
 
 /// `upper`: Convert a string to uppercase. Takes 1 arg (String).
-pub fn builtin_upper(
+fn builtin_upper(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -571,7 +571,7 @@ pub fn builtin_upper(
 }
 
 /// `lower`: Convert a string to lowercase. Takes 1 arg (String).
-pub fn builtin_lower(
+fn builtin_lower(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -585,7 +585,7 @@ pub fn builtin_lower(
 /// `trim`: Remove leading and trailing whitespace from a string.
 ///
 /// Takes 1 arg (String). Returns the trimmed string.
-pub fn builtin_trim(
+fn builtin_trim(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -640,7 +640,7 @@ fn float_to_int_builtin(
 /// - Float input: applies `f64::floor()` then converts to `i64`.
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
-pub fn builtin_floor(
+fn builtin_floor(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -655,7 +655,7 @@ pub fn builtin_floor(
 /// - Float input: applies `f64::round()` (half-away-from-zero) then converts to `i64`.
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
-pub fn builtin_round(
+fn builtin_round(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -668,7 +668,7 @@ pub fn builtin_round(
 ///
 /// Parses the string as an integer via `str::parse::<i64>()`. Returns Int.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
-pub fn builtin_to_int(
+fn builtin_to_int(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -688,7 +688,7 @@ pub fn builtin_to_int(
 ///
 /// Parses the string as a float via `str::parse::<f64>()`. Returns Float.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
-pub fn builtin_to_float(
+fn builtin_to_float(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -718,7 +718,7 @@ pub fn builtin_to_float(
 /// value and recurse into nested dicts.
 /// `eval`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval::deep_materialize`].
-pub fn builtin_eval(
+fn builtin_eval(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -729,7 +729,7 @@ pub fn builtin_eval(
 }
 
 /// `error`: takes 1 arg (String message), always raises.
-pub fn builtin_error(
+fn builtin_error(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -742,7 +742,7 @@ pub fn builtin_error(
 
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[ok: value]`
 /// on success or `[err: message]` on failure.
-pub fn builtin_try(
+fn builtin_try(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -815,7 +815,7 @@ pub fn builtin_try(
 ///
 /// For user-defined functions, delegates to `eval::invoke_function` so that
 /// default values, named args, and variadics are handled identically to `call`.
-pub fn builtin_apply(
+fn builtin_apply(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -865,7 +865,7 @@ pub fn builtin_apply(
 
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
 /// Both `Function` and `Builtin` return "Function" (from the user's perspective).
-pub fn builtin_type_of(
+fn builtin_type_of(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -936,7 +936,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize) -> Result<Value, Bo
 }
 
 /// `from-json`: takes 1 arg (String containing JSON), parses into LLT value.
-pub fn builtin_from_json(
+fn builtin_from_json(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
@@ -955,7 +955,7 @@ pub fn builtin_from_json(
 /// directory. Absolute paths are used as-is. Cycle detection prevents A→B→A
 /// circular includes. The included file gets an empty `$$` and sees the stdlib
 /// environment but NOT the caller's scope.
-pub fn builtin_include(
+fn builtin_include(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,

@@ -107,6 +107,10 @@ tree:
 ci: check test lint fmt-check
     @echo "✅ All CI checks passed!"
 
+# Start interactive REPL
+repl:
+    {{container}} run -it {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- repl
+
 # Interactive shell in container (for debugging)
 shell:
     {{container}} run -it {{run_flags}} {{rust_image}} /bin/bash
@@ -130,7 +134,7 @@ bench:
 
 # Audit dependencies for security vulnerabilities
 audit:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "cargo install cargo-audit@0.21.2 && cargo audit"
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "cargo install cargo-audit@0.22.1 --locked && cargo audit"
 
 # Watch for changes and run tests (requires cargo-watch)
 watch:

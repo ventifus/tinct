@@ -108,8 +108,11 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
     # Won't run unless `result` is actually used
     result: [call $expensive-computation $data]
 
-    # Infinite structures (not yet implemented)
-    fibonacci: [call $lazy-seq 0 1]
+    # Infinite sequences -- only compute what you take
+    naturals: [call $range 0]
+    first-ten-evens: [call $collect
+        [call $take 10
+            [call $filter [fn [n] [call $= 0 [call $mod $n 2]]] $naturals]]]
 
     # Short-circuit: if condition is true, never evaluate the else branch
     value: [call $if $condition $cheap-option $very-expensive-option]
@@ -1262,8 +1265,8 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `take`, `drop` | Structural — positional subsequence, thunks preserved |
 | `zip` | Structural — pairs entries, values stay thunks |
 | `length`, `empty?` | Structural — counts entries, ignores values |
-| `map`, `map-entries` | Lazy-transforming — each result is a new thunk `[call $f $v]` |
-| `filter` | **Materializing** — must evaluate predicate to decide inclusion |
+| `map`, `map-entries` | Lazy-transforming — on dicts, returns dict with PendingCall thunks; on seqs, returns lazy seq |
+| `filter` | On dicts, returns Seq (must evaluate predicates); on seqs, returns lazy seq |
 | `reduce`, `fold` | **Materializing** — accumulates, materializes each step |
 | `find-deep` | **Materializing** — must traverse structure looking for keys |
 | `flatten` | **Materializing** — must inspect values to check if they are lists |
@@ -1284,9 +1287,12 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 - `compose`
 - `apply` — call function with list spread as positional args
 
-**Sequences** (structural — produces lazy thunks):
-- `range`, `repeat`, `cycle`
-- `lazy-seq` (not yet implemented)
+**Sequences** (lazy computation -- produce `Seq` values):
+- `range`, `repeat`, `cycle`, `iterate`, `unfold` -- constructors (finite or infinite)
+- `seq` -- low-level cons: `[call $seq $head $tail-thunk]`
+- `collect` -- materializes a Seq into a dict with integer keys
+- `head`, `tail` -- destructors
+- `seq?` -- type check
 
 **Utility:**
 
@@ -1305,21 +1311,22 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Key implications for lazy evaluation:**
 
 ```lisp
-# $map is lazy — nothing computed until individual results are accessed
-big-result: [call $map [fn [x] [call $expensive $x]] $big-list]
-$big-result[3]              # Only this one element gets computed
+# $map on dict is lazy — returns dict with PendingCall thunks
+big-result: [call $map [fn [x] [call $expensive $x]] $big-dict]
+$big-result.widget          # Only this one element gets computed
 
-# $filter materializes the predicate, lazy on passed-through values
-filtered: [call $filter [fn [x] [call $> $x.age 30]] $users]
-# Every user's age is materialized (to evaluate predicate)
-# But other fields on kept users remain thunks until accessed
+# $filter on dict returns a Seq (must evaluate predicates to decide inclusion)
+# Other fields on kept users remain thunks until accessed
+expensive: [call $collect [call $filter [fn [x] [call $> $x.price 100]] $products]]
 
 # $sort must materialize everything — can't sort without comparing
 sorted: [call $sort $big-list]  # All values materialized immediately
 
-# $map with field access — lazy, each result is a thunk
-names: [call $map [fn [u] $u.name] $users]
-$names[0]                   # Only this user's name is materialized
+# Infinite sequences — lazy all the way
+naturals: [call $range 0]   # O(1), nothing computed
+squares: [call $map [fn [n] [call $* $n $n]] $naturals]  # still O(1)
+first-ten: [call $collect [call $take 10 $squares]]
+# -> [0 1 4 9 16 25 36 49 64 81]
 ```
 
 ### Rust-Native vs LLT-Implemented Boundary
@@ -1518,15 +1525,157 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `range` | `[fn [start end] ...]` | Generate integers from start (inclusive) to end (exclusive) |
-| `repeat` | `[fn [n val] ...]` | Create a list of n copies of a value |
-| `cycle` | `[fn [n xs] ...]` | Repeat a list n times |
+| `range` | `[fn [start ...end] ...]` | Seq of integers from start; finite if end given, infinite otherwise |
+| `repeat` | `[fn [val ...n] ...]` | Seq of copies of val; finite if n given, infinite otherwise |
+| `cycle` | `[fn [xs ...n] ...]` | Seq repeating xs; finite if n given, infinite otherwise |
+| `iterate` | `[fn [f x] ...]` | Infinite seq: x, f(x), f(f(x)), ... |
+| `unfold` | `[fn [step seed] ...]` | Seq from step function; step returns `[value state]` or `[]` to stop |
+| `seq` | `[fn [head tail] ...]` | Low-level seq constructor (cons cell) |
+| `collect` | `[fn [s] ...]` | Materialize seq into dict with integer keys 0..n |
+| `head` | `[fn [s] ...]` | First element of seq |
+| `tail` | `[fn [s] ...]` | Rest of seq (seq, not materialized) |
+| `seq?` | `[fn [x] ...]` | True if x is a Seq |
 
 **Assertions:**
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `assert` | `[fn [cond msg] ...]` | Assert condition; error with message if false |
+
+### Sequences and Lazy Computation
+
+**Sequences are lazy computations, not data.** Dicts are data (finite, random-access, known keys). Sequences are suspended computations that produce elements on demand (possibly infinite, sequential access, unknown structure).
+
+This distinction preserves the "everything is a dict" invariant for data while enabling lazy, composable pipelines for computation.
+
+**Runtime representation:**
+
+A sequence is a cons cell: a head value and a tail that is itself a sequence (or empty dict `[]` for end-of-sequence).
+
+```
+Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)
+```
+
+The tail thunk evaluates to either another `Seq` or `[]` (done). Since thunks are memoized, traversing the same sequence twice reuses cached results -- unlike Python generators, which are single-pass.
+
+**`$collect` is the boundary between computation and data:**
+
+```lisp
+# Computation (lazy, possibly infinite)
+evens: [call $filter [fn [n] [call $= 0 [call $mod $n 2]]] [call $range 0]]
+
+# Data (materialized, finite, dict with integer keys)
+first-ten: [call $collect [call $take 10 $evens]]
+# -> [0 2 4 6 8 10 12 14 16 18]
+```
+
+`$collect` runs the computation and pours results into a dict with integer keys 0..n. Calling `$collect` on an infinite sequence without `$take` is an error (hits depth/memory limit). This is explicit by design -- no accidental infinite materialization.
+
+**Sequence constructors:**
+
+| Function | Finite | Infinite | Description |
+|----------|--------|----------|-------------|
+| `range` | `[call $range 0 10]` | `[call $range 0]` | Integers from start; optional end (exclusive) |
+| `repeat` | `[call $repeat 5 x]` | `[call $repeat x]` | n copies of a value; or infinite |
+| `cycle` | `[call $cycle 3 xs]` | `[call $cycle xs]` | Repeat a list n times; or infinite |
+| `seq` | -- | -- | Low-level: `[call $seq $head $tail-thunk]` |
+| `iterate` | -- | `[call $iterate $f $x]` | `x, f(x), f(f(x)), ...` |
+| `unfold` | varies | varies | `[call $unfold $step $seed]`; step returns `[value state]` or `[]` |
+
+**Sequence operations (lazy -- return sequences):**
+
+| Function | Description |
+|----------|-------------|
+| `take` | First n elements |
+| `drop` | Skip first n elements |
+| `filter` | Elements matching predicate |
+| `map` | Transform each element (on seq input; on dict input, returns lazy dict) |
+| `concat-seq` | Concatenate two sequences |
+| `zip-seq` | Pair elements from two sequences |
+
+**Sequence destructors (materializing):**
+
+| Function | Description |
+|----------|-------------|
+| `collect` | Seq to dict with integer keys 0..n |
+| `head` | First element (materializes head thunk) |
+| `tail` | Rest of sequence (returns seq, does not materialize) |
+| `reduce` | Accumulate over sequence elements |
+| `seq?` | Type check: is this a Seq? |
+
+**Dual dispatch for `$map` and `$filter`:**
+
+`$map` and `$filter` accept both dicts and sequences, with behavior determined by input type:
+
+| Input | `$map` result | `$filter` result |
+|-------|--------------|-----------------|
+| Dict | Dict (lazy values via PendingCall thunks) | Seq (must evaluate predicates) |
+| Seq | Seq (lazy) | Seq (lazy) |
+
+`$map` on a dict is the key insight: it returns a dict with the **same keys** but each value wrapped in a `PendingCall` thunk. No computation happens until a specific value is accessed. This makes `[call $map $f $big-dict]` O(n) to construct and O(1) per element access, compared to the current O(n^2) eager implementation.
+
+`$filter` on a dict must return a Seq because the output keys are unknown without evaluating predicates. Use `$collect` to get a dict back.
+
+```lisp
+# $map on dict: same keys, lazy values (no computation yet)
+prices-usd: [call $map [fn [p] [call $* $p 1.1]] $prices-eur]
+$prices-usd.widget    # only this one price is computed
+
+# $filter on dict: returns seq (must evaluate predicates to decide inclusion)
+expensive: [call $collect [call $filter [fn [p] [call $> $p 100]] $prices-eur]]
+
+# $map on seq: returns seq (lazy)
+doubled: [call $map [fn [n] [call $* $n 2]] [call $range 0]]
+# nothing computed until $take/$collect
+```
+
+**`PendingCall` thunk state:**
+
+To make dict-returning operations lazy, the thunk model gains a new state:
+
+```
+PendingCall(function: Rc<Thunk>, args: Vec<Rc<Thunk>>)
+```
+
+`PendingCall` represents "apply this function to these arguments when forced." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result, just like `PendingBuiltin` does for builtin calls.
+
+This completes the laziness picture:
+
+| Thunk state | Represents | Created by |
+|-------------|-----------|-----------|
+| `Unevaluated` | AST expression + environment | Parser/eval (dict values, fn bodies) |
+| `PendingBuiltin` | Deferred builtin call | `[call $builtin ...]` |
+| `PendingCall` | Deferred function application | `$map`, `$update`, lazy combinators |
+| `InProgress` | Cycle detection sentinel | Materialization |
+| `Materialized` | Computed value | After first force |
+
+**Impact on existing operations:**
+
+With `PendingCall` and `Seq`, several operations become lazier:
+
+| Operation | Before | After |
+|-----------|--------|-------|
+| `$map f dict` | Eager, O(n^2) | Lazy dict with PendingCall values, O(n) construct / O(1) per access |
+| `$filter pred dict` | Eager, O(n^2) | Returns Seq, O(1) construct / O(n) to fully consume |
+| `$range start end` | Eager dict, O(n^2) | Seq, O(1) to construct |
+| `$range start` | Not possible | Infinite Seq, O(1) |
+| `$merge a b` | Eager clone | Lazy overlay (b's keys shadow a's, no deep copy) |
+| `$if cond t f` | Materializes chosen branch | Returns chosen branch as thunk |
+| `$update dict k f` | Eager | PendingCall on the updated value |
+
+**BuiltinFn signature change:**
+
+To support builtins that return lazy results, `BuiltinFn` changes from returning `Value` to returning `Rc<Thunk>`:
+
+```
+// Before
+type BuiltinFn = fn(args, named, depth, call_span) -> Result<Value, Box<EvalError>>;
+
+// After
+type BuiltinFn = fn(args, named, depth, call_span) -> Result<Rc<Thunk>, Box<EvalError>>;
+```
+
+Builtins that currently return materialized values wrap them in `Thunk::new_materialized()`. Builtins like `$map` and `$if` can now return thunks directly. This removes the forced materialization boundary that currently prevents builtins from participating in lazy evaluation.
 
 ---
 
@@ -1682,12 +1831,13 @@ enum Value {
     String(String),
     Bool(bool),
     Dict(LinkedHashMap<Key, Rc<Thunk>>),
+    Seq(Rc<Thunk>, Rc<Thunk>),    // head, tail (tail evaluates to Seq or [] for end)
     Function {
         params: Vec<String>,
         body: AstNode,
         env: Environment,
     },
-    Builtin(fn(BuiltinArgs) -> Result<Value, Error>),
+    Builtin(fn(BuiltinArgs) -> Result<Rc<Thunk>, Error>),
     // BuiltinArgs { positional: Vec<Rc<Thunk>>, named: IndexMap<String, Rc<Thunk>> }
 }
 
@@ -1700,6 +1850,8 @@ struct Thunk {
 
 enum ThunkState {
     Unevaluated,
+    PendingBuiltin(name, args),   // deferred builtin call
+    PendingCall(func, args),      // deferred function application (lazy $map, $update, etc.)
     InProgress,                   // cycle detection — hitting this during materialization means circular dep
     Materialized(Value),
 }

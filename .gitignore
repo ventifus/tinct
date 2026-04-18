@@ -11,6 +11,11 @@ Cargo.lock
 *~
 .DS_Store
 
+.claude
+
 # Testing
 *.profdata
 *.profraw
+
+# Training materials (cloned repos for agent training)
+.training/

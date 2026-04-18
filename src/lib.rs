@@ -26,6 +26,8 @@ pub(crate) mod types;
 pub(crate) mod value;
 // Phase 3a: Rust-native builtin functions.
 pub(crate) mod builtins;
+// Phase 6a: REPL (Read-Eval-Print Loop).
+pub mod repl;
 
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
@@ -43,6 +45,10 @@ pub use builtins::{
 
 /// Error types with source spans and stack traces.
 pub use error::{EvalError, StackFrame};
+
+#[cfg(feature = "repl")]
+pub use repl::run_repl;
+
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{Environment, Key, Thunk, Value};
 

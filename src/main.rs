@@ -37,6 +37,9 @@ enum Commands {
         /// Input LLT file. Use `-` to read LLT source from stdin.
         file: String,
     },
+    /// Start an interactive REPL session.
+    #[cfg(feature = "repl")]
+    Repl,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -54,6 +57,8 @@ fn main() {
         .stack_size(WORKER_STACK_SIZE)
         .spawn(move || match cli.command {
             Commands::Eval { format, eval, file } => run_eval(&file, &format, eval),
+            #[cfg(feature = "repl")]
+            Commands::Repl => lazy_lisp_transformer::repl::run_repl(),
         })
         .expect("failed to spawn worker thread")
         .join();

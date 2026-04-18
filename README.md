@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phases 0-4 complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, LLT standard library (79 corpus tests covering all public functions), comprehensive test suite (929 tests: 875 unit + 49 CLI integration + 5 corpus). Phase 5 (tooling) is next.
+**Status:** Phases 0-4 and 6a complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, LLT standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, comprehensive test suite (975 tests: 921 unit + 49 CLI integration + 5 corpus). Phase 6b (LSP) is next.
 
 ## Syntax at a Glance
 
@@ -56,6 +56,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Rust-native builtins** -- 28 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O) with `standard_builtins()` registry (Phase 3a + 3c)
 - **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in LLT itself, loaded via `create_stdlib_env()` (Phase 3a-llt)
 - **Error reporting** -- `EvalError` with definition-site span, materialization-site span, and `StackFrame` traces
+- **Interactive REPL** -- `llt repl` with line editing, history, bracket matching, scope chains, and error recovery (Phase 6a)
 - **Corpus testing** -- file-based test suite in `tests/corpus/` with `===` delimiter for expected output
 
 ## Examples
@@ -112,6 +113,7 @@ just build          # Build debug version
 just test           # Run all tests (unit + corpus)
 just test-corpus    # Run only corpus tests
 just run            # Eval test_input.txt, output JSON
+just repl           # Start interactive REPL
 just ci             # Run full CI pipeline
 just --list         # See all commands
 ```
@@ -128,6 +130,7 @@ cargo run -- eval --format llt test_input.txt  # LLT display format
 cargo run -- eval --eval test_input.txt         # Deep-force all thunks
 echo '{"x": 1}' | cargo run -- eval -           # Read LLT from stdin
 echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as $$
+cargo run --features repl -- repl               # Start interactive REPL
 ```
 
 ## Project Structure
@@ -145,20 +148,21 @@ echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as $$
 | `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, `Fn@Return [Params]` resolution, row polymorphism |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
 | `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `set_include_context()`, `clear_include_context()`, `IncludeContext`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
+| `src/repl.rs` | REPL session: scope chains, bracket matching, error recovery |
 | `src/main.rs` | CLI (`llt` binary): `llt eval [OPTIONS] <FILE>` -- evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing, `$include` context setup |
 | `stdlib/prelude.llt` | LLT standard library: stdlib functions written in LLT itself |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
 | `tests/cli_tests.rs` | CLI integration tests: file eval, format flags, stdin JSON, error handling |
 | `test_input.txt` | Example input demonstrating syntax |
-| `Cargo.toml` | Dependencies: pest, indexmap, serde_json, clap |
+| `Cargo.toml` | Dependencies: pest, indexmap, serde_json, clap, rustyline (optional) |
 | `justfile` | Containerized build commands |
 
 ## Testing
 
 ### Unit Tests
 
-929 tests (875 unit + 49 CLI integration + 5 corpus) across multiple modules covering:
+975 tests (921 unit + 49 CLI integration + 5 corpus) across multiple modules covering:
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
 - **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `$_` implicit lambda desugaring, TypeAlias), depth limiting, and materialization span propagation
