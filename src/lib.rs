@@ -8,6 +8,7 @@
 //! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
+//! - [`set_include_context`] / [`IncludeContext`] -- configure `$include` for file-based evaluation
 //! - [`json_to_value`] -- convert `serde_json::Value` to LLT `Value`
 //! - [`value_to_json`] -- convert LLT `Value` to `serde_json::Value`
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
@@ -30,20 +31,22 @@ pub(crate) mod builtins;
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
 pub use parser::{parse, parse_expression, ParseError};
 
-// --- Public eval API ---
+/// `MAX_EVAL_DEPTH` (256): recursion limit for eval, materialize, and serialization depth.
 pub use eval::{deep_materialize, eval_file, eval_file_with_input, materialize, MAX_EVAL_DEPTH};
 
-// --- Public builtin API ---
-pub use builtins::{create_stdlib_env, json_to_value};
+pub use builtins::{
+    create_stdlib_env, json_to_value, set_include_context, IncludeContext, MAX_FILE_SIZE,
+};
 
-// --- Public value/error types ---
-pub use error::EvalError;
+pub use error::{EvalError, StackFrame};
 pub use value::{Environment, Key, Thunk, Value};
 
-/// Parse and evaluate LLT source, returning the materialized result as a displayable string.
+/// Parse and evaluate LLT source, returning the result in **LLT display format**
+/// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) — not JSON.
 ///
 /// The output format recursively materializes all values (including dict entries)
 /// into a readable representation. Primarily used for testing and corpus validation.
+/// For JSON output, use [`value_to_json`] after evaluation instead.
 pub fn eval_source(input: &str) -> Result<String, String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
     let env = builtins::create_stdlib_env()?;
@@ -190,8 +193,6 @@ mod tests {
         Rc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 1)))
     }
 
-    // --- Primitive types ---
-
     #[test]
     fn test_json_int() {
         let result = value_to_json(&Value::Int(42), 0).unwrap();
@@ -276,8 +277,6 @@ mod tests {
         assert_eq!(result, serde_json::json!(false));
     }
 
-    // --- Dict as object ---
-
     #[test]
     fn test_json_dict_empty() {
         let dict = Value::Dict(IndexMap::new());
@@ -315,8 +314,6 @@ mod tests {
         let result = value_to_json(&Value::Dict(map), 0).unwrap();
         assert_eq!(result, serde_json::json!({"0": "zero", "x": 1}));
     }
-
-    // --- Dict as array ---
 
     #[test]
     fn test_json_dict_array_like() {
@@ -358,8 +355,6 @@ mod tests {
         assert_eq!(result, serde_json::json!({"1": 10, "2": 20}));
     }
 
-    // --- Nested dicts ---
-
     #[test]
     fn test_json_nested_dict() {
         let mut inner = IndexMap::new();
@@ -394,8 +389,6 @@ mod tests {
         );
     }
 
-    // --- Function errors ---
-
     #[test]
     fn test_json_function_error() {
         let f = Value::Function {
@@ -425,8 +418,6 @@ mod tests {
         assert!(err.message.contains("cannot serialize Function to JSON"));
     }
 
-    // --- Depth limit ---
-
     #[test]
     fn test_json_depth_limit() {
         let err = value_to_json(&Value::Int(1), eval::MAX_EVAL_DEPTH).unwrap_err();
@@ -440,8 +431,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // --- i64 boundary values ---
-
     #[test]
     fn test_json_int_max() {
         let result = value_to_json(&Value::Int(i64::MAX), 0).unwrap();
@@ -453,8 +442,6 @@ mod tests {
         let result = value_to_json(&Value::Int(i64::MIN), 0).unwrap();
         assert_eq!(result, serde_json::json!(i64::MIN));
     }
-
-    // --- eval_file_with_input integration tests ---
 
     /// Helper: run the full eval pipeline (parse, eval, materialize, to JSON).
     fn eval_to_json(source: &str) -> serde_json::Value {

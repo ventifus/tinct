@@ -8,11 +8,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
-use crate::types::{
-    instantiate, unify, RowRest, Substitution, Type, TypeEnv, TypeError,
-};
-
-// --- Public API ---
+use crate::types::{instantiate, unify, RowRest, Substitution, Type, TypeEnv, TypeError};
 
 pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     let mut errors = Vec::new();
@@ -32,8 +28,6 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
         Err(errors)
     }
 }
-
-// --- Document-level type inference ---
 
 fn typecheck_document(
     doc: &Spanned<Document>,
@@ -115,8 +109,6 @@ fn register_type_aliases(
     errors
 }
 
-// --- Expression type inference ---
-
 fn infer_expr(
     expr: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
@@ -179,8 +171,6 @@ fn infer_expr(
         )]),
     }
 }
-
-// --- Record type construction ---
 
 fn infer_dict(
     entries: &[Spanned<Entry>],
@@ -266,8 +256,6 @@ fn entry_key_name(
     }
 }
 
-// --- Access chain type checking ---
-
 fn check_dot_access(
     target: &Spanned<Expr>,
     field: &str,
@@ -315,7 +303,7 @@ fn check_bracket_access(
                 _ => match &key_ty {
                     Type::StringLiteral(s) => lookup(s.as_str()),
                     Type::IntLiteral(n) => lookup(&n.to_string()),
-                    Type::String | Type::Int | Type::Any => Ok(Type::Any),
+                    Type::Str | Type::Int | Type::Any => Ok(Type::Any),
                     _ => Err(vec![TypeError::new(
                         format!("bracket access key must be String or Int, got {key_ty}"),
                         span,
@@ -342,7 +330,7 @@ fn check_range_access(
         let bound_ty = infer_expr(bound, env, counter)?;
         if !matches!(
             bound_ty,
-            Type::Int | Type::IntLiteral(_) | Type::String | Type::StringLiteral(_) | Type::Any
+            Type::Int | Type::IntLiteral(_) | Type::Str | Type::StringLiteral(_) | Type::Any
         ) {
             return Err(vec![TypeError::new(
                 format!("range bound must be Int or String, got {bound_ty}"),
@@ -356,8 +344,6 @@ fn check_range_access(
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
-
-// --- Call type checking ---
 
 fn check_call(
     func: &Spanned<Expr>,
@@ -418,8 +404,6 @@ fn check_call(
     }
 }
 
-// --- Function type inference ---
-
 fn infer_fn(
     return_ann: &Option<Spanned<Annotation>>,
     params: &[Spanned<Param>],
@@ -468,14 +452,10 @@ fn infer_fn(
     })
 }
 
-// --- Type alias expansion ---
-
 fn expand_type_alias(inner: &Spanned<Expr>, env: &Rc<TypeEnv>) -> Result<Type, TypeError> {
     let _ = resolve_type_expr(inner, env)?;
     Ok(Type::Any)
 }
-
-// --- TypeAssert enforcement ---
 
 fn resolve_type_assert(
     annotation: &Spanned<Annotation>,
@@ -494,8 +474,6 @@ fn resolve_type_assert(
 
     Ok(expected)
 }
-
-// --- Annotated node interpretation ---
 
 fn resolve_annotated(
     name: &str,
@@ -531,8 +509,6 @@ fn resolve_annotation_as_type(
         Annotation::PropertyDict(entries) => resolve_type_dict(entries, env, span),
     }
 }
-
-// --- Annotation and type name resolution ---
 
 fn resolve_annotation(ann: &Annotation, env: &TypeEnv, span: Span) -> Result<Type, TypeError> {
     match ann {
@@ -606,7 +582,7 @@ fn resolve_type_name(name: &str, env: &TypeEnv, span: Span) -> Result<Type, Type
     match name {
         "Int" => Ok(Type::Int),
         "Float" => Ok(Type::Float),
-        "String" => Ok(Type::String),
+        "String" => Ok(Type::Str),
         "Bool" => Ok(Type::Bool),
         "Number" => Ok(Type::Number),
         "Any" => Ok(Type::Any),
@@ -1042,7 +1018,7 @@ mod tests {
         );
         match ty {
             Type::Record(fields, _) => {
-                assert_eq!(fields.get("name"), Some(&Type::String));
+                assert_eq!(fields.get("name"), Some(&Type::Str));
                 assert_eq!(fields.get("age"), Some(&Type::Number));
             }
             other => panic!("expected Record type from Person alias, got {other}"),
@@ -1275,10 +1251,7 @@ mod tests {
         )]);
         let result = resolve_annotation(&ann, &env, span);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message
-            .contains("function type"));
+        assert!(result.unwrap_err().message.contains("function type"));
     }
 
     // -- Type alias in scope --
@@ -1668,7 +1641,7 @@ mod tests {
         );
         match ty {
             Type::Record(fields, RowRest::Open) => {
-                assert_eq!(fields.get("name"), Some(&Type::String));
+                assert_eq!(fields.get("name"), Some(&Type::Str));
             }
             other => panic!("expected open Record, got {other}"),
         }
@@ -1682,7 +1655,7 @@ mod tests {
         );
         match ty {
             Type::Record(fields, RowRest::RowVar(name)) => {
-                assert_eq!(fields.get("name"), Some(&Type::String));
+                assert_eq!(fields.get("name"), Some(&Type::Str));
                 assert_eq!(name, "rest");
             }
             other => panic!("expected record with row var, got {other}"),
@@ -1727,7 +1700,7 @@ mod tests {
                 "[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice  age: 30]]]\n[result: $p.name]",
                 "result",
             ),
-            Type::String,
+            Type::Str,
         );
     }
 

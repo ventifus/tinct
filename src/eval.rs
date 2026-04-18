@@ -10,6 +10,7 @@ use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span,
 use crate::error::EvalError;
 use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 
+/// Maximum evaluation depth (256). Limits nesting of eval/materialize calls to prevent stack overflow.
 pub const MAX_EVAL_DEPTH: usize = 256;
 /// Shared error message for range access with mixed key types (used in `key_in_range`).
 const RANGE_KEY_TYPE_ERROR: &str = "range access requires comparable key types";
@@ -44,8 +45,6 @@ fn key_in_range(
     };
     Ok(after_start && before_end)
 }
-
-// --- Evaluation ---
 
 /// Wrap an AST expression in a thunk. Literals produce immediately materialized
 /// thunks; dicts produce materialized thunks whose values are unevaluated;
@@ -117,10 +116,9 @@ pub fn eval(
             expr: inner,
             annotation,
         } => {
-            let thunk = eval(inner, env, depth + 1)?;
+            let thunk = eval(inner, Rc::clone(&env), depth + 1)?;
             let value = materialize(&thunk, Some(&expr.span), depth + 1)?;
 
-            // Extract the expected type name from the annotation
             let expected_type = match &annotation.node {
                 Annotation::Simple(name) => Some(name.as_str()),
                 Annotation::PropertyDict(_) => {
@@ -141,6 +139,9 @@ pub fn eval(
                     actual == expected
                 };
                 if !matches {
+                    if let Some(default_expr) = annotation.node.get_property("default") {
+                        return eval(default_expr, env, depth + 1);
+                    }
                     return Err(EvalError::new(
                         format!("type assertion failed: expected {expected}, got {actual}"),
                         expr.span,
@@ -167,7 +168,7 @@ pub fn eval(
             Ok(Rc::new(Thunk::new_materialized(
                 Value::Function {
                     params: Rc::new(fn_params),
-                    body: Rc::new(*body.clone()),
+                    body: Rc::new(body.as_ref().clone()),
                     env: Rc::clone(&env),
                     return_ann: return_ann.clone(),
                 },
@@ -190,8 +191,6 @@ pub fn eval(
         .into()),
     }
 }
-
-// --- Document Evaluation (scope chains) ---
 
 /// Evaluate a document: a sequence of expressions forming a scope chain.
 ///
@@ -251,8 +250,6 @@ pub fn eval_document(
     unreachable!("document has expressions but loop did not return")
 }
 
-// --- File Evaluation (multi-document pipeline) ---
-
 /// Evaluate a file: one or more documents separated by `---`.
 ///
 /// Documents are totally isolated -- they share no scope. Data flows between
@@ -305,8 +302,6 @@ pub fn eval_file_with_input(
     Ok(prev_output)
 }
 
-// --- Dict Construction (letrec) ---
-
 fn eval_dict(
     entries: &[Spanned<Entry>],
     parent_env: &Rc<RefCell<Environment>>,
@@ -339,7 +334,7 @@ fn eval_dict(
         }
 
         let thunk = Rc::new(Thunk::new_unevaluated(
-            entry.node.value.clone(),
+            Rc::new(entry.node.value.clone()),
             Rc::clone(&dict_env),
             entry.node.value.span,
         ));
@@ -359,8 +354,6 @@ fn eval_dict(
         *dict_span,
     )))
 }
-
-// --- Key Evaluation ---
 
 fn eval_key(
     key_expr: &Spanned<Expr>,
@@ -387,8 +380,6 @@ fn value_to_key(value: &Value, span: &Span) -> Result<Key, Box<EvalError>> {
     }
 }
 
-// --- Function Call ---
-
 /// Evaluate a call expression: materialize the function, bind arguments, wrap body as thunk.
 fn eval_call(
     func_expr: &Spanned<Expr>,
@@ -408,7 +399,7 @@ fn eval_call(
         .iter()
         .map(|arg| {
             Rc::new(Thunk::new_unevaluated(
-                (*arg).clone(),
+                Rc::new((*arg).clone()),
                 Rc::clone(env),
                 arg.span,
             ))
@@ -419,7 +410,7 @@ fn eval_call(
         named_thunks.insert(
             na.node.name.clone(),
             Rc::new(Thunk::new_unevaluated(
-                na.node.value.clone(),
+                Rc::new(na.node.value.clone()),
                 Rc::clone(env),
                 na.node.value.span,
             )),
@@ -432,16 +423,16 @@ fn eval_call(
             body,
             env: closure_env,
             ..
-        } => invoke_function(
-            &params,
-            &body,
-            &closure_env,
-            &pos_thunks,
-            &named_thunks,
-            env,
-            *call_span,
+        } => invoke_function(&CallContext {
+            params: &params,
+            body: &body,
+            closure_env: &closure_env,
+            positional: &pos_thunks,
+            named: &named_thunks,
+            default_env: env,
+            call_span: *call_span,
             depth,
-        ),
+        }),
         Value::Builtin { func, .. } => Ok(Rc::new(Thunk::new_pending_builtin(
             func,
             pos_thunks,
@@ -453,41 +444,41 @@ fn eval_call(
     }
 }
 
+/// Arguments for invoking a user-defined function.
+///
+/// `default_env` is the environment used to evaluate default expressions for
+/// optional params. For normal calls this is the caller's environment; for
+/// `apply` it is the closure environment.
+pub struct CallContext<'a> {
+    pub params: &'a [Param],
+    pub body: &'a Rc<Spanned<Expr>>,
+    pub closure_env: &'a Rc<RefCell<Environment>>,
+    pub positional: &'a [Rc<Thunk>],
+    pub named: &'a IndexMap<String, Rc<Thunk>>,
+    pub default_env: &'a Rc<RefCell<Environment>>,
+    pub call_span: Span,
+    pub depth: usize,
+}
+
 /// Invoke a user-defined function with pre-evaluated thunks.
 ///
 /// Binds positional and named args to function params (respecting defaults and
 /// variadics), then wraps the body as an unevaluated thunk. This is the shared
 /// call path for both `eval_call` and `builtin_apply`.
-///
-/// `default_env` is the environment used to evaluate default expressions for
-/// optional params. For normal calls this is the caller's environment; for
-/// `apply` it is the closure environment.
-// Needs all these parameters to thread positional args, named args, defaults,
-// and variadic binding through a single pass (delegated to bind_args_thunks).
-#[allow(clippy::too_many_arguments)]
-pub fn invoke_function(
-    params: &[Param],
-    body: &Rc<Spanned<Expr>>,
-    closure_env: &Rc<RefCell<Environment>>,
-    positional: &[Rc<Thunk>],
-    named: &IndexMap<String, Rc<Thunk>>,
-    default_env: &Rc<RefCell<Environment>>,
-    call_span: Span,
-    depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+pub fn invoke_function(ctx: &CallContext) -> Result<Rc<Thunk>, Box<EvalError>> {
     let call_env = bind_args_thunks(
-        params,
-        positional,
-        named,
-        default_env,
-        closure_env,
-        &call_span,
-        depth,
+        ctx.params,
+        ctx.positional,
+        ctx.named,
+        ctx.default_env,
+        ctx.closure_env,
+        &ctx.call_span,
+        ctx.depth,
     )?;
-    // Wrap the body as an unevaluated thunk in the call environment
-    let body_expr: Spanned<Expr> = body.as_ref().clone();
     Ok(Rc::new(Thunk::new_unevaluated(
-        body_expr, call_env, call_span,
+        Rc::clone(ctx.body),
+        call_env,
+        ctx.call_span,
     )))
 }
 
@@ -618,8 +609,6 @@ fn get_default(param: &Param) -> Option<Spanned<Expr>> {
         .cloned()
 }
 
-// --- Implicit Lambda ($_ desugaring) ---
-
 /// Check if an expression directly contains VarRef("_") (not nested in inner brackets).
 fn contains_direct_underscore(expr: &Expr) -> bool {
     match expr {
@@ -685,8 +674,6 @@ fn wrap_in_lambda(expr: &Spanned<Expr>) -> Spanned<Expr> {
     )
 }
 
-// --- Access Chain Helpers ---
-
 /// Evaluate a target expression, materialize, and return the inner IndexMap if
 /// it's a Dict, otherwise return a type-mismatch error. Shared by all access
 /// chain functions (dot, bracket, range).
@@ -703,8 +690,6 @@ fn eval_as_dict(
         _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
     }
 }
-
-// --- Access Chains ---
 
 /// DotAccess: materialize target, look up string key in dict.
 fn eval_dot_access(
@@ -766,8 +751,6 @@ fn eval_range_access(
     )))
 }
 
-// --- Materialization ---
-
 /// Force a thunk to its concrete value. Memoizes the result so subsequent
 /// calls return the cached value. Detects cycles via the InProgress sentinel.
 ///
@@ -793,7 +776,6 @@ pub fn materialize(
         .into());
     }
 
-    // Check current state without taking ownership
     {
         let state = thunk.state();
         match &*state {
@@ -810,9 +792,11 @@ pub fn materialize(
     }
 
     let attach_mat_span = |mut e: Box<EvalError>| -> Box<EvalError> {
-        if e.materialization_span.is_none() {
-            if let Some(span) = mat_span {
+        if let Some(span) = mat_span {
+            if e.materialization_span.is_none() {
                 e.materialization_span = Some(*span);
+            } else {
+                e.push_frame("materialized", *span);
             }
         }
         e
@@ -835,7 +819,13 @@ pub fn materialize(
             }
         }
     } else if let Some((func, args, named, pending_depth)) = thunk.take_pending_builtin() {
-        match func(&args, &named, pending_depth).map_err(attach_mat_span) {
+        let attach_call_span = |mut e: Box<EvalError>| -> Box<EvalError> {
+            if e.definition_span == Span::origin() {
+                e.definition_span = thunk.span;
+            }
+            attach_mat_span(e)
+        };
+        match func(&args, &named, pending_depth).map_err(attach_call_span) {
             Ok(value) => {
                 thunk.transition(|_| ThunkState::Materialized(value.clone()));
                 Ok(value)
@@ -904,8 +894,6 @@ mod tests {
         Rc::new(RefCell::new(Environment::new()))
     }
 
-    // --- Literal Evaluation ---
-
     #[test]
     fn test_eval_int() {
         let expr = sp(Expr::Int(42));
@@ -937,8 +925,6 @@ mod tests {
         let val = materialize(&thunk, None, 0).unwrap();
         assert_eq!(val, Value::String("hello".into()));
     }
-
-    // --- VarRef Lookup ---
 
     #[test]
     fn test_varref_found() {
@@ -982,8 +968,6 @@ mod tests {
         );
     }
 
-    // --- Simple Dict ---
-
     #[test]
     fn test_simple_dict() {
         // [x: 1  y: hello]
@@ -1015,8 +999,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- Auto-indexed Dict ---
 
     #[test]
     fn test_auto_indexed_dict() {
@@ -1057,8 +1039,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- Mixed Keyed + Auto-indexed ---
 
     #[test]
     fn test_mixed_keyed_and_auto_indexed() {
@@ -1108,8 +1088,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- Dict Letrec ---
 
     #[test]
     fn test_dict_letrec_sibling_reference() {
@@ -1163,8 +1141,6 @@ mod tests {
         }
     }
 
-    // --- Cycle Detection ---
-
     #[test]
     fn test_cycle_detection() {
         // [x: $x] -- x references itself
@@ -1189,8 +1165,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- Thunk Poisoning Prevention ---
 
     #[test]
     fn test_thunk_retryable_after_error() {
@@ -1233,8 +1207,6 @@ mod tests {
         );
     }
 
-    // --- Nested Dict Scope ---
-
     #[test]
     fn test_nested_dict_sees_outer_bindings() {
         // [x: 42  inner: [y: $x]]
@@ -1272,8 +1244,6 @@ mod tests {
         }
     }
 
-    // --- Duplicate Key ---
-
     #[test]
     fn test_duplicate_key_error() {
         let entries = vec![
@@ -1294,8 +1264,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- Fn Evaluation ---
 
     #[test]
     fn test_fn_creates_function_value() {
@@ -1353,8 +1321,6 @@ mod tests {
         let result = materialize(&result_thunk, None, 0).unwrap();
         assert_eq!(result, Value::Int(42));
     }
-
-    // --- Call Evaluation ---
 
     #[test]
     fn test_call_simple() {
@@ -1446,8 +1412,6 @@ mod tests {
         assert!(err.message.contains("Function"), "got: {}", err.message);
     }
 
-    // --- Arity Checking ---
-
     #[test]
     fn test_call_too_few_args() {
         // f: [fn [x y] $x]
@@ -1518,8 +1482,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- Named Arguments ---
 
     #[test]
     fn test_call_named_arg_with_default() {
@@ -1687,8 +1649,6 @@ mod tests {
         );
     }
 
-    // --- Variadic Parameters ---
-
     #[test]
     fn test_call_variadic() {
         // f: [fn [x ...rest] $rest]
@@ -1777,8 +1737,6 @@ mod tests {
         }
     }
 
-    // --- Builtin Calls ---
-
     #[test]
     fn test_call_builtin() {
         fn add_builtin(
@@ -1814,8 +1772,6 @@ mod tests {
         assert_eq!(val, Value::Int(7));
     }
 
-    // --- TypeAlias ---
-
     #[test]
     fn test_type_alias_returns_empty_dict() {
         let expr = sp(Expr::TypeAlias(Box::new(sp(Expr::VarRef("MyType".into())))));
@@ -1826,8 +1782,6 @@ mod tests {
             other => panic!("expected empty Dict, got {other:?}"),
         }
     }
-
-    // --- Rest Marker ---
 
     #[test]
     fn test_rest_marker_anonymous_errors() {
@@ -1852,8 +1806,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- $_ Implicit Lambda ---
 
     #[test]
     fn test_underscore_access_chain_becomes_lambda() {
@@ -2012,8 +1964,6 @@ mod tests {
         );
     }
 
-    // --- DotAccess ---
-
     fn dict_with_entries(entries: Vec<(&str, Value)>) -> Spanned<Expr> {
         let ast_entries = entries
             .into_iter()
@@ -2108,8 +2058,6 @@ mod tests {
         );
     }
 
-    // --- BracketAccess ---
-
     #[test]
     fn test_bracket_access_int_key() {
         // [10 20 30][1] -> 20
@@ -2187,8 +2135,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- RangeAccess ---
 
     #[test]
     fn test_range_access_both_bounds() {
@@ -2377,8 +2323,6 @@ mod tests {
         );
     }
 
-    // --- TypeAssert (runtime check) ---
-
     #[test]
     fn test_type_assert_int_passes() {
         // [@Int 42] -> 42
@@ -2523,7 +2467,110 @@ mod tests {
         assert_eq!(val, Value::String("hello".into()));
     }
 
-    // --- Annotated (bare string) ---
+    #[test]
+    fn test_type_assert_default_not_used_on_match() {
+        // [@[type: Int  default: 0] 42] -> 42 (type matches, default not used)
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("type".into()))),
+                value: sp(Expr::Str("Int".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("default".into()))),
+                value: sp(Expr::Int(0)),
+            }),
+        ];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Int(42))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn test_type_assert_default_used_on_mismatch() {
+        // [@[type: Int  default: 0] hello] -> 0 (type mismatch, returns default)
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("type".into()))),
+                value: sp(Expr::Str("Int".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("default".into()))),
+                value: sp(Expr::Int(0)),
+            }),
+        ];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+        });
+        let thunk = eval(&expr, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(0));
+    }
+
+    #[test]
+    fn test_type_assert_property_dict_no_default_errors_on_mismatch() {
+        // [@[type: Int] hello] -> error (no default, mismatch is an error)
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("type".into()))),
+            value: sp(Expr::Str("Int".into())),
+        })];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+        });
+        let err = eval(&expr, empty_env(), 0).unwrap_err();
+        assert!(
+            err.message
+                .contains("type assertion failed: expected Int, got String"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_assert_number_default_int_passes_string_triggers() {
+        // [@[type: Number  default: -1] 42] -> 42 (Int passes Number check)
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("type".into()))),
+                value: sp(Expr::Str("Number".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("default".into()))),
+                value: sp(Expr::Int(-1)),
+            }),
+        ];
+        let expr_pass = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Int(42))),
+        });
+        let thunk = eval(&expr_pass, empty_env(), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(42));
+
+        // [@[type: Number  default: -1] "nope"] -> -1 (String fails Number, returns default)
+        let entries2 = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("type".into()))),
+                value: sp(Expr::Str("Number".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("default".into()))),
+                value: sp(Expr::Int(-1)),
+            }),
+        ];
+        let expr_fail = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries2)),
+            expr: Box::new(sp(Expr::Str("nope".into()))),
+        });
+        let thunk2 = eval(&expr_fail, empty_env(), 0).unwrap();
+        let val2 = materialize(&thunk2, None, 0).unwrap();
+        assert_eq!(val2, Value::Int(-1));
+    }
 
     #[test]
     fn test_annotated_bare_string() {
@@ -2536,8 +2583,6 @@ mod tests {
         let val = materialize(&thunk, None, 0).unwrap();
         assert_eq!(val, Value::String("Config".into()));
     }
-
-    // --- Chained access ---
 
     #[test]
     fn test_chained_dot_access() {
@@ -2572,8 +2617,6 @@ mod tests {
         assert_eq!(val, Value::Int(99));
     }
 
-    // --- Depth limit ---
-
     #[test]
     fn test_eval_depth_limit() {
         let expr = sp(Expr::Int(42));
@@ -2596,8 +2639,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- Materialization span ---
 
     #[test]
     fn test_materialization_span_on_error() {
@@ -2655,8 +2696,6 @@ mod tests {
         }
     }
 
-    // --- BracketAccess on non-dict ---
-
     #[test]
     fn test_bracket_access_on_non_dict() {
         let env = empty_env();
@@ -2684,8 +2723,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- RangeAccess on non-dict ---
 
     #[test]
     fn test_range_access_on_non_dict() {
@@ -2715,8 +2752,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- RangeAccess with string keys ---
 
     #[test]
     fn test_range_access_string_keys() {
@@ -2757,8 +2792,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- value_to_key with invalid types ---
 
     #[test]
     fn test_value_to_key_invalid_type_bool() {
@@ -2803,8 +2836,6 @@ mod tests {
         );
         assert!(err.message.contains("got Float"), "got: {}", err.message);
     }
-
-    // --- Document Evaluation ---
 
     #[test]
     fn test_eval_document_single_expression() {
@@ -2945,7 +2976,7 @@ mod tests {
         // Three expressions chaining scope:
         // Expr 1: [a: 1]
         // Expr 2: [b: 2]
-        // Expr 3: [sum_ref_a: $a  sum_ref_b: $b]
+        // Expr 3: [ref_a: $a  ref_b: $b]
         // Expr 3 should see both $a (from expr 1 via grandparent) and $b (from expr 2 via parent)
         let expr1 = sp(Expr::Dict(vec![sp(Entry {
             key: Some(sp(Expr::Str("a".into()))),
@@ -3095,8 +3126,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- File Evaluation ---
 
     #[test]
     fn test_eval_file_single_document() {
@@ -3390,8 +3419,6 @@ mod tests {
         }
     }
 
-    // --- deep_materialize tests ---
-
     #[test]
     fn test_deep_materialize_int() {
         let val = Value::Int(42);
@@ -3490,7 +3517,7 @@ mod tests {
     #[test]
     fn test_deep_materialize_forces_unevaluated_thunks() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Spanned::new(Expr::Int(99), span);
+        let expr = Rc::new(Spanned::new(Expr::Int(99), span));
         let env = Rc::new(RefCell::new(Environment::new()));
         let unevaluated = Rc::new(Thunk::new_unevaluated(expr, env, span));
 
@@ -3712,7 +3739,7 @@ mod tests {
         // Verify that after deep_materialize, all thunks in the result dict
         // are in the Materialized state (not Unevaluated or PendingBuiltin)
         let span = test_span(1, 1, 1, 5);
-        let expr = Spanned::new(Expr::Int(7), span);
+        let expr = Rc::new(Spanned::new(Expr::Int(7), span));
         let env = Rc::new(RefCell::new(Environment::new()));
         let unevaluated = Rc::new(Thunk::new_unevaluated(expr, env, span));
 

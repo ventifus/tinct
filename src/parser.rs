@@ -13,7 +13,7 @@ pub(crate) struct LltParser;
 /// Enforced during AST construction, not during pest's parse phase.
 /// Pest recurses on Rust's call stack, so ~500+ nested brackets can
 /// overflow before this check fires. See Phase 6 (hand-written parser).
-const MAX_DEPTH: usize = 256;
+const MAX_PARSE_DEPTH: usize = 256;
 
 /// Parse LLT source text into a spanned File AST.
 /// No input length limit is enforced; callers should validate input size if needed.
@@ -128,8 +128,6 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-// --- Span helpers ---
-
 fn make_span(pair: &pest::iterators::Pair<'_, Rule>, lines: &LineTable) -> Span {
     let pest_span = pair.as_span();
     Span {
@@ -170,16 +168,14 @@ impl LineTable {
     }
 }
 
-// --- AST builders ---
-
 fn build_value(
     pair: pest::iterators::Pair<'_, Rule>,
     lines: &LineTable,
     depth: usize,
 ) -> Result<Spanned<Expr>, ParseError> {
-    if depth >= MAX_DEPTH {
+    if depth >= MAX_PARSE_DEPTH {
         return Err(ParseError {
-            message: format!("maximum nesting depth exceeded ({MAX_DEPTH})"),
+            message: format!("maximum nesting depth exceeded ({MAX_PARSE_DEPTH})"),
             span: Some(make_span(&pair, lines)),
         });
     }
@@ -921,8 +917,6 @@ mod tests {
         parse_expression(input).unwrap_err()
     }
 
-    // --- Literal tests ---
-
     #[test]
     fn test_int_literal() {
         let ast = parse_ok("[42]");
@@ -1081,8 +1075,6 @@ mod tests {
         }
     }
 
-    // --- Dict tests ---
-
     #[test]
     fn test_empty_dict() {
         let ast = parse_ok("[]");
@@ -1141,8 +1133,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- Special form tests ---
 
     #[test]
     fn test_call() {
@@ -1282,8 +1272,6 @@ mod tests {
         }
     }
 
-    // --- Access chain tests ---
-
     #[test]
     fn test_dot_access() {
         let ast = parse_ok("[$person.name]");
@@ -1363,8 +1351,6 @@ mod tests {
         }
     }
 
-    // --- Type assertion tests ---
-
     #[test]
     fn test_type_assert_simple() {
         let ast = parse_ok("[@Number $expr]");
@@ -1388,8 +1374,6 @@ mod tests {
         }
     }
 
-    // --- Comment tests ---
-
     #[test]
     fn test_comments_ignored() {
         let ast = parse_ok(
@@ -1406,10 +1390,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- Error tests ---
-
-    // --- Complex examples ---
 
     #[test]
     fn test_pipeline_example() {
@@ -1463,8 +1443,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- M6 - Error-path tests ---
 
     #[test]
     fn test_error_span_on_unmatched_bracket() {
@@ -1570,22 +1548,22 @@ mod tests {
         let lines = LineTable::new(input);
         let pair = pairs.into_iter().next().unwrap();
 
-        // At depth=MAX_DEPTH, build_value rejects immediately.
-        let err = build_value(pair, &lines, MAX_DEPTH).unwrap_err();
+        // At depth=MAX_PARSE_DEPTH, build_value rejects immediately.
+        let err = build_value(pair, &lines, MAX_PARSE_DEPTH).unwrap_err();
         assert!(err.message.contains("maximum nesting depth exceeded"));
         assert!(err.span.is_some());
 
-        // At depth=MAX_DEPTH-1, parsing should succeed (leaf value, no further nesting).
+        // At depth=MAX_PARSE_DEPTH-1, parsing should succeed (leaf value, no further nesting).
         let pairs2 = LltParser::parse(Rule::value, input).unwrap();
         let pair2 = pairs2.into_iter().next().unwrap();
-        assert!(build_value(pair2, &lines, MAX_DEPTH - 1).is_ok());
+        assert!(build_value(pair2, &lines, MAX_PARSE_DEPTH - 1).is_ok());
     }
 
     #[test]
     fn test_error_depth_limit_message_format() {
         // Verify ParseError Display formatting with and without span
         let err_with_span = ParseError {
-            message: format!("maximum nesting depth exceeded ({MAX_DEPTH})"),
+            message: format!("maximum nesting depth exceeded ({MAX_PARSE_DEPTH})"),
             span: Some(Span::new(
                 Position {
                     offset: 0,
@@ -1674,10 +1652,6 @@ mod tests {
         }
     }
 
-    // --- M8 - Grammar coverage gap tests ---
-
-    // --- Semicolon separation in dicts ---
-
     #[test]
     fn test_semicolon_separated_entries() {
         let ast = parse_ok("[a: 1; b: 2; c: 3]");
@@ -1735,8 +1709,6 @@ mod tests {
         }
     }
 
-    // --- Complex bracket keys ---
-
     #[test]
     fn test_bracket_key_nested_dict() {
         // A bracket expression as a key: [bracket key]: value
@@ -1776,8 +1748,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- String escape sequences ---
 
     #[test]
     fn test_escape_newline() {
@@ -1876,8 +1846,6 @@ mod tests {
         }
     }
 
-    // --- Bare word edge cases ---
-
     #[test]
     fn test_bare_word_unicode() {
         let ast = parse_ok("[caf\u{00e9}]");
@@ -1965,8 +1933,6 @@ mod tests {
         }
     }
 
-    // --- bare_token as dict key (int, float, bool as keys) ---
-
     #[test]
     fn test_int_as_dict_key() {
         let ast = parse_ok("[0: zero  1: one  2: two]");
@@ -2028,8 +1994,6 @@ mod tests {
         }
     }
 
-    // --- Nested annotations ---
-
     #[test]
     fn test_fn_annotation_dict_with_default() {
         let ast = parse_ok("[fn@[type: Number  default: 0] [x] $x]");
@@ -2086,8 +2050,6 @@ mod tests {
         }
     }
 
-    // --- Empty param list ---
-
     #[test]
     fn test_fn_empty_param_list() {
         let ast = parse_ok("[fn [] 42]");
@@ -2123,8 +2085,6 @@ mod tests {
             other => panic!("expected Fn, got {other:?}"),
         }
     }
-
-    // --- Range expression start/end fields ---
 
     #[test]
     fn test_range_both_bounds() {
@@ -2245,8 +2205,6 @@ mod tests {
         }
     }
 
-    // --- Additional var_ref operator tests ---
-
     #[test]
     fn test_var_ref_operator_greater_than() {
         let ast = parse_ok("[$>]");
@@ -2331,8 +2289,6 @@ mod tests {
         }
     }
 
-    // --- Span correctness on valid parses ---
-
     #[test]
     fn test_span_simple_int() {
         let ast = parse_ok("[42]");
@@ -2356,8 +2312,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- Additional edge-case error tests ---
 
     #[test]
     fn test_error_bare_dollar() {
@@ -2418,8 +2372,6 @@ mod tests {
         let display = format!("{err}");
         assert_eq!(display, "2:3: test error");
     }
-
-    // --- Document structure tests ---
 
     #[test]
     fn test_single_document_single_expression() {
@@ -2518,8 +2470,6 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         }
     }
-
-    // --- Static constraints (SPEC 5.1, 5.3, 5.4) ---
 
     #[test]
     fn test_error_positional_after_named_in_dict() {
@@ -2621,8 +2571,6 @@ mod tests {
             other => panic!("expected Fn, got {other:?}"),
         }
     }
-
-    // --- LineTable (offset_to_position performance) ---
 
     #[test]
     fn test_line_table_single_line() {

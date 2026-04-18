@@ -159,20 +159,20 @@ Depends on 3a. After this step, `llt eval input.llt` produces JSON.
 
 Depends on 1b. Complex enough to be its own step: file I/O, cycle detection, scope merging.
 
-- [ ] Evaluate a file, return its dict
-- [ ] Namespaced usage: `utils: [call $include "utils.llt"]`
-- [ ] Merged usage: include result becomes parent scope
-- [ ] Cycle detection: error on circular includes
-- [ ] Path resolution relative to including file
+- [x] Evaluate a file, return its dict
+- [x] Namespaced usage: `utils: [call $include "utils.llt"]`
+- [x] Merged usage: include result becomes parent scope
+- [x] Cycle detection: error on circular includes
+- [x] Path resolution relative to including file
 
 ### 3d: Error Reporting Polish
 
 Ongoing throughout earlier phases, but final polish here.
 
 - [ ] Call stack reconstruction: chain of materialization sites
-- [ ] Clear messages: "key not found", "type mismatch", "arity mismatch", "circular dependency"
-- [ ] Source spans on all errors (definition-site + materialization-site)
-- [ ] TypeAssert `default:` fallback support
+- [x] Clear messages: "key not found", "type mismatch", "arity mismatch", "circular dependency"
+- [x] Source spans on all errors (definition-site + materialization-site) — note: Span::origin sentinel remains in builtin-originated errors
+- [x] TypeAssert `default:` fallback support
 - [ ] Thread call-site spans through BuiltinFn signature (resolve Span::origin sentinel in builtin errors)
 
 ## Pre-Phase 4: Stdlib Boundary Analysis — Complete

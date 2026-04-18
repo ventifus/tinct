@@ -16,8 +16,6 @@ use crate::error::EvalError;
 pub type BuiltinFn =
     fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize) -> Result<Value, Box<EvalError>>;
 
-// --- Key ---
-
 /// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
@@ -54,8 +52,6 @@ impl fmt::Display for Key {
     }
 }
 
-// --- Value ---
-
 /// A materialized runtime value.
 #[derive(Clone)]
 pub enum Value {
@@ -74,7 +70,7 @@ pub enum Value {
         params: Rc<Vec<Param>>,
         body: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
-        /// Stored for future type-checking of function return types (Phase 3d).
+        /// Stored for future type-checking integration.
         #[allow(dead_code)]
         return_ann: Option<Spanned<Annotation>>,
     },
@@ -92,7 +88,7 @@ impl Value {
             Value::Bool(_) => "Bool",
             Value::Dict(_) => "Dict",
             Value::Function { .. } => "Function",
-            Value::Builtin { .. } => "Function",
+            Value::Builtin { .. } => "Builtin",
         }
     }
 }
@@ -166,12 +162,10 @@ impl PartialEq for Value {
     }
 }
 
-// --- ThunkState ---
-
 #[derive(Debug, Clone)]
 pub enum ThunkState {
     Unevaluated {
-        expr: Spanned<Expr>,
+        expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
     },
     PendingBuiltin {
@@ -184,8 +178,6 @@ pub enum ThunkState {
     Materialized(Value),
 }
 
-// --- Thunk ---
-
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
 /// or a materialized value with memoization (evaluate-at-most-once semantics).
 pub struct Thunk {
@@ -194,7 +186,11 @@ pub struct Thunk {
 }
 
 impl Thunk {
-    pub fn new_unevaluated(expr: Spanned<Expr>, env: Rc<RefCell<Environment>>, span: Span) -> Self {
+    pub fn new_unevaluated(
+        expr: Rc<Spanned<Expr>>,
+        env: Rc<RefCell<Environment>>,
+        span: Span,
+    ) -> Self {
         Self {
             state: RefCell::new(ThunkState::Unevaluated { expr, env }),
             span,
@@ -259,7 +255,8 @@ impl Thunk {
 
     /// Take ownership of unevaluated data, atomically setting state to InProgress.
     /// Returns None if the thunk is not in the Unevaluated state.
-    pub fn take_unevaluated(&self) -> Option<(Spanned<Expr>, Rc<RefCell<Environment>>)> {
+    #[allow(clippy::type_complexity)]
+    pub fn take_unevaluated(&self) -> Option<(Rc<Spanned<Expr>>, Rc<RefCell<Environment>>)> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::Unevaluated { expr, env } => Some((expr, env)),
@@ -313,8 +310,6 @@ impl fmt::Debug for Thunk {
         }
     }
 }
-
-// --- Environment ---
 
 /// Lexical scope chain: bindings in the current scope plus an optional parent link.
 #[derive(Debug, Clone)]
@@ -382,8 +377,6 @@ mod tests {
     use super::*;
     use crate::test_util::test_span;
 
-    // --- Key tests ---
-
     #[test]
     fn test_key_hash_consistency() {
         use std::collections::hash_map::DefaultHasher;
@@ -405,8 +398,6 @@ mod tests {
         assert_eq!(format!("{}", Key::Int(42)), "42");
         assert_eq!(format!("{}", Key::String("hello".into())), "hello");
     }
-
-    // --- Value PartialEq tests ---
 
     #[test]
     fn test_value_partial_eq_primitives() {
@@ -466,8 +457,6 @@ mod tests {
         assert_ne!(b.clone(), b);
     }
 
-    // --- Environment tests ---
-
     #[test]
     fn test_environment_get_current_scope() {
         let mut env = Environment::new();
@@ -519,8 +508,6 @@ mod tests {
         assert!(!Rc::ptr_eq(&found, &parent_thunk));
     }
 
-    // --- Thunk tests ---
-
     #[test]
     fn test_thunk_new_materialized() {
         let span = test_span(1, 1, 1, 5);
@@ -535,7 +522,7 @@ mod tests {
     #[test]
     fn test_thunk_transition() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Spanned::new(Expr::Int(0), span);
+        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, span);
 
@@ -554,7 +541,7 @@ mod tests {
     #[test]
     fn test_thunk_debug_borrowed_state() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Spanned::new(Expr::Int(0), span);
+        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, span);
 
@@ -568,8 +555,6 @@ mod tests {
             "expected '<borrowed>' in debug output, got: {debug_str}"
         );
     }
-
-    // --- Value::Display tests ---
 
     #[test]
     fn test_value_display_int() {
@@ -664,8 +649,6 @@ mod tests {
         };
         assert_eq!(format!("{builtin}"), "<builtin test_fn>");
     }
-
-    // --- Value::Debug tests ---
 
     #[test]
     fn test_value_debug_int() {

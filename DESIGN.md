@@ -581,15 +581,15 @@ $data: [alice bob carol dave]
 # → [x: 1  z: 3]
 ```
 
-**`$conj` on sparse data:** `$conj` delegates to `$append`, which uses `$length` as the new key. This is correct for the intended list semantics (dense 0..n keys). On sparse data, the new key equals the entry count, not max key + 1, which may collide with an existing key. Use `$reindex` first to make sparse data dense before appending.
+**`$conj` on sparse data:** `$conj` delegates to `$append`, which uses the maximum existing integer key + 1 as the new key (or 0 if no integer keys exist). This avoids key collisions even on sparse data:
 
 ```lisp
 # Dense list — $conj works as expected
 [call $conj [a b c] d]                  # → [0: a  1: b  2: c  3: d]
 
-# Sparse data — reindex first
+# Sparse data — no collision, key 11 is used (max 10 + 1)
 $sparse: [0: a  5: b  10: c]
-[call $conj [call $reindex $sparse] d]  # → [0: a  1: b  2: c  3: d]
+[call $conj $sparse d]                  # → [0: a  5: b  10: c  11: d]
 ```
 
 ### No Null — Missing Keys Are Errors
@@ -1322,7 +1322,7 @@ $names[0]                   # Only this user's name is materialized
 
 **Principle:** Only implement in Rust what cannot be expressed in LLT itself. Everything else is LLT code loaded from a prelude file at startup.
 
-**Rust-native builtins (27 total):**
+**Rust-native builtins (28 total):**
 
 | Group | Functions | Rationale |
 |-------|-----------|-----------|
@@ -1335,7 +1335,7 @@ $names[0]                   # Only this user's name is materialized
 | Parsing | `to-int`, `to-float` | String-to-number parsing only (e.g., `"42"` to `42`). Numeric conversion (float-to-int) uses `floor`/`round`/`trunc`; int-to-float uses arithmetic promotion (`[call $+ $x 0.0]`). |
 | Evaluation control | `eval`, `error`, `try`, `apply` | `eval` deep-forces thunks (evaluator access); `error` constructs EvalError; `try` catches materialization errors; `apply` spreads a dict as positional args. |
 | Type introspection | `type-of` | Inspects the Value enum variant; no LLT expression can determine a value's type. |
-| I/O | `from-json` | Parses a JSON string into an LLT dict; requires a JSON parser (serde_json). |
+| I/O | `from-json`, `include` | `from-json` parses a JSON string into an LLT dict; requires a JSON parser (serde_json). `include` evaluates an LLT file and returns its result; requires filesystem access, cycle detection, and path resolution. |
 
 **Derived functions (moved from Rust to LLT):**
 
@@ -1381,6 +1381,146 @@ Rust builtins ($+, $-, $<, $=, $if, $keys, $merge, $str, $floor, ...)
   └── LLT stdlib ($not, $>, $mod, $ceil, $and, $map, $filter, $compose, ...)
         └── User code
 ```
+
+### Stdlib Function Reference
+
+All functions below are implemented in LLT itself in `stdlib/prelude.llt`. They are loaded at startup via `create_stdlib_env()` and available to all user code. Internal helper functions (suffixed with `-impl`) are omitted.
+
+**Internal Helpers:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `make-entry` | `[fn [k v] ...]` | Construct a single-entry dict from a computed key and value |
+
+**Identity:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `identity` | `[fn [x] $x]` | Returns its argument unchanged |
+
+**Logic:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `not` | `[fn [x] ...]` | Boolean negation |
+| `and` | `[fn [a b] ...]` | Short-circuit AND: returns `$b` if `$a` is true, else `false` |
+| `or` | `[fn [a b] ...]` | Short-circuit OR: returns `true` if `$a` is true, else `$b` |
+
+**Comparison (derived from `<` and `=`):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `>` | `[fn [a b] ...]` | Greater than |
+| `<=` | `[fn [a b] ...]` | Less than or equal |
+| `>=` | `[fn [a b] ...]` | Greater than or equal |
+
+**Arithmetic (derived from `+`, `-`, `*`, `/`):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `quot` | `[fn [a b] ...]` | Integer quotient, truncates toward zero (Clojure semantics) |
+| `mod` | `[fn [a b] ...]` | Remainder: `a - (a quot b) * b` |
+
+**Numeric Conversion (derived from `floor`):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `ceil` | `[fn [x] ...]` | Ceiling: smallest integer >= x. Derived as `-floor(-x)` |
+| `trunc` | `[fn [x] ...]` | Truncate toward zero: `floor` for positive, `ceil` for negative |
+
+**String (derived from `str`, `split`, `filter`):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `join` | `[fn [sep xs] ...]` | Join a list of strings with a separator |
+| `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings |
+
+**Control Flow:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `when` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is true, else `[]` |
+| `unless` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is false, else `[]` |
+| `cond` | `[fn [pairs] ...]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
+
+**Dict Utilities:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `get` | `[fn [xs k] ...]` | Get value by key (bracket access wrapper) |
+| `has?` | `[fn [xs k] ...]` | Check if a key exists (uses `$try` around access) |
+| `get-or` | `[fn [xs k default] ...]` | Get value by key with fallback default |
+| `get-in` | `[fn [xs path] ...]` | Traverse nested dicts by a list of keys |
+| `empty?` | `[fn [xs] ...]` | Check if a collection has zero entries |
+| `set` | `[fn [xs k v] ...]` | Return new dict with key added/updated |
+| `remove` | `[fn [xs k] ...]` | Return new dict with key removed |
+| `update` | `[fn [xs k f] ...]` | Apply function `$f` to the value at key `$k` |
+| `values` | `[fn [xs] ...]` | Get all values as an integer-indexed list |
+| `entries` | `[fn [xs] ...]` | Get all entries as a list of `[key: k value: v]` dicts |
+
+**List Operations (integer keys, dense 0..n output):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `first` | `[fn [xs] ...]` | Get the first element (key 0) |
+| `nth` | `[fn [xs n] ...]` | Get element by insertion-order position (supports negative indices) |
+| `last` | `[fn [xs] ...]` | Get the last element by insertion-order position |
+| `rest` | `[fn [xs] ...]` | All elements except the first, reindexed from 0 |
+| `cons` | `[fn [x xs] ...]` | Prepend an element, reindexing from 0 |
+| `conj` | `[fn [xs x] ...]` | Append an element (delegates to `$append`) |
+| `concat` | `[fn [xs ys] ...]` | Concatenate two lists, reindexing the second |
+| `reverse` | `[fn [xs] ...]` | Reverse a list |
+| `reindex` | `[fn [xs] ...]` | Rebuild with dense 0..n integer keys |
+
+**Sorting:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `sort` | `[fn [xs] ...]` | Sort using natural ordering (mergesort) |
+| `sort-by` | `[fn [cmp xs] ...]` | Sort using a custom comparator function |
+
+**Universal Collection Operations (preserve keys):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `map` | `[fn [f xs] ...]` | Apply function to every value, preserving keys |
+| `map-entries` | `[fn [f xs] ...]` | Apply function to every `[key value]` pair |
+| `filter` | `[fn [pred xs] ...]` | Keep entries where predicate returns true |
+| `reduce` | `[fn [f init xs] ...]` | Left fold over a collection |
+| `fold` | `[fn [f init xs] ...]` | Alias for `reduce` |
+| `slice` | `[fn [xs start end] ...]` | Positional slice (start inclusive, end exclusive) |
+| `take` | `[fn [n xs] ...]` | Take the first n entries, preserving keys |
+| `drop` | `[fn [n xs] ...]` | Skip the first n entries, preserving keys |
+| `zip` | `[fn [xs ys] ...]` | Pair entries from two collections by position |
+| `flatten` | `[fn [xs] ...]` | Flatten nested lists one level deep |
+| `find-deep` | `[fn [xs target] ...]` | Recursively search for a key in nested dicts |
+
+**Composition:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `compose` | `[fn [f g] ...]` | Compose two functions: `(compose f g)(x) = f(g(x))` |
+| `->` | `[fn [x ...stages] ...]` | Thread a value through a series of functions |
+
+**Error Handling:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `try-or` | `[fn [f default] ...]` | Call a function; return default if it errors |
+
+**Sequences:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `range` | `[fn [start end] ...]` | Generate integers from start (inclusive) to end (exclusive) |
+| `repeat` | `[fn [n val] ...]` | Create a list of n copies of a value |
+| `cycle` | `[fn [n xs] ...]` | Repeat a list n times |
+
+**Assertions:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `assert` | `[fn [cond msg] ...]` | Assert condition; error with message if false |
 
 ---
 

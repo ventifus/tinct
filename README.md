@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phase 0 (parser), Phase 1a-1e (evaluator), Phase 2a (core types & inference), Phase 2b (polymorphism), Phase 3a (Rust-native builtins), Phase 3a-llt (stdlib loading), and Phase 3b (CLI + JSON output) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 27 Rust-native builtins, LLT standard library, comprehensive test suite (877 tests: 840 unit + 32 CLI integration + 5 corpus). Phase 3c ($include) is next.
+**Status:** Phase 0 (parser), Phase 1a-1e (evaluator), Phase 2a (core types & inference), Phase 2b (polymorphism), Phase 3a (Rust-native builtins), Phase 3a-llt (stdlib loading), Phase 3b (CLI + JSON output), Phase 3c ($include), and Phase 3d (error reporting polish) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, LLT standard library, comprehensive test suite (911 tests: 858 unit + 48 CLI integration + 5 corpus). Phase 4 (stdlib validation & expansion) is next.
 
 ## Syntax at a Glance
 
@@ -54,7 +54,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Type system** -- `Type` enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` scope chain, `TypeError` reporting (Phase 2a)
 - **Type checker** -- `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion (Phase 2a)
 - **Polymorphism** -- Hindley-Milner unification, `Fn@Return [Params]` function type expressions, row polymorphism (open/closed/row-var records), type variable instantiation per call site (Phase 2b)
-- **Rust-native builtins** -- 27 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O) with `standard_builtins()` registry (Phase 3a)
+- **Rust-native builtins** -- 28 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O) with `standard_builtins()` registry (Phase 3a + 3c)
 - **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in LLT itself, loaded via `create_stdlib_env()` (Phase 3a-llt)
 - **Error reporting** -- `EvalError` with definition-site span, materialization-site span, and `StackFrame` traces
 - **Corpus testing** -- file-based test suite in `tests/corpus/` with `===` delimiter for expected output
@@ -129,15 +129,15 @@ cargo run -- eval test_input.txt
 | `src/grammar.pest` | PEG grammar (lexical + syntactic rules) |
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/parser.rs` | pest pairs to AST conversion + comprehensive unit tests |
-| `src/eval.rs` | Evaluator: `eval()`, `materialize()`, dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, depth limit (256) |
-| `src/builtins.rs` | 27 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O), `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
+| `src/eval.rs` | Evaluator: `eval()`, `materialize()` (call-site span attachment, stack frame propagation), dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, TypeAssert `default:` fallback, depth limit (256) |
+| `src/builtins.rs` | 28 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O), `IncludeContext` + thread-local for `$include`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces |
 | `src/types.rs` | Type system: `Type` enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any), `RowRest` (Closed, Open, RowVar), `Substitution` (unification), `TypeEnv` (Rc-based scope chain), `TypeError` |
 | `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, `Fn@Return [Params]` resolution, row polymorphism |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
-| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
-| `src/main.rs` | CLI (`llt` binary): `llt eval [OPTIONS] <FILE>` -- evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing |
+| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `set_include_context()`, `IncludeContext`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
+| `src/main.rs` | CLI (`llt` binary): `llt eval [OPTIONS] <FILE>` -- evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing, `$include` context setup |
 | `stdlib/prelude.llt` | LLT standard library: stdlib functions written in LLT itself |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
@@ -150,11 +150,11 @@ cargo run -- eval test_input.txt
 
 ### Unit Tests
 
-877 tests (840 unit + 32 CLI integration + 5 corpus) across multiple modules covering:
+911 tests (858 unit + 48 CLI integration + 5 corpus) across multiple modules covering:
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
 - **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `$_` implicit lambda desugaring, TypeAlias), depth limiting, and materialization span propagation
-- **builtins.rs** -- all 27 Rust-native builtins (arithmetic auto-promotion, division by zero, comparison cross-type, `if` selective materialization, dict operations, string operations, numeric floor/round with NaN/infinity guards, string parsing, eval/error/try/apply, type-of, from-json), stdlib env loading (root env + prelude)
+- **builtins.rs** -- all 28 Rust-native builtins (arithmetic auto-promotion, division by zero, comparison cross-type, `if` selective materialization, dict operations, string operations, numeric floor/round with NaN/infinity guards, string parsing, eval/error/try/apply, type-of, from-json, include with cycle detection/path resolution/nested includes/stdlib access), stdlib env loading (root env + prelude)
 - **value.rs** -- Value, Thunk, and Environment types (evaluator foundation)
 - **error.rs** -- `EvalError` and `StackFrame` formatting with definition-site and materialization-site spans
 - **types.rs** -- Type enum, TypeEnv scope chain, subtyping (Number, structural records, function variance, open/closed/row-var records), unification (Hindley-Milner, type variable instantiation, substitution application, literal promotions, occurs check)

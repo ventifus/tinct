@@ -172,8 +172,6 @@ impl Annotation {
     }
 }
 
-// --- Display implementations for pretty-printing and error reporting ---
-
 impl fmt::Display for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, doc) in self.documents.iter().enumerate() {
@@ -320,8 +318,6 @@ impl fmt::Display for Span {
 mod tests {
     use super::*;
     use crate::test_util::sp;
-
-    // --- Expr::Display tests ---
 
     #[test]
     fn test_display_range_access_full() {
@@ -564,8 +560,6 @@ mod tests {
         assert_eq!(format!("{expr}"), "[10  20]");
     }
 
-    // --- Annotation::PropertyDict::Display tests ---
-
     #[test]
     fn test_display_annotation_simple() {
         let ann = Annotation::Simple("String".into());
@@ -592,8 +586,6 @@ mod tests {
         ]);
         assert_eq!(format!("{ann}"), "[$type: $Number  $default: 42]");
     }
-
-    // --- Document::Display tests ---
 
     #[test]
     fn test_display_document_single_expression() {

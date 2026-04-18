@@ -36,9 +36,7 @@ impl EvalError {
         self
     }
 
-    /// Builder for stack frame attachment. Used in tests now; will be used
-    /// for call-stack reconstruction in Phase 3d (error reporting improvements).
-    #[allow(dead_code)]
+    /// Builder for stack frame attachment.
     pub fn with_frame(mut self, label: impl Into<String>, span: Span) -> Self {
         self.stack.push(StackFrame {
             label: label.into(),
@@ -47,9 +45,7 @@ impl EvalError {
         self
     }
 
-    /// Mutable stack frame push. Used in tests now; will be used
-    /// for call-stack reconstruction in Phase 3d (error reporting improvements).
-    #[allow(dead_code)]
+    /// Mutable stack frame push.
     pub fn push_frame(&mut self, label: impl Into<String>, span: Span) {
         self.stack.push(StackFrame {
             label: label.into(),

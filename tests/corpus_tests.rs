@@ -18,6 +18,7 @@ fn find_test_files(dir: &Path) -> Vec<PathBuf> {
         }
     }
 
+    files.sort();
     files
 }
 
@@ -154,7 +155,8 @@ fn test_invalid_corpus() {
             None => {
                 failed.push((
                     relative_path.to_path_buf(),
-                    "invalid corpus test file missing expected error substring after ===".to_string(),
+                    "invalid corpus test file missing expected error substring after ==="
+                        .to_string(),
                 ));
                 continue;
             }
@@ -303,7 +305,8 @@ fn test_eval_error_corpus() {
             None => {
                 failed.push((
                     relative_path.to_path_buf(),
-                    "eval error corpus test file missing expected error substring after ===".to_string(),
+                    "eval error corpus test file missing expected error substring after ==="
+                        .to_string(),
                 ));
                 continue;
             }

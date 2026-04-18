@@ -3,14 +3,14 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use lazy_lisp_transformer::{
     create_stdlib_env, deep_materialize, eval_file_with_input, json_to_value, materialize, parse,
-    value_to_display_string, value_to_json, Thunk, Value,
+    set_include_context, value_to_display_string, value_to_json, IncludeContext, Thunk, Value,
+    MAX_FILE_SIZE,
 };
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::io::{self, IsTerminal, Read};
 use std::process;
 use std::rc::Rc;
-
-/// Maximum input file size: 10 MB.
-const MAX_INPUT_SIZE: u64 = 10 * 1024 * 1024;
 
 /// Lazy Lisp Transformer — a unified data representation and transformation language.
 #[derive(Parser)]
@@ -89,6 +89,27 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
     // Create stdlib environment
     let env = create_stdlib_env()?;
 
+    // Set up include context for $include builtin
+    let base_dir = if file_path == "-" {
+        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
+    } else {
+        let p = std::path::Path::new(file_path);
+        // Use the file's parent directory; fall back to cwd if the path has no parent
+        // (e.g., a bare filename like "test.llt").
+        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            Some(dir) => dir
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve directory for \"{file_path}\": {e}"))?,
+            None => std::env::current_dir()
+                .map_err(|e| format!("cannot determine working directory: {e}"))?,
+        }
+    };
+    set_include_context(IncludeContext {
+        base_dir,
+        include_guard: Rc::new(RefCell::new(HashSet::new())),
+        stdlib_env: Rc::clone(&env),
+    });
+
     // Convert stdin JSON to initial $$ thunk
     let initial_input = stdin_input.map(|val| {
         Rc::new(Thunk::new_materialized(
@@ -135,24 +156,24 @@ fn read_source(file_path: &str) -> Result<String, String> {
     if file_path == "-" {
         let mut buf = String::new();
         io::stdin()
-            .take(MAX_INPUT_SIZE + 1)
+            .take(MAX_FILE_SIZE + 1)
             .read_to_string(&mut buf)
             .map_err(|e| format!("error reading stdin: {e}"))?;
-        if buf.len() as u64 > MAX_INPUT_SIZE {
+        if buf.len() as u64 > MAX_FILE_SIZE {
             return Err(format!(
                 "stdin input exceeds the 10 MB limit ({} bytes)",
-                MAX_INPUT_SIZE
+                MAX_FILE_SIZE
             ));
         }
         Ok(buf)
     } else {
         let metadata =
             std::fs::metadata(file_path).map_err(|e| format!("error reading file: {e}"))?;
-        if metadata.len() > MAX_INPUT_SIZE {
+        if metadata.len() > MAX_FILE_SIZE {
             return Err(format!(
                 "input file is {} bytes, which exceeds the 10 MB limit ({} bytes)",
                 metadata.len(),
-                MAX_INPUT_SIZE
+                MAX_FILE_SIZE
             ));
         }
         std::fs::read_to_string(file_path).map_err(|e| format!("error reading file: {e}"))
@@ -168,14 +189,14 @@ fn read_stdin_json() -> Result<Option<Value>, String> {
 
     let mut buf = String::new();
     io::stdin()
-        .take(MAX_INPUT_SIZE + 1)
+        .take(MAX_FILE_SIZE + 1)
         .read_to_string(&mut buf)
         .map_err(|e| format!("error reading stdin: {e}"))?;
 
-    if buf.len() as u64 > MAX_INPUT_SIZE {
+    if buf.len() as u64 > MAX_FILE_SIZE {
         return Err(format!(
             "stdin JSON input exceeds the 10 MB limit ({} bytes)",
-            MAX_INPUT_SIZE
+            MAX_FILE_SIZE
         ));
     }
 

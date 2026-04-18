@@ -7,7 +7,7 @@
 #![cfg(feature = "cli")]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Return the path to the compiled `llt` binary.
@@ -17,15 +17,40 @@ fn llt_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_llt"))
 }
 
-/// Create a temporary LLT file with the given content and return its path.
+/// A temporary directory that is automatically removed on drop.
+/// Each test gets its own unique subdirectory to avoid collisions and
+/// leftover files.
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(label: &str) -> Self {
+        let path = std::env::temp_dir().join("llt_cli_tests").join(label);
+        fs::create_dir_all(&path).expect("failed to create temp dir");
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.path).ok();
+    }
+}
+
+/// Create a temporary LLT file with the given content and return its path
+/// along with a guard that cleans up the directory on drop.
 /// Uses the test name (via a caller-supplied label) to make filenames unique
 /// so parallel tests never collide.
-fn write_temp_llt(label: &str, content: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("llt_cli_tests");
-    fs::create_dir_all(&dir).expect("failed to create temp dir");
-    let path = dir.join(format!("{label}.llt"));
+fn write_temp_llt(label: &str, content: &str) -> (PathBuf, TempDir) {
+    let dir = TempDir::new(label);
+    let path = dir.path().join(format!("{label}.llt"));
     fs::write(&path, content).expect("failed to write temp file");
-    path
+    (path, dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -34,13 +59,17 @@ fn write_temp_llt(label: &str, content: &str) -> PathBuf {
 
 #[test]
 fn eval_simple_dict_json_output() {
-    let path = write_temp_llt("eval_simple_dict", "[x: 1 y: hello]");
+    let (path, _dir) = write_temp_llt("eval_simple_dict", "[x: 1 y: hello]");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
         .expect("failed to run llt");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
     assert_eq!(json, serde_json::json!({"x": 1, "y": "hello"}));
@@ -48,7 +77,7 @@ fn eval_simple_dict_json_output() {
 
 #[test]
 fn eval_scalar_int() {
-    let path = write_temp_llt("eval_scalar_int", "42");
+    let (path, _dir) = write_temp_llt("eval_scalar_int", "42");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -62,7 +91,7 @@ fn eval_scalar_int() {
 
 #[test]
 fn eval_scalar_string() {
-    let path = write_temp_llt("eval_scalar_string", "\"hello world\"");
+    let (path, _dir) = write_temp_llt("eval_scalar_string", "\"hello world\"");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -76,7 +105,7 @@ fn eval_scalar_string() {
 
 #[test]
 fn eval_scalar_bool() {
-    let path = write_temp_llt("eval_scalar_bool", "true");
+    let (path, _dir) = write_temp_llt("eval_scalar_bool", "true");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -90,7 +119,7 @@ fn eval_scalar_bool() {
 
 #[test]
 fn eval_scalar_float() {
-    let path = write_temp_llt("eval_scalar_float", "3.14");
+    let (path, _dir) = write_temp_llt("eval_scalar_float", "3.14");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -104,7 +133,7 @@ fn eval_scalar_float() {
 
 #[test]
 fn eval_array_like_dict() {
-    let path = write_temp_llt("eval_array_like", "[10 20 30]");
+    let (path, _dir) = write_temp_llt("eval_array_like", "[10 20 30]");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -118,7 +147,7 @@ fn eval_array_like_dict() {
 
 #[test]
 fn eval_nested_dict() {
-    let path = write_temp_llt("eval_nested", "[a: [b: [c: 42]]]");
+    let (path, _dir) = write_temp_llt("eval_nested", "[a: [b: [c: 42]]]");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -136,7 +165,7 @@ fn eval_nested_dict() {
 
 #[test]
 fn eval_format_json_explicit() {
-    let path = write_temp_llt("eval_format_json", "[x: 1]");
+    let (path, _dir) = write_temp_llt("eval_format_json", "[x: 1]");
     let output = Command::new(llt_bin())
         .args(["eval", "--format", "json", path.to_str().unwrap()])
         .output()
@@ -150,7 +179,7 @@ fn eval_format_json_explicit() {
 
 #[test]
 fn eval_format_json_short_flag() {
-    let path = write_temp_llt("eval_format_json_short", "[x: 1]");
+    let (path, _dir) = write_temp_llt("eval_format_json_short", "[x: 1]");
     let output = Command::new(llt_bin())
         .args(["eval", "-f", "json", path.to_str().unwrap()])
         .output()
@@ -168,7 +197,7 @@ fn eval_format_json_short_flag() {
 
 #[test]
 fn eval_format_llt_scalar() {
-    let path = write_temp_llt("eval_format_llt_scalar", "42");
+    let (path, _dir) = write_temp_llt("eval_format_llt_scalar", "42");
     let output = Command::new(llt_bin())
         .args(["eval", "--format", "llt", path.to_str().unwrap()])
         .output()
@@ -181,7 +210,7 @@ fn eval_format_llt_scalar() {
 
 #[test]
 fn eval_format_llt_dict() {
-    let path = write_temp_llt("eval_format_llt_dict", "[x: 42]");
+    let (path, _dir) = write_temp_llt("eval_format_llt_dict", "[x: 42]");
     let output = Command::new(llt_bin())
         .args(["eval", "-f", "llt", path.to_str().unwrap()])
         .output()
@@ -194,7 +223,7 @@ fn eval_format_llt_dict() {
 
 #[test]
 fn eval_format_llt_string() {
-    let path = write_temp_llt("eval_format_llt_string", "\"hello\"");
+    let (path, _dir) = write_temp_llt("eval_format_llt_string", "\"hello\"");
     let output = Command::new(llt_bin())
         .args(["eval", "-f", "llt", path.to_str().unwrap()])
         .output()
@@ -207,7 +236,7 @@ fn eval_format_llt_string() {
 
 #[test]
 fn eval_format_llt_bool() {
-    let path = write_temp_llt("eval_format_llt_bool", "true");
+    let (path, _dir) = write_temp_llt("eval_format_llt_bool", "true");
     let output = Command::new(llt_bin())
         .args(["eval", "-f", "llt", path.to_str().unwrap()])
         .output()
@@ -220,7 +249,7 @@ fn eval_format_llt_bool() {
 
 #[test]
 fn eval_format_llt_float() {
-    let path = write_temp_llt("eval_format_llt_float", "3.14");
+    let (path, _dir) = write_temp_llt("eval_format_llt_float", "3.14");
     let output = Command::new(llt_bin())
         .args(["eval", "-f", "llt", path.to_str().unwrap()])
         .output()
@@ -241,13 +270,17 @@ fn eval_flag_deep_materialize() {
     // thunks are deep-materialized before output. Both should produce
     // the same JSON for this simple case, but --eval exercises the
     // deep_materialize code path in main.rs.
-    let path = write_temp_llt("eval_flag_deep", "[a: [b: [c: 42]]]");
+    let (path, _dir) = write_temp_llt("eval_flag_deep", "[a: [b: [c: 42]]]");
     let output = Command::new(llt_bin())
         .args(["eval", "--eval", path.to_str().unwrap()])
         .output()
         .expect("failed to run llt");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!({"a": {"b": {"c": 42}}}));
@@ -255,7 +288,7 @@ fn eval_flag_deep_materialize() {
 
 #[test]
 fn eval_flag_with_llt_format() {
-    let path = write_temp_llt("eval_flag_llt", "[x: 1]");
+    let (path, _dir) = write_temp_llt("eval_flag_llt", "[x: 1]");
     let output = Command::new(llt_bin())
         .args(["eval", "--eval", "-f", "llt", path.to_str().unwrap()])
         .output()
@@ -274,13 +307,17 @@ fn eval_flag_with_llt_format() {
 fn eval_multi_document_pipeline() {
     // doc1 produces {x: 10}, doc2 receives it as $$ and wraps it
     let source = "[x: 10]\n---\n[result: $$.x]";
-    let path = write_temp_llt("eval_multi_doc", source);
+    let (path, _dir) = write_temp_llt("eval_multi_doc", source);
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
         .expect("failed to run llt");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!({"result": 10}));
@@ -292,13 +329,17 @@ fn eval_multi_document_pipeline() {
 
 #[test]
 fn eval_builtin_add() {
-    let path = write_temp_llt("eval_builtin_add", "[call $+ 1 2]");
+    let (path, _dir) = write_temp_llt("eval_builtin_add", "[call $+ 1 2]");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
         .expect("failed to run llt");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!(3));
@@ -306,13 +347,17 @@ fn eval_builtin_add() {
 
 #[test]
 fn eval_builtin_if() {
-    let path = write_temp_llt("eval_builtin_if", "[call $if true 42 99]");
+    let (path, _dir) = write_temp_llt("eval_builtin_if", "[call $if true 42 99]");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
         .expect("failed to run llt");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!(42));
@@ -329,7 +374,10 @@ fn eval_missing_file() {
         .output()
         .expect("failed to run llt");
 
-    assert!(!output.status.success(), "expected non-zero exit for missing file");
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for missing file"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("error reading file"),
@@ -351,22 +399,28 @@ fn eval_missing_file_exit_code() {
 #[test]
 fn eval_parse_error() {
     // Unterminated bracket is a parse error
-    let path = write_temp_llt("eval_parse_error", "[x: 1");
+    let (path, _dir) = write_temp_llt("eval_parse_error", "[x: 1");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
         .expect("failed to run llt");
 
-    assert!(!output.status.success(), "expected non-zero exit for parse error");
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for parse error"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     // The error message should be non-empty
-    assert!(!stderr.trim().is_empty(), "expected error message on stderr");
+    assert!(
+        !stderr.trim().is_empty(),
+        "expected error message on stderr"
+    );
 }
 
 #[test]
 fn eval_error_undefined_var() {
     // Referencing an undefined variable should produce an eval error
-    let path = write_temp_llt("eval_error_undef", "$nonexistent");
+    let (path, _dir) = write_temp_llt("eval_error_undef", "$nonexistent");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -374,7 +428,10 @@ fn eval_error_undefined_var() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.trim().is_empty(), "expected error message for undefined var");
+    assert!(
+        !stderr.trim().is_empty(),
+        "expected error message for undefined var"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -383,9 +440,7 @@ fn eval_error_undefined_var() {
 
 #[test]
 fn no_subcommand_shows_usage() {
-    let output = Command::new(llt_bin())
-        .output()
-        .expect("failed to run llt");
+    let output = Command::new(llt_bin()).output().expect("failed to run llt");
 
     // clap exits non-zero when no subcommand is given
     assert!(!output.status.success());
@@ -433,7 +488,7 @@ fn eval_help_flag() {
 
 #[test]
 fn eval_invalid_format() {
-    let path = write_temp_llt("eval_invalid_format", "42");
+    let (path, _dir) = write_temp_llt("eval_invalid_format", "42");
     let output = Command::new(llt_bin())
         .args(["eval", "-f", "xml", path.to_str().unwrap()])
         .output()
@@ -473,7 +528,7 @@ fn version_flag() {
 
 #[test]
 fn eval_json_output_is_pretty_printed() {
-    let path = write_temp_llt("eval_pretty_json", "[a: 1 b: 2]");
+    let (path, _dir) = write_temp_llt("eval_pretty_json", "[a: 1 b: 2]");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -499,7 +554,7 @@ fn eval_json_output_is_pretty_printed() {
 #[test]
 fn eval_stdin_json_injection() {
     // When stdin is piped with JSON, it should be available as $$ in the first doc
-    let path = write_temp_llt("eval_stdin_json", "[name: $$.name]");
+    let (path, _dir) = write_temp_llt("eval_stdin_json", "[name: $$.name]");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .stdin(std::process::Stdio::piped())
@@ -517,7 +572,11 @@ fn eval_stdin_json_injection() {
         })
         .expect("failed to run llt with piped stdin");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!({"name": "Alice"}));
@@ -530,7 +589,7 @@ fn eval_stdin_json_injection() {
 #[test]
 fn eval_empty_file() {
     // An empty/whitespace-only file should be a parse error (no expression)
-    let path = write_temp_llt("eval_empty", "  \n  ");
+    let (path, _dir) = write_temp_llt("eval_empty", "  \n  ");
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -555,14 +614,504 @@ fn eval_empty_file() {
 fn eval_scope_chain() {
     // Second expression should see bindings from the first
     let source = "[x: 10]\n[result: $x]";
-    let path = write_temp_llt("eval_scope_chain", source);
+    let (path, _dir) = write_temp_llt("eval_scope_chain", source);
     let output = Command::new(llt_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
         .expect("failed to run llt");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!({"result": 10}));
+}
+
+// ---------------------------------------------------------------------------
+// $include tests
+// ---------------------------------------------------------------------------
+
+/// Create a temporary directory with a unique label for $include tests.
+/// Returns a `TempDir` that is automatically cleaned up on drop.
+fn make_include_dir(label: &str) -> TempDir {
+    TempDir::new(&format!("include_{label}"))
+}
+
+#[test]
+fn include_basic_dict() {
+    let dir = make_include_dir("basic_dict");
+    let helper = dir.path().join("helper.llt");
+    fs::write(&helper, "[x: 1 y: 2]").unwrap();
+    let main = dir.path().join("main.llt");
+    fs::write(&main, "[result: [call $include \"helper.llt\"]]").unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", main.to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"result": {"x": 1, "y": 2}}));
+}
+
+#[test]
+fn include_namespaced() {
+    // Include a helper and access its fields via the namespace binding
+    let dir = make_include_dir("namespaced");
+    fs::write(
+        dir.path().join("helper.llt"),
+        "[double: [fn [n] [call $* $n 2]]]",
+    )
+    .unwrap();
+    let main_src = r#"[utils: [call $include "helper.llt"]]
+[result: [call $utils.double 21]]"#;
+    fs::write(dir.path().join("main.llt"), main_src).unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"result": 42}));
+}
+
+#[test]
+fn include_merged_scope_chain() {
+    // First expression is an include (result merges into scope), second uses its bindings
+    let dir = make_include_dir("merged_scope");
+    fs::write(dir.path().join("helper.llt"), "[x: 10 y: 20]").unwrap();
+    let main_src = "[call $include \"helper.llt\"]\n[sum: [call $+ $x $y]]";
+    fs::write(dir.path().join("main.llt"), main_src).unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"sum": 30}));
+}
+
+#[test]
+fn include_nested_a_includes_b_includes_c() {
+    // A includes B, B includes C — nested transitive include
+    let dir = make_include_dir("nested_chain");
+    fs::write(dir.path().join("c.llt"), "[val: 99]").unwrap();
+    fs::write(
+        dir.path().join("b.llt"),
+        "[inner: [call $include \"c.llt\"]]",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("a.llt"),
+        "[outer: [call $include \"b.llt\"]]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("a.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"outer": {"inner": {"val": 99}}}));
+}
+
+#[test]
+fn include_circular_error() {
+    // A includes B, B includes A — circular dependency
+    let dir = make_include_dir("circular");
+    fs::write(dir.path().join("a.llt"), "[call $include \"b.llt\"]").unwrap();
+    fs::write(dir.path().join("b.llt"), "[call $include \"a.llt\"]").unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("a.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        !output.status.success(),
+        "expected failure for circular include"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("circular include"),
+        "expected 'circular include' in stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn include_self_circular_error() {
+    // File includes itself — degenerate circular case
+    let dir = make_include_dir("self_circular");
+    fs::write(dir.path().join("self.llt"), "[call $include \"self.llt\"]").unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("self.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        !output.status.success(),
+        "expected failure for self-include"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("circular include"),
+        "expected 'circular include' in stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn include_file_not_found_error() {
+    let dir = make_include_dir("file_not_found");
+    fs::write(
+        dir.path().join("main.llt"),
+        "[call $include \"nonexistent.llt\"]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        !output.status.success(),
+        "expected failure for missing include file"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot open"),
+        "expected 'cannot open' in stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn include_relative_path_from_subdirectory() {
+    // Main file in root dir includes a file in a subdirectory via relative path
+    let dir = make_include_dir("relative_subdir");
+    let sub = dir.path().join("lib");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join("utils.llt"), "[pi: 3.14]").unwrap();
+    fs::write(
+        dir.path().join("main.llt"),
+        "[math: [call $include \"lib/utils.llt\"]]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"math": {"pi": 3.14}}));
+}
+
+#[test]
+fn include_relative_path_from_included_file() {
+    // Main includes sub/a.llt, which eagerly includes sibling b.llt (relative to sub/).
+    // The include must be at the top level (not inside a dict entry) so it is
+    // evaluated while the base_dir still points at sub/. Dict entry values are
+    // lazy, so a nested [call $include ...] inside a dict would only materialize
+    // after base_dir has been restored to the parent.
+    let dir = make_include_dir("relative_from_included");
+    let sub = dir.path().join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join("b.llt"), "[val: 42]").unwrap();
+    // a.llt uses a scope chain: first expression includes b.llt eagerly,
+    // second expression wraps the result.
+    fs::write(
+        sub.join("a.llt"),
+        "[call $include \"b.llt\"]\n[nested: $val]",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("main.llt"),
+        "[wrapper: [call $include \"sub/a.llt\"]]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"wrapper": {"nested": 42}}));
+}
+
+#[test]
+fn include_with_stdlib_builtins() {
+    // Included file uses stdlib builtins (arithmetic)
+    let dir = make_include_dir("stdlib_builtins");
+    fs::write(dir.path().join("math.llt"), "[sum: [call $+ 10 20]]").unwrap();
+    fs::write(
+        dir.path().join("main.llt"),
+        "[result: [call $include \"math.llt\"]]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"result": {"sum": 30}}));
+}
+
+#[test]
+fn include_returns_scalar() {
+    // Included file evaluates to a scalar (not a dict)
+    let dir = make_include_dir("scalar_return");
+    fs::write(dir.path().join("answer.llt"), "42").unwrap();
+    fs::write(
+        dir.path().join("main.llt"),
+        "[answer: [call $include \"answer.llt\"]]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"answer": 42}));
+}
+
+#[test]
+fn include_returns_string() {
+    // Included file evaluates to a string scalar
+    let dir = make_include_dir("string_return");
+    fs::write(dir.path().join("greeting.llt"), "\"hello world\"").unwrap();
+    fs::write(
+        dir.path().join("main.llt"),
+        "[msg: [call $include \"greeting.llt\"]]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"msg": "hello world"}));
+}
+
+#[test]
+fn include_diamond_pattern_no_cycle() {
+    // Diamond: main includes A and B, both include C — NOT circular
+    // (C is included twice but never re-enters while already in the guard)
+    let dir = make_include_dir("diamond");
+    fs::write(dir.path().join("c.llt"), "[shared: 100]").unwrap();
+    fs::write(
+        dir.path().join("a.llt"),
+        "[a_data: [call $include \"c.llt\"]]",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("b.llt"),
+        "[b_data: [call $include \"c.llt\"]]",
+    )
+    .unwrap();
+    let main_src = r#"[
+  a: [call $include "a.llt"]
+  b: [call $include "b.llt"]
+]"#;
+    fs::write(dir.path().join("main.llt"), main_src).unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "a": {"a_data": {"shared": 100}},
+            "b": {"b_data": {"shared": 100}}
+        })
+    );
+}
+
+#[test]
+fn include_isolation_no_caller_scope() {
+    // Included file should NOT see bindings from the caller's scope
+    let dir = make_include_dir("isolation");
+    // The included file tries to reference $caller_var which is only in main's scope
+    fs::write(dir.path().join("helper.llt"), "[val: $caller_var]").unwrap();
+    let main_src = "[caller_var: 999]\n[result: [call $include \"helper.llt\"]]";
+    fs::write(dir.path().join("main.llt"), main_src).unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        !output.status.success(),
+        "expected failure: included file should not see caller scope"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("undefined variable") || stderr.contains("not defined"),
+        "expected undefined variable error, got: {stderr}"
+    );
+}
+
+#[test]
+fn include_with_deep_materialize() {
+    // Use --eval flag with includes to exercise deep materialization
+    let dir = make_include_dir("deep_materialize");
+    fs::write(dir.path().join("nested.llt"), "[a: [b: [c: 42]]]").unwrap();
+    fs::write(
+        dir.path().join("main.llt"),
+        "[data: [call $include \"nested.llt\"]]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args([
+            "eval",
+            "--eval",
+            dir.path().join("main.llt").to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"data": {"a": {"b": {"c": 42}}}}));
+}
+
+#[test]
+fn include_llt_format_output() {
+    // Include test with LLT display format output
+    let dir = make_include_dir("llt_format");
+    fs::write(dir.path().join("helper.llt"), "[x: 42]").unwrap();
+    fs::write(
+        dir.path().join("main.llt"),
+        "[call $include \"helper.llt\"]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args([
+            "eval",
+            "-f",
+            "llt",
+            dir.path().join("main.llt").to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "Dict({\"x\": Int(42)})");
+}
+
+#[test]
+fn include_path_traversal_parent_dir() {
+    // child.llt in a subdirectory includes ../parent.llt via path traversal
+    let dir = make_include_dir("path_traversal");
+    let subdir = dir.path().join("subdir");
+    fs::create_dir_all(&subdir).unwrap();
+    fs::write(dir.path().join("parent.llt"), "[greeting: hello]").unwrap();
+    fs::write(
+        subdir.join("child.llt"),
+        "[data: [call $include \"../parent.llt\"]]",
+    )
+    .unwrap();
+
+    let output = Command::new(llt_bin())
+        .args(["eval", subdir.join("child.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run llt");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"data": {"greeting": "hello"}}));
 }

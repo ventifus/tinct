@@ -14,19 +14,48 @@
 //! **Parsing:** `to-int`, `to-float`
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
 //! **Type introspection:** `type-of`
-//! **I/O:** `from-json`
+//! **I/O:** `from-json`, `include`
 
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::error::EvalError;
-use crate::eval::{invoke_function, materialize, MAX_EVAL_DEPTH};
+use crate::eval::{invoke_function, materialize, CallContext, MAX_EVAL_DEPTH};
 use crate::value::{BuiltinFn, Environment, Key, Thunk, Value};
 
-// --- Helpers ---
+/// Maximum file size for reading LLT files: 10 MB.
+pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Thread-local context for `$include` — provides filesystem paths, cycle
+/// detection, and the stdlib environment to the builtin without changing the
+/// `BuiltinFn` signature.
+pub struct IncludeContext {
+    /// Directory of the currently-evaluating file (for relative path resolution).
+    pub base_dir: PathBuf,
+    /// Canonical paths currently being included — push before recursing, pop after.
+    pub include_guard: Rc<RefCell<HashSet<PathBuf>>>,
+    /// The stdlib environment to use when evaluating included files.
+    pub stdlib_env: Rc<RefCell<Environment>>,
+}
+
+thread_local! {
+    static INCLUDE_CTX: RefCell<Option<IncludeContext>> = const { RefCell::new(None) };
+}
+
+/// Install an [`IncludeContext`] on the current thread.
+///
+/// Must be called before evaluating any code that uses `$include`. The context
+/// is stored in a thread-local and read by [`builtin_include`].
+pub fn set_include_context(ctx: IncludeContext) {
+    INCLUDE_CTX.with(|cell| {
+        *cell.borrow_mut() = Some(ctx);
+    });
+}
 
 /// Helper: materialize a single positional argument, enforcing exact arity of 1
 /// and rejecting named arguments. Used by many single-arg builtins.
@@ -52,7 +81,7 @@ fn expect_one_arg(
 /// Helper: check that an f64 value is within the representable range of i64
 /// before casting. Returns an error if the value would saturate.
 fn checked_f64_to_i64(name: &str, f: f64) -> Result<i64, Box<EvalError>> {
-    if f < (i64::MIN as f64) || f > (i64::MAX as f64) {
+    if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
         return Err(
             EvalError::new(format!("{name}: {f} is out of Int range"), Span::origin()).into(),
         );
@@ -143,8 +172,6 @@ fn reject_named(name: &str, named: &IndexMap<String, Rc<Thunk>>) -> Result<(), B
     Ok(())
 }
 
-// --- Arithmetic builtins ---
-
 /// `+`: Addition with auto-promotion. Int + Int -> Int, any Float operand -> Float.
 pub fn builtin_add(
     args: &[Rc<Thunk>],
@@ -156,7 +183,7 @@ pub fn builtin_add(
         NumPair::Ints(a, b) => a
             .checked_add(b)
             .map(Value::Int)
-            .ok_or_else(|| EvalError::new("$+: integer overflow", Span::origin()).into()),
+            .ok_or_else(|| EvalError::new("+: integer overflow", Span::origin()).into()),
         NumPair::Floats(a, b) => Ok(Value::Float(a + b)),
     }
 }
@@ -172,7 +199,7 @@ pub fn builtin_sub(
         NumPair::Ints(a, b) => a
             .checked_sub(b)
             .map(Value::Int)
-            .ok_or_else(|| EvalError::new("$-: integer overflow", Span::origin()).into()),
+            .ok_or_else(|| EvalError::new("-: integer overflow", Span::origin()).into()),
         NumPair::Floats(a, b) => Ok(Value::Float(a - b)),
     }
 }
@@ -188,7 +215,7 @@ pub fn builtin_mul(
         NumPair::Ints(a, b) => a
             .checked_mul(b)
             .map(Value::Int)
-            .ok_or_else(|| EvalError::new("$*: integer overflow", Span::origin()).into()),
+            .ok_or_else(|| EvalError::new("*: integer overflow", Span::origin()).into()),
         NumPair::Floats(a, b) => Ok(Value::Float(a * b)),
     }
 }
@@ -203,22 +230,20 @@ pub fn builtin_div_float(
     match extract_num_pair(args, depth)? {
         NumPair::Ints(a, b) => {
             if b == 0 {
-                Err(EvalError::new("division by zero", Span::origin()).into())
+                Err(EvalError::new("/: division by zero", Span::origin()).into())
             } else {
                 Ok(Value::Float(a as f64 / b as f64))
             }
         }
         NumPair::Floats(a, b) => {
             if b == 0.0 {
-                Err(EvalError::new("division by zero", Span::origin()).into())
+                Err(EvalError::new("/: division by zero", Span::origin()).into())
             } else {
                 Ok(Value::Float(a / b))
             }
         }
     }
 }
-
-// --- Comparison builtins ---
 
 /// `=`: Equality comparison.
 /// Works on Int, Float, String, Bool. Cross-type Int/Float comparison
@@ -285,8 +310,6 @@ pub fn builtin_lt(
     Ok(Value::Bool(result))
 }
 
-// --- Control flow ---
-
 /// `if`: Conditional with selective materialization.
 ///
 /// Takes 3 positional args: condition, then-branch, else-branch.
@@ -312,8 +335,6 @@ pub fn builtin_if(
         _ => Err(EvalError::type_mismatch("Bool", condition.type_name(), Span::origin()).into()),
     }
 }
-
-// --- Dict primitives ---
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
@@ -378,7 +399,7 @@ pub fn builtin_merge(
     let left = require_dict("merge", left_val)?;
     let right = require_dict("merge", right_val)?;
 
-    let mut result = IndexMap::with_capacity(left.len() + right.len());
+    let mut result = IndexMap::with_capacity(left.len().max(right.len()));
     // Insert all left entries
     for (key, thunk) in &left {
         result.insert(key.clone(), Rc::clone(thunk));
@@ -419,7 +440,7 @@ pub fn builtin_append(
         .max()
         .map(|max| {
             max.checked_add(1)
-                .ok_or_else(|| EvalError::new("$append: key overflow", Span::origin()))
+                .ok_or_else(|| EvalError::new("append: integer key overflow", Span::origin()))
         })
         .transpose()?
         .unwrap_or(0);
@@ -427,8 +448,6 @@ pub fn builtin_append(
     map.insert(Key::Int(next_key), Rc::clone(&args[1]));
     Ok(Value::Dict(map))
 }
-
-// --- String builtins ---
 
 /// `str`: Variadic string concatenation and toString.
 ///
@@ -540,8 +559,6 @@ pub fn builtin_trim(
     Ok(Value::String(s.trim().to_string()))
 }
 
-// --- Numeric builtins ---
-
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
 /// operation, materializes one numeric arg, and applies the operation to floats.
 ///
@@ -609,8 +626,6 @@ pub fn builtin_round(
     float_to_int_builtin("round", f64::round, args, named, depth)
 }
 
-// --- Parsing builtins ---
-
 /// `to-int`: STRING-TO-NUMBER PARSING ONLY. Takes 1 String arg.
 ///
 /// Parses the string as an integer via `str::parse::<i64>()`. Returns Int.
@@ -661,8 +676,6 @@ pub fn builtin_to_float(
     }
 }
 
-// --- Evaluation control builtins ---
-
 /// Recursively materialize a value: if it is a Dict, materialize every entry
 /// value and recurse into nested dicts.
 /// `eval`: takes 1 arg, deep-forces all thunks recursively.
@@ -710,7 +723,7 @@ pub fn builtin_try(
             if !params.is_empty() {
                 return Err(EvalError::new(
                     format!(
-                        "try requires a zero-argument function, got {} parameters",
+                        "try: expected a zero-argument function, got {} parameters",
                         params.len()
                     ),
                     args[0].span,
@@ -719,7 +732,7 @@ pub fn builtin_try(
             }
             // Evaluate the body in the closure's environment
             let body_thunk = Rc::new(Thunk::new_unevaluated(
-                (*body).clone(),
+                Rc::clone(&body),
                 Rc::clone(&closure_env),
                 body.span,
             ));
@@ -792,24 +805,22 @@ pub fn builtin_apply(
         } => {
             // Delegate to the shared invoke path. Defaults are evaluated in
             // the closure env since apply has no caller-side AST context.
-            let result_thunk = invoke_function(
-                &params,
-                &body,
-                &closure_env,
-                &positional,
-                &IndexMap::new(),
-                &closure_env,
-                args[0].span,
+            let result_thunk = invoke_function(&CallContext {
+                params: &params,
+                body: &body,
+                closure_env: &closure_env,
+                positional: &positional,
+                named: &IndexMap::new(),
+                default_env: &closure_env,
+                call_span: args[0].span,
                 depth,
-            )?;
+            })?;
             materialize(&result_thunk, None, depth)
         }
         Value::Builtin { func, .. } => func(&positional, &IndexMap::new(), depth),
         _ => Err(EvalError::type_mismatch("Function", func_val.type_name(), args[0].span).into()),
     }
 }
-
-// --- Type introspection ---
 
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
 /// Both `Function` and `Builtin` return "Function" (from the user's perspective).
@@ -819,10 +830,12 @@ pub fn builtin_type_of(
     depth: usize,
 ) -> Result<Value, Box<EvalError>> {
     let val = expect_one_arg("type-of", args, named, depth)?;
-    Ok(Value::String(val.type_name().to_string()))
+    let name = match val.type_name() {
+        "Builtin" => "Function",
+        other => other,
+    };
+    Ok(Value::String(name.to_string()))
 }
-
-// --- I/O builtins ---
 
 /// Convert a `serde_json::Value` into an LLT `Value`.
 ///
@@ -846,8 +859,8 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize) -> Result<Value, Bo
             } else if let Some(f) = n.as_f64() {
                 Ok(Value::Float(f))
             } else {
-                // Fallback for u64 values outside i64 range; as_f64() always
-                // succeeds for JSON numbers, so unwrap() is safe here.
+                // Fallback for u64 values outside i64 range; as_f64() succeeds
+                // for all serde_json Numbers parsed from valid JSON, so unwrap() is safe here.
                 Ok(Value::Float(n.as_f64().unwrap()))
             }
         }
@@ -886,11 +899,136 @@ pub fn builtin_from_json(
     let val = expect_one_arg("from-json", args, named, depth)?;
     let json_str = require_string("from-json", val)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| EvalError::new(format!("invalid JSON: {e}"), args[0].span))?;
+        .map_err(|e| EvalError::new(format!("from-json: invalid JSON: {e}"), args[0].span))?;
     json_to_value(&parsed, depth)
 }
 
-// --- Registration ---
+/// `include`: takes 1 arg (String file path), evaluates the file, returns its result.
+///
+/// Path resolution: relative paths are resolved against the including file's
+/// directory. Absolute paths are used as-is. Cycle detection prevents A→B→A
+/// circular includes. The included file gets an empty `$$` and sees the stdlib
+/// environment but NOT the caller's scope.
+pub fn builtin_include(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+) -> Result<Value, Box<EvalError>> {
+    let val = expect_one_arg("include", args, named, depth)?;
+    let file_path_str = require_string("include", val)?;
+
+    // Read the include context from the thread-local.
+    INCLUDE_CTX.with(|cell| {
+        let mut ctx_ref = cell.borrow_mut();
+        let ctx = ctx_ref.as_mut().ok_or_else(|| {
+            EvalError::new(
+                "include: not available in this context (no file path set)".to_string(),
+                Span::origin(),
+            )
+        })?;
+
+        // Resolve the path: relative to base_dir, or absolute as-is.
+        let raw_path = std::path::Path::new(&file_path_str);
+        let resolved = if raw_path.is_absolute() {
+            raw_path.to_path_buf()
+        } else {
+            ctx.base_dir.join(raw_path)
+        };
+
+        // Canonicalize to detect cycles and normalize the path.
+        let canonical = resolved.canonicalize().map_err(|e| {
+            EvalError::new(
+                format!("include: cannot open \"{}\": {e}", resolved.display()),
+                Span::origin(),
+            )
+        })?;
+
+        // Cycle detection.
+        if ctx.include_guard.borrow().contains(&canonical) {
+            return Err(EvalError::new(
+                format!("circular include detected: \"{}\"", canonical.display()),
+                Span::origin(),
+            )
+            .into());
+        }
+
+        // Check file size.
+        let metadata = std::fs::metadata(&canonical).map_err(|e| {
+            EvalError::new(
+                format!("include: cannot read \"{}\": {e}", canonical.display()),
+                Span::origin(),
+            )
+        })?;
+        if metadata.len() > MAX_FILE_SIZE {
+            return Err(EvalError::new(
+                format!(
+                    "include: file \"{}\" is {} bytes, exceeds 10 MB limit",
+                    canonical.display(),
+                    metadata.len()
+                ),
+                Span::origin(),
+            )
+            .into());
+        }
+
+        // Read the file.
+        let source = std::fs::read_to_string(&canonical).map_err(|e| {
+            EvalError::new(
+                format!("include: cannot read \"{}\": {e}", canonical.display()),
+                Span::origin(),
+            )
+        })?;
+
+        // Parse.
+        let file = crate::parser::parse(&source).map_err(|e| {
+            EvalError::new(
+                format!("include: parse error in \"{}\": {e}", canonical.display()),
+                Span::origin(),
+            )
+        })?;
+
+        // Add to include guard before recursing.
+        ctx.include_guard.borrow_mut().insert(canonical.clone());
+
+        // Save current base_dir and set new one for the included file.
+        let parent_base_dir = ctx.base_dir.clone();
+        ctx.base_dir = canonical
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("/"))
+            .to_path_buf();
+
+        let stdlib_env = Rc::clone(&ctx.stdlib_env);
+
+        // Evaluate the included file with empty $$ and the stdlib env.
+        // We must drop the borrow before calling eval (which may re-enter
+        // this builtin for nested includes).
+        drop(ctx_ref);
+
+        let eval_result = crate::eval::eval_file(&file.node, stdlib_env, depth + 1);
+
+        // Restore the context regardless of success/failure.
+        let restore = |cell: &RefCell<Option<IncludeContext>>| {
+            let mut ctx_ref = cell.borrow_mut();
+            if let Some(ctx) = ctx_ref.as_mut() {
+                ctx.base_dir = parent_base_dir.clone();
+                ctx.include_guard.borrow_mut().remove(&canonical);
+            }
+        };
+
+        match eval_result {
+            Ok(thunk) => {
+                // Materialize the top-level result (inner values stay lazy).
+                let result = materialize(&thunk, None, depth);
+                restore(cell);
+                result
+            }
+            Err(e) => {
+                restore(cell);
+                Err(e)
+            }
+        }
+    })
+}
 
 /// Returns all builtin definitions as (name, function) pairs.
 ///
@@ -936,6 +1074,7 @@ pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
         ("type-of", builtin_type_of),
         // I/O
         ("from-json", builtin_from_json),
+        ("include", builtin_include),
     ]
 }
 
@@ -1043,8 +1182,6 @@ mod tests {
             test_span(1, 1, 1, 5),
         ))
     }
-
-    // --- floor ---
 
     #[test]
     fn floor_int_passthrough() {
@@ -1195,8 +1332,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- round ---
 
     #[test]
     fn round_int_passthrough() {
@@ -1352,8 +1487,6 @@ mod tests {
         );
     }
 
-    // --- to-int ---
-
     #[test]
     fn to_int_valid_positive() {
         let result = builtin_to_int(&[thunk(Value::String("42".into()))], &no_named(), 0).unwrap();
@@ -1483,8 +1616,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- to-float ---
 
     #[test]
     fn to_float_valid_decimal() {
@@ -1660,8 +1791,6 @@ mod tests {
         assert!(err.message.contains("cannot parse"), "got: {}", err.message);
     }
 
-    // --- eval ---
-
     #[test]
     fn eval_primitive_int() {
         let result = builtin_eval(&[thunk(Value::Int(42))], &no_named(), 0).unwrap();
@@ -1746,7 +1875,7 @@ mod tests {
     #[test]
     fn eval_with_unevaluated_thunk() {
         // Create an unevaluated thunk wrapping a literal -- eval should force it
-        let expr = Spanned::new(Expr::Int(99), test_span(1, 1, 1, 5));
+        let expr = Rc::new(Spanned::new(Expr::Int(99), test_span(1, 1, 1, 5)));
         let env = Rc::new(RefCell::new(Environment::new()));
         let unevaluated = Rc::new(Thunk::new_unevaluated(expr, env, test_span(1, 1, 1, 5)));
 
@@ -1773,8 +1902,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- error ---
 
     #[test]
     fn error_raises_with_message() {
@@ -1814,8 +1941,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- try ---
 
     #[test]
     fn try_success_returns_ok_dict() {
@@ -1945,8 +2070,6 @@ mod tests {
         }
     }
 
-    // --- apply ---
-
     #[test]
     fn apply_single_arg() {
         // [fn [x] $x] applied to [42]
@@ -2063,8 +2186,6 @@ mod tests {
         );
     }
 
-    // --- type-of ---
-
     #[test]
     fn type_of_int() {
         let result = builtin_type_of(&[thunk(Value::Int(42))], &no_named(), 0).unwrap();
@@ -2129,8 +2250,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- from-json ---
 
     #[test]
     fn from_json_int() {
@@ -2343,8 +2462,6 @@ mod tests {
         );
     }
 
-    // --- keys ---
-
     #[test]
     fn keys_empty_dict() {
         let dict = thunk_dict(IndexMap::new());
@@ -2447,8 +2564,6 @@ mod tests {
         }
     }
 
-    // --- length ---
-
     #[test]
     fn length_empty_dict() {
         let dict = thunk_dict(IndexMap::new());
@@ -2476,8 +2591,6 @@ mod tests {
         let result = builtin_length(&[dict], &no_named(), 0).unwrap();
         assert_eq!(result, Value::Int(2));
     }
-
-    // --- merge ---
 
     #[test]
     fn merge_disjoint_keys() {
@@ -2627,8 +2740,6 @@ mod tests {
         }
     }
 
-    // --- Dict error cases ---
-
     #[test]
     fn keys_wrong_arity_zero() {
         let err = builtin_keys(&[], &no_named(), 0).unwrap_err();
@@ -2759,8 +2870,6 @@ mod tests {
         );
         assert!(err.message.contains("got String"), "got: {}", err.message);
     }
-
-    // --- append ---
 
     #[test]
     fn append_to_empty_dict() {
@@ -2910,14 +3019,8 @@ mod tests {
         map.insert(Key::Int(i64::MAX), thunk(Value::Int(1)));
         let dict = thunk_dict(map);
         let err = builtin_append(&[dict, thunk(Value::Int(2))], &no_named(), 0).unwrap_err();
-        assert!(
-            err.message.contains("key overflow"),
-            "got: {}",
-            err.message
-        );
+        assert!(err.message.contains("key overflow"), "got: {}", err.message);
     }
-
-    // --- str ---
 
     #[test]
     fn str_no_args() {
@@ -3008,8 +3111,6 @@ mod tests {
             Value::String("count: 42, ratio: 3.14, ok: true".into())
         );
     }
-
-    // --- split ---
 
     #[test]
     fn split_basic() {
@@ -3141,8 +3242,6 @@ mod tests {
         }
     }
 
-    // --- replace ---
-
     #[test]
     fn replace_basic() {
         let result = builtin_replace(
@@ -3218,8 +3317,6 @@ mod tests {
         assert_eq!(result, Value::String("heo".into()));
     }
 
-    // --- upper ---
-
     #[test]
     fn upper_basic() {
         let result =
@@ -3257,8 +3354,6 @@ mod tests {
         assert_eq!(result, Value::String("ABC123".into()));
     }
 
-    // --- lower ---
-
     #[test]
     fn lower_basic() {
         let result =
@@ -3288,8 +3383,6 @@ mod tests {
         let result = builtin_lower(&[thunk(Value::String("".into()))], &no_named(), 0).unwrap();
         assert_eq!(result, Value::String("".into()));
     }
-
-    // --- trim ---
 
     #[test]
     fn trim_basic() {
@@ -3340,8 +3433,6 @@ mod tests {
         let result = builtin_trim(&[thunk(Value::String("".into()))], &no_named(), 0).unwrap();
         assert_eq!(result, Value::String("".into()));
     }
-
-    // --- String error cases: wrong arity ---
 
     #[test]
     fn split_wrong_arity_too_few() {
@@ -3447,8 +3538,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- String error cases: wrong types ---
 
     #[test]
     fn split_wrong_type_separator() {
@@ -3599,8 +3688,6 @@ mod tests {
         assert!(err.message.contains("got Float"), "got: {}", err.message);
     }
 
-    // --- Named argument rejection ---
-
     #[test]
     fn upper_rejects_named_args() {
         let mut named = IndexMap::new();
@@ -3742,12 +3829,8 @@ mod tests {
     fn add_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(99)));
-        let err = builtin_add(
-            &[thunk(Value::Int(1)), thunk(Value::Int(2))],
-            &named,
-            0,
-        )
-        .unwrap_err();
+        let err =
+            builtin_add(&[thunk(Value::Int(1)), thunk(Value::Int(2))], &named, 0).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3759,12 +3842,8 @@ mod tests {
     fn sub_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_sub(
-            &[thunk(Value::Int(3)), thunk(Value::Int(1))],
-            &named,
-            0,
-        )
-        .unwrap_err();
+        let err =
+            builtin_sub(&[thunk(Value::Int(3)), thunk(Value::Int(1))], &named, 0).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3776,12 +3855,8 @@ mod tests {
     fn mul_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_mul(
-            &[thunk(Value::Int(2)), thunk(Value::Int(3))],
-            &named,
-            0,
-        )
-        .unwrap_err();
+        let err =
+            builtin_mul(&[thunk(Value::Int(2)), thunk(Value::Int(3))], &named, 0).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3793,12 +3868,8 @@ mod tests {
     fn div_float_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_div_float(
-            &[thunk(Value::Int(10)), thunk(Value::Int(3))],
-            &named,
-            0,
-        )
-        .unwrap_err();
+        let err = builtin_div_float(&[thunk(Value::Int(10)), thunk(Value::Int(3))], &named, 0)
+            .unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3810,12 +3881,7 @@ mod tests {
     fn eq_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_eq(
-            &[thunk(Value::Int(1)), thunk(Value::Int(2))],
-            &named,
-            0,
-        )
-        .unwrap_err();
+        let err = builtin_eq(&[thunk(Value::Int(1)), thunk(Value::Int(2))], &named, 0).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3827,12 +3893,7 @@ mod tests {
     fn lt_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_lt(
-            &[thunk(Value::Int(1)), thunk(Value::Int(2))],
-            &named,
-            0,
-        )
-        .unwrap_err();
+        let err = builtin_lt(&[thunk(Value::Int(1)), thunk(Value::Int(2))], &named, 0).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3968,8 +4029,6 @@ mod tests {
         );
     }
 
-    // --- registry ---
-
     #[test]
     fn standard_builtins_contains_all() {
         let builtins = standard_builtins();
@@ -4011,11 +4070,10 @@ mod tests {
         assert!(names.contains(&"type-of"), "missing type-of");
         // I/O
         assert!(names.contains(&"from-json"), "missing from-json");
+        assert!(names.contains(&"include"), "missing include");
         // Total count
-        assert_eq!(names.len(), 27, "expected 27 builtins, got {}", names.len());
+        assert_eq!(names.len(), 28, "expected 28 builtins, got {}", names.len());
     }
-
-    // --- Addition ($+) ---
 
     #[test]
     fn add_int_int() {
@@ -4130,8 +4188,6 @@ mod tests {
         );
     }
 
-    // --- Subtraction ($-) ---
-
     #[test]
     fn sub_int_int() {
         let r = builtin_sub(
@@ -4236,8 +4292,6 @@ mod tests {
         assert!(e.message.contains("type mismatch"), "got: {}", e.message);
     }
 
-    // --- Multiplication ($*) ---
-
     #[test]
     fn mul_int_int() {
         let r = builtin_mul(
@@ -4329,8 +4383,6 @@ mod tests {
             err.message
         );
     }
-
-    // --- Float division ($/) ---
 
     #[test]
     fn div_float_int_int_returns_float() {
@@ -4432,8 +4484,6 @@ mod tests {
         .unwrap();
         assert_eq!(r, Value::Float(0.0));
     }
-
-    // --- Equality ($=) ---
 
     #[test]
     fn eq_int_int_equal() {
@@ -4625,8 +4675,6 @@ mod tests {
         let e = builtin_eq(&[thunk(Value::Int(1))], &no_named(), 0).unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
-
-    // --- Less-than ($<) ---
 
     #[test]
     fn lt_int_int_true() {
@@ -4825,8 +4873,6 @@ mod tests {
         assert_eq!(r, Value::Bool(false));
     }
 
-    // --- Conditional ($if) ---
-
     #[test]
     fn if_true_returns_then_branch() {
         let args = vec![
@@ -4851,10 +4897,10 @@ mod tests {
 
     #[test]
     fn if_does_not_materialize_unchosen_else_branch() {
-        let error_expr = Spanned::new(
+        let error_expr = Rc::new(Spanned::new(
             Expr::VarRef("nonexistent".to_string()),
             test_span(1, 1, 1, 10),
-        );
+        ));
         let env = Rc::new(RefCell::new(Environment::new()));
         let error_thunk = Rc::new(Thunk::new_unevaluated(
             error_expr,
@@ -4869,10 +4915,10 @@ mod tests {
 
     #[test]
     fn if_does_not_materialize_unchosen_then_branch() {
-        let error_expr = Spanned::new(
+        let error_expr = Rc::new(Spanned::new(
             Expr::VarRef("nonexistent".to_string()),
             test_span(1, 1, 1, 10),
-        );
+        ));
         let env = Rc::new(RefCell::new(Environment::new()));
         let error_thunk = Rc::new(Thunk::new_unevaluated(
             error_expr,
@@ -4935,8 +4981,6 @@ mod tests {
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
 
-    // --- create_root_env ---
-
     #[test]
     fn create_root_env_has_all_builtins() {
         let env = create_root_env();
@@ -4948,8 +4992,6 @@ mod tests {
             );
         }
     }
-
-    // --- create_stdlib_env ---
 
     #[test]
     fn create_stdlib_env_has_builtins_and_prelude() {
@@ -4969,5 +5011,299 @@ mod tests {
             env_ref.get("identity").is_some(),
             "missing prelude function identity"
         );
+    }
+
+    /// Helper: set up an IncludeContext pointing at the given base directory.
+    fn setup_include_ctx(base_dir: &std::path::Path) {
+        let stdlib_env = create_stdlib_env().expect("stdlib env");
+        set_include_context(IncludeContext {
+            base_dir: base_dir.to_path_buf(),
+            include_guard: Rc::new(RefCell::new(std::collections::HashSet::new())),
+            stdlib_env,
+        });
+    }
+
+    /// Helper: write a temp file and return its path.
+    fn write_temp_file(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, content).expect("write temp file");
+        path
+    }
+
+    #[test]
+    fn include_no_context_error() {
+        // Clear any existing context
+        INCLUDE_CTX.with(|cell| *cell.borrow_mut() = None);
+        let args = vec![thunk(Value::String("test.llt".into()))];
+        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        assert!(
+            err.message.contains("not available"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn include_wrong_type_error() {
+        let dir = std::env::temp_dir().join("llt_test_include_type");
+        std::fs::create_dir_all(&dir).ok();
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::Int(42))];
+        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        assert!(
+            err.message.contains("expected String"),
+            "got: {}",
+            err.message
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_file_not_found() {
+        let dir = std::env::temp_dir().join("llt_test_include_notfound");
+        std::fs::create_dir_all(&dir).ok();
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("nonexistent.llt".into()))];
+        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        assert!(err.message.contains("cannot open"), "got: {}", err.message);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_simple_dict() {
+        let dir = std::env::temp_dir().join("llt_test_include_simple");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "lib.llt", "[x: 42 y: hello]");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("lib.llt".into()))];
+        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 2);
+                let x = materialize(map.get(&Key::String("x".into())).unwrap(), None, 0).unwrap();
+                assert_eq!(x, Value::Int(42));
+                let y = materialize(map.get(&Key::String("y".into())).unwrap(), None, 0).unwrap();
+                assert_eq!(y, Value::String("hello".into()));
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_scalar_value() {
+        let dir = std::env::temp_dir().join("llt_test_include_scalar");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "num.llt", "42");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("num.llt".into()))];
+        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        assert_eq!(result, Value::Int(42));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_parse_error() {
+        let dir = std::env::temp_dir().join("llt_test_include_parse_err");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "bad.llt", "[x: ]");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("bad.llt".into()))];
+        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        assert!(err.message.contains("parse error"), "got: {}", err.message);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_circular_detection() {
+        let dir = std::env::temp_dir().join("llt_test_include_circular");
+        std::fs::create_dir_all(&dir).ok();
+        // File A includes file B at top level (not inside a dict entry, so
+        // the include is evaluated eagerly during eval_file). File B includes
+        // file A the same way, triggering the cycle.
+        write_temp_file(&dir, "a.llt", "[call $include \"b.llt\"]");
+        write_temp_file(&dir, "b.llt", "[call $include \"a.llt\"]");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("a.llt".into()))];
+        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        assert!(
+            err.message.contains("circular include"),
+            "got: {}",
+            err.message
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_self_circular() {
+        let dir = std::env::temp_dir().join("llt_test_include_self");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "self.llt", "[call $include \"self.llt\"]");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("self.llt".into()))];
+        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        assert!(
+            err.message.contains("circular include"),
+            "got: {}",
+            err.message
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_nested() {
+        let dir = std::env::temp_dir().join("llt_test_include_nested");
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("sub")).ok();
+        write_temp_file(
+            &dir,
+            "outer.llt",
+            "[inner: [call $include \"sub/inner.llt\"]]",
+        );
+        write_temp_file(&dir.join("sub"), "inner.llt", "[val: 99]");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("outer.llt".into()))];
+        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let inner =
+                    materialize(map.get(&Key::String("inner".into())).unwrap(), None, 0).unwrap();
+                match inner {
+                    Value::Dict(inner_map) => {
+                        let val = materialize(
+                            inner_map.get(&Key::String("val".into())).unwrap(),
+                            None,
+                            0,
+                        )
+                        .unwrap();
+                        assert_eq!(val, Value::Int(99));
+                    }
+                    other => panic!("expected inner Dict, got {:?}", other),
+                }
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_absolute_path() {
+        let dir = std::env::temp_dir().join("llt_test_include_abs");
+        std::fs::create_dir_all(&dir).ok();
+        let file_path = write_temp_file(&dir, "abs.llt", "[val: 77]");
+        // Use a different directory as base to prove absolute path works
+        let other_dir = std::env::temp_dir().join("llt_test_include_abs_other");
+        std::fs::create_dir_all(&other_dir).ok();
+        setup_include_ctx(&other_dir);
+
+        let args = vec![thunk(Value::String(
+            file_path.to_string_lossy().into_owned(),
+        ))];
+        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let val =
+                    materialize(map.get(&Key::String("val".into())).unwrap(), None, 0).unwrap();
+                assert_eq!(val, Value::Int(77));
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&other_dir).ok();
+    }
+
+    #[test]
+    fn include_arity_error() {
+        let dir = std::env::temp_dir().join("llt_test_include_arity");
+        std::fs::create_dir_all(&dir).ok();
+        setup_include_ctx(&dir);
+
+        // No arguments
+        let err = builtin_include(&[], &no_named(), 0).unwrap_err();
+        assert!(
+            err.message.contains("arity mismatch"),
+            "got: {}",
+            err.message
+        );
+
+        // Two arguments
+        let args = vec![
+            thunk(Value::String("a.llt".into())),
+            thunk(Value::String("b.llt".into())),
+        ];
+        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        assert!(
+            err.message.contains("arity mismatch"),
+            "got: {}",
+            err.message
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_rejects_named_args() {
+        let dir = std::env::temp_dir().join("llt_test_include_named");
+        std::fs::create_dir_all(&dir).ok();
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("test.llt".into()))];
+        let mut named = IndexMap::new();
+        named.insert("path".to_string(), thunk(Value::String("x".into())));
+        let err = builtin_include(&args, &named, 0).unwrap_err();
+        assert!(
+            err.message.contains("does not accept named arguments"),
+            "got: {}",
+            err.message
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_multi_document() {
+        let dir = std::env::temp_dir().join("llt_test_include_multidoc");
+        std::fs::create_dir_all(&dir).ok();
+        // Two documents: first produces [x: 10], $$ pipeline passes to second
+        write_temp_file(&dir, "multi.llt", "[x: 10]\n---\n[y: $$.x]");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("multi.llt".into()))];
+        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let y = materialize(map.get(&Key::String("y".into())).unwrap(), None, 0).unwrap();
+                assert_eq!(y, Value::Int(10));
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_uses_stdlib() {
+        // The included file should have access to stdlib builtins
+        let dir = std::env::temp_dir().join("llt_test_include_stdlib");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "stdlib_test.llt", "[result: [call $+ 1 2]]");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("stdlib_test.llt".into()))];
+        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let val =
+                    materialize(map.get(&Key::String("result".into())).unwrap(), None, 0).unwrap();
+                assert_eq!(val, Value::Int(3));
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
