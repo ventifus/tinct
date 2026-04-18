@@ -169,11 +169,11 @@ Depends on 1b. Complex enough to be its own step: file I/O, cycle detection, sco
 
 Ongoing throughout earlier phases, but final polish here.
 
-- [ ] Call stack reconstruction: chain of materialization sites
+- [x] Call stack reconstruction: chain of materialization sites
 - [x] Clear messages: "key not found", "type mismatch", "arity mismatch", "circular dependency"
-- [x] Source spans on all errors (definition-site + materialization-site) — note: Span::origin sentinel remains in builtin-originated errors
+- [x] Source spans on all errors (definition-site + materialization-site)
 - [x] TypeAssert `default:` fallback support
-- [ ] Thread call-site spans through BuiltinFn signature (resolve Span::origin sentinel in builtin errors)
+- [x] Thread call-site spans through BuiltinFn signature (resolve Span::origin sentinel in builtin errors)
 
 ## Pre-Phase 4: Stdlib Boundary Analysis — Complete
 

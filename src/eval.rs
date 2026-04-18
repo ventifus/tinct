@@ -380,6 +380,20 @@ fn value_to_key(value: &Value, span: &Span) -> Result<Key, Box<EvalError>> {
     }
 }
 
+/// Extract a human-readable label from a function expression for stack frames.
+fn func_label(expr: &Expr) -> String {
+    match expr {
+        Expr::VarRef(name) => format!("call ${name}"),
+        Expr::DotAccess { expr: inner, field } => {
+            let base = func_label(&inner.node);
+            // If the base already starts with "call ", strip it to avoid "call call ..."
+            let base = base.strip_prefix("call ").unwrap_or(&base);
+            format!("call {base}.{field}")
+        }
+        _ => "call <anonymous>".to_string(),
+    }
+}
+
 /// Evaluate a call expression: materialize the function, bind arguments, wrap body as thunk.
 fn eval_call(
     func_expr: &Spanned<Expr>,
@@ -417,6 +431,8 @@ fn eval_call(
         );
     }
 
+    let label = func_label(&func_expr.node);
+
     match func_val {
         Value::Function {
             params,
@@ -432,6 +448,11 @@ fn eval_call(
             default_env: env,
             call_span: *call_span,
             depth,
+            origin: Some(label.clone()),
+        })
+        .map_err(|mut e| {
+            e.push_frame(label, *call_span);
+            e
         }),
         Value::Builtin { func, .. } => Ok(Rc::new(Thunk::new_pending_builtin(
             func,
@@ -458,6 +479,9 @@ pub struct CallContext<'a> {
     pub default_env: &'a Rc<RefCell<Environment>>,
     pub call_span: Span,
     pub depth: usize,
+    /// Optional label for stack traces (e.g. "call $f"). Set by `eval_call`
+    /// when the function expression has a recognizable name.
+    pub origin: Option<String>,
 }
 
 /// Invoke a user-defined function with pre-evaluated thunks.
@@ -475,11 +499,11 @@ pub fn invoke_function(ctx: &CallContext) -> Result<Rc<Thunk>, Box<EvalError>> {
         &ctx.call_span,
         ctx.depth,
     )?;
-    Ok(Rc::new(Thunk::new_unevaluated(
-        Rc::clone(ctx.body),
-        call_env,
-        ctx.call_span,
-    )))
+    let mut thunk = Thunk::new_unevaluated(Rc::clone(ctx.body), call_env, ctx.call_span);
+    if let Some(ref label) = ctx.origin {
+        thunk = thunk.with_origin(label.clone());
+    }
+    Ok(Rc::new(thunk))
 }
 
 /// Bind pre-evaluated thunks to function parameters. Returns the new call environment.
@@ -699,7 +723,10 @@ fn eval_dot_access(
     access_span: &Span,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    let map = eval_as_dict(target, env, access_span, depth)?;
+    let map = eval_as_dict(target, env, access_span, depth).map_err(|mut e| {
+        e.push_frame(format!("accessing .{field}"), *access_span);
+        e
+    })?;
     let key = Key::String(field.to_string());
     match map.get(&key) {
         Some(thunk) => Ok(Rc::clone(thunk)),
@@ -715,7 +742,10 @@ fn eval_bracket_access(
     access_span: &Span,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    let map = eval_as_dict(target, env, access_span, depth)?;
+    let map = eval_as_dict(target, env, access_span, depth).map_err(|mut e| {
+        e.push_frame("accessing [..]", *access_span);
+        e
+    })?;
     let key = eval_key(key_expr, env, depth)?;
     match map.get(&key) {
         Some(thunk) => Ok(Rc::clone(thunk)),
@@ -734,7 +764,10 @@ fn eval_range_access(
     access_span: &Span,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    let map = eval_as_dict(target, env, access_span, depth)?;
+    let map = eval_as_dict(target, env, access_span, depth).map_err(|mut e| {
+        e.push_frame("accessing [..:..]", *access_span);
+        e
+    })?;
     let start_key = start.map(|e| eval_key(e, env, depth)).transpose()?;
     let end_key = end.map(|e| eval_key(e, env, depth)).transpose()?;
 
@@ -795,7 +828,13 @@ pub fn materialize(
         if let Some(span) = mat_span {
             if e.materialization_span.is_none() {
                 e.materialization_span = Some(*span);
-            } else {
+            } else if e.materialization_span != Some(*span)
+                && !e.stack.iter().any(|f| f.span == *span)
+            {
+                // Only push a frame if the span differs from the existing
+                // materialization span and isn't already in the stack (avoids
+                // duplicate frames when the same span propagates through
+                // nested materialize calls).
                 e.push_frame("materialized", *span);
             }
         }
@@ -803,10 +842,34 @@ pub fn materialize(
     };
 
     if let Some((expr, env)) = thunk.take_unevaluated() {
-        let result = (|| {
-            let result_thunk = eval(&expr, Rc::clone(&env), depth + 1).map_err(attach_mat_span)?;
-            materialize(&result_thunk, mat_span, depth + 1).map_err(attach_mat_span)
-        })();
+        let origin = thunk.origin.clone();
+        let thunk_span = thunk.span;
+
+        let decorate_err = |mut e: Box<EvalError>| -> Box<EvalError> {
+            if let Some(span) = mat_span {
+                if e.materialization_span.is_none() {
+                    e.materialization_span = Some(*span);
+                } else if e.materialization_span != Some(*span)
+                    && !e.stack.iter().any(|f| f.span == *span)
+                {
+                    e.push_frame("materialized", *span);
+                }
+            }
+            if let Some(ref label) = origin {
+                if !e
+                    .stack
+                    .iter()
+                    .any(|f| f.span == thunk_span && f.label == *label)
+                {
+                    e.push_frame(label.clone(), thunk_span);
+                }
+            }
+            e
+        };
+
+        let result = eval(&expr, Rc::clone(&env), depth + 1)
+            .and_then(|result_thunk| materialize(&result_thunk, mat_span, depth + 1))
+            .map_err(decorate_err);
 
         match result {
             Ok(value) => {
@@ -818,14 +881,9 @@ pub fn materialize(
                 Err(e)
             }
         }
-    } else if let Some((func, args, named, pending_depth)) = thunk.take_pending_builtin() {
-        let attach_call_span = |mut e: Box<EvalError>| -> Box<EvalError> {
-            if e.definition_span == Span::origin() {
-                e.definition_span = thunk.span;
-            }
-            attach_mat_span(e)
-        };
-        match func(&args, &named, pending_depth).map_err(attach_call_span) {
+    } else if let Some((func, args, named, pending_depth, call_span)) = thunk.take_pending_builtin()
+    {
+        match func(&args, &named, pending_depth, call_span).map_err(attach_mat_span) {
             Ok(value) => {
                 thunk.transition(|_| ThunkState::Materialized(value.clone()));
                 Ok(value)
@@ -836,6 +894,7 @@ pub fn materialize(
                     args,
                     named,
                     depth: pending_depth,
+                    call_span,
                 });
                 Err(e)
             }
@@ -1743,6 +1802,7 @@ mod tests {
             args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
+            _call_span: Span,
         ) -> Result<Value, Box<EvalError>> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
@@ -3565,6 +3625,7 @@ mod tests {
             _: &[Rc<Thunk>],
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
+            _: Span,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
@@ -3759,5 +3820,452 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
+    }
+
+    // ── Stack trace / call stack reconstruction tests ──────────────────
+
+    #[test]
+    fn test_call_error_has_stack_frame_with_function_name() {
+        // [f: [fn [x] $missing]; result: [call $f 1]]
+        // Calling $f with body that references $missing should produce a
+        // stack frame with "call $f".
+        let env = empty_env();
+        let fn_span = test_span(1, 1, 1, 20);
+        let fn_val = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(Spanned::new(
+                Expr::VarRef("missing".into()),
+                test_span(1, 15, 1, 23),
+            )),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, fn_span)),
+        );
+
+        let call_span = test_span(2, 1, 2, 15);
+        let call_expr = Spanned::new(
+            Expr::Call {
+                func: Box::new(Spanned::new(
+                    Expr::VarRef("f".into()),
+                    test_span(2, 7, 2, 8),
+                )),
+                args: vec![Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11))],
+                named_args: vec![],
+            },
+            call_span,
+        );
+
+        let thunk = eval(&call_expr, env, 0).unwrap();
+        let err = materialize(&thunk, None, 0).unwrap_err();
+        assert!(
+            err.message.contains("undefined variable: $missing"),
+            "got: {}",
+            err.message
+        );
+        // The stack should contain a frame for "call $f"
+        assert!(
+            err.stack.iter().any(|f| f.label == "call $f"),
+            "expected 'call $f' frame, got: {:?}",
+            err.stack
+        );
+    }
+
+    #[test]
+    fn test_nested_call_produces_multi_frame_stack() {
+        // inner: [fn [x] $missing]
+        // outer: [fn [y] [call $inner $y]]
+        // [call $outer 1]
+        //
+        // Error should show both call sites in the stack.
+        let env = empty_env();
+
+        // Inner function
+        let inner_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(Spanned::new(
+                Expr::VarRef("missing".into()),
+                test_span(1, 20, 1, 28),
+            )),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "inner".into(),
+            Rc::new(Thunk::new_materialized(inner_fn, test_span(1, 1, 1, 30))),
+        );
+
+        // Outer function: body is [call $inner $y]
+        let inner_call_span = test_span(2, 15, 2, 30);
+        let outer_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "y".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(Spanned::new(
+                Expr::Call {
+                    func: Box::new(Spanned::new(
+                        Expr::VarRef("inner".into()),
+                        test_span(2, 21, 2, 26),
+                    )),
+                    args: vec![Spanned::new(
+                        Expr::VarRef("y".into()),
+                        test_span(2, 28, 2, 29),
+                    )],
+                    named_args: vec![],
+                },
+                inner_call_span,
+            )),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "outer".into(),
+            Rc::new(Thunk::new_materialized(outer_fn, test_span(2, 1, 2, 35))),
+        );
+
+        // Evaluate [call $outer 1]
+        let outer_call_span = test_span(3, 1, 3, 20);
+        let call_expr = Spanned::new(
+            Expr::Call {
+                func: Box::new(Spanned::new(
+                    Expr::VarRef("outer".into()),
+                    test_span(3, 7, 3, 12),
+                )),
+                args: vec![Spanned::new(Expr::Int(1), test_span(3, 14, 3, 15))],
+                named_args: vec![],
+            },
+            outer_call_span,
+        );
+
+        let thunk = eval(&call_expr, env, 0).unwrap();
+        let err = materialize(&thunk, None, 0).unwrap_err();
+        assert!(err.message.contains("undefined variable: $missing"));
+
+        // Should have frames for both call sites
+        let labels: Vec<&str> = err.stack.iter().map(|f| f.label.as_str()).collect();
+        assert!(
+            labels.contains(&"call $inner"),
+            "expected 'call $inner' in stack, got: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"call $outer"),
+            "expected 'call $outer' in stack, got: {labels:?}"
+        );
+        // Inner call should appear before outer call (innermost first)
+        let inner_pos = labels.iter().position(|l| *l == "call $inner").unwrap();
+        let outer_pos = labels.iter().position(|l| *l == "call $outer").unwrap();
+        assert!(
+            inner_pos < outer_pos,
+            "inner call frame should come before outer: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_dot_access_error_has_access_frame() {
+        // When dot access fails because the target evaluation itself errors,
+        // the error should include a frame indicating the access context.
+        //
+        // [a: $missing]
+        // $a.x  -- accessing .x should add a frame
+        let env = empty_env();
+
+        // Put a dict with a broken value in the env
+        let dict_span = test_span(1, 1, 1, 20);
+        let mut dict_map = IndexMap::new();
+        let bad_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(Spanned::new(
+                Expr::VarRef("missing".into()),
+                test_span(1, 8, 1, 15),
+            )),
+            Rc::clone(&env),
+            test_span(1, 8, 1, 15),
+        ));
+        dict_map.insert(Key::String("x".into()), bad_thunk);
+
+        env.borrow_mut().insert(
+            "a".into(),
+            Rc::new(Thunk::new_materialized(Value::Dict(dict_map), dict_span)),
+        );
+
+        // Now access $a.x -- this should succeed (returns the thunk), but
+        // materializing the result should fail
+        let access_span = test_span(2, 1, 2, 5);
+        let access_expr = Spanned::new(
+            Expr::DotAccess {
+                expr: Box::new(Spanned::new(
+                    Expr::VarRef("a".into()),
+                    test_span(2, 1, 2, 2),
+                )),
+                field: "x".into(),
+            },
+            access_span,
+        );
+
+        let thunk = eval(&access_expr, env, 0).unwrap();
+        let mat_span = test_span(3, 1, 3, 10);
+        let err = materialize(&thunk, Some(&mat_span), 0).unwrap_err();
+        assert!(err.message.contains("undefined variable: $missing"));
+        // The materialization span should be set
+        assert!(err.materialization_span.is_some());
+    }
+
+    #[test]
+    fn test_dot_access_on_erroring_target_has_frame() {
+        // $nonexistent.field -- the target itself fails, and the error
+        // should include an "accessing .field" frame.
+        let env = empty_env();
+        let access_span = test_span(1, 1, 1, 20);
+        let access_expr = Spanned::new(
+            Expr::DotAccess {
+                expr: Box::new(Spanned::new(
+                    Expr::VarRef("nonexistent".into()),
+                    test_span(1, 1, 1, 12),
+                )),
+                field: "field".into(),
+            },
+            access_span,
+        );
+
+        let err = eval(&access_expr, env, 0).unwrap_err();
+        assert!(err.message.contains("undefined variable: $nonexistent"));
+        // Should have an "accessing .field" frame
+        assert!(
+            err.stack.iter().any(|f| f.label == "accessing .field"),
+            "expected 'accessing .field' frame, got: {:?}",
+            err.stack
+        );
+    }
+
+    #[test]
+    fn test_bracket_access_on_erroring_target_has_frame() {
+        // $nonexistent[0] -- the target itself fails
+        let env = empty_env();
+        let access_span = test_span(1, 1, 1, 20);
+        let access_expr = Spanned::new(
+            Expr::BracketAccess {
+                expr: Box::new(Spanned::new(
+                    Expr::VarRef("nonexistent".into()),
+                    test_span(1, 1, 1, 12),
+                )),
+                key: Box::new(Spanned::new(Expr::Int(0), test_span(1, 13, 1, 14))),
+            },
+            access_span,
+        );
+
+        let err = eval(&access_expr, env, 0).unwrap_err();
+        assert!(err.message.contains("undefined variable: $nonexistent"));
+        assert!(
+            err.stack.iter().any(|f| f.label == "accessing [..]"),
+            "expected 'accessing [..]' frame, got: {:?}",
+            err.stack
+        );
+    }
+
+    #[test]
+    fn test_range_access_on_erroring_target_has_frame() {
+        // $nonexistent[0..2] -- the target itself fails
+        let env = empty_env();
+        let access_span = test_span(1, 1, 1, 20);
+        let access_expr = Spanned::new(
+            Expr::RangeAccess {
+                expr: Box::new(Spanned::new(
+                    Expr::VarRef("nonexistent".into()),
+                    test_span(1, 1, 1, 12),
+                )),
+                start: Some(Box::new(Spanned::new(
+                    Expr::Int(0),
+                    test_span(1, 13, 1, 14),
+                ))),
+                end: Some(Box::new(Spanned::new(
+                    Expr::Int(2),
+                    test_span(1, 16, 1, 17),
+                ))),
+            },
+            access_span,
+        );
+
+        let err = eval(&access_expr, env, 0).unwrap_err();
+        assert!(err.message.contains("undefined variable: $nonexistent"));
+        assert!(
+            err.stack.iter().any(|f| f.label == "accessing [..:..]"),
+            "expected 'accessing [..:..]' frame, got: {:?}",
+            err.stack
+        );
+    }
+
+    #[test]
+    fn test_chained_access_error_shows_chain() {
+        // [a: [x: $missing]]
+        // $a.x  -- force chain
+        // When materialized, the error should show the materialization chain.
+        let inner_env = empty_env();
+        let mut inner_map = IndexMap::new();
+        inner_map.insert(
+            Key::String("x".into()),
+            Rc::new(Thunk::new_unevaluated(
+                Rc::new(Spanned::new(
+                    Expr::VarRef("missing".into()),
+                    test_span(1, 10, 1, 18),
+                )),
+                Rc::clone(&inner_env),
+                test_span(1, 10, 1, 18),
+            )),
+        );
+        let inner_dict = Value::Dict(inner_map);
+
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "a".into(),
+            Rc::new(Thunk::new_materialized(inner_dict, test_span(1, 1, 1, 20))),
+        );
+
+        // Build $a.x access
+        let access_span = test_span(2, 1, 2, 5);
+        let access_expr = Spanned::new(
+            Expr::DotAccess {
+                expr: Box::new(Spanned::new(
+                    Expr::VarRef("a".into()),
+                    test_span(2, 1, 2, 2),
+                )),
+                field: "x".into(),
+            },
+            access_span,
+        );
+
+        // Eval returns the thunk for $missing
+        let thunk = eval(&access_expr, Rc::clone(&env), 0).unwrap();
+
+        // Materialize with a different span (simulating a reference from $b)
+        let b_span = test_span(3, 1, 3, 5);
+        let err = materialize(&thunk, Some(&b_span), 0).unwrap_err();
+        assert!(err.message.contains("undefined variable: $missing"));
+        assert_eq!(
+            err.materialization_span,
+            Some(b_span),
+            "materialization span should be the forcing site"
+        );
+    }
+
+    #[test]
+    fn test_func_label_varref() {
+        assert_eq!(func_label(&Expr::VarRef("f".into())), "call $f");
+    }
+
+    #[test]
+    fn test_func_label_dot_access() {
+        let expr = Expr::DotAccess {
+            expr: Box::new(sp(Expr::VarRef("utils".into()))),
+            field: "run".into(),
+        };
+        assert_eq!(func_label(&expr), "call $utils.run");
+    }
+
+    #[test]
+    fn test_func_label_anonymous() {
+        // A literal fn expression has no name
+        assert_eq!(func_label(&Expr::Int(42)), "call <anonymous>");
+    }
+
+    #[test]
+    fn test_materialize_chain_no_duplicate_frames() {
+        // When the same mat_span propagates through nested materialize calls,
+        // we should not get duplicate frames for the same span.
+        let env = empty_env();
+
+        // Create a thunk whose body is another unevaluated thunk that errors
+        let inner_expr = Spanned::new(Expr::VarRef("missing".into()), test_span(1, 1, 1, 8));
+        let inner_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(inner_expr),
+            Rc::clone(&env),
+            test_span(1, 1, 1, 8),
+        ));
+
+        // Materialize with a specific span
+        let mat_span = test_span(5, 1, 5, 10);
+        let err = materialize(&inner_thunk, Some(&mat_span), 0).unwrap_err();
+
+        // Count how many frames have the same span
+        let frame_count = err.stack.iter().filter(|f| f.span == mat_span).count();
+        assert!(
+            frame_count <= 1,
+            "expected at most 1 frame with mat_span, got {frame_count}: {:?}",
+            err.stack
+        );
+    }
+
+    #[test]
+    fn test_call_arity_error_has_call_frame() {
+        // Calling a function with wrong arity should include the call site frame
+        let env = empty_env();
+        let fn_val = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "a".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "b".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+            ]),
+            body: Rc::new(sp(Expr::VarRef("a".into()))),
+            env: Rc::clone(&env),
+            return_ann: None,
+        };
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 20))),
+        );
+
+        // Call with wrong arity: [call $f 1] (needs 2 args)
+        let call_span = test_span(2, 1, 2, 15);
+        let call_expr = Spanned::new(
+            Expr::Call {
+                func: Box::new(Spanned::new(
+                    Expr::VarRef("f".into()),
+                    test_span(2, 7, 2, 8),
+                )),
+                args: vec![Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11))],
+                named_args: vec![],
+            },
+            call_span,
+        );
+
+        let err = eval(&call_expr, env, 0).unwrap_err();
+        assert!(err.message.contains("arity mismatch"));
+        assert!(
+            err.stack.iter().any(|f| f.label == "call $f"),
+            "expected 'call $f' frame, got: {:?}",
+            err.stack
+        );
+    }
+
+    #[test]
+    fn test_error_display_with_full_stack() {
+        // Integration test: verify the Display output includes all stack frames
+        let err = EvalError::new("something broke", test_span(1, 5, 1, 12))
+            .with_materialization_span(test_span(10, 1, 10, 5))
+            .with_frame("call $inner", test_span(5, 1, 5, 20))
+            .with_frame("call $outer", test_span(8, 1, 8, 25));
+        let display = format!("{err}");
+        assert!(display.contains("something broke"));
+        assert!(display.contains("defined at 1:5-1:12"));
+        assert!(display.contains("materialized at 10:1-10:5"));
+        assert!(display.contains("in call $inner at 5:1-5:20"));
+        assert!(display.contains("in call $outer at 8:1-8:25"));
     }
 }

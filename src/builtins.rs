@@ -1,7 +1,7 @@
 //! Rust-native builtin functions for the LLT language.
 //!
 //! All builtins follow the `BuiltinFn` signature:
-//! `fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize) -> Result<Value, Box<EvalError>>`
+//! `fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> Result<Value, Box<EvalError>>`
 //!
 //! ## Builtin groups
 //!
@@ -64,27 +64,24 @@ fn expect_one_arg(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
     if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     if !named.is_empty() {
-        return Err(EvalError::new(
-            format!("{name} does not accept named arguments"),
-            Span::origin(),
-        )
-        .into());
+        return Err(
+            EvalError::new(format!("{name} does not accept named arguments"), call_span).into(),
+        );
     }
     materialize(&args[0], None, depth)
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
 /// before casting. Returns an error if the value would saturate.
-fn checked_f64_to_i64(name: &str, f: f64) -> Result<i64, Box<EvalError>> {
+fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> Result<i64, Box<EvalError>> {
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
-        return Err(
-            EvalError::new(format!("{name}: {f} is out of Int range"), Span::origin()).into(),
-        );
+        return Err(EvalError::new(format!("{name}: {f} is out of Int range"), call_span).into());
     }
     Ok(f as i64)
 }
@@ -102,9 +99,13 @@ enum NumPair {
 }
 
 /// Extract two numeric operands with auto-promotion, enforcing arity == 2.
-fn extract_num_pair(args: &[Rc<Thunk>], depth: usize) -> Result<NumPair, Box<EvalError>> {
+fn extract_num_pair(
+    args: &[Rc<Thunk>],
+    depth: usize,
+    call_span: Span,
+) -> Result<NumPair, Box<EvalError>> {
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     let left = materialize(&args[0], None, depth)?;
     let right = materialize(&args[1], None, depth)?;
@@ -116,7 +117,7 @@ fn extract_num_pair(args: &[Rc<Thunk>], depth: usize) -> Result<NumPair, Box<Eva
         _ => Err(EvalError::type_mismatch(
             "Int or Float",
             &format!("{} and {}", left.type_name(), right.type_name()),
-            Span::origin(),
+            call_span,
         )
         .into()),
     }
@@ -137,37 +138,43 @@ fn stringify(value: &Value) -> String {
 }
 
 /// Helper: require that a materialized value is a Dict, returning the inner IndexMap.
-fn require_dict(name: &str, value: Value) -> Result<IndexMap<Key, Rc<Thunk>>, Box<EvalError>> {
+fn require_dict(
+    name: &str,
+    value: Value,
+    call_span: Span,
+) -> Result<IndexMap<Key, Rc<Thunk>>, Box<EvalError>> {
     match value {
         Value::Dict(map) => Ok(map),
         other => Err(EvalError::new(
             format!("{name}: expected Dict, got {}", other.type_name()),
-            Span::origin(),
+            call_span,
         )
         .into()),
     }
 }
 
 /// Helper: require that a materialized value is a String, returning the inner String.
-fn require_string(name: &str, value: Value) -> Result<String, Box<EvalError>> {
+fn require_string(name: &str, value: Value, call_span: Span) -> Result<String, Box<EvalError>> {
     match value {
         Value::String(s) => Ok(s),
         other => Err(EvalError::new(
             format!("{name}: expected String, got {}", other.type_name()),
-            Span::origin(),
+            call_span,
         )
         .into()),
     }
 }
 
 /// Helper: reject named arguments for multi-arg builtins that don't accept them.
-fn reject_named(name: &str, named: &IndexMap<String, Rc<Thunk>>) -> Result<(), Box<EvalError>> {
+fn reject_named(
+    name: &str,
+    named: &IndexMap<String, Rc<Thunk>>,
+    call_span: Span,
+) -> Result<(), Box<EvalError>> {
     if !named.is_empty() {
-        return Err(EvalError::new(
-            format!("{name} does not accept named arguments"),
-            Span::origin(),
-        )
-        .into());
+        return Err(
+            EvalError::new(format!("{name} does not accept named arguments"), call_span).into(),
+        );
     }
     Ok(())
 }
@@ -177,13 +184,14 @@ pub fn builtin_add(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("+", named)?;
-    match extract_num_pair(args, depth)? {
+    reject_named("+", named, call_span)?;
+    match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_add(b)
             .map(Value::Int)
-            .ok_or_else(|| EvalError::new("+: integer overflow", Span::origin()).into()),
+            .ok_or_else(|| EvalError::new("+: integer overflow", call_span).into()),
         NumPair::Floats(a, b) => Ok(Value::Float(a + b)),
     }
 }
@@ -193,13 +201,14 @@ pub fn builtin_sub(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("-", named)?;
-    match extract_num_pair(args, depth)? {
+    reject_named("-", named, call_span)?;
+    match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
             .map(Value::Int)
-            .ok_or_else(|| EvalError::new("-: integer overflow", Span::origin()).into()),
+            .ok_or_else(|| EvalError::new("-: integer overflow", call_span).into()),
         NumPair::Floats(a, b) => Ok(Value::Float(a - b)),
     }
 }
@@ -209,13 +218,14 @@ pub fn builtin_mul(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("*", named)?;
-    match extract_num_pair(args, depth)? {
+    reject_named("*", named, call_span)?;
+    match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
             .map(Value::Int)
-            .ok_or_else(|| EvalError::new("*: integer overflow", Span::origin()).into()),
+            .ok_or_else(|| EvalError::new("*: integer overflow", call_span).into()),
         NumPair::Floats(a, b) => Ok(Value::Float(a * b)),
     }
 }
@@ -225,19 +235,20 @@ pub fn builtin_div_float(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("/", named)?;
-    match extract_num_pair(args, depth)? {
+    reject_named("/", named, call_span)?;
+    match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => {
             if b == 0 {
-                Err(EvalError::new("/: division by zero", Span::origin()).into())
+                Err(EvalError::new("/: division by zero", call_span).into())
             } else {
                 Ok(Value::Float(a as f64 / b as f64))
             }
         }
         NumPair::Floats(a, b) => {
             if b == 0.0 {
-                Err(EvalError::new("/: division by zero", Span::origin()).into())
+                Err(EvalError::new("/: division by zero", call_span).into())
             } else {
                 Ok(Value::Float(a / b))
             }
@@ -253,10 +264,11 @@ pub fn builtin_eq(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("=", named)?;
+    reject_named("=", named, call_span)?;
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     let left = materialize(&args[0], None, depth)?;
     let right = materialize(&args[1], None, depth)?;
@@ -283,10 +295,11 @@ pub fn builtin_lt(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("<", named)?;
+    reject_named("<", named, call_span)?;
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     let left = materialize(&args[0], None, depth)?;
     let right = materialize(&args[1], None, depth)?;
@@ -302,7 +315,7 @@ pub fn builtin_lt(
             return Err(EvalError::type_mismatch(
                 "Int, Float, or String (same or compatible types)",
                 &format!("{} and {}", left.type_name(), right.type_name()),
-                Span::origin(),
+                call_span,
             )
             .into());
         }
@@ -320,10 +333,11 @@ pub fn builtin_if(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("if", named)?;
+    reject_named("if", named, call_span)?;
     if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
 
     // Materialize only the condition
@@ -332,7 +346,7 @@ pub fn builtin_if(
     match condition {
         Value::Bool(true) => materialize(&args[1], None, depth),
         Value::Bool(false) => materialize(&args[2], None, depth),
-        _ => Err(EvalError::type_mismatch("Bool", condition.type_name(), Span::origin()).into()),
+        _ => Err(EvalError::type_mismatch("Bool", condition.type_name(), call_span).into()),
     }
 }
 
@@ -343,15 +357,16 @@ pub fn builtin_keys(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("keys", named)?;
+    reject_named("keys", named, call_span)?;
     if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     let val = materialize(&args[0], None, depth)?;
-    let map = require_dict("keys", val)?;
+    let map = require_dict("keys", val, call_span)?;
 
-    let origin = Span::origin();
+    let origin = call_span;
     let mut result = IndexMap::new();
     for (i, (key, _)) in map.iter().enumerate() {
         let key_value = match key {
@@ -371,13 +386,14 @@ pub fn builtin_length(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("length", named)?;
+    reject_named("length", named, call_span)?;
     if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     let val = materialize(&args[0], None, depth)?;
-    let map = require_dict("length", val)?;
+    let map = require_dict("length", val, call_span)?;
     Ok(Value::Int(map.len() as i64))
 }
 
@@ -389,15 +405,16 @@ pub fn builtin_merge(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("merge", named)?;
+    reject_named("merge", named, call_span)?;
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     let left_val = materialize(&args[0], None, depth)?;
     let right_val = materialize(&args[1], None, depth)?;
-    let left = require_dict("merge", left_val)?;
-    let right = require_dict("merge", right_val)?;
+    let left = require_dict("merge", left_val, call_span)?;
+    let right = require_dict("merge", right_val, call_span)?;
 
     let mut result = IndexMap::with_capacity(left.len().max(right.len()));
     // Insert all left entries
@@ -422,13 +439,14 @@ pub fn builtin_append(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("append", named)?;
+    reject_named("append", named, call_span)?;
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     let dict_val = materialize(&args[0], None, depth)?;
-    let mut map = require_dict("append", dict_val)?;
+    let mut map = require_dict("append", dict_val, call_span)?;
 
     // Compute the next integer key: max existing int key + 1, or 0 if none.
     let next_key = map
@@ -440,7 +458,7 @@ pub fn builtin_append(
         .max()
         .map(|max| {
             max.checked_add(1)
-                .ok_or_else(|| EvalError::new("append: integer key overflow", Span::origin()))
+                .ok_or_else(|| EvalError::new("append: integer key overflow", call_span))
         })
         .transpose()?
         .unwrap_or(0);
@@ -457,8 +475,9 @@ pub fn builtin_str(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("str", named)?;
+    reject_named("str", named, call_span)?;
     let mut result = String::new();
     for arg in args {
         let val = materialize(arg, None, depth)?;
@@ -475,16 +494,17 @@ pub fn builtin_split(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("split", named)?;
+    reject_named("split", named, call_span)?;
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     let sep_val = materialize(&args[0], None, depth)?;
     let input_val = materialize(&args[1], None, depth)?;
 
-    let sep = require_string("split", sep_val)?;
-    let input = require_string("split", input_val)?;
+    let sep = require_string("split", sep_val, call_span)?;
+    let input = require_string("split", input_val, call_span)?;
 
     let parts: Vec<&str> = input.split(sep.as_str()).collect();
     let mut map = IndexMap::new();
@@ -493,7 +513,7 @@ pub fn builtin_split(
             Key::Int(i as i64),
             Rc::new(Thunk::new_materialized(
                 Value::String(part.to_string()),
-                Span::origin(),
+                call_span,
             )),
         );
     }
@@ -508,18 +528,19 @@ pub fn builtin_replace(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("replace", named)?;
+    reject_named("replace", named, call_span)?;
     if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
     let pattern_val = materialize(&args[0], None, depth)?;
     let replacement_val = materialize(&args[1], None, depth)?;
     let input_val = materialize(&args[2], None, depth)?;
 
-    let pattern = require_string("replace", pattern_val)?;
-    let replacement = require_string("replace", replacement_val)?;
-    let input = require_string("replace", input_val)?;
+    let pattern = require_string("replace", pattern_val, call_span)?;
+    let replacement = require_string("replace", replacement_val, call_span)?;
+    let input = require_string("replace", input_val, call_span)?;
 
     Ok(Value::String(input.replace(pattern.as_str(), &replacement)))
 }
@@ -529,9 +550,10 @@ pub fn builtin_upper(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("upper", args, named, depth)?;
-    let s = require_string("upper", val)?;
+    let val = expect_one_arg("upper", args, named, depth, call_span)?;
+    let s = require_string("upper", val, call_span)?;
     Ok(Value::String(s.to_uppercase()))
 }
 
@@ -540,9 +562,10 @@ pub fn builtin_lower(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("lower", args, named, depth)?;
-    let s = require_string("lower", val)?;
+    let val = expect_one_arg("lower", args, named, depth, call_span)?;
+    let s = require_string("lower", val, call_span)?;
     Ok(Value::String(s.to_lowercase()))
 }
 
@@ -553,9 +576,10 @@ pub fn builtin_trim(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("trim", args, named, depth)?;
-    let s = require_string("trim", val)?;
+    let val = expect_one_arg("trim", args, named, depth, call_span)?;
+    let s = require_string("trim", val, call_span)?;
     Ok(Value::String(s.trim().to_string()))
 }
 
@@ -571,30 +595,29 @@ fn float_to_int_builtin(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg(name, args, named, depth)?;
+    let val = expect_one_arg(name, args, named, depth, call_span)?;
     match val {
         Value::Int(n) => Ok(Value::Int(n)),
         Value::Float(f) => {
             if f.is_nan() {
                 return Err(EvalError::new(
                     format!("{name}: NaN cannot be converted to Int"),
-                    Span::origin(),
+                    call_span,
                 )
                 .into());
             }
             if f.is_infinite() {
                 return Err(EvalError::new(
                     format!("{name}: Infinity cannot be converted to Int"),
-                    Span::origin(),
+                    call_span,
                 )
                 .into());
             }
-            Ok(Value::Int(checked_f64_to_i64(name, op(f))?))
+            Ok(Value::Int(checked_f64_to_i64(name, op(f), call_span)?))
         }
-        other => {
-            Err(EvalError::type_mismatch("Int or Float", other.type_name(), Span::origin()).into())
-        }
+        other => Err(EvalError::type_mismatch("Int or Float", other.type_name(), call_span).into()),
     }
 }
 
@@ -608,8 +631,9 @@ pub fn builtin_floor(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    float_to_int_builtin("floor", f64::floor, args, named, depth)
+    float_to_int_builtin("floor", f64::floor, args, named, depth, call_span)
 }
 
 /// `round`: Takes 1 numeric arg (Int or Float). Returns Int.
@@ -622,8 +646,9 @@ pub fn builtin_round(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    float_to_int_builtin("round", f64::round, args, named, depth)
+    float_to_int_builtin("round", f64::round, args, named, depth, call_span)
 }
 
 /// `to-int`: STRING-TO-NUMBER PARSING ONLY. Takes 1 String arg.
@@ -634,16 +659,15 @@ pub fn builtin_to_int(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("to-int", args, named, depth)?;
-    let s = require_string("to-int", val)?;
+    let val = expect_one_arg("to-int", args, named, depth, call_span)?;
+    let s = require_string("to-int", val, call_span)?;
     match s.parse::<i64>() {
         Ok(n) => Ok(Value::Int(n)),
-        Err(_) => Err(EvalError::new(
-            format!("to-int: cannot parse {:?} as Int", s),
-            Span::origin(),
-        )
-        .into()),
+        Err(_) => {
+            Err(EvalError::new(format!("to-int: cannot parse {:?} as Int", s), call_span).into())
+        }
     }
 }
 
@@ -655,9 +679,10 @@ pub fn builtin_to_float(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("to-float", args, named, depth)?;
-    let s = require_string("to-float", val)?;
+    let val = expect_one_arg("to-float", args, named, depth, call_span)?;
+    let s = require_string("to-float", val, call_span)?;
     match s.parse::<f64>() {
         Ok(f) if f.is_finite() => Ok(Value::Float(f)),
         Ok(_) => Err(EvalError::new(
@@ -665,12 +690,12 @@ pub fn builtin_to_float(
                 "to-float: cannot parse {:?} as Float (non-finite values not allowed)",
                 s
             ),
-            Span::origin(),
+            call_span,
         )
         .into()),
         Err(_) => Err(EvalError::new(
             format!("to-float: cannot parse {:?} as Float", s),
-            Span::origin(),
+            call_span,
         )
         .into()),
     }
@@ -684,8 +709,9 @@ pub fn builtin_eval(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("eval", args, named, depth)?;
+    let val = expect_one_arg("eval", args, named, depth, call_span)?;
     crate::eval::deep_materialize(&val, depth)
 }
 
@@ -694,10 +720,11 @@ pub fn builtin_error(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("error", args, named, depth)?;
-    let msg = require_string("error", val)?;
-    Err(EvalError::new(msg, args[0].span).into())
+    let val = expect_one_arg("error", args, named, depth, call_span)?;
+    let msg = require_string("error", val, call_span)?;
+    Err(EvalError::new(msg, call_span).into())
 }
 
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[ok: value]`
@@ -706,10 +733,11 @@ pub fn builtin_try(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("try", named)?;
+    reject_named("try", named, call_span)?;
     if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     let func_val = materialize(&args[0], None, depth)?;
 
@@ -726,7 +754,7 @@ pub fn builtin_try(
                         "try: expected a zero-argument function, got {} parameters",
                         params.len()
                     ),
-                    args[0].span,
+                    call_span,
                 )
                 .into());
             }
@@ -738,10 +766,10 @@ pub fn builtin_try(
             ));
             materialize(&body_thunk, None, depth)
         }
-        Value::Builtin { func, .. } => func(&[], &IndexMap::new(), depth),
+        Value::Builtin { func, .. } => func(&[], &IndexMap::new(), depth, call_span),
         _ => {
             return Err(
-                EvalError::type_mismatch("Function", func_val.type_name(), args[0].span).into(),
+                EvalError::type_mismatch("Function", func_val.type_name(), call_span).into(),
             )
         }
     };
@@ -751,7 +779,7 @@ pub fn builtin_try(
             let mut result = IndexMap::new();
             result.insert(
                 Key::String("ok".to_string()),
-                Rc::new(Thunk::new_materialized(value, Span::origin())),
+                Rc::new(Thunk::new_materialized(value, call_span)),
             );
             Ok(Value::Dict(result))
         }
@@ -761,7 +789,7 @@ pub fn builtin_try(
                 Key::String("err".to_string()),
                 Rc::new(Thunk::new_materialized(
                     Value::String(e.message.clone()),
-                    Span::origin(),
+                    call_span,
                 )),
             );
             Ok(Value::Dict(result))
@@ -778,19 +806,18 @@ pub fn builtin_apply(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    reject_named("apply", named)?;
+    reject_named("apply", named, call_span)?;
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), Span::origin()).into());
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     let func_val = materialize(&args[0], None, depth)?;
     let args_val = materialize(&args[1], None, depth)?;
 
     let arg_dict = match args_val {
         Value::Dict(map) => map,
-        _ => {
-            return Err(EvalError::type_mismatch("Dict", args_val.type_name(), args[1].span).into())
-        }
+        _ => return Err(EvalError::type_mismatch("Dict", args_val.type_name(), call_span).into()),
     };
 
     // Collect the dict values in insertion order as positional args
@@ -812,13 +839,14 @@ pub fn builtin_apply(
                 positional: &positional,
                 named: &IndexMap::new(),
                 default_env: &closure_env,
-                call_span: args[0].span,
+                call_span,
                 depth,
+                origin: Some("call $apply".to_string()),
             })?;
             materialize(&result_thunk, None, depth)
         }
-        Value::Builtin { func, .. } => func(&positional, &IndexMap::new(), depth),
-        _ => Err(EvalError::type_mismatch("Function", func_val.type_name(), args[0].span).into()),
+        Value::Builtin { func, .. } => func(&positional, &IndexMap::new(), depth, call_span),
+        _ => Err(EvalError::type_mismatch("Function", func_val.type_name(), call_span).into()),
     }
 }
 
@@ -828,8 +856,9 @@ pub fn builtin_type_of(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("type-of", args, named, depth)?;
+    let val = expect_one_arg("type-of", args, named, depth, call_span)?;
     let name = match val.type_name() {
         "Builtin" => "Function",
         other => other,
@@ -895,11 +924,12 @@ pub fn builtin_from_json(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("from-json", args, named, depth)?;
-    let json_str = require_string("from-json", val)?;
+    let val = expect_one_arg("from-json", args, named, depth, call_span)?;
+    let json_str = require_string("from-json", val, call_span)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| EvalError::new(format!("from-json: invalid JSON: {e}"), args[0].span))?;
+        .map_err(|e| EvalError::new(format!("from-json: invalid JSON: {e}"), call_span))?;
     json_to_value(&parsed, depth)
 }
 
@@ -913,9 +943,10 @@ pub fn builtin_include(
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    let val = expect_one_arg("include", args, named, depth)?;
-    let file_path_str = require_string("include", val)?;
+    let val = expect_one_arg("include", args, named, depth, call_span)?;
+    let file_path_str = require_string("include", val, call_span)?;
 
     // Read the include context from the thread-local.
     INCLUDE_CTX.with(|cell| {
@@ -923,7 +954,7 @@ pub fn builtin_include(
         let ctx = ctx_ref.as_mut().ok_or_else(|| {
             EvalError::new(
                 "include: not available in this context (no file path set)".to_string(),
-                Span::origin(),
+                call_span,
             )
         })?;
 
@@ -939,7 +970,7 @@ pub fn builtin_include(
         let canonical = resolved.canonicalize().map_err(|e| {
             EvalError::new(
                 format!("include: cannot open \"{}\": {e}", resolved.display()),
-                Span::origin(),
+                call_span,
             )
         })?;
 
@@ -947,7 +978,7 @@ pub fn builtin_include(
         if ctx.include_guard.borrow().contains(&canonical) {
             return Err(EvalError::new(
                 format!("circular include detected: \"{}\"", canonical.display()),
-                Span::origin(),
+                call_span,
             )
             .into());
         }
@@ -956,7 +987,7 @@ pub fn builtin_include(
         let metadata = std::fs::metadata(&canonical).map_err(|e| {
             EvalError::new(
                 format!("include: cannot read \"{}\": {e}", canonical.display()),
-                Span::origin(),
+                call_span,
             )
         })?;
         if metadata.len() > MAX_FILE_SIZE {
@@ -966,7 +997,7 @@ pub fn builtin_include(
                     canonical.display(),
                     metadata.len()
                 ),
-                Span::origin(),
+                call_span,
             )
             .into());
         }
@@ -975,7 +1006,7 @@ pub fn builtin_include(
         let source = std::fs::read_to_string(&canonical).map_err(|e| {
             EvalError::new(
                 format!("include: cannot read \"{}\": {e}", canonical.display()),
-                Span::origin(),
+                call_span,
             )
         })?;
 
@@ -983,7 +1014,7 @@ pub fn builtin_include(
         let file = crate::parser::parse(&source).map_err(|e| {
             EvalError::new(
                 format!("include: parse error in \"{}\": {e}", canonical.display()),
-                Span::origin(),
+                call_span,
             )
         })?;
 
@@ -1147,6 +1178,11 @@ mod tests {
         IndexMap::new()
     }
 
+    /// Helper: call-site span for test builtin invocations.
+    fn cs() -> Span {
+        test_span(1, 1, 1, 5)
+    }
+
     /// Helper: make a zero-arg function whose body is a single expression.
     fn zero_arg_fn(body_expr: Expr) -> Value {
         Value::Function {
@@ -1185,69 +1221,78 @@ mod tests {
 
     #[test]
     fn floor_int_passthrough() {
-        let result = builtin_floor(&[thunk(Value::Int(42))], &no_named(), 0).unwrap();
+        let result = builtin_floor(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn floor_negative_int_passthrough() {
-        let result = builtin_floor(&[thunk(Value::Int(-7))], &no_named(), 0).unwrap();
+        let result = builtin_floor(&[thunk(Value::Int(-7))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(-7));
     }
 
     #[test]
     fn floor_zero_int() {
-        let result = builtin_floor(&[thunk(Value::Int(0))], &no_named(), 0).unwrap();
+        let result = builtin_floor(&[thunk(Value::Int(0))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(0));
     }
 
     #[test]
     fn floor_positive_float() {
-        let result = builtin_floor(&[thunk(Value::Float(3.7))], &no_named(), 0).unwrap();
+        let result = builtin_floor(&[thunk(Value::Float(3.7))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(3));
     }
 
     #[test]
     fn floor_negative_float() {
         // floor(-3.2) = -4, not -3
-        let result = builtin_floor(&[thunk(Value::Float(-3.2))], &no_named(), 0).unwrap();
+        let result = builtin_floor(&[thunk(Value::Float(-3.2))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(-4));
     }
 
     #[test]
     fn floor_float_exact_integer() {
-        let result = builtin_floor(&[thunk(Value::Float(5.0))], &no_named(), 0).unwrap();
+        let result = builtin_floor(&[thunk(Value::Float(5.0))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(5));
     }
 
     #[test]
     fn floor_float_just_below_integer() {
-        let result = builtin_floor(&[thunk(Value::Float(2.9999999))], &no_named(), 0).unwrap();
+        let result =
+            builtin_floor(&[thunk(Value::Float(2.9999999))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(2));
     }
 
     #[test]
     fn floor_nan_errors() {
-        let err = builtin_floor(&[thunk(Value::Float(f64::NAN))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_floor(&[thunk(Value::Float(f64::NAN))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("NaN"), "got: {}", err.message);
     }
 
     #[test]
     fn floor_positive_infinity_errors() {
-        let err = builtin_floor(&[thunk(Value::Float(f64::INFINITY))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_floor(&[thunk(Value::Float(f64::INFINITY))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("Infinity"), "got: {}", err.message);
     }
 
     #[test]
     fn floor_negative_infinity_errors() {
-        let err =
-            builtin_floor(&[thunk(Value::Float(f64::NEG_INFINITY))], &no_named(), 0).unwrap_err();
+        let err = builtin_floor(
+            &[thunk(Value::Float(f64::NEG_INFINITY))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("Infinity"), "got: {}", err.message);
     }
 
     #[test]
     fn floor_string_type_error() {
-        let err = builtin_floor(&[thunk(Value::String("3.5".into()))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_floor(&[thunk(Value::String("3.5".into()))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected Int or Float"),
             "got: {}",
@@ -1257,7 +1302,7 @@ mod tests {
 
     #[test]
     fn floor_bool_type_error() {
-        let err = builtin_floor(&[thunk(Value::Bool(true))], &no_named(), 0).unwrap_err();
+        let err = builtin_floor(&[thunk(Value::Bool(true))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected Int or Float"),
             "got: {}",
@@ -1267,8 +1312,8 @@ mod tests {
 
     #[test]
     fn floor_dict_type_error() {
-        let err =
-            builtin_floor(&[thunk(Value::Dict(IndexMap::new()))], &no_named(), 0).unwrap_err();
+        let err = builtin_floor(&[thunk(Value::Dict(IndexMap::new()))], &no_named(), 0, cs())
+            .unwrap_err();
         assert!(
             err.message.contains("expected Int or Float"),
             "got: {}",
@@ -1278,7 +1323,7 @@ mod tests {
 
     #[test]
     fn floor_wrong_arity_zero() {
-        let err = builtin_floor(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_floor(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -1292,6 +1337,7 @@ mod tests {
             &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -1305,7 +1351,7 @@ mod tests {
     fn floor_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_floor(&[thunk(Value::Float(3.5))], &named, 0).unwrap_err();
+        let err = builtin_floor(&[thunk(Value::Float(3.5))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -1315,7 +1361,7 @@ mod tests {
 
     #[test]
     fn floor_large_positive_float_out_of_range() {
-        let err = builtin_floor(&[thunk(Value::Float(1e19))], &no_named(), 0).unwrap_err();
+        let err = builtin_floor(&[thunk(Value::Float(1e19))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("out of Int range"),
             "got: {}",
@@ -1325,7 +1371,7 @@ mod tests {
 
     #[test]
     fn floor_large_negative_float_out_of_range() {
-        let err = builtin_floor(&[thunk(Value::Float(-1e19))], &no_named(), 0).unwrap_err();
+        let err = builtin_floor(&[thunk(Value::Float(-1e19))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("out of Int range"),
             "got: {}",
@@ -1335,96 +1381,104 @@ mod tests {
 
     #[test]
     fn round_int_passthrough() {
-        let result = builtin_round(&[thunk(Value::Int(42))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn round_negative_int_passthrough() {
-        let result = builtin_round(&[thunk(Value::Int(-7))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Int(-7))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(-7));
     }
 
     #[test]
     fn round_positive_half_rounds_up() {
         // 0.5 rounds to 1 (half-away-from-zero)
-        let result = builtin_round(&[thunk(Value::Float(0.5))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(0.5))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(1));
     }
 
     #[test]
     fn round_negative_half_rounds_down() {
         // -0.5 rounds to -1 (half-away-from-zero)
-        let result = builtin_round(&[thunk(Value::Float(-0.5))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(-0.5))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(-1));
     }
 
     #[test]
     fn round_positive_below_half() {
-        let result = builtin_round(&[thunk(Value::Float(2.4))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(2.4))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(2));
     }
 
     #[test]
     fn round_positive_above_half() {
-        let result = builtin_round(&[thunk(Value::Float(2.6))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(2.6))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(3));
     }
 
     #[test]
     fn round_negative_below_half() {
         // -2.4 rounds to -2
-        let result = builtin_round(&[thunk(Value::Float(-2.4))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(-2.4))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(-2));
     }
 
     #[test]
     fn round_negative_above_half() {
         // -2.6 rounds to -3
-        let result = builtin_round(&[thunk(Value::Float(-2.6))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(-2.6))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(-3));
     }
 
     #[test]
     fn round_1_5_rounds_to_2() {
-        let result = builtin_round(&[thunk(Value::Float(1.5))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(1.5))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(2));
     }
 
     #[test]
     fn round_negative_1_5_rounds_to_negative_2() {
-        let result = builtin_round(&[thunk(Value::Float(-1.5))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(-1.5))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(-2));
     }
 
     #[test]
     fn round_float_exact_integer() {
-        let result = builtin_round(&[thunk(Value::Float(5.0))], &no_named(), 0).unwrap();
+        let result = builtin_round(&[thunk(Value::Float(5.0))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(5));
     }
 
     #[test]
     fn round_nan_errors() {
-        let err = builtin_round(&[thunk(Value::Float(f64::NAN))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_round(&[thunk(Value::Float(f64::NAN))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("NaN"), "got: {}", err.message);
     }
 
     #[test]
     fn round_positive_infinity_errors() {
-        let err = builtin_round(&[thunk(Value::Float(f64::INFINITY))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_round(&[thunk(Value::Float(f64::INFINITY))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("Infinity"), "got: {}", err.message);
     }
 
     #[test]
     fn round_negative_infinity_errors() {
-        let err =
-            builtin_round(&[thunk(Value::Float(f64::NEG_INFINITY))], &no_named(), 0).unwrap_err();
+        let err = builtin_round(
+            &[thunk(Value::Float(f64::NEG_INFINITY))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("Infinity"), "got: {}", err.message);
     }
 
     #[test]
     fn round_string_type_error() {
-        let err = builtin_round(&[thunk(Value::String("3.5".into()))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_round(&[thunk(Value::String("3.5".into()))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected Int or Float"),
             "got: {}",
@@ -1434,7 +1488,7 @@ mod tests {
 
     #[test]
     fn round_bool_type_error() {
-        let err = builtin_round(&[thunk(Value::Bool(false))], &no_named(), 0).unwrap_err();
+        let err = builtin_round(&[thunk(Value::Bool(false))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected Int or Float"),
             "got: {}",
@@ -1444,7 +1498,7 @@ mod tests {
 
     #[test]
     fn round_wrong_arity_zero() {
-        let err = builtin_round(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_round(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -1458,6 +1512,7 @@ mod tests {
             &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -1469,7 +1524,7 @@ mod tests {
 
     #[test]
     fn round_large_positive_float_out_of_range() {
-        let err = builtin_round(&[thunk(Value::Float(1e19))], &no_named(), 0).unwrap_err();
+        let err = builtin_round(&[thunk(Value::Float(1e19))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("out of Int range"),
             "got: {}",
@@ -1479,7 +1534,7 @@ mod tests {
 
     #[test]
     fn round_large_negative_float_out_of_range() {
-        let err = builtin_round(&[thunk(Value::Float(-1e19))], &no_named(), 0).unwrap_err();
+        let err = builtin_round(&[thunk(Value::Float(-1e19))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("out of Int range"),
             "got: {}",
@@ -1489,19 +1544,22 @@ mod tests {
 
     #[test]
     fn to_int_valid_positive() {
-        let result = builtin_to_int(&[thunk(Value::String("42".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_to_int(&[thunk(Value::String("42".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn to_int_valid_negative() {
-        let result = builtin_to_int(&[thunk(Value::String("-7".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_to_int(&[thunk(Value::String("-7".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(-7));
     }
 
     #[test]
     fn to_int_valid_zero() {
-        let result = builtin_to_int(&[thunk(Value::String("0".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_to_int(&[thunk(Value::String("0".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(0));
     }
 
@@ -1511,6 +1569,7 @@ mod tests {
             &[thunk(Value::String("9223372036854775807".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::Int(i64::MAX));
@@ -1518,34 +1577,40 @@ mod tests {
 
     #[test]
     fn to_int_invalid_float_string() {
-        let err =
-            builtin_to_int(&[thunk(Value::String("3.14".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_int(&[thunk(Value::String("3.14".into()))], &no_named(), 0, cs())
+            .unwrap_err();
         assert!(err.message.contains("cannot parse"), "got: {}", err.message);
     }
 
     #[test]
     fn to_int_invalid_text() {
-        let err =
-            builtin_to_int(&[thunk(Value::String("hello".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_int(
+            &[thunk(Value::String("hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("cannot parse"), "got: {}", err.message);
     }
 
     #[test]
     fn to_int_invalid_empty() {
-        let err = builtin_to_int(&[thunk(Value::String("".into()))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_to_int(&[thunk(Value::String("".into()))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("cannot parse"), "got: {}", err.message);
     }
 
     #[test]
     fn to_int_invalid_with_spaces() {
-        let err =
-            builtin_to_int(&[thunk(Value::String(" 42 ".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_int(&[thunk(Value::String(" 42 ".into()))], &no_named(), 0, cs())
+            .unwrap_err();
         assert!(err.message.contains("cannot parse"), "got: {}", err.message);
     }
 
     #[test]
     fn to_int_rejects_int_input() {
-        let err = builtin_to_int(&[thunk(Value::Int(42))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_int(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -1560,7 +1625,7 @@ mod tests {
 
     #[test]
     fn to_int_rejects_float_input() {
-        let err = builtin_to_int(&[thunk(Value::Float(3.14))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_int(&[thunk(Value::Float(3.14))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -1570,7 +1635,7 @@ mod tests {
 
     #[test]
     fn to_int_rejects_bool_input() {
-        let err = builtin_to_int(&[thunk(Value::Bool(true))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_int(&[thunk(Value::Bool(true))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -1580,8 +1645,8 @@ mod tests {
 
     #[test]
     fn to_int_rejects_dict_input() {
-        let err =
-            builtin_to_int(&[thunk(Value::Dict(IndexMap::new()))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_int(&[thunk(Value::Dict(IndexMap::new()))], &no_named(), 0, cs())
+            .unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -1591,7 +1656,7 @@ mod tests {
 
     #[test]
     fn to_int_wrong_arity_zero() {
-        let err = builtin_to_int(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_to_int(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -1608,6 +1673,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -1620,7 +1686,7 @@ mod tests {
     #[test]
     fn to_float_valid_decimal() {
         let result =
-            builtin_to_float(&[thunk(Value::String("3.14".into()))], &no_named(), 0).unwrap();
+            builtin_to_float(&[thunk(Value::String("3.14".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Float(3.14));
     }
 
@@ -1628,35 +1694,45 @@ mod tests {
     fn to_float_valid_integer_string() {
         // "42" parses as 42.0
         let result =
-            builtin_to_float(&[thunk(Value::String("42".into()))], &no_named(), 0).unwrap();
+            builtin_to_float(&[thunk(Value::String("42".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Float(42.0));
     }
 
     #[test]
     fn to_float_valid_negative() {
         let result =
-            builtin_to_float(&[thunk(Value::String("-2.5".into()))], &no_named(), 0).unwrap();
+            builtin_to_float(&[thunk(Value::String("-2.5".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Float(-2.5));
     }
 
     #[test]
     fn to_float_valid_scientific_notation() {
-        let result =
-            builtin_to_float(&[thunk(Value::String("1.5e10".into()))], &no_named(), 0).unwrap();
+        let result = builtin_to_float(
+            &[thunk(Value::String("1.5e10".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::Float(1.5e10));
     }
 
     #[test]
     fn to_float_valid_negative_exponent() {
-        let result =
-            builtin_to_float(&[thunk(Value::String("2.5e-3".into()))], &no_named(), 0).unwrap();
+        let result = builtin_to_float(
+            &[thunk(Value::String("2.5e-3".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::Float(2.5e-3));
     }
 
     #[test]
     fn to_float_valid_zero() {
         let result =
-            builtin_to_float(&[thunk(Value::String("0.0".into()))], &no_named(), 0).unwrap();
+            builtin_to_float(&[thunk(Value::String("0.0".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Float(0.0));
     }
 
@@ -1664,54 +1740,65 @@ mod tests {
     fn to_float_valid_leading_dot() {
         // ".5" parses to 0.5
         let result =
-            builtin_to_float(&[thunk(Value::String(".5".into()))], &no_named(), 0).unwrap();
+            builtin_to_float(&[thunk(Value::String(".5".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Float(0.5));
     }
 
     #[test]
     fn to_float_invalid_text() {
-        let err =
-            builtin_to_float(&[thunk(Value::String("hello".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_float(
+            &[thunk(Value::String("hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("cannot parse"), "got: {}", err.message);
     }
 
     #[test]
     fn to_float_invalid_empty() {
-        let err = builtin_to_float(&[thunk(Value::String("".into()))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_to_float(&[thunk(Value::String("".into()))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("cannot parse"), "got: {}", err.message);
     }
 
     #[test]
     fn to_float_rejects_inf() {
-        let err =
-            builtin_to_float(&[thunk(Value::String("inf".into()))], &no_named(), 0).unwrap_err();
-        assert!(err.message.contains("non-finite"), "got: {}", err.message);
-    }
-
-    #[test]
-    fn to_float_rejects_negative_inf() {
-        let err =
-            builtin_to_float(&[thunk(Value::String("-inf".into()))], &no_named(), 0).unwrap_err();
-        assert!(err.message.contains("non-finite"), "got: {}", err.message);
-    }
-
-    #[test]
-    fn to_float_rejects_infinity() {
-        let err = builtin_to_float(&[thunk(Value::String("infinity".into()))], &no_named(), 0)
+        let err = builtin_to_float(&[thunk(Value::String("inf".into()))], &no_named(), 0, cs())
             .unwrap_err();
         assert!(err.message.contains("non-finite"), "got: {}", err.message);
     }
 
     #[test]
+    fn to_float_rejects_negative_inf() {
+        let err = builtin_to_float(&[thunk(Value::String("-inf".into()))], &no_named(), 0, cs())
+            .unwrap_err();
+        assert!(err.message.contains("non-finite"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn to_float_rejects_infinity() {
+        let err = builtin_to_float(
+            &[thunk(Value::String("infinity".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("non-finite"), "got: {}", err.message);
+    }
+
+    #[test]
     fn to_float_rejects_nan() {
-        let err =
-            builtin_to_float(&[thunk(Value::String("NaN".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_float(&[thunk(Value::String("NaN".into()))], &no_named(), 0, cs())
+            .unwrap_err();
         assert!(err.message.contains("non-finite"), "got: {}", err.message);
     }
 
     #[test]
     fn to_float_rejects_int_input() {
-        let err = builtin_to_float(&[thunk(Value::Int(42))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_float(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -1721,7 +1808,7 @@ mod tests {
 
     #[test]
     fn to_float_rejects_float_input() {
-        let err = builtin_to_float(&[thunk(Value::Float(3.14))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_float(&[thunk(Value::Float(3.14))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -1731,7 +1818,7 @@ mod tests {
 
     #[test]
     fn to_float_rejects_bool_input() {
-        let err = builtin_to_float(&[thunk(Value::Bool(true))], &no_named(), 0).unwrap_err();
+        let err = builtin_to_float(&[thunk(Value::Bool(true))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -1741,7 +1828,7 @@ mod tests {
 
     #[test]
     fn to_float_wrong_arity_zero() {
-        let err = builtin_to_float(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_to_float(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -1758,6 +1845,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -1771,7 +1859,8 @@ mod tests {
     fn to_float_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::String("1.0".into())));
-        let err = builtin_to_float(&[thunk(Value::String("3.14".into()))], &named, 0).unwrap_err();
+        let err =
+            builtin_to_float(&[thunk(Value::String("3.14".into()))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -1786,6 +1875,7 @@ mod tests {
             &[thunk(Value::String("9223372036854775808".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(err.message.contains("cannot parse"), "got: {}", err.message);
@@ -1793,32 +1883,38 @@ mod tests {
 
     #[test]
     fn eval_primitive_int() {
-        let result = builtin_eval(&[thunk(Value::Int(42))], &no_named(), 0).unwrap();
+        let result = builtin_eval(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn eval_primitive_string() {
-        let result = builtin_eval(&[thunk(Value::String("hello".into()))], &no_named(), 0).unwrap();
+        let result = builtin_eval(
+            &[thunk(Value::String("hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn eval_primitive_float() {
-        let result = builtin_eval(&[thunk(Value::Float(3.14))], &no_named(), 0).unwrap();
+        let result = builtin_eval(&[thunk(Value::Float(3.14))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Float(3.14));
     }
 
     #[test]
     fn eval_primitive_bool() {
-        let result = builtin_eval(&[thunk(Value::Bool(true))], &no_named(), 0).unwrap();
+        let result = builtin_eval(&[thunk(Value::Bool(true))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Bool(true));
     }
 
     #[test]
     fn eval_empty_dict() {
         let dict = Value::Dict(IndexMap::new());
-        let result = builtin_eval(&[thunk(dict)], &no_named(), 0).unwrap();
+        let result = builtin_eval(&[thunk(dict)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             _ => panic!("expected Dict"),
@@ -1831,7 +1927,7 @@ mod tests {
         map.insert(Key::String("a".into()), thunk(Value::Int(1)));
         map.insert(Key::String("b".into()), thunk(Value::Int(2)));
         let dict = Value::Dict(map);
-        let result = builtin_eval(&[thunk(dict)], &no_named(), 0).unwrap();
+        let result = builtin_eval(&[thunk(dict)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -1855,7 +1951,7 @@ mod tests {
         outer.insert(Key::String("x".into()), thunk(inner_dict));
         let outer_dict = Value::Dict(outer);
 
-        let result = builtin_eval(&[thunk(outer_dict)], &no_named(), 0).unwrap();
+        let result = builtin_eval(&[thunk(outer_dict)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(outer_map) => {
                 let x_val = materialize(&outer_map[&Key::String("x".into())], None, 0).unwrap();
@@ -1883,7 +1979,7 @@ mod tests {
         map.insert(Key::String("val".into()), unevaluated);
         let dict = Value::Dict(map);
 
-        let result = builtin_eval(&[thunk(dict)], &no_named(), 0).unwrap();
+        let result = builtin_eval(&[thunk(dict)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let v = materialize(&map[&Key::String("val".into())], None, 0).unwrap();
@@ -1895,7 +1991,7 @@ mod tests {
 
     #[test]
     fn eval_arity_error() {
-        let err = builtin_eval(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_eval(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -1905,8 +2001,8 @@ mod tests {
 
     #[test]
     fn error_raises_with_message() {
-        let err =
-            builtin_error(&[thunk(Value::String("boom".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_error(&[thunk(Value::String("boom".into()))], &no_named(), 0, cs())
+            .unwrap_err();
         assert_eq!(err.message, "boom");
     }
 
@@ -1916,6 +2012,7 @@ mod tests {
             &[thunk(Value::String("division by zero".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert_eq!(err.message, "division by zero");
@@ -1923,7 +2020,7 @@ mod tests {
 
     #[test]
     fn error_type_mismatch_on_non_string() {
-        let err = builtin_error(&[thunk(Value::Int(42))], &no_named(), 0).unwrap_err();
+        let err = builtin_error(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -1934,7 +2031,7 @@ mod tests {
 
     #[test]
     fn error_arity_check() {
-        let err = builtin_error(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_error(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -1946,7 +2043,7 @@ mod tests {
     fn try_success_returns_ok_dict() {
         // [fn [] 42]
         let func = zero_arg_fn(Expr::Int(42));
-        let result = builtin_try(&[thunk(func)], &no_named(), 0).unwrap();
+        let result = builtin_try(&[thunk(func)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert!(map.contains_key(&Key::String("ok".into())));
@@ -1960,7 +2057,7 @@ mod tests {
     #[test]
     fn try_success_with_string_body() {
         let func = zero_arg_fn(Expr::Str("hello".into()));
-        let result = builtin_try(&[thunk(func)], &no_named(), 0).unwrap();
+        let result = builtin_try(&[thunk(func)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let ok_val = materialize(&map[&Key::String("ok".into())], None, 0).unwrap();
@@ -1974,7 +2071,7 @@ mod tests {
     fn try_failure_returns_err_dict() {
         // [fn [] $nonexistent] -- references an undefined variable
         let func = zero_arg_fn(Expr::VarRef("nonexistent".into()));
-        let result = builtin_try(&[thunk(func)], &no_named(), 0).unwrap();
+        let result = builtin_try(&[thunk(func)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert!(map.contains_key(&Key::String("err".into())));
@@ -1995,7 +2092,7 @@ mod tests {
 
     #[test]
     fn try_non_function_type_error() {
-        let err = builtin_try(&[thunk(Value::Int(42))], &no_named(), 0).unwrap_err();
+        let err = builtin_try(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected Function"),
             "got: {}",
@@ -2006,7 +2103,7 @@ mod tests {
     #[test]
     fn try_non_zero_arg_function_error() {
         let func = n_arg_fn(&["x"], Expr::VarRef("x".into()));
-        let err = builtin_try(&[thunk(func)], &no_named(), 0).unwrap_err();
+        let err = builtin_try(&[thunk(func)], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("zero-argument"),
             "got: {}",
@@ -2016,7 +2113,7 @@ mod tests {
 
     #[test]
     fn try_arity_check() {
-        let err = builtin_try(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_try(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2030,6 +2127,7 @@ mod tests {
             _: &[Rc<Thunk>],
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
+            _: Span,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(99))
         }
@@ -2037,7 +2135,7 @@ mod tests {
             name: "ok",
             func: ok_builtin,
         };
-        let result = builtin_try(&[thunk(b)], &no_named(), 0).unwrap();
+        let result = builtin_try(&[thunk(b)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let ok_val = materialize(&map[&Key::String("ok".into())], None, 0).unwrap();
@@ -2053,14 +2151,15 @@ mod tests {
             _: &[Rc<Thunk>],
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
+            call_span: Span,
         ) -> Result<Value, Box<EvalError>> {
-            Err(EvalError::new("builtin error", Span::origin()).into())
+            Err(EvalError::new("builtin error", call_span).into())
         }
         let b = Value::Builtin {
             name: "fail",
             func: err_builtin,
         };
-        let result = builtin_try(&[thunk(b)], &no_named(), 0).unwrap();
+        let result = builtin_try(&[thunk(b)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let err_val = materialize(&map[&Key::String("err".into())], None, 0).unwrap();
@@ -2078,7 +2177,7 @@ mod tests {
         arg_dict.insert(Key::Int(0), thunk(Value::Int(42)));
         let args_val = Value::Dict(arg_dict);
 
-        let result = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0).unwrap();
+        let result = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
@@ -2091,7 +2190,7 @@ mod tests {
         arg_dict.insert(Key::Int(1), thunk(Value::Int(20)));
         let args_val = Value::Dict(arg_dict);
 
-        let result = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0).unwrap();
+        let result = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(10));
     }
 
@@ -2104,7 +2203,7 @@ mod tests {
         arg_dict.insert(Key::Int(1), thunk(Value::Int(20)));
         let args_val = Value::Dict(arg_dict);
 
-        let result = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0).unwrap();
+        let result = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(20));
     }
 
@@ -2114,12 +2213,13 @@ mod tests {
             args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
+            call_span: Span,
         ) -> Result<Value, Box<EvalError>> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
                 (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
-                _ => Err(EvalError::new("expected ints", Span::origin()).into()),
+                _ => Err(EvalError::new("expected ints", call_span).into()),
             }
         }
         let func = Value::Builtin {
@@ -2131,7 +2231,7 @@ mod tests {
         arg_dict.insert(Key::Int(1), thunk(Value::Int(4)));
         let args_val = Value::Dict(arg_dict);
 
-        let result = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0).unwrap();
+        let result = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(7));
     }
 
@@ -2142,7 +2242,7 @@ mod tests {
         arg_dict.insert(Key::Int(0), thunk(Value::Int(1)));
         let args_val = Value::Dict(arg_dict);
 
-        let err = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0).unwrap_err();
+        let err = builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2156,8 +2256,13 @@ mod tests {
         arg_dict.insert(Key::Int(0), thunk(Value::Int(1)));
         let args_val = Value::Dict(arg_dict);
 
-        let err =
-            builtin_apply(&[thunk(Value::Int(42)), thunk(args_val)], &no_named(), 0).unwrap_err();
+        let err = builtin_apply(
+            &[thunk(Value::Int(42)), thunk(args_val)],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("expected Function"),
             "got: {}",
@@ -2168,7 +2273,8 @@ mod tests {
     #[test]
     fn apply_non_dict_args_type_error() {
         let func = n_arg_fn(&["x"], Expr::VarRef("x".into()));
-        let err = builtin_apply(&[thunk(func), thunk(Value::Int(42))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_apply(&[thunk(func), thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected Dict"),
             "got: {}",
@@ -2178,7 +2284,7 @@ mod tests {
 
     #[test]
     fn apply_wrong_arity() {
-        let err = builtin_apply(&[thunk(Value::Int(1))], &no_named(), 0).unwrap_err();
+        let err = builtin_apply(&[thunk(Value::Int(1))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2188,39 +2294,40 @@ mod tests {
 
     #[test]
     fn type_of_int() {
-        let result = builtin_type_of(&[thunk(Value::Int(42))], &no_named(), 0).unwrap();
+        let result = builtin_type_of(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("Int".into()));
     }
 
     #[test]
     fn type_of_float() {
-        let result = builtin_type_of(&[thunk(Value::Float(3.14))], &no_named(), 0).unwrap();
+        let result = builtin_type_of(&[thunk(Value::Float(3.14))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("Float".into()));
     }
 
     #[test]
     fn type_of_string() {
-        let result = builtin_type_of(&[thunk(Value::String("hi".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_type_of(&[thunk(Value::String("hi".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("String".into()));
     }
 
     #[test]
     fn type_of_bool() {
-        let result = builtin_type_of(&[thunk(Value::Bool(false))], &no_named(), 0).unwrap();
+        let result = builtin_type_of(&[thunk(Value::Bool(false))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("Bool".into()));
     }
 
     #[test]
     fn type_of_dict() {
         let result =
-            builtin_type_of(&[thunk(Value::Dict(IndexMap::new()))], &no_named(), 0).unwrap();
+            builtin_type_of(&[thunk(Value::Dict(IndexMap::new()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("Dict".into()));
     }
 
     #[test]
     fn type_of_function() {
         let func = zero_arg_fn(Expr::Int(0));
-        let result = builtin_type_of(&[thunk(func)], &no_named(), 0).unwrap();
+        let result = builtin_type_of(&[thunk(func)], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("Function".into()));
     }
 
@@ -2230,6 +2337,7 @@ mod tests {
             _: &[Rc<Thunk>],
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
+            _: Span,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
@@ -2237,13 +2345,13 @@ mod tests {
             name: "dummy",
             func: dummy,
         };
-        let result = builtin_type_of(&[thunk(builtin)], &no_named(), 0).unwrap();
+        let result = builtin_type_of(&[thunk(builtin)], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("Function".into()));
     }
 
     #[test]
     fn type_of_arity_check() {
-        let err = builtin_type_of(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_type_of(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2254,43 +2362,55 @@ mod tests {
     #[test]
     fn from_json_int() {
         let result =
-            builtin_from_json(&[thunk(Value::String("42".into()))], &no_named(), 0).unwrap();
+            builtin_from_json(&[thunk(Value::String("42".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn from_json_float() {
         let result =
-            builtin_from_json(&[thunk(Value::String("3.14".into()))], &no_named(), 0).unwrap();
+            builtin_from_json(&[thunk(Value::String("3.14".into()))], &no_named(), 0, cs())
+                .unwrap();
         assert_eq!(result, Value::Float(3.14));
     }
 
     #[test]
     fn from_json_string() {
-        let result =
-            builtin_from_json(&[thunk(Value::String(r#""hello""#.into()))], &no_named(), 0)
-                .unwrap();
+        let result = builtin_from_json(
+            &[thunk(Value::String(r#""hello""#.into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn from_json_bool_true() {
         let result =
-            builtin_from_json(&[thunk(Value::String("true".into()))], &no_named(), 0).unwrap();
+            builtin_from_json(&[thunk(Value::String("true".into()))], &no_named(), 0, cs())
+                .unwrap();
         assert_eq!(result, Value::Bool(true));
     }
 
     #[test]
     fn from_json_bool_false() {
-        let result =
-            builtin_from_json(&[thunk(Value::String("false".into()))], &no_named(), 0).unwrap();
+        let result = builtin_from_json(
+            &[thunk(Value::String("false".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::Bool(false));
     }
 
     #[test]
     fn from_json_null_becomes_empty_dict() {
         let result =
-            builtin_from_json(&[thunk(Value::String("null".into()))], &no_named(), 0).unwrap();
+            builtin_from_json(&[thunk(Value::String("null".into()))], &no_named(), 0, cs())
+                .unwrap();
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             _ => panic!("expected empty Dict for null"),
@@ -2299,8 +2419,13 @@ mod tests {
 
     #[test]
     fn from_json_array() {
-        let result =
-            builtin_from_json(&[thunk(Value::String("[1, 2, 3]".into()))], &no_named(), 0).unwrap();
+        let result = builtin_from_json(
+            &[thunk(Value::String("[1, 2, 3]".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -2323,6 +2448,7 @@ mod tests {
             ))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -2341,7 +2467,7 @@ mod tests {
     fn from_json_nested_structure() {
         let json = r#"{"users": [{"name": "Bob"}, {"name": "Eve"}]}"#;
         let result =
-            builtin_from_json(&[thunk(Value::String(json.into()))], &no_named(), 0).unwrap();
+            builtin_from_json(&[thunk(Value::String(json.into()))], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let users = materialize(&map[&Key::String("users".into())], None, 0).unwrap();
@@ -2367,14 +2493,19 @@ mod tests {
 
     #[test]
     fn from_json_invalid_json() {
-        let err = builtin_from_json(&[thunk(Value::String("{bad json".into()))], &no_named(), 0)
-            .unwrap_err();
+        let err = builtin_from_json(
+            &[thunk(Value::String("{bad json".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("invalid JSON"), "got: {}", err.message);
     }
 
     #[test]
     fn from_json_non_string_type_error() {
-        let err = builtin_from_json(&[thunk(Value::Int(42))], &no_named(), 0).unwrap_err();
+        let err = builtin_from_json(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -2384,7 +2515,7 @@ mod tests {
 
     #[test]
     fn from_json_arity_check() {
-        let err = builtin_from_json(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_from_json(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2395,7 +2526,7 @@ mod tests {
     #[test]
     fn from_json_empty_object() {
         let result =
-            builtin_from_json(&[thunk(Value::String("{}".into()))], &no_named(), 0).unwrap();
+            builtin_from_json(&[thunk(Value::String("{}".into()))], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             _ => panic!("expected empty Dict"),
@@ -2405,7 +2536,7 @@ mod tests {
     #[test]
     fn from_json_empty_array() {
         let result =
-            builtin_from_json(&[thunk(Value::String("[]".into()))], &no_named(), 0).unwrap();
+            builtin_from_json(&[thunk(Value::String("[]".into()))], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             _ => panic!("expected empty Dict"),
@@ -2418,6 +2549,7 @@ mod tests {
             &[thunk(Value::String(r#"[1, "two", true, null]"#.into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -2465,7 +2597,7 @@ mod tests {
     #[test]
     fn keys_empty_dict() {
         let dict = thunk_dict(IndexMap::new());
-        let result = builtin_keys(&[dict], &no_named(), 0).unwrap();
+        let result = builtin_keys(&[dict], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 0),
             other => panic!("expected Dict, got {other:?}"),
@@ -2480,7 +2612,7 @@ mod tests {
         map.insert(Key::Int(2), thunk(Value::String("c".into())));
         let dict = thunk_dict(map);
 
-        let result = builtin_keys(&[dict], &no_named(), 0).unwrap();
+        let result = builtin_keys(&[dict], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
@@ -2503,7 +2635,7 @@ mod tests {
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
         let dict = thunk_dict(map);
 
-        let result = builtin_keys(&[dict], &no_named(), 0).unwrap();
+        let result = builtin_keys(&[dict], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 2);
@@ -2527,7 +2659,7 @@ mod tests {
         map.insert(Key::Int(5), thunk(Value::String("third".into())));
         let dict = thunk_dict(map);
 
-        let result = builtin_keys(&[dict], &no_named(), 0).unwrap();
+        let result = builtin_keys(&[dict], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
@@ -2550,7 +2682,7 @@ mod tests {
         map.insert(Key::String("m".into()), thunk(Value::Int(3)));
         let dict = thunk_dict(map);
 
-        let result = builtin_keys(&[dict], &no_named(), 0).unwrap();
+        let result = builtin_keys(&[dict], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(keys_map) => {
                 let k0 = materialize(&keys_map[&Key::Int(0)], None, 0).unwrap();
@@ -2567,7 +2699,7 @@ mod tests {
     #[test]
     fn length_empty_dict() {
         let dict = thunk_dict(IndexMap::new());
-        let result = builtin_length(&[dict], &no_named(), 0).unwrap();
+        let result = builtin_length(&[dict], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(0));
     }
 
@@ -2578,7 +2710,7 @@ mod tests {
         map.insert(Key::String("b".into()), thunk(Value::Int(2)));
         map.insert(Key::String("c".into()), thunk(Value::Int(3)));
         let dict = thunk_dict(map);
-        let result = builtin_length(&[dict], &no_named(), 0).unwrap();
+        let result = builtin_length(&[dict], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(3));
     }
 
@@ -2588,7 +2720,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(Value::String("x".into())));
         map.insert(Key::Int(1), thunk(Value::String("y".into())));
         let dict = thunk_dict(map);
-        let result = builtin_length(&[dict], &no_named(), 0).unwrap();
+        let result = builtin_length(&[dict], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(2));
     }
 
@@ -2601,7 +2733,8 @@ mod tests {
         right.insert(Key::String("c".into()), thunk(Value::Int(3)));
         right.insert(Key::String("d".into()), thunk(Value::Int(4)));
 
-        let result = builtin_merge(&[thunk_dict(left), thunk_dict(right)], &no_named(), 0).unwrap();
+        let result =
+            builtin_merge(&[thunk_dict(left), thunk_dict(right)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 4);
@@ -2623,7 +2756,8 @@ mod tests {
         right.insert(Key::String("y".into()), thunk(Value::Int(99)));
         right.insert(Key::String("z".into()), thunk(Value::Int(3)));
 
-        let result = builtin_merge(&[thunk_dict(left), thunk_dict(right)], &no_named(), 0).unwrap();
+        let result =
+            builtin_merge(&[thunk_dict(left), thunk_dict(right)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -2644,6 +2778,7 @@ mod tests {
             &[thunk_dict(IndexMap::new()), thunk_dict(IndexMap::new())],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -2660,6 +2795,7 @@ mod tests {
             &[thunk_dict(IndexMap::new()), thunk_dict(right)],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -2680,6 +2816,7 @@ mod tests {
             &[thunk_dict(left), thunk_dict(IndexMap::new())],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -2703,7 +2840,8 @@ mod tests {
         let mut right = IndexMap::new();
         right.insert(Key::String("b".into()), Rc::clone(&right_thunk));
 
-        let result = builtin_merge(&[thunk_dict(left), thunk_dict(right)], &no_named(), 0).unwrap();
+        let result =
+            builtin_merge(&[thunk_dict(left), thunk_dict(right)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert!(Rc::ptr_eq(&map[&Key::String("a".into())], &left_thunk));
@@ -2722,7 +2860,8 @@ mod tests {
         right.insert(Key::String("d".into()), thunk(Value::Int(3)));
         right.insert(Key::String("c".into()), thunk(Value::Int(4)));
 
-        let result = builtin_merge(&[thunk_dict(left), thunk_dict(right)], &no_named(), 0).unwrap();
+        let result =
+            builtin_merge(&[thunk_dict(left), thunk_dict(right)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let keys: Vec<&Key> = map.keys().collect();
@@ -2742,7 +2881,7 @@ mod tests {
 
     #[test]
     fn keys_wrong_arity_zero() {
-        let err = builtin_keys(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_keys(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2753,7 +2892,7 @@ mod tests {
     #[test]
     fn keys_wrong_arity_two() {
         let d = thunk_dict(IndexMap::new());
-        let err = builtin_keys(&[d.clone(), d], &no_named(), 0).unwrap_err();
+        let err = builtin_keys(&[d.clone(), d], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2763,7 +2902,7 @@ mod tests {
 
     #[test]
     fn length_wrong_arity_zero() {
-        let err = builtin_length(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_length(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2774,7 +2913,7 @@ mod tests {
     #[test]
     fn length_wrong_arity_two() {
         let d = thunk_dict(IndexMap::new());
-        let err = builtin_length(&[d.clone(), d], &no_named(), 0).unwrap_err();
+        let err = builtin_length(&[d.clone(), d], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2785,7 +2924,7 @@ mod tests {
     #[test]
     fn merge_wrong_arity_one() {
         let d = thunk_dict(IndexMap::new());
-        let err = builtin_merge(&[d], &no_named(), 0).unwrap_err();
+        let err = builtin_merge(&[d], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2796,7 +2935,7 @@ mod tests {
     #[test]
     fn merge_wrong_arity_three() {
         let d = thunk_dict(IndexMap::new());
-        let err = builtin_merge(&[d.clone(), d.clone(), d], &no_named(), 0).unwrap_err();
+        let err = builtin_merge(&[d.clone(), d.clone(), d], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -2806,7 +2945,7 @@ mod tests {
 
     #[test]
     fn keys_non_dict_int() {
-        let err = builtin_keys(&[thunk(Value::Int(42))], &no_named(), 0).unwrap_err();
+        let err = builtin_keys(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("keys"), "got: {}", err.message);
         assert!(
             err.message.contains("expected Dict"),
@@ -2818,23 +2957,33 @@ mod tests {
 
     #[test]
     fn keys_non_dict_string() {
-        let err =
-            builtin_keys(&[thunk(Value::String("hello".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_keys(
+            &[thunk(Value::String("hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("keys"), "got: {}", err.message);
         assert!(err.message.contains("got String"), "got: {}", err.message);
     }
 
     #[test]
     fn keys_non_dict_bool() {
-        let err = builtin_keys(&[thunk(Value::Bool(true))], &no_named(), 0).unwrap_err();
+        let err = builtin_keys(&[thunk(Value::Bool(true))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("keys"), "got: {}", err.message);
         assert!(err.message.contains("got Bool"), "got: {}", err.message);
     }
 
     #[test]
     fn length_non_dict() {
-        let err =
-            builtin_length(&[thunk(Value::String("hello".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_length(
+            &[thunk(Value::String("hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("length"), "got: {}", err.message);
         assert!(
             err.message.contains("expected Dict"),
@@ -2847,7 +2996,7 @@ mod tests {
     #[test]
     fn merge_first_arg_non_dict() {
         let d = thunk_dict(IndexMap::new());
-        let err = builtin_merge(&[thunk(Value::Int(1)), d], &no_named(), 0).unwrap_err();
+        let err = builtin_merge(&[thunk(Value::Int(1)), d], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("merge"), "got: {}", err.message);
         assert!(
             err.message.contains("expected Dict"),
@@ -2860,8 +3009,13 @@ mod tests {
     #[test]
     fn merge_second_arg_non_dict() {
         let d = thunk_dict(IndexMap::new());
-        let err =
-            builtin_merge(&[d, thunk(Value::String("nope".into()))], &no_named(), 0).unwrap_err();
+        let err = builtin_merge(
+            &[d, thunk(Value::String("nope".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("merge"), "got: {}", err.message);
         assert!(
             err.message.contains("expected Dict"),
@@ -2874,7 +3028,7 @@ mod tests {
     #[test]
     fn append_to_empty_dict() {
         let empty = thunk_dict(IndexMap::new());
-        let result = builtin_append(&[empty, thunk(Value::Int(42))], &no_named(), 0).unwrap();
+        let result = builtin_append(&[empty, thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
@@ -2891,8 +3045,13 @@ mod tests {
         map.insert(Key::Int(0), thunk(Value::String("a".into())));
         map.insert(Key::Int(1), thunk(Value::String("b".into())));
         let dict = thunk_dict(map);
-        let result =
-            builtin_append(&[dict, thunk(Value::String("c".into()))], &no_named(), 0).unwrap();
+        let result = builtin_append(
+            &[dict, thunk(Value::String("c".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -2909,7 +3068,7 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
         let dict = thunk_dict(map);
-        let result = builtin_append(&[dict, thunk(Value::Int(99))], &no_named(), 0).unwrap();
+        let result = builtin_append(&[dict, thunk(Value::Int(99))], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -2927,7 +3086,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(Value::Int(10)));
         map.insert(Key::Int(5), thunk(Value::Int(50)));
         let dict = thunk_dict(map);
-        let result = builtin_append(&[dict, thunk(Value::Int(60))], &no_named(), 0).unwrap();
+        let result = builtin_append(&[dict, thunk(Value::Int(60))], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -2947,6 +3106,7 @@ mod tests {
             &[dict, thunk(Value::String("second".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -2966,7 +3126,7 @@ mod tests {
         // The value arg is not materialized -- it's inserted as a thunk
         let empty = thunk_dict(IndexMap::new());
         let val_thunk = thunk(Value::Int(7));
-        let result = builtin_append(&[empty, Rc::clone(&val_thunk)], &no_named(), 0).unwrap();
+        let result = builtin_append(&[empty, Rc::clone(&val_thunk)], &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 // The inserted thunk should be the same Rc (not a copy)
@@ -2978,7 +3138,7 @@ mod tests {
 
     #[test]
     fn append_wrong_arity_zero() {
-        let err = builtin_append(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_append(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("2"), "got: {}", err.message);
     }
 
@@ -2992,6 +3152,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(err.message.contains("2"), "got: {}", err.message);
@@ -3003,6 +3164,7 @@ mod tests {
             &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(err.message.contains("append"), "got: {}", err.message);
@@ -3018,49 +3180,55 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::Int(i64::MAX), thunk(Value::Int(1)));
         let dict = thunk_dict(map);
-        let err = builtin_append(&[dict, thunk(Value::Int(2))], &no_named(), 0).unwrap_err();
+        let err = builtin_append(&[dict, thunk(Value::Int(2))], &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("key overflow"), "got: {}", err.message);
     }
 
     #[test]
     fn str_no_args() {
-        let result = builtin_str(&[], &no_named(), 0).unwrap();
+        let result = builtin_str(&[], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("".into()));
     }
 
     #[test]
     fn str_single_int() {
-        let result = builtin_str(&[thunk(Value::Int(42))], &no_named(), 0).unwrap();
+        let result = builtin_str(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("42".into()));
     }
 
     #[test]
     fn str_single_negative_int() {
-        let result = builtin_str(&[thunk(Value::Int(-7))], &no_named(), 0).unwrap();
+        let result = builtin_str(&[thunk(Value::Int(-7))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("-7".into()));
     }
 
     #[test]
     fn str_single_float() {
-        let result = builtin_str(&[thunk(Value::Float(3.14))], &no_named(), 0).unwrap();
+        let result = builtin_str(&[thunk(Value::Float(3.14))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("3.14".into()));
     }
 
     #[test]
     fn str_single_string() {
-        let result = builtin_str(&[thunk(Value::String("hello".into()))], &no_named(), 0).unwrap();
+        let result = builtin_str(
+            &[thunk(Value::String("hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn str_single_bool_true() {
-        let result = builtin_str(&[thunk(Value::Bool(true))], &no_named(), 0).unwrap();
+        let result = builtin_str(&[thunk(Value::Bool(true))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("true".into()));
     }
 
     #[test]
     fn str_single_bool_false() {
-        let result = builtin_str(&[thunk(Value::Bool(false))], &no_named(), 0).unwrap();
+        let result = builtin_str(&[thunk(Value::Bool(false))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("false".into()));
     }
 
@@ -3074,13 +3242,13 @@ mod tests {
                 test_span(1, 1, 1, 5),
             )),
         );
-        let result = builtin_str(&[thunk(Value::Dict(map))], &no_named(), 0).unwrap();
+        let result = builtin_str(&[thunk(Value::Dict(map))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("[x: <thunk>]".into()));
     }
 
     #[test]
     fn str_single_empty_string() {
-        let result = builtin_str(&[thunk(Value::String("".into()))], &no_named(), 0).unwrap();
+        let result = builtin_str(&[thunk(Value::String("".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("".into()));
     }
 
@@ -3091,7 +3259,7 @@ mod tests {
             thunk(Value::String(" ".into())),
             thunk(Value::String("World".into())),
         ];
-        let result = builtin_str(&args, &no_named(), 0).unwrap();
+        let result = builtin_str(&args, &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("Hello World".into()));
     }
 
@@ -3105,7 +3273,7 @@ mod tests {
             thunk(Value::String(", ok: ".into())),
             thunk(Value::Bool(true)),
         ];
-        let result = builtin_str(&args, &no_named(), 0).unwrap();
+        let result = builtin_str(&args, &no_named(), 0, cs()).unwrap();
         assert_eq!(
             result,
             Value::String("count: 42, ratio: 3.14, ok: true".into())
@@ -3121,6 +3289,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -3146,6 +3315,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -3167,6 +3337,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -3184,6 +3355,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -3205,6 +3377,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -3230,6 +3403,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match result {
@@ -3252,6 +3426,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::String("hello Rust".into()));
@@ -3267,6 +3442,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::String("bonono".into()));
@@ -3282,6 +3458,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::String("hello".into()));
@@ -3297,6 +3474,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::String("-a-b-c-".into()));
@@ -3312,6 +3490,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::String("heo".into()));
@@ -3319,8 +3498,13 @@ mod tests {
 
     #[test]
     fn upper_basic() {
-        let result =
-            builtin_upper(&[thunk(Value::String("hello".into()))], &no_named(), 0).unwrap();
+        let result = builtin_upper(
+            &[thunk(Value::String("hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("HELLO".into()));
     }
 
@@ -3330,6 +3514,7 @@ mod tests {
             &[thunk(Value::String("Hello World".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::String("HELLO WORLD".into()));
@@ -3337,27 +3522,39 @@ mod tests {
 
     #[test]
     fn upper_already_upper() {
-        let result = builtin_upper(&[thunk(Value::String("ABC".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_upper(&[thunk(Value::String("ABC".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("ABC".into()));
     }
 
     #[test]
     fn upper_empty() {
-        let result = builtin_upper(&[thunk(Value::String("".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_upper(&[thunk(Value::String("".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("".into()));
     }
 
     #[test]
     fn upper_with_numbers() {
-        let result =
-            builtin_upper(&[thunk(Value::String("abc123".into()))], &no_named(), 0).unwrap();
+        let result = builtin_upper(
+            &[thunk(Value::String("abc123".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("ABC123".into()));
     }
 
     #[test]
     fn lower_basic() {
-        let result =
-            builtin_lower(&[thunk(Value::String("HELLO".into()))], &no_named(), 0).unwrap();
+        let result = builtin_lower(
+            &[thunk(Value::String("HELLO".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
@@ -3367,6 +3564,7 @@ mod tests {
             &[thunk(Value::String("Hello World".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::String("hello world".into()));
@@ -3374,46 +3572,70 @@ mod tests {
 
     #[test]
     fn lower_already_lower() {
-        let result = builtin_lower(&[thunk(Value::String("abc".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_lower(&[thunk(Value::String("abc".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("abc".into()));
     }
 
     #[test]
     fn lower_empty() {
-        let result = builtin_lower(&[thunk(Value::String("".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_lower(&[thunk(Value::String("".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("".into()));
     }
 
     #[test]
     fn trim_basic() {
-        let result =
-            builtin_trim(&[thunk(Value::String("  hello  ".into()))], &no_named(), 0).unwrap();
+        let result = builtin_trim(
+            &[thunk(Value::String("  hello  ".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_leading_only() {
-        let result =
-            builtin_trim(&[thunk(Value::String("   hello".into()))], &no_named(), 0).unwrap();
+        let result = builtin_trim(
+            &[thunk(Value::String("   hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_trailing_only() {
-        let result =
-            builtin_trim(&[thunk(Value::String("hello   ".into()))], &no_named(), 0).unwrap();
+        let result = builtin_trim(
+            &[thunk(Value::String("hello   ".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_no_whitespace() {
-        let result = builtin_trim(&[thunk(Value::String("hello".into()))], &no_named(), 0).unwrap();
+        let result = builtin_trim(
+            &[thunk(Value::String("hello".into()))],
+            &no_named(),
+            0,
+            cs(),
+        )
+        .unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_all_whitespace() {
-        let result = builtin_trim(&[thunk(Value::String("   ".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_trim(&[thunk(Value::String("   ".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("".into()));
     }
 
@@ -3423,6 +3645,7 @@ mod tests {
             &[thunk(Value::String("\t\nhello\n\t".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(result, Value::String("hello".into()));
@@ -3430,13 +3653,15 @@ mod tests {
 
     #[test]
     fn trim_empty() {
-        let result = builtin_trim(&[thunk(Value::String("".into()))], &no_named(), 0).unwrap();
+        let result =
+            builtin_trim(&[thunk(Value::String("".into()))], &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::String("".into()));
     }
 
     #[test]
     fn split_wrong_arity_too_few() {
-        let err = builtin_split(&[thunk(Value::String(",".into()))], &no_named(), 0).unwrap_err();
+        let err =
+            builtin_split(&[thunk(Value::String(",".into()))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -3455,6 +3680,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3473,6 +3699,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3485,7 +3712,7 @@ mod tests {
 
     #[test]
     fn upper_wrong_arity_zero() {
-        let err = builtin_upper(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_upper(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -3502,6 +3729,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3513,7 +3741,7 @@ mod tests {
 
     #[test]
     fn lower_wrong_arity() {
-        let err = builtin_lower(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_lower(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -3530,6 +3758,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3545,6 +3774,7 @@ mod tests {
             &[thunk(Value::Int(42)), thunk(Value::String("hello".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3566,6 +3796,7 @@ mod tests {
             &[thunk(Value::String(",".into())), thunk(Value::Int(42))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3590,6 +3821,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3610,6 +3842,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3630,6 +3863,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3642,7 +3876,7 @@ mod tests {
 
     #[test]
     fn upper_wrong_type() {
-        let err = builtin_upper(&[thunk(Value::Int(42))], &no_named(), 0).unwrap_err();
+        let err = builtin_upper(&[thunk(Value::Int(42))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -3658,7 +3892,7 @@ mod tests {
 
     #[test]
     fn lower_wrong_type() {
-        let err = builtin_lower(&[thunk(Value::Bool(true))], &no_named(), 0).unwrap_err();
+        let err = builtin_lower(&[thunk(Value::Bool(true))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -3674,7 +3908,7 @@ mod tests {
 
     #[test]
     fn trim_wrong_type() {
-        let err = builtin_trim(&[thunk(Value::Float(3.14))], &no_named(), 0).unwrap_err();
+        let err = builtin_trim(&[thunk(Value::Float(3.14))], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -3692,7 +3926,8 @@ mod tests {
     fn upper_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::String("hi".into())));
-        let err = builtin_upper(&[thunk(Value::String("hello".into()))], &named, 0).unwrap_err();
+        let err =
+            builtin_upper(&[thunk(Value::String("hello".into()))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3704,7 +3939,8 @@ mod tests {
     fn lower_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::String("hi".into())));
-        let err = builtin_lower(&[thunk(Value::String("HELLO".into()))], &named, 0).unwrap_err();
+        let err =
+            builtin_lower(&[thunk(Value::String("HELLO".into()))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3716,7 +3952,8 @@ mod tests {
     fn trim_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::String("hi".into())));
-        let err = builtin_trim(&[thunk(Value::String("  hello  ".into()))], &named, 0).unwrap_err();
+        let err =
+            builtin_trim(&[thunk(Value::String("  hello  ".into()))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3728,7 +3965,7 @@ mod tests {
     fn eval_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_eval(&[thunk(Value::Int(42))], &named, 0).unwrap_err();
+        let err = builtin_eval(&[thunk(Value::Int(42))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3740,7 +3977,8 @@ mod tests {
     fn error_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_error(&[thunk(Value::String("boom".into()))], &named, 0).unwrap_err();
+        let err =
+            builtin_error(&[thunk(Value::String("boom".into()))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3752,7 +3990,7 @@ mod tests {
     fn type_of_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_type_of(&[thunk(Value::Int(42))], &named, 0).unwrap_err();
+        let err = builtin_type_of(&[thunk(Value::Int(42))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3764,7 +4002,8 @@ mod tests {
     fn from_json_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_from_json(&[thunk(Value::String("42".into()))], &named, 0).unwrap_err();
+        let err =
+            builtin_from_json(&[thunk(Value::String("42".into()))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3776,7 +4015,8 @@ mod tests {
     fn to_int_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_to_int(&[thunk(Value::String("42".into()))], &named, 0).unwrap_err();
+        let err =
+            builtin_to_int(&[thunk(Value::String("42".into()))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3795,6 +4035,7 @@ mod tests {
             ],
             &named,
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3816,6 +4057,7 @@ mod tests {
             ],
             &named,
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3829,8 +4071,13 @@ mod tests {
     fn add_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(99)));
-        let err =
-            builtin_add(&[thunk(Value::Int(1)), thunk(Value::Int(2))], &named, 0).unwrap_err();
+        let err = builtin_add(
+            &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+            &named,
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3842,8 +4089,13 @@ mod tests {
     fn sub_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err =
-            builtin_sub(&[thunk(Value::Int(3)), thunk(Value::Int(1))], &named, 0).unwrap_err();
+        let err = builtin_sub(
+            &[thunk(Value::Int(3)), thunk(Value::Int(1))],
+            &named,
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3855,8 +4107,13 @@ mod tests {
     fn mul_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err =
-            builtin_mul(&[thunk(Value::Int(2)), thunk(Value::Int(3))], &named, 0).unwrap_err();
+        let err = builtin_mul(
+            &[thunk(Value::Int(2)), thunk(Value::Int(3))],
+            &named,
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3868,8 +4125,13 @@ mod tests {
     fn div_float_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_div_float(&[thunk(Value::Int(10)), thunk(Value::Int(3))], &named, 0)
-            .unwrap_err();
+        let err = builtin_div_float(
+            &[thunk(Value::Int(10)), thunk(Value::Int(3))],
+            &named,
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3881,7 +4143,13 @@ mod tests {
     fn eq_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_eq(&[thunk(Value::Int(1)), thunk(Value::Int(2))], &named, 0).unwrap_err();
+        let err = builtin_eq(
+            &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+            &named,
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3893,7 +4161,13 @@ mod tests {
     fn lt_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_lt(&[thunk(Value::Int(1)), thunk(Value::Int(2))], &named, 0).unwrap_err();
+        let err = builtin_lt(
+            &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+            &named,
+            0,
+            cs(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3913,6 +4187,7 @@ mod tests {
             ],
             &named,
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3928,7 +4203,7 @@ mod tests {
         named.insert("extra".into(), thunk(Value::Int(1)));
         let mut map = IndexMap::new();
         map.insert(Key::String("a".into()), thunk(Value::Int(1)));
-        let err = builtin_keys(&[thunk(Value::Dict(map))], &named, 0).unwrap_err();
+        let err = builtin_keys(&[thunk(Value::Dict(map))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3941,7 +4216,7 @@ mod tests {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
         let map = IndexMap::new();
-        let err = builtin_length(&[thunk(Value::Dict(map))], &named, 0).unwrap_err();
+        let err = builtin_length(&[thunk(Value::Dict(map))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -3960,6 +4235,7 @@ mod tests {
             ],
             &named,
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3977,6 +4253,7 @@ mod tests {
             &[thunk(Value::Dict(IndexMap::new())), thunk(Value::Int(42))],
             &named,
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -3990,7 +4267,8 @@ mod tests {
     fn str_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_str(&[thunk(Value::String("hello".into()))], &named, 0).unwrap_err();
+        let err =
+            builtin_str(&[thunk(Value::String("hello".into()))], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -4003,7 +4281,7 @@ mod tests {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
         let func = zero_arg_fn(Expr::Int(42));
-        let err = builtin_try(&[thunk(func)], &named, 0).unwrap_err();
+        let err = builtin_try(&[thunk(func)], &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("named arguments"),
             "got: {}",
@@ -4020,6 +4298,7 @@ mod tests {
             &[thunk(func), thunk(Value::Dict(IndexMap::new()))],
             &named,
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -4081,6 +4360,7 @@ mod tests {
             &[thunk(Value::Int(3)), thunk(Value::Int(5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(8));
@@ -4092,6 +4372,7 @@ mod tests {
             &[thunk(Value::Int(3)), thunk(Value::Float(2.5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(5.5));
@@ -4103,6 +4384,7 @@ mod tests {
             &[thunk(Value::Float(2.5)), thunk(Value::Int(3))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(5.5));
@@ -4114,6 +4396,7 @@ mod tests {
             &[thunk(Value::Float(1.5)), thunk(Value::Float(2.5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(4.0));
@@ -4125,6 +4408,7 @@ mod tests {
             &[thunk(Value::Int(-10)), thunk(Value::Int(3))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(-7));
@@ -4136,6 +4420,7 @@ mod tests {
             &[thunk(Value::Int(0)), thunk(Value::Int(0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(0));
@@ -4147,6 +4432,7 @@ mod tests {
             &[thunk(Value::Int(1)), thunk(Value::String("hello".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("type mismatch"), "got: {}", e.message);
@@ -4154,7 +4440,7 @@ mod tests {
 
     #[test]
     fn add_arity_one_arg() {
-        let e = builtin_add(&[thunk(Value::Int(1))], &no_named(), 0).unwrap_err();
+        let e = builtin_add(&[thunk(Value::Int(1))], &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
 
@@ -4168,6 +4454,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
@@ -4179,6 +4466,7 @@ mod tests {
             &[thunk(Value::Int(i64::MAX)), thunk(Value::Int(1))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -4194,6 +4482,7 @@ mod tests {
             &[thunk(Value::Int(10)), thunk(Value::Int(3))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(7));
@@ -4205,6 +4494,7 @@ mod tests {
             &[thunk(Value::Int(10)), thunk(Value::Float(3.5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(6.5));
@@ -4216,6 +4506,7 @@ mod tests {
             &[thunk(Value::Float(10.5)), thunk(Value::Int(3))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(7.5));
@@ -4227,6 +4518,7 @@ mod tests {
             &[thunk(Value::Float(10.5)), thunk(Value::Float(3.5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(7.0));
@@ -4238,6 +4530,7 @@ mod tests {
             &[thunk(Value::Int(3)), thunk(Value::Int(10))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(-7));
@@ -4249,6 +4542,7 @@ mod tests {
             &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(0));
@@ -4256,13 +4550,13 @@ mod tests {
 
     #[test]
     fn sub_arity_zero_args() {
-        let e = builtin_sub(&[], &no_named(), 0).unwrap_err();
+        let e = builtin_sub(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
 
     #[test]
     fn sub_arity_one_arg() {
-        let e = builtin_sub(&[thunk(Value::Int(1))], &no_named(), 0).unwrap_err();
+        let e = builtin_sub(&[thunk(Value::Int(1))], &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
 
@@ -4276,6 +4570,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
@@ -4287,6 +4582,7 @@ mod tests {
             &[thunk(Value::Int(1)), thunk(Value::String("hello".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("type mismatch"), "got: {}", e.message);
@@ -4298,6 +4594,7 @@ mod tests {
             &[thunk(Value::Int(4)), thunk(Value::Int(5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(20));
@@ -4309,6 +4606,7 @@ mod tests {
             &[thunk(Value::Int(4)), thunk(Value::Float(2.5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(10.0));
@@ -4320,6 +4618,7 @@ mod tests {
             &[thunk(Value::Float(2.5)), thunk(Value::Int(4))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(10.0));
@@ -4331,6 +4630,7 @@ mod tests {
             &[thunk(Value::Float(2.5)), thunk(Value::Float(3.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(7.5));
@@ -4342,6 +4642,7 @@ mod tests {
             &[thunk(Value::Int(42)), thunk(Value::Int(0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(0));
@@ -4353,6 +4654,7 @@ mod tests {
             &[thunk(Value::Int(-3)), thunk(Value::Int(4))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(-12));
@@ -4364,6 +4666,7 @@ mod tests {
             &[thunk(Value::Int(42)), thunk(Value::Int(-1))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Int(-42));
@@ -4375,6 +4678,7 @@ mod tests {
             &[thunk(Value::Int(i64::MAX)), thunk(Value::Int(2))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(
@@ -4390,6 +4694,7 @@ mod tests {
             &[thunk(Value::Int(10)), thunk(Value::Int(3))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match r {
@@ -4406,6 +4711,7 @@ mod tests {
             &[thunk(Value::Int(10)), thunk(Value::Int(2))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match r {
@@ -4420,6 +4726,7 @@ mod tests {
             &[thunk(Value::Int(10)), thunk(Value::Float(3.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         match r {
@@ -4436,6 +4743,7 @@ mod tests {
             &[thunk(Value::Float(7.5)), thunk(Value::Float(2.5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(3.0));
@@ -4447,6 +4755,7 @@ mod tests {
             &[thunk(Value::Int(10)), thunk(Value::Int(0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("division by zero"), "got: {}", e.message);
@@ -4458,6 +4767,7 @@ mod tests {
             &[thunk(Value::Float(10.0)), thunk(Value::Float(0.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("division by zero"), "got: {}", e.message);
@@ -4469,6 +4779,7 @@ mod tests {
             &[thunk(Value::Int(10)), thunk(Value::Float(0.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("division by zero"), "got: {}", e.message);
@@ -4480,6 +4791,7 @@ mod tests {
             &[thunk(Value::Float(-0.0)), thunk(Value::Float(1.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Float(0.0));
@@ -4491,6 +4803,7 @@ mod tests {
             &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4502,6 +4815,7 @@ mod tests {
             &[thunk(Value::Int(5)), thunk(Value::Int(6))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4513,6 +4827,7 @@ mod tests {
             &[thunk(Value::Float(3.14)), thunk(Value::Float(3.14))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4524,6 +4839,7 @@ mod tests {
             &[thunk(Value::Float(3.14)), thunk(Value::Float(2.71))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4538,6 +4854,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4552,6 +4869,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4563,6 +4881,7 @@ mod tests {
             &[thunk(Value::Bool(true)), thunk(Value::Bool(true))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4574,6 +4893,7 @@ mod tests {
             &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4585,6 +4905,7 @@ mod tests {
             &[thunk(Value::Int(5)), thunk(Value::Float(5.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4596,6 +4917,7 @@ mod tests {
             &[thunk(Value::Float(5.0)), thunk(Value::Int(5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4607,6 +4929,7 @@ mod tests {
             &[thunk(Value::Int(5)), thunk(Value::Float(5.1))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4621,6 +4944,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4632,6 +4956,7 @@ mod tests {
             &[thunk(Value::Int(1)), thunk(Value::String("1".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4643,6 +4968,7 @@ mod tests {
             &[thunk(Value::Bool(true)), thunk(Value::Int(1))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4654,6 +4980,7 @@ mod tests {
             &[thunk(Value::Float(f64::NAN)), thunk(Value::Float(f64::NAN))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4665,6 +4992,7 @@ mod tests {
             &[thunk(Value::Float(-0.0)), thunk(Value::Float(0.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4672,7 +5000,7 @@ mod tests {
 
     #[test]
     fn eq_arity_error() {
-        let e = builtin_eq(&[thunk(Value::Int(1))], &no_named(), 0).unwrap_err();
+        let e = builtin_eq(&[thunk(Value::Int(1))], &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
 
@@ -4682,6 +5010,7 @@ mod tests {
             &[thunk(Value::Int(3)), thunk(Value::Int(5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4693,6 +5022,7 @@ mod tests {
             &[thunk(Value::Int(5)), thunk(Value::Int(3))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4704,6 +5034,7 @@ mod tests {
             &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4715,6 +5046,7 @@ mod tests {
             &[thunk(Value::Float(2.5)), thunk(Value::Float(3.5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4729,6 +5061,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4743,6 +5076,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4757,6 +5091,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4771,6 +5106,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4782,6 +5118,7 @@ mod tests {
             &[thunk(Value::Int(3)), thunk(Value::Float(3.5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4793,6 +5130,7 @@ mod tests {
             &[thunk(Value::Float(2.5)), thunk(Value::Int(3))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4804,6 +5142,7 @@ mod tests {
             &[thunk(Value::Int(5)), thunk(Value::Float(5.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4815,6 +5154,7 @@ mod tests {
             &[thunk(Value::Int(1)), thunk(Value::String("hello".into()))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("type mismatch"), "got: {}", e.message);
@@ -4826,6 +5166,7 @@ mod tests {
             &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("type mismatch"), "got: {}", e.message);
@@ -4840,6 +5181,7 @@ mod tests {
             ],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap_err();
         assert!(e.message.contains("type mismatch"), "got: {}", e.message);
@@ -4847,7 +5189,7 @@ mod tests {
 
     #[test]
     fn lt_arity_error() {
-        let e = builtin_lt(&[thunk(Value::Int(1))], &no_named(), 0).unwrap_err();
+        let e = builtin_lt(&[thunk(Value::Int(1))], &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
 
@@ -4857,6 +5199,7 @@ mod tests {
             &[thunk(Value::Int(-10)), thunk(Value::Int(-5))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
@@ -4868,6 +5211,7 @@ mod tests {
             &[thunk(Value::Float(f64::NAN)), thunk(Value::Float(1.0))],
             &no_named(),
             0,
+            cs(),
         )
         .unwrap();
         assert_eq!(r, Value::Bool(false));
@@ -4880,7 +5224,7 @@ mod tests {
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
-        let result = builtin_if(&args, &no_named(), 0).unwrap();
+        let result = builtin_if(&args, &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
@@ -4891,7 +5235,7 @@ mod tests {
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
-        let result = builtin_if(&args, &no_named(), 0).unwrap();
+        let result = builtin_if(&args, &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(99));
     }
 
@@ -4909,7 +5253,7 @@ mod tests {
         ));
 
         let args = vec![thunk(Value::Bool(true)), thunk(Value::Int(42)), error_thunk];
-        let result = builtin_if(&args, &no_named(), 0).unwrap();
+        let result = builtin_if(&args, &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
@@ -4931,7 +5275,7 @@ mod tests {
             error_thunk,
             thunk(Value::Int(99)),
         ];
-        let result = builtin_if(&args, &no_named(), 0).unwrap();
+        let result = builtin_if(&args, &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(99));
     }
 
@@ -4942,7 +5286,7 @@ mod tests {
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
-        let e = builtin_if(&args, &no_named(), 0).unwrap_err();
+        let e = builtin_if(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("type mismatch"), "got: {}", e.message);
         assert!(
             e.message.contains("Bool"),
@@ -4958,14 +5302,14 @@ mod tests {
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
-        let e = builtin_if(&args, &no_named(), 0).unwrap_err();
+        let e = builtin_if(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("type mismatch"), "got: {}", e.message);
     }
 
     #[test]
     fn if_arity_too_few() {
         let args = vec![thunk(Value::Bool(true)), thunk(Value::Int(42))];
-        let e = builtin_if(&args, &no_named(), 0).unwrap_err();
+        let e = builtin_if(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
 
@@ -4977,7 +5321,7 @@ mod tests {
             thunk(Value::Int(2)),
             thunk(Value::Int(3)),
         ];
-        let e = builtin_if(&args, &no_named(), 0).unwrap_err();
+        let e = builtin_if(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
     }
 
@@ -5035,7 +5379,7 @@ mod tests {
         // Clear any existing context
         INCLUDE_CTX.with(|cell| *cell.borrow_mut() = None);
         let args = vec![thunk(Value::String("test.llt".into()))];
-        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        let err = builtin_include(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("not available"),
             "got: {}",
@@ -5050,7 +5394,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::Int(42))];
-        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        let err = builtin_include(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("expected String"),
             "got: {}",
@@ -5066,7 +5410,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("nonexistent.llt".into()))];
-        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        let err = builtin_include(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("cannot open"), "got: {}", err.message);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5079,7 +5423,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("lib.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        let result = builtin_include(&args, &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -5101,7 +5445,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("num.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        let result = builtin_include(&args, &no_named(), 0, cs()).unwrap();
         assert_eq!(result, Value::Int(42));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5114,7 +5458,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("bad.llt".into()))];
-        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        let err = builtin_include(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(err.message.contains("parse error"), "got: {}", err.message);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5131,7 +5475,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("a.llt".into()))];
-        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        let err = builtin_include(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("circular include"),
             "got: {}",
@@ -5148,7 +5492,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("self.llt".into()))];
-        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        let err = builtin_include(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("circular include"),
             "got: {}",
@@ -5171,7 +5515,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("outer.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        let result = builtin_include(&args, &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let inner =
@@ -5207,7 +5551,7 @@ mod tests {
         let args = vec![thunk(Value::String(
             file_path.to_string_lossy().into_owned(),
         ))];
-        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        let result = builtin_include(&args, &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let val =
@@ -5227,7 +5571,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         // No arguments
-        let err = builtin_include(&[], &no_named(), 0).unwrap_err();
+        let err = builtin_include(&[], &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -5239,7 +5583,7 @@ mod tests {
             thunk(Value::String("a.llt".into())),
             thunk(Value::String("b.llt".into())),
         ];
-        let err = builtin_include(&args, &no_named(), 0).unwrap_err();
+        let err = builtin_include(&args, &no_named(), 0, cs()).unwrap_err();
         assert!(
             err.message.contains("arity mismatch"),
             "got: {}",
@@ -5257,7 +5601,7 @@ mod tests {
         let args = vec![thunk(Value::String("test.llt".into()))];
         let mut named = IndexMap::new();
         named.insert("path".to_string(), thunk(Value::String("x".into())));
-        let err = builtin_include(&args, &named, 0).unwrap_err();
+        let err = builtin_include(&args, &named, 0, cs()).unwrap_err();
         assert!(
             err.message.contains("does not accept named arguments"),
             "got: {}",
@@ -5275,7 +5619,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("multi.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        let result = builtin_include(&args, &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let y = materialize(map.get(&Key::String("y".into())).unwrap(), None, 0).unwrap();
@@ -5295,7 +5639,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("stdlib_test.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0).unwrap();
+        let result = builtin_include(&args, &no_named(), 0, cs()).unwrap();
         match result {
             Value::Dict(map) => {
                 let val =

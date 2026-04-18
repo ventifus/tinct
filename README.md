@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phase 0 (parser), Phase 1a-1e (evaluator), Phase 2a (core types & inference), Phase 2b (polymorphism), Phase 3a (Rust-native builtins), Phase 3a-llt (stdlib loading), Phase 3b (CLI + JSON output), Phase 3c ($include), and Phase 3d (error reporting polish) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, LLT standard library, comprehensive test suite (911 tests: 858 unit + 48 CLI integration + 5 corpus). Phase 4 (stdlib validation & expansion) is next.
+**Status:** Phase 0 (parser), Phase 1a-1e (evaluator), Phase 2a (core types & inference), Phase 2b (polymorphism), Phase 3a (Rust-native builtins), Phase 3a-llt (stdlib loading), Phase 3b (CLI + JSON output), Phase 3c ($include), and Phase 3d (error reporting polish) complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, LLT standard library, comprehensive test suite (925 tests: 871 unit + 49 CLI integration + 5 corpus). Phase 4 (stdlib validation & expansion) is next.
 
 ## Syntax at a Glance
 
@@ -150,7 +150,7 @@ cargo run -- eval test_input.txt
 
 ### Unit Tests
 
-911 tests (858 unit + 48 CLI integration + 5 corpus) across multiple modules covering:
+925 tests (871 unit + 49 CLI integration + 5 corpus) across multiple modules covering:
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
 - **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `$_` implicit lambda desugaring, TypeAlias), depth limiting, and materialization span propagation

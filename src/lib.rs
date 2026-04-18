@@ -407,6 +407,7 @@ mod tests {
             _: &[Rc<Thunk>],
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
+            _: ast::Span,
         ) -> Result<Value, Box<error::EvalError>> {
             Ok(Value::Int(0))
         }

@@ -11,10 +11,10 @@ use crate::ast::{Annotation, Expr, Param, Span, Spanned};
 use crate::error::EvalError;
 
 /// Signature for built-in functions: receives positional args, named args,
-/// and the current evaluation depth (for propagating `MAX_EVAL_DEPTH`
-/// through `materialize` calls).
+/// the current evaluation depth (for propagating `MAX_EVAL_DEPTH`
+/// through `materialize` calls), and the call-site span (for error reporting).
 pub type BuiltinFn =
-    fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize) -> Result<Value, Box<EvalError>>;
+    fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> Result<Value, Box<EvalError>>;
 
 /// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +173,7 @@ pub enum ThunkState {
         args: Vec<Rc<Thunk>>,
         named: IndexMap<String, Rc<Thunk>>,
         depth: usize,
+        call_span: Span,
     },
     InProgress,
     Materialized(Value),
@@ -183,6 +184,9 @@ pub enum ThunkState {
 pub struct Thunk {
     state: RefCell<ThunkState>,
     pub(crate) span: Span,
+    /// Optional label describing this thunk's origin (e.g. "call $f").
+    /// Used for stack trace construction when materialization fails.
+    pub(crate) origin: Option<String>,
 }
 
 impl Thunk {
@@ -194,6 +198,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::Unevaluated { expr, env }),
             span,
+            origin: None,
         }
     }
 
@@ -201,6 +206,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::Materialized(value)),
             span,
+            origin: None,
         }
     }
 
@@ -217,9 +223,17 @@ impl Thunk {
                 args,
                 named,
                 depth,
+                call_span: span,
             }),
             span,
+            origin: None,
         }
+    }
+
+    /// Set the origin label for this thunk (used in stack traces).
+    pub fn with_origin(mut self, label: String) -> Self {
+        self.origin = Some(label);
+        self
     }
 
     pub fn state(&self) -> Ref<ThunkState> {
@@ -277,6 +291,7 @@ impl Thunk {
         Vec<Rc<Thunk>>,
         IndexMap<String, Rc<Thunk>>,
         usize,
+        Span,
     )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
@@ -285,7 +300,8 @@ impl Thunk {
                 args,
                 named,
                 depth,
-            } => Some((func, args, named, depth)),
+                call_span,
+            } => Some((func, args, named, depth, call_span)),
             other => {
                 *state = other;
                 None
@@ -296,18 +312,24 @@ impl Thunk {
 
 impl fmt::Debug for Thunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.state.try_borrow() {
-            Ok(state) => f
-                .debug_struct("Thunk")
-                .field("state", &*state)
-                .field("span", &self.span)
-                .finish(),
-            Err(_) => f
-                .debug_struct("Thunk")
-                .field("state", &"<borrowed>")
-                .field("span", &self.span)
-                .finish(),
+        let mut s = match self.state.try_borrow() {
+            Ok(state) => {
+                let mut s = f.debug_struct("Thunk");
+                s.field("state", &*state);
+                s.field("span", &self.span);
+                s
+            }
+            Err(_) => {
+                let mut s = f.debug_struct("Thunk");
+                s.field("state", &"<borrowed>");
+                s.field("span", &self.span);
+                s
+            }
+        };
+        if let Some(ref origin) = self.origin {
+            s.field("origin", origin);
         }
+        s.finish()
     }
 }
 
@@ -447,6 +469,7 @@ mod tests {
             _: &[Rc<Thunk>],
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
+            _: Span,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
@@ -640,6 +663,7 @@ mod tests {
             _args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
+            _call_span: Span,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
@@ -726,6 +750,7 @@ mod tests {
             _args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
+            _call_span: Span,
         ) -> Result<Value, Box<EvalError>> {
             Ok(Value::Int(0))
         }
