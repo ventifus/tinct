@@ -99,6 +99,10 @@ check:
 update:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo update
 
+# Pin a specific dependency version
+update-precise PKG VER:
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo update {{PKG}} --precise {{VER}}
+
 # Show dependency tree
 tree:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo tree
@@ -110,6 +114,10 @@ ci: check test lint fmt-check
 # Start interactive REPL
 repl:
     {{container}} run -it {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- repl
+
+# Start LSP server (stdio transport)
+lsp:
+    {{container}} run -i {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- lsp
 
 # Interactive shell in container (for debugging)
 shell:

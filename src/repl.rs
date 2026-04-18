@@ -215,8 +215,8 @@ pub fn run_repl() -> Result<(), String> {
 
     // Set up $include context so that $include works in the REPL.
     // Use CWD as the base directory for relative path resolution.
-    let base_dir = std::env::current_dir()
-        .map_err(|e| format!("cannot determine working directory: {e}"))?;
+    let base_dir =
+        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?;
     set_include_context(IncludeContext {
         base_dir,
         include_guard: Rc::new(RefCell::new(HashSet::new())),
@@ -225,104 +225,104 @@ pub fn run_repl() -> Result<(), String> {
 
     // Wrap the main loop so that clear_include_context() runs on all exit paths.
     let result = (|| -> Result<(), String> {
-    let mut editor =
-        DefaultEditor::new().map_err(|e| format!("failed to initialize editor: {e}"))?;
+        let mut editor =
+            DefaultEditor::new().map_err(|e| format!("failed to initialize editor: {e}"))?;
 
-    // Try to load history from ~/.llt_history (best-effort).
-    let history_path =
-        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".llt_history"));
-    if let Some(ref path) = history_path {
-        let _ = editor.load_history(path);
-    }
+        // Try to load history from ~/.llt_history (best-effort).
+        let history_path =
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".llt_history"));
+        if let Some(ref path) = history_path {
+            let _ = editor.load_history(path);
+        }
 
-    eprintln!("Lazy Lisp Transformer REPL (Ctrl-D to exit)");
+        eprintln!("Lazy Lisp Transformer REPL (Ctrl-D to exit)");
 
-    let mut buffer = String::new();
-    let mut bracket_depth: i32 = 0;
+        let mut buffer = String::new();
+        let mut bracket_depth: i32 = 0;
 
-    loop {
-        let prompt = if bracket_depth > 0 {
-            PROMPT_CONTINUATION
-        } else {
-            PROMPT_PRIMARY
-        };
+        loop {
+            let prompt = if bracket_depth > 0 {
+                PROMPT_CONTINUATION
+            } else {
+                PROMPT_PRIMARY
+            };
 
-        match editor.readline(prompt) {
-            Ok(line) => {
-                // Check buffer size before appending to prevent unbounded growth.
-                if buffer.len() + line.len() > MAX_FILE_SIZE as usize {
-                    eprintln!(
-                        "error: input exceeds the 10 MB limit ({} bytes)",
-                        MAX_FILE_SIZE
-                    );
-                    buffer.clear();
-                    bracket_depth = 0;
-                    continue;
-                }
-
-                bracket_depth += bracket_count(&line);
-
-                if buffer.is_empty() {
-                    buffer = line;
-                } else {
-                    buffer.push('\n');
-                    buffer.push_str(&line);
-                }
-
-                // Wait for brackets to balance before evaluating.
-                if bracket_depth > 0 {
-                    continue;
-                }
-
-                // Skip empty/whitespace-only input.
-                if buffer.trim().is_empty() {
-                    buffer.clear();
-                    bracket_depth = 0;
-                    continue;
-                }
-
-                let _ = editor.add_history_entry(buffer.as_str());
-
-                match session.eval_input(&buffer) {
-                    Ok(display) => {
-                        println!("{display}");
+            match editor.readline(prompt) {
+                Ok(line) => {
+                    // Check buffer size before appending to prevent unbounded growth.
+                    if buffer.len() + line.len() > MAX_FILE_SIZE as usize {
+                        eprintln!(
+                            "error: input exceeds the 10 MB limit ({} bytes)",
+                            MAX_FILE_SIZE
+                        );
+                        buffer.clear();
+                        bracket_depth = 0;
+                        continue;
                     }
-                    Err(msg) => {
-                        eprintln!("error: {msg}");
-                    }
-                }
 
-                buffer.clear();
-                bracket_depth = 0;
-            }
-            Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: cancel current multi-line input, or print hint.
-                if !buffer.is_empty() {
-                    eprintln!("^C (input cancelled)");
+                    bracket_depth += bracket_count(&line);
+
+                    if buffer.is_empty() {
+                        buffer = line;
+                    } else {
+                        buffer.push('\n');
+                        buffer.push_str(&line);
+                    }
+
+                    // Wait for brackets to balance before evaluating.
+                    if bracket_depth > 0 {
+                        continue;
+                    }
+
+                    // Skip empty/whitespace-only input.
+                    if buffer.trim().is_empty() {
+                        buffer.clear();
+                        bracket_depth = 0;
+                        continue;
+                    }
+
+                    let _ = editor.add_history_entry(buffer.as_str());
+
+                    match session.eval_input(&buffer) {
+                        Ok(display) => {
+                            println!("{display}");
+                        }
+                        Err(msg) => {
+                            eprintln!("error: {msg}");
+                        }
+                    }
+
                     buffer.clear();
                     bracket_depth = 0;
-                } else {
-                    eprintln!("(use Ctrl-D to exit)");
                 }
-            }
-            Err(ReadlineError::Eof) => {
-                // Ctrl-D: exit cleanly.
-                eprintln!("Goodbye.");
-                break;
-            }
-            Err(e) => {
-                eprintln!("readline error: {e}");
-                break;
+                Err(ReadlineError::Interrupted) => {
+                    // Ctrl-C: cancel current multi-line input, or print hint.
+                    if !buffer.is_empty() {
+                        eprintln!("^C (input cancelled)");
+                        buffer.clear();
+                        bracket_depth = 0;
+                    } else {
+                        eprintln!("(use Ctrl-D to exit)");
+                    }
+                }
+                Err(ReadlineError::Eof) => {
+                    // Ctrl-D: exit cleanly.
+                    eprintln!("Goodbye.");
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("readline error: {e}");
+                    break;
+                }
             }
         }
-    }
 
-    // Save history (best-effort).
-    if let Some(ref path) = history_path {
-        let _ = editor.save_history(path);
-    }
+        // Save history (best-effort).
+        if let Some(ref path) = history_path {
+            let _ = editor.save_history(path);
+        }
 
-    Ok(())
+        Ok(())
     })(); // end of closure wrapping the main loop
 
     clear_include_context();
@@ -636,10 +636,7 @@ mod tests {
         session.eval_input("[y: 2]").unwrap();
 
         // Both bindings should be accessible (y from current env, x from parent).
-        assert_eq!(
-            session.eval_input("[call $+ $x $y]").unwrap(),
-            "Int(3)"
-        );
+        assert_eq!(session.eval_input("[call $+ $x $y]").unwrap(), "Int(3)");
     }
 
     #[test]
@@ -653,10 +650,7 @@ mod tests {
 
         // $$ itself becomes the new $$, so $$ should still be 1 (now it was
         // just the result of evaluating $$, which was 1).
-        assert_eq!(
-            session.eval_input("[call $+ $$ 10]").unwrap(),
-            "Int(11)"
-        );
+        assert_eq!(session.eval_input("[call $+ $$ 10]").unwrap(), "Int(11)");
 
         // Now $$ is 11.
         assert_eq!(session.eval_input("$$").unwrap(), "Int(11)");
@@ -714,10 +708,7 @@ mod tests {
     fn test_session_if_builtin() {
         let mut session = ReplSession::new().unwrap();
 
-        assert_eq!(
-            session.eval_input("[call $if true 1 0]").unwrap(),
-            "Int(1)"
-        );
+        assert_eq!(session.eval_input("[call $if true 1 0]").unwrap(), "Int(1)");
 
         assert_eq!(
             session.eval_input("[call $if false 1 0]").unwrap(),

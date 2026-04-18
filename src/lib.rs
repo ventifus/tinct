@@ -28,6 +28,9 @@ pub(crate) mod value;
 pub(crate) mod builtins;
 // Phase 6a: REPL (Read-Eval-Print Loop).
 pub mod repl;
+// Phase 6b: LSP (Language Server Protocol).
+#[cfg(feature = "lsp")]
+pub mod lsp;
 
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
@@ -48,6 +51,9 @@ pub use error::{EvalError, StackFrame};
 
 #[cfg(feature = "repl")]
 pub use repl::run_repl;
+
+#[cfg(feature = "lsp")]
+pub use lsp::run_lsp;
 
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{Environment, Key, Thunk, Value};

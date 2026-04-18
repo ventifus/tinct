@@ -3,6 +3,7 @@
 //! unification for polymorphic function calls.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -10,13 +11,17 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::types::{instantiate, unify, RowRest, Substitution, Type, TypeEnv, TypeError};
 
+/// A map from expression span (start_offset, end_offset) to the inferred type.
+/// Populated during type checking so hover can look up types without re-inference.
+pub type TypeMap = HashMap<(usize, usize), Type>;
+
 pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     let mut errors = Vec::new();
     let mut env = Rc::new(TypeEnv::new());
     let counter = Cell::new(0u32);
 
     for doc in &file.documents {
-        match typecheck_document(doc, &env, &counter) {
+        match typecheck_document(doc, &env, &counter, &mut None) {
             Ok(new_env) => env = new_env,
             Err(mut doc_errors) => errors.append(&mut doc_errors),
         }
@@ -29,10 +34,30 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     }
 }
 
+/// Type-check a file, returning both errors and a map from expression spans to
+/// inferred types. The type map is populated even when errors occur, covering
+/// every expression that was successfully inferred.
+pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
+    let mut errors = Vec::new();
+    let mut env = Rc::new(TypeEnv::new());
+    let counter = Cell::new(0u32);
+    let mut type_map = TypeMap::new();
+
+    for doc in &file.documents {
+        match typecheck_document(doc, &env, &counter, &mut Some(&mut type_map)) {
+            Ok(new_env) => env = new_env,
+            Err(mut doc_errors) => errors.append(&mut doc_errors),
+        }
+    }
+
+    (errors, type_map)
+}
+
 fn typecheck_document(
     doc: &Spanned<Document>,
     parent_env: &Rc<TypeEnv>,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Rc<TypeEnv>, Vec<TypeError>> {
     let mut errors = Vec::new();
     let mut env = Rc::new(TypeEnv::with_parent(Rc::clone(parent_env)));
@@ -50,7 +75,7 @@ fn typecheck_document(
 
     for (i, expr) in exprs.iter().enumerate() {
         let is_last = i == exprs.len() - 1;
-        match infer_expr(expr, &env, counter) {
+        match infer_expr(expr, &env, counter, type_map) {
             Ok(ty) => {
                 if is_last {
                     result_type = ty;
@@ -113,8 +138,9 @@ fn infer_expr(
     expr: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    match &expr.node {
+    let result = match &expr.node {
         Expr::Int(n) => Ok(Type::IntLiteral(*n)),
         Expr::Float(_) => Ok(Type::Float),
         Expr::Bool(_) => Ok(Type::Bool),
@@ -125,41 +151,41 @@ fn infer_expr(
             .cloned()
             .ok_or_else(|| vec![TypeError::undefined_variable(name, expr.span)]),
 
-        Expr::Dict(entries) => infer_dict(entries, env, counter),
+        Expr::Dict(entries) => infer_dict(entries, env, counter, type_map),
 
         Expr::DotAccess {
             expr: target,
             field,
-        } => check_dot_access(target, field, env, expr.span, counter),
+        } => check_dot_access(target, field, env, expr.span, counter, type_map),
 
         Expr::BracketAccess { expr: target, key } => {
-            check_bracket_access(target, key, env, expr.span, counter)
+            check_bracket_access(target, key, env, expr.span, counter, type_map)
         }
 
         Expr::RangeAccess {
             expr: target,
             start,
             end,
-        } => check_range_access(target, start, end, env, expr.span, counter),
+        } => check_range_access(target, start, end, env, expr.span, counter, type_map),
 
         Expr::Call {
             func,
             args,
             named_args,
-        } => check_call(func, args, named_args, env, expr.span, counter),
+        } => check_call(func, args, named_args, env, expr.span, counter, type_map),
 
         Expr::Fn {
             return_ann,
             params,
             body,
-        } => infer_fn(return_ann, params, body, env, expr.span, counter),
+        } => infer_fn(return_ann, params, body, env, expr.span, counter, type_map),
 
         Expr::TypeAlias(inner) => expand_type_alias(inner, env).map_err(|e| vec![e]),
 
         Expr::TypeAssert {
             annotation,
             expr: inner,
-        } => resolve_type_assert(annotation, inner, env, expr.span, counter),
+        } => resolve_type_assert(annotation, inner, env, expr.span, counter, type_map),
 
         Expr::Annotated { name, annotation } => {
             resolve_annotated(name, annotation, env, expr.span).map_err(|e| vec![e])
@@ -169,20 +195,31 @@ fn infer_expr(
             "rest marker (...) is only valid inside type expressions",
             expr.span,
         )]),
+    };
+
+    // Record the inferred type in the type map (if collecting).
+    if let Ok(ref ty) = result {
+        if let Some(ref mut map) = type_map {
+            let key = (expr.span.start.offset, expr.span.end.offset);
+            map.insert(key, ty.clone());
+        }
     }
+
+    result
 }
 
 fn infer_dict(
     entries: &[Spanned<Entry>],
     env: &Rc<TypeEnv>,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let mut dict_env = TypeEnv::with_parent(Rc::clone(env));
     let mut key_entries: Vec<(Option<String>, bool)> = Vec::new();
     let mut auto_index: i64 = 0;
 
     for entry in entries {
-        let key_name = entry_key_name(&entry.node, &mut auto_index, env, counter);
+        let key_name = entry_key_name(&entry.node, &mut auto_index, env, counter, type_map);
         let is_alias = matches!(&entry.node.value.node, Expr::TypeAlias(_));
         if let Some(ref name) = key_name {
             dict_env.insert(name.clone(), Type::Any);
@@ -210,7 +247,7 @@ fn infer_dict(
         if *is_alias || matches!(&entry.node.value.node, Expr::Rest(_)) {
             continue;
         }
-        match infer_expr(&entry.node.value, &dict_env, counter) {
+        match infer_expr(&entry.node.value, &dict_env, counter, type_map) {
             Ok(value_ty) => {
                 if let Some(name) = key_name {
                     fields.insert(name.clone(), value_ty);
@@ -237,12 +274,13 @@ fn entry_key_name(
     auto_index: &mut i64,
     env: &Rc<TypeEnv>,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Option<String> {
     match &entry.key {
         Some(key_expr) => match &key_expr.node {
             Expr::Str(s) => Some(s.clone()),
             Expr::Int(n) => Some(n.to_string()),
-            _ => match infer_expr(key_expr, env, counter) {
+            _ => match infer_expr(key_expr, env, counter, type_map) {
                 Ok(Type::StringLiteral(s)) => Some(s),
                 Ok(Type::IntLiteral(n)) => Some(n.to_string()),
                 _ => None,
@@ -262,8 +300,9 @@ fn check_dot_access(
     env: &Rc<TypeEnv>,
     span: Span,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, counter)?;
+    let target_ty = infer_expr(target, env, counter, type_map)?;
     match &target_ty {
         Type::Record(fields, rest) => match fields.get(field) {
             Some(ty) => Ok(ty.clone()),
@@ -281,9 +320,10 @@ fn check_bracket_access(
     env: &Rc<TypeEnv>,
     span: Span,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, counter)?;
-    let key_ty = infer_expr(key, env, counter)?;
+    let target_ty = infer_expr(target, env, counter, type_map)?;
+    let key_ty = infer_expr(key, env, counter, type_map)?;
 
     match &target_ty {
         Type::Record(fields, rest) => {
@@ -323,11 +363,12 @@ fn check_range_access(
     env: &Rc<TypeEnv>,
     span: Span,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, counter)?;
+    let target_ty = infer_expr(target, env, counter, type_map)?;
 
     for bound in [start, end].into_iter().flatten() {
-        let bound_ty = infer_expr(bound, env, counter)?;
+        let bound_ty = infer_expr(bound, env, counter, type_map)?;
         if !matches!(
             bound_ty,
             Type::Int | Type::IntLiteral(_) | Type::Str | Type::StringLiteral(_) | Type::Any
@@ -352,15 +393,16 @@ fn check_call(
     env: &Rc<TypeEnv>,
     span: Span,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let func_ty = infer_expr(func, env, counter)?;
+    let func_ty = infer_expr(func, env, counter, type_map)?;
 
-    let arg_types: Vec<Type> = args
-        .iter()
-        .map(|a| infer_expr(a, env, counter))
-        .collect::<Result<_, _>>()?;
+    let mut arg_types = Vec::with_capacity(args.len());
+    for a in args {
+        arg_types.push(infer_expr(a, env, counter, type_map)?);
+    }
     for na in named_args {
-        let _ = infer_expr(&na.node.value, env, counter)?;
+        let _ = infer_expr(&na.node.value, env, counter, type_map)?;
     }
 
     match &func_ty {
@@ -411,6 +453,7 @@ fn infer_fn(
     env: &Rc<TypeEnv>,
     span: Span,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let param_types: Vec<Type> = params
         .iter()
@@ -437,13 +480,13 @@ fn infer_fn(
     let ret_type = match return_ann {
         Some(ann) => {
             let declared = resolve_annotation(&ann.node, env, ann.span).map_err(|e| vec![e])?;
-            let inferred = infer_expr(body, &fn_env, counter)?;
+            let inferred = infer_expr(body, &fn_env, counter, type_map)?;
             if !Type::is_subtype(&inferred, &declared) {
                 return Err(vec![TypeError::type_mismatch(&declared, &inferred, span)]);
             }
             declared
         }
-        None => infer_expr(body, &fn_env, counter)?,
+        None => infer_expr(body, &fn_env, counter, type_map)?,
     };
 
     Ok(Type::Function {
@@ -463,10 +506,11 @@ fn resolve_type_assert(
     env: &Rc<TypeEnv>,
     span: Span,
     counter: &Cell<u32>,
+    type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let expected =
         resolve_annotation(&annotation.node, env, annotation.span).map_err(|e| vec![e])?;
-    let actual = infer_expr(inner, env, counter)?;
+    let actual = infer_expr(inner, env, counter, type_map)?;
 
     if !Type::is_subtype(&actual, &expected) {
         return Err(vec![TypeError::type_mismatch(&expected, &actual, span)]);
@@ -751,14 +795,14 @@ mod tests {
         let env = Rc::new(TypeEnv::new());
         let counter = Cell::new(0u32);
         let expr = &file.node.documents[0].node.expressions[0];
-        infer_expr(expr, &env, &counter).unwrap()
+        infer_expr(expr, &env, &counter, &mut None).unwrap()
     }
 
     fn doc_env(input: &str) -> Rc<TypeEnv> {
         let file = crate::parse(input).unwrap();
         let env = Rc::new(TypeEnv::new());
         let counter = Cell::new(0u32);
-        typecheck_document(&file.node.documents[0], &env, &counter).unwrap()
+        typecheck_document(&file.node.documents[0], &env, &counter, &mut None).unwrap()
     }
 
     fn result_type(input: &str) -> Type {
@@ -778,7 +822,7 @@ mod tests {
         let mut env = Rc::new(TypeEnv::new());
         let counter = Cell::new(0u32);
         for doc in &file.node.documents {
-            env = typecheck_document(doc, &env, &counter).unwrap();
+            env = typecheck_document(doc, &env, &counter, &mut None).unwrap();
         }
         env
     }
@@ -898,7 +942,7 @@ mod tests {
         let env = Rc::new(TypeEnv::new());
         let counter = Cell::new(0u32);
         let expr = &file.node.documents[0].node.expressions[0];
-        let errs = infer_expr(expr, &env, &counter).unwrap_err();
+        let errs = infer_expr(expr, &env, &counter, &mut None).unwrap_err();
         assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
         assert!(errs[0].message.contains("$undefined1"));
         assert!(errs[1].message.contains("$undefined2"));

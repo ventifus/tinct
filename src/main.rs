@@ -40,6 +40,9 @@ enum Commands {
     /// Start an interactive REPL session.
     #[cfg(feature = "repl")]
     Repl,
+    /// Start the LSP server (stdio transport).
+    #[cfg(feature = "lsp")]
+    Lsp,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -59,6 +62,8 @@ fn main() {
             Commands::Eval { format, eval, file } => run_eval(&file, &format, eval),
             #[cfg(feature = "repl")]
             Commands::Repl => lazy_lisp_transformer::repl::run_repl(),
+            #[cfg(feature = "lsp")]
+            Commands::Lsp => lazy_lisp_transformer::lsp::run_lsp().map_err(|e| format!("{e}")),
         })
         .expect("failed to spawn worker thread")
         .join();
