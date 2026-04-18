@@ -1659,7 +1659,7 @@ Evaluate these later:
 └─────────────┘
 ```
 
-> **Note:** The type checker (Phase 2a/2b) is implemented but not yet called at runtime. Type checking is a separate AST pass that will be integrated into the pipeline in future work. Currently, only the evaluator runs after parsing.
+> **Note:** The type checker (Phase 2a/2b) runs after parsing but type errors are advisory -- evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
 
 ### Implementation Roadmap
 

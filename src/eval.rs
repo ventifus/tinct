@@ -159,18 +159,13 @@ pub fn eval(
                 expr.span,
             )))
         }
-        Expr::Fn {
-            return_ann,
-            params,
-            body,
-        } => {
+        Expr::Fn { params, body, .. } => {
             let fn_params: Vec<Param> = params.iter().map(|p| p.node.clone()).collect();
             Ok(Rc::new(Thunk::new_materialized(
                 Value::Function {
                     params: Rc::new(fn_params),
                     body: Rc::new(body.as_ref().clone()),
                     env: Rc::clone(&env),
-                    return_ann: return_ann.clone(),
                 },
                 expr.span,
             )))
@@ -824,7 +819,10 @@ pub fn materialize(
         }
     }
 
-    let attach_mat_span = |mut e: Box<EvalError>| -> Box<EvalError> {
+    let origin = thunk.origin.clone();
+    let thunk_span = thunk.span;
+
+    let decorate_err = |mut e: Box<EvalError>| -> Box<EvalError> {
         if let Some(span) = mat_span {
             if e.materialization_span.is_none() {
                 e.materialization_span = Some(*span);
@@ -838,35 +836,19 @@ pub fn materialize(
                 e.push_frame("materialized", *span);
             }
         }
+        if let Some(ref label) = origin {
+            if !e
+                .stack
+                .iter()
+                .any(|f| f.span == thunk_span && f.label == *label)
+            {
+                e.push_frame(label.clone(), thunk_span);
+            }
+        }
         e
     };
 
     if let Some((expr, env)) = thunk.take_unevaluated() {
-        let origin = thunk.origin.clone();
-        let thunk_span = thunk.span;
-
-        let decorate_err = |mut e: Box<EvalError>| -> Box<EvalError> {
-            if let Some(span) = mat_span {
-                if e.materialization_span.is_none() {
-                    e.materialization_span = Some(*span);
-                } else if e.materialization_span != Some(*span)
-                    && !e.stack.iter().any(|f| f.span == *span)
-                {
-                    e.push_frame("materialized", *span);
-                }
-            }
-            if let Some(ref label) = origin {
-                if !e
-                    .stack
-                    .iter()
-                    .any(|f| f.span == thunk_span && f.label == *label)
-                {
-                    e.push_frame(label.clone(), thunk_span);
-                }
-            }
-            e
-        };
-
         let result = eval(&expr, Rc::clone(&env), depth + 1)
             .and_then(|result_thunk| materialize(&result_thunk, mat_span, depth + 1))
             .map_err(decorate_err);
@@ -883,7 +865,7 @@ pub fn materialize(
         }
     } else if let Some((func, args, named, pending_depth, call_span)) = thunk.take_pending_builtin()
     {
-        match func(&args, &named, pending_depth, call_span).map_err(attach_mat_span) {
+        match func(&args, &named, pending_depth, call_span).map_err(decorate_err) {
             Ok(value) => {
                 thunk.transition(|_| ThunkState::Materialized(value.clone()));
                 Ok(value)
@@ -1395,7 +1377,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::VarRef("x".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1431,7 +1412,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::VarRef("b".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1491,7 +1471,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::VarRef("x".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1523,7 +1502,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::VarRef("x".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1566,7 +1544,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::VarRef("y".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1607,7 +1584,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::VarRef("y".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1639,7 +1615,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::VarRef("x".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1685,7 +1660,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::VarRef("y".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1728,7 +1702,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::VarRef("rest".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1777,7 +1750,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::VarRef("rest".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1899,7 +1871,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::VarRef("x".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -1986,7 +1957,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::VarRef("x".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -3606,7 +3576,6 @@ mod tests {
             }]),
             body: Rc::new(Spanned::new(Expr::Int(0), span)),
             env: Rc::new(RefCell::new(Environment::new())),
-            return_ann: None,
         };
         let result = deep_materialize(&val, 0).unwrap();
         // Functions are opaque -- returned as-is
@@ -3725,7 +3694,6 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(Expr::Int(0), span)),
             env: Rc::new(RefCell::new(Environment::new())),
-            return_ann: None,
         };
         let mut map = IndexMap::new();
         map.insert(
@@ -3842,7 +3810,6 @@ mod tests {
                 test_span(1, 15, 1, 23),
             )),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),
@@ -3898,7 +3865,6 @@ mod tests {
                 test_span(1, 20, 1, 28),
             )),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "inner".into(),
@@ -3928,7 +3894,6 @@ mod tests {
                 inner_call_span,
             )),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "outer".into(),
@@ -4173,8 +4138,19 @@ mod tests {
     }
 
     #[test]
+    fn test_func_label_chained_dot_access() {
+        let expr = Expr::DotAccess {
+            expr: Box::new(sp(Expr::DotAccess {
+                expr: Box::new(sp(Expr::VarRef("a".into()))),
+                field: "b".into(),
+            })),
+            field: "c".into(),
+        };
+        assert_eq!(func_label(&expr), "call $a.b.c");
+    }
+
+    #[test]
     fn test_func_label_anonymous() {
-        // A literal fn expression has no name
         assert_eq!(func_label(&Expr::Int(42)), "call <anonymous>");
     }
 
@@ -4224,7 +4200,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::VarRef("a".into()))),
             env: Rc::clone(&env),
-            return_ann: None,
         };
         env.borrow_mut().insert(
             "f".into(),

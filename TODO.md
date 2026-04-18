@@ -93,7 +93,7 @@ Separate AST pass that runs between parsing and evaluation (see DESIGN.md pipeli
 
 Depends on 1e (full evaluation model must be stable). After this step, the type checker infers types for all data forms and validates annotations.
 
-- [x] Type representation: Type enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any)
+- [x] Type representation: Type enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any)
 - [x] Type environment: maps names to types, Rc-based scope chain mirroring evaluation's Environment
 - [x] Literal type inference (Int, Float, Bool, String)
 - [x] Record type construction from dict entries (three-pass letrec: bind all to Any, register aliases, infer values)
@@ -122,7 +122,7 @@ Build the end-to-end runtime. Builtins get proper type signatures from Phase 2.
 
 ### 3a: Rust-Native Builtins
 
-Depends on 1e + 2b. The 27 true primitives that MUST be Rust: operations LLT cannot express. Everything else is derived in LLT in `stdlib/prelude.llt`.
+Depends on 1e + 2b. The 28 true primitives that MUST be Rust: operations LLT cannot express. Everything else is derived in LLT in `stdlib/prelude.llt`.
 
 - [x] Builtin registration: populate root environment with `Value::Builtin` entries
 - [x] Arithmetic: `+`, `-`, `*`, `/` with auto-promotion (Int+Int=Int, mixed=Float)
@@ -177,7 +177,7 @@ Ongoing throughout earlier phases, but final polish here.
 
 ## Pre-Phase 4: Stdlib Boundary Analysis — Complete
 
-- [x] Identify the minimal set of builtins that MUST be implemented in Rust (27 total: arithmetic, comparison, if, keys/length/merge/append, string ops, numeric conversion, eval/error/try/apply, type-of, from-json)
+- [x] Identify the minimal set of builtins that MUST be implemented in Rust (28 total: arithmetic, comparison, if, keys/length/merge/append, string ops, numeric conversion, eval/error/try/apply, type-of, from-json, include)
 - [x] Identify which stdlib functions CAN be implemented as LLT code (all control flow, collection ops, composition, list ops, sorting, sequences, assertions — implemented in `stdlib/prelude.llt`)
 - [x] Document the boundary in DESIGN.md with rationale for each Rust-native builtin (see "Rust-Native vs LLT-Implemented Boundary" section)
 - [x] Design the stdlib loading mechanism (`include_str!` prelude, Rust builtins → LLT stdlib → user code environment chain)
@@ -281,3 +281,18 @@ Replace the current closed-strict/open-lenient record unification with full Remy
 - [ ] Update `instantiate` to freshen row variables alongside type variables
 - [ ] Test inference through polymorphic functions that extend/restrict records (e.g., `[fn add-id [r@[...rest]] [id: 1  ...rest]]`)
 - [ ] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
+
+## Phase 8: Sandboxing & Security
+
+Design and implement filesystem sandboxing for `$include` and any future I/O operations. Currently `$include` can read any file the process can access (mitigated only by file size limit and cycle detection).
+
+- [ ] Design sandboxing model: restrict includes to a subtree of the initial file's directory
+- [ ] Decide policy for absolute paths (block entirely vs. resolve relative to sandbox root)
+- [ ] Decide policy for symlinks (resolve and check target is within sandbox, or block)
+- [ ] Implement sandbox root calculation in `IncludeContext`
+- [ ] Add `canonical.starts_with(&root_dir)` check in `builtin_include`
+- [ ] Add CLI flag to configure sandbox root (e.g., `--include-root`)
+- [ ] Test: relative paths within sandbox succeed
+- [ ] Test: `../` traversal beyond sandbox root fails
+- [ ] Test: absolute paths outside sandbox fail
+- [ ] Test: symlinks pointing outside sandbox fail

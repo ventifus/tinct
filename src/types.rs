@@ -183,6 +183,8 @@ impl Substitution {
         }
     }
 
+    // Used in type checker tests; not yet called from production code.
+    #[allow(dead_code)]
     pub fn get(&self, name: &str) -> Option<&Type> {
         self.map.get(name)
     }

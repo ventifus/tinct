@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, Expr, Param, Span, Spanned};
+use crate::ast::{Expr, Param, Span, Spanned};
 use crate::error::EvalError;
 
 /// Signature for built-in functions: receives positional args, named args,
@@ -70,9 +70,6 @@ pub enum Value {
         params: Rc<Vec<Param>>,
         body: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
-        /// Stored for future type-checking integration.
-        #[allow(dead_code)]
-        return_ann: Option<Spanned<Annotation>>,
     },
     /// Rust-native built-in function
     Builtin { name: &'static str, func: BuiltinFn },
@@ -458,7 +455,6 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
-            return_ann: None,
         };
         assert_ne!(f.clone(), f);
     }
@@ -648,12 +644,7 @@ mod tests {
         ]);
         let body = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
-        let func = Value::Function {
-            params,
-            body,
-            env,
-            return_ann: None,
-        };
+        let func = Value::Function { params, body, env };
         assert_eq!(format!("{func}"), "[fn [x y] ...]");
     }
 
@@ -735,12 +726,7 @@ mod tests {
         ]);
         let body = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
-        let func = Value::Function {
-            params,
-            body,
-            env,
-            return_ann: None,
-        };
+        let func = Value::Function { params, body, env };
         assert_eq!(format!("{func:?}"), "Function(a, b)");
     }
 

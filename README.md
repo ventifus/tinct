@@ -51,7 +51,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Access chains** -- dot access, bracket access, range expressions, type assertions, annotated access (Phase 1c)
 - **Document evaluation** -- multi-expression scope chains, multi-document `$$` pipeline with lazy passing (Phase 1d)
 - **Function evaluation** -- `fn`/`call` with closures, `$_` implicit lambda desugaring, named args with defaults, variadics, arity checking (Phase 1e)
-- **Type system** -- `Type` enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` scope chain, `TypeError` reporting (Phase 2a)
+- **Type system** -- `Type` enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` scope chain, `TypeError` reporting (Phase 2a)
 - **Type checker** -- `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion (Phase 2a)
 - **Polymorphism** -- Hindley-Milner unification, `Fn@Return [Params]` function type expressions, row polymorphism (open/closed/row-var records), type variable instantiation per call site (Phase 2b)
 - **Rust-native builtins** -- 28 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O) with `standard_builtins()` registry (Phase 3a + 3c)
@@ -120,6 +120,10 @@ If you have Rust installed:
 cargo build --release
 cargo test
 cargo run -- eval test_input.txt
+cargo run -- eval --format llt test_input.txt  # LLT display format
+cargo run -- eval --eval test_input.txt         # Deep-force all thunks
+echo '{"x": 1}' | cargo run -- eval -           # Read LLT from stdin
+echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as $$
 ```
 
 ## Project Structure
@@ -133,7 +137,7 @@ cargo run -- eval test_input.txt
 | `src/builtins.rs` | 28 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O), `IncludeContext` + thread-local for `$include`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces |
-| `src/types.rs` | Type system: `Type` enum (Int, Float, String, Bool, Number, Record, Function, TypeVar, Any), `RowRest` (Closed, Open, RowVar), `Substitution` (unification), `TypeEnv` (Rc-based scope chain), `TypeError` |
+| `src/types.rs` | Type system: `Type` enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any), `RowRest` (Closed, Open, RowVar), `Substitution` (unification), `TypeEnv` (Rc-based scope chain), `TypeError` |
 | `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, `Fn@Return [Params]` resolution, row polymorphism |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
 | `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `set_include_context()`, `IncludeContext`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |

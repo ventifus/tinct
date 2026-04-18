@@ -87,7 +87,7 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
     let ast = parse(&source).map_err(|e| format!("{e}"))?;
 
     // Create stdlib environment
-    let env = create_stdlib_env()?;
+    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
 
     // Set up include context for $include builtin
     let base_dir = if file_path == "-" {

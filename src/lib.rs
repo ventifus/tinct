@@ -19,26 +19,28 @@ pub(crate) mod eval;
 pub mod parser;
 #[cfg(test)]
 pub(crate) mod test_util;
-// Type system modules: pub(crate) with dead_code allowed until integrated into public API.
-#[allow(dead_code)]
 pub(crate) mod typecheck;
-#[allow(dead_code)]
 pub(crate) mod types;
 pub(crate) mod value;
 // Phase 3a: Rust-native builtin functions.
 pub(crate) mod builtins;
 
+/// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
+/// Parser entry points and error type.
 pub use parser::{parse, parse_expression, ParseError};
 
-/// `MAX_EVAL_DEPTH` (256): recursion limit for eval, materialize, and serialization depth.
+/// Evaluation functions and depth limit.
 pub use eval::{deep_materialize, eval_file, eval_file_with_input, materialize, MAX_EVAL_DEPTH};
 
+/// Builtin infrastructure: stdlib creation, JSON conversion, and include context.
 pub use builtins::{
     create_stdlib_env, json_to_value, set_include_context, IncludeContext, MAX_FILE_SIZE,
 };
 
+/// Error types with source spans and stack traces.
 pub use error::{EvalError, StackFrame};
+/// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{Environment, Key, Thunk, Value};
 
 /// Parse and evaluate LLT source, returning the result in **LLT display format**
@@ -49,7 +51,9 @@ pub use value::{Environment, Key, Thunk, Value};
 /// For JSON output, use [`value_to_json`] after evaluation instead.
 pub fn eval_source(input: &str) -> Result<String, String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
-    let env = builtins::create_stdlib_env()?;
+    // Type errors are advisory; evaluation proceeds regardless.
+    let _ = typecheck::typecheck_file(&file.node);
+    let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
     let thunk = eval::eval_file(&file.node, env, 0).map_err(|e| format!("{e}"))?;
     let val = eval::materialize(&thunk, None, 0).map_err(|e| format!("{e}"))?;
     let forced = eval::deep_materialize(&val, 0).map_err(|e| format!("{e}"))?;
@@ -395,7 +399,6 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(ast::Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
-            return_ann: None,
         };
         let err = value_to_json(&f, 0).unwrap_err();
         assert!(err.message.contains("cannot serialize Function to JSON"));
