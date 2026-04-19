@@ -228,12 +228,12 @@ Minor and nit fixes from 9-agent review (2026-04-19).
 
 Fix stdlib bugs and add missing test coverage. Identified by stdlib-author review (2026-04-19).
 
-- [ ] Fix `get-in` crash on missing intermediate keys — currently crashes instead of returning fallback when an intermediate key doesn't exist [Major, stdlib-author]
-- [ ] Document recursive sequence generator depth limits (~250 elements max) in prelude docstrings; add Phase 5d TODO reference (`stdlib/prelude.llt:479-496`) [Critical, stdlib-author]
-- [ ] Add tests for empty collection edge cases — map, filter, reduce, join, flatten, zip, sort with empty dict `[]` input (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
-- [ ] Add test for compose with multi-step chains (`tests/corpus/eval/stdlib/compose.txt`) [Major, stdlib-author]
-- [ ] Add negative tests for `assert` (failure case) and `find-deep` (key not found) [Minor, stdlib-author]
-- [ ] Add test for slice with negative indices or document positional-only (`tests/corpus/eval/stdlib/slice.txt`) [Nit, stdlib-author]
+- [x] Fix `get-in` crash on missing intermediate keys — added `has?` check, error on missing key; added `get-in-or` with default fallback [Major, stdlib-author]
+- [x] Document recursive sequence generator depth limits (~250 elements max) in prelude docstrings; already documented at prelude.llt lines 491, 498, 505 [Critical, stdlib-author]
+- [x] Add tests for empty collection edge cases — map, filter, reduce, join, flatten, zip, sort with empty dict `[]` input (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
+- [x] Add test for compose with multi-step chains (`tests/corpus/eval/stdlib/compose_chain.txt`) [Major, stdlib-author]
+- [x] Add negative tests for `assert` (failure case) and `find-deep` (key not found) — already existed: `errors/assert_false.txt`, `errors/find_deep_missing.txt` [Minor, stdlib-author]
+- [x] Add test for slice with negative indices or document positional-only (`tests/corpus/eval/stdlib/slice.txt`) — positional-only confirmed [Nit, stdlib-author]
 
 ## Phase 4b½: New Stdlib Functions (Pre-Sequences)
 
@@ -567,6 +567,9 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Add clarifying comment to `bind_args_thunks` double conflict check (`src/eval.rs:573-587`) [Nit, eval-engine]
 - [ ] Consider `matches!` instead of `!=` in `key_in_range` (`src/eval.rs:22-50`) [Nit, eval-engine]
 - [ ] Extract `MAX_APPLY_DEPTH` constant to shared location — duplicated in `src/types.rs:127` and `src/eval.rs:42` [Nit, performance-expert]
+- [ ] Avoid AST clone in eval_call argument thunk creation — `(*arg).clone()` clones entire `Spanned<Expr>` subtree per argument; consider `Rc<Spanned<Expr>>` to share immutable AST nodes (`src/eval.rs:416-435`) [Minor, performance-expert]
+- [ ] Avoid intermediate Vec in value_to_display_string — collects all formatted entries into Vec<String> then joins; write directly to String with_capacity instead (`src/lib.rs:194-204`) [Minor, performance-expert]
+- [ ] Avoid intermediate Vec in builtin_split — `input.split(sep).collect::<Vec<&str>>()` then maps to thunks; use iterator directly (`src/builtins.rs:525-535`) [Nit, performance-expert]
 
 ## Phase 7½: Iterative Evaluator
 
@@ -773,8 +776,8 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] PendingBuiltin state transition unit tests — verify Unevaluated→PendingBuiltin→Materialized lifecycle, error recovery, cycle detection in isolation (`src/value.rs`, `src/eval.rs`) [Critical, test-crafter]
 - [ ] Add error corpus tests with span assertions — current tests check message content only, not definition_span, materialization_span, or stack frame accuracy (`tests/corpus/eval/errors/`) [Critical, test-crafter + span-integrity-checker]
 - [ ] Add selective materialization unit tests — use mock/panic functions to prove unused branches stay unevaluated (`src/eval.rs`) [Critical, test-crafter]
-- [ ] Add `tests/corpus/eval/laziness/` directory with negative tests proving unused expressions are NOT evaluated
-- [ ] Add builtins.rs unit tests for edge cases — NaN, overflow, Unicode, cycle detection (currently ~7% coverage) (`src/builtins.rs`) [Major, test-crafter]
+- [ ] Expand `tests/corpus/eval/laziness/` with more negative tests proving unused expressions are NOT evaluated (current: 2 tests, target: 10+)
+- [ ] Add builtins.rs unit tests for additional edge cases — NaN, overflow, Unicode, cycle detection (337 tests exist, expand for special values) (`src/builtins.rs`) [Major, test-crafter]
 - [ ] Add typecheck corpus tests (currently zero; Nickel has 90+ granular typecheck test files)
 - [ ] Add `deep_materialize` corpus tests through the public API
 - [ ] Materialization behavior corpus tests proving stdlib laziness categories (test-crafter review)
@@ -846,9 +849,9 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 
 ### SPEC.md vs Code (from REVIEW.md)
 
-- [ ] **SPEC bare_word_char denylist inconsistency** — SPEC.md `§3.5` (`SPEC.md:160-163`) doesn't accurately document all excluded characters (@, $); update to match `grammar.pest:219-225` [Critical, grammar-architect]
+- [ ] **SPEC bare_word_char prose terminator list missing `$`** — SPEC.md formal grammar (`SPEC.md:161`) is correct and matches `grammar.pest:219-225`, but the prose terminator list (`SPEC.md:168-170`) omits `$`; add `$` to the bulleted list [Nit, grammar-architect]
 - [ ] **SPEC.md §3.4 access chain grammar missing dot exclusion clarity** — add inline comment showing `.` exclusion in `var_ident_char` (`SPEC.md:85-92`) [Major, grammar-architect]
-- [ ] **SPEC.md §5.3 duplicate key detection claim vs implementation** — verify runtime duplicate detection for bracket expression keys exists; update spec (`SPEC.md:628-629`) [Major, grammar-architect]
+- [x] **SPEC.md §5.3 duplicate key detection claim vs implementation** — VERIFIED: runtime duplicate detection exists at `eval.rs:338`. SPEC.md:629 is accurate. [Resolved, grammar-architect]
 - [ ] **SPEC.md annotation_value comment doesn't reference parent rule** — reference `param_annotation`/`fn_annotation` (`SPEC.md:792`) [Nit, grammar-architect]
 - [ ] **SPEC.md Token Precedence missing annotated_bare** — add `annotated_bare` at position 5.5 (`SPEC.md:177-186`) [Nit, grammar-architect]
 - [ ] **SPEC.md Bracket Nesting Depth Limit doesn't link to TODO.md** — add document reference (`SPEC.md:645-647`) [Nit, grammar-architect]
@@ -874,4 +877,4 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 
 ### CLAUDE.md (from REVIEW.md)
 
-- [ ] **CLAUDE.md references "Phase 6" for hand-written parser, should be Phase 7** — update reference (`CLAUDE.md:135`) [Minor, grammar-architect]
+- [x] **CLAUDE.md references "Phase 6" for hand-written parser, should be Phase 7** — STALE: CLAUDE.md simplified, no longer contains phase references. [Resolved, grammar-architect]

@@ -1,0 +1,4 @@
+# map on empty dict returns empty dict
+[call $map [fn [x] [call $+ $x 1]] []]
+===
+Dict({})

@@ -1254,7 +1254,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | Function | Materialization behavior |
 |----------|------------------------|
 | `get`, `get-or`, `has?` | Structural — key lookup, returns thunk |
-| `get-in` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. |
+| `get-in`, `get-in-or` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. `get-in-or` returns a default on missing keys instead of erroring. |
 | `set`, `remove` | Structural — add/remove entries |
 | `merge` | **Current:** Eagerly clones both input dicts. **Phase 5b:** Will use lazy overlay (right dict's keys shadow left dict's keys, no deep copy until access). |
 | `keys` | Structural — keys are always evaluated, not thunks |
@@ -1467,7 +1467,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `get` | `[fn [xs k] ...]` | Get value by key (bracket access wrapper) |
 | `has?` | `[fn [xs k] ...]` | Check if a key exists (uses `$try` around access) |
 | `get-or` | `[fn [xs k default] ...]` | Get value by key with fallback default |
-| `get-in` | `[fn [xs path] ...]` | Traverse nested dicts by a list of keys |
+| `get-in` | `[fn [xs path] ...]` | Traverse nested dicts by a list of keys; errors on missing key |
+| `get-in-or` | `[fn [xs path default] ...]` | Traverse nested dicts with fallback default |
 | `empty?` | `[fn [xs] ...]` | Check if a collection has zero entries |
 | `set` | `[fn [xs k v] ...]` | Return new dict with key added/updated |
 | `remove` | `[fn [xs k] ...]` | Return new dict with key removed |

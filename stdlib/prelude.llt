@@ -146,11 +146,25 @@ get-or: [fn [xs k default]
     [call $if [call $has? $xs $k] $xs[$k] $default]]
 
 # Traverse nested dicts by a list of keys.
+# Returns error when any intermediate key is missing.
+# Use get-in-or for a default fallback on missing keys.
 # Usage: [call $get-in $data [key1 key2 key3]]
 get-in: [fn [xs path]
     [call $if [call $= [call $length $path] 0]
         $xs
-        [call $get-in $xs[$path[0]] [call $rest $path]]]]
+        [call $if [call $has? $xs $path[0]]
+            [call $get-in $xs[$path[0]] [call $rest $path]]
+            [call $error [call $str "key not found: " $path[0]]]]]]
+
+# Traverse nested dicts by a list of keys with a default fallback.
+# Returns default when any intermediate key is missing.
+# Usage: [call $get-in-or $data [key1 key2 key3] fallback]
+get-in-or: [fn [xs path default]
+    [call $if [call $= [call $length $path] 0]
+        $xs
+        [call $if [call $has? $xs $path[0]]
+            [call $get-in-or $xs[$path[0]] [call $rest $path] $default]
+            $default]]]
 
 # Check if a collection is empty.
 empty?: [fn [xs] [call $= [call $length $xs] 0]]

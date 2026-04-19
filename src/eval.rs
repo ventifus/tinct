@@ -2639,7 +2639,10 @@ mod tests {
         let env = empty_env();
         env.borrow_mut().insert(
             "fallback".into(),
-            Rc::new(Thunk::new_materialized(Value::Int(99), test_span(1, 1, 1, 1))),
+            Rc::new(Thunk::new_materialized(
+                Value::Int(99),
+                test_span(1, 1, 1, 1),
+            )),
         );
         let thunk = eval(&expr, Rc::clone(&env), 0).unwrap();
         let val = materialize(&thunk, None, 0).unwrap();

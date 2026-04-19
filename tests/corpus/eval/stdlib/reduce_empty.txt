@@ -1,0 +1,4 @@
+# reduce on empty dict returns init
+[call $reduce [fn [acc x] [call $+ $acc $x]] 0 []]
+===
+Int(0)

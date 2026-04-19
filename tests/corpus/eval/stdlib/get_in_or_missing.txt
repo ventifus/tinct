@@ -1,0 +1,4 @@
+# get-in-or: returns default when intermediate key missing
+[call $get-in-or [a: [b: 42]] [a c d] fallback]
+===
+String("fallback")
