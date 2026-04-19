@@ -201,6 +201,16 @@ Remaining stdlib functions stay in LLT prelude: logic (`and`, `or`), control flo
 
 The original design calls for everything to be lazy. Several operations are currently eager due to the `BuiltinFn` return type (`Value` instead of `Rc<Thunk>`) and the absence of lazy function application. This phase adds `Value::Seq` for lazy computation and `PendingCall` thunk state to restore laziness across the language. See DESIGN.md "Sequences and Lazy Computation" for full design.
 
+**Note:** Phase 5 can proceed in parallel with Phase 7 (hand-written parser) since the parser is independent of runtime semantics.
+
+### Pre-Phase 5: Laziness Boundary Analysis
+
+Before starting implementation, document the PendingCall/Seq design and analyze current eager operations.
+
+- [ ] Analyze all current eager operations and categorize by fix strategy (PendingCall, Seq, inherently eager)
+- [ ] Document the PendingCall/Seq design decisions in DESIGN.md before starting 5a
+- [ ] Document current-vs-planned laziness for `$if`, `$merge`, `$apply` in DESIGN.md
+
 ### 5a: PendingCall Thunk State
 
 Add `PendingCall(func: Rc<Thunk>, args: Vec<Rc<Thunk>>)` to `ThunkState`. This enables lazy function application at runtime without AST nodes.
@@ -274,7 +284,7 @@ Cache `$include` results so re-including the same file returns the cached thunk 
 
 ### 5g: Laziness Inventory
 
-Every operation should be as lazy as possible. This is the tracking list.
+Every operation should be as lazy as possible. After this step, all operations that can be lazy are lazy, and the remaining eager operations are documented with justification.
 
 **Currently eager, should become lazy:**
 
@@ -348,23 +358,25 @@ Execution order: REPL → LSP → tree-sitter. One commit per item.
 
 Uses `lsp-server` (sync), not `tower-lsp` (async), because `Rc<RefCell<Environment>>` is not Send/Sync.
 
-- [ ] Add `lsp-server` + `lsp-types` dependencies (optional, under `lsp` feature)
-- [ ] Document store (`src/lsp/document.rs`): HashMap<Url, DocumentState>, re-parse/eval/typecheck on change
-- [ ] Span conversion (`src/lsp/convert.rs`): LLT Span (offset, 1-indexed) ↔ LSP Position (0-indexed, UTF-16)
-- [ ] Analysis + hover (`src/lsp/analysis.rs`)
+- [x] Add `lsp-server` + `lsp-types` dependencies (optional, under `lsp` feature)
+- [x] Document store (`src/lsp/document.rs`): HashMap<Url, DocumentState>, re-parse/eval/typecheck on change
+- [x] Span conversion (`src/lsp/convert.rs`): LLT Span (offset, 1-indexed) ↔ LSP Position (0-indexed, UTF-16)
+- [x] Analysis + hover (`src/lsp/analysis.rs`)
   - Expose `infer_expr` or add `type_at_position()` helper in typecheck.rs
   - Hover on `$var` shows inferred type, hover on `[call ...]` shows signature
   - Parse errors → Error diagnostics, type errors → Warning diagnostics (advisory)
   - Go-to-definition: stretch goal (requires span tracking in Environment bindings)
-- [ ] Main loop (`src/lsp/server.rs`): `Connection` + crossbeam message loop
+- [x] Main loop (`src/lsp/server.rs`): `Connection` + crossbeam message loop
   - Requests: `initialize`, `shutdown`, `textDocument/hover`
   - Notifications: `didOpen`, `didChange`, `didClose`
   - Publish diagnostics on every document change
-- [ ] CLI wiring: `Lsp` variant in `Commands`, `llt lsp` on stdio
-- [ ] Tests (span conversion, hover analysis, diagnostic generation, simulated LSP client)
-- [ ] Just recipe: `just lsp`
+- [x] CLI wiring: `Lsp` variant in `Commands`, `llt lsp` on stdio
+- [x] Tests (span conversion, hover analysis, diagnostic generation, simulated LSP client)
+- [x] Just recipe: `just lsp`
 
 ### Phase 6c: tree-sitter grammar
+
+After this step, editors with tree-sitter support get syntax highlighting, code folding, and incremental parsing for `.llt` files.
 
 - [x] Scaffold `tree-sitter-llt/` (package.json, grammar.js skeleton, tree-sitter.json)
 - [x] Implement grammar rules (port from grammar.pest / SPEC.md)
@@ -442,8 +454,10 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest).
 - [ ] Remove `pest` and `pest_derive` dependencies from Cargo.toml
 - [ ] Remove `src/grammar.pest`
 - [ ] Remove pest-specific code from `src/parser.rs`
+- [ ] Remove pest-specific test code and helpers from `src/parser.rs`
 - [ ] Rename `src/parser2.rs` to `src/parser.rs`
-- [ ] Update CLAUDE.md, README.md, SPEC.md references
+- [ ] Update CLAUDE.md, README.md, SPEC.md references (remove pest notation, update grammar description)
+- [ ] Full pest removal audit: verify no remaining pest references in docs, tests, or comments
 
 ## Performance: Stdlib Rust Reimplementations
 
@@ -472,6 +486,8 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 
 Replace the current closed-strict/open-lenient record unification with full Remy-style row-variable unification. Row variables become first-class participants in type inference, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
 
+**Depends on:** Phase 5c (Value::Seq) for sequence type support in row polymorphism.
+
 - [ ] Add VarLevel (integer rank) tracking to type variables for sound let-polymorphism generalization (Elm's rank-based approach — determines which type variables can be generalized at `let` boundaries)
 - [ ] Extend `Substitution::apply` to splice bound row variable fields into records (e.g., `[a: Int | ...r]` with `r → [b: String]` produces `[a: Int, b: String]`)
 - [ ] Unify row rests: `RowVar` vs `RowVar` binds one to the other, `RowVar` vs `Closed` binds the var to the leftover fields as a closed record
@@ -480,6 +496,7 @@ Replace the current closed-strict/open-lenient record unification with full Remy
 - [ ] Update `instantiate` to freshen row variables alongside type variables
 - [ ] Test inference through polymorphic functions that extend/restrict records (e.g., `[fn add-id [r@[...rest]] [id: 1  ...rest]]`)
 - [ ] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
+- [ ] Add row-specific occurs check for `RowVar("r")` with `Record(..., RowVar("r"))` (infinite row type prevention)
 
 ## Phase 9: Sandboxing & Security
 
@@ -547,6 +564,9 @@ Enhance error reporting with richer context types inspired by Elm, Nickel, and r
 - [ ] Migrate freeform string error constructors to structured enum variants (`key_not_found`, `type_mismatch`, `arity_mismatch`)
 - [ ] Add secondary span support for "evaluated to this" labels on lazy evaluation errors (Nickel dual-position pattern)
 - [ ] Reconstruct multi-hop cycle paths for circular dependency errors (show the full cycle chain, not just the blackholed thunk)
+- [ ] Add structured error codes (E001, E002, ...) for programmatic error filtering and documentation linking
+- [ ] Document dual-span error model in DESIGN.md (currently undocumented design decision)
+- [ ] Add LSP `related_information` for materialization-site spans and stack frames (currently discarded)
 
 ## Phase 12: Stdlib Documentation
 
@@ -569,6 +589,14 @@ Improvements to test infrastructure identified by cross-language analysis.
 - [ ] Add fuzzing targets (`fuzz/fuzz_targets/parse.rs`, `fuzz/fuzz_targets/eval_source.rs`)
 - [ ] Add pretty-print round-trip idempotence test (parse → Display → re-parse → Display → compare)
 - [ ] Add stack-size canary test (~200 nested brackets)
+- [ ] Extend error test framework: support `=== ERROR: substring` for message validation (test-crafter review)
+- [ ] Add depth limit corpus tests (256 levels succeeds, 257 errors)
+- [ ] Add cross-feature interaction tests (`tests/corpus/eval/cross_feature/`)
+- [ ] Add static constraint negative tests (variadic-not-last, rest-entry position, annotation context)
+- [ ] Add snapshot testing for error messages using `insta` crate
+- [ ] Generate per-file test functions for clearer failure reports (Nickel `test_resources!` pattern)
+- [ ] Add property-based testing (proptest) for parser round-trip and evaluator commutativity
+- [ ] Add LSP corpus tests (`tests/lsp_corpus/`) with `.llt` + `.expected.json` per position
 
 ## Documentation Divergences (DESIGN.md / SPEC.md / Code)
 

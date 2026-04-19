@@ -2,7 +2,7 @@
 //! substitutions/unification for Hindley-Milner polymorphism,
 //! and type error definitions for the type checker.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -134,27 +134,38 @@ impl Substitution {
     }
 
     pub fn apply(&self, ty: &Type) -> Type {
-        self.apply_inner(ty, 0)
+        let mut visited = HashSet::new();
+        self.apply_inner(ty, 0, &mut visited)
     }
 
-    fn apply_inner(&self, ty: &Type, depth: usize) -> Type {
+    fn apply_inner(&self, ty: &Type, depth: usize, visited: &mut HashSet<String>) -> Type {
         if depth >= MAX_APPLY_DEPTH {
             return ty.clone();
         }
         match ty {
-            Type::TypeVar(name) => match self.map.get(name) {
-                Some(bound) => self.apply_inner(bound, depth + 1),
-                None => ty.clone(),
-            },
+            Type::TypeVar(name) => {
+                if visited.contains(name) {
+                    return ty.clone();
+                }
+                match self.map.get(name) {
+                    Some(bound) => {
+                        visited.insert(name.clone());
+                        let result = self.apply_inner(bound, depth + 1, visited);
+                        visited.remove(name);
+                        result
+                    }
+                    None => ty.clone(),
+                }
+            }
             Type::Record(fields, rest) => {
                 let new_fields: IndexMap<String, Type> = fields
                     .iter()
-                    .map(|(k, v)| (k.clone(), self.apply_inner(v, depth + 1)))
+                    .map(|(k, v)| (k.clone(), self.apply_inner(v, depth + 1, visited)))
                     .collect();
                 match rest {
                     RowRest::RowVar(name) => match self.map.get(name) {
                         Some(bound) => {
-                            let resolved = self.apply_inner(bound, depth + 1);
+                            let resolved = self.apply_inner(bound, depth + 1, visited);
                             match resolved {
                                 Type::Record(extra_fields, resolved_rest) => {
                                     let mut merged = new_fields;
@@ -172,12 +183,12 @@ impl Substitution {
                     _ => Type::Record(new_fields, rest.clone()),
                 }
             }
-            Type::Function { params, ret } => Type::Function {
+            Type::Function { params, ret} => Type::Function {
                 params: params
                     .iter()
-                    .map(|p| self.apply_inner(p, depth + 1))
+                    .map(|p| self.apply_inner(p, depth + 1, visited))
                     .collect(),
-                ret: Box::new(self.apply_inner(ret, depth + 1)),
+                ret: Box::new(self.apply_inner(ret, depth + 1, visited)),
             },
             _ => ty.clone(),
         }
@@ -1049,6 +1060,29 @@ mod tests {
         assert_eq!(
             subst.apply(&Type::TypeVar("b".into())),
             Type::TypeVar("b".into())
+        );
+    }
+
+    #[test]
+    fn test_substitution_apply_self_reference_cycle() {
+        let mut subst = Substitution::new();
+        subst.map.insert("a".into(), Type::TypeVar("a".into()));
+        assert_eq!(
+            subst.apply(&Type::TypeVar("a".into())),
+            Type::TypeVar("a".into())
+        );
+    }
+
+    #[test]
+    fn test_substitution_apply_indirect_cycle() {
+        let mut subst = Substitution::new();
+        subst.map.insert("a".into(), Type::TypeVar("b".into()));
+        subst.map.insert("b".into(), Type::TypeVar("a".into()));
+        // When we apply starting from "a", we get "a" back because:
+        // a -> b (with a visited) -> a (already visited, return TypeVar("a"))
+        assert_eq!(
+            subst.apply(&Type::TypeVar("a".into())),
+            Type::TypeVar("a".into())
         );
     }
 

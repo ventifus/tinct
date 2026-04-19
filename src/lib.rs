@@ -41,6 +41,10 @@ pub use parser::{parse, parse_expression, ParseError};
 pub use eval::{deep_materialize, eval_file, eval_file_with_input, materialize, MAX_EVAL_DEPTH};
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, and include context.
+///
+/// **Note:** If your LLT code uses `$include`, you must call [`set_include_context`] before
+/// evaluation and [`clear_include_context`] after evaluation to provide the base directory
+/// for resolving relative file paths.
 pub use builtins::{
     clear_include_context, create_stdlib_env, json_to_value, set_include_context, IncludeContext,
     MAX_FILE_SIZE,
@@ -65,6 +69,9 @@ pub use value::{Environment, Key, Thunk, Value};
 /// The output format recursively materializes all values (including dict entries)
 /// into a readable representation. Primarily used for testing and corpus validation.
 /// For JSON output, use [`value_to_json`] after evaluation instead.
+///
+/// **Note:** If your LLT code uses `$include`, you must call [`set_include_context`] before
+/// calling this function and [`clear_include_context`] after it returns.
 pub fn eval_source(input: &str) -> Result<String, String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
     // Type errors are advisory; evaluation proceeds regardless.
@@ -161,6 +168,9 @@ pub fn value_to_json(
 /// structure, not just keys. The value should already be deep-materialized
 /// via [`eval::deep_materialize`]; this function still calls `materialize`
 /// on each thunk for safety but does not perform recursive deep-forcing.
+///
+/// Unlike [`value_to_json`], this function accepts `Float` values that are
+/// NaN or Infinity (they render as `Float(NaN)`, `Float(inf)`, etc.).
 ///
 /// `depth` tracks recursion depth to prevent stack overflow from deeply nested
 /// dict-of-dicts structures. Uses the same limit as `eval::MAX_EVAL_DEPTH`.
@@ -479,7 +489,8 @@ mod tests {
         let env = builtins::create_stdlib_env().expect("stdlib failed");
 
         let initial_input = stdin_json.map(|json| {
-            let val = builtins::json_to_value(&json, 0).expect("json_to_value failed");
+            let val = builtins::json_to_value(&json, 0, ast::Span::origin())
+                .expect("json_to_value failed");
             Rc::new(Thunk::new_materialized(val, ast::Span::origin()))
         });
 

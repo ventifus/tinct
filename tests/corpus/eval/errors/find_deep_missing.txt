@@ -1,0 +1,3 @@
+[call $find-deep [a: 1 b: [c: 2]] "missing"]
+===
+key not found: missing

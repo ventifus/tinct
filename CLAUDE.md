@@ -86,6 +86,10 @@ tests/corpus/
 
 Add a test: create a `.txt` file in the appropriate directory, then `just test-corpus`.
 
+## Temporary Files
+
+All temporary files MUST go in `.tmp/` within the project directory (already gitignored). Never use `/tmp` or any system-level temp directory. Create `.tmp/` if it doesn't exist. This applies to all agents, scripts, and ad-hoc work.
+
 ## Building and Running
 
 All commands use containers (podman) — no local Rust installation required.

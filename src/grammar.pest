@@ -66,7 +66,8 @@ type_form = {
 
 // === Keywords ===
 // Atomic rules that match the keyword text,
-// reject if followed by identifier chars or by whitespace+colon.
+// reject if followed by identifier chars (!ident_char prevents "callable" matching "call")
+// or by whitespace+colon (!colon_ahead prevents "call:" from matching as a keyword — it's a dict key).
 
 keyword_call    = @{ "call"    ~ !ident_char ~ !colon_ahead }
 keyword_fn      = @{ "fn"      ~ !ident_char ~ !colon_ahead }
@@ -105,6 +106,7 @@ param_annotation = ${ "@" ~ annotation_value }
 
 variadic_param = !{ "..." ~ param_name }
 
+// Non-atomic (!{}) breaks compound-atomic inheritance, enabling whitespace inside [type: Number default: 30]
 annotation_value = !{ bracket_expr | annotation_word }
 
 // A bare word in annotation context (e.g., Number, String, a, b)
@@ -114,7 +116,7 @@ annotation_word = @{
 
 // === Dict entries ===
 
-dict_entries = { (entry ~ semicolon?)* }
+dict_entries = { (entry ~ ";"?)* }
 
 entry = { keyed_entry | rest_entry | auto_entry }
 
@@ -127,8 +129,6 @@ auto_entry = { value }
 key = { bracket_expr | var_ref | quoted_string | bare_token }
 
 bare_token = { float_lit | int_lit | bool_lit | bare_word }
-
-semicolon = _{ ";" }
 
 // === Access chains ===
 // Compound-atomic: no implicit whitespace between var_ref and the chain.

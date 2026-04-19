@@ -171,6 +171,8 @@ bare_word_char = _{
 
 Examples: `hello`, `some.file.txt`, `path/to/file`, `my-key`, `config..bak`
 
+**Note:** The tree-sitter grammar excludes `.` from `bare_word_char` to simplify access chain parsing. This is a divergence from the pest grammar, which allows `.` in bare words (requiring compound-atomic rules to disambiguate `$a.b` from `$a .b`). The tree-sitter grammar uses `token.immediate()` for access chains instead.
+
 ### 2.4 Token Precedence
 
 When classifying a bare token, the tokenizer applies rules in this order:
@@ -316,7 +318,7 @@ range_expr = { range_value? ~ ".." ~ range_value? }
 range_value = { float_lit | int_lit | var_ref }
 ```
 
-Range values are restricted to numeric literals and variable references — bracket expressions are not allowed inside range bounds.
+Range values are limited to numeric literals and variable references.
 
 Because `access_expr` is compound-atomic (`$`), `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word.
 
@@ -410,9 +412,9 @@ annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
 ```pest
 type_assert_body = { "@" ~ annotation_value ~ value }
 ```
-`[@Number $expr]` asserts `$expr` has type `Number`.
+`[@Number $expr]` asserts `$expr` has type `Number`. When a `default:` is provided (e.g., `[@[type: Number  default: 0] $expr]`), the default value is evaluated in the same environment as the asserted expression.
 
-### 3.8 Type Expressions (Deferred)
+### 3.8 Type Expressions
 
 Type expressions appear in type annotations and `[type ...]` declarations. They use the same `[]` syntax as data but are distinguished by context (after `@`, inside `type` form).
 
@@ -424,6 +426,8 @@ Type expressions appear in type annotations and `[type ...]` declarations. They 
 ```
 
 The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annotated { name: "Fn", annotation: Simple("b") }`. The type checker interprets `Fn` as a function type constructor. All types in a type definition must be explicit -- there is no body to infer from.
+
+**Note:** `Fn@Number` in a bare context (not inside `[]`) is also valid and parsed via the `annotated_bare` grammar rule, producing the same AST structure.
 
 **Row polymorphism** is supported via `rest_entry` syntax in type expressions. `...` marks an open record type (any additional fields are permitted), and `...name` introduces a named row variable for polymorphic record operations:
 
@@ -622,7 +626,7 @@ Duplicate keys within a single `[]` literal are parse errors:
 
 Duplicate detection applies to explicit keys only. Auto-indexed entries cannot duplicate because the counter always increments.
 
-**Note:** The parser detects duplicates among literal keys and VarRef keys at parse time. VarRef keys are compared by variable name -- `[$k: a  $k: b]` is a parse error because `$k` appears twice as a key, regardless of what value `$k` might resolve to at runtime. The evaluator performs a second duplicate check at evaluation time to catch computed keys (e.g., `[$k1: a  $k2: b]` where `$k1` and `$k2` resolve to the same value). Both checks produce errors with source locations.
+**Note:** The parser detects duplicates among literal keys and VarRef keys at parse time. VarRef keys are compared by variable name -- `[$k: a  $k: b]` is a parse error because `$k` appears twice as a key, regardless of what value `$k` might resolve to at runtime. Bracket expression keys (`[[expr]: value]`) bypass the parse-time duplicate check; the evaluator performs runtime duplicate detection to catch computed keys (e.g., `[$k1: a  $k2: b]` where `$k1` and `$k2` resolve to the same value, or `[[call $f]: a  [call $g]: b]` where both calls produce the same key). Both checks produce errors with source locations.
 
 ### 5.4 `fn` Parameter List Structure
 
@@ -639,7 +643,7 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 
 ### 5.5 Bracket Nesting Depth Limit
 
-Bracket nesting is limited to 256 levels (`MAX_PARSE_DEPTH`). Inputs exceeding this depth produce a parse error. This limit is enforced during AST construction, not during pest's parse phase -- pest recurses on Rust's call stack, so deeply nested inputs (~500+ levels) may overflow the call stack before this check fires. See Phase 6 (hand-written parser) for a planned resolution.
+Pest recurses on Rust's call stack for nested bracket expressions, so deeply nested inputs (~500+ levels) may overflow the default 8MB stack before reaching any application-level check. `MAX_PARSE_DEPTH` (256) is the policy limit enforced during AST construction to fail fast with a clear parse error. Inputs exceeding this policy limit produce a parse error. See Phase 7 (hand-written parser) for a planned resolution.
 
 ### 5.6 Annotation Bracket Restriction
 
@@ -700,9 +704,9 @@ The parser examines the first token of every `[]` to detect special forms:
 
 | First token | Followed by | AST node |
 |------------|-------------|----------|
-| `call` | not `:` | `Call` |
-| `fn` | not `:` | `Fn` |
-| `type` | not `:` | `TypeAlias` |
+| `call` | not followed by (optional whitespace then) `:` | `Call` |
+| `fn` | not followed by (optional whitespace then) `:` | `Fn` |
+| `type` | not followed by (optional whitespace then) `:` | `TypeAlias` |
 | `@` | (at bracket start) | `TypeAssert` |
 | anything else | — | `Dict` |
 
@@ -1004,7 +1008,7 @@ Fn {
     $sort]
 ```
 
-Note: `$_` desugaring is an evaluator concern, not a parser concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. The evaluator wraps `[...]` expressions containing `$_` in implicit lambdas.
+Note: `$_` desugaring is an evaluator concern, not a parser concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. The evaluator wraps `[...]` expressions containing `$_` in implicit lambdas. See DESIGN.md for the `$_` lambda scope rule (nested bracket boundary).
 
 **AST:**
 ```

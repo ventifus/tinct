@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lazy_lisp_transformer::{
     clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
     json_to_value, materialize, parse, set_include_context, value_to_display_string, value_to_json,
-    IncludeContext, Thunk, Value, MAX_FILE_SIZE,
+    IncludeContext, Span, Thunk, Value, MAX_FILE_SIZE,
 };
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -228,6 +228,6 @@ fn read_stdin_json() -> Result<Option<Value>, String> {
     let json: serde_json::Value =
         serde_json::from_str(&buf).map_err(|e| format!("error parsing stdin JSON: {e}"))?;
 
-    let val = json_to_value(&json, 0).map_err(|e| format!("{e}"))?;
+    let val = json_to_value(&json, 0, Span::origin()).map_err(|e| format!("{e}"))?;
     Ok(Some(val))
 }

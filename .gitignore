@@ -1,3 +1,5 @@
+# Agent artifacts
+.tmp/
 # Rust build artifacts
 /target
 /lazy_lisp_transformer/target

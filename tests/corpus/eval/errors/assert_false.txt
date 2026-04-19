@@ -1,0 +1,3 @@
+[call $assert false "test failure"]
+===
+test failure

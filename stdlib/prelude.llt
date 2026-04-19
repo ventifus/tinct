@@ -138,8 +138,8 @@ get: [fn [xs k] $xs[$k]]
 has?: [fn [xs k]
     [call $has?-impl [call $try [fn [] $xs[$k]]]]]
 
-has?-impl: [fn [result]
-    [call $= [call $first [call $keys $result]] ok]]
+has?-impl: [fn [try-result]
+    [call $= [call $first [call $keys $try-result]] ok]]
 
 # Get value by key with a default if key is missing.
 get-or: [fn [xs k default]
@@ -465,27 +465,30 @@ compose: [fn [f g] [fn [x] [call $f [call $g $x]]]]
 try-or: [fn [f default]
     [call $try-or-impl [call $try $f] $default]]
 
-try-or-impl: [fn [result default]
-    [call $if [call $= [call $first [call $keys $result]] ok]
-        $result.ok
+try-or-impl: [fn [try-result default]
+    [call $if [call $= [call $first [call $keys $try-result]] ok]
+        $try-result.ok
         $default]]
 
 # ============================================================================
 # Sequences
 # ============================================================================
 
+# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs. Phase 5d moves to Rust builtins.
 # Generate a range of integers from start (inclusive) to end (exclusive).
 range: [fn [start end]
     [call $if [call $>= $start $end]
         []
         [call $cons $start [call $range [call $+ $start 1] $end]]]]
 
+# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs. Phase 5d moves to Rust builtins.
 # Create a list of n copies of a value.
 repeat: [fn [n val]
     [call $if [call $<= $n 0]
         []
         [call $cons $val [call $repeat [call $- $n 1] $val]]]]
 
+# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs. Phase 5d moves to Rust builtins.
 # Repeat a list n times.
 cycle: [fn [n xs]
     [call $if [call $<= $n 0]

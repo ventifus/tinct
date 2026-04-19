@@ -1,0 +1,3 @@
+x@[call $f $x]
+===
+annotation bracket expression must contain key-value entries

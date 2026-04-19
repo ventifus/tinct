@@ -173,6 +173,7 @@ fn build_value(
     lines: &LineTable,
     depth: usize,
 ) -> Result<Spanned<Expr>, ParseError> {
+    debug_assert!(depth <= MAX_PARSE_DEPTH);
     if depth >= MAX_PARSE_DEPTH {
         return Err(ParseError {
             message: format!("maximum nesting depth exceeded ({MAX_PARSE_DEPTH})"),

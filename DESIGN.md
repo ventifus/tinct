@@ -422,7 +422,7 @@ safe: [call $try-or [fn [] [call $/ 1 0]] 0]   # → 0
 
 **Why:** Simple default path — most code lets errors propagate. Lazy eval means unmaterialized errors never happen ("pay for what you use"). `$try` available when explicit handling is needed.
 
-**Implementation note:** Thunks must record definition-site source location. When materialized, record materialization-site too. Error messages include both locations and a reconstructed call stack showing the chain of materializations.
+**Implementation note:** Thunks must record definition-site source location. When materialized, the materialization-site span is passed as a parameter to `materialize()`, not stored in the thunk. Error messages include both locations and a reconstructed call stack showing the chain of materializations. The evaluator depth limit (256) counts nesting depth of evaluation calls, not total operations — deeply nested function calls hit the limit, but a linear chain of thunks does not.
 
 ### No `defn` — Functions Are Dict Entries
 
@@ -660,6 +660,8 @@ Everything else can be a regular function in the stdlib:
 - `[]` is familiar from JSON, Python, JavaScript
 - True unification: there's one data structure, so there's one syntax
 
+**Parser complexity trade-off:** Single brackets with overloaded semantics require careful disambiguation: keyword recognition (`call`/`fn`/`type` vs dict entries), access chain whitespace sensitivity (`$a.b` vs `$a .b`), and special-form parsing. This complexity is concentrated in the parser — the evaluator and user-facing syntax remain simple.
+
 ### Numeric Types — `Int`, `Float`, `Number`
 
 **Two concrete types: `Int(i64)` and `Float(f64)`.** `Number` is the supertype that accepts either. Integer literals carry their value: `42` has type `IntLiteral(42)`, which is a subtype of `Int`. Float literals do not have a literal type variant because floats cannot be dict keys.
@@ -726,6 +728,8 @@ Rules for how the tokenizer/parser handles `$`, `.`, `[`, `..`, and `@`. These c
 **Excluded from identifiers:** whitespace, `[`, `]`, `:`, `;`, `#`, `"`, `@`, `.`
 
 Everything else is a valid identifier character, including `$` itself, digits, unicode, and operator symbols. This means `$$` is VarRef("$") (the inter-document pipeline variable), `$$foo` is VarRef("$foo"), and `$0` is VarRef("0").
+
+**Denylist rationale:** The denylist approach (allow-by-default, exclude structural delimiters) provides extensibility for new operators without reserved keywords, and enables full Unicode identifier support (emoji, non-Latin scripts) without explicit allow-lists.
 
 The token ends at the first excluded character. `.` and `[` are **not** part of the variable name — they are separate access operators that the parser chains onto the reference.
 
@@ -1229,7 +1233,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 
 | Function | Materialization behavior |
 |----------|------------------------|
-| `if` | Materializes condition; returns one branch as thunk (other never materialized) |
+| `if` | **Current:** Materializes condition and the chosen branch. **Phase 5b:** Will return the chosen branch as a thunk (other never materialized). |
 | `cond` | Materializes conditions in order; returns first matching branch as thunk |
 | `when`, `unless` | Materializes condition; returns body or `[]` |
 | `and` | Materializes first; if false, returns false without materializing second |
@@ -1252,7 +1256,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `get`, `get-or`, `has?` | Structural — key lookup, returns thunk |
 | `get-in` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. |
 | `set`, `remove` | Structural — add/remove entries |
-| `merge` | Structural — right-biased key merge, values stay thunks |
+| `merge` | **Current:** Eagerly clones both input dicts. **Phase 5b:** Will use lazy overlay (right dict's keys shadow left dict's keys, no deep copy until access). |
 | `keys` | Structural — keys are always evaluated, not thunks |
 | `values`, `entries` | Structural — returns thunks |
 | `update` | Lazy-transforming — produces thunk `[call $f $old-value]` |
@@ -1393,7 +1397,7 @@ Rust builtins ($+, $-, $<, $=, $if, $keys, $merge, $str, $floor, ...)
         └── User code
 ```
 
-### Stdlib Function Reference
+### Stdlib Function Reference (62 functions)
 
 All functions below are implemented in LLT itself in `stdlib/prelude.llt`. They are loaded at startup via `create_stdlib_env()` and available to all user code. Private implementation details (functions suffixed with `-impl`) are omitted.
 
@@ -1638,6 +1642,8 @@ PendingCall(function: Rc<Thunk>, args: Vec<Rc<Thunk>>)
 ```
 
 `PendingCall` represents "apply this function to these arguments when forced." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result, just like `PendingBuiltin` does for builtin calls.
+
+**`PendingBuiltin` preserves laziness:** When the evaluator encounters `[call $builtin ...]`, it does not immediately execute the builtin. Instead, it wraps the builtin name and unevaluated argument thunks in a `PendingBuiltin` state. The builtin executes only when the result is materialized (accessed). This deferred execution is critical for preserving lazy semantics — builtins like `$if` can selectively materialize arguments, and operations like `$map` can return lazy structures without forcing computation.
 
 This completes the laziness picture:
 

@@ -25,6 +25,9 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::error::EvalError;
+// Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
+// eval.rs calls builtins via function pointers stored in `Value::Builtin`.
+// This bidirectional dependency is safe because neither module's initialization depends on the other.
 use crate::eval::{invoke_function, materialize, CallContext, MAX_EVAL_DEPTH};
 use crate::value::{BuiltinFn, Environment, Key, Thunk, Value};
 
@@ -884,11 +887,15 @@ fn builtin_type_of(
 /// JSON null maps to an empty dict, arrays map to integer-keyed dicts,
 /// and objects map to string-keyed dicts. Numbers are converted to `Int`
 /// when they fit in i64, otherwise `Float`.
-pub fn json_to_value(json: &serde_json::Value, depth: usize) -> Result<Value, Box<EvalError>> {
+pub fn json_to_value(
+    json: &serde_json::Value,
+    depth: usize,
+    span: Span,
+) -> Result<Value, Box<EvalError>> {
     if depth >= MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum JSON nesting depth exceeded ({MAX_EVAL_DEPTH})"),
-            Span::origin(),
+            span,
         )
         .into());
     }
@@ -903,17 +910,14 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize) -> Result<Value, Bo
             } else {
                 // Unreachable with default serde_json: as_f64() covers all
                 // non-i64 numbers. Return error instead of panicking.
-                Err(
-                    EvalError::new("JSON number outside representable range", Span::origin())
-                        .into(),
-                )
+                Err(EvalError::new("JSON number outside representable range", span).into())
             }
         }
         serde_json::Value::String(s) => Ok(Value::String(s.clone())),
         serde_json::Value::Array(arr) => {
             let mut map = IndexMap::new();
             for (i, item) in arr.iter().enumerate() {
-                let val = json_to_value(item, depth + 1)?;
+                let val = json_to_value(item, depth + 1, span)?;
                 map.insert(
                     Key::Int(i64::try_from(i).expect("collection too large")),
                     Rc::new(Thunk::new_materialized(val, Span::origin())),
@@ -924,7 +928,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize) -> Result<Value, Bo
         serde_json::Value::Object(obj) => {
             let mut map = IndexMap::new();
             for (k, v) in obj {
-                let val = json_to_value(v, depth + 1)?;
+                let val = json_to_value(v, depth + 1, span)?;
                 map.insert(
                     Key::String(k.clone()),
                     Rc::new(Thunk::new_materialized(val, Span::origin())),
@@ -946,7 +950,7 @@ fn builtin_from_json(
     let json_str = require_string("from-json", val, call_span)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| EvalError::new(format!("from-json: invalid JSON: {e}"), call_span))?;
-    json_to_value(&parsed, depth)
+    json_to_value(&parsed, depth, call_span)
 }
 
 /// `include`: takes 1 arg (String file path), evaluates the file, returns its result.
@@ -2811,7 +2815,7 @@ mod tests {
             val
         }
         let deep = build_deep(MAX_EVAL_DEPTH + 1);
-        let err = json_to_value(&deep, 0).unwrap_err();
+        let err = json_to_value(&deep, 0, call_span()).unwrap_err();
         assert!(
             err.message.contains("maximum JSON nesting depth exceeded"),
             "expected depth error, got: {}",

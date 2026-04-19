@@ -8,6 +8,9 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::error::EvalError;
+// Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
+// builtins.rs imports `invoke_function` and `materialize` from this module.
+// This bidirectional dependency is safe because neither module's initialization depends on the other.
 use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 
 /// Maximum evaluation depth (256). Limits nesting of eval/materialize calls to prevent stack overflow.
@@ -257,6 +260,9 @@ pub fn eval_document(
 ///   (lazy -- no materialization at the `---` boundary).
 /// - The last document's result is the file's output.
 /// - An empty file (zero documents) returns an empty dict.
+///
+/// **Note:** If your LLT code uses `$include`, you must call [`crate::set_include_context`]
+/// before calling this function and [`crate::clear_include_context`] after it returns.
 pub fn eval_file(
     file: &File,
     env: Rc<RefCell<Environment>>,
@@ -270,6 +276,9 @@ pub fn eval_file(
 /// When `initial_input` is `Some(thunk)`, that thunk becomes `$$` for the first
 /// document instead of the default empty dict. This supports the CLI's stdin
 /// JSON injection: `cat data.json | llt eval file.llt`.
+///
+/// **Note:** If your LLT code uses `$include`, you must call [`crate::set_include_context`]
+/// before calling this function and [`crate::clear_include_context`] after it returns.
 pub fn eval_file_with_input(
     file: &File,
     env: Rc<RefCell<Environment>>,
@@ -801,19 +810,27 @@ pub fn materialize(
     depth: usize,
 ) -> Result<Value, Box<EvalError>> {
     if depth >= MAX_EVAL_DEPTH {
-        return Err(EvalError::new(
+        let mut err = EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
             thunk.span,
-        )
-        .into());
+        );
+        if let Some(span) = mat_span {
+            err = err.with_materialization_span(*span);
+        }
+        return Err(err.into());
     }
+
+    // Read origin before checking state (InProgress may not preserve it)
+    let origin = thunk.origin.clone();
+    let thunk_span = thunk.span;
 
     {
         let state = thunk.state();
         match &*state {
             ThunkState::Materialized(v) => return Ok(v.clone()),
             ThunkState::InProgress => {
-                let mut err = EvalError::circular_dependency("thunk", thunk.span);
+                let label = origin.as_deref().unwrap_or("thunk");
+                let mut err = EvalError::circular_dependency(label, thunk.span);
                 if let Some(span) = mat_span {
                     err = err.with_materialization_span(*span);
                 }
@@ -822,9 +839,6 @@ pub fn materialize(
             ThunkState::Unevaluated { .. } | ThunkState::PendingBuiltin { .. } => {}
         }
     }
-
-    let origin = thunk.origin.clone();
-    let thunk_span = thunk.span;
 
     let decorate_err = |mut e: Box<EvalError>| -> Box<EvalError> {
         if let Some(span) = mat_span {
