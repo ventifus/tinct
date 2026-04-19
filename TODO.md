@@ -366,15 +366,15 @@ Uses `lsp-server` (sync), not `tower-lsp` (async), because `Rc<RefCell<Environme
 
 ### Phase 6c: tree-sitter grammar
 
-- [ ] Scaffold `tree-sitter-llt/` (package.json, grammar.js skeleton)
-- [ ] Implement grammar rules (port from grammar.pest / SPEC.md)
+- [x] Scaffold `tree-sitter-llt/` (package.json, grammar.js skeleton, tree-sitter.json)
+- [x] Implement grammar rules (port from grammar.pest / SPEC.md)
   - `token.immediate()` for whitespace-sensitive `.` and `[` access
-  - Special form keywords as keyword nodes
-  - Comments as `comment` node type (tree-sitter preserves them)
-  - `---` document separator as distinct node type
-- [ ] Test corpus (port from `tests/corpus/valid/`)
-- [ ] Highlight queries (`queries/highlights.scm`)
-- [ ] Just recipes: `just ts-generate`, `just ts-test`
+  - Special form keywords via tree-sitter `word` rule keyword extraction
+  - Comments as `comment` node type in extras
+  - `---` document separator via external scanner (C, negative lookahead)
+- [x] Test corpus (49 tests: literals, dicts, special forms, access, documents, annotations, comments)
+- [x] Highlight queries (`queries/highlights.scm`)
+- [x] Just recipes: `just ts-generate`, `just ts-test`, `just ts-parse FILE`
 
 
 ## Phase 7: Hand-Written Parser (E2)
@@ -393,6 +393,7 @@ Tokenizer producing a flat token stream. Whitespace-sensitivity for access chain
 - [ ] Comment skipping (`#` to EOL)
 - [ ] String escapes (`\"`, `\\`, `\n`, `\t`, `\r`)
 - [ ] Bare word denylist matching grammar.pest rules
+- [ ] CRLF line ending support: track line boundaries correctly for `\r\n` (pest and LSP convert.rs both assume `\n` only)
 
 ### Phase 7b: Iterative parser (`src/parser2.rs`)
 

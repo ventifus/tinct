@@ -1,0 +1,102 @@
+===========
+Type assert
+===========
+
+[@Number 42]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (type_assert
+          annotation: (annotation_word)
+          expr: (int_lit))))))
+
+===================
+Annotated bare word
+===================
+
+x@Number
+
+---
+
+(file
+  (document
+    (expression
+      (annotated_bare
+        name: (bare_word)
+        annotation: (annotation_word)))))
+
+================
+Param annotation
+================
+
+[fn [x@Number] $x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (fn_form
+          (keyword_fn)
+          (param_list
+            (param
+              (param_name)
+              (param_annotation
+                (annotation_word))))
+          body: (var_ref))))))
+
+===============================
+Type assert with dict annotation
+===============================
+
+[@[type: Number default: 0] $x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (type_assert
+          annotation: (bracket_expr
+            (dict
+              (keyed_entry
+                key: (bare_word)
+                value: (bare_word))
+              (keyed_entry
+                key: (bare_word)
+                value: (int_lit))))
+          expr: (var_ref))))))
+
+=============================
+Param with dict annotation
+=============================
+
+[fn [x@[type: Number default: 0]] $x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (fn_form
+          (keyword_fn)
+          (param_list
+            (param
+              (param_name)
+              (param_annotation
+                (bracket_expr
+                  (dict
+                    (keyed_entry
+                      key: (bare_word)
+                      value: (bare_word))
+                    (keyed_entry
+                      key: (bare_word)
+                      value: (int_lit)))))))
+          body: (var_ref))))))

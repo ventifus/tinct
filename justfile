@@ -119,6 +119,22 @@ repl:
 lsp:
     {{container}} run -i {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- lsp
 
+# Tree-sitter grammar
+node_image := "node:22"
+ts_run_flags := "--rm -v .:/workspace:z -w /workspace/tree-sitter-llt"
+
+# Generate tree-sitter parser from grammar.js
+ts-generate:
+    {{container}} run {{ts_run_flags}} -v {{project_name}}-ts-node:/workspace/tree-sitter-llt/node_modules {{node_image}} sh -c "npm install --no-save tree-sitter-cli && npx tree-sitter generate"
+
+# Run tree-sitter tests
+ts-test:
+    {{container}} run {{ts_run_flags}} -v {{project_name}}-ts-node:/workspace/tree-sitter-llt/node_modules {{node_image}} sh -c "npm install --no-save tree-sitter-cli && npx tree-sitter test"
+
+# Parse a file with tree-sitter
+ts-parse FILE:
+    {{container}} run {{ts_run_flags}} -v {{project_name}}-ts-node:/workspace/tree-sitter-llt/node_modules {{node_image}} sh -c "npm install --no-save tree-sitter-cli && npx tree-sitter parse /workspace/{{FILE}}"
+
 # Interactive shell in container (for debugging)
 shell:
     {{container}} run -it {{run_flags}} {{rust_image}} /bin/bash

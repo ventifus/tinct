@@ -1,0 +1,155 @@
+==========
+Dot access
+==========
+
+$x.field
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (var_ref)
+        (dot_access
+          (access_field))))))
+
+==============
+Bracket access
+==============
+
+$x[0]
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (var_ref)
+        (bracket_access
+          (int_lit))))))
+
+==================
+Chained dot access
+==================
+
+$x.a.b
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (var_ref)
+        (dot_access
+          (access_field))
+        (dot_access
+          (access_field))))))
+
+============
+Range access
+============
+
+$x[1..3]
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (var_ref)
+        (bracket_access
+          (range_expr
+            start: (int_lit)
+            end: (int_lit)))))))
+
+==============================
+Mixed chain: dot and bracket
+==============================
+
+$x.a[0].b
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (var_ref)
+        (dot_access
+          (access_field))
+        (bracket_access
+          (int_lit))
+        (dot_access
+          (access_field))))))
+
+========================
+Space prevents dot access
+========================
+
+[$a b]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (auto_entry
+            (var_ref))
+          (auto_entry
+            (bare_word)))))))
+
+============================
+Open-ended range: unbounded
+============================
+
+$a[..]
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (var_ref)
+        (bracket_access
+          (range_expr))))))
+
+=============================
+Open-ended range: start only
+=============================
+
+$a[1..]
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (var_ref)
+        (bracket_access
+          (range_expr
+            start: (int_lit)))))))
+
+===========================
+Open-ended range: end only
+===========================
+
+$a[..3]
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (var_ref)
+        (bracket_access
+          (range_expr
+            end: (int_lit)))))))

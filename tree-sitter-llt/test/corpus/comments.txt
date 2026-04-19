@@ -1,0 +1,53 @@
+================================
+Line comment before expression
+================================
+
+# this is a comment
+42
+
+---
+
+(file
+  (comment)
+  (document
+    (expression
+      (int_lit))))
+
+=========================
+Comment after expression
+=========================
+
+42 # inline comment
+
+---
+
+(file
+  (document
+    (expression
+      (int_lit)))
+  (comment))
+
+==================================
+Comments between dict entries
+==================================
+
+[
+  x: 1
+  # comment between entries
+  y: 2
+]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit))
+          (comment)
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit)))))))

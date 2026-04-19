@@ -1,0 +1,120 @@
+=========
+Call form
+=========
+
+[call $+ 1 2]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (call_form
+          (keyword_call)
+          func: (var_ref)
+          (call_args
+            (int_lit)
+            (int_lit)))))))
+
+=======
+Fn form
+=======
+
+[fn [x] $x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (fn_form
+          (keyword_fn)
+          (param_list
+            (param
+              (param_name)))
+          body: (var_ref))))))
+
+====================================
+Fn form with return type annotation
+====================================
+
+[fn@Number [x] $x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (fn_form
+          (keyword_fn)
+          (fn_annotation
+            (annotation_word))
+          (param_list
+            (param
+              (param_name)))
+          body: (var_ref))))))
+
+=========
+Type form
+=========
+
+[type $x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (type_form
+          (keyword_type)
+          expr: (var_ref))))))
+
+====================
+Call with named args
+====================
+
+[call $func x: 1 y: 2]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (call_form
+          (keyword_call)
+          func: (var_ref)
+          (call_args
+            (named_arg
+              name: (named_arg_key
+                (bare_word))
+              value: (int_lit))
+            (named_arg
+              name: (named_arg_key
+                (bare_word))
+              value: (int_lit))))))))
+
+=====================
+Fn with variadic param
+=====================
+
+[fn [x ...rest] $x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (fn_form
+          (keyword_fn)
+          (param_list
+            (param
+              (param_name))
+            (variadic_param
+              (param_name)))
+          body: (var_ref))))))

@@ -6,7 +6,7 @@ A **unified data representation and transformation language** combining JSON-lik
 
 **Vision:** One language for both data representation (like JSON/YAML) and data transformation (like JSONnet/jq), with lazy evaluation and strong composition principles.
 
-**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator) complete. Phase 2a (core types & inference) complete. Phase 2b (polymorphism) complete. Phase 3a (Rust-native builtins) + 3a-llt (stdlib loading) complete. Phase 3b (CLI + JSON output) complete. Phase 3c ($include) complete. Phase 3d (error reporting polish) complete. Phase 4 (stdlib validation) complete. Phase 6a (REPL) complete. Phase 6b (LSP) complete. Hand-written parser (E2) deferred to Phase 7.
+**Current State:** Phase 0 (parser) complete. Phase 1a-1e (evaluator) complete. Phase 2a (core types & inference) complete. Phase 2b (polymorphism) complete. Phase 3a (Rust-native builtins) + 3a-llt (stdlib loading) complete. Phase 3b (CLI + JSON output) complete. Phase 3c ($include) complete. Phase 3d (error reporting polish) complete. Phase 4 (stdlib validation) complete. Phase 6a (REPL) complete. Phase 6b (LSP) complete. Phase 6c (tree-sitter) complete. Hand-written parser (E2) deferred to Phase 7.
 
 ## Key Documents
 
@@ -42,6 +42,9 @@ The parser is built on [pest](https://pest.rs/) (PEG-based grammar in a separate
 | `src/lsp/convert.rs` | Coordinate conversion: LLT spans (1-indexed, byte offsets) to LSP ranges (0-indexed, UTF-16), and back |
 | `src/main.rs` | CLI (`llt` binary): `llt eval [OPTIONS] <FILE>` — evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing, `$include` context setup; `llt repl` — interactive REPL; `llt lsp` — LSP server on stdio |
 | `stdlib/prelude.llt` | LLT standard library: all stdlib functions implementable in LLT itself |
+| `tree-sitter-llt/grammar.js` | Tree-sitter grammar for LLT: external scanner for `doc_separator`, `token.immediate()` for access chains, keyword extraction via `word` rule |
+| `tree-sitter-llt/src/scanner.c` | External scanner: `doc_separator` with negative lookahead (--- not followed by bare_word_char) |
+| `tree-sitter-llt/queries/highlights.scm` | Syntax highlighting queries mapping LLT nodes to standard highlight groups |
 | `test_input.txt` | Example input demonstrating syntax |
 
 ### Dependencies
@@ -101,9 +104,12 @@ just check          # Fast compile check
 just fmt            # Format code
 just shell          # Interactive container shell
 just clean          # Clean build artifacts
+just ts-generate    # Generate tree-sitter parser from grammar.js
+just ts-test        # Run tree-sitter tests (49 corpus tests)
+just ts-parse FILE  # Parse a file with tree-sitter
 ```
 
-Container: Rust 1.85, named volumes for `target/` and cargo cache, host UID/GID.
+Container: Rust 1.85, named volumes for `target/` and cargo cache, host UID/GID. Tree-sitter commands use `node:22` container.
 
 ## Parser Design Notes
 

@@ -1,0 +1,185 @@
+==========
+Empty dict
+==========
+
+[]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (empty_bracket)))))
+
+====================
+Single key-value pair
+====================
+
+[x: 42]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit)))))))
+
+============
+Nested dicts
+============
+
+[a: [b: 1]]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (bracket_expr
+              (dict
+                (keyed_entry
+                  key: (bare_word)
+                  value: (int_lit))))))))))
+
+==========
+Auto entry
+==========
+
+[42]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (auto_entry
+            (int_lit)))))))
+
+==========
+Rest entry
+==========
+
+[x: 1 ...rest]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit))
+          (rest_entry
+            (annotation_word)))))))
+
+==============================
+Keywords as auto_entry values
+==============================
+
+[call]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (auto_entry
+            (bare_word)))))))
+
+=======================================
+Multiple keywords as auto_entries (semicolons)
+=======================================
+
+[call; fn; type]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (auto_entry
+            (bare_word))
+          (auto_entry
+            (bare_word))
+          (auto_entry
+            (bare_word)))))))
+
+==============================
+Keyword as keyed_entry value
+==============================
+
+[x: call]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (bare_word)))))))
+
+========================
+Keywords as dict keys
+========================
+
+[call: x; fn: y; type: z]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (bare_word))
+          (keyed_entry
+            key: (bare_word)
+            value: (bare_word))
+          (keyed_entry
+            key: (bare_word)
+            value: (bare_word)))))))
+
+================================
+Multiple entries with semicolons
+================================
+
+[a: 1; b: 2; c: 3]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit))
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit))
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit)))))))

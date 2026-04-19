@@ -1,0 +1,1047 @@
+[
+  {
+    "type": "access_expr",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "bracket_access",
+          "named": true
+        },
+        {
+          "type": "dot_access",
+          "named": true
+        },
+        {
+          "type": "var_ref",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "access_field",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "annotated_bare",
+    "named": true,
+    "fields": {
+      "annotation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "annotation_word",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "bare_word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "annotation_word",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "auto_entry",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "access_expr",
+          "named": true
+        },
+        {
+          "type": "annotated_bare",
+          "named": true
+        },
+        {
+          "type": "bare_word",
+          "named": true
+        },
+        {
+          "type": "bool_lit",
+          "named": true
+        },
+        {
+          "type": "bracket_expr",
+          "named": true
+        },
+        {
+          "type": "float_lit",
+          "named": true
+        },
+        {
+          "type": "int_lit",
+          "named": true
+        },
+        {
+          "type": "quoted_string",
+          "named": true
+        },
+        {
+          "type": "var_ref",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "bool_lit",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "bracket_access",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "access_expr",
+          "named": true
+        },
+        {
+          "type": "annotated_bare",
+          "named": true
+        },
+        {
+          "type": "bare_word",
+          "named": true
+        },
+        {
+          "type": "bool_lit",
+          "named": true
+        },
+        {
+          "type": "bracket_expr",
+          "named": true
+        },
+        {
+          "type": "float_lit",
+          "named": true
+        },
+        {
+          "type": "int_lit",
+          "named": true
+        },
+        {
+          "type": "quoted_string",
+          "named": true
+        },
+        {
+          "type": "range_expr",
+          "named": true
+        },
+        {
+          "type": "var_ref",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "bracket_expr",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "call_form",
+          "named": true
+        },
+        {
+          "type": "dict",
+          "named": true
+        },
+        {
+          "type": "empty_bracket",
+          "named": true
+        },
+        {
+          "type": "fn_form",
+          "named": true
+        },
+        {
+          "type": "type_assert",
+          "named": true
+        },
+        {
+          "type": "type_form",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "call_args",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "access_expr",
+          "named": true
+        },
+        {
+          "type": "annotated_bare",
+          "named": true
+        },
+        {
+          "type": "bare_word",
+          "named": true
+        },
+        {
+          "type": "bool_lit",
+          "named": true
+        },
+        {
+          "type": "bracket_expr",
+          "named": true
+        },
+        {
+          "type": "float_lit",
+          "named": true
+        },
+        {
+          "type": "int_lit",
+          "named": true
+        },
+        {
+          "type": "named_arg",
+          "named": true
+        },
+        {
+          "type": "quoted_string",
+          "named": true
+        },
+        {
+          "type": "var_ref",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "call_form",
+    "named": true,
+    "fields": {
+      "func": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "access_expr",
+            "named": true
+          },
+          {
+            "type": "annotated_bare",
+            "named": true
+          },
+          {
+            "type": "bare_word",
+            "named": true
+          },
+          {
+            "type": "bool_lit",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          },
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "quoted_string",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "call_args",
+          "named": true
+        },
+        {
+          "type": "keyword_call",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "dict",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "auto_entry",
+          "named": true
+        },
+        {
+          "type": "keyed_entry",
+          "named": true
+        },
+        {
+          "type": "rest_entry",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "document",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "dot_access",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "access_field",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "empty_bracket",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "access_expr",
+          "named": true
+        },
+        {
+          "type": "annotated_bare",
+          "named": true
+        },
+        {
+          "type": "bare_word",
+          "named": true
+        },
+        {
+          "type": "bool_lit",
+          "named": true
+        },
+        {
+          "type": "bracket_expr",
+          "named": true
+        },
+        {
+          "type": "float_lit",
+          "named": true
+        },
+        {
+          "type": "int_lit",
+          "named": true
+        },
+        {
+          "type": "quoted_string",
+          "named": true
+        },
+        {
+          "type": "var_ref",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "file",
+    "named": true,
+    "root": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "doc_separator",
+          "named": true
+        },
+        {
+          "type": "document",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "fn_annotation",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "annotation_word",
+          "named": true
+        },
+        {
+          "type": "bracket_expr",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "fn_form",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "access_expr",
+            "named": true
+          },
+          {
+            "type": "annotated_bare",
+            "named": true
+          },
+          {
+            "type": "bare_word",
+            "named": true
+          },
+          {
+            "type": "bool_lit",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          },
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "quoted_string",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "fn_annotation",
+          "named": true
+        },
+        {
+          "type": "keyword_fn",
+          "named": true
+        },
+        {
+          "type": "param_list",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "keyed_entry",
+    "named": true,
+    "fields": {
+      "key": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "bare_word",
+            "named": true
+          },
+          {
+            "type": "bool_lit",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          },
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "quoted_string",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "access_expr",
+            "named": true
+          },
+          {
+            "type": "annotated_bare",
+            "named": true
+          },
+          {
+            "type": "bare_word",
+            "named": true
+          },
+          {
+            "type": "bool_lit",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          },
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "quoted_string",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "named_arg",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "named_arg_key",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "access_expr",
+            "named": true
+          },
+          {
+            "type": "annotated_bare",
+            "named": true
+          },
+          {
+            "type": "bare_word",
+            "named": true
+          },
+          {
+            "type": "bool_lit",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          },
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "quoted_string",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "named_arg_key",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "bare_word",
+          "named": true
+        },
+        {
+          "type": "var_ref",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "param",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "param_annotation",
+          "named": true
+        },
+        {
+          "type": "param_name",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "param_annotation",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "annotation_word",
+          "named": true
+        },
+        {
+          "type": "bracket_expr",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "param_list",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "param",
+          "named": true
+        },
+        {
+          "type": "variadic_param",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "param_name",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "quoted_string",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "escape_sequence",
+          "named": true
+        },
+        {
+          "type": "string_content",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "range_expr",
+    "named": true,
+    "fields": {
+      "end": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      },
+      "start": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "rest_entry",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "annotation_word",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "type_assert",
+    "named": true,
+    "fields": {
+      "annotation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "annotation_word",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          }
+        ]
+      },
+      "expr": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "access_expr",
+            "named": true
+          },
+          {
+            "type": "annotated_bare",
+            "named": true
+          },
+          {
+            "type": "bare_word",
+            "named": true
+          },
+          {
+            "type": "bool_lit",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          },
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "quoted_string",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "type_form",
+    "named": true,
+    "fields": {
+      "expr": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "access_expr",
+            "named": true
+          },
+          {
+            "type": "annotated_bare",
+            "named": true
+          },
+          {
+            "type": "bare_word",
+            "named": true
+          },
+          {
+            "type": "bool_lit",
+            "named": true
+          },
+          {
+            "type": "bracket_expr",
+            "named": true
+          },
+          {
+            "type": "float_lit",
+            "named": true
+          },
+          {
+            "type": "int_lit",
+            "named": true
+          },
+          {
+            "type": "quoted_string",
+            "named": true
+          },
+          {
+            "type": "var_ref",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "keyword_type",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "variadic_param",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "param_name",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "\"",
+    "named": false
+  },
+  {
+    "type": ".",
+    "named": false
+  },
+  {
+    "type": "..",
+    "named": false
+  },
+  {
+    "type": "...",
+    "named": false
+  },
+  {
+    "type": ":",
+    "named": false
+  },
+  {
+    "type": ";",
+    "named": false
+  },
+  {
+    "type": "@",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "]",
+    "named": false
+  },
+  {
+    "type": "bare_word",
+    "named": true
+  },
+  {
+    "type": "comment",
+    "named": true,
+    "extra": true
+  },
+  {
+    "type": "doc_separator",
+    "named": true
+  },
+  {
+    "type": "escape_sequence",
+    "named": true
+  },
+  {
+    "type": "false",
+    "named": false
+  },
+  {
+    "type": "float_lit",
+    "named": true
+  },
+  {
+    "type": "int_lit",
+    "named": true
+  },
+  {
+    "type": "keyword_call",
+    "named": true
+  },
+  {
+    "type": "keyword_fn",
+    "named": true
+  },
+  {
+    "type": "keyword_type",
+    "named": true
+  },
+  {
+    "type": "string_content",
+    "named": true
+  },
+  {
+    "type": "true",
+    "named": false
+  },
+  {
+    "type": "var_ref",
+    "named": true
+  }
+]

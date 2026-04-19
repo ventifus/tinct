@@ -1,0 +1,22 @@
+{
+  "name": "tree-sitter-llt",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for LLT (Lazy Lisp Transformer)",
+  "keywords": ["tree-sitter", "parser", "llt"],
+  "license": "MIT",
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.llt",
+      "file-types": ["llt"],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

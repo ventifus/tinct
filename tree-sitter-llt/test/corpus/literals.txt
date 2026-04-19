@@ -1,0 +1,163 @@
+================
+Positive integer
+================
+
+42
+
+---
+
+(file
+  (document
+    (expression
+      (int_lit))))
+
+================
+Negative integer
+================
+
+-7
+
+---
+
+(file
+  (document
+    (expression
+      (int_lit))))
+
+=============
+Float literal
+=============
+
+3.14
+
+---
+
+(file
+  (document
+    (expression
+      (float_lit))))
+
+================
+Boolean literals
+================
+
+true
+false
+
+---
+
+(file
+  (document
+    (expression
+      (bool_lit))
+    (expression
+      (bool_lit))))
+
+============================
+Quoted string with escapes
+============================
+
+"hello \"world\"\n"
+
+---
+
+(file
+  (document
+    (expression
+      (quoted_string
+        (string_content)
+        (escape_sequence)
+        (string_content)
+        (escape_sequence)
+        (escape_sequence)))))
+
+==================
+Variable reference
+==================
+
+$my-var
+
+---
+
+(file
+  (document
+    (expression
+      (var_ref))))
+
+=============================
+Variable reference: dollar-dollar
+=============================
+
+$$
+
+---
+
+(file
+  (document
+    (expression
+      (var_ref))))
+
+=====================
+Variable reference: $0
+=====================
+
+$0
+
+---
+
+(file
+  (document
+    (expression
+      (var_ref))))
+
+=====================
+Variable reference: $_
+=====================
+
+$_
+
+---
+
+(file
+  (document
+    (expression
+      (var_ref))))
+
+====================
+Negative float literal
+====================
+
+-3.14
+
+---
+
+(file
+  (document
+    (expression
+      (float_lit))))
+
+====================
+Empty quoted string
+====================
+
+""
+
+---
+
+(file
+  (document
+    (expression
+      (quoted_string))))
+
+=========
+Bare word
+=========
+
+hello
+
+---
+
+(file
+  (document
+    (expression
+      (bare_word))))

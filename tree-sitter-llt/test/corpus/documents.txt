@@ -1,0 +1,100 @@
+=================
+Single expression
+=================
+
+42
+
+---
+
+(file
+  (document
+    (expression
+      (int_lit))))
+
+===================================
+Multiple expressions (scope chain)
+===================================
+
+[x: 1]
+[y: $x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit)))))
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (var_ref)))))))
+
+==================
+Document separator
+==================
+
+[x: 1]
+---
+[y: 2]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit))))))
+  (doc_separator)
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit)))))))
+
+====================================
+Multiple documents with pipeline
+====================================
+
+[x: 1]
+---
+[y: $$]
+---
+[z: $$]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (int_lit))))))
+  (doc_separator)
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (var_ref))))))
+  (doc_separator)
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (bare_word)
+            value: (var_ref)))))))

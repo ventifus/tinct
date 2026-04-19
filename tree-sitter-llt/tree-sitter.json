@@ -1,0 +1,25 @@
+{
+  "grammars": [
+    {
+      "name": "llt",
+      "camelcase": "LLT",
+      "scope": "source.llt",
+      "path": ".",
+      "file-types": ["llt"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for LLT (Lazy Lisp Transformer)",
+    "authors": [
+      {
+        "name": "Andrew Denton"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/adenton/tree-sitter-llt"
+    }
+  }
+}
