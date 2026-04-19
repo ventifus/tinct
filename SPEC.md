@@ -647,13 +647,17 @@ Pest recurses on Rust's call stack for nested bracket expressions, so deeply nes
 
 ### 5.6 Annotation Bracket Restriction
 
-Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) must contain only dict entries. Special forms within annotations are parse errors:
+Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) must contain only dict entries. Special forms within annotations are parse errors. When a `type:` key is present, rest entries (`...` or `...name`) are also forbidden — they have no defined semantics in property dict context:
 
 ```
-x@[type: Number  default: 30]    # valid: dict entries
+x@[type: Number  default: 30]    # valid: property dict
 x@Number                         # valid: simple annotation
+[@[name: String  ...] $val]      # valid: type expression with rest (no type: key)
 x@[call $f $x]                   # ERROR: special form in annotation bracket
+x@[type: Int  ...]               # ERROR: rest entry alongside type: key
 ```
+
+When no `type:` key is present, the bracket is interpreted as a type expression (record type), and rest entries are allowed for row polymorphism.
 
 ---
 

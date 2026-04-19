@@ -594,6 +594,26 @@ fn build_annotation_value(
                         .next()
                         .expect("peek succeeded so next is Some");
                     let entries = build_dict_entries(first, lines, depth)?;
+                    // Reject rest entries in property dict annotations with 'type:' key (SPEC 5.6)
+                    // Rest entries are allowed in type expressions (e.g., [@[name: String ...] $val])
+                    // but not as properties alongside 'type:' (e.g., [x@[type: Int ...]])
+                    let has_type_key = entries.iter().any(|e| {
+                        e.node
+                            .key
+                            .as_ref()
+                            .map_or(false, |k| matches!(&k.node, Expr::Str(s) if s == "type"))
+                    });
+                    if has_type_key {
+                        if let Some(rest_entry) = entries
+                            .iter()
+                            .find(|e| matches!(&e.node.value.node, Expr::Rest(_)))
+                        {
+                            return Err(ParseError {
+                                message: "rest entries (...) cannot appear alongside 'type:' in annotation bracket expressions".to_string(),
+                                span: Some(rest_entry.span),
+                            });
+                        }
+                    }
                     Ok(Spanned::new(
                         Annotation::PropertyDict(entries),
                         bracket_span,
@@ -2831,6 +2851,25 @@ mod tests {
         assert!(
             result.is_ok(),
             "dict entries in annotation bracket should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_annotation_bracket_rest_entry_with_type_key_rejected() {
+        let result = parse("[fn [x@[type: Int  ...rest]] $x]");
+        assert!(
+            result.is_err(),
+            "rest entry alongside type: key in annotation bracket should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_annotation_bracket_rest_entry_without_type_key_allowed() {
+        let result = parse("[fn [x@[default: 0  ...rest]] $x]");
+        assert!(
+            result.is_ok(),
+            "rest entry without type: key in annotation bracket should be allowed: {:?}",
+            result.err()
         );
     }
 

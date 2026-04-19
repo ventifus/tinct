@@ -1092,6 +1092,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_type_alias_cycle_errors_not_loops() {
+        // Circular aliases reference undefined types in each other. The aliases
+        // themselves parse OK, but using them produces errors (not infinite loops).
+        // The structure prevents cycles because aliases resolve against the parent
+        // env, not the env being built.
+        check("[A: [type B]  B: [type A]]").unwrap();
+        let errors = check_err("[A: [type B]  B: [type A]  x: [@A 42]]");
+        assert!(
+            !errors.is_empty(),
+            "using circular type aliases should produce errors"
+        );
+        let msg = format!("{:?}", errors);
+        assert!(
+            msg.contains("ndefined") || msg.contains("nknown"),
+            "error should be about undefined/unknown type, got: {msg}"
+        );
+    }
+
     // -- Function inference --
 
     #[test]

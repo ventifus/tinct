@@ -698,6 +698,73 @@ mod tests {
     }
 
     #[test]
+    fn test_subtype_closed_record_extra_field_rejected() {
+        // Closed sub with extra field should NOT be subtype of closed sup
+        let mut sub_fields = IndexMap::new();
+        sub_fields.insert("a".into(), Type::Int);
+        sub_fields.insert("b".into(), Type::Int);
+        let sub = Type::Record(sub_fields, RowRest::Closed);
+
+        let mut sup_fields = IndexMap::new();
+        sup_fields.insert("a".into(), Type::Int);
+        let sup = Type::Record(sup_fields, RowRest::Closed);
+
+        assert!(
+            !Type::is_subtype(&sub, &sup),
+            "[a: Int, b: Int] should NOT be subtype of [a: Int] (Closed)"
+        );
+    }
+
+    #[test]
+    fn test_subtype_closed_record_same_fields_ok() {
+        let mut sub_fields = IndexMap::new();
+        sub_fields.insert("a".into(), Type::Int);
+        let sub = Type::Record(sub_fields, RowRest::Closed);
+
+        let mut sup_fields = IndexMap::new();
+        sup_fields.insert("a".into(), Type::Int);
+        let sup = Type::Record(sup_fields, RowRest::Closed);
+
+        assert!(
+            Type::is_subtype(&sub, &sup),
+            "[a: Int] should be subtype of [a: Int] (both Closed)"
+        );
+    }
+
+    #[test]
+    fn test_subtype_closed_to_row_var() {
+        let mut sub_fields = IndexMap::new();
+        sub_fields.insert("a".into(), Type::Int);
+        let sub = Type::Record(sub_fields, RowRest::Closed);
+
+        let mut sup_fields = IndexMap::new();
+        sup_fields.insert("a".into(), Type::Int);
+        let sup = Type::Record(sup_fields, RowRest::RowVar("r".into()));
+
+        assert!(
+            Type::is_subtype(&sub, &sup),
+            "[a: Int] (Closed) should be subtype of [a: Int ...r] (RowVar)"
+        );
+    }
+
+    #[test]
+    fn test_subtype_row_var_to_closed() {
+        let mut sub_fields = IndexMap::new();
+        sub_fields.insert("a".into(), Type::Int);
+        sub_fields.insert("b".into(), Type::Int);
+        let sub = Type::Record(sub_fields, RowRest::RowVar("r".into()));
+
+        let mut sup_fields = IndexMap::new();
+        sup_fields.insert("a".into(), Type::Int);
+        let sup = Type::Record(sup_fields, RowRest::Closed);
+
+        assert!(
+            !Type::is_subtype(&sub, &sup),
+            "[a: Int, b: Int ...r] (RowVar) should NOT be subtype of [a: Int] (Closed)"
+        );
+    }
+
+    #[test]
     fn test_subtype_function_covariant_return() {
         let sub = Type::Function {
             params: vec![Type::Number],
