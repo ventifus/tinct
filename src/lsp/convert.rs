@@ -18,11 +18,15 @@ fn llt_position_to_lsp(line: usize, col: usize, source: &str) -> lsp_types::Posi
     let lsp_line = line.saturating_sub(1) as u32;
 
     // Find the start of the LLT line in the source text.
-    let line_start_offset = source
-        .lines()
-        .take(line.saturating_sub(1))
-        .map(|l| l.len() + 1) // +1 for newline
-        .sum::<usize>();
+    let line_start_offset = match compute_line_start(source, line.saturating_sub(1)) {
+        Some(offset) => offset,
+        None => {
+            return lsp_types::Position {
+                line: lsp_line,
+                character: 0,
+            }
+        }
+    };
 
     // LLT column is a 1-indexed byte offset; convert to 0-indexed.
     let byte_offset_in_line = col.saturating_sub(1);
@@ -47,27 +51,47 @@ pub fn lsp_position_to_offset(pos: &lsp_types::Position, source: &str) -> Option
     let line_idx = pos.line as usize;
     let utf16_char = pos.character as usize;
 
-    // Find the byte offset of the start of the line.
-    let mut offset = 0;
-    for (i, line) in source.lines().enumerate() {
-        if i == line_idx {
-            // Found the target line. Now find the UTF-16 character offset.
-            let mut utf16_count = 0;
-            for (byte_idx, _) in line.char_indices() {
-                if utf16_count == utf16_char {
-                    return Some(offset + byte_idx);
-                }
-                utf16_count += line[byte_idx..].chars().next()?.len_utf16();
-            }
-            // Past all characters on this line; return end-of-line offset.
-            if utf16_count == utf16_char {
-                return Some(offset + line.len());
-            }
-            return None; // Character index out of bounds
+    let offset = compute_line_start(source, line_idx)?;
+
+    let line_text = source[offset..].lines().next().unwrap_or("");
+    let mut utf16_count = 0;
+    for (byte_idx, _) in line_text.char_indices() {
+        if utf16_count == utf16_char {
+            return Some(offset + byte_idx);
         }
-        offset += line.len() + 1; // +1 for newline
+        utf16_count += line_text[byte_idx..].chars().next()?.len_utf16();
     }
-    None // Line index out of bounds
+    if utf16_count == utf16_char {
+        return Some(offset + line_text.len());
+    }
+    None
+}
+
+/// Compute the byte offset of the start of a 0-indexed line, handling both LF and CRLF.
+/// Returns `None` if the target line does not exist in the source.
+fn compute_line_start(source: &str, target_line: usize) -> Option<usize> {
+    if target_line == 0 {
+        return Some(0);
+    }
+    let bytes = source.as_bytes();
+    let mut line = 0;
+    let mut i = 0;
+    while i < bytes.len() && line < target_line {
+        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            i += 2;
+            line += 1;
+        } else if bytes[i] == b'\n' {
+            i += 1;
+            line += 1;
+        } else {
+            i += 1;
+        }
+    }
+    if line == target_line {
+        Some(i)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -249,5 +273,36 @@ mod tests {
         let pos = llt_position_to_lsp(2, 1, source);
         assert_eq!(pos.line, 1);
         assert_eq!(pos.character, 0);
+    }
+
+    #[test]
+    fn test_llt_to_lsp_crlf() {
+        let source = "abc\r\ndef";
+        let pos = llt_position_to_lsp(2, 1, source);
+        assert_eq!(pos.line, 1);
+        assert_eq!(pos.character, 0);
+    }
+
+    #[test]
+    fn test_lsp_to_offset_crlf() {
+        let source = "[x: 1]\r\n[y: 2]";
+        let pos = lsp_types::Position {
+            line: 1,
+            character: 1,
+        };
+        let offset = lsp_position_to_offset(&pos, source).unwrap();
+        assert_eq!(offset, 9); // 6 ("[x: 1]") + 2 ("\r\n") + 1 ("[") = 9
+    }
+
+    #[test]
+    fn test_round_trip_crlf() {
+        let source = "[x: 42]\r\n[y: hello]";
+        let span = make_span(2, 5, 2, 10);
+        let range = llt_span_to_lsp_range(&span, source);
+
+        let offset_start = lsp_position_to_offset(&range.start, source).unwrap();
+        let offset_end = lsp_position_to_offset(&range.end, source).unwrap();
+
+        assert_eq!(&source[offset_start..offset_end], "hello");
     }
 }

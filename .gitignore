@@ -1,5 +1,6 @@
 # Agent artifacts
 .tmp/
+SPRINT.md
 # Rust build artifacts
 /target
 /lazy_lisp_transformer/target

@@ -145,11 +145,18 @@ struct LineTable {
 
 impl LineTable {
     fn new(input: &str) -> Self {
-        // Assumes Unix line endings (\n). \r\n files may report incorrect column numbers.
         let mut line_starts = vec![0];
-        for (i, ch) in input.char_indices() {
-            if ch == '\n' {
+        let bytes = input.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                line_starts.push(i + 2);
+                i += 2;
+            } else if bytes[i] == b'\n' {
                 line_starts.push(i + 1);
+                i += 1;
+            } else {
+                i += 1;
             }
         }
         LineTable { line_starts }
@@ -2807,5 +2814,125 @@ mod tests {
             },
             other => panic!("expected TypeAlias, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_annotation_bracket_special_form_rejected() {
+        let result = parse("[fn [x@[call $f $x]] $x]");
+        assert!(
+            result.is_err(),
+            "special form in annotation bracket should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_annotation_bracket_dict_entries_accepted() {
+        let result = parse("[fn [x@[type: Number  default: 0]] $x]");
+        assert!(
+            result.is_ok(),
+            "dict entries in annotation bracket should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_type_assert_special_form_rejected() {
+        let result = parse("[@[call $f $x] 42]");
+        assert!(
+            result.is_err(),
+            "special form in type assert annotation should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_line_table_unix_endings() {
+        let table = LineTable::new("abc\ndef\nghi");
+        assert_eq!(
+            table.offset_to_position(0),
+            Position {
+                offset: 0,
+                line: 1,
+                column: 1
+            }
+        );
+        assert_eq!(
+            table.offset_to_position(4),
+            Position {
+                offset: 4,
+                line: 2,
+                column: 1
+            }
+        );
+        assert_eq!(
+            table.offset_to_position(5),
+            Position {
+                offset: 5,
+                line: 2,
+                column: 2
+            }
+        );
+        assert_eq!(
+            table.offset_to_position(8),
+            Position {
+                offset: 8,
+                line: 3,
+                column: 1
+            }
+        );
+    }
+
+    #[test]
+    fn test_line_table_crlf_endings() {
+        let table = LineTable::new("abc\r\ndef\r\nghi");
+        assert_eq!(
+            table.offset_to_position(0),
+            Position {
+                offset: 0,
+                line: 1,
+                column: 1
+            }
+        );
+        assert_eq!(
+            table.offset_to_position(5),
+            Position {
+                offset: 5,
+                line: 2,
+                column: 1
+            }
+        );
+        assert_eq!(
+            table.offset_to_position(6),
+            Position {
+                offset: 6,
+                line: 2,
+                column: 2
+            }
+        );
+        assert_eq!(
+            table.offset_to_position(10),
+            Position {
+                offset: 10,
+                line: 3,
+                column: 1
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_crlf_multiline() {
+        let input = "[x: 1\r\ny: 2]";
+        let file = parse(input).unwrap();
+        let doc = &file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 1);
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => assert_eq!(entries.len(), 2),
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_crlf_multi_document() {
+        let input = "[x: 1]\r\n---\r\n[y: 2]";
+        let file = parse(input).unwrap();
+        assert_eq!(file.node.documents.len(), 2);
     }
 }

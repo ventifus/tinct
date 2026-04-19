@@ -387,15 +387,14 @@ fn value_to_key(value: &Value, span: &Span) -> Result<Key, Box<EvalError>> {
 
 /// Extract a human-readable label from a function expression for stack frames.
 fn func_label(expr: &Expr) -> String {
+    format!("call {}", func_path(expr))
+}
+
+fn func_path(expr: &Expr) -> String {
     match expr {
-        Expr::VarRef(name) => format!("call ${name}"),
-        Expr::DotAccess { expr: inner, field } => {
-            let base = func_label(&inner.node);
-            // If the base already starts with "call ", strip it to avoid "call call ..."
-            let base = base.strip_prefix("call ").unwrap_or(&base);
-            format!("call {base}.{field}")
-        }
-        _ => "call <anonymous>".to_string(),
+        Expr::VarRef(name) => format!("${name}"),
+        Expr::DotAccess { expr: inner, field } => format!("{}.{field}", func_path(&inner.node)),
+        _ => "<anonymous>".to_string(),
     }
 }
 

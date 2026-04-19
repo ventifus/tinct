@@ -183,7 +183,7 @@ impl Substitution {
                     _ => Type::Record(new_fields, rest.clone()),
                 }
             }
-            Type::Function { params, ret} => Type::Function {
+            Type::Function { params, ret } => Type::Function {
                 params: params
                     .iter()
                     .map(|p| self.apply_inner(p, depth + 1, visited))
@@ -258,8 +258,28 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
         (Type::Int | Type::Number, Type::IntLiteral(_)) | (Type::Number, Type::Int) => Ok(()),
         (Type::Float, Type::Number) | (Type::Number, Type::Float) => Ok(()),
         (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => Ok(()),
-        (Type::IntLiteral(_), Type::IntLiteral(_)) => Ok(()),
-        (Type::StringLiteral(_), Type::StringLiteral(_)) => Ok(()),
+        (Type::IntLiteral(v1), Type::IntLiteral(v2)) => {
+            if v1 == v2 {
+                Ok(())
+            } else {
+                Err(TypeError::type_mismatch(
+                    &Type::IntLiteral(*v1),
+                    &Type::IntLiteral(*v2),
+                    span,
+                ))
+            }
+        }
+        (Type::StringLiteral(s1), Type::StringLiteral(s2)) => {
+            if s1 == s2 {
+                Ok(())
+            } else {
+                Err(TypeError::type_mismatch(
+                    &Type::StringLiteral(s1.clone()),
+                    &Type::StringLiteral(s2.clone()),
+                    span,
+                ))
+            }
+        }
         (Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => Ok(()),
 
         (
@@ -1277,6 +1297,55 @@ mod tests {
             &Type::StringLiteral("lo".into()),
             &mut subst,
             span
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_unify_int_literal_different_values() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let result = unify(&Type::IntLiteral(1), &Type::IntLiteral(2), &mut subst, span);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("type mismatch"));
+    }
+
+    #[test]
+    fn test_unify_int_literal_same_values() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        assert!(unify(
+            &Type::IntLiteral(42),
+            &Type::IntLiteral(42),
+            &mut subst,
+            span
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_unify_string_literal_different_values() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let result = unify(
+            &Type::StringLiteral("hello".into()),
+            &Type::StringLiteral("world".into()),
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("type mismatch"));
+    }
+
+    #[test]
+    fn test_unify_string_literal_same_values() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        assert!(unify(
+            &Type::StringLiteral("hello".into()),
+            &Type::StringLiteral("hello".into()),
+            &mut subst,
+            span,
         )
         .is_ok());
     }

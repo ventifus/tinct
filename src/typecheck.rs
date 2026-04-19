@@ -407,10 +407,6 @@ fn check_call(
 
     match &func_ty {
         Type::Function { params, ret } => {
-            if !func_ty.has_type_vars() {
-                return Ok(*ret.clone());
-            }
-
             if params.len() != arg_types.len() {
                 return Err(vec![TypeError::new(
                     format!(
@@ -420,6 +416,10 @@ fn check_call(
                     ),
                     span,
                 )]);
+            }
+
+            if !func_ty.has_type_vars() {
+                return Ok(*ret.clone());
             }
 
             let mut cnt = counter.get();
@@ -513,7 +513,10 @@ fn resolve_type_assert(
     let actual = infer_expr(inner, env, counter, type_map)?;
 
     if !Type::is_subtype(&actual, &expected) {
-        return Err(vec![TypeError::type_mismatch(&expected, &actual, span)]);
+        let has_default = annotation.node.get_property("default").is_some();
+        if !has_default {
+            return Err(vec![TypeError::type_mismatch(&expected, &actual, span)]);
+        }
     }
 
     Ok(expected)
@@ -1052,6 +1055,26 @@ mod tests {
         assert!(errors[0].message.contains("type mismatch"));
     }
 
+    #[test]
+    fn test_type_assert_default_suppresses_mismatch() {
+        let result = check("[@[type: Number  default: 0] hello]");
+        assert!(
+            result.is_ok(),
+            "TypeAssert with default: should not raise type error, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_type_assert_no_default_still_errors() {
+        let errors = check_err("[@[type: Number] hello]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "TypeAssert without default: should still report type error, got: {:?}",
+            errors
+        );
+    }
+
     // -- TypeAlias --
 
     #[test]
@@ -1574,6 +1597,16 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.message.contains("arity mismatch")),
             "expected arity mismatch error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_call_monomorphic_arity_mismatch() {
+        let errors = check_err("[f: [fn@Number [x@Number y@Number] $x]]\n[result: [call $f 42]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("arity mismatch")),
+            "expected arity mismatch for monomorphic function, got: {:?}",
             errors
         );
     }
