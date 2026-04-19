@@ -219,10 +219,10 @@ Major type system bugs from 9-agent review (2026-04-19). Fix before Phase 4b.
 
 Minor and nit fixes from 9-agent review (2026-04-19).
 
-- [ ] Add `Eq` derive to `RowRest` — currently missing (`src/types.rs:14-18`) [Minor, type-theorist]
-- [ ] Verify type assertion default uses correct scope — `src/eval.rs:145-148` may use wrong scope for inner expression [Minor, eval-engine]
-- [ ] Fix `func_label` incorrectly stripping "call " prefix — uses `strip_prefix("call ")` which breaks for variable names starting with "call" (e.g., `$callback`). Fix: check if the label was generated from a call form before stripping. (`src/eval.rs`) [Minor, eval-engine]
-- [ ] Fix `eval` depth check using `>=` instead of `>` — off-by-one: depth 256 errors but docs say limit is 256 (`src/eval.rs:63-69`) [Nit, eval-engine]
+- [x] Add `Eq` derive to `RowRest` — added to `src/types.rs:13` [Fixed 2026-04-19]
+- [x] Verify type assertion default uses correct scope — verified correct: default evaluates in outer scope (same `env`). Added regression test `test_type_assert_default_accesses_outer_scope`. [Verified 2026-04-19]
+- [x] Fix `func_label` incorrectly stripping "call " prefix — not a bug: no `strip_prefix("call ")` exists in codebase. `func_label` only prepends "call " and it's used as-is for stack frames. [Verified 2026-04-19]
+- [x] Fix `eval` depth check using `>=` instead of `>` — changed to `>` in eval, materialize, and deep_materialize so depth=MAX_EVAL_DEPTH is allowed. Updated test. [Fixed 2026-04-19]
 
 ## Phase 4b: Stdlib Fixes & Test Coverage
 

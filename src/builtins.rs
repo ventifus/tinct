@@ -892,7 +892,7 @@ pub fn json_to_value(
     depth: usize,
     span: Span,
 ) -> Result<Value, Box<EvalError>> {
-    if depth >= MAX_EVAL_DEPTH {
+    if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum JSON nesting depth exceeded ({MAX_EVAL_DEPTH})"),
             span,

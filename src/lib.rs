@@ -102,7 +102,7 @@ pub fn value_to_json(
     use serde_json::Value as JV;
     use value::{Key, Value};
 
-    if depth >= eval::MAX_EVAL_DEPTH {
+    if depth > eval::MAX_EVAL_DEPTH {
         return Err(error::EvalError::new(
             format!(
                 "maximum serialization depth exceeded ({})",
@@ -178,7 +178,7 @@ pub fn value_to_display_string(
     val: &value::Value,
     depth: usize,
 ) -> Result<String, Box<error::EvalError>> {
-    if depth >= eval::MAX_EVAL_DEPTH {
+    if depth > eval::MAX_EVAL_DEPTH {
         return Err(error::EvalError::new(
             format!("maximum display depth exceeded ({})", eval::MAX_EVAL_DEPTH),
             ast::Span::origin(),
@@ -452,14 +452,14 @@ mod tests {
 
     #[test]
     fn test_json_depth_limit() {
-        let err = value_to_json(&Value::Int(1), eval::MAX_EVAL_DEPTH).unwrap_err();
+        let err = value_to_json(&Value::Int(1), eval::MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(err.message.contains("maximum serialization depth exceeded"));
     }
 
     #[test]
     fn test_json_depth_limit_just_under() {
         // One below the limit should still succeed for a leaf value
-        let result = value_to_json(&Value::Int(1), eval::MAX_EVAL_DEPTH - 1);
+        let result = value_to_json(&Value::Int(1), eval::MAX_EVAL_DEPTH);
         assert!(result.is_ok());
     }
 

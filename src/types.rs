@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowRest {
     Closed,
     Open,

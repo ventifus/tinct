@@ -60,7 +60,7 @@ pub fn eval(
     env: Rc<RefCell<Environment>>,
     depth: usize,
 ) -> Result<Rc<Thunk>, Box<EvalError>> {
-    if depth >= MAX_EVAL_DEPTH {
+    if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
             expr.span,
@@ -808,7 +808,7 @@ pub fn materialize(
     mat_span: Option<&Span>,
     depth: usize,
 ) -> Result<Value, Box<EvalError>> {
-    if depth >= MAX_EVAL_DEPTH {
+    if depth > MAX_EVAL_DEPTH {
         let mut err = EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
             thunk.span,
@@ -916,7 +916,7 @@ pub fn materialize(
 /// deeply nested or cyclic structures. On infinite/cyclic structures without a
 /// depth bound, this function will diverge (see DESIGN.md on `$eval`).
 pub fn deep_materialize(val: &Value, depth: usize) -> Result<Value, Box<EvalError>> {
-    if depth >= MAX_EVAL_DEPTH {
+    if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
             Span::origin(),
@@ -2620,6 +2620,33 @@ mod tests {
     }
 
     #[test]
+    fn test_type_assert_default_accesses_outer_scope() {
+        // [@[type: Int  default: $fallback] hello] with fallback=99 -> 99
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("type".into()))),
+                value: sp(Expr::Str("Int".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("default".into()))),
+                value: sp(Expr::VarRef("fallback".into())),
+            }),
+        ];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+        });
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "fallback".into(),
+            Rc::new(Thunk::new_materialized(Value::Int(99), test_span(1, 1, 1, 1))),
+        );
+        let thunk = eval(&expr, Rc::clone(&env), 0).unwrap();
+        let val = materialize(&thunk, None, 0).unwrap();
+        assert_eq!(val, Value::Int(99));
+    }
+
+    #[test]
     fn test_annotated_bare_string() {
         // Config@ConfigType -> "Config"
         let expr = sp(Expr::Annotated {
@@ -3628,7 +3655,7 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_depth_limit() {
-        let err = deep_materialize(&Value::Int(1), MAX_EVAL_DEPTH).unwrap_err();
+        let err = deep_materialize(&Value::Int(1), MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(
             err.message.contains("maximum evaluation depth exceeded"),
             "got: {}",
@@ -3638,8 +3665,8 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_depth_just_under() {
-        // One below the limit should still succeed for a leaf value
-        let result = deep_materialize(&Value::Int(1), MAX_EVAL_DEPTH - 1);
+        // At the limit should still succeed for a leaf value
+        let result = deep_materialize(&Value::Int(1), MAX_EVAL_DEPTH);
         assert!(result.is_ok());
     }
 
