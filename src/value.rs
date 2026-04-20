@@ -544,7 +544,10 @@ mod tests {
     #[test]
     fn test_seq_type_name() {
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(Value::Int(42), test_span(1, 1, 1, 1))),
+            head: Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 1),
+            )),
             tail: Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),
@@ -556,7 +559,10 @@ mod tests {
     #[test]
     fn test_seq_debug() {
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(Value::Int(1), test_span(1, 1, 1, 1))),
+            head: Rc::new(Thunk::new_materialized(
+                Value::Int(1),
+                test_span(1, 1, 1, 1),
+            )),
             tail: Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),
@@ -569,7 +575,10 @@ mod tests {
     #[test]
     fn test_seq_display() {
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(Value::Int(1), test_span(1, 1, 1, 1))),
+            head: Rc::new(Thunk::new_materialized(
+                Value::Int(1),
+                test_span(1, 1, 1, 1),
+            )),
             tail: Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),
@@ -582,7 +591,10 @@ mod tests {
     #[test]
     fn test_seq_not_equal_to_itself() {
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(Value::Int(42), test_span(1, 1, 1, 1))),
+            head: Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 1),
+            )),
             tail: Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),

@@ -334,6 +334,13 @@ Rewrite `range`, `repeat`, `cycle` (currently in `stdlib/prelude.llt`) as Rust b
 - [x] Remove old `range`, `repeat`, `cycle`, `take` (and helpers) from prelude.llt
 - [x] Tests: finite/infinite range, repeat, cycle, iterate, unfold, take on Seq
 
+### 5d¾: Critical Span Fix
+
+Fix Failed state materialization_span overwrite found by span-integrity-checker review (2026-04-20). When re-materializing a Failed thunk, the original materialization_span is overwritten instead of preserved.
+
+- [x] Fix Failed state unconditional materialization_span overwrite — preserve original span, add subsequent access sites as stack frames instead of overwriting (`src/eval.rs:882-887`) [Critical, span-integrity-checker]
+- [x] Update `test_failed_state_updates_materialization_span` to verify correct behavior: first access sets mat_span, subsequent accesses push frames instead of overwriting (`src/eval.rs`) [Critical, span-integrity-checker]
+
 ### 5e: Dual-Dispatch Map/Filter
 
 Make `$map` and `$filter` work on both dicts and sequences, with Rust implementations for performance. Note: `$take` dual-dispatch already implemented in Phase 5d.
@@ -588,6 +595,9 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Avoid AST clone in eval_call argument thunk creation — `(*arg).clone()` clones entire `Spanned<Expr>` subtree per argument; consider `Rc<Spanned<Expr>>` to share immutable AST nodes (`src/eval.rs:416-435`) [Minor, performance-expert]
 - [ ] Avoid intermediate Vec in value_to_display_string — collects all formatted entries into Vec<String> then joins; write directly to String with_capacity instead (`src/lib.rs:194-204`) [Minor, performance-expert]
 - [ ] Avoid intermediate Vec in builtin_split — `input.split(sep).collect::<Vec<&str>>()` then maps to thunks; use iterator directly (`src/builtins.rs:525-535`) [Nit, performance-expert]
+- [ ] Cache materialized dict in `builtin_cycle_step` — currently re-materializes immutable dict on every iteration; store IndexMap directly (`src/builtins.rs:1375-1443`) [Major, performance-expert]
+- [ ] Optimize `builtin_take` Dict path — materializes entire dict then clones first n entries; use `map.iter().take(n)` directly (`src/builtins.rs:1648-1657`) [Major, performance-expert]
+- [ ] Consider SmallVec for sequence constructor tail args — `Vec::new()` + push allocates heap on every step of infinite sequences; SmallVec<[Rc<Thunk>; 2]> would stack-allocate common cases (`src/builtins.rs`) [Minor, performance-expert]
 
 ## Phase 7½: Iterative Evaluator
 
@@ -783,6 +793,8 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Add docstring to `fold` justifying alias duplication with `reduce` (`stdlib/prelude.llt:353`) [Nit, stdlib-author]
 - [ ] Document `cond` returning `[]` when no branch matches (`stdlib/prelude.llt:120-123`) [Nit, stdlib-author]
 - [ ] Add 16 undocumented stdlib functions to DESIGN.md stdlib section: `const`, `>`, `<=`, `>=`, `quot`, `mod`, `ceil`, `trunc`, `join`, `words`, `nth`, `conj`, `reindex`, `from-entries`, `any?`, `all?` [Major, stdlib-author]
+- [ ] Add doc comment to `Value::Seq` match arm in `value_to_json` explaining why Seq→JSON is an error and requires `$collect` first (`src/lib.rs:161-166`) [Minor, integration-verifier]
+- [ ] Add comment to Seq cycle detection in `deep_materialize` explaining raw pointer identity pattern (`src/eval.rs:1093-1100`) [Nit, integration-verifier]
 - [ ] Update DESIGN.md ThunkState sketch to include `Failed(Box<EvalError>)` and `PendingCall` variants (`DESIGN.md:1988-1994`) [Nit, eval-engine]
 - [ ] Add corpus tests for `any?` and `all?` (any_true, any_false, any_empty, all_true, all_false, all_empty) (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
 
@@ -800,6 +812,13 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add typecheck corpus tests (currently zero; Nickel has 90+ granular typecheck test files)
 - [ ] Add `deep_materialize` corpus tests through the public API
 - [ ] Materialization behavior corpus tests proving stdlib laziness categories (test-crafter review)
+- [ ] Add `test_type_of_seq()` unit test verifying `builtin_type_of` returns `"Seq"` for `Value::Seq` — all other Value variants have type-of tests but Seq is missing (`src/builtins.rs`) [Major, integration-verifier]
+- [ ] Add corpus test `type_of_seq.txt` — `[call $type-of [call $seq 1 []]]` returns `"Seq"` (`tests/corpus/eval/builtins/`) [Minor, integration-verifier]
+- [ ] Add sequence constructor error path corpus tests — `range_start_overflow.txt`, `iterate_non_function.txt`, `unfold_invalid_return.txt`, `cycle_empty.txt` (`tests/corpus/eval/errors/`) [Critical, test-crafter]
+- [ ] Add laziness proof tests for map/filter — `map_preserves_thunks.txt`, `filter_selective_materialization.txt` proving unused values stay unevaluated (`tests/corpus/eval/laziness/`) [Critical, test-crafter]
+- [ ] Add Failed state same-span deduplication test — access Failed thunk twice with same span, verify no duplicate stack frames (`src/eval.rs`) [Minor, test-crafter]
+- [ ] Add Failed state None→Some→Some edge case test — first access with None, then Some(span1), then Some(span2); verifies is_none() path (`src/eval.rs`) [Minor, test-crafter]
+- [ ] Add doc comment to Failed state handler explaining dual-span model conditional update strategy (`src/eval.rs:873-894`) [Nit, span-integrity-checker + eval-engine]
 
 ### 13a½: Additional Test Coverage
 
@@ -812,6 +831,11 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add SPEC.md grammar coverage tests — parser_mechanisms tests for 100% grammar rule coverage (`SPEC.md`, `tests/corpus/valid/`) [Minor, test-crafter]
 - [ ] Add `$_` implicit lambda edge case tests — nested `$_`, shadowing when `_` already bound, desugaring in dict entries vs call args (`src/eval.rs:669-686`) [Minor, test-crafter]
 - [ ] Add row polymorphism tests for Closed-specific behavior — closed record with extra fields (`src/types.rs:679-837`) [Nit, type-theorist]
+- [ ] Add === delimiter edge case tests — `delimiter_in_string.txt`, `delimiter_partial.txt`, `delimiter_triple_docs.txt` (`tests/corpus/valid/edge_cases/`) [Major, test-crafter]
+- [ ] Add CRLF line ending corpus test — create `.txt` with actual `\r\n` bytes (`tests/corpus/valid/edge_cases/crlf_line_endings.txt`) [Minor, test-crafter]
+- [ ] Add Unicode identifier corpus test — `[$café: espresso]` and other Unicode var names (`tests/corpus/valid/literals/unicode_identifiers.txt`) [Minor, test-crafter]
+- [ ] Add annotated bare word corpus tests — `[x@Number: 42]`, `[fn@Int [] 42]` (`tests/corpus/valid/annotations/`) [Minor, test-crafter]
+- [ ] Add variadic + named args interaction test — positional + variadic + named args together (`tests/corpus/eval/fn_variadic_plus_named.txt`) [Minor, test-crafter]
 - [ ] Rename `threading.txt` test file to `pipeline.txt` to match function name (`tests/corpus/eval/stdlib/threading.txt`) [Nit, stdlib-author]
 
 ### 13b: Test Framework Enhancements

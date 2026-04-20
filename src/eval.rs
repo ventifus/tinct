@@ -22,12 +22,7 @@ const DEFAULT_ANNOTATION_KEY: &str = "default";
 /// Check whether `k` falls in the half-open range `[start, end)`.
 /// `None` bounds are treated as unbounded (i.e. negative/positive infinity).
 /// Returns an error when `k` is not comparable with the bound (mixed key types).
-fn key_in_range(
-    k: &Key,
-    start: Option<&Key>,
-    end: Option<&Key>,
-    span: Span,
-) -> EvalResult<bool> {
+fn key_in_range(k: &Key, start: Option<&Key>, end: Option<&Key>, span: Span) -> EvalResult<bool> {
     let after_start = match start {
         Some(s) => {
             let ord = k
@@ -855,11 +850,7 @@ fn attach_materialization_context(
 /// `mat_span` is the span of the expression that triggered materialization
 /// (e.g., an access chain). Attached to errors so users can see both where
 /// a value was defined and where it was forced.
-pub fn materialize(
-    thunk: &Thunk,
-    mat_span: Option<&Span>,
-    depth: usize,
-) -> EvalResult<Value> {
+pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
         let mut err = EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
@@ -881,8 +872,24 @@ pub fn materialize(
             ThunkState::Materialized(v) => return Ok(v.clone()),
             ThunkState::Failed(ref err) => {
                 let mut cloned = (**err).clone();
+                let mut should_update_cache = false;
                 if let Some(span) = mat_span {
-                    cloned.materialization_span = Some(*span);
+                    if cloned.materialization_span.is_none() {
+                        // First access via Failed path (edge case: error cached without mat_span)
+                        cloned.materialization_span = Some(*span);
+                        should_update_cache = true;
+                    } else if cloned.materialization_span != Some(*span)
+                        && !cloned.stack.iter().any(|f| f.span == *span)
+                    {
+                        // Different access site: add as stack frame, preserve original mat_span
+                        cloned.push_frame("materialized", *span);
+                        should_update_cache = true;
+                    }
+                }
+                // Update cached error if we modified it
+                if should_update_cache {
+                    drop(state);
+                    thunk.set_state(ThunkState::Failed(Box::new(cloned.clone())));
                 }
                 return Err(Box::new(cloned));
             }
@@ -949,15 +956,14 @@ pub fn materialize(
         }
     } else if let Some((func_thunk, args, call_span)) = thunk.take_pending_call() {
         // Materialize the function thunk to determine if it's a Function or Builtin
-        let func_value = match materialize(&func_thunk, Some(&call_span), depth + 1)
-            .map_err(&decorate)
-        {
-            Ok(v) => v,
-            Err(e) => {
-                thunk.cache_failure(&e);
-                return Err(e);
-            }
-        };
+        let func_value =
+            match materialize(&func_thunk, Some(&call_span), depth + 1).map_err(&decorate) {
+                Ok(v) => v,
+                Err(e) => {
+                    thunk.cache_failure(&e);
+                    return Err(e);
+                }
+            };
 
         match func_value {
             Value::Function { params, body, env } => {
@@ -977,8 +983,7 @@ pub fn materialize(
                 match invoke_function(&ctx).map_err(&decorate) {
                     Ok(result_thunk) => {
                         // Materialize the result and memoize
-                        match materialize(&result_thunk, mat_span, depth + 1).map_err(&decorate)
-                        {
+                        match materialize(&result_thunk, mat_span, depth + 1).map_err(&decorate) {
                             Ok(value) => {
                                 thunk.set_state(ThunkState::Materialized(value.clone()));
                                 Ok(value)
@@ -1002,8 +1007,7 @@ pub fn materialize(
                             thunk.set_state(ThunkState::Materialized(value.clone()));
                             Ok(value)
                         } else {
-                            match materialize(&result_thunk, mat_span, depth + 1)
-                                .map_err(&decorate)
+                            match materialize(&result_thunk, mat_span, depth + 1).map_err(&decorate)
                             {
                                 Ok(value) => {
                                     thunk.set_state(ThunkState::Materialized(value.clone()));
@@ -1980,7 +1984,10 @@ mod tests {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(Value::Int(x + y), test_span(1, 1, 1, 1)))),
+                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(
+                    Value::Int(x + y),
+                    test_span(1, 1, 1, 1),
+                ))),
                 _ => panic!("test expects Int args"),
             }
         }
@@ -3827,7 +3834,10 @@ mod tests {
             _: usize,
             _: Span,
         ) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), test_span(1, 1, 1, 1))))
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(0),
+                test_span(1, 1, 1, 1),
+            )))
         }
         let val = Value::Builtin {
             name: "test",
@@ -4027,7 +4037,11 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let head_expr = Rc::new(Spanned::new(Expr::Int(42), span));
         let env = Rc::new(RefCell::new(Environment::new()));
-        let head_thunk = Rc::new(Thunk::new_unevaluated(Rc::clone(&head_expr), Rc::clone(&env), span));
+        let head_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::clone(&head_expr),
+            Rc::clone(&env),
+            span,
+        ));
 
         let tail_expr = Rc::new(Spanned::new(Expr::Str("tail".into()), span));
         let tail_thunk = Rc::new(Thunk::new_unevaluated(tail_expr, Rc::clone(&env), span));
@@ -4568,7 +4582,10 @@ mod tests {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(Value::Int(x + y), test_span(1, 1, 1, 1)))),
+                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(
+                    Value::Int(x + y),
+                    test_span(1, 1, 1, 1),
+                ))),
                 _ => panic!("test expects Int args"),
             }
         }
@@ -4620,7 +4637,10 @@ mod tests {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(Value::Int(x * y), test_span(1, 1, 1, 1)))),
+                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(
+                    Value::Int(x * y),
+                    test_span(1, 1, 1, 1),
+                ))),
                 _ => panic!("test expects Int args"),
             }
         }
@@ -4817,7 +4837,8 @@ mod tests {
 
     #[test]
     fn test_failed_state_updates_materialization_span() {
-        // Failed state should update materialization_span on each access when provided
+        // Failed state should preserve the first materialization_span and add
+        // subsequent access sites as stack frames (dual-span model)
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("broken".into()))),
             value: sp(Expr::VarRef("missing".into())),
@@ -4836,16 +4857,23 @@ mod tests {
         let span1 = test_span(10, 1, 10, 5);
         let err1 = materialize(&broken_thunk, Some(&span1), 0).unwrap_err();
         assert_eq!(err1.materialization_span, Some(span1));
+        assert_eq!(err1.stack.len(), 0);
 
-        // Second access with a different materialization span updates it
+        // Second access with a different materialization span should preserve span1
+        // and add span2 as a stack frame
         let span2 = test_span(20, 1, 20, 5);
         let err2 = materialize(&broken_thunk, Some(&span2), 0).unwrap_err();
-        assert_eq!(err2.materialization_span, Some(span2));
+        assert_eq!(err2.materialization_span, Some(span1)); // PRESERVED
+        assert_eq!(err2.stack.len(), 1);
+        assert_eq!(err2.stack[0].label, "materialized");
+        assert_eq!(err2.stack[0].span, span2);
 
         // Third access with no materialization span returns error with the
-        // materialization_span from the original cached error (which was span1)
+        // original materialization_span and the stack frame from the second access
         let err3 = materialize(&broken_thunk, None, 0).unwrap_err();
-        assert_eq!(err3.materialization_span, Some(span1));
+        assert_eq!(err3.materialization_span, Some(span1)); // PRESERVED
+        assert_eq!(err3.stack.len(), 1);
+        assert_eq!(err3.stack[0].span, span2);
     }
 
     #[test]
@@ -4995,7 +5023,9 @@ mod tests {
 
         // First materialization should fail with undefined variable error
         let err = materialize(&pending, None, 0).unwrap_err();
-        assert!(err.message.contains("undefined variable: $nonexistent_func"));
+        assert!(err
+            .message
+            .contains("undefined variable: $nonexistent_func"));
 
         // The thunk should be in Failed state, NOT InProgress
         match &*pending.state() {
@@ -5006,7 +5036,9 @@ mod tests {
 
         // Second access should return cached error, NOT "circular dependency"
         let err2 = materialize(&pending, None, 0).unwrap_err();
-        assert!(err2.message.contains("undefined variable: $nonexistent_func"));
+        assert!(err2
+            .message
+            .contains("undefined variable: $nonexistent_func"));
         assert!(!err2.message.contains("circular dependency"));
     }
 

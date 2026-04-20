@@ -446,7 +446,10 @@ mod tests {
     #[test]
     fn test_json_seq_error() {
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(Value::Int(1), test_span(1, 1, 1, 1))),
+            head: Rc::new(Thunk::new_materialized(
+                Value::Int(1),
+                test_span(1, 1, 1, 1),
+            )),
             tail: Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),
@@ -464,7 +467,10 @@ mod tests {
             _: usize,
             _: ast::Span,
         ) -> Result<Rc<Thunk>, Box<error::EvalError>> {
-            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), ast::Span::origin())))
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(0),
+                ast::Span::origin(),
+            )))
         }
         let b = Value::Builtin {
             name: "test",
@@ -513,8 +519,7 @@ mod tests {
         let env = builtins::create_stdlib_env().expect("stdlib failed");
 
         let initial_input = stdin_json.map(|json| {
-            builtins::json_to_value(&json, 0, ast::Span::origin())
-                .expect("json_to_value failed")
+            builtins::json_to_value(&json, 0, ast::Span::origin()).expect("json_to_value failed")
         });
 
         let thunk =
@@ -606,7 +611,10 @@ mod tests {
     #[test]
     fn test_display_seq() {
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(Value::Int(1), test_span(1, 1, 1, 1))),
+            head: Rc::new(Thunk::new_materialized(
+                Value::Int(1),
+                test_span(1, 1, 1, 1),
+            )),
             tail: Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),

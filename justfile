@@ -51,17 +51,17 @@ test-corpus:
 lint:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy -- -D warnings"
 
-# Run clippy with auto-fixes
+# Run clippy with auto-fixes (runs as container root so it can write to bind-mounted source files)
 lint-fix:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo clippy --fix --allow-dirty --allow-staged
+    {{container}} run {{run_flags}} {{rust_image}} cargo clippy --fix --allow-dirty --allow-staged
 
 # Check code formatting
 fmt-check:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add rustfmt 2>/dev/null; cargo fmt -- --check"
 
-# Format code
+# Format code (runs as container root so it can write to bind-mounted source files)
 fmt:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add rustfmt 2>/dev/null; cargo fmt"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add rustfmt 2>/dev/null; cargo fmt"
 
 # Run the application with test_input.txt (eval, JSON output)
 run:
