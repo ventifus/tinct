@@ -1642,7 +1642,29 @@ To make dict-returning operations lazy, the thunk model gains a new state:
 PendingCall(function: Rc<Thunk>, args: Vec<Rc<Thunk>>)
 ```
 
-`PendingCall` represents "apply this function to these arguments when forced." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result, just like `PendingBuiltin` does for builtin calls.
+`PendingCall` represents "apply this function to these arguments when forced." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result (transitioning to `Materialized`), just like `PendingBuiltin` does for builtin calls.
+
+This is different from `PendingBuiltin` in a key way:
+- **PendingBuiltin** stores a Rust function pointer (`BuiltinFn`) and its arguments — the builtin runs when materialized
+- **PendingCall** stores a user-defined function thunk, its argument thunks, and a `call_span: Span` (for error reporting) — invokes `invoke_function()` when materialized
+
+Both support lazy evaluation, but `PendingCall` works at the LLT function level (no AST needed), while `PendingBuiltin` works at the Rust builtin level.
+
+**Type transparency:** `PendingCall` is invisible to the type system — a `PendingCall(f, [x])` has the same inferred type as `f(x)`. No new `Type` variant is needed; HM type inference is unchanged.
+
+**Error reporting:** When `PendingCall` materialization fails, the definition-site span comes from the function's body, the materialization-site span from where the thunk was forced, and a stack frame is added with the deferred call's creation span (from `call_span`).
+
+**Motivation:** Operations like `$map` on dicts need to create new thunks that apply a function to each value, but they can't store AST nodes (the function comes from a runtime variable). `PendingCall` lets them defer function application without needing to construct new AST `CallExpr` nodes.
+
+**`Failed` thunk state:**
+
+To cache evaluation failures instead of restoring `Unevaluated` and re-evaluating on every access attempt:
+
+```
+Failed(Box<EvalError>)
+```
+
+When a thunk fails to materialize (any state → error), it transitions to `Failed` and stores the error. Future materialization attempts return a clone of the cached error with the `materialization_span` updated to reflect the current access location, preserving the original stack frames. This matches Nix's `nFailed` pattern and prevents quadratic behavior when multiple accesses trigger the same failing computation.
 
 **`PendingBuiltin` preserves laziness:** When the evaluator encounters `[call $builtin ...]`, it does not immediately execute the builtin. Instead, it wraps the builtin name and unevaluated argument thunks in a `PendingBuiltin` state. The builtin executes only when the result is materialized (accessed). This deferred execution is critical for preserving lazy semantics — builtins like `$if` can selectively materialize arguments, and operations like `$map` can return lazy structures without forcing computation.
 
@@ -1655,6 +1677,7 @@ This completes the laziness picture:
 | `PendingCall` | Deferred function application | `$map`, `$update`, lazy combinators |
 | `InProgress` | Cycle detection sentinel | Materialization |
 | `Materialized` | Computed value | After first force |
+| `Failed` | Cached evaluation error | Any failed materialization |
 
 **Impact on existing operations:**
 
@@ -1683,6 +1706,113 @@ type BuiltinFn = fn(args, named, depth, call_span) -> Result<Rc<Thunk>, Box<Eval
 ```
 
 Builtins that currently return materialized values wrap them in `Thunk::new_materialized()`. Builtins like `$map` and `$if` can now return thunks directly. This removes the forced materialization boundary that currently prevents builtins from participating in lazy evaluation.
+
+**Rationale:** The current signature forces all builtins to return fully materialized values, which prevents operations like `$if` from returning the chosen branch as a thunk, and prevents `$map` from returning a dict with lazy PendingCall values. Changing the return type to `Rc<Thunk>` allows builtins to participate in lazy evaluation while maintaining backward compatibility (wrap in `Thunk::new_materialized()` for eager builtins).
+
+**Type inference is unchanged** — return types are determined by unifying the call signature during type checking, not by inspecting returned thunk contents. This change is a runtime optimization only.
+
+**Performance trade-off:** Inherently materializing builtins (~60% of the 28 current builtins: arithmetic, string ops, comparisons) pay two extra heap allocations per call (Thunk + Rc wrapper) to wrap their `Value` result. For lazy-capable builtins (`$if`, `$merge`, `$map`, `$update`), this eliminates the forced materialization boundary. Net benefit when lazy operations dominate. If profiling shows the overhead is significant, a dual-signature approach (`EagerBuiltinFn` vs `LazyBuiltinFn`) could be considered.
+
+### Current vs Planned Laziness Analysis
+
+This table documents every operation's current materialization behavior and the planned improvement in Phase 5.
+
+| Operation | Current Behavior | Planned Behavior | Phase | Rationale |
+|-----------|------------------|------------------|-------|-----------|
+| **Control Flow** | | | | |
+| `$if` | Materializes condition + chosen branch | Return branch thunk directly (no materialization) | 5b | The chosen branch should stay lazy until accessed by caller |
+| `$and` | Materializes first arg; second materialized only if first is true (short-circuit via `$if`) | No change (already optimal via lazy `$if`) | — | Short-circuit via `[fn [a b] [call $if $a $b false]]` |
+| `$or` | Materializes first arg; second materialized only if first is false (short-circuit via `$if`) | No change (already optimal via lazy `$if`) | — | Short-circuit via `[fn [a b] [call $if $a true $b]]` |
+| `$not` | Materializes argument | No change (must inspect value) | — | Inherently materializing |
+| `$when`, `$unless` | Materializes condition + chosen body via `$if` | Body returned as thunk (implicit benefit from Phase 5b `$if` change) | 5b (implicit) | Delegates to `$if`; no code change needed |
+| `$cond` | Materializes conditions in order + chosen branch via `$if` | Branches returned as thunks (implicit benefit from Phase 5b `$if` change) | 5b (implicit) | Delegates to `$if`; no code change needed |
+| **Dict Operations** | | | | |
+| `$merge` | Eagerly clones both input dicts | Lazy overlay: right shadows left, O(1) construction, O(2) access per key. Chained merges create overlay depth; flattens on iteration. Type is still eagerly inferred. | 5b | Lazy overlay is O(1) construction vs O(n) clone; values stay thunks |
+| `$get`, `$get-or` | Structural: returns value thunk | No change (already optimal) | — | Already lazy |
+| `$keys` | Structural: keys always evaluated | No change (keys are never thunks) | — | Keys must be known to construct dict |
+| `$values` | Structural: returns list of thunks | No change (already optimal) | — | Already lazy |
+| `$entries` | Structural: returns list of entry dicts | No change (values stay as thunks) | — | Already lazy |
+| `$set`, `$remove` | Structural: add/remove entries (`$set` delegates to `$merge`, inherits its eager cloning) | No change (values stay as thunks; `$set` benefits implicitly from Phase 5b `$merge` improvement) | — | Already lazy on values |
+| `$update` | Eagerly applies function to old value | Return dict with PendingCall thunk on updated value | 5e | Defers function application until value accessed |
+| `$has?` | Wraps `$try` around access | No change (access is structural) | — | Already optimal |
+| `$get-in`, `$get-in-or` | Materializes each step of path | No change (must traverse nested dicts) | — | Inherently materializing to walk path |
+| `$length` | Materializes dict to count entries | No change (must count entries) | — | Inherently materializing |
+| `$empty?` | Calls `$length` then compares to 0 | No change (inherently materializing) | — | Depends on `$length` |
+| **Universal Collection Ops** | | | | |
+| `$map` on dict | Eager: builds full result dict with materialized values, O(n²) | Lazy: return dict with PendingCall thunks, O(n) construct / O(1) per access | 5e | Enables lazy dict transforms |
+| `$map` on seq | N/A (Seq not yet implemented) | Lazy: return seq applying function to each element | 5e | Enables infinite sequence transforms |
+| `$filter` on dict | Eager: builds full result dict, O(n²) | Return Seq (must evaluate predicates) | 5e | Predicates must run to know which keys to keep |
+| `$filter` on seq | N/A (Seq not yet implemented) | Lazy: return seq filtering elements | 5e | Lazy sequence filtering |
+| `$reduce`, `$fold` | Materializes accumulator at each step | No change (inherently materializing) | — | Accumulator pattern requires sequential forcing |
+| `$map-entries` | Eager: builds full result dict with accumulator pattern, O(n²) | Return dict with PendingCall thunks on transformed entries | 5e | Same as `$map` on dicts |
+| `$from-entries` | Eagerly reduces entry pairs into dict via `$merge` | No change (must construct concrete dict) | — | Inherently materializing |
+| `$any?`, `$all?` | Short-circuit: materializes elements until condition met/failed | No change (inherently materializing) | — | Predicates must run |
+| `$until` | Eagerly iterates until predicate holds | No change (inherently materializing) | — | Must evaluate predicate each step |
+| `$find-deep` | Materializes while searching | No change (inherently materializing) | — | Must traverse structure |
+| `$flatten` | Eagerly traverses and rebuilds | No change (must inspect values to check if list) | — | Inherently materializing |
+| `$zip` | Eagerly builds paired dict | Return lazy Seq for sequences; eager for dicts | 5e | Seq zip is lazy, dict zip is materializing |
+| **List Operations** | | | | |
+| `$first` | Structural: returns first value thunk | No change (already optimal) | — | Already lazy |
+| `$nth`, `$last` | Structural: returns value thunk by position | No change (already optimal) | — | Already lazy |
+| `$rest` | Eagerly clones dict minus first entry | Return Seq tail for sequences; O(1) | 5e | Seq `rest` is O(1) vs O(n) dict clone |
+| `$cons` | Eagerly clones and shifts all entries | Return Seq cons for sequences; O(1) | 5e | Seq `cons` is O(1) vs O(n) dict clone |
+| `$conj` | Materializes + clones dict O(n), inserts new entry O(1) (delegates to `$append` builtin) | No change (acceptable for dicts) | — | O(n) clone + O(1) insert |
+| `$concat` | Eagerly clones and merges both lists | Return Seq concat for sequences | 5e | Seq concat is lazy, dict concat is eager |
+| `$reverse` | Eagerly builds reversed dict | No change (must know all entries to reverse) | — | Inherently materializing |
+| `$reindex` | Eagerly rebuilds with dense 0..n keys | No change (must traverse all entries) | — | Inherently materializing |
+| `$sort`, `$sort-by` | Eagerly materializes all values to compare | No change (inherently materializing) | — | Must compare all values to sort |
+| `$take` | Positional slice: preserves thunks | Return lazy Seq for sequences | 5e | Seq `take` is O(1), dict `take` is structural |
+| `$drop` | Positional slice: preserves thunks | Return lazy Seq for sequences | 5e | Seq `drop` is O(1), dict `drop` is structural |
+| `$slice` | Positional slice: preserves thunks | No change (already optimal for dicts) | — | Already lazy on values |
+| **Sequences** | | | | |
+| `$range` | Eager: builds full dict O(n²) | Return lazy Seq, O(1) construction; infinite if 1-arg | 5d | Enables infinite ranges |
+| `$repeat` | Eager: builds full dict | Return lazy Seq, O(1) construction; infinite if 1-arg | 5d | Enables infinite repetition |
+| `$cycle` | Eager: builds full dict | Return lazy Seq, O(1) construction; infinite if 1-arg | 5d | Enables infinite cycling |
+| `$iterate` | Not yet implemented | Return lazy infinite Seq: `x, f(x), f(f(x)), ...` | 5d | New lazy sequence constructor |
+| `$unfold` | Not yet implemented | Return lazy Seq from step function | 5d | New lazy sequence constructor |
+| `$seq` | Not yet implemented | Low-level Seq constructor (cons cell) | 5c | Rust builtin for Seq construction |
+| `$collect` | Not yet implemented | Materialize Seq into dict with integer keys 0..n | 5c | Seq → Dict boundary |
+| `$head` | Not yet implemented | Materialize head of Seq | 5c | Forces first element |
+| `$tail` | Not yet implemented | Return tail Seq (lazy, does not materialize) | 5c | Structural Seq operation |
+| `$seq?` | Not yet implemented | Type check: returns Bool | 5c | Type introspection |
+| **Arithmetic & Comparison** | | | | |
+| `$+`, `$-`, `$*`, `$/` | Materialize both operands | No change (inherently materializing) | — | Must inspect numeric values |
+| `$quot`, `$mod` | Materialize both operands | No change (inherently materializing) | — | Depends on arithmetic |
+| `$=`, `$<`, `$>`, `$<=`, `$>=` | Materialize both operands | No change (inherently materializing) | — | Must compare values |
+| `$to-int`, `$to-float` | Materialize argument | No change (inherently materializing) | — | Must parse/convert value |
+| `$floor`, `$ceil`, `$round`, `$trunc` | Materialize argument | No change (inherently materializing) | — | Must inspect numeric value |
+| **Strings** | | | | |
+| `$str` | Materialize all arguments | No change (inherently materializing) | — | Must concatenate string content |
+| `$split`, `$replace`, `$upper`, `$lower`, `$trim` | Materialize argument | No change (inherently materializing) | — | Must inspect string content |
+| `$join` | Materializes separator + all list elements | No change (inherently materializing) | — | Must concatenate all strings |
+| `$words` | Materializes string, filters empty | No change (inherently materializing) | — | Depends on `$split` |
+| **Composition** | | | | |
+| `$apply` | Double-forces: materializes invoke_function result thunk | Return thunk directly | 5b | Current impl materialize+rewrap; should return invoke_function thunk as-is |
+| `$identity` | Structural: returns argument thunk | No change (already optimal) | — | Already lazy |
+| `$compose` | Structural: returns function thunk | No change (functions are always thunks) | — | Already lazy |
+| `$->` (threading) | Structural: threads thunk through functions | No change (already optimal) | — | Already lazy |
+| **Runtime & Introspection** | | | | |
+| `$eval` | Deep-forces all thunks recursively | No change (inherently materializing by definition) | — | Explicit materialization primitive |
+| `$type-of` | Materializes argument to inspect type | No change (inherently materializing) | — | Must know runtime type |
+| `$error` | Structural: constructs error value | No change (error is a value) | — | Structural |
+| `$try`, `$try-or` | Materializes body, catches exceptions | No change (must run body to catch errors) | — | Inherently materializing |
+| `$assert` | Materializes condition | No change (inherently materializing) | — | Must check condition |
+| `$from-json` | Materializes JSON string, parses | No change (inherently materializing) | — | Must parse entire JSON |
+| `$include` | Evaluates file, returns thunk | Add caching: return cached thunk on re-include | 5f | Jsonnet-style include memoization |
+| **Internal (eval.rs)** | | | | |
+| `eval_key` (dict construction) | Materializes all dict keys | No change (IndexMap requires concrete keys) | — | Keys must be known for dict insertion |
+| `eval_as_dict` (access chains) | Materializes target for access | No change (must know dict structure to access) | — | Inherently materializing to perform access |
+| `builtin_keys` | Materializes dict | No change (keys are always evaluated) | — | Keys are never thunks |
+
+**Error reporting impact:** Operations that shift from eager to lazy (e.g., `$if`, `$merge`, `$map`) will report errors at access time rather than construction time. This provides more accurate source locations (pointing to where materialization failed) but changes error timing. Inherently materializing operations continue to produce errors at call time.
+
+**Summary of Phase 5 changes:**
+- **5a**: Add `PendingCall` and `Failed` thunk states
+- **5b**: Change `BuiltinFn` return type to `Rc<Thunk>`; make `$if`, `$merge`, `$apply` lazier
+- **5c**: Add `Value::Seq` and basic Seq builtins (`seq`, `head`, `tail`, `collect`, `seq?`)
+- **5d**: Convert `$range`, `$repeat`, `$cycle` to Seq constructors; add `$iterate`, `$unfold`
+- **5e**: Make `$map`/`$filter` dual-dispatch (dict vs Seq); make `$update` use PendingCall
+- **5f**: Add include caching
 
 ---
 

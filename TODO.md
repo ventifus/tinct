@@ -305,7 +305,7 @@ Add `Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)` for lazy sequences.
 - [ ] Handle `Seq` in `value_to_display_string` (show `Seq(head, ...)`)
 - [ ] Handle `Seq` in `deep_materialize` (force head, recurse on tail up to depth limit)
 - [ ] Add visited set to `deep_materialize` for cycle tracking across mutual dict references (Nix `forceValueDeep` pattern) — also flagged by eval-engine + performance-expert reviews
-- [ ] Add `Seq` type to type system (`types.rs`)
+- [ ] Add `Type::Seq(Box<Type>)` to type system — monomorphic in element type, not a subtype of Record (`types.rs`)
 - [ ] Sequence builtins (Rust-native): `seq`, `head`, `tail`, `collect`, `seq?`
 - [ ] Tests: seq construction, head/tail, collect, type-of, JSON error, display
 - [ ] Fix `empty?` to not hang on infinite sequences — currently does not short-circuit (`stdlib/prelude.llt:156`) [Minor, stdlib-author]
@@ -334,6 +334,7 @@ Make `$map` and `$filter` work on both dicts and sequences, with Rust implementa
 - [ ] `$drop` on seq: return seq skipping first n elements
 - [ ] `$reduce` on seq: accumulate, materializing each step
 - [ ] Move `map`, `filter`, `take`, `drop`, `reduce` from LLT prelude to Rust builtins
+- [ ] Decide typing strategy for dual-dispatch ops (`$map`/`$filter` on Record vs Seq): `Any` escape hatch, union types, or separate functions [Major, type-theorist]
 - [ ] Tests: map/filter on dicts (lazy verification), map/filter on seqs, mixed pipelines
 - [ ] Document `join` O(n^2) due to repeated str concatenation; optimize in Rust builtin (`stdlib/prelude.llt:88-97`) [Minor, stdlib-author]
 
@@ -359,13 +360,10 @@ Every operation should be as lazy as possible. After this step, all operations t
 - [ ] `$if` -- materializes chosen branch (fix: return branch thunk, Phase 5b)
 - [ ] `$merge` -- clones both dicts (fix: lazy overlay, Phase 5b)
 - [ ] `$update` -- eagerly applies function (fix: PendingCall on updated value, Phase 5e)
-- [ ] `$concat` -- eagerly clones and merges (fix: Seq concat, or lazy dict overlay)
-- [ ] `$cons` -- eagerly clones and shifts (fix: Seq cons, O(1))
-- [ ] `$rest` -- eagerly clones dict minus first entry (fix: Seq tail, O(1))
-- [ ] `$reverse` -- eagerly builds new dict (fix: Seq or lazy reindexing)
-- [ ] `$zip` -- eagerly builds paired dict (fix: lazy Seq zip)
-- [ ] `$flatten` -- eagerly traverses and rebuilds (fix: lazy Seq flatten)
-- [ ] `$sort`, `$sort-by` -- eagerly materializes all values (inherently eager: must compare)
+- [ ] `$concat` -- eagerly clones and merges (fix: Seq concat for sequences; stays eager for dicts)
+- [ ] `$cons` -- eagerly clones and shifts (fix: Seq cons O(1) for sequences; stays eager for dicts)
+- [ ] `$rest` -- eagerly clones dict minus first entry (fix: Seq tail O(1) for sequences; stays eager for dicts)
+- [ ] `$zip` -- eagerly builds paired dict (fix: lazy Seq zip for sequences; stays eager for dicts)
 - [ ] `$apply` -- double-forces by materializing `invoke_function()`'s result thunk (fix: return thunk directly, Phase 5b)
 
 **Currently eager, inherently materializing (document justification):**
@@ -376,16 +374,26 @@ Every operation should be as lazy as possible. After this step, all operations t
 - [ ] `builtin_length` materializes dict — must count entries; add comment (`src/builtins.rs:409`) [Minor, laziness-auditor]
 - [ ] `$reduce`, `$fold` -- accumulator pattern requires sequential materialization
 - [ ] `$sort`, `$sort-by` -- must compare values to determine order
+- [ ] `$reverse` -- must know all entries to reverse (list operation inherently materializing)
+- [ ] `$reindex` -- must traverse all entries to rebuild with dense 0..n keys
+- [ ] `$flatten` -- must inspect values to check if they are lists (inherently materializing)
 - [ ] `$length` -- must know all entries (on seqs: must traverse entirely)
+- [ ] `$empty?` -- depends on `$length`, inherently materializing
+- [ ] `$get-in`, `$get-in-or` -- must traverse nested dict path, materializing each step
 - [ ] `$=`, `$<` and comparisons -- must inspect values
 - [ ] `$+`, `$-`, `$*`, `$/` and arithmetic -- must compute
-- [ ] `$str`, `$split`, `$replace`, string ops -- must inspect string content
+- [ ] `$quot`, `$mod`, `$ceil`, `$trunc` -- derived arithmetic, inherently materializing
+- [ ] `$str`, `$split`, `$replace`, `$upper`, `$lower`, `$trim` -- must inspect string content
+- [ ] `$join`, `$words` -- derived string ops, inherently materializing
 - [ ] `$to-int`, `$to-float`, `$floor`, `$round` -- must convert
 - [ ] `$type-of` -- must inspect value variant
 - [ ] `$from-json` -- must parse entire JSON string
 - [ ] `$eval` -- deep-forces all thunks by definition
 - [ ] `$error` -- constructs error value (structural, but the error itself is concrete)
+- [ ] `$try`, `$try-or` -- must materialize body to catch errors
+- [ ] `$assert` -- must materialize condition to check
 - [ ] `$find-deep` -- must traverse structure
+- [ ] `$any?`, `$all?` -- short-circuit but materializes elements until condition met/failed
 
 **Already lazy:**
 
@@ -399,7 +407,6 @@ Every operation should be as lazy as possible. After this step, all operations t
 - [x] `$nth` -- returns nth value thunk
 - [x] `$identity` -- returns argument as-is
 - [x] `$and`, `$or` -- short-circuit via lazy `$if` args
-- [x] `$try` -- lazy on success value (wraps in dict)
 
 ## Phase 6: Tooling
 
