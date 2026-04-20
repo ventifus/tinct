@@ -1,4 +1,4 @@
-# Lazy Lisp Transformer
+# tinct
 
 A **unified data representation and transformation language** that combines JSON-like simplicity with lazy functional programming power.
 
@@ -56,7 +56,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Rust-native builtins** -- 28 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O) with `standard_builtins()` registry (Phase 3a + 3c)
 - **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in LLT itself, loaded via `create_stdlib_env()` (Phase 3a-llt)
 - **Error reporting** -- `EvalError` with definition-site span, materialization-site span, and `StackFrame` traces
-- **Interactive REPL** -- `llt repl` with line editing, history, bracket matching, scope chains, and error recovery (Phase 6a)
+- **Interactive REPL** -- `tinct repl` with line editing, history, bracket matching, scope chains, and error recovery (Phase 6a)
 - **Corpus testing** -- file-based test suite in `tests/corpus/` with `===` delimiter for expected output
 
 ## Examples
@@ -149,7 +149,7 @@ cargo run --features repl -- repl               # Start interactive REPL
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
 | `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `set_include_context()`, `clear_include_context()`, `IncludeContext`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
 | `src/repl.rs` | REPL session: scope chains, bracket matching, error recovery |
-| `src/main.rs` | CLI (`llt` binary): `llt eval [OPTIONS] <FILE>` -- evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing, `$include` context setup |
+| `src/main.rs` | CLI (`tinct` binary): `tinct eval [OPTIONS] <FILE>` -- evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing, `$include` context setup |
 | `stdlib/prelude.llt` | LLT standard library: stdlib functions written in LLT itself |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
@@ -174,7 +174,7 @@ cargo run --features repl -- repl               # Start interactive REPL
 
 ### Corpus Tests (`tests/corpus/`)
 
-File-based test suite with auto-discovery. Each `.txt` file is parsed; valid inputs must succeed, invalid inputs must fail. Tests can include expected AST output after a `===` delimiter:
+File-based test suite with auto-discovery. Each `.llt-eval` file is parsed; valid inputs must succeed, invalid inputs must fail. Tests can include expected output after a `===` delimiter:
 
 ```
 [key: value]
@@ -201,7 +201,7 @@ tests/corpus/
     stdlib/         -- stdlib function evaluation
 ```
 
-Add a test by creating a `.txt` file in the appropriate directory, then run `just test-corpus`.
+Add a test by creating a `.llt-eval` file in the appropriate directory, then run `just test-corpus`.
 
 ## Requirements
 

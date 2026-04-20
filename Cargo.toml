@@ -1,16 +1,16 @@
 [package]
-name = "lazy_lisp_transformer"
+name = "tinct"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 [[bin]]
-name = "llt"
+name = "tinct"
 path = "src/main.rs"
 required-features = ["cli"]
 
 [lib]
-name = "lazy_lisp_transformer"
+name = "tinct"
 path = "src/lib.rs"
 
 [profile.release]

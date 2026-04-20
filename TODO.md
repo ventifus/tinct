@@ -28,7 +28,7 @@ Extracted from DESIGN.md. Tracks what's built, what's next, and what's deferred.
 
 The smallest slice that produces a working `parse -> eval -> output` pipeline. Lazy from the start — every value is a thunk.
 
-**Deliverable:** `llt eval input.llt` outputs JSON. End-to-end pipeline.
+**Deliverable:** `tinct eval input.llt` outputs JSON. End-to-end pipeline.
 
 ### eval-foundation: Value, Thunk, Environment
 
@@ -147,10 +147,10 @@ Depends on builtins-core. Load `stdlib/prelude.llt` to provide the rest of the s
 
 ### cli-json: CLI + JSON Output
 
-Depends on builtins-core. After this step, `llt eval input.llt` produces JSON.
+Depends on builtins-core. After this step, `tinct eval input.llt` produces JSON.
 
 - [x] JSON serialization of Value (`value_to_json` in `lib.rs`, `serde_json`)
-- [x] `llt eval input.llt` — evaluate file, serialize final value as JSON to stdout (clap CLI)
+- [x] `tinct eval input.llt` — evaluate file, serialize final value as JSON to stdout (clap CLI)
 - [x] Stdin input: parse stdin as JSON, inject as `$$` for the first document (`eval_file_with_input`)
 - [x] `--format` flag: output as JSON (default) or LLT (YAML deferred — would require `serde_yaml` dependency)
 - [x] `--eval` flag: deep-force all thunks before serializing (surface errors before partial output)
@@ -460,7 +460,7 @@ Already lazy — no work needed. Kept for completeness.
 
 Execution order: REPL → LSP → tree-sitter. One commit per item.
 
-### repl: REPL (`llt repl`)
+### repl: REPL (`tinct repl`)
 
 - [x] Add `rustyline` dependency (optional, under `repl` feature)
 - [x] Expose eval internals: `eval_document`, `eval`, `Environment`, `Value`, `Thunk` as pub in lib.rs
@@ -476,7 +476,7 @@ Execution order: REPL → LSP → tree-sitter. One commit per item.
 - [x] Integration tests (bracket matching, scope chain, `$$` pipeline, error recovery, stdlib)
 - [x] Just recipe: `just repl` (with `-it` for interactive TTY)
 
-### lsp: LSP server (`llt lsp`)
+### lsp: LSP server (`tinct lsp`)
 
 Uses `lsp-server` (sync), not `tower-lsp` (async), because `Rc<RefCell<Environment>>` is not Send/Sync.
 
@@ -492,7 +492,7 @@ Uses `lsp-server` (sync), not `tower-lsp` (async), because `Rc<RefCell<Environme
   - Requests: `initialize`, `shutdown`, `textDocument/hover`
   - Notifications: `didOpen`, `didChange`, `didClose`
   - Publish diagnostics on every document change
-- [x] CLI wiring: `Lsp` variant in `Commands`, `llt lsp` on stdio
+- [x] CLI wiring: `Lsp` variant in `Commands`, `tinct lsp` on stdio
 - [x] Tests (span conversion, hover analysis, diagnostic generation, simulated LSP client)
 - [x] Just recipe: `just lsp`
 
@@ -521,15 +521,35 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 
 Tokenizer producing a flat token stream. Whitespace-sensitivity for access chains handled here.
 
-- [ ] Token enum: OpenBracket, CloseBracket, Colon, Semicolon, Dot, Range, At, Ellipsis, DocSeparator, Int(i64), Float(f64), BareWord(String), QuotedString(String), VarRef(String), BoolLit(bool)
+- [ ] Token enum: OpenBracket, CloseBracket, Colon, Semicolon, Dot, Range, At, Ellipsis, DocSeparator, Newline, Comment(String), Int(i64), Float(f64), BareWord(String), QuotedString(String), VarRef(String), BoolLit(bool)
 - [ ] Single-pass tokenization with source spans on every token
 - [ ] Whitespace-sensitive access detection: Dot/OpenBracket immediately after VarRef or CloseBracket (no whitespace) emits access-context tokens
-- [ ] Comment skipping (`#` to EOL)
+- [ ] Comment tokens (`#` to EOL, preserves text for formatter)
+- [ ] Newline tokens (significant whitespace for blank line detection; consecutive Newlines encode blank lines)
 - [ ] String escapes (`\"`, `\\`, `\n`, `\t`, `\r`)
 - [ ] Bare word denylist matching grammar.pest rules
 - [ ] CRLF line ending support: track line boundaries correctly for `\r\n` (pest and LSP convert.rs both assume `\n` only)
 - [ ] Add inline comments to grammar.pest explaining why access_expr/access_chain are compound-atomic (`grammar.pest:137-148`) [Major, grammar-architect]
 - [ ] Fix grammar.pest COMMENT rule misleading NEWLINE comment (`grammar.pest:8`) [Nit, grammar-architect]
+
+### formatter: Formatter/Pretty-Printer (`tinct fmt`)
+
+Uses the hand-written lexer's token stream (comment-preserving, unlike pest). See DESIGN.md §Formatter for full design.
+
+- [x] Design formatting rules (single-line threshold, comment attachment, semicolon handling) — see DESIGN.md §Formatter
+- [ ] Formatting engine (`src/formatter.rs`)
+  - Indent nested `[]` by 2 spaces per depth
+  - One entry per line (unless bracket expr fits within 80 chars AND has ≤4 entries)
+  - Comments: line-affinity attachment (trailing = same line, leading = own line)
+  - Semicolons always removed (canonical whitespace-separated style)
+  - Consistent spacing: one space after `:`
+  - `---` separators get blank lines above and below
+  - Collapse multiple blank lines to one
+  - Access chains never broken across lines
+  - Strip trailing whitespace, ensure trailing newline
+- [ ] CLI subcommand: `Fmt` variant with `--check`, `--in-place`, `--stdin` (zero config)
+- [ ] Tests (idempotency, comment preservation, indentation, single-line vs multi-line, edge cases)
+- [ ] Just recipes: `just fmt-llt FILE`, `just fmt-llt-check FILE`
 
 ### iterative-parser: Iterative parser (`src/parser2.rs`)
 
@@ -549,24 +569,9 @@ Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed w
 
 Refactor thread-local IncludeContext to parameter-passing for LSP multi-file support (integration-verifier review).
 
+- [x] Design eval-stack parameter threading for IncludeContext — see DESIGN.md §EvalContext
 - [ ] Replace thread-local `INCLUDE_CTX` with parameter passed through eval stack
 - [ ] Enable LSP multi-file support where multiple files need separate include guards
-
-### formatter: Formatter/Pretty-Printer (`llt fmt`)
-
-Uses the hand-written lexer's token stream (comment-preserving, unlike pest).
-
-- [ ] Formatting engine (`src/formatter.rs`)
-  - Indent nested `[]` by 2 spaces per depth
-  - One entry per line (unless bracket expr fits on one line, ~80 char threshold)
-  - Comments stay attached to their line
-  - Semicolons replaced with newlines (or preserved in single-line mode)
-  - Consistent spacing: one space after `:`
-  - `---` separators get blank lines above and below
-  - Collapse multiple blank lines to one
-- [ ] CLI subcommand: `Fmt` variant with `--check`, `--in-place`, `--stdin`
-- [ ] Tests (idempotency, comment preservation, indentation, single-line vs multi-line, edge cases)
-- [ ] Just recipes: `just fmt-llt FILE`, `just fmt-llt-check FILE`
 
 ### parser-integration: Integration
 
@@ -607,6 +612,7 @@ Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 
 Performance improvements identified by performance-expert review (2026-04-19) that don't depend on the Parser Rewrite.
 
+- [ ] Design allocation strategy (arena vs Rc, flat env vs chain)
 - [ ] Arena allocation for thunks/environments — reduce per-thunk Rc<RefCell<ThunkState>> overhead, improve cache locality
 - [ ] Flat environment with slot indices — replace O(n) chain walk with O(1) slot lookup (requires compile-time slot assignment)
 - [ ] String interning for dict keys and small strings — reduce allocation pressure, improve key comparison
@@ -653,6 +659,7 @@ Replace the current closed-strict/open-lenient record unification with full Remy
 
 **Depends on:** seq-core for sequence type support in row polymorphism.
 
+- [ ] Design Remy-style row unification model (row variable binding, remainder semantics, occurs check)
 - [ ] Add VarLevel (integer rank) tracking to type variables for sound let-polymorphism generalization (Elm's rank-based approach — determines which type variables can be generalized at `let` boundaries)
 - [ ] Extend `Substitution::apply` to splice bound row variable fields into records (e.g., `[a: Int | ...r]` with `r → [b: String]` produces `[a: Int, b: String]`)
 - [ ] Unify row rests: `RowVar` vs `RowVar` binds one to the other, `RowVar` vs `Closed` binds the var to the leftover fields as a closed record
@@ -670,23 +677,30 @@ Replace the current closed-strict/open-lenient record unification with full Remy
 
 ## sandbox: Sandboxing & Security
 
-Design and implement filesystem sandboxing for `$include` and any future I/O operations. Currently `$include` can read any file the process can access (mitigated only by file size limit and cycle detection).
+Design and implement four unprivileged sandboxing layers. See DESIGN.md §Sandboxing & Security for full design.
 
-- [ ] Design sandboxing model: restrict includes to a subtree of the initial file's directory
-- [ ] Decide policy for absolute paths (block entirely vs. resolve relative to sandbox root)
-- [ ] Decide policy for symlinks (resolve and check target is within sandbox, or block)
-- [ ] Implement sandbox root calculation in `IncludeContext`
-- [ ] Add `canonical.starts_with(&root_dir)` check in `builtin_include`
-- [ ] Add CLI flag to configure sandbox root (e.g., `--include-root`)
-- [ ] Test: relative paths within sandbox succeed
-- [ ] Test: `../` traversal beyond sandbox root fails
-- [ ] Test: absolute paths outside sandbox fail
-- [ ] Test: symlinks pointing outside sandbox fail
+- [x] Design sandboxing model — see DESIGN.md §Sandboxing & Security
+- [x] Decide policy for absolute paths — allowed if within any --allow-path
+- [x] Decide policy for symlinks — canonicalize, then check against allowlist
+- [ ] Implement filesystem allowlist in `EvalConfig` (depends on include-refactor)
+- [ ] Add path-ancestor allowlist check in `builtin_include` (after canonicalize, before cache)
+- [ ] Add `--allow-path` global CLI flag (default: `.`)
+- [ ] Implement Landlock filesystem ACLs (Linux 5.13+, graceful degradation)
+- [ ] Implement seccomp-bpf network sandbox (block socket/connect/bind/listen/accept)
+- [ ] Implement seccomp-bpf process sandbox (block fork/execve/execveat, allow clone)
+- [ ] Implement rlimit resource caps (RLIMIT_AS, RLIMIT_CPU eval-only, RLIMIT_NOFILE, RLIMIT_FSIZE)
+- [ ] Add `--allow-network`, `--max-memory`, `--max-cpu`, `--max-fds` global CLI flags
+- [ ] Test: relative paths within allowlist succeed
+- [ ] Test: `../` traversal beyond allowlist fails
+- [ ] Test: absolute paths outside allowlist fail
+- [ ] Test: symlinks pointing outside allowlist fail
+- [ ] Test: graceful degradation when Landlock/seccomp unavailable
 
 ## type-extensions: Type System Extensions
 
 Future type system work identified by type-theorist review (2026-04-19).
 
+- [ ] Design type system extension roadmap (Seq types, gradual typing, type classes, error recovery)
 - [ ] Add Type::Seq inference to typecheck.rs — sequence builtins ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) currently infer as Any; annotate return types in `check_call` for LSP hover and type safety (`src/typecheck.rs`) [Major, type-theorist]
 - [ ] Fix polymorphic call unification for named args — requires extending `Type::Function` to carry param names; after positional unification, named args are not unified (`src/typecheck.rs:389-447`) [Major, type-theorist, deferred from types-major-fixes]
 - [ ] Gradual typing with Any→concrete boundary tracking and blame (TypeScript/Typed Racket model)
@@ -767,6 +781,7 @@ Enhance error reporting with richer context types inspired by Elm, Nickel, and r
 
 Core error model improvements. Foundation for all later error work.
 
+- [ ] Design structured error model (enum variants, error codes, style guidelines)
 - [ ] Migrate freeform string error constructors to structured enum variants (`key_not_found`, `type_mismatch`, `arity_mismatch`)
 - [ ] Add structured error codes (E001, E002, ...) for programmatic error filtering and documentation linking
 - [ ] Document dual-span error model in DESIGN.md (currently undocumented design decision)
@@ -792,7 +807,7 @@ User-facing error presentation improvements.
 
 - [ ] Source snippets in error output — include source context with carets like rustc (span-integrity-checker review)
 - [ ] Span-aware error recovery in REPL — show source line with caret pointing to error span (span-integrity-checker review)
-- [ ] `llt explain <error-code>` command for extended help on error categories (span-integrity-checker review, Elm-inspired)
+- [ ] `tinct explain <error-code>` command for extended help on error categories (span-integrity-checker review, Elm-inspired)
 - [ ] Add LSP `related_information` for materialization-site spans and stack frames (currently discarded)
 
 ### error-message-polish: Error Message Polish (Minor)

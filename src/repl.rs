@@ -194,7 +194,7 @@ impl ReplSession {
 // ── rustyline I/O (behind `repl` feature flag) ─────────────────────────────
 
 /// Primary prompt shown when the REPL is ready for input.
-const PROMPT_PRIMARY: &str = "llt> ";
+const PROMPT_PRIMARY: &str = "tinct> ";
 /// Continuation prompt shown during multi-line input (unbalanced brackets).
 const PROMPT_CONTINUATION: &str = "...> ";
 
@@ -229,14 +229,14 @@ pub fn run_repl() -> Result<(), String> {
         let mut editor =
             DefaultEditor::new().map_err(|e| format!("failed to initialize editor: {e}"))?;
 
-        // Try to load history from ~/.llt_history (best-effort).
+        // Try to load history from ~/.tinct_history (best-effort).
         let history_path =
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".llt_history"));
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".tinct_history"));
         if let Some(ref path) = history_path {
             let _ = editor.load_history(path);
         }
 
-        eprintln!("Lazy Lisp Transformer REPL (Ctrl-D to exit)");
+        eprintln!("tinct REPL (Ctrl-D to exit)");
 
         let mut buffer = String::new();
         let mut bracket_depth: i32 = 0;

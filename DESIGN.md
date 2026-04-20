@@ -1121,11 +1121,11 @@ The `---` boundary does **not** materialize the previous document. `$$` is a laz
 LLT is a pure data transformation language with no in-language side effects. The program evaluates to a value; the CLI serializes it:
 
 ```
-llt eval file.llt              # evaluate, output result as JSON
-llt eval -f yaml file.llt      # output as YAML (not yet implemented -- deferred)
-llt eval --eval file.llt       # deep-force all thunks before serializing (surfaces errors before partial output)
-llt eval -                     # read LLT source from stdin
-cat data.json | llt eval file.llt  # stdin JSON parsed and injected as $$ for first document
+tinct eval file.llt              # evaluate, output result as JSON
+tinct eval -f yaml file.llt      # output as YAML (not yet implemented -- deferred)
+tinct eval --eval file.llt       # deep-force all thunks before serializing (surfaces errors before partial output)
+tinct eval -                     # read LLT source from stdin
+cat data.json | tinct eval file.llt  # stdin JSON parsed and injected as $$ for first document
 ```
 
 This is the Jsonnet/Nix model: the language produces data, an external tool handles I/O. Unreferenced dict entries are never computed. There is no `$write`, `$read`, `$stdout`, `$stdin`, or channel system.
@@ -1192,6 +1192,171 @@ If the included file needs to reference local bindings, use namespaced import in
 ```
 
 Duplicate names during merge are errors (consistent with the duplicate-keys-are-errors rule). Include cycle detection is required — even with lazy values, the scope structure must be known at include time.
+
+### Sandboxing & Security
+
+LLT uses four unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are global (before the subcommand), since a single `tinct` invocation runs exactly one subcommand.
+
+#### Filesystem Sandbox (Application-Level + Landlock)
+
+Two layers of defense for `$include` and any future file I/O:
+
+**Application-level allowlist:** `$include` checks resolved paths against an allowlist before reading. All paths are canonicalized first (resolving symlinks and `../` traversal), then checked using path-ancestor matching: `canonical.ancestors().any(|a| allowed_paths.contains(a))`. This is path-element-based, not substring-based — `/tmp/allowed` does not match `/tmp/allowed2`. This is the primary control — works on all platforms, produces clear error messages.
+
+**Landlock (Linux 5.13+):** Kernel-enforced filesystem ACLs as defense-in-depth. If a bug bypasses the application-level check, Landlock catches it at the kernel level. Detected at runtime; gracefully degrades on older kernels or non-Linux platforms (logs a warning, falls back to application-level check as the sole barrier).
+
+**Allowlist model:**
+- `--allow-path <dir>` adds a directory tree to the allowlist. Repeatable. Global flag.
+- Default: `--allow-path .` (current working directory subtree). Project files accessible, nothing else.
+- `--allow-path /` disables filesystem sandboxing entirely.
+- Absolute paths in `$include` are allowed if they resolve within any allowed path.
+- Symlinks: canonicalize to real path, then check. Symlinks pointing outside all allowed paths fail.
+- `--allow-path` values are themselves canonicalized at CLI parse time (once), not on every include check.
+- Stdlib is embedded via `include_str!` at compile time — no filesystem access, unaffected by sandboxing.
+- REPL: default allow-path is cwd. LSP: workspace root (or document directory if no workspace).
+
+**Check ordering in `$include`:** canonicalize path → allowlist check → cache check → cycle detection → read file. The allowlist check happens after canonicalization (to prevent symlink bypasses) but before the cache check (to prevent cached results from bypassing updated allowlists).
+
+**Error message format:** `"include: path '/etc/passwd' is outside allowed paths (allowed: ['/home/user/project'])"` — shows resolved path and the allowlist so the user knows exactly what happened and how to fix it.
+
+```bash
+tinct --allow-path . eval main.llt                           # default (explicit)
+tinct --allow-path ./lib --allow-path /shared eval main.llt  # explicit allowlist
+tinct --allow-path / eval main.llt                           # unrestricted
+```
+
+#### Network Sandbox (seccomp-bpf)
+
+No network features exist yet, but the sandbox is designed so future features (`$fetch`, remote includes) have a security model ready.
+
+- Default: network blocked. seccomp-bpf blocks `socket`, `connect`, `bind`, `listen`, `accept` syscalls. Even if a future vulnerability allows code injection, the process cannot make network connections.
+- `--allow-network` lifts the restriction (for future network features). Global flag.
+- `--allow-host <host:port>` for fine-grained control (future — requires application-level checking since seccomp cannot filter by host).
+- Seccomp filter installed in `main()` before evaluation starts (process-level, not per-eval).
+- Linux-only; on other platforms, network features are controlled at the application level. Logs a warning on non-Linux.
+
+#### Resource Sandbox (rlimit)
+
+Prevents evaluation from consuming unbounded resources (DoS protection, runaway recursion). Uses POSIX `setrlimit` — works on Linux, macOS, and BSDs.
+
+| Limit | Default | CLI Override | Applies to |
+|-------|---------|-------------|------------|
+| `RLIMIT_AS` | 512MB | `--max-memory 1G` | All subcommands |
+| `RLIMIT_CPU` | 30s | `--max-cpu 60` | `eval` only |
+| `RLIMIT_NOFILE` | 64 | `--max-fds 128` | All subcommands |
+| `RLIMIT_FSIZE` | 10MB | — | All subcommands |
+
+`RLIMIT_CPU` applies only to `eval`. The `lsp` and `repl` subcommands are long-lived processes where cumulative CPU time is expected — a 30-second CPU cap would kill them during normal use. Memory and file descriptor limits still apply to all subcommands as safety nets.
+
+#### Process Sandbox (seccomp-bpf)
+
+LLT is a pure configuration language — it should never spawn child processes.
+
+- Always on. Blocks `fork`, `execve`, `execveat` via seccomp. `clone` is allowed because LLT uses worker threads (64MB stack for pest deep nesting workaround).
+- No CLI flag to disable — there is no legitimate reason for a config evaluator to fork or exec.
+- Linux-only; on other platforms, LLT simply never calls process-creation APIs. Logs a warning on non-Linux.
+
+#### Initialization Order
+
+Sandbox setup in `main()` follows this sequence:
+
+1. Parse CLI (clap) — get `--allow-path`, `--max-memory`, etc.
+2. Set up rlimit (resource caps)
+3. Set up seccomp-bpf (network block, process block)
+4. Set up Landlock (filesystem ACLs from `--allow-path`)
+5. Load stdlib (`create_stdlib_env()` — uses `include_str!`, no filesystem access)
+6. Dispatch subcommand (eval/repl/lsp)
+
+Seccomp and Landlock are applied before any evaluation. `prctl(PR_SET_NO_NEW_PRIVS)` is called before seccomp installation.
+
+#### Platform Support
+
+| Sandbox | Linux | macOS | Windows |
+|---------|-------|-------|---------|
+| Filesystem (application) | Yes | Yes | Yes |
+| Filesystem (Landlock) | 5.13+ | No | No |
+| Network (seccomp) | 3.5+ | No | No |
+| Resources (rlimit) | Yes | Yes | No |
+| Process (seccomp) | 3.5+ | No | No |
+
+On non-Linux platforms, the application-level filesystem check and rlimit (where available) provide the core security guarantees. seccomp and Landlock are defense-in-depth layers specific to Linux. When unavailable, a warning is logged and the application-level checks remain the sole barrier.
+
+#### EvalConfig Integration
+
+The filesystem allowlist lives in `EvalConfig` (immutable per evaluation session):
+
+```rust
+struct EvalConfig {
+    base_dir: PathBuf,
+    stdlib_env: Rc<RefCell<Environment>>,
+    allowed_paths: Vec<PathBuf>,    // canonicalized at CLI parse time
+    // future: allowed_hosts: Vec<String>,
+}
+```
+
+`$include` checks `config.allowed_paths` before reading. Landlock, seccomp, and rlimit are set up in `main()` before evaluation starts — they are process-level restrictions, not per-eval.
+
+#### Rust Crates
+
+- `landlock` — official Landlock LSM wrapper
+- `seccompiler` — seccomp-bpf filter builder (from rust-vmm/Firecracker)
+- `rlimit` — setrlimit wrapper
+
+### Formatter (`llt fmt`)
+
+**Zero-configuration** code formatter for LLT files. Operates on the hand-written lexer's token stream (not the AST), so comments and whitespace are preserved and reformatted.
+
+**Architecture:** The formatter lexes source into a token stream (including comment tokens), groups tokens into bracket-delimited blocks, applies formatting rules, and emits reformatted source. It does not parse to AST — this avoids losing comments (pest silently drops them) and avoids a dependency on the iterative parser.
+
+#### Line-Breaking: Width + Element Count
+
+A bracket expression `[...]` is rendered on a single line if both conditions are met:
+1. The fully-expanded single-line form fits within **80 characters** (including indentation)
+2. The expression contains **≤ 4 entries** (key-value pairs or positional values)
+
+If either condition fails, the expression is expanded to one entry per line, indented 2 spaces deeper than the opening bracket. There is no middle ground — expressions are either fully collapsed or fully expanded.
+
+**Exception:** Function parameter lists (`[fn [params...] body]`) and function type parameter lists (`Fn@Return [Params]`) are always rendered on a single line regardless of width, since splitting params across lines hurts readability.
+
+**Entry counting:** The element count applies to the immediate bracket level, not recursively. A nested bracket like `[@[type: Number default: 0] $expr]` counts as 2 entries at the outer level (the annotation dict and `$expr`), regardless of how many entries the inner `[type: Number default: 0]` contains. Each `...` or `...name` rest entry counts as one entry.
+
+**Rationale:** Width-only (gofmt-style) produces unreadable dense lines for dicts with many short entries. Optimal-layout algorithms (Wadler-Lindig) are overkill for LLT's relatively flat structure. The element count cap of 4 matches the existing stdlib conventions.
+
+#### Comment Attachment: Line-Affinity
+
+Comments are attached to code based on their line position:
+
+- **Trailing comment:** A `#` comment on the same line as code stays attached to that code. `x: 5  # the x value` → the comment is part of the `x: 5` entry.
+- **Leading comment:** A `#` comment on its own line is attached to the next code line. It is indented to match the code it precedes.
+- **Section comment:** A blank line before a leading comment breaks the attachment — the comment becomes a standalone section separator. The blank line is preserved.
+
+#### Semicolons: Always Removed
+
+Semicolons are normalized away. They are syntactic sugar for newlines, and the formatter emits the canonical whitespace-separated form. `[x: 1; y: 2]` becomes `[x: 1 y: 2]` (single-line) or two separate lines (multi-line). The stdlib uses zero semicolons — this is the canonical style.
+
+#### Configurability: Zero-Config
+
+No formatting options. The formatter defines the canonical LLT style. The only CLI flags control I/O behavior:
+- `--check` — exit 1 if any file is not formatted (CI mode)
+- `--in-place` — overwrite files in place
+- `--stdin` — read from stdin, write to stdout
+
+**Rationale:** gofmt's zero-config philosophy. One canonical style eliminates bikeshedding. Pre-1.0, if a genuine need for configurability emerges, knobs can be added later. Starting opinionated is easier than tightening.
+
+#### Additional Rules
+
+| Rule | Behavior |
+|------|----------|
+| Indentation | 2 spaces per bracket depth, fixed |
+| Key-value spacing | One space after `:` — `key: value` |
+| Access chains | Never broken across lines — `$a.b[0].c` stays intact |
+| `---` separators | One blank line above and below (no blank before first document) |
+| Blank lines | Collapse runs of 2+ to 1. Preserve single blank lines (intentional grouping) |
+| Trailing whitespace | Stripped on every line |
+| Trailing newline | Single newline at end of file |
+| `@` annotations | No spaces around `@` — `x@Number`, `Fn@Return`, never `x @ Number` |
+| Quoted strings | Preserved exactly (escapes not normalized; idempotency) |
+| Comments in access chains | Cannot occur (compound-atomic grammar); formatter does not handle |
 
 ### Dual-Dispatch Builtins Typed as `Any`
 
@@ -1986,6 +2151,54 @@ Evaluate these later:
 ```
 
 > **Note:** The type checker (Phase 2a/2b) runs after parsing but type errors are advisory -- evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
+
+### EvalContext — Evaluation Infrastructure Context
+
+The evaluator threads an `EvalContext` through `eval()`, `materialize()`, and builtin dispatch. This separates evaluation infrastructure (file resolution, sandboxing) from variable bindings (`Environment`) and stack depth tracking (`depth`).
+
+**Design decision:** EvalContext replaces the thread-local `INCLUDE_CTX` pattern. Thread-locals create invisible coupling, prevent multi-file LSP support (each document needs its own include context), and require fragile set/clear ceremonies at every call site.
+
+**Config/State split:** EvalContext separates immutable session configuration from mutable evaluation state. Config is `Rc` (no RefCell) — the compiler enforces immutability. State is `Rc<RefCell>` for interior mutability.
+
+```rust
+struct EvalConfig {
+    base_dir: PathBuf,
+    stdlib_env: Rc<RefCell<Environment>>,
+    // future: sandbox_policy, max_depth_override, trace_enabled
+}
+
+struct EvalState {
+    include_guard: HashSet<PathBuf>,
+    include_cache: HashMap<PathBuf, Rc<Thunk>>,
+    // future: trace_log, eval_stats
+}
+
+struct EvalContext {
+    config: Rc<EvalConfig>,         // shared, immutable
+    state: Rc<RefCell<EvalState>>,   // shared, mutable
+}
+```
+
+**What stays separate:**
+- `depth: usize` — stack-depth counter, passed by value and incremented per recursive call (`eval(expr, env, ctx, depth + 1)`). Not session state — it's naturally fork-friendly for parallel evaluation paths.
+- `Environment` — variable bindings and lexical scope chain. Created and nested per scope.
+
+**Key invariant:** EvalContext is evaluation-session infrastructure; Environment is lexical scoping; depth is call-stack tracking. A single EvalContext is shared across the entire evaluation of a file, while Environments are created per scope and depth increments per recursive call.
+
+**Threading pattern:** `Rc<RefCell<EvalContext>>` — same pattern as `Environment`. Thunks capture `Rc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. `&mut EvalContext` would cause borrow conflicts with lazy evaluation.
+
+**ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Rc<RefCell<EvalContext>>` alongside their existing `env: Rc<RefCell<Environment>>`. When a thunk is forced, it uses the captured context for include resolution, sandboxing, etc.
+
+**BuiltinArgs:** Gains a `ctx: Rc<RefCell<EvalContext>>` field. The existing `depth: usize` field remains (call-site depth, captured at PendingBuiltin creation time). Most builtins ignore ctx; only `$include` and future I/O builtins use it.
+
+**Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. The `set_include_context()` / `clear_include_context()` functions are removed — the fragile set/clear ceremony is replaced by straightforward parameter passing.
+
+**Per-caller patterns:**
+- **CLI (main.rs):** Constructs EvalContext from CLI args (file path → base_dir), passes to eval_file.
+- **LSP:** Each DocumentState gets its own EvalContext. DocumentStore extracts base_dir from document URI. Config (stdlib_env) is shared across documents; state is per-document.
+- **REPL:** Fresh EvalContext per eval_input() call. Session env persists (accumulates bindings), but include state resets per input. Config (stdlib_env, base_dir) is shared via Rc across commands.
+
+**Precedent:** Nix's `EvalState`, Nickel's `VirtualMachine`, Dhall's normalization context. Standard pattern in mature language implementations for separating evaluation infrastructure from variable bindings.
 
 ### Implementation Roadmap
 

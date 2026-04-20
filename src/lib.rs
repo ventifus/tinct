@@ -1,4 +1,4 @@
-//! Parser, evaluator, type system, and builtins for the Lazy Lisp Transformer language.
+//! Parser, evaluator, type system, and builtins for the tinct language.
 //!
 //! [`parse`] takes an input string and returns a fully-spanned `File` AST (one or more documents).
 //! [`parse_expression`] is a convenience wrapper that parses a single expression.

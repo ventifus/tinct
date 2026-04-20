@@ -3,7 +3,7 @@
 SPRINT.md
 # Rust build artifacts
 /target
-/lazy_lisp_transformer/target
+/tinct/target
 Cargo.lock
 
 # Editor/IDE
@@ -14,11 +14,12 @@ Cargo.lock
 *~
 .DS_Store
 
-.claude
-
 # Testing
 *.profdata
 *.profraw
 
 # Training materials (cloned repos for agent training)
 .training/
+
+# Local memory palace
+.mempalace/

@@ -1,4 +1,4 @@
-# Lazy Lisp Transformer - Containerized Build System
+# tinct - Containerized Build System
 # All commands run in containers, no local Rust installation required
 
 # Container runtime (podman or docker)
@@ -11,7 +11,7 @@ rust_version := "1.85"
 rust_image := "rust:" + rust_version
 
 # Project name for volume naming
-project_name := "lazy-lisp-transformer"
+project_name := "tinct"
 
 # Common container run flags (using named volumes for target and cargo cache)
 run_flags := "--rm -v .:/workspace:z -v " + project_name + "-target:/workspace/target -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
@@ -65,23 +65,23 @@ fmt:
 
 # Run the application with test_input.txt (eval, JSON output)
 run:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- eval test_input.txt
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval test_input.txt
 
 # Run the application with custom input file
 run-file FILE:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- eval {{FILE}}
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval {{FILE}}
 
 # Run with LLT display format
 run-llt FILE:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- eval -f llt {{FILE}}
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval -f llt {{FILE}}
 
 # Run with piped JSON stdin
 run-json JSON FILE:
-    echo '{{JSON}}' | {{container}} run -i {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- eval {{FILE}}
+    echo '{{JSON}}' | {{container}} run -i {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval {{FILE}}
 
 # Run the release build
 run-release:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt --release -- eval test_input.txt
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct --release -- eval test_input.txt
 
 # Clean build artifacts
 clean:
@@ -113,11 +113,11 @@ ci: check test lint fmt-check
 
 # Start interactive REPL
 repl:
-    {{container}} run -it {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- repl
+    {{container}} run -it {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- repl
 
 # Start LSP server (stdio transport)
 lsp:
-    {{container}} run -i {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin llt -- lsp
+    {{container}} run -i {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- lsp
 
 # Tree-sitter grammar
 node_image := "node:22"

@@ -23,7 +23,7 @@ const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
 
 /// Run the LSP server on stdio.
 pub fn run_lsp() -> Result<(), Box<dyn Error>> {
-    eprintln!("LLT LSP server starting...");
+    eprintln!("tinct LSP server starting...");
 
     let (connection, io_threads) = Connection::stdio();
     let (id, params) = connection.initialize_start()?;
@@ -39,14 +39,14 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
     let init_result = InitializeResult {
         capabilities,
         server_info: Some(lsp_types::ServerInfo {
-            name: "llt-lsp".to_string(),
+            name: "tinct-lsp".to_string(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
     };
 
     connection.initialize_finish(id, serde_json::to_value(init_result)?)?;
 
-    eprintln!("LLT LSP server initialized.");
+    eprintln!("tinct LSP server initialized.");
 
     let mut store = DocumentStore::new();
 
@@ -54,7 +54,7 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
         match msg {
             Message::Request(req) => {
                 if connection.handle_shutdown(&req)? {
-                    eprintln!("LLT LSP server shutting down.");
+                    eprintln!("tinct LSP server shutting down.");
                     break;
                 }
 
@@ -210,7 +210,7 @@ fn publish_too_large_diagnostic(
             severity: Some(DiagnosticSeverity::ERROR),
             code: None,
             code_description: None,
-            source: Some("llt-lsp".to_string()),
+            source: Some("tinct-lsp".to_string()),
             message: format!("document too large ({} bytes, limit 10 MB)", size),
             related_information: None,
             tags: None,

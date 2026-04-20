@@ -211,7 +211,7 @@ fn parse_error_to_diagnostic(err: &ParseError, source: &str) -> Diagnostic {
         severity: Some(DiagnosticSeverity::ERROR),
         code: None,
         code_description: None,
-        source: Some("llt-parser".to_string()),
+        source: Some("tinct-parser".to_string()),
         message: err.message.clone(),
         related_information: None,
         tags: None,
@@ -227,7 +227,7 @@ fn type_error_to_diagnostic(err: &TypeError, source: &str) -> Diagnostic {
         severity: Some(DiagnosticSeverity::WARNING),
         code: None,
         code_description: None,
-        source: Some("llt-typecheck".to_string()),
+        source: Some("tinct-typecheck".to_string()),
         message: err.message.clone(),
         related_information: None,
         tags: None,
@@ -243,7 +243,7 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str) -> Diag
         severity: Some(DiagnosticSeverity::INFORMATION),
         code: None,
         code_description: None,
-        source: Some("llt-eval".to_string()),
+        source: Some("tinct-eval".to_string()),
         message: err.message.clone(),
         related_information: None,
         tags: None,
@@ -329,7 +329,7 @@ mod tests {
         let diags = diagnostics_for(&doc);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
-        assert_eq!(diags[0].source, Some("llt-parser".to_string()));
+        assert_eq!(diags[0].source, Some("tinct-parser".to_string()));
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
         assert!(!diags.is_empty());
         let type_diag = diags
             .iter()
-            .find(|d| d.source.as_deref() == Some("llt-typecheck"))
+            .find(|d| d.source.as_deref() == Some("tinct-typecheck"))
             .unwrap();
         assert_eq!(type_diag.severity, Some(DiagnosticSeverity::WARNING));
     }
@@ -353,7 +353,7 @@ mod tests {
         assert!(!diags.is_empty());
         let eval_diag = diags
             .iter()
-            .find(|d| d.source.as_deref() == Some("llt-eval"))
+            .find(|d| d.source.as_deref() == Some("tinct-eval"))
             .unwrap();
         assert_eq!(eval_diag.severity, Some(DiagnosticSeverity::INFORMATION));
     }

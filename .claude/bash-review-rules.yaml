@@ -1,0 +1,70 @@
+# LLT project bash-review rules
+#
+# All Rust/cargo commands should go through the justfile, which handles
+# containerized builds with correct volume mounts and user flags.
+
+rules:
+  - name: no-cargo-build
+    pattern: \bcargo build\b
+    message: Use the justfile target instead of running cargo directly
+    suggest: just build
+
+  - name: no-cargo-test
+    pattern: \bcargo test\b
+    message: Use the justfile target instead of running cargo directly
+    suggest: just test
+
+  - name: no-cargo-check
+    pattern: \bcargo check\b
+    message: Use the justfile target instead of running cargo directly
+    suggest: just check
+
+  - name: no-cargo-clippy
+    pattern: \bcargo clippy\b
+    message: Use the justfile target instead of running clippy directly
+    suggest: just lint
+
+  - name: no-cargo-fmt
+    pattern: \bcargo fmt\b
+    message: Use the justfile target instead of running cargo fmt directly
+    suggest: just fmt
+
+  - name: no-cargo-run
+    pattern: \bcargo run\b
+    message: Use the justfile target instead of running cargo directly
+    suggest: just run-file FILE
+
+  - name: no-cargo-doc
+    pattern: \bcargo doc\b
+    message: Use the justfile target instead of running cargo directly
+    suggest: just doc
+
+  - name: no-cargo-clean
+    pattern: \bcargo clean\b
+    message: Use the justfile target instead of running cargo directly
+    suggest: just clean
+
+  - name: no-cargo-update
+    pattern: \bcargo update\b
+    message: Use the justfile target instead of running cargo directly
+    suggest: just update
+
+  - name: no-rustc
+    pattern: \brustc\b
+    message: Use the justfile targets instead of invoking rustc directly
+    suggest: just build
+
+  - name: no-podman-run
+    pattern: \bpodman run\b
+    message: Use the justfile targets instead of running podman directly. The justfile handles volume mounts and user flags
+    suggest: just --list
+
+  - name: no-docker-run
+    pattern: \bdocker run\b
+    message: Use the justfile targets instead of running docker directly. The justfile handles volume mounts and user flags
+    suggest: just --list
+
+  - name: no-system-tmp
+    pattern: /tmp\b
+    message: Use .tmp/ in the project directory for temporary files, not /tmp. Create it with mkdir -p .tmp/ if needed.
+    suggest: .tmp/

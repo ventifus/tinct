@@ -1,7 +1,7 @@
 /// <reference types="tree-sitter-cli/dsl" />
 // @ts-check
 //
-// Tree-sitter grammar for LLT (Lazy Lisp Transformer)
+// Tree-sitter grammar for LLT (tinct)
 // Ported from src/grammar.pest. See DESIGN.md and SPEC.md.
 
 // Dot excluded from bare_word (unlike pest) to avoid ambiguity with
