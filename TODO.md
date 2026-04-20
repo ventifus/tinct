@@ -297,7 +297,7 @@ Change `BuiltinFn` to return `Rc<Thunk>` instead of `Value`. This removes the fo
 - [x] Update `$merge` to return lazy overlay (right dict shadows left, no cloning)
 - [x] Defer function materialization in `eval_call` — skipped: needs PendingCall named args, marginal benefit
 - [x] Tests: verify all builtins still work, $if laziness preserved
-- [ ] Consider `BuiltinArgs` struct to reduce BuiltinFn signature verbosity (4 parameters) (`src/value.rs:16-17`) [Nit, integration-verifier]
+- [x] Consider `BuiltinArgs` struct to reduce BuiltinFn signature verbosity (4 parameters) (`src/value.rs:16-17`) [Nit, integration-verifier]
 
 ### 5c: Value::Seq (Core)
 
@@ -371,11 +371,9 @@ Cache `$include` results so re-including the same file returns the cached thunk 
 - [ ] Return cached thunk on re-include of the same resolved path
 - [ ] Tests: same file included twice returns identical thunk, cache respects path normalization
 
-### 5g: Laziness Inventory
+### 5g-i: Make Remaining Eager Ops Lazy
 
-Every operation should be as lazy as possible. After this step, all operations that can be lazy are lazy, and the remaining eager operations are documented with justification.
-
-**Currently eager, should become lazy:**
+Make remaining eager operations lazy where possible. Seq-aware dual-dispatch for collection ops.
 
 - [x] `$map` on dict -- returns eager dict (fix: PendingCall thunks, Phase 5e)
 - [x] `$filter` on dict -- returns eager dict (fix: return Seq, Phase 5e)
@@ -386,12 +384,19 @@ Every operation should be as lazy as possible. After this step, all operations t
 - [x] `$merge` -- clones both dicts (Rc-clones thunks already; full lazy overlay needs dict proxy, deferred)
 - [ ] `$update` -- eagerly applies function (fix: PendingCall on updated value, Phase 5e)
 - [ ] `$concat` -- eagerly clones and merges (fix: Seq concat for sequences; stays eager for dicts)
+- [x] `$apply` -- double-forces by materializing `invoke_function()`'s result thunk (fix: return thunk directly, Phase 5b)
+
+### 5g-ii: Seq-Aware Collection Builtins
+
+Add Seq support to collection builtins that currently only work on Dict.
+
 - [ ] `$cons` -- eagerly clones and shifts (fix: Seq cons O(1) for sequences; stays eager for dicts)
 - [ ] `$rest` -- eagerly clones dict minus first entry (fix: Seq tail O(1) for sequences; stays eager for dicts)
 - [ ] `$zip` -- eagerly builds paired dict (fix: lazy Seq zip for sequences; stays eager for dicts)
-- [x] `$apply` -- double-forces by materializing `invoke_function()`'s result thunk (fix: return thunk directly, Phase 5b)
 
-**Currently eager, inherently materializing (document justification):**
+### 5g-iii: Document Inherent Eagerness — Core Eval
+
+Document why these core eval/dict operations must materialize. Add comments at each call site.
 
 - [ ] `eval_key` materializes all dict keys — necessary for IndexMap insertion; add comment explaining why (`src/eval.rs:123,376`) [Major, laziness-auditor]
 - [ ] `eval_as_dict` materializes target for all access chains — necessary for key lookup; add comment (`src/eval.rs:719`) [Minor, laziness-auditor]
@@ -401,6 +406,11 @@ Every operation should be as lazy as possible. After this step, all operations t
 - [ ] `$sort`, `$sort-by` -- must compare values to determine order
 - [ ] `$reverse` -- must know all entries to reverse (list operation inherently materializing)
 - [ ] `$reindex` -- must traverse all entries to rebuild with dense 0..n keys
+
+### 5g-iv: Document Inherent Eagerness — Collection & Comparison
+
+Document why these collection/comparison operations must materialize.
+
 - [ ] `$flatten` -- must inspect values to check if they are lists (inherently materializing)
 - [ ] `$length` -- must know all entries (on seqs: must traverse entirely)
 - [ ] `$empty?` -- depends on `$length`, inherently materializing
@@ -408,19 +418,31 @@ Every operation should be as lazy as possible. After this step, all operations t
 - [ ] `$=`, `$<` and comparisons -- must inspect values
 - [ ] `$+`, `$-`, `$*`, `$/` and arithmetic -- must compute
 - [ ] `$quot`, `$mod`, `$ceil`, `$trunc` -- derived arithmetic, inherently materializing
+- [ ] `$find-deep` -- must traverse structure
+
+### 5g-v: Document Inherent Eagerness — String & Conversion
+
+Document why these string/conversion operations must materialize.
+
 - [ ] `$str`, `$split`, `$replace`, `$upper`, `$lower`, `$trim` -- must inspect string content
 - [ ] `$join`, `$words` -- derived string ops, inherently materializing
 - [ ] `$to-int`, `$to-float`, `$floor`, `$round` -- must convert
 - [ ] `$type-of` -- must inspect value variant
 - [ ] `$from-json` -- must parse entire JSON string
+
+### 5g-vi: Document Inherent Eagerness — Control Flow
+
+Document why these control flow operations must materialize.
+
 - [ ] `$eval` -- deep-forces all thunks by definition
 - [ ] `$error` -- constructs error value (structural, but the error itself is concrete)
 - [ ] `$try`, `$try-or` -- must materialize body to catch errors
 - [ ] `$assert` -- must materialize condition to check
-- [ ] `$find-deep` -- must traverse structure
 - [ ] `$any?`, `$all?` -- short-circuit but materializes elements until condition met/failed
 
-**Already lazy:**
+### 5g-vii: Laziness Inventory — Already Lazy (reference)
+
+Already lazy — no work needed. Kept for completeness.
 
 - [x] Dict value construction -- values are `Unevaluated` thunks (letrec semantics)
 - [x] Function bodies -- thunks until called

@@ -10,12 +10,18 @@ use indexmap::IndexMap;
 use crate::ast::{Expr, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 
-/// Signature for built-in functions: receives positional args, named args,
-/// the current evaluation depth (for propagating `MAX_EVAL_DEPTH`
-/// through `materialize` calls), and the call-site span (for error reporting).
+/// Arguments passed to built-in functions.
+pub struct BuiltinArgs<'a> {
+    pub args: &'a [Rc<Thunk>],
+    pub named: &'a IndexMap<String, Rc<Thunk>>,
+    pub depth: usize,
+    pub call_span: Span,
+}
+
+/// Signature for built-in functions: receives a `BuiltinArgs` struct containing
+/// positional args, named args, evaluation depth, and call-site span.
 /// Returns an `Rc<Thunk>` to allow builtins to participate in lazy evaluation.
-pub type BuiltinFn =
-    fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> EvalResult<Rc<Thunk>>;
+pub type BuiltinFn = fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>;
 
 /// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,13 +532,11 @@ mod tests {
 
     #[test]
     fn test_value_partial_eq_builtin_always_false() {
-        fn dummy(
-            _: &[Rc<Thunk>],
-            _: &IndexMap<String, Rc<Thunk>>,
-            _: usize,
-            span: Span,
-        ) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), span)))
+        fn dummy(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(0),
+                ctx.call_span,
+            )))
         }
         let b = Value::Builtin {
             name: "test",
@@ -777,13 +781,11 @@ mod tests {
 
     #[test]
     fn test_value_display_builtin() {
-        fn dummy_builtin(
-            _args: &[Rc<Thunk>],
-            _named: &IndexMap<String, Rc<Thunk>>,
-            _depth: usize,
-            call_span: Span,
-        ) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), call_span)))
+        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(0),
+                ctx.call_span,
+            )))
         }
         let builtin = Value::Builtin {
             name: "test_fn",
@@ -859,13 +861,11 @@ mod tests {
 
     #[test]
     fn test_value_debug_builtin() {
-        fn dummy_builtin(
-            _args: &[Rc<Thunk>],
-            _named: &IndexMap<String, Rc<Thunk>>,
-            _depth: usize,
-            call_span: Span,
-        ) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), call_span)))
+        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(0),
+                ctx.call_span,
+            )))
         }
         let builtin = Value::Builtin {
             name: "test_builtin",

@@ -461,12 +461,7 @@ mod tests {
 
     #[test]
     fn test_json_builtin_error() {
-        fn dummy(
-            _: &[Rc<Thunk>],
-            _: &IndexMap<String, Rc<Thunk>>,
-            _: usize,
-            _: ast::Span,
-        ) -> Result<Rc<Thunk>, Box<error::EvalError>> {
+        fn dummy(_ctx: value::BuiltinArgs) -> Result<Rc<Thunk>, Box<error::EvalError>> {
             Ok(Rc::new(Thunk::new_materialized(
                 Value::Int(0),
                 ast::Span::origin(),

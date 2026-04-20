@@ -930,7 +930,13 @@ pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> Eval
         }
     } else if let Some((func, args, named, pending_depth, call_span)) = thunk.take_pending_builtin()
     {
-        match func(&args, &named, pending_depth, call_span).map_err(&decorate) {
+        let builtin_args = crate::value::BuiltinArgs {
+            args: &args,
+            named: &named,
+            depth: pending_depth,
+            call_span,
+        };
+        match func(builtin_args).map_err(&decorate) {
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion.
                 if let Some(value) = result_thunk.try_get_materialized() {
@@ -1001,7 +1007,13 @@ pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> Eval
                 }
             }
             Value::Builtin { func, .. } => {
-                match func(&args, &IndexMap::new(), depth, call_span).map_err(&decorate) {
+                let builtin_args = crate::value::BuiltinArgs {
+                    args: &args,
+                    named: &IndexMap::new(),
+                    depth,
+                    call_span,
+                };
+                match func(builtin_args).map_err(&decorate) {
                     Ok(result_thunk) => {
                         if let Some(value) = result_thunk.try_get_materialized() {
                             thunk.set_state(ThunkState::Materialized(value.clone()));
@@ -1975,12 +1987,8 @@ mod tests {
 
     #[test]
     fn test_call_builtin() {
-        fn add_builtin(
-            args: &[Rc<Thunk>],
-            _named: &IndexMap<String, Rc<Thunk>>,
-            _depth: usize,
-            _call_span: Span,
-        ) -> EvalResult<Rc<Thunk>> {
+        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            let crate::value::BuiltinArgs { args, .. } = ctx;
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
@@ -3828,12 +3836,7 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_builtin_passthrough() {
-        fn dummy(
-            _: &[Rc<Thunk>],
-            _: &IndexMap<String, Rc<Thunk>>,
-            _: usize,
-            _: Span,
-        ) -> EvalResult<Rc<Thunk>> {
+        fn dummy(_ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Ok(Rc::new(Thunk::new_materialized(
                 Value::Int(0),
                 test_span(1, 1, 1, 1),
@@ -4573,12 +4576,8 @@ mod tests {
         };
 
         // Add the builtin $+ to the environment
-        fn add_builtin(
-            args: &[Rc<Thunk>],
-            _named: &IndexMap<String, Rc<Thunk>>,
-            _depth: usize,
-            _call_span: Span,
-        ) -> EvalResult<Rc<Thunk>> {
+        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            let crate::value::BuiltinArgs { args, .. } = ctx;
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
@@ -4628,12 +4627,8 @@ mod tests {
     #[test]
     fn test_pending_call_builtin_function() {
         // Create a PendingCall thunk where the function is a Builtin
-        fn multiply_builtin(
-            args: &[Rc<Thunk>],
-            _named: &IndexMap<String, Rc<Thunk>>,
-            _depth: usize,
-            _call_span: Span,
-        ) -> EvalResult<Rc<Thunk>> {
+        fn multiply_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            let crate::value::BuiltinArgs { args, .. } = ctx;
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
@@ -4924,12 +4919,8 @@ mod tests {
     #[test]
     fn test_pending_builtin_error_becomes_failed() {
         // When a PendingBuiltin fails, it should transition to Failed state
-        fn failing_builtin(
-            _args: &[Rc<Thunk>],
-            _named: &IndexMap<String, Rc<Thunk>>,
-            _depth: usize,
-            call_span: Span,
-        ) -> EvalResult<Rc<Thunk>> {
+        fn failing_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            let crate::value::BuiltinArgs { call_span, .. } = ctx;
             Err(EvalError::new("builtin intentionally failed", call_span).into())
         }
 
