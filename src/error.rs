@@ -4,6 +4,9 @@ use std::fmt;
 
 use crate::ast::Span;
 
+/// Convenience type alias for evaluation results.
+pub type EvalResult<T> = Result<T, Box<EvalError>>;
+
 /// A single frame in an evaluation stack trace (function name + source location).
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackFrame {

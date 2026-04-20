@@ -755,19 +755,22 @@ mod tests {
 
     #[test]
     fn test_session_depth_exhaustion() {
-        let mut session = ReplSession::new().unwrap();
-
-        // Define a recursive function with no base case, then call it.
-        // This exhausts the eval depth limit (256) without requiring deep
-        // parser nesting (which would overflow pest's call stack).
-        session
-            .eval_input("[f: [fn [x] [call $f [call $+ $x 1]]]]")
+        // 256 levels of LLT recursion needs more than the default 8MB Rust stack.
+        let result = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut session = ReplSession::new().unwrap();
+                session
+                    .eval_input("[f: [fn [x] [call $f [call $+ $x 1]]]]")
+                    .unwrap();
+                session.eval_input("[call $f 0]").unwrap_err()
+            })
+            .unwrap()
+            .join()
             .unwrap();
-
-        let msg = session.eval_input("[call $f 0]").unwrap_err();
         assert!(
-            msg.contains("depth"),
-            "expected depth exhaustion error, got: {msg}"
+            result.contains("depth"),
+            "expected depth exhaustion error, got: {result}"
         );
     }
 

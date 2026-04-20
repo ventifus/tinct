@@ -1,7 +1,7 @@
 //! Rust-native builtin functions for the LLT language.
 //!
 //! All builtins follow the `BuiltinFn` signature:
-//! `fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> Result<Value, Box<EvalError>>`
+//! `fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> EvalResult<Value>`
 //!
 //! ## Builtin groups
 //!
@@ -24,7 +24,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::error::EvalError;
+use crate::error::{EvalError, EvalResult};
 // Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -78,7 +78,7 @@ fn expect_one_arg(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
@@ -92,7 +92,7 @@ fn expect_one_arg(
 
 /// Helper: check that an f64 value is within the representable range of i64
 /// before casting. Returns an error if the value would saturate.
-fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> Result<i64, Box<EvalError>> {
+fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> EvalResult<i64> {
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
         return Err(EvalError::new(format!("{name}: {f} is out of Int range"), call_span).into());
     }
@@ -116,7 +116,7 @@ fn extract_num_pair(
     args: &[Rc<Thunk>],
     depth: usize,
     call_span: Span,
-) -> Result<NumPair, Box<EvalError>> {
+) -> EvalResult<NumPair> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
@@ -155,7 +155,7 @@ fn require_dict(
     name: &str,
     value: Value,
     call_span: Span,
-) -> Result<IndexMap<Key, Rc<Thunk>>, Box<EvalError>> {
+) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
         other => Err(EvalError::new(
@@ -167,7 +167,7 @@ fn require_dict(
 }
 
 /// Helper: require that a materialized value is a String, returning the inner String.
-fn require_string(name: &str, value: Value, call_span: Span) -> Result<String, Box<EvalError>> {
+fn require_string(name: &str, value: Value, call_span: Span) -> EvalResult<String> {
     match value {
         Value::String(s) => Ok(s),
         other => Err(EvalError::new(
@@ -183,7 +183,7 @@ fn reject_named(
     name: &str,
     named: &IndexMap<String, Rc<Thunk>>,
     call_span: Span,
-) -> Result<(), Box<EvalError>> {
+) -> EvalResult<()> {
     if !named.is_empty() {
         return Err(
             EvalError::new(format!("{name} does not accept named arguments"), call_span).into(),
@@ -198,7 +198,7 @@ fn builtin_add(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("+", named, call_span)?;
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
@@ -215,7 +215,7 @@ fn builtin_sub(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("-", named, call_span)?;
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
@@ -232,7 +232,7 @@ fn builtin_mul(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("*", named, call_span)?;
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
@@ -249,7 +249,7 @@ fn builtin_div_float(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("/", named, call_span)?;
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => {
@@ -278,7 +278,7 @@ fn builtin_eq(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("=", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -309,7 +309,7 @@ fn builtin_lt(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("<", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -348,7 +348,7 @@ fn builtin_if(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("if", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
@@ -372,7 +372,7 @@ fn builtin_keys(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("keys", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -401,7 +401,7 @@ fn builtin_length(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("length", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -420,7 +420,7 @@ fn builtin_merge(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("merge", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -456,7 +456,7 @@ fn builtin_append(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("append", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -492,7 +492,7 @@ fn builtin_str(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("str", named, call_span)?;
     let mut result = String::new();
     for arg in args {
@@ -511,7 +511,7 @@ fn builtin_split(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("split", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -545,7 +545,7 @@ fn builtin_replace(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("replace", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
@@ -567,7 +567,7 @@ fn builtin_upper(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("upper", args, named, depth, call_span)?;
     let s = require_string("upper", val, call_span)?;
     Ok(Value::String(s.to_uppercase()))
@@ -579,7 +579,7 @@ fn builtin_lower(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("lower", args, named, depth, call_span)?;
     let s = require_string("lower", val, call_span)?;
     Ok(Value::String(s.to_lowercase()))
@@ -593,7 +593,7 @@ fn builtin_trim(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("trim", args, named, depth, call_span)?;
     let s = require_string("trim", val, call_span)?;
     Ok(Value::String(s.trim().to_string()))
@@ -612,7 +612,7 @@ fn float_to_int_builtin(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg(name, args, named, depth, call_span)?;
     match val {
         Value::Int(n) => Ok(Value::Int(n)),
@@ -648,7 +648,7 @@ fn builtin_floor(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     float_to_int_builtin("floor", f64::floor, args, named, depth, call_span)
 }
 
@@ -663,7 +663,7 @@ fn builtin_round(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     float_to_int_builtin("round", f64::round, args, named, depth, call_span)
 }
 
@@ -676,7 +676,7 @@ fn builtin_to_int(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("to-int", args, named, depth, call_span)?;
     let s = require_string("to-int", val, call_span)?;
     match s.parse::<i64>() {
@@ -696,7 +696,7 @@ fn builtin_to_float(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("to-float", args, named, depth, call_span)?;
     let s = require_string("to-float", val, call_span)?;
     match s.parse::<f64>() {
@@ -726,7 +726,7 @@ fn builtin_eval(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("eval", args, named, depth, call_span)?;
     crate::eval::deep_materialize(&val, depth)
 }
@@ -737,7 +737,7 @@ fn builtin_error(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("error", args, named, depth, call_span)?;
     let msg = require_string("error", val, call_span)?;
     Err(EvalError::new(msg, call_span).into())
@@ -750,7 +750,7 @@ fn builtin_try(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("try", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -823,7 +823,7 @@ fn builtin_apply(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     reject_named("apply", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -857,7 +857,7 @@ fn builtin_apply(
                 default_env: &closure_env,
                 call_span,
                 depth,
-                origin: Some("call $apply".to_string()),
+                origin: "call $apply".to_string(),
             })?;
             materialize(&result_thunk, None, depth)
         }
@@ -873,7 +873,7 @@ fn builtin_type_of(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("type-of", args, named, depth, call_span)?;
     let name = match val.type_name() {
         "Builtin" => "Function",
@@ -891,7 +891,7 @@ pub fn json_to_value(
     json: &serde_json::Value,
     depth: usize,
     span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum JSON nesting depth exceeded ({MAX_EVAL_DEPTH})"),
@@ -945,7 +945,7 @@ fn builtin_from_json(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("from-json", args, named, depth, call_span)?;
     let json_str = require_string("from-json", val, call_span)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
@@ -964,7 +964,7 @@ fn builtin_include(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     let val = expect_one_arg("include", args, named, depth, call_span)?;
     let file_path_str = require_string("include", val, call_span)?;
 
@@ -2301,7 +2301,7 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             _: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             Ok(Value::Int(99))
         }
         let b = Value::Builtin {
@@ -2325,7 +2325,7 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             call_span: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             Err(EvalError::new("builtin error", call_span).into())
         }
         let b = Value::Builtin {
@@ -2390,7 +2390,7 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             call_span: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
@@ -2534,7 +2534,7 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             _: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             Ok(Value::Int(0))
         }
         let builtin = Value::Builtin {

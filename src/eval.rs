@@ -7,7 +7,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
-use crate::error::EvalError;
+use crate::error::{EvalError, EvalResult};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -27,7 +27,7 @@ fn key_in_range(
     start: Option<&Key>,
     end: Option<&Key>,
     span: Span,
-) -> Result<bool, Box<EvalError>> {
+) -> EvalResult<bool> {
     let after_start = match start {
         Some(s) => {
             let ord = k
@@ -59,7 +59,7 @@ pub fn eval(
     expr: &Spanned<Expr>,
     env: Rc<RefCell<Environment>>,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
@@ -75,6 +75,9 @@ pub fn eval(
     }
 
     match &expr.node {
+        // Literals and closures are already computed values, so we wrap them in
+        // immediately-materialized thunks instead of Unevaluated thunks. This avoids
+        // the overhead of wrapping, then unwrapping, then re-evaluating on first access.
         Expr::Int(n) => Ok(Rc::new(Thunk::new_materialized(Value::Int(*n), expr.span))),
         Expr::Float(f) => Ok(Rc::new(Thunk::new_materialized(
             Value::Float(*f),
@@ -201,7 +204,7 @@ pub fn eval_document(
     doc: &Spanned<Document>,
     env: Rc<RefCell<Environment>>,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     let exprs = &doc.node.expressions;
 
     if exprs.is_empty() {
@@ -267,7 +270,7 @@ pub fn eval_file(
     file: &File,
     env: Rc<RefCell<Environment>>,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     eval_file_with_input(file, env, None, depth)
 }
 
@@ -284,7 +287,7 @@ pub fn eval_file_with_input(
     env: Rc<RefCell<Environment>>,
     initial_input: Option<Rc<Thunk>>,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     // $$ starts as the provided input, or empty dict if none given
     let mut prev_output = initial_input.unwrap_or_else(|| {
         Rc::new(Thunk::new_materialized(
@@ -312,7 +315,7 @@ fn eval_dict(
     parent_env: &Rc<RefCell<Environment>>,
     dict_span: &Span,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     let dict_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
         parent_env,
     ))));
@@ -364,7 +367,7 @@ fn eval_key(
     key_expr: &Spanned<Expr>,
     parent_env: &Rc<RefCell<Environment>>,
     depth: usize,
-) -> Result<Key, Box<EvalError>> {
+) -> EvalResult<Key> {
     // Fast path for literal keys (avoids creating temporary thunks)
     match &key_expr.node {
         Expr::Str(s) => return Ok(Key::String(s.clone())),
@@ -377,7 +380,7 @@ fn eval_key(
     value_to_key(&value, &key_expr.span)
 }
 
-fn value_to_key(value: &Value, span: &Span) -> Result<Key, Box<EvalError>> {
+fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
     match value {
         Value::String(s) => Ok(Key::String(s.clone())),
         Value::Int(n) => Ok(Key::Int(*n)),
@@ -406,13 +409,16 @@ fn eval_call(
     env: &Rc<RefCell<Environment>>,
     call_span: &Span,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     // Evaluate and materialize the function
     let func_thunk = eval(func_expr, Rc::clone(env), depth + 1)?;
     let func_val = materialize(&func_thunk, Some(call_span), depth + 1)?;
 
     // Wrap arguments as unevaluated thunks (lazy). This ensures expressions
     // like $xs[$i] in unselected $if branches are never evaluated.
+    // For builtins, these thunks are wrapped again in PendingBuiltin (the builtin
+    // call is deferred until its result is materialized). For LLT functions,
+    // invoke_function binds these thunks lazily in the closure environment.
     let pos_thunks: Vec<Rc<Thunk>> = args
         .iter()
         .map(|arg| {
@@ -452,7 +458,7 @@ fn eval_call(
             default_env: env,
             call_span: *call_span,
             depth,
-            origin: Some(label.clone()),
+            origin: label.clone(),
         })
         .map_err(|mut e| {
             e.push_frame(label, *call_span);
@@ -483,9 +489,9 @@ pub struct CallContext<'a> {
     pub default_env: &'a Rc<RefCell<Environment>>,
     pub call_span: Span,
     pub depth: usize,
-    /// Optional label for stack traces (e.g. "call $f"). Set by `eval_call`
+    /// Label for stack traces (e.g. "call $f"). Set by `eval_call`
     /// when the function expression has a recognizable name.
-    pub origin: Option<String>,
+    pub origin: String,
 }
 
 /// Invoke a user-defined function with pre-evaluated thunks.
@@ -493,7 +499,7 @@ pub struct CallContext<'a> {
 /// Binds positional and named args to function params (respecting defaults and
 /// variadics), then wraps the body as an unevaluated thunk. This is the shared
 /// call path for both `eval_call` and `builtin_apply`.
-pub fn invoke_function(ctx: &CallContext) -> Result<Rc<Thunk>, Box<EvalError>> {
+pub fn invoke_function(ctx: &CallContext) -> EvalResult<Rc<Thunk>> {
     let call_env = bind_args_thunks(
         ctx.params,
         ctx.positional,
@@ -504,8 +510,8 @@ pub fn invoke_function(ctx: &CallContext) -> Result<Rc<Thunk>, Box<EvalError>> {
         ctx.depth,
     )?;
     let mut thunk = Thunk::new_unevaluated(Rc::clone(ctx.body), call_env, ctx.call_span);
-    if let Some(ref label) = ctx.origin {
-        thunk = thunk.with_origin(label.clone());
+    if !ctx.origin.is_empty() {
+        thunk = thunk.with_origin(ctx.origin.clone());
     }
     Ok(Rc::new(thunk))
 }
@@ -522,7 +528,7 @@ fn bind_args_thunks(
     closure_env: &Rc<RefCell<Environment>>,
     call_span: &Span,
     depth: usize,
-) -> Result<Rc<RefCell<Environment>>, Box<EvalError>> {
+) -> EvalResult<Rc<RefCell<Environment>>> {
     let call_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
         closure_env,
     ))));
@@ -713,7 +719,7 @@ fn eval_as_dict(
     env: &Rc<RefCell<Environment>>,
     access_span: &Span,
     depth: usize,
-) -> Result<IndexMap<Key, Rc<Thunk>>, Box<EvalError>> {
+) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     let target_thunk = eval(target, Rc::clone(env), depth + 1)?;
     let target_val = materialize(&target_thunk, Some(access_span), depth + 1)?;
     match target_val {
@@ -729,7 +735,7 @@ fn eval_dot_access(
     env: &Rc<RefCell<Environment>>,
     access_span: &Span,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     let map = eval_as_dict(target, env, access_span, depth).map_err(|mut e| {
         e.push_frame(format!("accessing .{field}"), *access_span);
         e
@@ -748,7 +754,7 @@ fn eval_bracket_access(
     env: &Rc<RefCell<Environment>>,
     access_span: &Span,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     let map = eval_as_dict(target, env, access_span, depth).map_err(|mut e| {
         e.push_frame("accessing [..]", *access_span);
         e
@@ -770,7 +776,7 @@ fn eval_range_access(
     env: &Rc<RefCell<Environment>>,
     access_span: &Span,
     depth: usize,
-) -> Result<Rc<Thunk>, Box<EvalError>> {
+) -> EvalResult<Rc<Thunk>> {
     let map = eval_as_dict(target, env, access_span, depth).map_err(|mut e| {
         e.push_frame("accessing [..:..]", *access_span);
         e
@@ -791,14 +797,60 @@ fn eval_range_access(
     )))
 }
 
-/// Force a thunk to its concrete value. Memoizes the result so subsequent
-/// calls return the cached value. Detects cycles via the InProgress sentinel.
+/// Decorate an EvalError with materialization context (span and stack frames).
+///
+/// Attaches the materialization-site span if provided, and adds stack frames
+/// for the materialization context and the thunk's origin label. Avoids duplicate
+/// frames by checking if the span is already in the stack.
+fn attach_materialization_context(
+    mut err: Box<EvalError>,
+    mat_span: Option<&Span>,
+    origin: &str,
+    thunk_span: Span,
+) -> Box<EvalError> {
+    if let Some(span) = mat_span {
+        if err.materialization_span.is_none() {
+            err.materialization_span = Some(*span);
+        } else if err.materialization_span != Some(*span)
+            && !err.stack.iter().any(|f| f.span == *span)
+        {
+            // Only push a frame if the span differs from the existing
+            // materialization span and isn't already in the stack (avoids
+            // duplicate frames when the same span propagates through
+            // nested materialize calls).
+            err.push_frame("materialized", *span);
+        }
+    }
+    if !origin.is_empty()
+        && !err
+            .stack
+            .iter()
+            .any(|f| f.span == thunk_span && f.label == origin)
+    {
+        err.push_frame(origin, thunk_span);
+    }
+    err
+}
+
+/// Force a thunk to its concrete value, memoizing the result.
+///
+/// On first materialization, evaluates the thunk and caches the result (or error).
+/// Subsequent calls return the cached value without re-evaluation. This implements
+/// call-by-need semantics: lazy evaluation with sharing.
+///
+/// # ThunkState transitions
+///
+/// - `Materialized`: returns cached value immediately
+/// - `Failed`: returns cached error (with updated materialization_span)
+/// - `InProgress`: returns circular dependency error
+/// - `Unevaluated`: evaluates expr in env, memoizes result or error
+/// - `PendingBuiltin`: calls builtin with args, memoizes result or error
+/// - `PendingCall`: materializes func, invokes it with args, memoizes result or error
 ///
 /// # Side effects
 ///
-/// Mutates the thunk's internal state via `RefCell`: transitions from
-/// `Unevaluated` to `InProgress` to `Materialized`. Subsequent calls
-/// return the cached value without further mutation.
+/// Mutates the thunk's internal state via `RefCell`. On success, transitions to
+/// `Materialized`. On failure, transitions to `Failed` (caching the error).
 ///
 /// `mat_span` is the span of the expression that triggered materialization
 /// (e.g., an access chain). Attached to errors so users can see both where
@@ -807,7 +859,7 @@ pub fn materialize(
     thunk: &Thunk,
     mat_span: Option<&Span>,
     depth: usize,
-) -> Result<Value, Box<EvalError>> {
+) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
         let mut err = EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
@@ -835,7 +887,11 @@ pub fn materialize(
                 return Err(Box::new(cloned));
             }
             ThunkState::InProgress => {
-                let label = origin.as_deref().unwrap_or("thunk");
+                let label = if origin.is_empty() {
+                    "thunk"
+                } else {
+                    origin.as_str()
+                };
                 let mut err = EvalError::circular_dependency(label, thunk.span);
                 if let Some(span) = mat_span {
                     err = err.with_materialization_span(*span);
@@ -848,67 +904,43 @@ pub fn materialize(
         }
     }
 
-    let decorate_err = |mut e: Box<EvalError>| -> Box<EvalError> {
-        if let Some(span) = mat_span {
-            if e.materialization_span.is_none() {
-                e.materialization_span = Some(*span);
-            } else if e.materialization_span != Some(*span)
-                && !e.stack.iter().any(|f| f.span == *span)
-            {
-                // Only push a frame if the span differs from the existing
-                // materialization span and isn't already in the stack (avoids
-                // duplicate frames when the same span propagates through
-                // nested materialize calls).
-                e.push_frame("materialized", *span);
-            }
-        }
-        if let Some(ref label) = origin {
-            if !e
-                .stack
-                .iter()
-                .any(|f| f.span == thunk_span && f.label == *label)
-            {
-                e.push_frame(label.clone(), thunk_span);
-            }
-        }
-        e
-    };
+    let decorate = |e| attach_materialization_context(e, mat_span, &origin, thunk_span);
 
     if let Some((expr, env)) = thunk.take_unevaluated() {
         let result = eval(&expr, Rc::clone(&env), depth + 1)
             .and_then(|result_thunk| materialize(&result_thunk, mat_span, depth + 1))
-            .map_err(decorate_err);
+            .map_err(&decorate);
 
         match result {
             Ok(value) => {
-                thunk.transition(|_| ThunkState::Materialized(value.clone()));
+                thunk.set_state(ThunkState::Materialized(value.clone()));
                 Ok(value)
             }
             Err(e) => {
-                thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                thunk.cache_failure(&e);
                 Err(e)
             }
         }
     } else if let Some((func, args, named, pending_depth, call_span)) = thunk.take_pending_builtin()
     {
-        match func(&args, &named, pending_depth, call_span).map_err(decorate_err) {
+        match func(&args, &named, pending_depth, call_span).map_err(&decorate) {
             Ok(value) => {
-                thunk.transition(|_| ThunkState::Materialized(value.clone()));
+                thunk.set_state(ThunkState::Materialized(value.clone()));
                 Ok(value)
             }
             Err(e) => {
-                thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                thunk.cache_failure(&e);
                 Err(e)
             }
         }
     } else if let Some((func_thunk, args, call_span)) = thunk.take_pending_call() {
         // Materialize the function thunk to determine if it's a Function or Builtin
         let func_value = match materialize(&func_thunk, Some(&call_span), depth + 1)
-            .map_err(decorate_err)
+            .map_err(&decorate)
         {
             Ok(v) => v,
             Err(e) => {
-                thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                thunk.cache_failure(&e);
                 return Err(e);
             }
         };
@@ -928,36 +960,36 @@ pub fn materialize(
                     origin: origin.clone(),
                 };
 
-                match invoke_function(&ctx).map_err(decorate_err) {
+                match invoke_function(&ctx).map_err(&decorate) {
                     Ok(result_thunk) => {
                         // Materialize the result and memoize
-                        match materialize(&result_thunk, mat_span, depth + 1).map_err(decorate_err)
+                        match materialize(&result_thunk, mat_span, depth + 1).map_err(&decorate)
                         {
                             Ok(value) => {
-                                thunk.transition(|_| ThunkState::Materialized(value.clone()));
+                                thunk.set_state(ThunkState::Materialized(value.clone()));
                                 Ok(value)
                             }
                             Err(e) => {
-                                thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                                thunk.cache_failure(&e);
                                 Err(e)
                             }
                         }
                     }
                     Err(e) => {
-                        thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                        thunk.cache_failure(&e);
                         Err(e)
                     }
                 }
             }
             Value::Builtin { func, .. } => {
                 // Call the builtin directly with the args
-                match func(&args, &IndexMap::new(), depth, call_span).map_err(decorate_err) {
+                match func(&args, &IndexMap::new(), depth, call_span).map_err(&decorate) {
                     Ok(value) => {
-                        thunk.transition(|_| ThunkState::Materialized(value.clone()));
+                        thunk.set_state(ThunkState::Materialized(value.clone()));
                         Ok(value)
                     }
                     Err(e) => {
-                        thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                        thunk.cache_failure(&e);
                         Err(e)
                     }
                 }
@@ -965,13 +997,13 @@ pub fn materialize(
             other => {
                 let err =
                     EvalError::type_mismatch("Function or Builtin", other.type_name(), call_span);
-                let decorated = decorate_err(Box::new(err));
-                thunk.transition(|_| ThunkState::Failed(Box::new((*decorated).clone())));
+                let decorated = decorate(Box::new(err));
+                thunk.cache_failure(&decorated);
                 Err(decorated)
             }
         }
     } else {
-        unreachable!("state must be Unevaluated, PendingBuiltin, or PendingCall after check")
+        unreachable!("state must be Unevaluated, PendingBuiltin, or PendingCall (Materialized returns early, Failed returns early, InProgress returns early)")
     }
 }
 
@@ -987,7 +1019,7 @@ pub fn materialize(
 /// `depth` is checked against [`MAX_EVAL_DEPTH`] to prevent stack overflow on
 /// deeply nested or cyclic structures. On infinite/cyclic structures without a
 /// depth bound, this function will diverge (see DESIGN.md on `$eval`).
-pub fn deep_materialize(val: &Value, depth: usize) -> Result<Value, Box<EvalError>> {
+pub fn deep_materialize(val: &Value, depth: usize) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
@@ -1864,7 +1896,7 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             _call_span: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
@@ -3714,7 +3746,7 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             _: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             Ok(Value::Int(0))
         }
         let val = Value::Builtin {
@@ -4399,7 +4431,7 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             _call_span: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
@@ -4430,7 +4462,13 @@ mod tests {
         ));
         let call_span = test_span(2, 1, 2, 15);
 
-        let pending = Thunk::new_pending_call(func_thunk, vec![arg1, arg2], call_span, call_span);
+        let pending = Thunk::new_pending_call(
+            func_thunk,
+            vec![arg1, arg2],
+            call_span,
+            call_span,
+            "test-pending-call".to_string(),
+        );
 
         // Materialize should call the function and return the result
         let result = materialize(&pending, None, 0).unwrap();
@@ -4445,7 +4483,7 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             _call_span: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
@@ -4471,7 +4509,13 @@ mod tests {
         ));
         let call_span = test_span(2, 1, 2, 10);
 
-        let pending = Thunk::new_pending_call(func_thunk, vec![arg1, arg2], call_span, call_span);
+        let pending = Thunk::new_pending_call(
+            func_thunk,
+            vec![arg1, arg2],
+            call_span,
+            call_span,
+            "test-pending-call".to_string(),
+        );
 
         // Materialize should call the builtin directly and return the result
         let result = materialize(&pending, None, 0).unwrap();
@@ -4507,6 +4551,7 @@ mod tests {
             vec![arg],
             call_span,
             call_span,
+            "test-pending-call".to_string(),
         ));
 
         // First materialization
@@ -4533,7 +4578,13 @@ mod tests {
         ));
         let call_span = test_span(2, 1, 2, 10);
 
-        let pending = Thunk::new_pending_call(not_a_function, vec![], call_span, call_span);
+        let pending = Thunk::new_pending_call(
+            not_a_function,
+            vec![],
+            call_span,
+            call_span,
+            "test-pending-call".to_string(),
+        );
 
         let err = materialize(&pending, None, 0).unwrap_err();
         assert!(
@@ -4571,7 +4622,13 @@ mod tests {
 
         let call_span = test_span(2, 1, 2, 10);
 
-        let pending = Thunk::new_pending_call(func_thunk, vec![arg], call_span, call_span);
+        let pending = Thunk::new_pending_call(
+            func_thunk,
+            vec![arg],
+            call_span,
+            call_span,
+            "test-pending-call".to_string(),
+        );
 
         // Materialize should evaluate the arg thunk and return the result
         let result = materialize(&pending, None, 0).unwrap();
@@ -4711,7 +4768,7 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             call_span: Span,
-        ) -> Result<Value, Box<EvalError>> {
+        ) -> EvalResult<Value> {
             Err(EvalError::new("builtin intentionally failed", call_span).into())
         }
 
@@ -4769,6 +4826,7 @@ mod tests {
             vec![],
             call_span,
             call_span,
+            "test-pending-call".to_string(),
         ));
 
         // First materialization: should fail
@@ -4799,6 +4857,7 @@ mod tests {
             vec![],
             call_span,
             call_span,
+            "test-pending-call".to_string(),
         ));
 
         // First materialization should fail with undefined variable error
@@ -4846,51 +4905,50 @@ mod tests {
 
     #[test]
     fn test_pending_call_cycle_detection() {
-        // PendingCall should detect cycles if the func or args reference the thunk itself
-        // This is a tricky test because we need to create a cycle through PendingCall.
-        // We'll create a dict where a key references itself via a call expression.
+        // 256 levels of LLT recursion needs more than the default 8MB Rust stack.
+        let result = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let env = empty_env();
 
-        // [f: [fn [x] [call $f $x]]; result: [call $f 1]]
-        // This creates an infinite recursion that should be caught by cycle detection
-        let env = empty_env();
+                let recursive_fn = Value::Function {
+                    params: Rc::new(vec![Param {
+                        name: "x".into(),
+                        annotation: None,
+                        variadic: false,
+                    }]),
+                    body: Rc::new(sp(Expr::Call {
+                        func: Box::new(sp(Expr::VarRef("f".into()))),
+                        args: vec![sp(Expr::VarRef("x".into()))],
+                        named_args: vec![],
+                    })),
+                    env: Rc::clone(&env),
+                };
 
-        let recursive_fn = Value::Function {
-            params: Rc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-            }]),
-            body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![sp(Expr::VarRef("x".into()))],
-                named_args: vec![],
-            })),
-            env: Rc::clone(&env),
-        };
+                env.borrow_mut().insert(
+                    "f".into(),
+                    Rc::new(Thunk::new_materialized(
+                        recursive_fn,
+                        test_span(1, 1, 1, 20),
+                    )),
+                );
 
-        env.borrow_mut().insert(
-            "f".into(),
-            Rc::new(Thunk::new_materialized(
-                recursive_fn,
-                test_span(1, 1, 1, 20),
-            )),
-        );
+                let call_expr = sp(Expr::Call {
+                    func: Box::new(sp(Expr::VarRef("f".into()))),
+                    args: vec![sp(Expr::Int(1))],
+                    named_args: vec![],
+                });
 
-        // Call the recursive function
-        let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
-            args: vec![sp(Expr::Int(1))],
-            named_args: vec![],
-        });
-
-        let thunk = eval(&call_expr, env, 0).unwrap();
-
-        // Materialization should fail with depth exceeded (not infinite loop)
-        let err = materialize(&thunk, None, 0).unwrap_err();
+                let thunk = eval(&call_expr, env, 0).unwrap();
+                materialize(&thunk, None, 0).unwrap_err()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
         assert!(
-            err.message.contains("maximum evaluation depth exceeded"),
+            result.message.contains("maximum evaluation depth exceeded"),
             "got: {}",
-            err.message
+            result.message
         );
     }
 }
