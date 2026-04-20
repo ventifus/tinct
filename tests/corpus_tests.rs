@@ -1,8 +1,8 @@
-use lazy_lisp_transformer::{eval_source, parse, parse_expression};
+use tinct::{eval_source, parse, parse_expression};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Recursively find all .txt files in a directory
+/// Recursively find all .llt-eval files in a directory
 fn find_test_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
 
@@ -12,7 +12,7 @@ fn find_test_files(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 files.extend(find_test_files(&path));
-            } else if path.extension().and_then(|s| s.to_str()) == Some("txt") {
+            } else if path.extension().and_then(|s| s.to_str()) == Some("llt-eval") {
                 files.push(path);
             }
         }

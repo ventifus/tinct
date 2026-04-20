@@ -12,7 +12,7 @@
   "metadata": {
     "version": "0.1.0",
     "license": "MIT",
-    "description": "Tree-sitter grammar for LLT (Lazy Lisp Transformer)",
+    "description": "Tree-sitter grammar for LLT (tinct)",
     "authors": [
       {
         "name": "Andrew Denton"

@@ -1,7 +1,7 @@
 //! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use lazy_lisp_transformer::{
+use tinct::{
     clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
     json_to_value, materialize, parse, set_include_context, value_to_display_string, value_to_json,
     IncludeContext, Span, Thunk, MAX_FILE_SIZE,
@@ -14,9 +14,9 @@ use std::rc::Rc;
 
 const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
 
-/// Lazy Lisp Transformer -- a unified data representation and transformation language.
+/// tinct -- a unified data representation and transformation language.
 #[derive(Parser)]
-#[command(name = "llt", version, about)]
+#[command(name = "tinct", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -61,9 +61,9 @@ fn main() {
         .spawn(move || match cli.command {
             Commands::Eval { format, eval, file } => run_eval(&file, &format, eval),
             #[cfg(feature = "repl")]
-            Commands::Repl => lazy_lisp_transformer::repl::run_repl(),
+            Commands::Repl => tinct::repl::run_repl(),
             #[cfg(feature = "lsp")]
-            Commands::Lsp => lazy_lisp_transformer::lsp::run_lsp().map_err(|e| format!("{e}")),
+            Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
         })
         .expect("failed to spawn worker thread")
         .join();

@@ -1,4 +1,4 @@
-//! Integration tests for the `llt` CLI binary.
+//! Integration tests for the `tinct` CLI binary.
 //!
 //! These tests exercise the CLI (main.rs) via `std::process::Command`,
 //! covering subcommands, output formats, flags, and error cases.
@@ -10,11 +10,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Return the path to the compiled `llt` binary.
-/// `CARGO_BIN_EXE_llt` is set by Cargo during test compilation when a
-/// `[[bin]]` named `llt` exists.
-fn llt_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_llt"))
+/// Return the path to the compiled `tinct` binary.
+/// `CARGO_BIN_EXE_tinct` is set by Cargo during test compilation when a
+/// `[[bin]]` named `tinct` exists.
+fn tinct_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_tinct"))
 }
 
 /// A temporary directory that is automatically removed on drop.
@@ -26,7 +26,7 @@ struct TempDir {
 
 impl TempDir {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join("llt_cli_tests").join(label);
+        let path = std::env::temp_dir().join("tinct_cli_tests").join(label);
         fs::create_dir_all(&path).expect("failed to create temp dir");
         Self { path }
     }
@@ -60,10 +60,10 @@ fn write_temp_llt(label: &str, content: &str) -> (PathBuf, TempDir) {
 #[test]
 fn eval_simple_dict_json_output() {
     let (path, _dir) = write_temp_llt("eval_simple_dict", "[x: 1 y: hello]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -78,10 +78,10 @@ fn eval_simple_dict_json_output() {
 #[test]
 fn eval_scalar_int() {
     let (path, _dir) = write_temp_llt("eval_scalar_int", "42");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -92,10 +92,10 @@ fn eval_scalar_int() {
 #[test]
 fn eval_scalar_string() {
     let (path, _dir) = write_temp_llt("eval_scalar_string", "\"hello world\"");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -106,10 +106,10 @@ fn eval_scalar_string() {
 #[test]
 fn eval_scalar_bool() {
     let (path, _dir) = write_temp_llt("eval_scalar_bool", "true");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -120,10 +120,10 @@ fn eval_scalar_bool() {
 #[test]
 fn eval_scalar_float() {
     let (path, _dir) = write_temp_llt("eval_scalar_float", "3.14");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -134,10 +134,10 @@ fn eval_scalar_float() {
 #[test]
 fn eval_array_like_dict() {
     let (path, _dir) = write_temp_llt("eval_array_like", "[10 20 30]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -148,10 +148,10 @@ fn eval_array_like_dict() {
 #[test]
 fn eval_nested_dict() {
     let (path, _dir) = write_temp_llt("eval_nested", "[a: [b: [c: 42]]]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -166,10 +166,10 @@ fn eval_nested_dict() {
 #[test]
 fn eval_format_json_explicit() {
     let (path, _dir) = write_temp_llt("eval_format_json", "[x: 1]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "--format", "json", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -180,10 +180,10 @@ fn eval_format_json_explicit() {
 #[test]
 fn eval_format_json_short_flag() {
     let (path, _dir) = write_temp_llt("eval_format_json_short", "[x: 1]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "-f", "json", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -198,10 +198,10 @@ fn eval_format_json_short_flag() {
 #[test]
 fn eval_format_llt_scalar() {
     let (path, _dir) = write_temp_llt("eval_format_llt_scalar", "42");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "--format", "llt", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -211,10 +211,10 @@ fn eval_format_llt_scalar() {
 #[test]
 fn eval_format_llt_dict() {
     let (path, _dir) = write_temp_llt("eval_format_llt_dict", "[x: 42]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "-f", "llt", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -224,10 +224,10 @@ fn eval_format_llt_dict() {
 #[test]
 fn eval_format_llt_string() {
     let (path, _dir) = write_temp_llt("eval_format_llt_string", "\"hello\"");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "-f", "llt", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -237,10 +237,10 @@ fn eval_format_llt_string() {
 #[test]
 fn eval_format_llt_bool() {
     let (path, _dir) = write_temp_llt("eval_format_llt_bool", "true");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "-f", "llt", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -250,10 +250,10 @@ fn eval_format_llt_bool() {
 #[test]
 fn eval_format_llt_float() {
     let (path, _dir) = write_temp_llt("eval_format_llt_float", "3.14");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "-f", "llt", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -271,10 +271,10 @@ fn eval_flag_deep_materialize() {
     // the same JSON for this simple case, but --eval exercises the
     // deep_materialize code path in main.rs.
     let (path, _dir) = write_temp_llt("eval_flag_deep", "[a: [b: [c: 42]]]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "--eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -289,10 +289,10 @@ fn eval_flag_deep_materialize() {
 #[test]
 fn eval_flag_with_llt_format() {
     let (path, _dir) = write_temp_llt("eval_flag_llt", "[x: 1]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "--eval", "-f", "llt", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -308,10 +308,10 @@ fn eval_multi_document_pipeline() {
     // doc1 produces {x: 10}, doc2 receives it as $$ and wraps it
     let source = "[x: 10]\n---\n[result: $$.x]";
     let (path, _dir) = write_temp_llt("eval_multi_doc", source);
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -330,10 +330,10 @@ fn eval_multi_document_pipeline() {
 #[test]
 fn eval_builtin_add() {
     let (path, _dir) = write_temp_llt("eval_builtin_add", "[call $+ 1 2]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -348,10 +348,10 @@ fn eval_builtin_add() {
 #[test]
 fn eval_builtin_if() {
     let (path, _dir) = write_temp_llt("eval_builtin_if", "[call $if true 42 99]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -369,10 +369,10 @@ fn eval_builtin_if() {
 
 #[test]
 fn eval_missing_file() {
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "/tmp/llt_cli_tests/nonexistent_file.llt"])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         !output.status.success(),
@@ -387,10 +387,10 @@ fn eval_missing_file() {
 
 #[test]
 fn eval_missing_file_exit_code() {
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "/tmp/llt_cli_tests/no_such_file.llt"])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     // main.rs exits with code 1 for errors
     assert_eq!(output.status.code(), Some(1));
@@ -400,10 +400,10 @@ fn eval_missing_file_exit_code() {
 fn eval_parse_error() {
     // Unterminated bracket is a parse error
     let (path, _dir) = write_temp_llt("eval_parse_error", "[x: 1");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         !output.status.success(),
@@ -421,10 +421,10 @@ fn eval_parse_error() {
 fn eval_error_undefined_var() {
     // Referencing an undefined variable should produce an eval error
     let (path, _dir) = write_temp_llt("eval_error_undef", "$nonexistent");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -440,7 +440,7 @@ fn eval_error_undefined_var() {
 
 #[test]
 fn no_subcommand_shows_usage() {
-    let output = Command::new(llt_bin()).output().expect("failed to run llt");
+    let output = Command::new(tinct_bin()).output().expect("failed to run tinct");
 
     // clap exits non-zero when no subcommand is given
     assert!(!output.status.success());
@@ -454,25 +454,25 @@ fn no_subcommand_shows_usage() {
 
 #[test]
 fn help_flag() {
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["--help"])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Lazy Lisp Transformer"),
+        stdout.contains("unified data representation and transformation language"),
         "expected description in help output, got: {stdout}"
     );
 }
 
 #[test]
 fn eval_help_flag() {
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "--help"])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -489,10 +489,10 @@ fn eval_help_flag() {
 #[test]
 fn eval_invalid_format() {
     let (path, _dir) = write_temp_llt("eval_invalid_format", "42");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", "-f", "xml", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     // clap should reject the invalid format value
     assert!(!output.status.success());
@@ -509,16 +509,16 @@ fn eval_invalid_format() {
 
 #[test]
 fn version_flag() {
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["--version"])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("llt"),
-        "expected 'llt' in version output, got: {stdout}"
+        stdout.contains("tinct"),
+        "expected 'tinct' in version output, got: {stdout}"
     );
 }
 
@@ -529,10 +529,10 @@ fn version_flag() {
 #[test]
 fn eval_json_output_is_pretty_printed() {
     let (path, _dir) = write_temp_llt("eval_pretty_json", "[a: 1 b: 2]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -555,7 +555,7 @@ fn eval_json_output_is_pretty_printed() {
 fn eval_stdin_json_injection() {
     // When stdin is piped with JSON, it should be available as $$ in the first doc
     let (path, _dir) = write_temp_llt("eval_stdin_json", "[name: $$.name]");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -590,10 +590,10 @@ fn eval_stdin_json_injection() {
 fn eval_empty_file() {
     // An empty/whitespace-only file should be a parse error (no expression)
     let (path, _dir) = write_temp_llt("eval_empty", "  \n  ");
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     // Empty input may or may not be valid depending on the grammar;
     // just verify it doesn't panic (exit code 2 = thread panic)
@@ -615,10 +615,10 @@ fn eval_scope_chain() {
     // Second expression should see bindings from the first
     let source = "[x: 10]\n[result: $x]";
     let (path, _dir) = write_temp_llt("eval_scope_chain", source);
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -648,10 +648,10 @@ fn include_basic_dict() {
     let main = dir.path().join("main.llt");
     fs::write(&main, "[result: [call $include \"helper.llt\"]]").unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", main.to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -676,10 +676,10 @@ fn include_namespaced() {
 [result: [call $utils.double 21]]"#;
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -699,10 +699,10 @@ fn include_merged_scope_chain() {
     let main_src = "[call $include \"helper.llt\"]\n[sum: [call $+ $x $y]]";
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -730,10 +730,10 @@ fn include_nested_a_includes_b_includes_c() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("a.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -752,10 +752,10 @@ fn include_circular_error() {
     fs::write(dir.path().join("a.llt"), "[call $include \"b.llt\"]").unwrap();
     fs::write(dir.path().join("b.llt"), "[call $include \"a.llt\"]").unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("a.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         !output.status.success(),
@@ -774,10 +774,10 @@ fn include_self_circular_error() {
     let dir = make_include_dir("self_circular");
     fs::write(dir.path().join("self.llt"), "[call $include \"self.llt\"]").unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("self.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         !output.status.success(),
@@ -799,10 +799,10 @@ fn include_file_not_found_error() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         !output.status.success(),
@@ -828,10 +828,10 @@ fn include_relative_path_from_subdirectory() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -867,10 +867,10 @@ fn include_relative_path_from_included_file() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -893,10 +893,10 @@ fn include_with_stdlib_builtins() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -919,10 +919,10 @@ fn include_returns_scalar() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -945,10 +945,10 @@ fn include_returns_string() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -982,10 +982,10 @@ fn include_diamond_pattern_no_cycle() {
 ]"#;
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -1012,10 +1012,10 @@ fn include_isolation_no_caller_scope() {
     let main_src = "[caller_var: 999]\n[result: [call $include \"helper.llt\"]]";
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         !output.status.success(),
@@ -1039,14 +1039,14 @@ fn include_with_deep_materialize() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args([
             "eval",
             "--eval",
             dir.path().join("main.llt").to_str().unwrap(),
         ])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -1069,7 +1069,7 @@ fn include_llt_format_output() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args([
             "eval",
             "-f",
@@ -1077,7 +1077,7 @@ fn include_llt_format_output() {
             dir.path().join("main.llt").to_str().unwrap(),
         ])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),
@@ -1101,10 +1101,10 @@ fn include_path_traversal_parent_dir() {
     )
     .unwrap();
 
-    let output = Command::new(llt_bin())
+    let output = Command::new(tinct_bin())
         .args(["eval", subdir.join("child.llt").to_str().unwrap()])
         .output()
-        .expect("failed to run llt");
+        .expect("failed to run tinct");
 
     assert!(
         output.status.success(),

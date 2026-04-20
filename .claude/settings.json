@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mempalace-tinct": {
+      "command": "python",
+      "args": ["-m", "mempalace.mcp_server", "--palace", "/var/home/adenton/Projects/tinct/.mempalace"],
+      "type": "stdio"
+    }
+  }
+}

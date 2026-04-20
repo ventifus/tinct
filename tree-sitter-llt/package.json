@@ -1,7 +1,7 @@
 {
   "name": "tree-sitter-llt",
   "version": "0.1.0",
-  "description": "Tree-sitter grammar for LLT (Lazy Lisp Transformer)",
+  "description": "Tree-sitter grammar for LLT (tinct)",
   "keywords": ["tree-sitter", "parser", "llt"],
   "license": "MIT",
   "devDependencies": {

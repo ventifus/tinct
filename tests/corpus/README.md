@@ -1,6 +1,6 @@
 # Test Corpus
 
-Organized test suite for the Lazy Lisp Transformer parser.
+Organized test suite for the tinct parser.
 
 ## Directory Structure
 
@@ -23,14 +23,14 @@ tests/corpus/
 
 ### Valid Test Cases
 
-Create a `.txt` file in the appropriate `valid/` subdirectory:
+Create a `.llt-eval` file in the appropriate `valid/` subdirectory:
 
 ```bash
 # Simple feature test
-echo "[key: value]" > tests/corpus/valid/simple/my_test.txt
+echo "[key: value]" > tests/corpus/valid/simple/my_test.llt-eval
 
 # Complex nested test
-cat > tests/corpus/valid/complex/my_nested.txt <<'EOF'
+cat > tests/corpus/valid/complex/my_nested.llt-eval <<'EOF'
 [
     outer: [
         inner: value
@@ -41,15 +41,15 @@ EOF
 
 ### Invalid Test Cases
 
-Create a `.txt` file with malformed input:
+Create a `.llt-eval` file with malformed input:
 
 ```bash
-echo "[unclosed: bracket" > tests/corpus/invalid/syntax_errors/my_error.txt
+echo "[unclosed: bracket" > tests/corpus/invalid/syntax_errors/my_error.llt-eval
 ```
 
 ## Test File Format
 
-Test files are plain `.txt` files containing LLT input. To specify expected output,
+Test files are plain `.llt-eval` files containing LLT input. To specify expected output,
 use a `===` delimiter: everything before the delimiter is the input, and everything
 after is the expected parse result. (`===` is used instead of `---` because `---` is
 a valid LLT document separator.)
@@ -82,7 +82,7 @@ cargo test --test corpus_tests test_invalid_corpus
 Corpus tests show which files they're processing:
 
 ```
-Testing valid input: tests/corpus/valid/simple/basic_key_value.txt
+Testing valid input: tests/corpus/valid/simple/basic_key_value.llt-eval
 ✅ All 8 valid corpus tests passed
 ```
 
@@ -90,7 +90,7 @@ Failed tests show the filename and error:
 
 ```
 ❌ 1 valid test(s) failed to parse:
-  - tests/corpus/valid/complex/foo.txt: Error at line 2, column 10:
+  - tests/corpus/valid/complex/foo.llt-eval: Error at line 2, column 10:
 ```
 
 ## Current Test Coverage
