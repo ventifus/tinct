@@ -172,8 +172,14 @@ pub enum ThunkState {
         depth: usize,
         call_span: Span,
     },
+    PendingCall {
+        func: Rc<Thunk>,
+        args: Vec<Rc<Thunk>>,
+        call_span: Span,
+    },
     InProgress,
     Materialized(Value),
+    Failed(Box<EvalError>),
 }
 
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
@@ -221,6 +227,23 @@ impl Thunk {
                 named,
                 depth,
                 call_span: span,
+            }),
+            span,
+            origin: None,
+        }
+    }
+
+    pub fn new_pending_call(
+        func: Rc<Thunk>,
+        args: Vec<Rc<Thunk>>,
+        call_span: Span,
+        span: Span,
+    ) -> Self {
+        Self {
+            state: RefCell::new(ThunkState::PendingCall {
+                func,
+                args,
+                call_span,
             }),
             span,
             origin: None,
@@ -299,6 +322,21 @@ impl Thunk {
                 depth,
                 call_span,
             } => Some((func, args, named, depth, call_span)),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
+
+    pub fn take_pending_call(&self) -> Option<(Rc<Thunk>, Vec<Rc<Thunk>>, Span)> {
+        let mut state = self.state.borrow_mut();
+        match std::mem::replace(&mut *state, ThunkState::InProgress) {
+            ThunkState::PendingCall {
+                func,
+                args,
+                call_span,
+            } => Some((func, args, call_span)),
             other => {
                 *state = other;
                 None

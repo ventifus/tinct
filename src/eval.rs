@@ -827,6 +827,13 @@ pub fn materialize(
         let state = thunk.state();
         match &*state {
             ThunkState::Materialized(v) => return Ok(v.clone()),
+            ThunkState::Failed(ref err) => {
+                let mut cloned = (**err).clone();
+                if let Some(span) = mat_span {
+                    cloned.materialization_span = Some(*span);
+                }
+                return Err(Box::new(cloned));
+            }
             ThunkState::InProgress => {
                 let label = origin.as_deref().unwrap_or("thunk");
                 let mut err = EvalError::circular_dependency(label, thunk.span);
@@ -835,7 +842,9 @@ pub fn materialize(
                 }
                 return Err(err.into());
             }
-            ThunkState::Unevaluated { .. } | ThunkState::PendingBuiltin { .. } => {}
+            ThunkState::Unevaluated { .. }
+            | ThunkState::PendingBuiltin { .. }
+            | ThunkState::PendingCall { .. } => {}
         }
     }
 
@@ -876,7 +885,7 @@ pub fn materialize(
                 Ok(value)
             }
             Err(e) => {
-                thunk.transition(|_| ThunkState::Unevaluated { expr, env });
+                thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
                 Err(e)
             }
         }
@@ -888,18 +897,81 @@ pub fn materialize(
                 Ok(value)
             }
             Err(e) => {
-                thunk.transition(|_| ThunkState::PendingBuiltin {
-                    func,
-                    args,
-                    named,
-                    depth: pending_depth,
-                    call_span,
-                });
+                thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
                 Err(e)
             }
         }
+    } else if let Some((func_thunk, args, call_span)) = thunk.take_pending_call() {
+        // Materialize the function thunk to determine if it's a Function or Builtin
+        let func_value = match materialize(&func_thunk, Some(&call_span), depth + 1)
+            .map_err(decorate_err)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                return Err(e);
+            }
+        };
+
+        match func_value {
+            Value::Function { params, body, env } => {
+                // Build CallContext and invoke the function
+                let ctx = CallContext {
+                    params: &params,
+                    body: &body,
+                    closure_env: &env,
+                    positional: &args,
+                    named: &IndexMap::new(), // PendingCall currently has no named args
+                    default_env: &env,       // Use closure env for defaults
+                    call_span,
+                    depth,
+                    origin: origin.clone(),
+                };
+
+                match invoke_function(&ctx).map_err(decorate_err) {
+                    Ok(result_thunk) => {
+                        // Materialize the result and memoize
+                        match materialize(&result_thunk, mat_span, depth + 1).map_err(decorate_err)
+                        {
+                            Ok(value) => {
+                                thunk.transition(|_| ThunkState::Materialized(value.clone()));
+                                Ok(value)
+                            }
+                            Err(e) => {
+                                thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                                Err(e)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                        Err(e)
+                    }
+                }
+            }
+            Value::Builtin { func, .. } => {
+                // Call the builtin directly with the args
+                match func(&args, &IndexMap::new(), depth, call_span).map_err(decorate_err) {
+                    Ok(value) => {
+                        thunk.transition(|_| ThunkState::Materialized(value.clone()));
+                        Ok(value)
+                    }
+                    Err(e) => {
+                        thunk.transition(|_| ThunkState::Failed(Box::new((*e).clone())));
+                        Err(e)
+                    }
+                }
+            }
+            other => {
+                let err =
+                    EvalError::type_mismatch("Function or Builtin", other.type_name(), call_span);
+                let decorated = decorate_err(Box::new(err));
+                thunk.transition(|_| ThunkState::Failed(Box::new((*decorated).clone())));
+                Err(decorated)
+            }
+        }
     } else {
-        unreachable!("state must be Unevaluated or PendingBuiltin after check")
+        unreachable!("state must be Unevaluated, PendingBuiltin, or PendingCall after check")
     }
 }
 
@@ -4289,5 +4361,536 @@ mod tests {
         assert!(display.contains("materialized at 10:1-10:5"));
         assert!(display.contains("in call $inner at 5:1-5:20"));
         assert!(display.contains("in call $outer at 8:1-8:25"));
+    }
+
+    // ── PendingCall thunk state tests ──────────────────────────────────
+
+    #[test]
+    fn test_pending_call_llt_function() {
+        // Create a PendingCall thunk that calls an LLT function
+        // [fn [x y] [call $+ $x $y]] with args (3, 4)
+        let env = empty_env();
+
+        // Create a simple addition function
+        let add_fn = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "y".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+            ]),
+            body: Rc::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::VarRef("+".into()))),
+                args: vec![sp(Expr::VarRef("x".into())), sp(Expr::VarRef("y".into()))],
+                named_args: vec![],
+            })),
+            env: Rc::clone(&env),
+        };
+
+        // Add the builtin $+ to the environment
+        fn add_builtin(
+            args: &[Rc<Thunk>],
+            _named: &IndexMap<String, Rc<Thunk>>,
+            _depth: usize,
+            _call_span: Span,
+        ) -> Result<Value, Box<EvalError>> {
+            let a = materialize(&args[0], None, 0)?;
+            let b = materialize(&args[1], None, 0)?;
+            match (a, b) {
+                (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
+                _ => panic!("test expects Int args"),
+            }
+        }
+        env.borrow_mut().insert(
+            "+".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Builtin {
+                    name: "+",
+                    func: add_builtin,
+                },
+                test_span(1, 1, 1, 5),
+            )),
+        );
+
+        // Create PendingCall thunk
+        let func_thunk = Rc::new(Thunk::new_materialized(add_fn, test_span(1, 1, 1, 20)));
+        let arg1 = Rc::new(Thunk::new_materialized(
+            Value::Int(3),
+            test_span(1, 21, 1, 22),
+        ));
+        let arg2 = Rc::new(Thunk::new_materialized(
+            Value::Int(4),
+            test_span(1, 23, 1, 24),
+        ));
+        let call_span = test_span(2, 1, 2, 15);
+
+        let pending = Thunk::new_pending_call(func_thunk, vec![arg1, arg2], call_span, call_span);
+
+        // Materialize should call the function and return the result
+        let result = materialize(&pending, None, 0).unwrap();
+        assert_eq!(result, Value::Int(7));
+    }
+
+    #[test]
+    fn test_pending_call_builtin_function() {
+        // Create a PendingCall thunk where the function is a Builtin
+        fn multiply_builtin(
+            args: &[Rc<Thunk>],
+            _named: &IndexMap<String, Rc<Thunk>>,
+            _depth: usize,
+            _call_span: Span,
+        ) -> Result<Value, Box<EvalError>> {
+            let a = materialize(&args[0], None, 0)?;
+            let b = materialize(&args[1], None, 0)?;
+            match (a, b) {
+                (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x * y)),
+                _ => panic!("test expects Int args"),
+            }
+        }
+
+        let func_thunk = Rc::new(Thunk::new_materialized(
+            Value::Builtin {
+                name: "*",
+                func: multiply_builtin,
+            },
+            test_span(1, 1, 1, 5),
+        ));
+        let arg1 = Rc::new(Thunk::new_materialized(
+            Value::Int(5),
+            test_span(1, 6, 1, 7),
+        ));
+        let arg2 = Rc::new(Thunk::new_materialized(
+            Value::Int(6),
+            test_span(1, 8, 1, 9),
+        ));
+        let call_span = test_span(2, 1, 2, 10);
+
+        let pending = Thunk::new_pending_call(func_thunk, vec![arg1, arg2], call_span, call_span);
+
+        // Materialize should call the builtin directly and return the result
+        let result = materialize(&pending, None, 0).unwrap();
+        assert_eq!(result, Value::Int(30));
+    }
+
+    #[test]
+    fn test_pending_call_memoizes() {
+        // PendingCall should memoize: second materialization returns cached value
+        let env = empty_env();
+
+        // Create a function that would fail if called twice
+        // (we'll verify it's only called once by checking the state)
+        let identity_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            env: Rc::clone(&env),
+        };
+
+        let func_thunk = Rc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
+        let arg = Rc::new(Thunk::new_materialized(
+            Value::Int(42),
+            test_span(1, 11, 1, 13),
+        ));
+        let call_span = test_span(2, 1, 2, 10);
+
+        let pending = Rc::new(Thunk::new_pending_call(
+            func_thunk,
+            vec![arg],
+            call_span,
+            call_span,
+        ));
+
+        // First materialization
+        let result1 = materialize(&pending, None, 0).unwrap();
+        assert_eq!(result1, Value::Int(42));
+
+        // Check that the thunk is now in Materialized state
+        match &*pending.state() {
+            ThunkState::Materialized(v) => assert_eq!(*v, Value::Int(42)),
+            other => panic!("expected Materialized after first call, got {other:?}"),
+        }
+
+        // Second materialization should return cached value
+        let result2 = materialize(&pending, None, 0).unwrap();
+        assert_eq!(result2, Value::Int(42));
+    }
+
+    #[test]
+    fn test_pending_call_non_function_error() {
+        // PendingCall with a non-Function/Builtin value should error
+        let not_a_function = Rc::new(Thunk::new_materialized(
+            Value::Int(123),
+            test_span(1, 1, 1, 4),
+        ));
+        let call_span = test_span(2, 1, 2, 10);
+
+        let pending = Thunk::new_pending_call(not_a_function, vec![], call_span, call_span);
+
+        let err = materialize(&pending, None, 0).unwrap_err();
+        assert!(
+            err.message
+                .contains("expected Function or Builtin, got Int"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_pending_call_with_unevaluated_args() {
+        // PendingCall should work with unevaluated argument thunks (lazy evaluation)
+        let env = empty_env();
+
+        let identity_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            env: Rc::clone(&env),
+        };
+
+        let func_thunk = Rc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
+
+        // Create an unevaluated arg
+        let arg_expr = Rc::new(sp(Expr::Int(99)));
+        let arg = Rc::new(Thunk::new_unevaluated(
+            arg_expr,
+            Rc::clone(&env),
+            test_span(1, 11, 1, 13),
+        ));
+
+        let call_span = test_span(2, 1, 2, 10);
+
+        let pending = Thunk::new_pending_call(func_thunk, vec![arg], call_span, call_span);
+
+        // Materialize should evaluate the arg thunk and return the result
+        let result = materialize(&pending, None, 0).unwrap();
+        assert_eq!(result, Value::Int(99));
+    }
+
+    // ── Failed thunk state tests ───────────────────────────────────────
+
+    #[test]
+    fn test_failed_state_returns_cached_error() {
+        // When a thunk fails, it should cache the error in Failed state
+        // and return it on subsequent materialization attempts
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("x".into()))),
+            value: sp(Expr::VarRef("undefined".into())),
+        })];
+        let dict = sp(Expr::Dict(entries));
+        let env = empty_env();
+        let dict_thunk = eval(&dict, Rc::clone(&env), 0).unwrap();
+        let dict_val = materialize(&dict_thunk, None, 0).unwrap();
+
+        let x_thunk = match &dict_val {
+            Value::Dict(map) => Rc::clone(map.get(&Key::String("x".into())).unwrap()),
+            other => panic!("expected Dict, got {other:?}"),
+        };
+
+        // First materialization: should fail and cache the error
+        let err1 = materialize(&x_thunk, None, 0).unwrap_err();
+        assert!(
+            err1.message.contains("undefined variable: $undefined"),
+            "first error: got: {}",
+            err1.message
+        );
+
+        // Check that the thunk is now in Failed state
+        match &*x_thunk.state() {
+            ThunkState::Failed(cached_err) => {
+                assert!(cached_err
+                    .message
+                    .contains("undefined variable: $undefined"));
+            }
+            other => panic!("expected Failed state, got {other:?}"),
+        }
+
+        // Second materialization: should return the cached error
+        let err2 = materialize(&x_thunk, None, 0).unwrap_err();
+        assert!(
+            err2.message.contains("undefined variable: $undefined"),
+            "second error: got: {}",
+            err2.message
+        );
+    }
+
+    #[test]
+    fn test_failed_state_updates_materialization_span() {
+        // Failed state should update materialization_span on each access when provided
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("broken".into()))),
+            value: sp(Expr::VarRef("missing".into())),
+        })];
+        let dict = sp(Expr::Dict(entries));
+        let env = empty_env();
+        let dict_thunk = eval(&dict, Rc::clone(&env), 0).unwrap();
+        let dict_val = materialize(&dict_thunk, None, 0).unwrap();
+
+        let broken_thunk = match &dict_val {
+            Value::Dict(map) => Rc::clone(map.get(&Key::String("broken".into())).unwrap()),
+            other => panic!("expected Dict, got {other:?}"),
+        };
+
+        // First access with one materialization span
+        let span1 = test_span(10, 1, 10, 5);
+        let err1 = materialize(&broken_thunk, Some(&span1), 0).unwrap_err();
+        assert_eq!(err1.materialization_span, Some(span1));
+
+        // Second access with a different materialization span updates it
+        let span2 = test_span(20, 1, 20, 5);
+        let err2 = materialize(&broken_thunk, Some(&span2), 0).unwrap_err();
+        assert_eq!(err2.materialization_span, Some(span2));
+
+        // Third access with no materialization span returns error with the
+        // materialization_span from the original cached error (which was span1)
+        let err3 = materialize(&broken_thunk, None, 0).unwrap_err();
+        assert_eq!(err3.materialization_span, Some(span1));
+    }
+
+    #[test]
+    fn test_failed_state_preserves_stack_frames() {
+        // Failed state should preserve the original error's stack frames
+        let env = empty_env();
+
+        // Create a function that will fail
+        let failing_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::VarRef("nonexistent".into()))),
+            env: Rc::clone(&env),
+        };
+
+        env.borrow_mut().insert(
+            "bad_fn".into(),
+            Rc::new(Thunk::new_materialized(failing_fn, test_span(1, 1, 1, 20))),
+        );
+
+        // Call the failing function
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("bad_fn".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+
+        let thunk = eval(&call_expr, env, 0).unwrap();
+
+        // First materialization: error should have stack frames
+        let err1 = materialize(&thunk, None, 0).unwrap_err();
+        assert!(err1.message.contains("undefined variable: $nonexistent"));
+        let frame_count1 = err1.stack.len();
+        assert!(frame_count1 > 0, "should have at least one stack frame");
+
+        // Second materialization: error should have the same stack frames
+        let err2 = materialize(&thunk, None, 0).unwrap_err();
+        assert_eq!(
+            err2.stack.len(),
+            frame_count1,
+            "stack frames should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_pending_builtin_error_becomes_failed() {
+        // When a PendingBuiltin fails, it should transition to Failed state
+        fn failing_builtin(
+            _args: &[Rc<Thunk>],
+            _named: &IndexMap<String, Rc<Thunk>>,
+            _depth: usize,
+            call_span: Span,
+        ) -> Result<Value, Box<EvalError>> {
+            Err(EvalError::new("builtin intentionally failed", call_span).into())
+        }
+
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "fail".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Builtin {
+                    name: "fail",
+                    func: failing_builtin,
+                },
+                test_span(1, 1, 1, 5),
+            )),
+        );
+
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("fail".into()))),
+            args: vec![],
+            named_args: vec![],
+        });
+
+        let thunk = eval(&call_expr, env, 0).unwrap();
+
+        // First materialization: should fail
+        let err1 = materialize(&thunk, None, 0).unwrap_err();
+        assert!(err1.message.contains("builtin intentionally failed"));
+
+        // Check that the thunk is now in Failed state
+        match &*thunk.state() {
+            ThunkState::Failed(_) => {}
+            other => panic!("expected Failed state after error, got {other:?}"),
+        }
+
+        // Second materialization: should return cached error
+        let err2 = materialize(&thunk, None, 0).unwrap_err();
+        assert!(err2.message.contains("builtin intentionally failed"));
+    }
+
+    #[test]
+    fn test_pending_call_error_becomes_failed() {
+        // When a PendingCall fails, it should transition to Failed state
+        let env = empty_env();
+
+        let failing_fn = Value::Function {
+            params: Rc::new(vec![]),
+            body: Rc::new(sp(Expr::VarRef("does_not_exist".into()))),
+            env: Rc::clone(&env),
+        };
+
+        let func_thunk = Rc::new(Thunk::new_materialized(failing_fn, test_span(1, 1, 1, 10)));
+        let call_span = test_span(2, 1, 2, 10);
+
+        let pending = Rc::new(Thunk::new_pending_call(
+            func_thunk,
+            vec![],
+            call_span,
+            call_span,
+        ));
+
+        // First materialization: should fail
+        let err1 = materialize(&pending, None, 0).unwrap_err();
+        assert!(err1.message.contains("undefined variable: $does_not_exist"));
+
+        // Check that the thunk is now in Failed state
+        match &*pending.state() {
+            ThunkState::Failed(_) => {}
+            other => panic!("expected Failed state after error, got {other:?}"),
+        }
+
+        // Second materialization: should return cached error
+        let err2 = materialize(&pending, None, 0).unwrap_err();
+        assert!(err2.message.contains("undefined variable: $does_not_exist"));
+    }
+
+    #[test]
+    fn test_pending_call_func_materialization_failure() {
+        let bad_func = Rc::new(Thunk::new_unevaluated(
+            Rc::new(sp(Expr::VarRef("nonexistent_func".into()))),
+            empty_env(),
+            test_span(1, 1, 1, 10),
+        ));
+        let call_span = test_span(2, 1, 2, 10);
+        let pending = Rc::new(Thunk::new_pending_call(
+            bad_func,
+            vec![],
+            call_span,
+            call_span,
+        ));
+
+        // First materialization should fail with undefined variable error
+        let err = materialize(&pending, None, 0).unwrap_err();
+        assert!(err.message.contains("undefined variable: $nonexistent_func"));
+
+        // The thunk should be in Failed state, NOT InProgress
+        match &*pending.state() {
+            ThunkState::Failed(_) => {}
+            ThunkState::InProgress => panic!("BUG: thunk stuck in InProgress"),
+            other => panic!("unexpected state: {other:?}"),
+        }
+
+        // Second access should return cached error, NOT "circular dependency"
+        let err2 = materialize(&pending, None, 0).unwrap_err();
+        assert!(err2.message.contains("undefined variable: $nonexistent_func"));
+        assert!(!err2.message.contains("circular dependency"));
+    }
+
+    #[test]
+    fn test_unevaluated_error_becomes_failed() {
+        // When an Unevaluated thunk fails during materialization, it should transition to Failed
+        let expr = sp(Expr::VarRef("undefined_var".into()));
+        let env = empty_env();
+        let thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(expr),
+            Rc::clone(&env),
+            test_span(1, 1, 1, 15),
+        ));
+
+        // First materialization: should fail
+        let err1 = materialize(&thunk, None, 0).unwrap_err();
+        assert!(err1.message.contains("undefined variable: $undefined_var"));
+
+        // Check that the thunk is now in Failed state
+        match &*thunk.state() {
+            ThunkState::Failed(_) => {}
+            other => panic!("expected Failed state after error, got {other:?}"),
+        }
+
+        // Second materialization: should return cached error
+        let err2 = materialize(&thunk, None, 0).unwrap_err();
+        assert!(err2.message.contains("undefined variable: $undefined_var"));
+    }
+
+    #[test]
+    fn test_pending_call_cycle_detection() {
+        // PendingCall should detect cycles if the func or args reference the thunk itself
+        // This is a tricky test because we need to create a cycle through PendingCall.
+        // We'll create a dict where a key references itself via a call expression.
+
+        // [f: [fn [x] [call $f $x]]; result: [call $f 1]]
+        // This creates an infinite recursion that should be caught by cycle detection
+        let env = empty_env();
+
+        let recursive_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::VarRef("f".into()))),
+                args: vec![sp(Expr::VarRef("x".into()))],
+                named_args: vec![],
+            })),
+            env: Rc::clone(&env),
+        };
+
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(
+                recursive_fn,
+                test_span(1, 1, 1, 20),
+            )),
+        );
+
+        // Call the recursive function
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+
+        let thunk = eval(&call_expr, env, 0).unwrap();
+
+        // Materialization should fail with depth exceeded (not infinite loop)
+        let err = materialize(&thunk, None, 0).unwrap_err();
+        assert!(
+            err.message.contains("maximum evaluation depth exceeded"),
+            "got: {}",
+            err.message
+        );
     }
 }

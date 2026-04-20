@@ -1639,7 +1639,7 @@ doubled: [call $map [fn [n] [call $* $n 2]] [call $range 0]]
 To make dict-returning operations lazy, the thunk model gains a new state:
 
 ```
-PendingCall(function: Rc<Thunk>, args: Vec<Rc<Thunk>>)
+PendingCall(function: Rc<Thunk>, args: Vec<Rc<Thunk>>, call_span: Span)
 ```
 
 `PendingCall` represents "apply this function to these arguments when forced." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result (transitioning to `Materialized`), just like `PendingBuiltin` does for builtin calls.
@@ -1727,7 +1727,7 @@ This table documents every operation's current materialization behavior and the 
 | `$when`, `$unless` | Materializes condition + chosen body via `$if` | Body returned as thunk (implicit benefit from Phase 5b `$if` change) | 5b (implicit) | Delegates to `$if`; no code change needed |
 | `$cond` | Materializes conditions in order + chosen branch via `$if` | Branches returned as thunks (implicit benefit from Phase 5b `$if` change) | 5b (implicit) | Delegates to `$if`; no code change needed |
 | **Dict Operations** | | | | |
-| `$merge` | Eagerly clones both input dicts | Lazy overlay: right shadows left, O(1) construction, O(2) access per key. Chained merges create overlay depth; flattens on iteration. Type is still eagerly inferred. | 5b | Lazy overlay is O(1) construction vs O(n) clone; values stay thunks |
+| `$merge` | Eagerly materializes dict structure to access keys; values remain as thunks (Rc clones) | Lazy overlay: right shadows left, O(1) construction, O(k) access per key for k chained merges. Flattens on iteration. Type is still eagerly inferred. | 5b | Lazy overlay is O(1) construction vs O(n) clone; values stay thunks |
 | `$get`, `$get-or` | Structural: returns value thunk | No change (already optimal) | — | Already lazy |
 | `$keys` | Structural: keys always evaluated | No change (keys are never thunks) | — | Keys must be known to construct dict |
 | `$values` | Structural: returns list of thunks | No change (already optimal) | — | Already lazy |
@@ -1739,7 +1739,7 @@ This table documents every operation's current materialization behavior and the 
 | `$length` | Materializes dict to count entries | No change (must count entries) | — | Inherently materializing |
 | `$empty?` | Calls `$length` then compares to 0 | No change (inherently materializing) | — | Depends on `$length` |
 | **Universal Collection Ops** | | | | |
-| `$map` on dict | Eager: builds full result dict with materialized values, O(n²) | Lazy: return dict with PendingCall thunks, O(n) construct / O(1) per access | 5e | Enables lazy dict transforms |
+| `$map` on dict | Eager: builds full result dict via repeated merge (O(n²)), values are call thunks (lazy) | Lazy: return dict with PendingCall thunks, O(n) construct / O(1) per access | 5e | Enables lazy dict transforms |
 | `$map` on seq | N/A (Seq not yet implemented) | Lazy: return seq applying function to each element | 5e | Enables infinite sequence transforms |
 | `$filter` on dict | Eager: builds full result dict, O(n²) | Return Seq (must evaluate predicates) | 5e | Predicates must run to know which keys to keep |
 | `$filter` on seq | N/A (Seq not yet implemented) | Lazy: return seq filtering elements | 5e | Lazy sequence filtering |

@@ -254,21 +254,21 @@ The original design calls for everything to be lazy. Several operations are curr
 
 Before starting implementation, document the PendingCall/Seq design and analyze current eager operations.
 
-- [ ] Analyze all current eager operations and categorize by fix strategy (PendingCall, Seq, inherently eager)
-- [ ] Document the PendingCall/Seq design decisions in DESIGN.md before starting 5a
-- [ ] Document current-vs-planned laziness for `$if`, `$merge`, `$apply` in DESIGN.md
+- [x] Analyze all current eager operations and categorize by fix strategy (PendingCall, Seq, inherently eager)
+- [x] Document the PendingCall/Seq design decisions in DESIGN.md before starting 5a
+- [x] Document current-vs-planned laziness for `$if`, `$merge`, `$apply` in DESIGN.md
 
 ### 5a: PendingCall Thunk State
 
-Add `PendingCall(func: Rc<Thunk>, args: Vec<Rc<Thunk>>)` to `ThunkState`. This enables lazy function application at runtime without AST nodes.
+Add `PendingCall(func: Rc<Thunk>, args: Vec<Rc<Thunk>>, call_span: Span)` and `Failed(Box<EvalError>)` to `ThunkState`. This enables lazy function application at runtime without AST nodes and error caching.
 
-- [ ] Add `PendingCall` variant to `ThunkState` in `value.rs`
-- [ ] Add `Failed(Box<EvalError>)` variant to `ThunkState` for error memoization (Nix's `nFailed` pattern — cache failures instead of restoring `Unevaluated` and re-evaluating)
-- [ ] Handle `PendingCall` in `materialize()`: extract func+args, call function, memoize result
-- [ ] Handle `PendingCall` in `Thunk::take_*` methods for state management
-- [ ] Handle `PendingCall` in cycle detection (set `InProgress`, restore on error)
-- [ ] Add `Thunk::new_pending_call(func, args, span)` constructor
-- [ ] Tests: PendingCall materializes correctly, memoizes, cycle-detects
+- [x] Add `PendingCall` variant to `ThunkState` in `value.rs`
+- [x] Add `Failed(Box<EvalError>)` variant to `ThunkState` for error memoization (Nix's `nFailed` pattern — cache failures instead of restoring `Unevaluated` and re-evaluating)
+- [x] Handle `PendingCall` in `materialize()`: extract func+args, call function, memoize result
+- [x] Handle `PendingCall` in `Thunk::take_*` methods for state management
+- [x] Handle `PendingCall` in cycle detection (set `InProgress`, restore on error)
+- [x] Add `Thunk::new_pending_call(func, args, span)` constructor
+- [x] Tests: PendingCall materializes correctly, memoizes, cycle-detects
 
 ### 5a-nits: Eval/Value Code Quality
 
@@ -608,9 +608,7 @@ Replace the current closed-strict/open-lenient record unification with full Remy
 - [ ] Add row variable substitution cycle handling — `Substitution::apply` must handle cycles when row variables bind to records containing the same row variable (`src/types.rs`) [Major, type-theorist]
 - [ ] Add VarLevel scope tracking for row variables (Elm rank-based generalization — essential for Phase 8 soundness, type-theorist review)
 - [ ] Subtyping proof search for TypeAssert defaults — validate default value type matches asserted type (type-theorist review)
-- [ ] Fix row variable occurs check for record fields — `occurs_in` doesn't recurse into Record field types; `unify(TypeVar("r"), Record([("x", TypeVar("r"))], Closed))` should error (`src/types.rs:210-223`) [Critical, type-theorist]
 - [ ] Fix row variable substitution creating duplicate fields — `merged.extend(extra_fields)` doesn't check for key collisions (`src/types.rs:166-184`) [Critical, type-theorist]
-- [ ] Fix instantiation not freshening nested row vars — `collect_type_vars` must recurse into Record field types (`src/types.rs:318-330`) [Critical, type-theorist]
 - [ ] Fix RowVar treated identically to Open in `is_subtype` — add TODO comment explaining Phase 8 placeholder (`src/types.rs:59-62`) [Major, type-theorist]
 
 ## Phase 9: Sandboxing & Security
@@ -791,6 +789,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 
 ### 13a½: Additional Test Coverage
 
+- [ ] Add error corpus tests for arithmetic overflow ($+/$-/$* with i64 bounds), NaN/Infinity rejection ($floor/$round), string parse failure ($to-int/$to-float), TypeAssert failure, range mixed keys [Critical, test-crafter]
 - [ ] Add depth limit corpus tests (256 levels succeeds, 257 errors)
 - [ ] Add keyword-in-context corpus tests (`[call: 42]`, `[fn: hello]` testing colon-lookahead)
 - [ ] Add static constraint negative tests (variadic-not-last, rest-entry position, annotation context)
