@@ -15,7 +15,7 @@
 //!   feature flag).
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -221,6 +221,7 @@ pub fn run_repl() -> Result<(), String> {
         base_dir,
         include_guard: Rc::new(RefCell::new(HashSet::new())),
         stdlib_env,
+        cache: Rc::new(RefCell::new(HashMap::new())),
     });
 
     // Wrap the main loop so that clear_include_context() runs on all exit paths.

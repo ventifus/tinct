@@ -18,7 +18,7 @@
 //! **Sequences:** `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -49,6 +49,8 @@ pub struct IncludeContext {
     pub include_guard: Rc<RefCell<HashSet<PathBuf>>>,
     /// The stdlib environment to use when evaluating included files.
     pub stdlib_env: Rc<RefCell<Environment>>,
+    /// Cache of evaluated include results by canonical path.
+    pub cache: Rc<RefCell<HashMap<PathBuf, Rc<Thunk>>>>,
 }
 
 thread_local! {
@@ -1031,6 +1033,11 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )
         })?;
 
+        // Check cache first: if we've already evaluated this file, return the cached thunk.
+        if let Some(cached) = ctx.cache.borrow().get(&canonical) {
+            return Ok(Rc::clone(cached));
+        }
+
         // Cycle detection.
         if ctx.include_guard.borrow().contains(&canonical) {
             return Err(EvalError::new(
@@ -1110,7 +1117,18 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 // a lazy thunk would defer evaluation past the guard removal.
                 let val = crate::eval::materialize(&thunk, None, depth + 1)?;
                 restore(cell);
-                ok_val(val)
+                let result_thunk = ok_val(val)?;
+
+                // Cache the result thunk for future includes of this file.
+                INCLUDE_CTX.with(|cell| {
+                    if let Some(ctx) = cell.borrow_mut().as_mut() {
+                        ctx.cache
+                            .borrow_mut()
+                            .insert(canonical.clone(), Rc::clone(&result_thunk));
+                    }
+                });
+
+                Ok(result_thunk)
             }
             Err(e) => {
                 restore(cell);
@@ -7552,6 +7570,7 @@ mod tests {
             base_dir: base_dir.to_path_buf(),
             include_guard: Rc::new(RefCell::new(std::collections::HashSet::new())),
             stdlib_env,
+            cache: Rc::new(RefCell::new(HashMap::new())),
         });
     }
 
@@ -7920,6 +7939,157 @@ mod tests {
             }
             other => panic!("expected Dict, got {:?}", other),
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_caches_result() {
+        // Including the same file twice should return the cached result, not re-evaluate.
+        let dir = std::env::temp_dir().join("llt_test_include_cache");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "cached.llt", "[value: 42]");
+        setup_include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("cached.llt".into()))];
+
+        // First include
+        let result1 = mat(builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+        }));
+
+        // Second include -- should hit cache
+        let result2 = mat(builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+        }));
+
+        // Both should return the same value
+        match (&result1, &result2) {
+            (Value::Dict(map1), Value::Dict(map2)) => {
+                let val1 =
+                    materialize(map1.get(&Key::String("value".into())).unwrap(), None, 0).unwrap();
+                let val2 =
+                    materialize(map2.get(&Key::String("value".into())).unwrap(), None, 0).unwrap();
+                assert_eq!(val1, Value::Int(42));
+                assert_eq!(val2, Value::Int(42));
+            }
+            _ => panic!("expected Dict, got {:?} and {:?}", result1, result2),
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_cache_respects_normalization() {
+        // Including a file via different paths that resolve to the same canonical path
+        // should hit the cache.
+        let dir = std::env::temp_dir().join("llt_test_include_cache_norm");
+        std::fs::create_dir_all(&dir).ok();
+        let subdir = dir.join("subdir");
+        std::fs::create_dir_all(&subdir).ok();
+        write_temp_file(&dir, "target.llt", "[value: 99]");
+        setup_include_ctx(&dir);
+
+        // First include with relative path
+        let args1 = vec![thunk(Value::String("./target.llt".into()))];
+        let result1 = mat(builtin_include(BuiltinArgs {
+            args: &args1,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+        }));
+
+        // Second include with normalized path
+        let args2 = vec![thunk(Value::String("subdir/../target.llt".into()))];
+        let result2 = mat(builtin_include(BuiltinArgs {
+            args: &args2,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+        }));
+
+        // Both should return the same value
+        match (&result1, &result2) {
+            (Value::Dict(map1), Value::Dict(map2)) => {
+                let val1 =
+                    materialize(map1.get(&Key::String("value".into())).unwrap(), None, 0).unwrap();
+                let val2 =
+                    materialize(map2.get(&Key::String("value".into())).unwrap(), None, 0).unwrap();
+                assert_eq!(val1, Value::Int(99));
+                assert_eq!(val2, Value::Int(99));
+            }
+            _ => panic!("expected Dict, got {:?} and {:?}", result1, result2),
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_cache_shared_across_nested() {
+        // File A includes file B. File C also includes file B. Both should share
+        // the cached result of B.
+        let dir = std::env::temp_dir().join("llt_test_include_cache_nested");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "shared.llt", "[shared: 123]");
+        write_temp_file(&dir, "file_a.llt", "[a: [call $include \"shared.llt\"]]");
+        write_temp_file(&dir, "file_c.llt", "[c: [call $include \"shared.llt\"]]");
+        setup_include_ctx(&dir);
+
+        // Include file_a (which includes shared.llt)
+        let args_a = vec![thunk(Value::String("file_a.llt".into()))];
+        let result_a = mat(builtin_include(BuiltinArgs {
+            args: &args_a,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+        }));
+
+        // Include file_c (which also includes shared.llt -- should hit cache)
+        let args_c = vec![thunk(Value::String("file_c.llt".into()))];
+        let result_c = mat(builtin_include(BuiltinArgs {
+            args: &args_c,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+        }));
+
+        // Verify that both got the shared value
+        match (&result_a, &result_c) {
+            (Value::Dict(map_a), Value::Dict(map_c)) => {
+                let a_val =
+                    materialize(map_a.get(&Key::String("a".into())).unwrap(), None, 0).unwrap();
+                let c_val =
+                    materialize(map_c.get(&Key::String("c".into())).unwrap(), None, 0).unwrap();
+
+                // Both should be dicts with "shared: 123"
+                match (&a_val, &c_val) {
+                    (Value::Dict(a_inner), Value::Dict(c_inner)) => {
+                        let a_shared = materialize(
+                            a_inner.get(&Key::String("shared".into())).unwrap(),
+                            None,
+                            0,
+                        )
+                        .unwrap();
+                        let c_shared = materialize(
+                            c_inner.get(&Key::String("shared".into())).unwrap(),
+                            None,
+                            0,
+                        )
+                        .unwrap();
+                        assert_eq!(a_shared, Value::Int(123));
+                        assert_eq!(c_shared, Value::Int(123));
+                    }
+                    _ => panic!("expected nested dicts, got {:?} and {:?}", a_val, c_val),
+                }
+            }
+            _ => panic!("expected Dict, got {:?} and {:?}", result_a, result_c),
+        }
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -367,9 +367,9 @@ Additional sequence operations and typing decisions for dual-dispatch ops.
 
 Cache `$include` results so re-including the same file returns the cached thunk instead of re-evaluating. Jsonnet caches import thunks; LLT currently re-evaluates every `$include` call.
 
-- [ ] Add `HashMap<PathBuf, Rc<Thunk>>` to `IncludeContext` for result caching
-- [ ] Return cached thunk on re-include of the same resolved path
-- [ ] Tests: same file included twice returns identical thunk, cache respects path normalization
+- [x] Add `HashMap<PathBuf, Rc<Thunk>>` to `IncludeContext` for result caching
+- [x] Return cached thunk on re-include of the same resolved path
+- [x] Tests: same file included twice returns identical thunk, cache respects path normalization
 
 ### 5g-i: Make Remaining Eager Ops Lazy
 
@@ -952,6 +952,9 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **DESIGN.md pipeline model uses code fence for non-code** — use indentation instead (`DESIGN.md:20-29`) [Nit, grammar-architect]
 - [ ] **DESIGN.md "Bare Word Character Set" header doesn't follow pattern** — retitle for consistency (`DESIGN.md:852-886`) [Nit, grammar-architect]
 - [ ] **Stdlib count mismatch: 28 builtins vs 62 total not clarified** — update headers to show breakdown (`DESIGN.md:1393`, `CLAUDE.md:30`) [Nit, integration-verifier]
+
+- [ ] **DESIGN.md laziness tables use future tense for completed Phase 5b work** — change "Phase 5b: Will return..." to past tense (`DESIGN.md:1245, 1268, 1761-1762`) [Minor, integration-verifier]
+- [ ] **DESIGN.md BuiltinFn signature section omits BuiltinArgs struct** — update to mention Phase 5b parameter bundling (`DESIGN.md:1732-1744`) [Minor, integration-verifier]
 
 ### DESIGN.md documentation gaps (eval-engine review)
 

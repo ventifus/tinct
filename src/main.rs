@@ -7,7 +7,7 @@ use lazy_lisp_transformer::{
     IncludeContext, Span, Thunk, MAX_FILE_SIZE,
 };
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Read};
 use std::process;
 use std::rc::Rc;
@@ -117,6 +117,7 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
         base_dir,
         include_guard: Rc::new(RefCell::new(HashSet::new())),
         stdlib_env: Rc::clone(&env),
+        cache: Rc::new(RefCell::new(HashMap::new())),
     });
 
     // Wrap evaluation logic in a closure so that clear_include_context() runs
