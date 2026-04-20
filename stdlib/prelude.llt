@@ -343,18 +343,6 @@ sort-merge: [fn [cmp left right]
 # Universal Collection Operations (preserve keys)
 # ============================================================================
 
-# Apply a function to every value, preserving keys.
-map: [fn [f xs] [call $map-impl $f $xs [call $keys $xs] 0 []]]
-
-map-impl: [fn [f xs ks i acc]
-    [call $if [call $>= $i [call $length $ks]]
-        $acc
-        [call $map-step $f $xs $ks $i $acc $ks[$i]]]]
-
-map-step: [fn [f xs ks i acc current-key]
-    [call $map-impl $f $xs $ks [call $+ $i 1]
-        [call $merge $acc [call $make-entry $current-key [call $f $xs[$current-key]]]]]]
-
 # Apply a function to every [key value] pair, returning new values under same keys.
 map-entries: [fn [f xs] [call $map-entries-impl $f $xs [call $keys $xs] 0 []]]
 
@@ -368,20 +356,6 @@ map-entries-step: [fn [f xs ks i acc current-key]
         [call $merge $acc
             [call $make-entry $current-key
                 [call $f [key: $current-key value: $xs[$current-key]]]]]]]
-
-# Keep only entries where the predicate returns true for the value.
-filter: [fn [pred xs] [call $filter-impl $pred $xs [call $keys $xs] 0 []]]
-
-filter-impl: [fn [pred xs ks i acc]
-    [call $if [call $>= $i [call $length $ks]]
-        $acc
-        [call $filter-step $pred $xs $ks $i $acc $ks[$i]]]]
-
-filter-step: [fn [pred xs ks i acc current-key]
-    [call $if [call $pred $xs[$current-key]]
-        [call $filter-impl $pred $xs $ks [call $+ $i 1]
-            [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]
-        [call $filter-impl $pred $xs $ks [call $+ $i 1] $acc]]]
 
 # Left fold over a collection.
 reduce: [fn [f init xs] [call $reduce-impl $f $init $xs [call $keys $xs] 0]]

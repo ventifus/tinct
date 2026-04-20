@@ -564,24 +564,22 @@ Key-range slicing requires keys to be comparable. All-integer or all-string keys
 - No ambiguity about which operations renumber — it's determined by the category, not the data
 - List operations always give you clean, predictable lists
 - Dict operations never silently destroy your key structure
-- `$filter` is universal (preserves keys), so filtering a list can produce a sparse result — pipe through `$reindex` if you want dense keys back
+- `$filter` returns a Seq of matching values (since inclusion requires predicate evaluation, keys are not preserved) — use `$collect` to get a dict back
 - The type system enforces the boundary: list operations require `[a]` (integer-keyed)
 
 ```lisp
-# $filter preserves keys (universal operation)
+# $filter returns a Seq of matching values (dual-dispatch)
 $data: [alice bob carol dave]
 [call $filter [fn [x] [call $not [call $= $x bob]]] $data]
-# → [0: alice  2: carol  3: dave]    sparse — key 1 gone
+# → Seq(alice, carol, dave)    use $collect for a dict
 
-# Pipe through $reindex for a clean list
-[call $-> $data
-    [call $filter [call $not [call $= $_ bob]] $_]
-    $reindex]
-# → [alice carol dave] = [0: alice  1: carol  2: dave]
+# Pipe through $collect for a clean list
+[call $collect [call $filter [fn [x] [call $not [call $= $x bob]]] $data]]
+# → [0: alice  1: carol  2: dave]
 
-# $filter on string-keyed dicts preserves keys (obviously)
-[call $filter [fn [v] [call $> $v 0]] [x: 1  y: -2  z: 3]]
-# → [x: 1  z: 3]
+# $filter on string-keyed dicts also returns Seq of values
+[call $collect [call $filter [fn [v] [call $> $v 0]] [x: 1  y: -2  z: 3]]]
+# → [0: 1  1: 3]
 ```
 
 **`$conj` on sparse data:** `$conj` delegates to `$append`, which uses the maximum existing integer key + 1 as the new key (or 0 if no integer keys exist). This avoids key collisions even on sparse data:
@@ -1504,7 +1502,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `map` | `[fn [f xs] ...]` | Apply function to every value, preserving keys |
 | `map-entries` | `[fn [f xs] ...]` | Apply function to every `[key value]` pair |
-| `filter` | `[fn [pred xs] ...]` | Keep entries where predicate returns true |
+| `filter` | `[fn [pred xs] ...]` | Keep values where predicate returns true (returns Seq) |
 | `reduce` | `[fn [f init xs] ...]` | Left fold over a collection |
 | `fold` | `[fn [f init xs] ...]` | Alias for `reduce` |
 | `slice` | `[fn [xs start end] ...]` | Positional slice (start inclusive, end exclusive) |

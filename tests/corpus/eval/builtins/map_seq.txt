@@ -1,0 +1,4 @@
+# map on seq: returns lazy seq
+[call $head [call $map [fn [x] [call $+ $x 10]] [call $seq 1 [call $seq 2 []]]]]
+===
+Int(11)

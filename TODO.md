@@ -343,18 +343,25 @@ Fix Failed state materialization_span overwrite found by span-integrity-checker 
 
 ### 5e: Dual-Dispatch Map/Filter
 
-Make `$map` and `$filter` work on both dicts and sequences, with Rust implementations for performance. Note: `$take` dual-dispatch already implemented in Phase 5d.
+Move `$map` and `$filter` to Rust builtins with dual-dispatch on Dict vs Seq. Note: `$take` dual-dispatch already implemented in Phase 5d.
 
-- [ ] `$map` on dict: return dict with PendingCall thunks (lazy, same keys)
-- [ ] `$map` on seq: return lazy seq
-- [ ] `$filter` on dict: return seq (must evaluate predicates)
-- [ ] `$filter` on seq: return lazy seq
+- [x] `$map` on dict: return dict with PendingCall thunks (lazy, same keys)
+- [x] `$map` on seq: return lazy seq
+- [x] `$filter` on dict: return seq (must evaluate predicates)
+- [x] `$filter` on seq: return lazy seq
+- [x] Move `map`, `filter` from LLT prelude to Rust builtins
+- [x] Tests: map/filter on dicts (lazy verification), map/filter on seqs, mixed pipelines
+
+### 5e½: Drop/Reduce + Typing Strategy
+
+Additional sequence operations and typing decisions for dual-dispatch ops.
+
 - [ ] `$drop` on seq: return seq skipping first n elements
 - [ ] `$reduce` on seq: accumulate, materializing each step
-- [ ] Move `map`, `filter`, `drop`, `reduce` from LLT prelude to Rust builtins
+- [ ] Move `drop`, `reduce` from LLT prelude to Rust builtins
 - [ ] Decide typing strategy for dual-dispatch ops (`$map`/`$filter` on Record vs Seq): `Any` escape hatch, union types, or separate functions [Major, type-theorist]
-- [ ] Tests: map/filter on dicts (lazy verification), map/filter on seqs, mixed pipelines
 - [ ] Document `join` O(n^2) due to repeated str concatenation; optimize in Rust builtin (`stdlib/prelude.llt:88-97`) [Minor, stdlib-author]
+- [ ] Tests: drop on seq, reduce on seq and dict
 
 ### 5f: Include Caching
 
@@ -598,6 +605,9 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Cache materialized dict in `builtin_cycle_step` — currently re-materializes immutable dict on every iteration; store IndexMap directly (`src/builtins.rs:1375-1443`) [Major, performance-expert]
 - [ ] Optimize `builtin_take` Dict path — materializes entire dict then clones first n entries; use `map.iter().take(n)` directly (`src/builtins.rs:1648-1657`) [Major, performance-expert]
 - [ ] Consider SmallVec for sequence constructor tail args — `Vec::new()` + push allocates heap on every step of infinite sequences; SmallVec<[Rc<Thunk>; 2]> would stack-allocate common cases (`src/builtins.rs`) [Minor, performance-expert]
+- [ ] Add capacity hint to variadic dict allocation — exact size known at allocation time (`src/eval.rs:610`) [Minor, performance-expert]
+- [ ] Use static empty IndexMap for PendingCall named args — eliminates allocation on every PendingCall with no named args (`src/eval.rs:976`) [Nit, performance-expert]
+- [ ] Use static empty dict thunk for default `$$` — eliminates allocation on every file eval without stdin (`src/eval.rs:287-291`) [Nit, performance-expert]
 
 ## Phase 7½: Iterative Evaluator
 
@@ -651,6 +661,7 @@ Design and implement filesystem sandboxing for `$include` and any future I/O ope
 
 Future type system work identified by type-theorist review (2026-04-19).
 
+- [ ] Add Type::Seq inference to typecheck.rs — sequence builtins ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) currently infer as Any; annotate return types in `check_call` for LSP hover and type safety (`src/typecheck.rs`) [Major, type-theorist]
 - [ ] Fix polymorphic call unification for named args — requires extending `Type::Function` to carry param names; after positional unification, named args are not unified (`src/typecheck.rs:389-447`) [Major, type-theorist, deferred from Phase 2c½]
 - [ ] Gradual typing with Any→concrete boundary tracking and blame (TypeScript/Typed Racket model)
 - [ ] Polymorphic recursion detection — forbid or support with depth-based instantiation tracking
@@ -837,6 +848,8 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add annotated bare word corpus tests — `[x@Number: 42]`, `[fn@Int [] 42]` (`tests/corpus/valid/annotations/`) [Minor, test-crafter]
 - [ ] Add variadic + named args interaction test — positional + variadic + named args together (`tests/corpus/eval/fn_variadic_plus_named.txt`) [Minor, test-crafter]
 - [ ] Rename `threading.txt` test file to `pipeline.txt` to match function name (`tests/corpus/eval/stdlib/threading.txt`) [Nit, stdlib-author]
+- [ ] Add TypeAssert `default:` fallback corpus test — `[@Number default: 42 "not a number"]` returns 42 (`tests/corpus/eval/builtins/`) [Minor, test-crafter]
+- [ ] Add type error corpus tests directory — `type_mismatch.txt`, `unification_failure.txt`, `record_field_missing.txt` (`tests/corpus/eval/type_errors/`) [Major, test-crafter]
 
 ### 13b: Test Framework Enhancements
 
@@ -894,6 +907,7 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 
 ### SPEC.md vs Code (from REVIEW.md)
 
+- [ ] **SPEC.md section 7 semicolon rule divergence** — SPEC.md:802-804 defines `semicolon = _{ ";" }` as standalone rule, but grammar.pest:119 uses `";"?` inline; either add rule to grammar.pest or inline in SPEC.md [Minor, grammar-architect]
 - [ ] **SPEC bare_word_char prose terminator list missing `$`** — SPEC.md formal grammar (`SPEC.md:161`) is correct and matches `grammar.pest:219-225`, but the prose terminator list (`SPEC.md:168-170`) omits `$`; add `$` to the bulleted list [Nit, grammar-architect]
 - [ ] **SPEC.md §3.4 access chain grammar missing dot exclusion clarity** — add inline comment showing `.` exclusion in `var_ident_char` (`SPEC.md:85-92`) [Major, grammar-architect]
 - [x] **SPEC.md §5.3 duplicate key detection claim vs implementation** — VERIFIED: runtime duplicate detection exists at `eval.rs:338`. SPEC.md:629 is accurate. [Resolved, grammar-architect]

@@ -1,0 +1,4 @@
+# map on dict: same keys, transformed values (lazy PendingCall)
+[call $map [fn [x] [call $* $x 2]] [a: 1 b: 2 c: 3]]
+===
+Dict({"a": Int(2), "b": Int(4), "c": Int(6)})

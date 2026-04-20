@@ -1,4 +1,4 @@
-# words: split a string into words
+# words: split a string into words (returns Seq since filter now returns Seq)
 [call $words "hello world"]
 ===
-Dict({0: String("hello"), 1: String("world")})
+Seq(String("hello"), ...)

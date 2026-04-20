@@ -1,0 +1,4 @@
+# filter on empty seq (terminated by empty dict) returns empty dict
+[call $filter [fn [x] true] []]
+===
+Dict({})

@@ -1,0 +1,4 @@
+# filter on seq: returns lazy seq of matching elements
+[call $head [call $filter [fn [x] [call $> $x 5]] [call $range 0 10]]]
+===
+Int(6)

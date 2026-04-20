@@ -1595,6 +1595,386 @@ fn builtin_unfold(
     Ok(result)
 }
 
+/// `map`: Apply a function to every element of a dict or sequence.
+///
+/// - For Dict: applies f to each value, preserving keys. Values are lazy (PendingCall thunks).
+/// - For Seq: applies f to each element, returning a lazy Seq.
+///
+/// Args: (f, xs)
+fn builtin_map(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("map", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let f_thunk = Rc::clone(&args[0]);
+    let xs = materialize(&args[1], None, depth)?;
+
+    match xs {
+        Value::Dict(ref map) => {
+            // Dict path: create PendingCall thunks for each value
+            let mut new_map = IndexMap::with_capacity(map.len());
+            for (key, value_thunk) in map {
+                let pending_call = Rc::new(Thunk::new_pending_call(
+                    Rc::clone(&f_thunk),
+                    vec![Rc::clone(value_thunk)],
+                    call_span,
+                    value_thunk.span,
+                    format!("map {}", key),
+                ));
+                new_map.insert(key.clone(), pending_call);
+            }
+            ok_val(Value::Dict(new_map))
+        }
+        Value::Seq { head, tail } => {
+            // Seq path: head = f(head), tail = map(f, tail)
+            let new_head = Rc::new(Thunk::new_pending_call(
+                Rc::clone(&f_thunk),
+                vec![Rc::clone(&head)],
+                call_span,
+                head.span,
+                "map head".to_string(),
+            ));
+            let tail_args = vec![Rc::clone(&f_thunk), Rc::clone(&tail)];
+            let new_tail = Rc::new(Thunk::new_pending_builtin(
+                builtin_map,
+                tail_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            ));
+            ok_val(Value::Seq {
+                head: new_head,
+                tail: new_tail,
+            })
+        }
+        other => Err(EvalError::new(
+            format!("map: expected Dict or Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// `filter`: Keep only elements where the predicate returns true.
+///
+/// - For Dict: evaluates pred for each value, returns Seq of values that pass.
+/// - For Seq: evaluates pred for each element, returns lazy Seq of passing elements.
+///
+/// Args: (pred, xs)
+fn builtin_filter(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("filter", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let pred_thunk = Rc::clone(&args[0]);
+    let xs = materialize(&args[1], None, depth)?;
+
+    match xs {
+        Value::Dict(ref map) => {
+            // Dict path: iterate entries by key order, building a Seq of values
+            // that pass the predicate
+            let keys: Vec<Key> = map.keys().cloned().collect();
+
+            if keys.is_empty() {
+                return ok_val(Value::Dict(IndexMap::new()));
+            }
+
+            // Wrap materialized values in Materialized-state thunks so the
+            // step helper's materialize() calls are O(1) by construction
+            let dict_thunk =
+                Rc::new(Thunk::new_materialized(Value::Dict(map.clone()), call_span));
+            let mut keys_map = IndexMap::with_capacity(keys.len());
+            for (i, k) in keys.into_iter().enumerate() {
+                let key_value = match k {
+                    Key::Int(n) => Value::Int(n),
+                    Key::String(s) => Value::String(s),
+                };
+                keys_map.insert(
+                    Key::Int(i as i64),
+                    Rc::new(Thunk::new_materialized(key_value, call_span)),
+                );
+            }
+            let keys_thunk = Rc::new(Thunk::new_materialized(Value::Dict(keys_map), call_span));
+            let idx_thunk = ok_val(Value::Int(0))?;
+
+            let filter_args = vec![Rc::clone(&pred_thunk), dict_thunk, keys_thunk, idx_thunk];
+
+            let result_thunk = Rc::new(Thunk::new_pending_builtin(
+                builtin_filter_dict_step,
+                filter_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            ));
+            Ok(result_thunk)
+        }
+        Value::Seq { head: _, tail: _ } => {
+            // Seq path: lazy filter
+            let filter_args = vec![Rc::clone(&pred_thunk), Rc::clone(&args[1])];
+            let result_thunk = Rc::new(Thunk::new_pending_builtin(
+                builtin_filter_seq_step,
+                filter_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            ));
+            Ok(result_thunk)
+        }
+        other => Err(EvalError::new(
+            format!("filter: expected Dict or Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// Helper for filter on Dict: iterates through dict entries, building a Seq.
+///
+/// Args: (pred, dict, keys, idx)
+fn builtin_filter_dict_step(
+    args: &[Rc<Thunk>],
+    _named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    let pred_thunk = Rc::clone(&args[0]);
+    let dict_thunk = Rc::clone(&args[1]);
+    let keys_thunk = Rc::clone(&args[2]);
+    let idx = materialize(&args[3], None, depth)?;
+
+    let idx_int = match idx {
+        Value::Int(i) => i,
+        other => {
+            return Err(EvalError::new(
+                format!(
+                    "filter-dict-step: idx must be Int, got {}",
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    let keys = materialize(&keys_thunk, None, depth)?;
+    let keys_map = match keys {
+        Value::Dict(ref m) => m,
+        other => {
+            return Err(EvalError::new(
+                format!(
+                    "filter-dict-step: keys must be Dict, got {}",
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    // Check if we've reached the end
+    if idx_int >= keys_map.len() as i64 {
+        return ok_val(Value::Dict(IndexMap::new()));
+    }
+
+    // Get the current key
+    let key_value = match keys_map.get(&Key::Int(idx_int)) {
+        Some(thunk) => materialize(thunk, None, depth)?,
+        None => {
+            return Err(EvalError::new(
+                format!("filter-dict-step: key at index {} not found", idx_int),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    let current_key = match key_value {
+        Value::Int(n) => Key::Int(n),
+        Value::String(s) => Key::String(s),
+        other => {
+            return Err(EvalError::new(
+                format!(
+                    "filter-dict-step: expected Int or String key, got {}",
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    // Get the value from the dict
+    let dict = materialize(&dict_thunk, None, depth)?;
+    let dict_map = match dict {
+        Value::Dict(ref m) => m,
+        other => {
+            return Err(EvalError::new(
+                format!(
+                    "filter-dict-step: dict must be Dict, got {}",
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    let value_thunk = match dict_map.get(&current_key) {
+        Some(v) => Rc::clone(v),
+        None => {
+            return Err(EvalError::new(
+                format!("filter-dict-step: key {} not found in dict", current_key),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    // Apply predicate
+    let pred_call = Rc::new(Thunk::new_pending_call(
+        Rc::clone(&pred_thunk),
+        vec![Rc::clone(&value_thunk)],
+        call_span,
+        value_thunk.span,
+        format!("filter-dict pred {}", current_key),
+    ));
+    let pred_result = materialize(&pred_call, None, depth)?;
+
+    let passes = match pred_result {
+        Value::Bool(b) => b,
+        other => {
+            return Err(EvalError::new(
+                format!(
+                    "filter: predicate must return Bool, got {}",
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    // Build tail: filter-dict-step with idx+1
+    let next_idx_thunk = ok_val(Value::Int(idx_int + 1))?;
+    let tail_args = vec![
+        Rc::clone(&pred_thunk),
+        dict_thunk,
+        keys_thunk,
+        next_idx_thunk,
+    ];
+    let tail = Rc::new(Thunk::new_pending_builtin(
+        builtin_filter_dict_step,
+        tail_args,
+        IndexMap::new(),
+        depth,
+        call_span,
+    ));
+
+    if passes {
+        // Include this value in the result
+        ok_val(Value::Seq {
+            head: value_thunk,
+            tail,
+        })
+    } else {
+        // Skip this value, continue to next
+        Ok(tail)
+    }
+}
+
+/// Helper for filter on Seq: lazily filters sequence elements.
+///
+/// Args: (pred, seq)
+fn builtin_filter_seq_step(
+    args: &[Rc<Thunk>],
+    _named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    let pred_thunk = Rc::clone(&args[0]);
+    let seq_thunk = Rc::clone(&args[1]);
+    let seq = materialize(&seq_thunk, None, depth)?;
+
+    match seq {
+        Value::Dict(_) => {
+            // End of sequence
+            ok_val(Value::Dict(IndexMap::new()))
+        }
+        Value::Seq { head, tail } => {
+            // Apply predicate to head
+            let pred_call = Rc::new(Thunk::new_pending_call(
+                Rc::clone(&pred_thunk),
+                vec![Rc::clone(&head)],
+                call_span,
+                head.span,
+                "filter-seq pred".to_string(),
+            ));
+            let pred_result = materialize(&pred_call, None, depth)?;
+
+            let passes = match pred_result {
+                Value::Bool(b) => b,
+                other => {
+                    return Err(EvalError::new(
+                        format!(
+                            "filter: predicate must return Bool, got {}",
+                            other.type_name()
+                        ),
+                        call_span,
+                    )
+                    .into())
+                }
+            };
+
+            if passes {
+                // Include this element
+                let tail_args = vec![Rc::clone(&pred_thunk), tail];
+                let new_tail = Rc::new(Thunk::new_pending_builtin(
+                    builtin_filter_seq_step,
+                    tail_args,
+                    IndexMap::new(),
+                    depth,
+                    call_span,
+                ));
+                ok_val(Value::Seq {
+                    head,
+                    tail: new_tail,
+                })
+            } else {
+                // Skip this element, recurse to next
+                let tail_args = vec![Rc::clone(&pred_thunk), tail];
+                let next_thunk = Rc::new(Thunk::new_pending_builtin(
+                    builtin_filter_seq_step,
+                    tail_args,
+                    IndexMap::new(),
+                    depth,
+                    call_span,
+                ));
+                Ok(next_thunk)
+            }
+        }
+        other => Err(EvalError::new(
+            format!(
+                "filter-seq-step: expected Dict or Seq, got {}",
+                other.type_name()
+            ),
+            call_span,
+        )
+        .into()),
+    }
+}
+
 /// `take`: Take the first n elements from a dict or sequence.
 ///
 /// - For Dict: takes first n entries by position, preserving keys. Returns Dict.
@@ -1719,6 +2099,8 @@ pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
         ("cycle", builtin_cycle),
         ("iterate", builtin_iterate),
         ("unfold", builtin_unfold),
+        ("map", builtin_map),
+        ("filter", builtin_filter),
         ("take", builtin_take),
     ]
 }
@@ -5389,9 +5771,11 @@ mod tests {
         assert!(names.contains(&"cycle"), "missing cycle");
         assert!(names.contains(&"iterate"), "missing iterate");
         assert!(names.contains(&"unfold"), "missing unfold");
+        assert!(names.contains(&"map"), "missing map");
+        assert!(names.contains(&"filter"), "missing filter");
         assert!(names.contains(&"take"), "missing take");
         // Total count
-        assert_eq!(names.len(), 39, "expected 39 builtins, got {}", names.len());
+        assert_eq!(names.len(), 41, "expected 41 builtins, got {}", names.len());
     }
 
     #[test]
