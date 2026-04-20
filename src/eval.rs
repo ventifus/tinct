@@ -1041,13 +1041,25 @@ pub fn materialize(
 /// - Dict values are fully materialized: each thunk entry is forced via
 ///   [`materialize`], then deep-materialized recursively. The returned Dict
 ///   wraps every value as [`Thunk::new_materialized`].
+/// - Seq values are fully materialized: both head and tail thunks are forced
+///   and recursively deep-materialized.
 /// - Functions (user-defined and builtins) are returned as-is -- they are
 ///   opaque values, not collections to traverse.
 ///
 /// `depth` is checked against [`MAX_EVAL_DEPTH`] to prevent stack overflow on
-/// deeply nested or cyclic structures. On infinite/cyclic structures without a
-/// depth bound, this function will diverge (see DESIGN.md on `$eval`).
+/// deeply nested structures. Cycle detection is performed using a visited set
+/// to prevent infinite loops on cyclic structures (e.g., mutual dict references).
 pub fn deep_materialize(val: &Value, depth: usize) -> EvalResult<Value> {
+    use std::collections::HashSet;
+    let mut visited = HashSet::new();
+    deep_materialize_impl(val, depth, &mut visited)
+}
+
+fn deep_materialize_impl(
+    val: &Value,
+    depth: usize,
+    visited: &mut std::collections::HashSet<*const Thunk>,
+) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
@@ -1059,14 +1071,54 @@ pub fn deep_materialize(val: &Value, depth: usize) -> EvalResult<Value> {
         Value::Dict(map) => {
             let mut result = IndexMap::new();
             for (key, thunk) in map {
+                // Check for cycles using raw pointer identity
+                let thunk_ptr = Rc::as_ptr(thunk);
+                if visited.contains(&thunk_ptr) {
+                    // Cycle detected: return thunk as-is without deep forcing
+                    result.insert(key.clone(), Rc::clone(thunk));
+                    continue;
+                }
+                visited.insert(thunk_ptr);
                 let v = materialize(thunk, None, depth)?;
-                let forced = deep_materialize(&v, depth + 1)?;
+                let forced = deep_materialize_impl(&v, depth + 1, visited)?;
                 result.insert(
                     key.clone(),
                     Rc::new(Thunk::new_materialized(forced, thunk.span)),
                 );
             }
             Ok(Value::Dict(result))
+        }
+        Value::Seq { head, tail } => {
+            // Materialize and deep-force head
+            let head_ptr = Rc::as_ptr(head);
+            if visited.contains(&head_ptr) {
+                // Cycle in head: keep as-is
+                return Ok(Value::Seq {
+                    head: Rc::clone(head),
+                    tail: Rc::clone(tail),
+                });
+            }
+            visited.insert(head_ptr);
+            let head_val = materialize(head, None, depth)?;
+            let head_forced = deep_materialize_impl(&head_val, depth + 1, visited)?;
+
+            // Materialize and deep-force tail
+            let tail_ptr = Rc::as_ptr(tail);
+            if visited.contains(&tail_ptr) {
+                // Cycle in tail: keep as-is
+                return Ok(Value::Seq {
+                    head: Rc::new(Thunk::new_materialized(head_forced, head.span)),
+                    tail: Rc::clone(tail),
+                });
+            }
+            visited.insert(tail_ptr);
+            let tail_val = materialize(tail, None, depth)?;
+            let tail_forced = deep_materialize_impl(&tail_val, depth + 1, visited)?;
+
+            Ok(Value::Seq {
+                head: Rc::new(Thunk::new_materialized(head_forced, head.span)),
+                tail: Rc::new(Thunk::new_materialized(tail_forced, tail.span)),
+            })
         }
         // Primitives and functions are already fully materialized
         other => Ok(other.clone()),
@@ -3967,6 +4019,59 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_deep_materialize_seq() {
+        // Verify that deep_materialize forces both head and tail of Seq
+        let span = test_span(1, 1, 1, 5);
+        let head_expr = Rc::new(Spanned::new(Expr::Int(42), span));
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let head_thunk = Rc::new(Thunk::new_unevaluated(Rc::clone(&head_expr), Rc::clone(&env), span));
+
+        let tail_expr = Rc::new(Spanned::new(Expr::Str("tail".into()), span));
+        let tail_thunk = Rc::new(Thunk::new_unevaluated(tail_expr, Rc::clone(&env), span));
+
+        let seq = Value::Seq {
+            head: head_thunk,
+            tail: tail_thunk,
+        };
+
+        let result = deep_materialize(&seq, 0).unwrap();
+        match result {
+            Value::Seq { head, tail } => {
+                // Both head and tail should be materialized
+                let head_val = &*head.state();
+                assert!(matches!(head_val, ThunkState::Materialized(Value::Int(42))));
+
+                let tail_val = &*tail.state();
+                assert!(matches!(
+                    tail_val,
+                    ThunkState::Materialized(Value::String(s)) if s == "tail"
+                ));
+            }
+            other => panic!("expected Seq, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_seq_depth_limit() {
+        // Build a deeply nested Seq structure exceeding MAX_EVAL_DEPTH
+        let span = test_span(1, 1, 1, 1);
+        let mut current = Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), span));
+
+        // Create MAX_EVAL_DEPTH + 2 nested Seq values
+        for _ in 0..MAX_EVAL_DEPTH + 2 {
+            let seq = Value::Seq {
+                head: Rc::new(Thunk::new_materialized(Value::Int(1), span)),
+                tail: Rc::clone(&current),
+            };
+            current = Rc::new(Thunk::new_materialized(seq, span));
+        }
+
+        let outer_seq = materialize(&current, None, 0).unwrap();
+        let err = deep_materialize(&outer_seq, 0).unwrap_err();
+        assert!(err.message.contains("maximum evaluation depth exceeded"));
     }
 
     // ── Stack trace / call stack reconstruction tests ──────────────────

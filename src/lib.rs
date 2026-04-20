@@ -159,6 +159,11 @@ pub fn value_to_json(
             ast::Span::origin(),
         )
         .into()),
+        Value::Seq { head, .. } => Err(error::EvalError::new(
+            "cannot serialize Seq to JSON: use $collect first",
+            head.span,
+        )
+        .into()),
     }
 }
 
@@ -208,6 +213,12 @@ pub fn value_to_display_string(
             Ok(format!("Function({})", names.join(", ")))
         }
         value::Value::Builtin { name, .. } => Ok(format!("Builtin({name})")),
+        value::Value::Seq { head, .. } => {
+            // Materialize and display head element
+            let head_val = eval::materialize(head, None, depth)?;
+            let head_str = value_to_display_string(&head_val, depth + 1)?;
+            Ok(format!("Seq({}, ...)", head_str))
+        }
     }
 }
 
@@ -433,6 +444,19 @@ mod tests {
     }
 
     #[test]
+    fn test_json_seq_error() {
+        let seq = Value::Seq {
+            head: Rc::new(Thunk::new_materialized(Value::Int(1), test_span(1, 1, 1, 1))),
+            tail: Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        let err = value_to_json(&seq, 0).unwrap_err();
+        assert!(err.message.contains("cannot serialize Seq"));
+    }
+
+    #[test]
     fn test_json_builtin_error() {
         fn dummy(
             _: &[Rc<Thunk>],
@@ -577,6 +601,19 @@ mod tests {
         let forced = eval::deep_materialize(&val, 0).expect("deep_materialize failed");
         let display = value_to_display_string(&forced, 0).expect("display failed");
         assert_eq!(display, "Dict({\"x\": Int(42)})");
+    }
+
+    #[test]
+    fn test_display_seq() {
+        let seq = Value::Seq {
+            head: Rc::new(Thunk::new_materialized(Value::Int(1), test_span(1, 1, 1, 1))),
+            tail: Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        let display = value_to_display_string(&seq, 0).expect("display failed");
+        assert_eq!(display, "Seq(Int(1), ...)");
     }
 
     #[test]

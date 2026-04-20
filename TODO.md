@@ -299,19 +299,25 @@ Change `BuiltinFn` to return `Rc<Thunk>` instead of `Value`. This removes the fo
 - [x] Tests: verify all builtins still work, $if laziness preserved
 - [ ] Consider `BuiltinArgs` struct to reduce BuiltinFn signature verbosity (4 parameters) (`src/value.rs:16-17`) [Nit, integration-verifier]
 
-### 5c: Value::Seq
+### 5c: Value::Seq (Core)
 
-Add `Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)` for lazy sequences.
+Add `Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)` for lazy sequences — core type and serialization.
 
-- [ ] Add `Seq` variant to `Value` enum
-- [ ] Add `seq?` type check to `type-of` builtin
-- [ ] Handle `Seq` in `value_to_json` (error: must $collect first)
-- [ ] Handle `Seq` in `value_to_display_string` (show `Seq(head, ...)`)
-- [ ] Handle `Seq` in `deep_materialize` (force head, recurse on tail up to depth limit)
-- [ ] Add visited set to `deep_materialize` for cycle tracking across mutual dict references (Nix `forceValueDeep` pattern) — also flagged by eval-engine + performance-expert reviews
-- [ ] Add `Type::Seq(Box<Type>)` to type system — monomorphic in element type, not a subtype of Record (`types.rs`)
+- [x] Add `Seq` variant to `Value` enum
+- [x] Add `seq?` type check to `type-of` builtin
+- [x] Handle `Seq` in `value_to_json` (error: must $collect first)
+- [x] Handle `Seq` in `value_to_display_string` (show `Seq(head, ...)`)
+- [x] Handle `Seq` in `deep_materialize` (force head, recurse on tail up to depth limit)
+- [x] Add visited set to `deep_materialize` for cycle tracking across mutual dict references (Nix `forceValueDeep` pattern) — also flagged by eval-engine + performance-expert reviews
+- [x] Tests: Seq in value_to_json error, display format, deep_materialize depth limit
+
+### 5c½: Sequence Builtins & Types
+
+Sequence builtins, type system integration, and stdlib fixes for Seq.
+
+- [x] Add `Type::Seq(Box<Type>)` to type system — monomorphic in element type, not a subtype of Record (`types.rs`)
 - [ ] Sequence builtins (Rust-native): `seq`, `head`, `tail`, `collect`, `seq?`
-- [ ] Tests: seq construction, head/tail, collect, type-of, JSON error, display
+- [ ] Tests: seq construction, head/tail, collect, type-of
 - [ ] Fix `empty?` to not hang on infinite sequences — currently does not short-circuit (`stdlib/prelude.llt:156`) [Minor, stdlib-author]
 
 ### 5d: Sequence Constructors

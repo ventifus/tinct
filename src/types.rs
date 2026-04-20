@@ -31,6 +31,7 @@ pub enum Type {
         params: Vec<Type>,
         ret: Box<Type>,
     },
+    Seq(Box<Type>),
     #[allow(clippy::enum_variant_names)]
     TypeVar(String),
     Any,
@@ -44,6 +45,7 @@ impl Type {
         }
         match (sub, sup) {
             (a, b) if a == b => true,
+            (Type::Seq(sub_elem), Type::Seq(sup_elem)) => Type::is_subtype(sub_elem, sup_elem),
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
@@ -101,6 +103,7 @@ impl Type {
                 }
                 ret.collect_type_vars(vars);
             }
+            Type::Seq(elem) => elem.collect_type_vars(vars),
             _ => {}
         }
     }
@@ -114,6 +117,7 @@ impl Type {
             Type::Function { params, ret } => {
                 params.iter().any(|p| p.has_type_vars()) || ret.has_type_vars()
             }
+            Type::Seq(elem) => elem.has_type_vars(),
             _ => false,
         }
     }
@@ -190,6 +194,7 @@ impl Substitution {
                     .collect(),
                 ret: Box::new(self.apply_inner(ret, depth + 1, visited)),
             },
+            Type::Seq(elem) => Type::Seq(Box::new(self.apply_inner(elem, depth + 1, visited))),
             _ => ty.clone(),
         }
     }
@@ -217,6 +222,7 @@ fn occurs_in(var_name: &str, ty: &Type) -> bool {
         Type::Function { params, ret } => {
             params.iter().any(|p| occurs_in(var_name, p)) || occurs_in(var_name, ret)
         }
+        Type::Seq(elem) => occurs_in(var_name, elem),
         _ => false,
     }
 }
@@ -308,6 +314,8 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
             unify(r1, r2, subst, span)
         }
 
+        (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, span),
+
         (Type::Record(f1, r1), Type::Record(f2, r2)) => {
             if matches!(r1, RowRest::Closed) && matches!(r2, RowRest::Closed) {
                 let keys1: BTreeSet<&String> = f1.keys().collect();
@@ -396,6 +404,7 @@ impl fmt::Display for Type {
                 }
                 write!(f, "]")
             }
+            Type::Seq(elem) => write!(f, "Seq[{elem}]"),
         }
     }
 }
@@ -1644,5 +1653,135 @@ mod tests {
             .unwrap_err()
             .message
             .contains("closed record field mismatch"));
+    }
+
+    #[test]
+    fn test_display_seq() {
+        assert_eq!(format!("{}", Type::Seq(Box::new(Type::Int))), "Seq[Int]");
+        assert_eq!(
+            format!("{}", Type::Seq(Box::new(Type::TypeVar("a".into())))),
+            "Seq[a]"
+        );
+    }
+
+    #[test]
+    fn test_subtype_seq_covariant() {
+        assert!(Type::is_subtype(
+            &Type::Seq(Box::new(Type::Int)),
+            &Type::Seq(Box::new(Type::Number)),
+        ));
+        assert!(!Type::is_subtype(
+            &Type::Seq(Box::new(Type::Number)),
+            &Type::Seq(Box::new(Type::Int)),
+        ));
+    }
+
+    #[test]
+    fn test_subtype_seq_same() {
+        assert!(Type::is_subtype(
+            &Type::Seq(Box::new(Type::Str)),
+            &Type::Seq(Box::new(Type::Str)),
+        ));
+    }
+
+    #[test]
+    fn test_subtype_seq_vs_other() {
+        assert!(!Type::is_subtype(
+            &Type::Seq(Box::new(Type::Int)),
+            &Type::Int,
+        ));
+        assert!(!Type::is_subtype(
+            &Type::Int,
+            &Type::Seq(Box::new(Type::Int)),
+        ));
+    }
+
+    #[test]
+    fn test_has_type_vars_seq() {
+        assert!(Type::Seq(Box::new(Type::TypeVar("a".into()))).has_type_vars());
+        assert!(!Type::Seq(Box::new(Type::Int)).has_type_vars());
+    }
+
+    #[test]
+    fn test_collect_type_vars_seq() {
+        let ty = Type::Seq(Box::new(Type::TypeVar("a".into())));
+        let mut vars = BTreeSet::new();
+        ty.collect_type_vars(&mut vars);
+        assert!(vars.contains("a"));
+        assert_eq!(vars.len(), 1);
+    }
+
+    #[test]
+    fn test_substitution_apply_seq() {
+        let mut subst = Substitution::new();
+        subst.map.insert("a".into(), Type::Int);
+        let ty = Type::Seq(Box::new(Type::TypeVar("a".into())));
+        assert_eq!(subst.apply(&ty), Type::Seq(Box::new(Type::Int)));
+    }
+
+    #[test]
+    fn test_unify_seq_types() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        unify(
+            &Type::Seq(Box::new(Type::TypeVar("a".into()))),
+            &Type::Seq(Box::new(Type::Int)),
+            &mut subst,
+            span,
+        )
+        .unwrap();
+        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+    }
+
+    #[test]
+    fn test_unify_seq_mismatch() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let result = unify(
+            &Type::Seq(Box::new(Type::Int)),
+            &Type::Seq(Box::new(Type::Str)),
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unify_seq_vs_non_seq() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let result = unify(
+            &Type::Seq(Box::new(Type::Int)),
+            &Type::Int,
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_occurs_check_seq() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let result = unify(
+            &Type::TypeVar("a".into()),
+            &Type::Seq(Box::new(Type::TypeVar("a".into()))),
+            &mut subst,
+            span,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("infinite type"));
+    }
+
+    #[test]
+    fn test_instantiate_seq() {
+        let ty = Type::Seq(Box::new(Type::TypeVar("a".into())));
+        let mut counter = 0;
+        let (result, _) = instantiate(&ty, &mut counter);
+        assert_eq!(counter, 1);
+        match &result {
+            Type::Seq(elem) => assert_eq!(**elem, Type::TypeVar("_t0".into())),
+            _ => panic!("expected Seq"),
+        }
     }
 }

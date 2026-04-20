@@ -74,6 +74,8 @@ pub enum Value {
     },
     /// Rust-native built-in function
     Builtin { name: &'static str, func: BuiltinFn },
+    /// Lazy linked-list sequence (head element, tail sequence)
+    Seq { head: Rc<Thunk>, tail: Rc<Thunk> },
 }
 
 impl Value {
@@ -87,6 +89,7 @@ impl Value {
             Value::Dict(_) => "Dict",
             Value::Function { .. } => "Function",
             Value::Builtin { .. } => "Builtin",
+            Value::Seq { .. } => "Seq",
         }
     }
 }
@@ -107,6 +110,7 @@ impl fmt::Debug for Value {
                 write!(f, "Function({})", names.join(", "))
             }
             Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
+            Value::Seq { .. } => write!(f, "Seq(...)"),
         }
     }
 }
@@ -139,13 +143,14 @@ impl fmt::Display for Value {
                 write!(f, "] ...]")
             }
             Value::Builtin { name, .. } => write!(f, "<builtin {name}>"),
+            Value::Seq { .. } => write!(f, "Seq(...)"),
         }
     }
 }
 
 /// Compares primitives (Int, Float, String, Bool) by value; cross-variant
 /// comparison always returns false (e.g. `Int(1) != Float(1.0)`). Float uses
-/// IEEE 754 semantics (NaN != NaN). Dict, Function, and Builtin are
+/// IEEE 754 semantics (NaN != NaN). Dict, Function, Builtin, and Seq are
 /// intentionally non-comparable and always return false, even to themselves.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
@@ -154,7 +159,7 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
-            // Dict, Function, and Builtin are not structurally compared
+            // Dict, Function, Builtin, and Seq are not structurally compared
             _ => false,
         }
     }
@@ -534,6 +539,56 @@ mod tests {
             func: dummy,
         };
         assert_ne!(b.clone(), b);
+    }
+
+    #[test]
+    fn test_seq_type_name() {
+        let seq = Value::Seq {
+            head: Rc::new(Thunk::new_materialized(Value::Int(42), test_span(1, 1, 1, 1))),
+            tail: Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        assert_eq!(seq.type_name(), "Seq");
+    }
+
+    #[test]
+    fn test_seq_debug() {
+        let seq = Value::Seq {
+            head: Rc::new(Thunk::new_materialized(Value::Int(1), test_span(1, 1, 1, 1))),
+            tail: Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        let debug_str = format!("{:?}", seq);
+        assert_eq!(debug_str, "Seq(...)");
+    }
+
+    #[test]
+    fn test_seq_display() {
+        let seq = Value::Seq {
+            head: Rc::new(Thunk::new_materialized(Value::Int(1), test_span(1, 1, 1, 1))),
+            tail: Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        let display_str = format!("{}", seq);
+        assert_eq!(display_str, "Seq(...)");
+    }
+
+    #[test]
+    fn test_seq_not_equal_to_itself() {
+        let seq = Value::Seq {
+            head: Rc::new(Thunk::new_materialized(Value::Int(42), test_span(1, 1, 1, 1))),
+            tail: Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        assert_ne!(seq.clone(), seq);
     }
 
     #[test]
