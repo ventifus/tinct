@@ -369,7 +369,7 @@ fn eval_key(
         Expr::Int(n) => return Ok(Key::Int(*n)),
         _ => {}
     }
-    // General path: evaluate and materialize
+    // General path: must materialize because IndexMap requires concrete Key values
     let thunk = eval(key_expr, Rc::clone(parent_env), depth + 1)?;
     let value = materialize(&thunk, Some(&key_expr.span), depth + 1)?;
     value_to_key(&value, &key_expr.span)
@@ -715,6 +715,7 @@ fn eval_as_dict(
     access_span: &Span,
     depth: usize,
 ) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
+    // Must materialize target to obtain IndexMap for key lookup
     let target_thunk = eval(target, Rc::clone(env), depth + 1)?;
     let target_val = materialize(&target_thunk, Some(access_span), depth + 1)?;
     match target_val {

@@ -2,7 +2,7 @@
 
 Extracted from DESIGN.md. Tracks what's built, what's next, and what's deferred.
 
-## Phase 0: Parser — Complete
+## Parser — Complete
 
 - [x] pest PEG grammar (`src/grammar.pest`)
 - [x] AST with source spans (`src/ast.rs`)
@@ -24,13 +24,13 @@ Extracted from DESIGN.md. Tracks what's built, what's next, and what's deferred.
 
 - [x] Pre-computed line-offset table for O(log n) `offset_to_position` (was O(n) per call)
 
-## Phase 1: Evaluator — End-to-End Pipeline
+## Evaluator — End-to-End Pipeline
 
 The smallest slice that produces a working `parse -> eval -> output` pipeline. Lazy from the start — every value is a thunk.
 
 **Deliverable:** `llt eval input.llt` outputs JSON. End-to-end pipeline.
 
-### 1a: Value, Thunk, Environment
+### eval-foundation: Value, Thunk, Environment
 
 Foundation types. No evaluation logic yet.
 
@@ -42,7 +42,7 @@ Foundation types. No evaluation logic yet.
 - [x] `EvalError` type with source span (definition-site + materialization-site)
 - [x] `Dict` uses insertion-ordered map (`IndexMap` or similar) with `Key` keys and `Rc<Thunk>` values
 
-### 1b: Core Eval
+### eval-core: Core Eval
 
 Evaluate literals, variable references, and dict construction. After this step, `[x: 1 y: hello]` produces a dict.
 
@@ -55,28 +55,28 @@ Evaluate literals, variable references, and dict construction. After this step, 
 - [x] Keyed entries: evaluate key expression, insert with explicit key
 - [x] Cycle detection: `InProgress` state triggers circular dependency error on re-entry
 
-### 1c: Access Chains — Complete
+### eval-access: Access Chains — Complete
 
-Depends on 1b. After this step, `$data.name` and `$data[0]` work.
+Depends on eval-core. After this step, `$data.name` and `$data[0]` work.
 
 - [x] DotAccess: materialize expr, look up string key in dict
 - [x] BracketAccess: materialize expr, evaluate key, look up in dict
 - [x] RangeAccess: materialize expr, filter dict entries by key range
-- [x] TypeAssert: evaluate as identity (type checker enforces in Phase 2a)
-- [x] Annotated: evaluate as the bare string (type checker interprets in Phase 2a)
+- [x] TypeAssert: evaluate as identity (type checker enforces in types-core)
+- [x] Annotated: evaluate as the bare string (type checker interprets in types-core)
 
-### 1d: Document Evaluation — Complete
+### eval-documents: Document Evaluation — Complete
 
-Depends on 1b-1c. After this step, multi-expression scope chains and `$$` pipeline work.
+Depends on eval-core and eval-access. After this step, multi-expression scope chains and `$$` pipeline work.
 
 - [x] Multi-expression documents: each expression's result dict becomes parent scope for the next
 - [x] Multi-document files: `---` resets scope, previous document's output becomes `$$`
 - [x] `$$` starts as `[]` (empty dict) for the first document
 - [x] `$$` passes lazily between documents (no materialization at `---` boundary)
 
-### 1e: Functions — Complete
+### eval-functions: Functions — Complete
 
-Depends on 1b. After this step, `[fn [x] $x]` and `[call $f $x]` work.
+Depends on eval-core. After this step, `[fn [x] $x]` and `[call $f $x]` work.
 
 - [x] `fn` evaluation: capture params + body + current env as `Value::Function`
 - [x] `call` evaluation: materialize function, bind args to params in new env, wrap body as thunk
@@ -85,13 +85,13 @@ Depends on 1b. After this step, `[fn [x] $x]` and `[call $f $x]` work.
 - [x] Arity checking: wrong argument count is an error
 - [x] Variadic params: collect remaining positional args into a dict with integer keys
 
-## Phase 2: Type System
+## Type System
 
-Separate AST pass that runs between parsing and evaluation (see DESIGN.md pipeline). Moved up from original Phase 3 to ensure all subsequent phases get proper types from the start.
+Separate AST pass that runs between parsing and evaluation (see DESIGN.md pipeline).
 
-### 2a: Core Types & Inference
+### types-core: Core Types & Inference
 
-Depends on 1e (full evaluation model must be stable). After this step, the type checker infers types for all data forms and validates annotations.
+Depends on eval-functions (full evaluation model must be stable). After this step, the type checker infers types for all data forms and validates annotations.
 
 - [x] Type representation: Type enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any)
 - [x] Type environment: maps names to types, Rc-based scope chain mirroring evaluation's Environment
@@ -104,9 +104,9 @@ Depends on 1e (full evaluation model must be stable). After this step, the type 
 - [x] Type alias expansion: `[type ...]` registers alias in TypeEnv, excluded from record fields
 - [x] Type error reporting with source spans (TypeError with message + Span)
 
-### 2b: Polymorphism & Function Types
+### types-polymorphism: Polymorphism & Function Types
 
-Depends on 2a. After this step, polymorphic functions and open records work.
+Depends on types-core. After this step, polymorphic functions and open records work.
 
 - [x] Function type inference from params + body + annotations
 - [x] `Fn@Return [Params]` type interpretation
@@ -116,13 +116,13 @@ Depends on 2a. After this step, polymorphic functions and open records work.
 - [x] Polymorphic function type checking (e.g., `map: Fn@[b] [Fn@b [a]  [a]]`)
 - [x] `Any` as escape hatch with `[@Type $expr]` as the way back to concrete types
 
-## Phase 3: Runtime Pipeline
+## Runtime Pipeline
 
-Build the end-to-end runtime. Builtins get proper type signatures from Phase 2.
+Build the end-to-end runtime. Builtins get proper type signatures from the Type System milestone.
 
-### 3a: Rust-Native Builtins
+### builtins-core: Rust-Native Builtins
 
-Depends on 1e + 2b. The 28 true primitives that MUST be Rust: operations LLT cannot express. Everything else is derived in LLT in `stdlib/prelude.llt`.
+Depends on eval-functions + types-polymorphism. The 28 true primitives that MUST be Rust: operations LLT cannot express. Everything else is derived in LLT in `stdlib/prelude.llt`.
 
 - [x] Builtin registration: populate root environment with `Value::Builtin` entries
 - [x] Arithmetic: `+`, `-`, `*`, `/` with auto-promotion (Int+Int=Int, mixed=Float)
@@ -136,18 +136,18 @@ Depends on 1e + 2b. The 28 true primitives that MUST be Rust: operations LLT can
 - [x] Type introspection: `type-of`
 - [x] I/O: `from-json`
 
-### 3a-llt: LLT Stdlib Loading
+### stdlib-loading: LLT Stdlib Loading
 
-Depends on 3a. Load `stdlib/prelude.llt` to provide the rest of the stdlib.
+Depends on builtins-core. Load `stdlib/prelude.llt` to provide the rest of the stdlib.
 
 - [x] `include_str!("../stdlib/prelude.llt")` to bundle at compile time
 - [x] Parse and evaluate prelude with Rust builtins as parent environment
 - [x] User code inherits from stdlib environment
 - [x] Verify all prelude functions work end-to-end
 
-### 3b: CLI + JSON Output
+### cli-json: CLI + JSON Output
 
-Depends on 3a. After this step, `llt eval input.llt` produces JSON.
+Depends on builtins-core. After this step, `llt eval input.llt` produces JSON.
 
 - [x] JSON serialization of Value (`value_to_json` in `lib.rs`, `serde_json`)
 - [x] `llt eval input.llt` — evaluate file, serialize final value as JSON to stdout (clap CLI)
@@ -155,9 +155,9 @@ Depends on 3a. After this step, `llt eval input.llt` produces JSON.
 - [x] `--format` flag: output as JSON (default) or LLT (YAML deferred — would require `serde_yaml` dependency)
 - [x] `--eval` flag: deep-force all thunks before serializing (surface errors before partial output)
 
-### 3c: `$include`
+### include: `$include`
 
-Depends on 1b. Complex enough to be its own step: file I/O, cycle detection, scope merging.
+Depends on eval-core. Complex enough to be its own step: file I/O, cycle detection, scope merging.
 
 - [x] Evaluate a file, return its dict
 - [x] Namespaced usage: `utils: [call $include "utils.llt"]`
@@ -165,7 +165,7 @@ Depends on 1b. Complex enough to be its own step: file I/O, cycle detection, sco
 - [x] Cycle detection: error on circular includes
 - [x] Path resolution relative to including file
 
-### 3d: Error Reporting Polish
+### error-polish: Error Reporting Polish
 
 Ongoing throughout earlier phases, but final polish here.
 
@@ -175,17 +175,17 @@ Ongoing throughout earlier phases, but final polish here.
 - [x] TypeAssert `default:` fallback support
 - [x] Thread call-site spans through BuiltinFn signature (resolve Span::origin sentinel in builtin errors)
 
-## Pre-Phase 4: Stdlib Boundary Analysis — Complete
+## Stdlib Boundary Analysis — Complete
 
 - [x] Identify the minimal set of builtins that MUST be implemented in Rust (28 total: arithmetic, comparison, if, keys/length/merge/append, string ops, numeric conversion, eval/error/try/apply, type-of, from-json, include)
 - [x] Identify which stdlib functions CAN be implemented as LLT code (all control flow, collection ops, composition, list ops, sorting, sequences, assertions — implemented in `stdlib/prelude.llt`)
 - [x] Document the boundary in DESIGN.md with rationale for each Rust-native builtin (see "Rust-Native vs LLT-Implemented Boundary" section)
 - [x] Design the stdlib loading mechanism (`include_str!` prelude, Rust builtins → LLT stdlib → user code environment chain)
-- [x] Update Phase 4 task list to reflect the split: Rust-native builtins vs LLT stdlib (Phase 3a = Rust builtins, Phase 4 = LLT already in prelude.llt)
+- [x] Update task list to reflect the split: Rust-native builtins vs LLT stdlib (builtins-core = Rust builtins, stdlib = LLT already in prelude.llt)
 
-## Phase 4: Stdlib Validation & Expansion
+## Stdlib Validation & Expansion
 
-The LLT stdlib is implemented in `stdlib/prelude.llt` (already working; 79 corpus test files cover stdlib functions). This phase validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in Phase 3a. LLT-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
+The LLT stdlib is implemented in `stdlib/prelude.llt` (already working; 79 corpus test files cover stdlib functions). This milestone validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in builtins-core. LLT-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
 
 ### Validate prelude functions
 
@@ -197,25 +197,25 @@ The LLT stdlib is implemented in `stdlib/prelude.llt` (already working; 79 corpu
 
 Remaining stdlib functions stay in LLT prelude: logic (`and`, `or`), control flow (`cond`, `when`, `unless`), dict utilities (`get`, `get-or`, `get-in`, `has?`, `values`, `entries`, `empty?`, `set`, `remove`, `update`), list ops (`first`, `nth`, `last`, `reindex`), collection ops (`map-entries`, `fold`, `slice`, `find-deep`), composition (`compose`, `->`), error handling (`try-or`), assertions (`assert`), identity (`identity`).
 
-## Phase 2c: Critical Correctness Fixes
+## types-correctness: Critical Correctness Fixes
 
-Critical correctness bugs found by 9-agent review (2026-04-19). Fix before Phase 2c½.
+Critical correctness bugs found by 9-agent review (2026-04-19). Fix before types-major-fixes.
 
 - [x] Fix literal unification accepting different values — IntLiteral/StringLiteral comparison in `unify()` (`src/types.rs:261-282`). Test: `test_unify_int_literal_different_values`. [Fixed in 20491ff]
 - [x] Fix monomorphic function arity check bypass — arity check moved before `has_type_vars()` early return (`src/typecheck.rs:410-422`). Test: `test_call_monomorphic_arity_mismatch`. [Fixed in 20491ff]
 - [x] Enforce annotation bracket restriction — `build_annotation_value` rejects non-dict-entries content (`src/parser.rs:602-608`). Tests: `test_annotation_bracket_special_form_rejected`, `test_type_assert_special_form_rejected`. [Fixed in 20491ff]
 - [x] CRLF line ending support — already implemented: `grammar.pest` WHITESPACE rule includes `\r`, `parser.rs` LineTable handles `\r\n` (line 152), tests at lines 2885/2922/2934. [Verified 2026-04-19]
 
-## Phase 2c½: Major Type System Fixes
+## types-major-fixes: Major Type System Fixes
 
-Major type system bugs from 9-agent review (2026-04-19). Fix before Phase 4b.
+Major type system bugs from 9-agent review (2026-04-19). Fix before stdlib-fixes.
 
 - [x] Fix TypeAssert `default:` raising spurious type errors — already fixed: `resolve_type_assert` checks `has_default` at `typecheck.rs:516`. Test: `test_type_assert_default_suppresses_mismatch`. [Fixed in 20491ff]
 - [x] Fix type alias expansion cycle detection — not a bug: aliases resolve against parent env, preventing cycles. Regression test: `test_type_alias_cycle_errors_not_loops`. [Verified 2026-04-19]
 - [x] Fix closed record subtyping field check — already correct: bidirectional check at `types.rs:51-55` + `60`. Regression tests: `test_subtype_closed_record_extra_field_rejected`, `test_subtype_closed_record_same_fields_ok`. [Verified 2026-04-19]
 - [x] Clarify annotation PropertyDict rest entry semantics — rest entries alongside `type:` key now rejected at parse time (`parser.rs:597-612`). Tests: `test_annotation_bracket_rest_entry_with_type_key_rejected`, `test_annotation_bracket_rest_entry_without_type_key_allowed`. SPEC.md §5.6 updated. [Fixed 2026-04-19]
 
-## Phase 2c-nits: Minor Type & Eval Fixes
+## types-eval-nits: Minor Type & Eval Fixes
 
 Minor and nit fixes from 9-agent review (2026-04-19).
 
@@ -224,7 +224,7 @@ Minor and nit fixes from 9-agent review (2026-04-19).
 - [x] Fix `func_label` incorrectly stripping "call " prefix — not a bug: no `strip_prefix("call ")` exists in codebase. `func_label` only prepends "call " and it's used as-is for stack frames. [Verified 2026-04-19]
 - [x] Fix `eval` depth check using `>=` instead of `>` — changed to `>` in eval, materialize, and deep_materialize so depth=MAX_EVAL_DEPTH is allowed. Updated test. [Fixed 2026-04-19]
 
-## Phase 4b: Stdlib Fixes & Test Coverage
+## stdlib-fixes: Stdlib Fixes & Test Coverage
 
 Fix stdlib bugs and add missing test coverage. Identified by stdlib-author review (2026-04-19).
 
@@ -235,30 +235,30 @@ Fix stdlib bugs and add missing test coverage. Identified by stdlib-author revie
 - [x] Add negative tests for `assert` (failure case) and `find-deep` (key not found) — already existed: `errors/assert_false.txt`, `errors/find_deep_missing.txt` [Minor, stdlib-author]
 - [x] Add test for slice with negative indices or document positional-only (`tests/corpus/eval/stdlib/slice.txt`) — positional-only confirmed [Nit, stdlib-author]
 
-## Phase 4b½: New Stdlib Functions (Pre-Sequences)
+## stdlib-pre-seq: New Stdlib Functions (Pre-Sequences)
 
-New functions implementable in LLT without Phase 5 Seq support. Identified by stdlib-author review (2026-04-19).
+New functions implementable in LLT without Seq support. Identified by stdlib-author review (2026-04-19).
 
 - [x] `const` — returns first argument, ignores second
 - [x] `from-entries` — inverse of `$entries`; reconstruct dict from `[key value]` pairs
 - [x] `until` — iterate function until predicate holds; functional loop
 - [x] `any?` / `all?` — short-circuit predicate tests over collections
 
-## Phase 5: Sequences and Fully Lazy Operations
+## Sequences and Fully Lazy Operations
 
-The original design calls for everything to be lazy. Several operations are currently eager due to the `BuiltinFn` return type (`Value` instead of `Rc<Thunk>`) and the absence of lazy function application. This phase adds `Value::Seq` for lazy computation and `PendingCall` thunk state to restore laziness across the language. See DESIGN.md "Sequences and Lazy Computation" for full design.
+The original design calls for everything to be lazy. Several operations are currently eager due to the `BuiltinFn` return type (`Value` instead of `Rc<Thunk>`) and the absence of lazy function application. This milestone adds `Value::Seq` for lazy computation and `PendingCall` thunk state to restore laziness across the language. See DESIGN.md "Sequences and Lazy Computation" for full design.
 
-**Note:** Phase 5 can proceed in parallel with Phase 7 (hand-written parser) since the parser is independent of runtime semantics.
+**Note:** This milestone can proceed in parallel with the Parser Rewrite since the parser is independent of runtime semantics.
 
-### Pre-Phase 5: Laziness Boundary Analysis
+### laziness-analysis: Laziness Boundary Analysis
 
 Before starting implementation, document the PendingCall/Seq design and analyze current eager operations.
 
 - [x] Analyze all current eager operations and categorize by fix strategy (PendingCall, Seq, inherently eager)
-- [x] Document the PendingCall/Seq design decisions in DESIGN.md before starting 5a
+- [x] Document the PendingCall/Seq design decisions in DESIGN.md before starting pending-call
 - [x] Document current-vs-planned laziness for `$if`, `$merge`, `$apply` in DESIGN.md
 
-### 5a: PendingCall Thunk State
+### pending-call: PendingCall Thunk State
 
 Add `PendingCall(func: Rc<Thunk>, args: Vec<Rc<Thunk>>, call_span: Span)` and `Failed(Box<EvalError>)` to `ThunkState`. This enables lazy function application at runtime without AST nodes and error caching.
 
@@ -270,9 +270,9 @@ Add `PendingCall(func: Rc<Thunk>, args: Vec<Rc<Thunk>>, call_span: Span)` and `F
 - [x] Add `Thunk::new_pending_call(func, args, span)` constructor
 - [x] Tests: PendingCall materializes correctly, memoizes, cycle-detects
 
-### 5a-nits: Eval/Value Code Quality
+### eval-quality: Eval/Value Code Quality
 
-Nit-level improvements to eval and value code, deferred to Phase 5a implementation window.
+Nit-level improvements to eval and value code, deferred to pending-call implementation window.
 
 - [x] Extract `decorate_err` closure to standalone `attach_materialization_context()` function for testability (`src/eval.rs:842-866`, used at lines 871 and 885) [Nit, eval-engine]
 - [x] Add `EvalResult<T>` type alias for `Result<T, Box<EvalError>>` — appears 200+ times across eval.rs and builtins.rs [Nit, integration-verifier]
@@ -286,7 +286,7 @@ Nit-level improvements to eval and value code, deferred to Phase 5a implementati
 - [x] Add `#[allow(clippy::type_complexity)]` to `take_pending_call` for consistency with `take_pending_builtin` (`src/value.rs:332`) [Nit, test-crafter]
 - [x] Update unreachable message in materialize() to explain why Failed/InProgress can't reach it (`src/eval.rs:974`) [Nit, eval-engine]
 
-### 5b: BuiltinFn Signature Change
+### builtin-thunk-return: BuiltinFn Signature Change
 
 Change `BuiltinFn` to return `Rc<Thunk>` instead of `Value`. This removes the forced materialization boundary for builtins.
 
@@ -299,7 +299,7 @@ Change `BuiltinFn` to return `Rc<Thunk>` instead of `Value`. This removes the fo
 - [x] Tests: verify all builtins still work, $if laziness preserved
 - [x] Consider `BuiltinArgs` struct to reduce BuiltinFn signature verbosity (4 parameters) (`src/value.rs:16-17`) [Nit, integration-verifier]
 
-### 5c: Value::Seq (Core)
+### seq-core: Value::Seq (Core)
 
 Add `Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)` for lazy sequences — core type and serialization.
 
@@ -311,7 +311,7 @@ Add `Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)` for lazy sequences — core t
 - [x] Add visited set to `deep_materialize` for cycle tracking across mutual dict references (Nix `forceValueDeep` pattern) — also flagged by eval-engine + performance-expert reviews
 - [x] Tests: Seq in value_to_json error, display format, deep_materialize depth limit
 
-### 5c½: Sequence Builtins & Types
+### seq-builtins-types: Sequence Builtins & Types
 
 Sequence builtins, type system integration, and stdlib fixes for Seq.
 
@@ -320,7 +320,7 @@ Sequence builtins, type system integration, and stdlib fixes for Seq.
 - [x] Tests: seq construction, head/tail, collect, type-of
 - [x] Fix `empty?` to not hang on infinite sequences — currently does not short-circuit (`stdlib/prelude.llt:156`) [Minor, stdlib-author]
 
-### 5d: Sequence Constructors — Complete
+### seq-constructors: Sequence Constructors — Complete
 
 Rewrite `range`, `repeat`, `cycle` (currently in `stdlib/prelude.llt`) as Rust builtins returning `Seq` instead of eagerly-built dicts. Add new constructors `iterate` and `unfold`.
 
@@ -334,16 +334,16 @@ Rewrite `range`, `repeat`, `cycle` (currently in `stdlib/prelude.llt`) as Rust b
 - [x] Remove old `range`, `repeat`, `cycle`, `take` (and helpers) from prelude.llt
 - [x] Tests: finite/infinite range, repeat, cycle, iterate, unfold, take on Seq
 
-### 5d¾: Critical Span Fix
+### span-failed-fix: Critical Span Fix
 
 Fix Failed state materialization_span overwrite found by span-integrity-checker review (2026-04-20). When re-materializing a Failed thunk, the original materialization_span is overwritten instead of preserved.
 
 - [x] Fix Failed state unconditional materialization_span overwrite — preserve original span, add subsequent access sites as stack frames instead of overwriting (`src/eval.rs:882-887`) [Critical, span-integrity-checker]
 - [x] Update `test_failed_state_updates_materialization_span` to verify correct behavior: first access sets mat_span, subsequent accesses push frames instead of overwriting (`src/eval.rs`) [Critical, span-integrity-checker]
 
-### 5e: Dual-Dispatch Map/Filter
+### dual-dispatch-map: Dual-Dispatch Map/Filter
 
-Move `$map` and `$filter` to Rust builtins with dual-dispatch on Dict vs Seq. Note: `$take` dual-dispatch already implemented in Phase 5d.
+Move `$map` and `$filter` to Rust builtins with dual-dispatch on Dict vs Seq. Note: `$take` dual-dispatch already implemented in seq-constructors.
 
 - [x] `$map` on dict: return dict with PendingCall thunks (lazy, same keys)
 - [x] `$map` on seq: return lazy seq
@@ -352,7 +352,7 @@ Move `$map` and `$filter` to Rust builtins with dual-dispatch on Dict vs Seq. No
 - [x] Move `map`, `filter` from LLT prelude to Rust builtins
 - [x] Tests: map/filter on dicts (lazy verification), map/filter on seqs, mixed pipelines
 
-### 5e½: Drop/Reduce + Typing Strategy
+### drop-reduce: Drop/Reduce + Typing Strategy
 
 Additional sequence operations and typing decisions for dual-dispatch ops.
 
@@ -363,7 +363,7 @@ Additional sequence operations and typing decisions for dual-dispatch ops.
 - [x] Document `join` O(n^2) due to repeated str concatenation; optimize in Rust builtin (`stdlib/prelude.llt:88-97`) [Minor, stdlib-author]
 - [x] Tests: drop on seq, reduce on seq and dict
 
-### 5f: Include Caching
+### include-cache: Include Caching
 
 Cache `$include` results so re-including the same file returns the cached thunk instead of re-evaluating. Jsonnet caches import thunks; LLT currently re-evaluates every `$include` call.
 
@@ -371,22 +371,22 @@ Cache `$include` results so re-including the same file returns the cached thunk 
 - [x] Return cached thunk on re-include of the same resolved path
 - [x] Tests: same file included twice returns identical thunk, cache respects path normalization
 
-### 5g-i: Make Remaining Eager Ops Lazy
+### lazy-remaining-ops: Make Remaining Eager Ops Lazy
 
 Make remaining eager operations lazy where possible. Seq-aware dual-dispatch for collection ops.
 
-- [x] `$map` on dict -- returns eager dict (fix: PendingCall thunks, Phase 5e)
-- [x] `$filter` on dict -- returns eager dict (fix: return Seq, Phase 5e)
-- [x] `$range` -- builds full dict eagerly, O(n^2) (fix: return Seq, Phase 5d)
-- [x] `$repeat` -- builds full dict eagerly (fix: return Seq, Phase 5d)
-- [x] `$cycle` -- builds full dict eagerly (fix: return Seq, Phase 5d)
-- [x] `$if` -- materializes chosen branch (fix: return branch thunk, Phase 5b)
+- [x] `$map` on dict -- returns eager dict (fix: PendingCall thunks, dual-dispatch-map)
+- [x] `$filter` on dict -- returns eager dict (fix: return Seq, dual-dispatch-map)
+- [x] `$range` -- builds full dict eagerly, O(n^2) (fix: return Seq, seq-constructors)
+- [x] `$repeat` -- builds full dict eagerly (fix: return Seq, seq-constructors)
+- [x] `$cycle` -- builds full dict eagerly (fix: return Seq, seq-constructors)
+- [x] `$if` -- materializes chosen branch (fix: return branch thunk, builtin-thunk-return)
 - [x] `$merge` -- clones both dicts (Rc-clones thunks already; full lazy overlay needs dict proxy, deferred)
-- [x] `$update` -- already lazy via PendingCall (Phase 5a) + lazy merge (Phase 5b); verified with laziness test
+- [x] `$update` -- already lazy via PendingCall (pending-call) + lazy merge (builtin-thunk-return); verified with laziness test
 - [x] `$concat` -- Seq path: lazy chain via recursive PendingCall; Dict path: stays eager (existing behavior)
-- [x] `$apply` -- double-forces by materializing `invoke_function()`'s result thunk (fix: return thunk directly, Phase 5b)
+- [x] `$apply` -- double-forces by materializing `invoke_function()`'s result thunk (fix: return thunk directly, builtin-thunk-return)
 
-### 5g-ii: Seq-Aware Collection Builtins
+### seq-collection: Seq-Aware Collection Builtins
 
 Add Seq support to collection builtins that currently only work on Dict.
 
@@ -395,20 +395,20 @@ Add Seq support to collection builtins that currently only work on Dict.
 - [x] `$rest` -- Seq path: O(1) tail via `$tail`; Dict path stays eager (rest-impl)
 - [x] `$zip` -- Seq+Seq path: lazy `zip-seq` producing Seq of pairs; mixed/Dict path: collect then eager `zip-dict`
 
-### 5g-iii: Document Inherent Eagerness — Core Eval
+### doc-eagerness-eval: Document Inherent Eagerness — Core Eval
 
 Document why these core eval/dict operations must materialize. Add comments at each call site.
 
-- [ ] `eval_key` materializes all dict keys — necessary for IndexMap insertion; add comment explaining why (`src/eval.rs:123,376`) [Major, laziness-auditor]
-- [ ] `eval_as_dict` materializes target for all access chains — necessary for key lookup; add comment (`src/eval.rs:719`) [Minor, laziness-auditor]
-- [ ] `builtin_keys` materializes dict — keys are always evaluated; add comment (`src/builtins.rs:380`) [Minor, laziness-auditor]
-- [ ] `builtin_length` materializes dict — must count entries; add comment (`src/builtins.rs:409`) [Minor, laziness-auditor]
-- [ ] `$reduce`, `$fold` -- accumulator pattern requires sequential materialization
-- [ ] `$sort`, `$sort-by` -- must compare values to determine order
-- [ ] `$reverse` -- must know all entries to reverse (list operation inherently materializing)
-- [ ] `$reindex` -- must traverse all entries to rebuild with dense 0..n keys
+- [x] `eval_key` materializes all dict keys — necessary for IndexMap insertion; comment added
+- [x] `eval_as_dict` materializes target for all access chains — necessary for key lookup; comment added
+- [x] `builtin_keys` materializes dict — keys are always evaluated; comment added
+- [x] `builtin_length` materializes dict — must count entries; comment added
+- [x] `$reduce`, `$fold` -- accumulator pattern requires sequential materialization; comment added
+- [x] `$sort`, `$sort-by` -- must compare values to determine order; comment added
+- [x] `$reverse` -- must know all entries to reverse; comment added
+- [x] `$reindex` -- must traverse all entries to rebuild with dense 0..n keys; comment added
 
-### 5g-iv: Document Inherent Eagerness — Collection & Comparison
+### doc-eagerness-collection: Document Inherent Eagerness — Collection & Comparison
 
 Document why these collection/comparison operations must materialize.
 
@@ -421,7 +421,7 @@ Document why these collection/comparison operations must materialize.
 - [ ] `$quot`, `$mod`, `$ceil`, `$trunc` -- derived arithmetic, inherently materializing
 - [ ] `$find-deep` -- must traverse structure
 
-### 5g-v: Document Inherent Eagerness — String & Conversion
+### doc-eagerness-string: Document Inherent Eagerness — String & Conversion
 
 Document why these string/conversion operations must materialize.
 
@@ -431,7 +431,7 @@ Document why these string/conversion operations must materialize.
 - [ ] `$type-of` -- must inspect value variant
 - [ ] `$from-json` -- must parse entire JSON string
 
-### 5g-vi: Document Inherent Eagerness — Control Flow
+### doc-eagerness-control: Document Inherent Eagerness — Control Flow
 
 Document why these control flow operations must materialize.
 
@@ -441,7 +441,7 @@ Document why these control flow operations must materialize.
 - [ ] `$assert` -- must materialize condition to check
 - [ ] `$any?`, `$all?` -- short-circuit but materializes elements until condition met/failed
 
-### 5g-vii: Laziness Inventory — Already Lazy (reference)
+### lazy-inventory: Laziness Inventory — Already Lazy (reference)
 
 Already lazy — no work needed. Kept for completeness.
 
@@ -456,11 +456,11 @@ Already lazy — no work needed. Kept for completeness.
 - [x] `$identity` -- returns argument as-is
 - [x] `$and`, `$or` -- short-circuit via lazy `$if` args
 
-## Phase 6: Tooling
+## Tooling
 
 Execution order: REPL → LSP → tree-sitter. One commit per item.
 
-### Phase 6a: REPL (`llt repl`)
+### repl: REPL (`llt repl`)
 
 - [x] Add `rustyline` dependency (optional, under `repl` feature)
 - [x] Expose eval internals: `eval_document`, `eval`, `Environment`, `Value`, `Thunk` as pub in lib.rs
@@ -476,7 +476,7 @@ Execution order: REPL → LSP → tree-sitter. One commit per item.
 - [x] Integration tests (bracket matching, scope chain, `$$` pipeline, error recovery, stdlib)
 - [x] Just recipe: `just repl` (with `-it` for interactive TTY)
 
-### Phase 6b: LSP server (`llt lsp`)
+### lsp: LSP server (`llt lsp`)
 
 Uses `lsp-server` (sync), not `tower-lsp` (async), because `Rc<RefCell<Environment>>` is not Send/Sync.
 
@@ -496,7 +496,7 @@ Uses `lsp-server` (sync), not `tower-lsp` (async), because `Rc<RefCell<Environme
 - [x] Tests (span conversion, hover analysis, diagnostic generation, simulated LSP client)
 - [x] Just recipe: `just lsp`
 
-### Phase 6c: tree-sitter grammar
+### tree-sitter: tree-sitter grammar
 
 After this step, editors with tree-sitter support get syntax highlighting, code folding, and incremental parsing for `.llt` files.
 
@@ -511,13 +511,13 @@ After this step, editors with tree-sitter support get syntax highlighting, code 
 - [x] Just recipes: `just ts-generate`, `just ts-test`, `just ts-parse FILE`
 
 
-## Phase 7: Hand-Written Parser (E2)
+## Parser Rewrite (E2)
 
 Replace pest's recursive descent with a hand-written lexer + iterative parser using an explicit stack. The pest parser stays as a reference implementation for comparison until the new parser graduates.
 
 **Goal:** Identical AST output from both parsers, selectable at parse time. Once the new parser passes the full test suite and matches pest output on all corpus files, it becomes the default and pest is removed.
 
-### Phase 7a: Lexer (`src/lexer.rs`)
+### lexer: Lexer (`src/lexer.rs`)
 
 Tokenizer producing a flat token stream. Whitespace-sensitivity for access chains handled here.
 
@@ -531,7 +531,7 @@ Tokenizer producing a flat token stream. Whitespace-sensitivity for access chain
 - [ ] Add inline comments to grammar.pest explaining why access_expr/access_chain are compound-atomic (`grammar.pest:137-148`) [Major, grammar-architect]
 - [ ] Fix grammar.pest COMMENT rule misleading NEWLINE comment (`grammar.pest:8`) [Nit, grammar-architect]
 
-### Phase 7b: Iterative parser (`src/parser2.rs`)
+### iterative-parser: Iterative parser (`src/parser2.rs`)
 
 Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed without recursion.
 
@@ -545,14 +545,14 @@ Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed w
 - [ ] Document `$_` desugaring AST shape mismatch between type checker and evaluator — or implement shared desugaring pass (`src/eval.rs:70-74`, `src/typecheck.rs:137-209`) [Major, integration-verifier]
 - [ ] Document type alias entries returning empty dict at runtime — add comment explaining compile-time-only behavior (`src/eval.rs:182-185`) [Minor, integration-verifier]
 
-### Phase 7b½: IncludeContext Refactor
+### include-refactor: IncludeContext Refactor
 
 Refactor thread-local IncludeContext to parameter-passing for LSP multi-file support (integration-verifier review).
 
 - [ ] Replace thread-local `INCLUDE_CTX` with parameter passed through eval stack
 - [ ] Enable LSP multi-file support where multiple files need separate include guards
 
-### Phase 7c: Formatter/Pretty-Printer (`llt fmt`)
+### formatter: Formatter/Pretty-Printer (`llt fmt`)
 
 Uses the hand-written lexer's token stream (comment-preserving, unlike pest).
 
@@ -568,21 +568,21 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest).
 - [ ] Tests (idempotency, comment preservation, indentation, single-line vs multi-line, edge cases)
 - [ ] Just recipes: `just fmt-llt FILE`, `just fmt-llt-check FILE`
 
-### Phase 7d: Integration
+### parser-integration: Integration
 
 - [ ] `parse()` API accepts parser selection (enum or feature flag)
 - [ ] Both parsers produce identical `Spanned<File>` output
 - [ ] Comparison test: parse every corpus file with both parsers, assert AST equality
 - [ ] Benchmark: compare parse time on large inputs
 
-### Phase 7e: Graduation criteria
+### parser-graduation: Graduation criteria
 
 - [ ] Full test suite passes (all unit + corpus tests)
 - [ ] AST output matches pest parser on every corpus file
 - [ ] Error messages are equal or better quality
 - [ ] No stack overflow on any nesting depth up to MAX_DEPTH
 
-### Phase 7f: Cleanup (post-graduation)
+### parser-cleanup: Cleanup (post-graduation)
 
 - [ ] Remove `pest` and `pest_derive` dependencies from Cargo.toml
 - [ ] Remove `src/grammar.pest`
@@ -596,16 +596,16 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest).
 
 Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append` materializing and cloning the growing accumulator IndexMap on every iteration. Sort is O(n^2 log n) because `sort-merge` uses `cons` (O(n)) per element.
 
-**Note:** Phase 5 (Sequences and Laziness Restoration) addresses much of this by moving `map`, `filter`, `range`, `take`, `drop`, `reduce` to Rust builtins with lazy dispatch. The items below track remaining performance work not covered by Phase 5.
+**Note:** The Sequences milestone addresses much of this by moving `map`, `filter`, `range`, `take`, `drop`, `reduce` to Rust builtins with lazy dispatch. The items below track remaining performance work not covered by that milestone.
 
-Remaining Rust reimplementations after Phase 5 (all currently in `stdlib/prelude.llt`):
+Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 - [ ] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning)
 - [ ] `sort`, `sort-by` / `sort-merge` -- single Rust builtin using Vec::sort_by would be O(n log n) (laziness-auditor review: $sort uses eager $cons per element)
 - [ ] `zip`, `flatten`, `find-deep` -- recursive traversal or lazy seq versions for perf
 
-## Phase 7¼: Performance Foundations
+## perf-foundations: Performance Foundations
 
-Performance improvements identified by performance-expert review (2026-04-19) that don't depend on Phase 7 parser.
+Performance improvements identified by performance-expert review (2026-04-19) that don't depend on the Parser Rewrite.
 
 - [ ] Arena allocation for thunks/environments — reduce per-thunk Rc<RefCell<ThunkState>> overhead, improve cache locality
 - [ ] Flat environment with slot indices — replace O(n) chain walk with O(1) slot lookup (requires compile-time slot assignment)
@@ -635,7 +635,7 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Use static empty IndexMap for PendingCall named args — eliminates allocation on every PendingCall with no named args (`src/eval.rs:976`) [Nit, performance-expert]
 - [ ] Use static empty dict thunk for default `$$` — eliminates allocation on every file eval without stdin (`src/eval.rs:287-291`) [Nit, performance-expert]
 
-## Phase 7½: Iterative Evaluator
+## iterative-eval: Iterative Evaluator
 
 Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. LLT's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
 
@@ -647,11 +647,11 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [ ] Benchmark: compare recursive vs iterative on deep chains and large collections
 - [ ] Remove 64MB worker thread stack workaround once iterative eval eliminates deep recursion
 
-## Phase 8: Full Row-Variable Unification (Remy-Style)
+## row-unification: Full Row-Variable Unification (Remy-Style)
 
 Replace the current closed-strict/open-lenient record unification with full Remy-style row-variable unification. Row variables become first-class participants in type inference, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
 
-**Depends on:** Phase 5c (Value::Seq) for sequence type support in row polymorphism.
+**Depends on:** seq-core for sequence type support in row polymorphism.
 
 - [ ] Add VarLevel (integer rank) tracking to type variables for sound let-polymorphism generalization (Elm's rank-based approach — determines which type variables can be generalized at `let` boundaries)
 - [ ] Extend `Substitution::apply` to splice bound row variable fields into records (e.g., `[a: Int | ...r]` with `r → [b: String]` produces `[a: Int, b: String]`)
@@ -663,12 +663,12 @@ Replace the current closed-strict/open-lenient record unification with full Remy
 - [ ] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
 - [ ] Add row-specific occurs check for `RowVar("r")` with `Record(..., RowVar("r"))` (infinite row type prevention)
 - [ ] Add row variable substitution cycle handling — `Substitution::apply` must handle cycles when row variables bind to records containing the same row variable (`src/types.rs`) [Major, type-theorist]
-- [ ] Add VarLevel scope tracking for row variables (Elm rank-based generalization — essential for Phase 8 soundness, type-theorist review)
+- [ ] Add VarLevel scope tracking for row variables (Elm rank-based generalization — essential for row-unification soundness, type-theorist review)
 - [ ] Subtyping proof search for TypeAssert defaults — validate default value type matches asserted type (type-theorist review)
 - [ ] Fix row variable substitution creating duplicate fields — `merged.extend(extra_fields)` doesn't check for key collisions (`src/types.rs:166-184`) [Critical, type-theorist]
-- [ ] Fix RowVar treated identically to Open in `is_subtype` — add TODO comment explaining Phase 8 placeholder (`src/types.rs:59-62`) [Major, type-theorist]
+- [ ] Fix RowVar treated identically to Open in `is_subtype` — add TODO comment explaining row-unification placeholder (`src/types.rs:59-62`) [Major, type-theorist]
 
-## Phase 9: Sandboxing & Security
+## sandbox: Sandboxing & Security
 
 Design and implement filesystem sandboxing for `$include` and any future I/O operations. Currently `$include` can read any file the process can access (mitigated only by file size limit and cycle detection).
 
@@ -683,12 +683,12 @@ Design and implement filesystem sandboxing for `$include` and any future I/O ope
 - [ ] Test: absolute paths outside sandbox fail
 - [ ] Test: symlinks pointing outside sandbox fail
 
-## Phase 9½: Type System Extensions
+## type-extensions: Type System Extensions
 
 Future type system work identified by type-theorist review (2026-04-19).
 
 - [ ] Add Type::Seq inference to typecheck.rs — sequence builtins ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) currently infer as Any; annotate return types in `check_call` for LSP hover and type safety (`src/typecheck.rs`) [Major, type-theorist]
-- [ ] Fix polymorphic call unification for named args — requires extending `Type::Function` to carry param names; after positional unification, named args are not unified (`src/typecheck.rs:389-447`) [Major, type-theorist, deferred from Phase 2c½]
+- [ ] Fix polymorphic call unification for named args — requires extending `Type::Function` to carry param names; after positional unification, named args are not unified (`src/typecheck.rs:389-447`) [Major, type-theorist, deferred from types-major-fixes]
 - [ ] Gradual typing with Any→concrete boundary tracking and blame (TypeScript/Typed Racket model)
 - [ ] Polymorphic recursion detection — forbid or support with depth-based instantiation tracking
 - [ ] Type error recovery with `Type::Error` sentinel that doesn't unify (prevents cascading errors, improves LSP)
@@ -717,13 +717,13 @@ Future type system work identified by type-theorist review (2026-04-19).
 - [ ] Consider `HashMap` instead of `IndexMap` for type alias registry — order doesn't matter (`src/types.rs:386`) [Nit, type-theorist]
 - [ ] Clarify `Fn@T` with zero params — document whether it means thunk or nullary function (`src/typecheck.rs:536-541`) [Nit, type-theorist]
 
-## Phase 10: Stdlib Expansion
+## Stdlib Expansion
 
 Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall). All implementable in LLT unless noted.
 
-### 10a: Core Missing Functions
+### stdlib-missing-core: Core Missing Functions
 
-- [ ] `with-entries` — `entries | map(f) | from-entries` pipeline (jq pattern; depends on `from-entries` from Phase 4b)
+- [ ] `with-entries` — `entries | map(f) | from-entries` pipeline (jq pattern; depends on `from-entries` from stdlib-pre-seq)
 - [ ] `partition` — single-pass split into matching/non-matching dicts (Nix + Dhall)
 - [ ] `flat-map` / `concat-map` — `flatten (map f xs)`, monadic bind for collections (Jsonnet + jq)
 - [ ] `find-first` / `find-first-or` — first element matching predicate, with default (Nix)
@@ -731,7 +731,7 @@ Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall
 - [ ] `deep-merge` — recursive merge for configuration overlays (Jsonnet, RFC 7396)
 - [ ] `walk` — recursive bottom-up transform of all sub-values (jq)
 
-### 10b: Convenience Functions
+### stdlib-convenience: Convenience Functions
 
 - [ ] `sum`, `min`, `max`, `count` — aggregate functions (one-liners over fold)
 - [ ] `contains?` / `elem?` — membership test
@@ -740,30 +740,30 @@ Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall
 - [ ] `zip-with` — generalized zip with combining function; define `zip` as special case (Nix)
 - [ ] `map-indexed` / `map-keys` — indexed mapping and key transformation (Jsonnet)
 - [ ] `sort-on` — sort by key-extraction function instead of comparator (Jsonnet + Nix)
-- [ ] `flip`, `abs`, `sign`, `clamp` — small composable primitives (Nix + Jsonnet; `const` moved to Phase 4b)
+- [ ] `flip`, `abs`, `sign`, `clamp` — small composable primitives (Nix + Jsonnet; `const` moved to stdlib-pre-seq)
 
-### 10c: Type Predicates & Guards
+### stdlib-type-predicates: Type Predicates & Guards
 
 - [ ] `is-int?`, `is-str?`, `is-float?`, `is-bool?`, `is-dict?`, `is-fn?` — type predicate wrappers over `$type-of` (Jsonnet pattern)
 - [ ] Runtime assertion guards at stdlib function entry with descriptive errors (Jsonnet pattern)
 
-### 10d: Numeric Utilities
+### stdlib-numeric: Numeric Utilities
 
 - [ ] `min`, `max`, `sum`, `product` — aggregate functions (stdlib-author review)
 - [ ] `abs`, `sign`, `clamp` — numeric primitives (stdlib-author review)
 
-### 10e: String Operations (requires new Rust builtin)
+### stdlib-string-ops: String Operations (requires new Rust builtin)
 
 - [ ] Add `substr` / `slice-str` Rust builtin for substring extraction (unblocks below)
 - [ ] `starts-with?`, `ends-with?` — string prefix/suffix tests
 - [ ] `chars` — string to character sequence
 - [ ] `join` — sequence/dict of strings to single string with separator
 
-## Phase 11: Error Context Enrichment
+## Error Context Enrichment
 
 Enhance error reporting with richer context types inspired by Elm, Nickel, and rustc patterns.
 
-### 11a: Error Model Restructuring
+### error-restructuring: Error Model Restructuring
 
 Core error model improvements. Foundation for all later error work.
 
@@ -776,7 +776,7 @@ Core error model improvements. Foundation for all later error work.
 - [ ] Fix builtin errors using call_span for definition-site — should use operand's span as definition-site, call_span as materialization-site (`src/builtins.rs:82-91`) [Major, span-integrity-checker]
 - [ ] Establish error message style guidelines (rustc's rules: no trailing punctuation, no questions, may contain names but not expressions)
 
-### 11b: Error Context & Suggestions
+### error-context: Error Context & Suggestions
 
 Richer error context for debugging.
 
@@ -786,7 +786,7 @@ Richer error context for debugging.
 - [ ] Add secondary span support for "evaluated to this" labels on lazy evaluation errors (Nickel dual-position pattern)
 - [ ] Reconstruct multi-hop cycle paths for circular dependency errors (show the full cycle chain, not just the blackholed thunk)
 
-### 11c: Error UX Features
+### error-ux: Error UX Features
 
 User-facing error presentation improvements.
 
@@ -795,7 +795,7 @@ User-facing error presentation improvements.
 - [ ] `llt explain <error-code>` command for extended help on error categories (span-integrity-checker review, Elm-inspired)
 - [ ] Add LSP `related_information` for materialization-site spans and stack frames (currently discarded)
 
-### 11d: Error Message Polish (Minor)
+### error-message-polish: Error Message Polish (Minor)
 
 Minor wording and span improvements.
 
@@ -806,7 +806,7 @@ Minor wording and span improvements.
 - [ ] Change unification error wording from "type mismatch" to "cannot unify X with Y" (`src/types.rs:314`) [Minor, type-theorist]
 - [ ] Improve Fn type expression error message for keyed params — currently generic (`src/typecheck.rs:764-772`) [Minor, type-theorist]
 
-### 11e: Error Nits
+### error-infra-nits: Error Nits
 
 Nit-level error infrastructure cleanup.
 
@@ -815,7 +815,7 @@ Nit-level error infrastructure cleanup.
 - [ ] Standardize error category names (`src/error.rs:56+`) [Nit, span-integrity-checker]
 - [ ] Review PendingBuiltin error path span handling — may overwrite operand span (`src/eval.rs:886`) [Nit, span-integrity-checker]
 
-## Phase 12: Stdlib Documentation
+## stdlib-docs: Stdlib Documentation
 
 Add type signatures and inline examples to all stdlib functions, serving as both documentation and executable tests.
 
@@ -836,11 +836,11 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Update DESIGN.md ThunkState sketch to include `Failed(Box<EvalError>)` and `PendingCall` variants (`DESIGN.md:1988-1994`) [Nit, eval-engine]
 - [ ] Add corpus tests for `any?` and `all?` (any_true, any_false, any_empty, all_true, all_false, all_empty) (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
 
-## Phase 13: Test Infrastructure Improvements
+## Test Infrastructure
 
 Improvements to test infrastructure identified by cross-language analysis and test-crafter review (2026-04-19).
 
-### 13a: Critical Test Coverage
+### test-critical: Critical Test Coverage
 
 - [ ] PendingBuiltin state transition unit tests — verify Unevaluated→PendingBuiltin→Materialized lifecycle, error recovery, cycle detection in isolation (`src/value.rs`, `src/eval.rs`) [Critical, test-crafter]
 - [ ] Add error corpus tests with span assertions — current tests check message content only, not definition_span, materialization_span, or stack frame accuracy (`tests/corpus/eval/errors/`) [Critical, test-crafter + span-integrity-checker]
@@ -863,7 +863,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add concat edge case corpus tests — empty dicts (`concat [] []`, `concat [a] []`, `concat [] [a]`), testing the `empty?` branch (`tests/corpus/eval/stdlib/`) [Minor, test-crafter]
 - [ ] Add concat error corpus tests — invalid input types, type mismatches (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
 
-### 13a½: Additional Test Coverage
+### test-additional: Additional Test Coverage
 
 - [ ] Add error corpus tests for arithmetic overflow ($+/$-/$* with i64 bounds), NaN/Infinity rejection ($floor/$round), string parse failure ($to-int/$to-float), TypeAssert failure, range mixed keys [Critical, test-crafter]
 - [ ] Add depth limit corpus tests (256 levels succeeds, 257 errors)
@@ -883,7 +883,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add TypeAssert `default:` fallback corpus test — `[@Number default: 42 "not a number"]` returns 42 (`tests/corpus/eval/builtins/`) [Minor, test-crafter]
 - [ ] Add type error corpus tests directory — `type_mismatch.txt`, `unification_failure.txt`, `record_field_missing.txt` (`tests/corpus/eval/type_errors/`) [Major, test-crafter]
 
-### 13b: Test Framework Enhancements
+### test-framework: Test Framework Enhancements
 
 - [ ] Extend error test framework: support `=== ERROR: substring` for message validation (test-crafter review)
 - [ ] Generate per-file test functions for clearer failure reports (Nickel `test_resources!` pattern)
@@ -895,7 +895,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Rename builtin tests to `test_*` convention or document current convention (`src/builtins.rs:2298-4700`) [Nit, test-crafter]
 - [ ] Standardize error corpus test format and document in README (`tests/corpus/`) [Nit, test-crafter]
 
-### 13c: Advanced Testing (Fuzzing, Property-Based, Benchmarks)
+### test-advanced: Advanced Testing (Fuzzing, Property-Based, Benchmarks)
 
 - [ ] Add fuzzing targets (`fuzz/fuzz_targets/parse.rs`, `fuzz/fuzz_targets/eval_source.rs`)
 - [ ] Add property-based testing (proptest) for parser round-trip and evaluator commutativity
@@ -904,7 +904,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add pretty-print round-trip idempotence test (parse → Display → re-parse → Display → compare)
 - [ ] Add function variance transitivity test or property test — transitivity assumed but not proven for subtyping (`src/types.rs:74-80`) [Major, type-theorist]
 
-### 13d: Tooling Integration Tests & Documentation
+### test-tooling: Tooling Integration Tests & Documentation
 
 - [ ] Integration tests for REPL/LSP — multi-line input, hover on nested expressions, multiple errors (test-crafter review)
 - [ ] Add LSP corpus tests (`tests/lsp_corpus/`) with `.llt` + `.expected.json` per position
@@ -962,11 +962,11 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **DESIGN.md "Bare Word Character Set" header doesn't follow pattern** — retitle for consistency (`DESIGN.md:852-886`) [Nit, grammar-architect]
 - [ ] **Stdlib count mismatch: 28 builtins vs 62 total not clarified** — update headers to show breakdown (`DESIGN.md:1393`, `CLAUDE.md:30`) [Nit, integration-verifier]
 
-- [ ] **DESIGN.md laziness tables use future tense for completed Phase 5b work** — change "Phase 5b: Will return..." to past tense (`DESIGN.md:1245, 1268, 1761-1762`) [Minor, integration-verifier]
-- [ ] **DESIGN.md BuiltinFn signature section omits BuiltinArgs struct** — update to mention Phase 5b parameter bundling (`DESIGN.md:1732-1744`) [Minor, integration-verifier]
+- [ ] **DESIGN.md laziness tables use future tense for completed builtin-thunk-return work** — change "Will return..." to past tense (`DESIGN.md:1245, 1268, 1761-1762`) [Minor, integration-verifier]
+- [ ] **DESIGN.md BuiltinFn signature section omits BuiltinArgs struct** — update to mention builtin-thunk-return parameter bundling (`DESIGN.md:1732-1744`) [Minor, integration-verifier]
 - [ ] **DESIGN.md include caching description sparse** — expand line 1835 to document cache key (canonical PathBuf), cache scope (thread-local), error non-caching rationale, cache lifetime (`DESIGN.md:1835`) [Minor, eval-engine]
 - [ ] **CLAUDE.md IncludeContext description missing cache field** — update builtins.rs row to mention include result cache for memoization (`CLAUDE.md:30`) [Minor, integration-verifier]
-- [ ] **DESIGN.md stale builtin count "44 total"** — update to 49 total after Phase 5 additions or remove inline count per no-stale-counts feedback (`DESIGN.md:1349`) [Minor, stdlib-author]
+- [ ] **DESIGN.md stale builtin count "44 total"** — update to 49 total after Sequences additions or remove inline count per no-stale-counts feedback (`DESIGN.md:1349`) [Minor, stdlib-author]
 - [ ] **Include cache code comments** — add skip-guard rationale at cache hit, clarify "Check cache" comment placement, add doc comment to cache field (`src/builtins.rs:1036-1039,52`) [Nit, eval-engine]
 - [ ] **IncludeContext::new() constructor** — add constructor to reduce breaking changes when fields are added; low priority pre-1.0 (`src/builtins.rs:54`) [Nit, integration-verifier]
 

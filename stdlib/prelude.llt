@@ -302,7 +302,7 @@ concat-impl: [fn [acc ys i len]
         $acc
         [call $concat-impl [call $append $acc $ys[$i]] $ys [call $+ $i 1] $len]]]
 
-# Reverse a list.
+# Reverse a list. Inherently materializing: must know all entries to reverse.
 reverse: [fn [xs] [call $reverse-impl $xs [call $- [call $length $xs] 1] []]]
 
 reverse-impl: [fn [xs i acc]
@@ -311,7 +311,7 @@ reverse-impl: [fn [xs i acc]
         [call $reverse-impl $xs [call $- $i 1]
             [call $append $acc $xs[$i]]]]]
 
-# Rebuild a collection with dense 0..n integer keys.
+# Rebuild a collection with dense 0..n integer keys. Inherently materializing: must traverse all entries.
 reindex: [fn [xs] [call $reindex-impl $xs [call $keys $xs] 0 []]]
 
 reindex-impl: [fn [xs ks i acc]
@@ -327,11 +327,11 @@ reindex-step: [fn [xs ks i acc current-key]
 # Sorting (Mergesort)
 # ============================================================================
 
-# Sort a list using natural ordering.
+# Sort a list using natural ordering. Inherently materializing: must compare values to determine order.
 sort: [fn [xs]
     [call $sort-by [fn [a b] [call $< $a $b]] $xs]]
 
-# Sort a list using a custom comparator.
+# Sort a list using a custom comparator. Inherently materializing: must compare values to determine order.
 sort-by: [fn [cmp xs]
     [call $if [call $<= [call $length $xs] 1]
         $xs

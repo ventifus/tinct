@@ -373,6 +373,7 @@ fn builtin_if(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
 /// String values). Insertion order is preserved.
+/// Inherently materializing: must access IndexMap to enumerate keys.
 fn builtin_keys(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -403,6 +404,7 @@ fn builtin_keys(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `length`: Takes 1 arg (a Dict). Returns an Int with the number of entries.
+/// Inherently materializing: must access IndexMap to count entries.
 fn builtin_length(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -2236,6 +2238,7 @@ fn builtin_drop_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `reduce`: Fold a function over a Dict or Seq.
+/// Inherently materializing: accumulator pattern requires sequential evaluation.
 ///
 /// - For Dict: build a chain of PendingCall thunks, one per value
 /// - For Seq: use recursive helper to build lazy chain
