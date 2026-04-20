@@ -1,0 +1,4 @@
+# from-entries with empty list
+[call $from-entries []]
+===
+Dict({})

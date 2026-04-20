@@ -1,0 +1,4 @@
+# any? - no elements match
+[call $any? [fn [x] [call $> $x 10]] [1 3 7 2]]
+===
+Bool(false)

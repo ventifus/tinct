@@ -1,0 +1,4 @@
+# until with increment
+[call $until [fn [x] [call $>= $x 10]] [fn [x] [call $+ $x 1]] 0]
+===
+Int(10)

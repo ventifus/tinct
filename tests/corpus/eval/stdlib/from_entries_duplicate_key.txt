@@ -1,0 +1,4 @@
+# from-entries with duplicate keys - last-write-wins via merge
+[call $from-entries [[key: x value: 1] [key: x value: 2]]]
+===
+Dict({"x": Int(2)})

@@ -1,0 +1,4 @@
+# all? - empty list
+[call $all? [fn [x] [call $> $x 5]] []]
+===
+Bool(true)

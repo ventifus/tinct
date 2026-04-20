@@ -1,0 +1,4 @@
+# const used with map - composition test
+[call $map [call $const 0] [a b c]]
+===
+Dict({0: Int(0), 1: Int(0), 2: Int(0)})

@@ -239,10 +239,10 @@ Fix stdlib bugs and add missing test coverage. Identified by stdlib-author revie
 
 New functions implementable in LLT without Phase 5 Seq support. Identified by stdlib-author review (2026-04-19).
 
-- [ ] `const` — returns first argument, ignores second
-- [ ] `from-entries` — inverse of `$entries`; reconstruct dict from `[key value]` pairs
-- [ ] `until` — iterate function until predicate holds; functional loop
-- [ ] `any?` / `all?` — short-circuit predicate tests over collections
+- [x] `const` — returns first argument, ignores second
+- [x] `from-entries` — inverse of `$entries`; reconstruct dict from `[key value]` pairs
+- [x] `until` — iterate function until predicate holds; functional loop
+- [x] `any?` / `all?` — short-circuit predicate tests over collections
 
 ## Phase 5: Sequences and Fully Lazy Operations
 

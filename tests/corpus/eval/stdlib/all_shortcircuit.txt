@@ -1,0 +1,4 @@
+# all? - short-circuit test (should stop at first non-match)
+[call $all? [fn [x] [call $< $x 3]] [1 2 5 4]]
+===
+Bool(false)

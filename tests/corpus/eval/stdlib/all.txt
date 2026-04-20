@@ -1,0 +1,4 @@
+# all? - all elements match
+[call $all? [fn [x] [call $> $x 0]] [1 3 7 2]]
+===
+Bool(true)

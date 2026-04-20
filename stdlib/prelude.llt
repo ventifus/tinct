@@ -40,6 +40,9 @@ make-entry: [fn [k v] [$k: $v]]
 # Returns its argument unchanged.
 identity: [fn [x] $x]
 
+# Returns first argument, ignores second. Classic K combinator.
+const: [fn [x] [fn [y] $x]]
+
 # ============================================================================
 # Logic
 # ============================================================================
@@ -51,6 +54,26 @@ and: [fn [a b] [call $if $a $b false]]
 
 # Short-circuit OR: if a is true, b is never evaluated.
 or: [fn [a b] [call $if $a true $b]]
+
+# Short-circuit predicate test: returns true if any element satisfies pred.
+any?: [fn [pred xs] [call $any?-impl $pred $xs [call $keys $xs] 0]]
+
+any?-impl: [fn [pred xs ks i]
+    [call $if [call $>= $i [call $length $ks]]
+        false
+        [call $if [call $pred $xs[$ks[$i]]]
+            true
+            [call $any?-impl $pred $xs $ks [call $+ $i 1]]]]]
+
+# Short-circuit predicate test: returns true if all elements satisfy pred.
+all?: [fn [pred xs] [call $all?-impl $pred $xs [call $keys $xs] 0]]
+
+all?-impl: [fn [pred xs ks i]
+    [call $if [call $>= $i [call $length $ks]]
+        true
+        [call $if [call $pred $xs[$ks[$i]]]
+            [call $all?-impl $pred $xs $ks [call $+ $i 1]]
+            false]]]
 
 # ============================================================================
 # Comparison (derived from < and =)
@@ -126,6 +149,10 @@ cond-check: [fn [pairs i condition result]
     [call $if $condition
         $result
         [call $cond-impl $pairs [call $+ $i 1]]]]
+
+# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs. Phase 5d moves to Rust builtins.
+# Iterate function until predicate holds. Applies f repeatedly to x until pred(x) is true.
+until: [fn [pred f x] [call $if [call $pred $x] $x [call $until $pred $f [call $f $x]]]]
 
 # ============================================================================
 # Dict Utilities
@@ -213,6 +240,9 @@ entries-impl: [fn [xs ks i acc]
 entries-step: [fn [xs ks i acc current-key]
     [call $entries-impl $xs $ks [call $+ $i 1]
         [call $append $acc [key: $current-key value: $xs[$current-key]]]]]
+
+# Reconstruct a dict from a list of [key: k value: v] pairs. Inverse of entries.
+from-entries: [fn [pairs] [call $reduce [fn [acc pair] [call $merge $acc [call $make-entry $pair.key $pair.value]]] [] $pairs]]
 
 # ============================================================================
 # List Operations (integer keys, dense 0..n output)
