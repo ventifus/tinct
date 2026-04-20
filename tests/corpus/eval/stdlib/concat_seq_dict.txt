@@ -1,0 +1,4 @@
+# concat Seq ending with [] (empty dict terminator)
+[call $collect [call $concat [call $seq 1 []] [call $seq 2 []]]]
+===
+Dict({0: Int(1), 1: Int(2)})

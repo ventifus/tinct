@@ -277,8 +277,15 @@ cons-impl: [fn [x xs i len acc]
 # Append an element to the end of a list.
 conj: [fn [xs x] [call $append $xs $x]]
 
-# Concatenate two lists, reindexing the second.
-concat: [fn [xs ys] [call $concat-impl $xs $ys 0 [call $length $ys]]]
+# Concatenate two collections.
+# If xs is Seq: lazily chain xs and ys (O(1) initial, O(n) on materialization).
+# If xs is Dict: eagerly append all elements from ys (O(m) where m = length(ys)).
+concat: [fn [xs ys]
+    [call $if [call $seq? $xs]
+        [call $seq [call $head $xs] [call $concat [call $tail $xs] $ys]]
+        [call $if [call $empty? $xs]
+            $ys
+            [call $concat-impl $xs $ys 0 [call $length $ys]]]]]
 
 concat-impl: [fn [acc ys i len]
     [call $if [call $>= $i $len]

@@ -382,8 +382,8 @@ Make remaining eager operations lazy where possible. Seq-aware dual-dispatch for
 - [x] `$cycle` -- builds full dict eagerly (fix: return Seq, Phase 5d)
 - [x] `$if` -- materializes chosen branch (fix: return branch thunk, Phase 5b)
 - [x] `$merge` -- clones both dicts (Rc-clones thunks already; full lazy overlay needs dict proxy, deferred)
-- [ ] `$update` -- eagerly applies function (fix: PendingCall on updated value, Phase 5e)
-- [ ] `$concat` -- eagerly clones and merges (fix: Seq concat for sequences; stays eager for dicts)
+- [x] `$update` -- already lazy via PendingCall (Phase 5a) + lazy merge (Phase 5b); verified with laziness test
+- [x] `$concat` -- Seq path: lazy chain via recursive PendingCall; Dict path: stays eager (existing behavior)
 - [x] `$apply` -- double-forces by materializing `invoke_function()`'s result thunk (fix: return thunk directly, Phase 5b)
 
 ### 5g-ii: Seq-Aware Collection Builtins
@@ -627,6 +627,9 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Cache materialized dict in `builtin_cycle_step` — currently re-materializes immutable dict on every iteration; store IndexMap directly (`src/builtins.rs:1375-1443`) [Major, performance-expert]
 - [ ] Optimize `builtin_take` Dict path — materializes entire dict then clones first n entries; use `map.iter().take(n)` directly (`src/builtins.rs:1648-1657`) [Major, performance-expert]
 - [ ] Consider SmallVec for sequence constructor tail args — `Vec::new()` + push allocates heap on every step of infinite sequences; SmallVec<[Rc<Thunk>; 2]> would stack-allocate common cases (`src/builtins.rs`) [Minor, performance-expert]
+- [ ] SmallVec for eval_call positional args — most calls have ≤4 args; SmallVec<[Rc<Thunk>; 4]> avoids heap allocation for common case (`src/eval.rs:417-426`) [Minor, performance-expert]
+- [ ] SmallVec for error stack frames — SmallVec<[StackFrame; 8]> for shallow stacks (`src/error.rs`) [Minor, performance-expert]
+- [ ] Thunk origin String→Option<Rc<str>> — most thunks have empty origin; eliminates per-thunk allocation, share origin strings via Rc (`src/value.rs:204,216`) [Nit, performance-expert]
 - [ ] Add capacity hint to variadic dict allocation — exact size known at allocation time (`src/eval.rs:610`) [Minor, performance-expert]
 - [ ] Use static empty IndexMap for PendingCall named args — eliminates allocation on every PendingCall with no named args (`src/eval.rs:976`) [Nit, performance-expert]
 - [ ] Use static empty dict thunk for default `$$` — eliminates allocation on every file eval without stdin (`src/eval.rs:287-291`) [Nit, performance-expert]
@@ -827,6 +830,7 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Document `cond` returning `[]` when no branch matches (`stdlib/prelude.llt:120-123`) [Nit, stdlib-author]
 - [ ] Add 16 undocumented stdlib functions to DESIGN.md stdlib section: `const`, `>`, `<=`, `>=`, `quot`, `mod`, `ceil`, `trunc`, `join`, `words`, `nth`, `conj`, `reindex`, `from-entries`, `any?`, `all?` [Major, stdlib-author]
 - [ ] Add doc comment to `Value::Seq` match arm in `value_to_json` explaining why Seq→JSON is an error and requires `$collect` first (`src/lib.rs:161-166`) [Minor, integration-verifier]
+- [ ] Update DESIGN.md concat classification to note dual-dispatch: Seq path is lazy O(1), Dict path is eager O(m) (`DESIGN.md:1257`) [Minor, grammar-architect]
 - [ ] Add comment to Seq cycle detection in `deep_materialize` explaining raw pointer identity pattern (`src/eval.rs:1093-1100`) [Nit, integration-verifier]
 - [ ] Update DESIGN.md ThunkState sketch to include `Failed(Box<EvalError>)` and `PendingCall` variants (`DESIGN.md:1988-1994`) [Nit, eval-engine]
 - [ ] Add corpus tests for `any?` and `all?` (any_true, any_false, any_empty, all_true, all_false, all_empty) (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
@@ -853,7 +857,10 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add Failed state None→Some→Some edge case test — first access with None, then Some(span1), then Some(span2); verifies is_none() path (`src/eval.rs`) [Minor, test-crafter]
 - [ ] Add doc comment to Failed state handler explaining dual-span model conditional update strategy (`src/eval.rs:873-894`) [Nit, span-integrity-checker + eval-engine]
 - [ ] Add error corpus tests for drop/reduce/join type/arity mismatches — `drop_wrong_type.txt`, `reduce_wrong_type.txt`, `join_wrong_type.txt` (`tests/corpus/eval/errors/`) [Major, test-crafter]
-- [ ] Add unit tests for builtin_drop, builtin_reduce, builtin_join (PendingCall chain construction, thunk state, span propagation) (`src/builtins.rs`) [Minor, test-crafter]
+- [ ] Add unit tests for builtin_drop, builtin_reduce, builtin_join (PendingCall chain construction, thunk state, span propagation) (`src/builtins.rs`) [Major, test-crafter]
+- [ ] Add include caching corpus tests — same file included twice returns identical result, nested includes share cache, verify cache interaction with cycle detection (`tests/corpus/eval/builtins/`) [Major, test-crafter]
+- [ ] Add concat edge case corpus tests — empty dicts (`concat [] []`, `concat [a] []`, `concat [] [a]`), testing the `empty?` branch (`tests/corpus/eval/stdlib/`) [Minor, test-crafter]
+- [ ] Add concat error corpus tests — invalid input types, type mismatches (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
 
 ### 13a½: Additional Test Coverage
 
@@ -904,6 +911,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Document circular builtins⇄eval dependency — add safety comment at `src/builtins.rs:28` explaining the value-level vs import-level dependency [Minor, integration-verifier]
 - [ ] Cross-layer contracts documentation — add section to DESIGN.md documenting BuiltinFn signature contract, serializer requirements, thread-local state discipline [Minor, integration-verifier]
 - [ ] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference — add test for display_string with NaN/Inf (`src/lib.rs:112-125, 176-211`) [Minor, integration-verifier]
+- [ ] Add lib.rs IncludeContext doc comment mentioning cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs:44-46`) [Minor, integration-verifier]
 - [ ] Add DESIGN.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
 
 ## Documentation Divergences (DESIGN.md / SPEC.md / Code)
@@ -955,6 +963,11 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 
 - [ ] **DESIGN.md laziness tables use future tense for completed Phase 5b work** — change "Phase 5b: Will return..." to past tense (`DESIGN.md:1245, 1268, 1761-1762`) [Minor, integration-verifier]
 - [ ] **DESIGN.md BuiltinFn signature section omits BuiltinArgs struct** — update to mention Phase 5b parameter bundling (`DESIGN.md:1732-1744`) [Minor, integration-verifier]
+- [ ] **DESIGN.md include caching description sparse** — expand line 1835 to document cache key (canonical PathBuf), cache scope (thread-local), error non-caching rationale, cache lifetime (`DESIGN.md:1835`) [Minor, eval-engine]
+- [ ] **CLAUDE.md IncludeContext description missing cache field** — update builtins.rs row to mention include result cache for memoization (`CLAUDE.md:30`) [Minor, integration-verifier]
+- [ ] **DESIGN.md stale builtin count "44 total"** — update to 49 total after Phase 5 additions or remove inline count per no-stale-counts feedback (`DESIGN.md:1349`) [Minor, stdlib-author]
+- [ ] **Include cache code comments** — add skip-guard rationale at cache hit, clarify "Check cache" comment placement, add doc comment to cache field (`src/builtins.rs:1036-1039,52`) [Nit, eval-engine]
+- [ ] **IncludeContext::new() constructor** — add constructor to reduce breaking changes when fields are added; low priority pre-1.0 (`src/builtins.rs:54`) [Nit, integration-verifier]
 
 ### DESIGN.md documentation gaps (eval-engine review)
 
