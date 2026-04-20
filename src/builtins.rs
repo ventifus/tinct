@@ -2124,7 +2124,7 @@ fn builtin_take(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `drop`: Drop the first n elements from a Dict or Seq.
 ///
 /// - For Dict: skip first n entries by position, return Dict with remaining entries
-/// - For Seq: eagerly traverse n elements, return remaining tail thunk
+/// - For Seq: use lazy step function to drop elements one at a time
 ///
 /// Args: (n, xs)
 fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -2168,35 +2168,67 @@ fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Dict(dropped))
         }
         Value::Seq { head: _, tail } => {
-            // Seq: eagerly traverse n elements by materializing head/tail in a loop
-            let mut remaining = Rc::clone(&tail);
-            let mut count = n_int - 1; // Already consumed head
-
-            while count > 0 {
-                let val = materialize(&remaining, None, depth)?;
-                match val {
-                    Value::Dict(_) => {
-                        // Sequence ended before n elements
-                        return ok_val(Value::Dict(IndexMap::new()));
-                    }
-                    Value::Seq { head: _, tail } => {
-                        remaining = Rc::clone(&tail);
-                        count -= 1;
-                    }
-                    other => {
-                        return Err(EvalError::new(
-                            format!("drop: invalid Seq tail, got {}", other.type_name()),
-                            call_span,
-                        )
-                        .into());
-                    }
-                }
-            }
-
-            Ok(remaining)
+            // Seq: use lazy step function to drop remaining elements
+            let n_minus_1 = Rc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
+            let step_args = vec![n_minus_1, tail];
+            Ok(Rc::new(Thunk::new_pending_builtin(
+                builtin_drop_seq_step,
+                step_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            )))
         }
         other => Err(EvalError::new(
             format!("drop: expected Dict or Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// Helper for `drop` on Seq: lazily drop elements one at a time.
+///
+/// Args: (n_remaining, seq)
+fn builtin_drop_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        depth,
+        call_span,
+        ..
+    } = ctx;
+
+    let n = materialize(&args[0], None, depth)?;
+    let n_int = match n {
+        Value::Int(i) => i,
+        _ => unreachable!("drop_seq_step: n_remaining must be Int"),
+    };
+
+    if n_int <= 0 {
+        // Done dropping, return remaining seq
+        return Ok(Rc::clone(&args[1]));
+    }
+
+    let seq = materialize(&args[1], None, depth)?;
+    match seq {
+        Value::Dict(_) => {
+            // End of sequence before we finished dropping
+            ok_val(Value::Dict(IndexMap::new()))
+        }
+        Value::Seq { head: _, tail } => {
+            // Drop this element, continue with tail
+            let n_minus_1 = Rc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
+            let step_args = vec![n_minus_1, tail];
+            Ok(Rc::new(Thunk::new_pending_builtin(
+                builtin_drop_seq_step,
+                step_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            )))
+        }
+        other => Err(EvalError::new(
+            format!("drop: invalid Seq tail, got {}", other.type_name()),
             call_span,
         )
         .into()),

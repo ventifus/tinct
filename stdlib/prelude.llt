@@ -257,7 +257,12 @@ last: [fn [xs]
     [call $get $xs [call $get [call $keys $xs] [call $- [call $length $xs] 1]]]]
 
 # All elements except the first, reindexed from 0.
-rest: [fn [xs] [call $rest-impl $xs 1 [call $length $xs] []]]
+# If xs is Seq: O(1) tail extraction.
+# If xs is Dict: O(n) eager copy with reindexing.
+rest: [fn [xs]
+    [call $if [call $seq? $xs]
+        [call $tail $xs]
+        [call $rest-impl $xs 1 [call $length $xs] []]]]
 
 rest-impl: [fn [xs i len acc]
     [call $if [call $>= $i $len]
@@ -266,7 +271,12 @@ rest-impl: [fn [xs i len acc]
             [call $append $acc $xs[$i]]]]]
 
 # Prepend an element to a list, reindexing from 0.
-cons: [fn [x xs] [call $cons-impl $x $xs 0 [call $length $xs] [0: $x]]]
+# If xs is Seq: O(1) prepend via $seq.
+# If xs is Dict: O(n) eager copy with reindexing.
+cons: [fn [x xs]
+    [call $if [call $seq? $xs]
+        [call $seq $x $xs]
+        [call $cons-impl $x $xs 0 [call $length $xs] [0: $x]]]]
 
 cons-impl: [fn [x xs i len acc]
     [call $if [call $>= $i $len]
@@ -377,7 +387,24 @@ slice-step: [fn [xs ks start end i acc current-key]
         [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
 
 # Pair entries from two collections by position. Returns a list of pairs.
+# If both xs and ys are Seq: lazy Seq of pairs.
+# Otherwise: collect Seqs to Dicts, then use eager zip-dict.
 zip: [fn [xs ys]
+    [call $if [call $and [call $seq? $xs] [call $seq? $ys]]
+        [call $zip-seq $xs $ys]
+        [call $zip-dict
+            [call $if [call $seq? $xs] [call $collect $xs] $xs]
+            [call $if [call $seq? $ys] [call $collect $ys] $ys]]]]
+
+# Lazy zip for two Seqs: produces a Seq of pairs until either input terminates.
+zip-seq: [fn [xs ys]
+    [call $if [call $and [call $seq? $xs] [call $seq? $ys]]
+        [call $seq [[call $head $xs] [call $head $ys]]
+            [call $zip-seq [call $tail $xs] [call $tail $ys]]]
+        []]]
+
+# Eager zip for Dicts: iterates over keys and builds pairs.
+zip-dict: [fn [xs ys]
     [call $zip-impl $xs $ys [call $keys $xs] [call $keys $ys] 0 []]]
 
 zip-impl: [fn [xs ys xks yks i acc]

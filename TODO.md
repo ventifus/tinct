@@ -390,9 +390,10 @@ Make remaining eager operations lazy where possible. Seq-aware dual-dispatch for
 
 Add Seq support to collection builtins that currently only work on Dict.
 
-- [ ] `$cons` -- eagerly clones and shifts (fix: Seq cons O(1) for sequences; stays eager for dicts)
-- [ ] `$rest` -- eagerly clones dict minus first entry (fix: Seq tail O(1) for sequences; stays eager for dicts)
-- [ ] `$zip` -- eagerly builds paired dict (fix: lazy Seq zip for sequences; stays eager for dicts)
+- [x] `$drop` Seq path: replace eager materialization loop with lazy step function — `builtin_drop_seq_step` using PendingBuiltin pattern
+- [x] `$cons` -- Seq path: O(1) prepend via `$seq`; Dict path stays eager (cons-impl)
+- [x] `$rest` -- Seq path: O(1) tail via `$tail`; Dict path stays eager (rest-impl)
+- [x] `$zip` -- Seq+Seq path: lazy `zip-seq` producing Seq of pairs; mixed/Dict path: collect then eager `zip-dict`
 
 ### 5g-iii: Document Inherent Eagerness — Core Eval
 
