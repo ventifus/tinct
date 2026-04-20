@@ -150,7 +150,7 @@ cond-check: [fn [pairs i condition result]
         $result
         [call $cond-impl $pairs [call $+ $i 1]]]]
 
-# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs. Phase 5d moves to Rust builtins.
+# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs.
 # Iterate function until predicate holds. Applies f repeatedly to x until pred(x) is true.
 until: [fn [pred f x] [call $if [call $pred $x] $x [call $until $pred $f [call $f $x]]]]
 
@@ -411,18 +411,6 @@ slice-step: [fn [xs ks start end i acc current-key]
     [call $slice-impl $xs $ks $start $end [call $+ $i 1]
         [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
 
-# Take the first n entries. Preserves keys.
-take: [fn [n xs] [call $take-impl $xs [call $keys $xs] $n 0 []]]
-
-take-impl: [fn [xs ks n i acc]
-    [call $if [call $or [call $>= $i [call $length $ks]] [call $>= $i $n]]
-        $acc
-        [call $take-step $xs $ks $n $i $acc $ks[$i]]]]
-
-take-step: [fn [xs ks n i acc current-key]
-    [call $take-impl $xs $ks $n [call $+ $i 1]
-        [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
-
 # Skip the first n entries. Preserves keys.
 drop: [fn [n xs] [call $drop-impl $xs [call $keys $xs] $n 0 []]]
 
@@ -519,26 +507,8 @@ try-or-impl: [fn [try-result default]
 # Sequences
 # ============================================================================
 
-# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs. Phase 5d moves to Rust builtins.
-# Generate a range of integers from start (inclusive) to end (exclusive).
-range: [fn [start end]
-    [call $if [call $>= $start $end]
-        []
-        [call $cons $start [call $range [call $+ $start 1] $end]]]]
-
-# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs. Phase 5d moves to Rust builtins.
-# Create a list of n copies of a value.
-repeat: [fn [n val]
-    [call $if [call $<= $n 0]
-        []
-        [call $cons $val [call $repeat [call $- $n 1] $val]]]]
-
-# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs. Phase 5d moves to Rust builtins.
-# Repeat a list n times.
-cycle: [fn [n xs]
-    [call $if [call $<= $n 0]
-        []
-        [call $concat $xs [call $cycle [call $- $n 1] $xs]]]]
+# Sequence constructors (range, repeat, cycle, take) are Rust-native builtins.
+# See src/builtins.rs for implementations.
 
 # ============================================================================
 # Assertions

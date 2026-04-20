@@ -1,0 +1,4 @@
+# cycle: error when called with non-Dict argument
+[call $cycle 42]
+===
+expected Dict

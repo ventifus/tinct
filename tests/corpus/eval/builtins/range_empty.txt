@@ -1,0 +1,4 @@
+# range: empty sequence when start >= end
+[call $collect [call $range 5 5]]
+===
+Dict({})

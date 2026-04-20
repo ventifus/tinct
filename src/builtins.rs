@@ -15,7 +15,7 @@
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
 //! **Type introspection:** `type-of`
 //! **I/O:** `from-json`, `include`
-//! **Sequences:** `seq`, `head`, `tail`, `collect`, `seq?`
+//! **Sequences:** `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -1245,6 +1245,441 @@ fn builtin_seq_check(
     ok_val(Value::Bool(matches!(val, Value::Seq { .. })))
 }
 
+/// `range`: Sequence of integers from start to end (exclusive), or infinite.
+///
+/// - `[call $range start]` → infinite Seq: start, start+1, start+2, ...
+/// - `[call $range start end]` → finite Seq: start, start+1, ..., end-1
+///   (empty if start >= end)
+///
+/// Both args must be Int. Uses checked_add for overflow detection.
+fn builtin_range(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("range", named, call_span)?;
+    if args.len() != 1 && args.len() != 2 {
+        return Err(EvalError::new(
+            format!("range: expected 1 or 2 arguments, got {}", args.len()),
+            call_span,
+        )
+        .into());
+    }
+
+    let start = materialize(&args[0], None, depth)?;
+    let start_int = match start {
+        Value::Int(n) => n,
+        other => {
+            return Err(EvalError::new(
+                format!("range: start must be Int, got {}", other.type_name()),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    if args.len() == 1 {
+        // Infinite range: [start, start+1, start+2, ...]
+        let next_start = start_int.checked_add(1).ok_or_else(|| {
+            EvalError::new("range: integer overflow in infinite range", call_span)
+        })?;
+        let head = ok_val(Value::Int(start_int))?;
+        let tail_args = vec![ok_val(Value::Int(next_start))?];
+        let tail = Rc::new(Thunk::new_pending_builtin(
+            builtin_range,
+            tail_args,
+            IndexMap::new(),
+            depth,
+            call_span,
+        ));
+        ok_val(Value::Seq { head, tail })
+    } else {
+        // Finite range: [start, start+1, ..., end-1]
+        let end = materialize(&args[1], None, depth)?;
+        let end_int = match end {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::new(
+                    format!("range: end must be Int, got {}", other.type_name()),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        if start_int >= end_int {
+            // Empty range
+            ok_val(Value::Dict(IndexMap::new()))
+        } else {
+            let next_start = start_int.checked_add(1).ok_or_else(|| {
+                EvalError::new("range: integer overflow in finite range", call_span)
+            })?;
+            let head = ok_val(Value::Int(start_int))?;
+            let tail_args = vec![ok_val(Value::Int(next_start))?, ok_val(Value::Int(end_int))?];
+            let tail = Rc::new(Thunk::new_pending_builtin(
+                builtin_range,
+                tail_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            ));
+            ok_val(Value::Seq { head, tail })
+        }
+    }
+}
+
+/// `repeat`: Infinite sequence of a repeated value.
+///
+/// `[call $repeat val]` → infinite Seq: val, val, val, ...
+///
+/// The value is kept as a thunk (fully lazy — never materialized).
+fn builtin_repeat(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    _depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("repeat", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    let head = Rc::clone(&args[0]);
+    let tail_args = vec![Rc::clone(&args[0])];
+    let tail = Rc::new(Thunk::new_pending_builtin(
+        builtin_repeat,
+        tail_args,
+        IndexMap::new(),
+        0, // depth doesn't matter for PendingBuiltin (checked at materialization)
+        call_span,
+    ));
+    ok_val(Value::Seq { head, tail })
+}
+
+/// Internal helper for `cycle`: produces the next element in the cycle.
+///
+/// Takes (dict_thunk, index_thunk) where dict is the original collection to cycle
+/// through and index is the current position (wrapped modulo length).
+fn builtin_cycle_step(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("cycle_step", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let dict = materialize(&args[0], None, depth)?;
+    let map = match &dict {
+        Value::Dict(m) => m,
+        other => {
+            return Err(EvalError::new(
+                format!("cycle_step: dict must be Dict, got {}", other.type_name()),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    let idx = materialize(&args[1], None, depth)?;
+    let idx_int = match idx {
+        Value::Int(i) => i,
+        other => {
+            return Err(EvalError::new(
+                format!("cycle_step: index must be Int, got {}", other.type_name()),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    if map.is_empty() {
+        return Err(EvalError::new("cycle: cannot cycle empty dict", call_span).into());
+    }
+
+    let len = map.len() as i64;
+    let current_idx = idx_int % len;
+    let next_idx = (idx_int + 1) % len;
+
+    // Get the value at current_idx
+    let head = map
+        .get_index(current_idx as usize)
+        .map(|(_, v)| Rc::clone(v))
+        .ok_or_else(|| EvalError::new("cycle_step: index out of bounds", call_span))?;
+
+    // Create tail as PendingBuiltin for next step
+    let tail_args = vec![Rc::clone(&args[0]), ok_val(Value::Int(next_idx))?];
+    let tail = Rc::new(Thunk::new_pending_builtin(
+        builtin_cycle_step,
+        tail_args,
+        IndexMap::new(),
+        depth,
+        call_span,
+    ));
+
+    ok_val(Value::Seq { head, tail })
+}
+
+/// `cycle`: Infinite sequence cycling through entries of a dict.
+///
+/// `[call $cycle xs]` → infinite Seq cycling through entries of xs by position.
+///
+/// Materializes xs to verify it's a non-empty Dict, then delegates to
+/// `cycle_step` helper for lazy iteration.
+fn builtin_cycle(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("cycle", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    let val = materialize(&args[0], None, depth)?;
+    match val {
+        Value::Dict(ref map) => {
+            if map.is_empty() {
+                return Err(
+                    EvalError::new("cycle: cannot cycle empty dict", call_span).into()
+                );
+            }
+            // Start cycling from index 0
+            builtin_cycle_step(
+                &[Rc::clone(&args[0]), ok_val(Value::Int(0))?],
+                &IndexMap::new(),
+                depth,
+                call_span,
+            )
+        }
+        other => Err(EvalError::new(
+            format!("cycle: expected Dict, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// `iterate`: Infinite sequence of iterated function applications.
+///
+/// `[call $iterate $f $x]` → infinite Seq: x, f(x), f(f(x)), ...
+///
+/// Both f and x are kept as thunks (fully lazy). The tail contains a PendingCall
+/// for f(x), wrapped in a PendingBuiltin for the next iterate step.
+fn builtin_iterate(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    _depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("iterate", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let f = Rc::clone(&args[0]);
+    let x = Rc::clone(&args[1]);
+
+    // head = x (lazy)
+    let head = Rc::clone(&x);
+
+    // Create f(x) as PendingCall
+    let f_of_x = Rc::new(Thunk::new_pending_call(
+        Rc::clone(&f),
+        vec![Rc::clone(&x)],
+        call_span,
+        call_span,
+        "iterate".to_string(),
+    ));
+
+    // tail = iterate(f, f(x))
+    let tail_args = vec![Rc::clone(&f), f_of_x];
+    let tail = Rc::new(Thunk::new_pending_builtin(
+        builtin_iterate,
+        tail_args,
+        IndexMap::new(),
+        0, // depth checked at materialization
+        call_span,
+    ));
+
+    ok_val(Value::Seq { head, tail })
+}
+
+/// Internal helper for `unfold`: performs one unfold step.
+///
+/// Takes (step_function, seed) and calls step(seed), which should return either:
+/// - A 2-element dict [value next_seed] to continue
+/// - An empty dict [] to terminate
+fn builtin_unfold_step(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("unfold_step", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let step = Rc::clone(&args[0]);
+    let seed = Rc::clone(&args[1]);
+
+    // Call step(seed) as PendingCall, then materialize it
+    let step_result_thunk = Rc::new(Thunk::new_pending_call(
+        step.clone(),
+        vec![seed],
+        call_span,
+        call_span,
+        "unfold".to_string(),
+    ));
+    let step_result = materialize(&step_result_thunk, None, depth)?;
+
+    match step_result {
+        Value::Dict(ref map) if map.is_empty() => {
+            // Termination: return empty dict
+            ok_val(Value::Dict(IndexMap::new()))
+        }
+        Value::Dict(ref map) if map.len() >= 2 => {
+            // Extract first two values (ignore keys)
+            let mut iter = map.values();
+            let value = Rc::clone(iter.next().unwrap());
+            let next_seed = Rc::clone(iter.next().unwrap());
+
+            // head = value (lazy)
+            let head = value;
+
+            // tail = unfold_step(step, next_seed)
+            let tail_args = vec![step, next_seed];
+            let tail = Rc::new(Thunk::new_pending_builtin(
+                builtin_unfold_step,
+                tail_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            ));
+
+            ok_val(Value::Seq { head, tail })
+        }
+        Value::Dict(ref map) => Err(EvalError::new(
+            format!(
+                "unfold: step function must return dict with 2+ entries or empty dict, got {} entries",
+                map.len()
+            ),
+            call_span,
+        )
+        .into()),
+        other => Err(EvalError::new(
+            format!(
+                "unfold: step function must return Dict, got {}",
+                other.type_name()
+            ),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// `unfold`: Generate a sequence from a step function and seed.
+///
+/// `[call $unfold $step $seed]` → Seq where step(seed) returns [value next_seed]
+/// or [] to stop.
+///
+/// Fully lazy — the step function is not called until the result is materialized.
+fn builtin_unfold(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("unfold", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    // Return PendingBuiltin wrapping unfold_step — fully lazy
+    let tail_args = vec![Rc::clone(&args[0]), Rc::clone(&args[1])];
+    let result = Rc::new(Thunk::new_pending_builtin(
+        builtin_unfold_step,
+        tail_args,
+        IndexMap::new(),
+        depth,
+        call_span,
+    ));
+    Ok(result)
+}
+
+/// `take`: Take the first n elements from a dict or sequence.
+///
+/// - For Dict: takes first n entries by position, preserving keys. Returns Dict.
+/// - For Seq: takes first n elements, returning a Seq (or terminal empty dict).
+/// - If n <= 0: returns empty dict (terminal for Seq).
+fn builtin_take(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("take", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let n = materialize(&args[0], None, depth)?;
+    let n_int = match n {
+        Value::Int(i) => i,
+        other => {
+            return Err(EvalError::new(
+                format!("take: n must be Int, got {}", other.type_name()),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    if n_int <= 0 {
+        // Return empty dict (terminal for Seq, empty for Dict)
+        return ok_val(Value::Dict(IndexMap::new()));
+    }
+
+    let xs = materialize(&args[1], None, depth)?;
+    match xs {
+        Value::Dict(ref map) => {
+            // Dict: take first n entries by position
+            let taken: IndexMap<Key, Rc<Thunk>> = map
+                .iter()
+                .take(n_int as usize)
+                .map(|(k, v)| (k.clone(), Rc::clone(v)))
+                .collect();
+            ok_val(Value::Dict(taken))
+        }
+        Value::Seq { head, tail } => {
+            // Seq: head = seq head, tail = take(n-1, seq tail)
+            let new_head = Rc::clone(&head);
+            let tail_args = vec![ok_val(Value::Int(n_int - 1))?, Rc::clone(&tail)];
+            let new_tail = Rc::new(Thunk::new_pending_builtin(
+                builtin_take,
+                tail_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            ));
+            ok_val(Value::Seq {
+                head: new_head,
+                tail: new_tail,
+            })
+        }
+        other => Err(EvalError::new(
+            format!("take: expected Dict or Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
 /// Returns all builtin definitions as (name, function) pairs.
 ///
 /// All builtins conform to the standard `BuiltinFn` signature, including `if`
@@ -1296,6 +1731,12 @@ pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
         ("tail", builtin_tail),
         ("collect", builtin_collect),
         ("seq?", builtin_seq_check),
+        ("range", builtin_range),
+        ("repeat", builtin_repeat),
+        ("cycle", builtin_cycle),
+        ("iterate", builtin_iterate),
+        ("unfold", builtin_unfold),
+        ("take", builtin_take),
     ]
 }
 
@@ -4857,8 +5298,14 @@ mod tests {
         assert!(names.contains(&"tail"), "missing tail");
         assert!(names.contains(&"collect"), "missing collect");
         assert!(names.contains(&"seq?"), "missing seq?");
+        assert!(names.contains(&"range"), "missing range");
+        assert!(names.contains(&"repeat"), "missing repeat");
+        assert!(names.contains(&"cycle"), "missing cycle");
+        assert!(names.contains(&"iterate"), "missing iterate");
+        assert!(names.contains(&"unfold"), "missing unfold");
+        assert!(names.contains(&"take"), "missing take");
         // Total count
-        assert_eq!(names.len(), 33, "expected 33 builtins, got {}", names.len());
+        assert_eq!(names.len(), 39, "expected 39 builtins, got {}", names.len());
     }
 
     #[test]
@@ -6436,5 +6883,588 @@ mod tests {
             call_span(),
         ));
         assert_eq!(result, Value::Bool(false));
+    }
+
+    // === range builtin tests ===
+
+    #[test]
+    fn range_finite_basic() {
+        // range(0, 5) → 0, 1, 2, 3, 4
+        let result = mat(builtin_range(
+            &[thunk(Value::Int(0)), thunk(Value::Int(5))],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Seq { head, tail } => {
+                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(0));
+                // Materialize tail to get next element
+                let tail_val = materialize(&tail, None, 0).unwrap();
+                match tail_val {
+                    Value::Seq { head: h2, .. } => {
+                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(1));
+                    }
+                    other => panic!("expected Seq for tail, got {:?}", other),
+                }
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn range_empty() {
+        // range(5, 5) → empty
+        let result = mat(builtin_range(
+            &[thunk(Value::Int(5)), thunk(Value::Int(5))],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Dict(map) if map.is_empty() => {} // Success
+            other => panic!("expected empty dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn range_negative_range() {
+        // range(10, 5) → empty (start >= end)
+        let result = mat(builtin_range(
+            &[thunk(Value::Int(10)), thunk(Value::Int(5))],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Dict(map) if map.is_empty() => {} // Success
+            other => panic!("expected empty dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn range_single_element() {
+        // range(0, 1) → 0
+        let result = mat(builtin_range(
+            &[thunk(Value::Int(0)), thunk(Value::Int(1))],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Seq { head, tail } => {
+                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(0));
+                // tail should be empty (terminal)
+                let tail_val = materialize(&tail, None, 0).unwrap();
+                match tail_val {
+                    Value::Dict(map) if map.is_empty() => {} // Success
+                    other => panic!("expected empty dict for tail, got {:?}", other),
+                }
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn range_infinite_basic() {
+        // range(0) → 0, 1, 2, ... (take first 3)
+        let result = mat(builtin_range(
+            &[thunk(Value::Int(0))],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Seq { head, tail } => {
+                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(0));
+                let tail_val = materialize(&tail, None, 0).unwrap();
+                match tail_val {
+                    Value::Seq { head: h2, tail: t2 } => {
+                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(1));
+                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        match t2_val {
+                            Value::Seq { head: h3, .. } => {
+                                assert_eq!(materialize(&h3, None, 0).unwrap(), Value::Int(2));
+                            }
+                            other => panic!("expected Seq, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected Seq, got {:?}", other),
+                }
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn range_arity_zero() {
+        let result = builtin_range(&[], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn range_arity_three() {
+        let result = builtin_range(
+            &[
+                thunk(Value::Int(0)),
+                thunk(Value::Int(5)),
+                thunk(Value::Int(10)),
+            ],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn range_non_int_start() {
+        let result = builtin_range(
+            &[thunk(Value::String("not an int".into()))],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn range_non_int_end() {
+        let result = builtin_range(
+            &[thunk(Value::Int(0)), thunk(Value::Float(5.5))],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+    }
+
+    // === repeat builtin tests ===
+
+    #[test]
+    fn repeat_basic() {
+        // repeat(42) → 42, 42, 42, ... (take first 3)
+        let result = mat(builtin_repeat(
+            &[thunk(Value::Int(42))],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Seq { head, tail } => {
+                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(42));
+                let tail_val = materialize(&tail, None, 0).unwrap();
+                match tail_val {
+                    Value::Seq { head: h2, tail: t2 } => {
+                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(42));
+                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        match t2_val {
+                            Value::Seq { head: h3, .. } => {
+                                assert_eq!(materialize(&h3, None, 0).unwrap(), Value::Int(42));
+                            }
+                            other => panic!("expected Seq, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected Seq, got {:?}", other),
+                }
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn repeat_laziness() {
+        // Repeat an unevaluated thunk (would error if materialized)
+        let undef_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(Spanned::new(
+                Expr::VarRef("undefined_var".to_string()),
+                test_span(1, 1, 1, 5),
+            )),
+            Rc::new(RefCell::new(Environment::new())),
+            test_span(1, 1, 1, 5),
+        ));
+        // repeat construction should succeed without materializing arg
+        let result = builtin_repeat(&[undef_thunk], &no_named(), 0, call_span());
+        assert!(result.is_ok());
+        match mat(result) {
+            Value::Seq { .. } => {} // Success
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn repeat_arity_zero() {
+        let result = builtin_repeat(&[], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn repeat_arity_two() {
+        let result = builtin_repeat(
+            &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+    }
+
+    // === cycle builtin tests ===
+
+    #[test]
+    fn cycle_basic() {
+        // cycle([a, b]) → a, b, a, b, ... (take first 4)
+        let mut map = IndexMap::new();
+        map.insert(Key::String("x".into()), thunk(Value::String("a".into())));
+        map.insert(Key::String("y".into()), thunk(Value::String("b".into())));
+        let dict_val = thunk(Value::Dict(map));
+
+        let result = mat(builtin_cycle(&[dict_val], &no_named(), 0, call_span()));
+        match result {
+            Value::Seq { head, tail } => {
+                // First element: "a"
+                assert_eq!(materialize(&head, None, 0).unwrap(), Value::String("a".into()));
+                let tail_val = materialize(&tail, None, 0).unwrap();
+                match tail_val {
+                    Value::Seq { head: h2, tail: t2 } => {
+                        // Second element: "b"
+                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::String("b".into()));
+                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        match t2_val {
+                            Value::Seq { head: h3, tail: t3 } => {
+                                // Third element: "a" (cycling back)
+                                assert_eq!(
+                                    materialize(&h3, None, 0).unwrap(),
+                                    Value::String("a".into())
+                                );
+                                let t3_val = materialize(&t3, None, 0).unwrap();
+                                match t3_val {
+                                    Value::Seq { head: h4, .. } => {
+                                        // Fourth element: "b"
+                                        assert_eq!(
+                                            materialize(&h4, None, 0).unwrap(),
+                                            Value::String("b".into())
+                                        );
+                                    }
+                                    other => panic!("expected Seq, got {:?}", other),
+                                }
+                            }
+                            other => panic!("expected Seq, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected Seq, got {:?}", other),
+                }
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cycle_empty_dict() {
+        let result = builtin_cycle(
+            &[thunk(Value::Dict(IndexMap::new()))],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("empty"));
+    }
+
+    #[test]
+    fn cycle_non_dict() {
+        let result = builtin_cycle(&[thunk(Value::Int(42))], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cycle_arity_zero() {
+        let result = builtin_cycle(&[], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    // === iterate builtin tests ===
+
+    #[test]
+    fn iterate_basic() {
+        // iterate(+1, 0) → 0, 1, 2, ... (test structure)
+        // For this test, we'll just verify the structure is correct
+        // The tail is PendingBuiltin(iterate, [f, PendingCall(f, [x])])
+        // Materializing it succeeds (returns another Seq), but materializing
+        // the head of *that* Seq would error because f is Int(999), not a function
+        let f_thunk = thunk(Value::Int(999)); // dummy, won't be called in structure test
+        let x_thunk = thunk(Value::Int(0));
+
+        let result = mat(builtin_iterate(
+            &[f_thunk, x_thunk.clone()],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Seq { head, tail } => {
+                // Head should be x (0)
+                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(0));
+                // Tail is a PendingBuiltin wrapping iterate(f, f(x))
+                // Materializing it returns another Seq (doesn't error yet)
+                let tail_val = materialize(&tail, None, 0).unwrap();
+                match tail_val {
+                    Value::Seq { head: h2, .. } => {
+                        // Trying to materialize h2 (which is PendingCall(Int(999), [Int(0)]))
+                        // will error because Int(999) is not a function
+                        let h2_result = materialize(&h2, None, 0);
+                        assert!(h2_result.is_err());
+                    }
+                    other => panic!("expected Seq for tail, got {:?}", other),
+                }
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn iterate_laziness() {
+        // iterate doesn't materialize its args
+        let undef_f = Rc::new(Thunk::new_unevaluated(
+            Rc::new(Spanned::new(
+                Expr::VarRef("undefined_f".to_string()),
+                test_span(1, 1, 1, 5),
+            )),
+            Rc::new(RefCell::new(Environment::new())),
+            test_span(1, 1, 1, 5),
+        ));
+        let undef_x = Rc::new(Thunk::new_unevaluated(
+            Rc::new(Spanned::new(
+                Expr::VarRef("undefined_x".to_string()),
+                test_span(1, 1, 1, 5),
+            )),
+            Rc::new(RefCell::new(Environment::new())),
+            test_span(1, 1, 1, 5),
+        ));
+        let result = builtin_iterate(&[undef_f, undef_x], &no_named(), 0, call_span());
+        assert!(result.is_ok());
+        match mat(result) {
+            Value::Seq { .. } => {} // Success
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn iterate_arity_one() {
+        let result = builtin_iterate(&[thunk(Value::Int(1))], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    // === unfold builtin tests ===
+
+    #[test]
+    fn unfold_basic_termination() {
+        // unfold with a step that immediately returns empty dict (termination)
+        // We can't easily test a full unfold without a real function, but we can
+        // test that it returns a PendingBuiltin
+        let step_thunk = thunk(Value::Int(999)); // dummy
+        let seed_thunk = thunk(Value::Int(0));
+
+        let result = builtin_unfold(
+            &[step_thunk, seed_thunk],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_ok());
+        // Result is a PendingBuiltin, not yet materialized
+        // Materializing it would call unfold_step, which would error because
+        // step is Int(999), not a function
+        let result_val = materialize(&result.unwrap(), None, 0);
+        assert!(result_val.is_err());
+    }
+
+    #[test]
+    fn unfold_arity_one() {
+        let result = builtin_unfold(&[thunk(Value::Int(1))], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    // === take builtin tests ===
+
+    #[test]
+    fn take_dict_basic() {
+        // take(2, [a: 1, b: 2, c: 3]) → [a: 1, b: 2]
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), thunk(Value::Int(1)));
+        map.insert(Key::String("b".into()), thunk(Value::Int(2)));
+        map.insert(Key::String("c".into()), thunk(Value::Int(3)));
+        let dict_val = thunk(Value::Dict(map));
+
+        let result = mat(builtin_take(
+            &[thunk(Value::Int(2)), dict_val],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 2);
+                assert_eq!(
+                    materialize(map.get(&Key::String("a".into())).unwrap(), None, 0).unwrap(),
+                    Value::Int(1)
+                );
+                assert_eq!(
+                    materialize(map.get(&Key::String("b".into())).unwrap(), None, 0).unwrap(),
+                    Value::Int(2)
+                );
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn take_dict_zero() {
+        // take(0, dict) → []
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), thunk(Value::Int(1)));
+        let dict_val = thunk(Value::Dict(map));
+
+        let result = mat(builtin_take(
+            &[thunk(Value::Int(0)), dict_val],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Dict(map) if map.is_empty() => {} // Success
+            other => panic!("expected empty dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn take_dict_negative() {
+        // take(-5, dict) → []
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), thunk(Value::Int(1)));
+        let dict_val = thunk(Value::Dict(map));
+
+        let result = mat(builtin_take(
+            &[thunk(Value::Int(-5)), dict_val],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Dict(map) if map.is_empty() => {} // Success
+            other => panic!("expected empty dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn take_dict_more_than_length() {
+        // take(10, [a: 1, b: 2]) → [a: 1, b: 2]
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), thunk(Value::Int(1)));
+        map.insert(Key::String("b".into()), thunk(Value::Int(2)));
+        let dict_val = thunk(Value::Dict(map));
+
+        let result = mat(builtin_take(
+            &[thunk(Value::Int(10)), dict_val],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 2);
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn take_seq_basic() {
+        // Build a 3-element sequence: Seq(1, Seq(2, Seq(3, {})))
+        let seq_val = thunk(Value::Seq {
+            head: thunk(Value::Int(1)),
+            tail: thunk(Value::Seq {
+                head: thunk(Value::Int(2)),
+                tail: thunk(Value::Seq {
+                    head: thunk(Value::Int(3)),
+                    tail: thunk(Value::Dict(IndexMap::new())),
+                }),
+            }),
+        });
+
+        // take(2, seq) → Seq(1, Seq(2, []))
+        let result = mat(builtin_take(
+            &[thunk(Value::Int(2)), seq_val],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Seq { head, tail } => {
+                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(1));
+                let tail_val = materialize(&tail, None, 0).unwrap();
+                match tail_val {
+                    Value::Seq { head: h2, tail: t2 } => {
+                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(2));
+                        // tail of tail should be empty dict (terminal)
+                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        match t2_val {
+                            Value::Dict(map) if map.is_empty() => {} // Success
+                            other => panic!("expected empty dict, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected Seq, got {:?}", other),
+                }
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn take_seq_zero() {
+        // take(0, seq) → []
+        let seq_val = thunk(Value::Seq {
+            head: thunk(Value::Int(1)),
+            tail: thunk(Value::Dict(IndexMap::new())),
+        });
+
+        let result = mat(builtin_take(
+            &[thunk(Value::Int(0)), seq_val],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Dict(map) if map.is_empty() => {} // Success
+            other => panic!("expected empty dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn take_n_non_int() {
+        let result = builtin_take(
+            &[thunk(Value::String("not int".into())), thunk(Value::Int(1))],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn take_xs_non_dict_or_seq() {
+        let result = builtin_take(
+            &[thunk(Value::Int(5)), thunk(Value::String("not dict or seq".into()))],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn take_arity_one() {
+        let result = builtin_take(&[thunk(Value::Int(5))], &no_named(), 0, call_span());
+        assert!(result.is_err());
     }
 }

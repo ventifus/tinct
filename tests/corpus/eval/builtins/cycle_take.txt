@@ -1,0 +1,4 @@
+# cycle: infinite cycling through dict entries, take 5 elements
+[call $collect [call $take 5 [call $cycle [a b]]]]
+===
+Dict({0: String("a"), 1: String("b"), 2: String("a"), 3: String("b"), 4: String("a")})

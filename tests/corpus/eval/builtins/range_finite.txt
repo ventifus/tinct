@@ -1,0 +1,4 @@
+# range: finite sequence from 0 to 5 (exclusive)
+[call $collect [call $range 0 5]]
+===
+Dict({0: Int(0), 1: Int(1), 2: Int(2), 3: Int(3), 4: Int(4)})

@@ -1,0 +1,4 @@
+# range: error when called with non-Int argument
+[call $range hello]
+===
+start must be Int

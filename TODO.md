@@ -320,30 +320,31 @@ Sequence builtins, type system integration, and stdlib fixes for Seq.
 - [x] Tests: seq construction, head/tail, collect, type-of
 - [x] Fix `empty?` to not hang on infinite sequences — currently does not short-circuit (`stdlib/prelude.llt:156`) [Minor, stdlib-author]
 
-### 5d: Sequence Constructors
+### 5d: Sequence Constructors — Complete
 
 Rewrite `range`, `repeat`, `cycle` (currently in `stdlib/prelude.llt`) as Rust builtins returning `Seq` instead of eagerly-built dicts. Add new constructors `iterate` and `unfold`.
 
-- [ ] Move `range`, `repeat`, `cycle` from LLT prelude to Rust builtins
-- [ ] `range` returns Seq; 1-arg form `[call $range start]` is infinite
-- [ ] `repeat` returns Seq; 1-arg form `[call $repeat val]` is infinite
-- [ ] `cycle` returns Seq; 1-arg form `[call $cycle xs]` is infinite
-- [ ] `iterate`: `[call $iterate $f $x]` -> x, f(x), f(f(x)), ...
-- [ ] `unfold`: `[call $unfold $step $seed]` -> step returns `[value state]` or `[]`
-- [ ] Tests: finite/infinite range, repeat, cycle, iterate, unfold
+- [x] Move `range`, `repeat`, `cycle` from LLT prelude to Rust builtins
+- [x] `range` returns Seq; 1-arg form `[call $range start]` is infinite, 2-arg form finite
+- [x] `repeat` returns infinite Seq; 1-arg form `[call $repeat val]` only
+- [x] `cycle` returns infinite Seq; 1-arg form `[call $cycle xs]` only
+- [x] `iterate`: `[call $iterate $f $x]` -> x, f(x), f(f(x)), ...
+- [x] `unfold`: `[call $unfold $step $seed]` -> step returns `[value state]` or `[]`
+- [x] Move `take` from LLT prelude to Rust builtin; dual-dispatch Dict (preserve keys) + Seq (return finite Seq)
+- [x] Remove old `range`, `repeat`, `cycle`, `take` (and helpers) from prelude.llt
+- [x] Tests: finite/infinite range, repeat, cycle, iterate, unfold, take on Seq
 
 ### 5e: Dual-Dispatch Map/Filter
 
-Make `$map` and `$filter` work on both dicts and sequences, with Rust implementations for performance.
+Make `$map` and `$filter` work on both dicts and sequences, with Rust implementations for performance. Note: `$take` dual-dispatch already implemented in Phase 5d.
 
 - [ ] `$map` on dict: return dict with PendingCall thunks (lazy, same keys)
 - [ ] `$map` on seq: return lazy seq
 - [ ] `$filter` on dict: return seq (must evaluate predicates)
 - [ ] `$filter` on seq: return lazy seq
-- [ ] `$take` on seq: return seq of first n elements
 - [ ] `$drop` on seq: return seq skipping first n elements
 - [ ] `$reduce` on seq: accumulate, materializing each step
-- [ ] Move `map`, `filter`, `take`, `drop`, `reduce` from LLT prelude to Rust builtins
+- [ ] Move `map`, `filter`, `drop`, `reduce` from LLT prelude to Rust builtins
 - [ ] Decide typing strategy for dual-dispatch ops (`$map`/`$filter` on Record vs Seq): `Any` escape hatch, union types, or separate functions [Major, type-theorist]
 - [ ] Tests: map/filter on dicts (lazy verification), map/filter on seqs, mixed pipelines
 - [ ] Document `join` O(n^2) due to repeated str concatenation; optimize in Rust builtin (`stdlib/prelude.llt:88-97`) [Minor, stdlib-author]

@@ -1,0 +1,4 @@
+# take: take from finite Seq returns finite Seq (collected to dict)
+[call $collect [call $take 2 [call $range 0 5]]]
+===
+Dict({0: Int(0), 1: Int(1)})

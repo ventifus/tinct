@@ -1,0 +1,4 @@
+# range: infinite range is lazy - only evaluates head, not tail
+[call $head [call $range 0]]
+===
+Int(0)

@@ -1337,7 +1337,7 @@ first-ten: [call $collect [call $take 10 $squares]]
 
 **Principle:** Only implement in Rust what cannot be expressed in LLT itself. Everything else is LLT code loaded from a prelude file at startup.
 
-**Rust-native builtins (33 total):**
+**Rust-native builtins (39 total):**
 
 | Group | Functions | Rationale |
 |-------|-----------|-----------|
@@ -1350,7 +1350,7 @@ first-ten: [call $collect [call $take 10 $squares]]
 | Parsing | `to-int`, `to-float` | String-to-number parsing only (e.g., `"42"` to `42`). Numeric conversion (float-to-int) uses `floor`/`round`/`trunc`; int-to-float uses arithmetic promotion (`[call $+ $x 0.0]`). |
 | Evaluation control | `eval`, `error`, `try`, `apply` | `eval` deep-forces thunks (evaluator access); `error` constructs EvalError; `try` catches materialization errors; `apply` spreads a dict as positional args. |
 | Type introspection | `type-of` | Inspects the Value enum variant; no LLT expression can determine a value's type. |
-| Sequences | `seq`, `head`, `tail`, `collect`, `seq?` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. All require `Rc<Thunk>` manipulation unavailable in LLT. |
+| Sequences | `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) return infinite or finite Seq (O(1) construction). `take` is dual-dispatch: on Dict preserves keys, on Seq returns finite Seq. All require `Rc<Thunk>` manipulation unavailable in LLT. |
 | I/O | `from-json`, `include` | `from-json` parses a JSON string into an LLT dict; requires a JSON parser (serde_json). `include` evaluates an LLT file and returns its result; requires filesystem access, cycle detection, and path resolution. |
 
 **Derived functions (moved from Rust to LLT):**
@@ -1531,11 +1531,12 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `range` | `[fn [start ...end] ...]` | Seq of integers from start; finite if end given, infinite otherwise |
-| `repeat` | `[fn [val ...n] ...]` | Seq of copies of val; finite if n given, infinite otherwise |
-| `cycle` | `[fn [xs ...n] ...]` | Seq repeating xs; finite if n given, infinite otherwise |
+| `range` | `[fn [start] ...]` or `[fn [start end] ...]` | Seq of integers from start (inclusive); infinite if 1-arg, finite (end exclusive) if 2-arg |
+| `repeat` | `[fn [val] ...]` | Infinite Seq of copies of val; for finite, use `[call $take n [call $repeat val]]` |
+| `cycle` | `[fn [xs] ...]` | Infinite Seq cycling through dict entries; for finite, use `[call $take n [call $cycle xs]]` |
 | `iterate` | `[fn [f x] ...]` | Infinite seq: x, f(x), f(f(x)), ... |
 | `unfold` | `[fn [step seed] ...]` | Seq from step function; step returns `[value state]` or `[]` to stop |
+| `take` | `[fn [n xs] ...]` | Dual-dispatch: on Dict, take first n entries preserving keys; on Seq, return finite Seq of first n elements |
 | `seq` | `[fn [head tail] ...]` | Low-level seq constructor (cons cell) |
 | `collect` | `[fn [s] ...]` | Materialize seq into dict with integer keys 0..n |
 | `head` | `[fn [s] ...]` | First element of seq |
@@ -1581,9 +1582,9 @@ first-ten: [call $collect [call $take 10 $evens]]
 
 | Function | Finite | Infinite | Description |
 |----------|--------|----------|-------------|
-| `range` | `[call $range 0 10]` | `[call $range 0]` | Integers from start; optional end (exclusive) |
-| `repeat` | `[call $repeat 5 x]` | `[call $repeat x]` | n copies of a value; or infinite |
-| `cycle` | `[call $cycle 3 xs]` | `[call $cycle xs]` | Repeat a list n times; or infinite |
+| `range` | `[call $range 0 10]` | `[call $range 0]` | Integers from start (inclusive); 2-arg has end (exclusive), 1-arg is infinite |
+| `repeat` | `[call $take 5 [call $repeat x]]` | `[call $repeat x]` | Infinite Seq of val; use `take` for finite |
+| `cycle` | `[call $take 3 [call $cycle xs]]` | `[call $cycle xs]` | Infinite Seq cycling through dict entries; use `take` for finite |
 | `seq` | -- | -- | Low-level: `[call $seq $head $tail-thunk]` |
 | `iterate` | -- | `[call $iterate $f $x]` | `x, f(x), f(f(x)), ...` |
 | `unfold` | varies | varies | `[call $unfold $step $seed]`; step returns `[value state]` or `[]` |
@@ -1762,15 +1763,15 @@ This table documents every operation's current materialization behavior and the 
 | `$reverse` | Eagerly builds reversed dict | No change (must know all entries to reverse) | — | Inherently materializing |
 | `$reindex` | Eagerly rebuilds with dense 0..n keys | No change (must traverse all entries) | — | Inherently materializing |
 | `$sort`, `$sort-by` | Eagerly materializes all values to compare | No change (inherently materializing) | — | Must compare all values to sort |
-| `$take` | Positional slice: preserves thunks | Return lazy Seq for sequences | 5e | Seq `take` is O(1), dict `take` is structural |
+| `$take` | Positional slice: preserves thunks | Dual-dispatch: Dict preserves keys, Seq returns finite Seq | ✓ 5d | Seq `take` is O(1), dict `take` is structural |
 | `$drop` | Positional slice: preserves thunks | Return lazy Seq for sequences | 5e | Seq `drop` is O(1), dict `drop` is structural |
 | `$slice` | Positional slice: preserves thunks | No change (already optimal for dicts) | — | Already lazy on values |
 | **Sequences** | | | | |
-| `$range` | Eager: builds full dict O(n²) | Return lazy Seq, O(1) construction; infinite if 1-arg | 5d | Enables infinite ranges |
-| `$repeat` | Eager: builds full dict | Return lazy Seq, O(1) construction; infinite if 1-arg | 5d | Enables infinite repetition |
-| `$cycle` | Eager: builds full dict | Return lazy Seq, O(1) construction; infinite if 1-arg | 5d | Enables infinite cycling |
-| `$iterate` | Not yet implemented | Return lazy infinite Seq: `x, f(x), f(f(x)), ...` | 5d | New lazy sequence constructor |
-| `$unfold` | Not yet implemented | Return lazy Seq from step function | 5d | New lazy sequence constructor |
+| `$range` | Eager: builds full dict O(n²) | Return lazy Seq, O(1) construction; 1-arg infinite, 2-arg finite | ✓ 5d | Enables infinite ranges |
+| `$repeat` | Eager: builds full dict | Return lazy infinite Seq, O(1) construction; 1-arg only | ✓ 5d | Enables infinite repetition |
+| `$cycle` | Eager: builds full dict | Return lazy infinite Seq, O(1) construction; 1-arg only | ✓ 5d | Enables infinite cycling |
+| `$iterate` | Not yet implemented | Return lazy infinite Seq: `x, f(x), f(f(x)), ...` | ✓ 5d | New lazy sequence constructor |
+| `$unfold` | Not yet implemented | Return lazy Seq from step function | ✓ 5d | New lazy sequence constructor |
 | `$seq` | Implemented (5c½) | Low-level Seq constructor (cons cell) | 5c½ | Rust builtin for Seq construction |
 | `$collect` | Implemented (5c½) | Materialize Seq into dict with integer keys 0..n | 5c½ | Seq → Dict boundary |
 | `$head` | Implemented (5c½) | Extract head of Seq (returns thunk, lazy) | 5c½ | Structural Seq operation |

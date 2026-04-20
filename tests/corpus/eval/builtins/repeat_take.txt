@@ -1,0 +1,4 @@
+# repeat: infinite sequence of same value, take 3 elements
+[call $collect [call $take 3 [call $repeat hello]]]
+===
+Dict({0: String("hello"), 1: String("hello"), 2: String("hello")})

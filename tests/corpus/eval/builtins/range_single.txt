@@ -1,0 +1,4 @@
+# range: single element sequence
+[call $collect [call $range 3 4]]
+===
+Dict({0: Int(3)})
