@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lazy_lisp_transformer::{
     clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
     json_to_value, materialize, parse, set_include_context, value_to_display_string, value_to_json,
-    IncludeContext, Span, Thunk, Value, MAX_FILE_SIZE,
+    IncludeContext, Span, Thunk, MAX_FILE_SIZE,
 };
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -122,13 +122,7 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
     // Wrap evaluation logic in a closure so that clear_include_context() runs
     // on all exit paths (success and error), preventing stale thread-local state.
     let result = (|| {
-        // Convert stdin JSON to initial $$ thunk
-        let initial_input = stdin_input.map(|val| {
-            Rc::new(Thunk::new_materialized(
-                val,
-                lazy_lisp_transformer::Span::origin(),
-            ))
-        });
+        let initial_input = stdin_input;
 
         // Evaluate
         let thunk =
@@ -203,7 +197,7 @@ fn read_source(file_path: &str) -> Result<String, String> {
 
 /// If stdin is not a terminal (i.e., data is piped), read it as JSON and convert
 /// to an LLT Value for injection as `$$` in the first document.
-fn read_stdin_json() -> Result<Option<Value>, String> {
+fn read_stdin_json() -> Result<Option<Rc<Thunk>>, String> {
     if io::stdin().is_terminal() {
         return Ok(None);
     }

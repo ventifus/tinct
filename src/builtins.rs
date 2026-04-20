@@ -1,7 +1,7 @@
 //! Rust-native builtin functions for the LLT language.
 //!
 //! All builtins follow the `BuiltinFn` signature:
-//! `fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> EvalResult<Value>`
+//! `fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> EvalResult<Rc<Thunk>>`
 //!
 //! ## Builtin groups
 //!
@@ -30,6 +30,10 @@ use crate::error::{EvalError, EvalResult};
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
 use crate::eval::{invoke_function, materialize, CallContext, MAX_EVAL_DEPTH};
 use crate::value::{BuiltinFn, Environment, Key, Thunk, Value};
+
+fn ok_val(v: Value) -> EvalResult<Rc<Thunk>> {
+    Ok(Rc::new(Thunk::new_materialized(v, Span::origin())))
+}
 
 /// Maximum file size for reading LLT files: 10 MB.
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
@@ -198,14 +202,14 @@ fn builtin_add(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("+", named, call_span)?;
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_add(b)
-            .map(Value::Int)
-            .ok_or_else(|| EvalError::new("+: integer overflow", call_span).into()),
-        NumPair::Floats(a, b) => Ok(Value::Float(a + b)),
+            .map(|n| ok_val(Value::Int(n)))
+            .unwrap_or_else(|| Err(EvalError::new("+: integer overflow", call_span).into())),
+        NumPair::Floats(a, b) => ok_val(Value::Float(a + b)),
     }
 }
 
@@ -215,14 +219,14 @@ fn builtin_sub(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("-", named, call_span)?;
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
-            .map(Value::Int)
-            .ok_or_else(|| EvalError::new("-: integer overflow", call_span).into()),
-        NumPair::Floats(a, b) => Ok(Value::Float(a - b)),
+            .map(|n| ok_val(Value::Int(n)))
+            .unwrap_or_else(|| Err(EvalError::new("-: integer overflow", call_span).into())),
+        NumPair::Floats(a, b) => ok_val(Value::Float(a - b)),
     }
 }
 
@@ -232,14 +236,14 @@ fn builtin_mul(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("*", named, call_span)?;
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
-            .map(Value::Int)
-            .ok_or_else(|| EvalError::new("*: integer overflow", call_span).into()),
-        NumPair::Floats(a, b) => Ok(Value::Float(a * b)),
+            .map(|n| ok_val(Value::Int(n)))
+            .unwrap_or_else(|| Err(EvalError::new("*: integer overflow", call_span).into())),
+        NumPair::Floats(a, b) => ok_val(Value::Float(a * b)),
     }
 }
 
@@ -249,21 +253,21 @@ fn builtin_div_float(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("/", named, call_span)?;
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => {
             if b == 0 {
                 Err(EvalError::new("/: division by zero", call_span).into())
             } else {
-                Ok(Value::Float(a as f64 / b as f64))
+                ok_val(Value::Float(a as f64 / b as f64))
             }
         }
         NumPair::Floats(a, b) => {
             if b == 0.0 {
                 Err(EvalError::new("/: division by zero", call_span).into())
             } else {
-                Ok(Value::Float(a / b))
+                ok_val(Value::Float(a / b))
             }
         }
     }
@@ -278,7 +282,7 @@ fn builtin_eq(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("=", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -297,7 +301,7 @@ fn builtin_eq(
         // Dict, Function, Builtin are never equal
         _ => false,
     };
-    Ok(Value::Bool(result))
+    ok_val(Value::Bool(result))
 }
 
 /// `<`: Less-than comparison.
@@ -309,7 +313,7 @@ fn builtin_lt(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("<", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -334,7 +338,7 @@ fn builtin_lt(
             .into());
         }
     };
-    Ok(Value::Bool(result))
+    ok_val(Value::Bool(result))
 }
 
 /// `if`: Conditional with selective materialization.
@@ -348,7 +352,7 @@ fn builtin_if(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("if", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
@@ -358,8 +362,8 @@ fn builtin_if(
     let condition = materialize(&args[0], None, depth)?;
 
     match condition {
-        Value::Bool(true) => materialize(&args[1], None, depth),
-        Value::Bool(false) => materialize(&args[2], None, depth),
+        Value::Bool(true) => Ok(Rc::clone(&args[1])),
+        Value::Bool(false) => Ok(Rc::clone(&args[2])),
         _ => Err(EvalError::type_mismatch("Bool", condition.type_name(), call_span).into()),
     }
 }
@@ -372,7 +376,7 @@ fn builtin_keys(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("keys", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -392,7 +396,7 @@ fn builtin_keys(
             Rc::new(Thunk::new_materialized(key_value, origin)),
         );
     }
-    Ok(Value::Dict(result))
+    ok_val(Value::Dict(result))
 }
 
 /// `length`: Takes 1 arg (a Dict). Returns an Int with the number of entries.
@@ -401,14 +405,14 @@ fn builtin_length(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("length", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     let val = materialize(&args[0], None, depth)?;
     let map = require_dict("length", val, call_span)?;
-    Ok(Value::Int(map.len() as i64))
+    ok_val(Value::Int(map.len() as i64))
 }
 
 /// `merge`: Takes 2 args (both Dicts). Returns a right-biased merge: all
@@ -420,7 +424,7 @@ fn builtin_merge(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("merge", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -441,7 +445,7 @@ fn builtin_merge(
     for (key, thunk) in &right {
         result.insert(key.clone(), Rc::clone(thunk));
     }
-    Ok(Value::Dict(result))
+    ok_val(Value::Dict(result))
 }
 
 /// `append`: Takes 2 args: a Dict and any value. Returns a new dict with the
@@ -456,7 +460,7 @@ fn builtin_append(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("append", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -480,7 +484,7 @@ fn builtin_append(
         .unwrap_or(0);
 
     map.insert(Key::Int(next_key), Rc::clone(&args[1]));
-    Ok(Value::Dict(map))
+    ok_val(Value::Dict(map))
 }
 
 /// `str`: Variadic string concatenation and toString.
@@ -492,14 +496,14 @@ fn builtin_str(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("str", named, call_span)?;
     let mut result = String::new();
     for arg in args {
         let val = materialize(arg, None, depth)?;
         result.push_str(&stringify(&val));
     }
-    Ok(Value::String(result))
+    ok_val(Value::String(result))
 }
 
 /// `split`: Split a string by a separator.
@@ -511,7 +515,7 @@ fn builtin_split(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("split", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -533,7 +537,7 @@ fn builtin_split(
             )),
         );
     }
-    Ok(Value::Dict(map))
+    ok_val(Value::Dict(map))
 }
 
 /// `replace`: Replace all occurrences of a pattern in a string.
@@ -545,7 +549,7 @@ fn builtin_replace(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("replace", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
@@ -558,7 +562,7 @@ fn builtin_replace(
     let replacement = require_string("replace", replacement_val, call_span)?;
     let input = require_string("replace", input_val, call_span)?;
 
-    Ok(Value::String(input.replace(pattern.as_str(), &replacement)))
+    ok_val(Value::String(input.replace(pattern.as_str(), &replacement)))
 }
 
 /// `upper`: Convert a string to uppercase. Takes 1 arg (String).
@@ -567,10 +571,10 @@ fn builtin_upper(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("upper", args, named, depth, call_span)?;
     let s = require_string("upper", val, call_span)?;
-    Ok(Value::String(s.to_uppercase()))
+    ok_val(Value::String(s.to_uppercase()))
 }
 
 /// `lower`: Convert a string to lowercase. Takes 1 arg (String).
@@ -579,10 +583,10 @@ fn builtin_lower(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("lower", args, named, depth, call_span)?;
     let s = require_string("lower", val, call_span)?;
-    Ok(Value::String(s.to_lowercase()))
+    ok_val(Value::String(s.to_lowercase()))
 }
 
 /// `trim`: Remove leading and trailing whitespace from a string.
@@ -593,10 +597,10 @@ fn builtin_trim(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("trim", args, named, depth, call_span)?;
     let s = require_string("trim", val, call_span)?;
-    Ok(Value::String(s.trim().to_string()))
+    ok_val(Value::String(s.trim().to_string()))
 }
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
@@ -612,10 +616,10 @@ fn float_to_int_builtin(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg(name, args, named, depth, call_span)?;
     match val {
-        Value::Int(n) => Ok(Value::Int(n)),
+        Value::Int(n) => ok_val(Value::Int(n)),
         Value::Float(f) => {
             if f.is_nan() {
                 return Err(EvalError::new(
@@ -631,7 +635,7 @@ fn float_to_int_builtin(
                 )
                 .into());
             }
-            Ok(Value::Int(checked_f64_to_i64(name, op(f), call_span)?))
+            ok_val(Value::Int(checked_f64_to_i64(name, op(f), call_span)?))
         }
         other => Err(EvalError::type_mismatch("Int or Float", other.type_name(), call_span).into()),
     }
@@ -648,7 +652,7 @@ fn builtin_floor(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     float_to_int_builtin("floor", f64::floor, args, named, depth, call_span)
 }
 
@@ -663,7 +667,7 @@ fn builtin_round(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     float_to_int_builtin("round", f64::round, args, named, depth, call_span)
 }
 
@@ -676,11 +680,11 @@ fn builtin_to_int(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("to-int", args, named, depth, call_span)?;
     let s = require_string("to-int", val, call_span)?;
     match s.parse::<i64>() {
-        Ok(n) => Ok(Value::Int(n)),
+        Ok(n) => ok_val(Value::Int(n)),
         Err(_) => {
             Err(EvalError::new(format!("to-int: cannot parse {:?} as Int", s), call_span).into())
         }
@@ -696,11 +700,11 @@ fn builtin_to_float(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("to-float", args, named, depth, call_span)?;
     let s = require_string("to-float", val, call_span)?;
     match s.parse::<f64>() {
-        Ok(f) if f.is_finite() => Ok(Value::Float(f)),
+        Ok(f) if f.is_finite() => ok_val(Value::Float(f)),
         Ok(_) => Err(EvalError::new(
             format!(
                 "to-float: cannot parse {:?} as Float (non-finite values not allowed)",
@@ -726,9 +730,10 @@ fn builtin_eval(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("eval", args, named, depth, call_span)?;
-    crate::eval::deep_materialize(&val, depth)
+    let deep = crate::eval::deep_materialize(&val, depth)?;
+    ok_val(deep)
 }
 
 /// `error`: takes 1 arg (String message), always raises.
@@ -737,7 +742,7 @@ fn builtin_error(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("error", args, named, depth, call_span)?;
     let msg = require_string("error", val, call_span)?;
     Err(EvalError::new(msg, call_span).into())
@@ -750,7 +755,7 @@ fn builtin_try(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("try", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -782,7 +787,12 @@ fn builtin_try(
             ));
             materialize(&body_thunk, None, depth)
         }
-        Value::Builtin { func, .. } => func(&[], &IndexMap::new(), depth, call_span),
+        Value::Builtin { func, .. } => {
+            match func(&[], &IndexMap::new(), depth, call_span) {
+                Ok(result_thunk) => materialize(&result_thunk, None, depth),
+                Err(e) => Err(e),
+            }
+        }
         _ => {
             return Err(
                 EvalError::type_mismatch("Function", func_val.type_name(), call_span).into(),
@@ -797,7 +807,7 @@ fn builtin_try(
                 Key::String("ok".to_string()),
                 Rc::new(Thunk::new_materialized(value, call_span)),
             );
-            Ok(Value::Dict(result))
+            ok_val(Value::Dict(result))
         }
         Err(e) => {
             let mut result = IndexMap::new();
@@ -808,7 +818,7 @@ fn builtin_try(
                     call_span,
                 )),
             );
-            Ok(Value::Dict(result))
+            ok_val(Value::Dict(result))
         }
     }
 }
@@ -823,7 +833,7 @@ fn builtin_apply(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     reject_named("apply", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -848,7 +858,7 @@ fn builtin_apply(
         } => {
             // Delegate to the shared invoke path. Defaults are evaluated in
             // the closure env since apply has no caller-side AST context.
-            let result_thunk = invoke_function(&CallContext {
+            invoke_function(&CallContext {
                 params: &params,
                 body: &body,
                 closure_env: &closure_env,
@@ -858,8 +868,7 @@ fn builtin_apply(
                 call_span,
                 depth,
                 origin: "call $apply".to_string(),
-            })?;
-            materialize(&result_thunk, None, depth)
+            })
         }
         Value::Builtin { func, .. } => func(&positional, &IndexMap::new(), depth, call_span),
         _ => Err(EvalError::type_mismatch("Function", func_val.type_name(), call_span).into()),
@@ -873,13 +882,13 @@ fn builtin_type_of(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("type-of", args, named, depth, call_span)?;
     let name = match val.type_name() {
         "Builtin" => "Function",
         other => other,
     };
-    Ok(Value::String(name.to_string()))
+    ok_val(Value::String(name.to_string()))
 }
 
 /// Convert a `serde_json::Value` into an LLT `Value`.
@@ -891,7 +900,7 @@ pub fn json_to_value(
     json: &serde_json::Value,
     depth: usize,
     span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::new(
             format!("maximum JSON nesting depth exceeded ({MAX_EVAL_DEPTH})"),
@@ -900,41 +909,38 @@ pub fn json_to_value(
         .into());
     }
     match json {
-        serde_json::Value::Null => Ok(Value::Dict(IndexMap::new())),
-        serde_json::Value::Bool(b) => Ok(Value::Bool(*b)),
+        serde_json::Value::Null => ok_val(Value::Dict(IndexMap::new())),
+        serde_json::Value::Bool(b) => ok_val(Value::Bool(*b)),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(Value::Int(i))
+                ok_val(Value::Int(i))
             } else if let Some(f) = n.as_f64() {
-                Ok(Value::Float(f))
+                ok_val(Value::Float(f))
             } else {
                 // Unreachable with default serde_json: as_f64() covers all
                 // non-i64 numbers. Return error instead of panicking.
                 Err(EvalError::new("JSON number outside representable range", span).into())
             }
         }
-        serde_json::Value::String(s) => Ok(Value::String(s.clone())),
+        serde_json::Value::String(s) => ok_val(Value::String(s.clone())),
         serde_json::Value::Array(arr) => {
             let mut map = IndexMap::new();
             for (i, item) in arr.iter().enumerate() {
-                let val = json_to_value(item, depth + 1, span)?;
+                let thunk = json_to_value(item, depth + 1, span)?;
                 map.insert(
                     Key::Int(i64::try_from(i).expect("collection too large")),
-                    Rc::new(Thunk::new_materialized(val, Span::origin())),
+                    thunk,
                 );
             }
-            Ok(Value::Dict(map))
+            ok_val(Value::Dict(map))
         }
         serde_json::Value::Object(obj) => {
             let mut map = IndexMap::new();
             for (k, v) in obj {
-                let val = json_to_value(v, depth + 1, span)?;
-                map.insert(
-                    Key::String(k.clone()),
-                    Rc::new(Thunk::new_materialized(val, Span::origin())),
-                );
+                let thunk = json_to_value(v, depth + 1, span)?;
+                map.insert(Key::String(k.clone()), thunk);
             }
-            Ok(Value::Dict(map))
+            ok_val(Value::Dict(map))
         }
     }
 }
@@ -945,7 +951,7 @@ fn builtin_from_json(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("from-json", args, named, depth, call_span)?;
     let json_str = require_string("from-json", val, call_span)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
@@ -964,7 +970,7 @@ fn builtin_include(
     named: &IndexMap<String, Rc<Thunk>>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<Value> {
+) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("include", args, named, depth, call_span)?;
     let file_path_str = require_string("include", val, call_span)?;
 
@@ -1068,10 +1074,12 @@ fn builtin_include(
 
         match eval_result {
             Ok(thunk) => {
-                // Materialize the top-level result (inner values stay lazy).
-                let result = materialize(&thunk, None, depth);
+                // Eagerly materialize: the include guard is only valid while
+                // the current file's canonical path is in the set. Returning
+                // a lazy thunk would defer evaluation past the guard removal.
+                let val = crate::eval::materialize(&thunk, None, depth + 1)?;
                 restore(cell);
-                result
+                ok_val(val)
             }
             Err(e) => {
                 restore(cell);
@@ -1202,6 +1210,10 @@ mod tests {
         test_span(1, 1, 1, 5)
     }
 
+    fn mat(result: EvalResult<Rc<Thunk>>) -> Value {
+        crate::eval::materialize(&result.unwrap(), None, 0).unwrap()
+    }
+
     /// Helper: make a zero-arg function whose body is a single expression.
     fn zero_arg_fn(body_expr: Expr) -> Value {
         Value::Function {
@@ -1238,26 +1250,26 @@ mod tests {
 
     #[test]
     fn floor_int_passthrough() {
-        let result = builtin_floor(&[thunk(Value::Int(42))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_floor(&[thunk(Value::Int(42))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn floor_negative_int_passthrough() {
-        let result = builtin_floor(&[thunk(Value::Int(-7))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_floor(&[thunk(Value::Int(-7))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(-7));
     }
 
     #[test]
     fn floor_zero_int() {
-        let result = builtin_floor(&[thunk(Value::Int(0))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_floor(&[thunk(Value::Int(0))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(0));
     }
 
     #[test]
     fn floor_positive_float() {
         let result =
-            builtin_floor(&[thunk(Value::Float(3.7))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_floor(&[thunk(Value::Float(3.7))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(3));
     }
 
@@ -1265,26 +1277,26 @@ mod tests {
     fn floor_negative_float() {
         // floor(-3.2) = -4, not -3
         let result =
-            builtin_floor(&[thunk(Value::Float(-3.2))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_floor(&[thunk(Value::Float(-3.2))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(-4));
     }
 
     #[test]
     fn floor_float_exact_integer() {
         let result =
-            builtin_floor(&[thunk(Value::Float(5.0))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_floor(&[thunk(Value::Float(5.0))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(5));
     }
 
     #[test]
     fn floor_float_just_below_integer() {
-        let result = builtin_floor(
+        let result = mat(builtin_floor(
             &[thunk(Value::Float(2.9999999))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Int(2));
     }
 
@@ -1429,13 +1441,13 @@ mod tests {
 
     #[test]
     fn round_int_passthrough() {
-        let result = builtin_round(&[thunk(Value::Int(42))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_round(&[thunk(Value::Int(42))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn round_negative_int_passthrough() {
-        let result = builtin_round(&[thunk(Value::Int(-7))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_round(&[thunk(Value::Int(-7))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(-7));
     }
 
@@ -1443,7 +1455,7 @@ mod tests {
     fn round_positive_half_rounds_up() {
         // 0.5 rounds to 1 (half-away-from-zero)
         let result =
-            builtin_round(&[thunk(Value::Float(0.5))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(0.5))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(1));
     }
 
@@ -1451,21 +1463,21 @@ mod tests {
     fn round_negative_half_rounds_down() {
         // -0.5 rounds to -1 (half-away-from-zero)
         let result =
-            builtin_round(&[thunk(Value::Float(-0.5))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(-0.5))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(-1));
     }
 
     #[test]
     fn round_positive_below_half() {
         let result =
-            builtin_round(&[thunk(Value::Float(2.4))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(2.4))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(2));
     }
 
     #[test]
     fn round_positive_above_half() {
         let result =
-            builtin_round(&[thunk(Value::Float(2.6))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(2.6))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(3));
     }
 
@@ -1473,7 +1485,7 @@ mod tests {
     fn round_negative_below_half() {
         // -2.4 rounds to -2
         let result =
-            builtin_round(&[thunk(Value::Float(-2.4))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(-2.4))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(-2));
     }
 
@@ -1481,28 +1493,28 @@ mod tests {
     fn round_negative_above_half() {
         // -2.6 rounds to -3
         let result =
-            builtin_round(&[thunk(Value::Float(-2.6))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(-2.6))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(-3));
     }
 
     #[test]
     fn round_1_5_rounds_to_2() {
         let result =
-            builtin_round(&[thunk(Value::Float(1.5))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(1.5))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(2));
     }
 
     #[test]
     fn round_negative_1_5_rounds_to_negative_2() {
         let result =
-            builtin_round(&[thunk(Value::Float(-1.5))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(-1.5))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(-2));
     }
 
     #[test]
     fn round_float_exact_integer() {
         let result =
-            builtin_round(&[thunk(Value::Float(5.0))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_round(&[thunk(Value::Float(5.0))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(5));
     }
 
@@ -1619,49 +1631,49 @@ mod tests {
 
     #[test]
     fn to_int_valid_positive() {
-        let result = builtin_to_int(
+        let result = mat(builtin_to_int(
             &[thunk(Value::String("42".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn to_int_valid_negative() {
-        let result = builtin_to_int(
+        let result = mat(builtin_to_int(
             &[thunk(Value::String("-7".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Int(-7));
     }
 
     #[test]
     fn to_int_valid_zero() {
-        let result = builtin_to_int(
+        let result = mat(builtin_to_int(
             &[thunk(Value::String("0".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Int(0));
     }
 
     #[test]
     fn to_int_valid_large() {
-        let result = builtin_to_int(
+        let result = mat(builtin_to_int(
             &[thunk(Value::String("9223372036854775807".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Int(i64::MAX));
     }
 
@@ -1798,87 +1810,87 @@ mod tests {
 
     #[test]
     fn to_float_valid_decimal() {
-        let result = builtin_to_float(
+        let result = mat(builtin_to_float(
             &[thunk(Value::String("3.14".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Float(3.14));
     }
 
     #[test]
     fn to_float_valid_integer_string() {
         // "42" parses as 42.0
-        let result = builtin_to_float(
+        let result = mat(builtin_to_float(
             &[thunk(Value::String("42".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Float(42.0));
     }
 
     #[test]
     fn to_float_valid_negative() {
-        let result = builtin_to_float(
+        let result = mat(builtin_to_float(
             &[thunk(Value::String("-2.5".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Float(-2.5));
     }
 
     #[test]
     fn to_float_valid_scientific_notation() {
-        let result = builtin_to_float(
+        let result = mat(builtin_to_float(
             &[thunk(Value::String("1.5e10".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Float(1.5e10));
     }
 
     #[test]
     fn to_float_valid_negative_exponent() {
-        let result = builtin_to_float(
+        let result = mat(builtin_to_float(
             &[thunk(Value::String("2.5e-3".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Float(2.5e-3));
     }
 
     #[test]
     fn to_float_valid_zero() {
-        let result = builtin_to_float(
+        let result = mat(builtin_to_float(
             &[thunk(Value::String("0.0".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Float(0.0));
     }
 
     #[test]
     fn to_float_valid_leading_dot() {
         // ".5" parses to 0.5
-        let result = builtin_to_float(
+        let result = mat(builtin_to_float(
             &[thunk(Value::String(".5".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Float(0.5));
     }
 
@@ -2049,40 +2061,40 @@ mod tests {
 
     #[test]
     fn eval_primitive_int() {
-        let result = builtin_eval(&[thunk(Value::Int(42))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_eval(&[thunk(Value::Int(42))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn eval_primitive_string() {
-        let result = builtin_eval(
+        let result = mat(builtin_eval(
             &[thunk(Value::String("hello".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn eval_primitive_float() {
         let result =
-            builtin_eval(&[thunk(Value::Float(3.14))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_eval(&[thunk(Value::Float(3.14))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Float(3.14));
     }
 
     #[test]
     fn eval_primitive_bool() {
         let result =
-            builtin_eval(&[thunk(Value::Bool(true))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_eval(&[thunk(Value::Bool(true))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Bool(true));
     }
 
     #[test]
     fn eval_empty_dict() {
         let dict = Value::Dict(IndexMap::new());
-        let result = builtin_eval(&[thunk(dict)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_eval(&[thunk(dict)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             _ => panic!("expected Dict"),
@@ -2095,7 +2107,7 @@ mod tests {
         map.insert(Key::String("a".into()), thunk(Value::Int(1)));
         map.insert(Key::String("b".into()), thunk(Value::Int(2)));
         let dict = Value::Dict(map);
-        let result = builtin_eval(&[thunk(dict)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_eval(&[thunk(dict)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -2119,7 +2131,7 @@ mod tests {
         outer.insert(Key::String("x".into()), thunk(inner_dict));
         let outer_dict = Value::Dict(outer);
 
-        let result = builtin_eval(&[thunk(outer_dict)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_eval(&[thunk(outer_dict)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(outer_map) => {
                 let x_val = materialize(&outer_map[&Key::String("x".into())], None, 0).unwrap();
@@ -2147,7 +2159,7 @@ mod tests {
         map.insert(Key::String("val".into()), unevaluated);
         let dict = Value::Dict(map);
 
-        let result = builtin_eval(&[thunk(dict)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_eval(&[thunk(dict)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 let v = materialize(&map[&Key::String("val".into())], None, 0).unwrap();
@@ -2216,7 +2228,7 @@ mod tests {
     fn try_success_returns_ok_dict() {
         // [fn [] 42]
         let func = zero_arg_fn(Expr::Int(42));
-        let result = builtin_try(&[thunk(func)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_try(&[thunk(func)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 assert!(map.contains_key(&Key::String("ok".into())));
@@ -2230,7 +2242,7 @@ mod tests {
     #[test]
     fn try_success_with_string_body() {
         let func = zero_arg_fn(Expr::Str("hello".into()));
-        let result = builtin_try(&[thunk(func)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_try(&[thunk(func)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 let ok_val = materialize(&map[&Key::String("ok".into())], None, 0).unwrap();
@@ -2244,7 +2256,7 @@ mod tests {
     fn try_failure_returns_err_dict() {
         // [fn [] $nonexistent] -- references an undefined variable
         let func = zero_arg_fn(Expr::VarRef("nonexistent".into()));
-        let result = builtin_try(&[thunk(func)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_try(&[thunk(func)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 assert!(map.contains_key(&Key::String("err".into())));
@@ -2301,14 +2313,14 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             _: Span,
-        ) -> EvalResult<Value> {
-            Ok(Value::Int(99))
+        ) -> EvalResult<Rc<Thunk>> {
+            ok_val(Value::Int(99))
         }
         let b = Value::Builtin {
             name: "ok",
             func: ok_builtin,
         };
-        let result = builtin_try(&[thunk(b)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_try(&[thunk(b)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 let ok_val = materialize(&map[&Key::String("ok".into())], None, 0).unwrap();
@@ -2325,14 +2337,14 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             call_span: Span,
-        ) -> EvalResult<Value> {
+        ) -> EvalResult<Rc<Thunk>> {
             Err(EvalError::new("builtin error", call_span).into())
         }
         let b = Value::Builtin {
             name: "fail",
             func: err_builtin,
         };
-        let result = builtin_try(&[thunk(b)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_try(&[thunk(b)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 let err_val = materialize(&map[&Key::String("err".into())], None, 0).unwrap();
@@ -2351,7 +2363,7 @@ mod tests {
         let args_val = Value::Dict(arg_dict);
 
         let result =
-            builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(42));
     }
 
@@ -2365,7 +2377,7 @@ mod tests {
         let args_val = Value::Dict(arg_dict);
 
         let result =
-            builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(10));
     }
 
@@ -2379,7 +2391,7 @@ mod tests {
         let args_val = Value::Dict(arg_dict);
 
         let result =
-            builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(20));
     }
 
@@ -2390,11 +2402,11 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             call_span: Span,
-        ) -> EvalResult<Value> {
+        ) -> EvalResult<Rc<Thunk>> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
+                (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y)),
                 _ => Err(EvalError::new("expected ints", call_span).into()),
             }
         }
@@ -2408,7 +2420,7 @@ mod tests {
         let args_val = Value::Dict(arg_dict);
 
         let result =
-            builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_apply(&[thunk(func), thunk(args_val)], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(7));
     }
 
@@ -2478,52 +2490,52 @@ mod tests {
     #[test]
     fn type_of_int() {
         let result =
-            builtin_type_of(&[thunk(Value::Int(42))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_type_of(&[thunk(Value::Int(42))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("Int".into()));
     }
 
     #[test]
     fn type_of_float() {
         let result =
-            builtin_type_of(&[thunk(Value::Float(3.14))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_type_of(&[thunk(Value::Float(3.14))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("Float".into()));
     }
 
     #[test]
     fn type_of_string() {
-        let result = builtin_type_of(
+        let result = mat(builtin_type_of(
             &[thunk(Value::String("hi".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("String".into()));
     }
 
     #[test]
     fn type_of_bool() {
         let result =
-            builtin_type_of(&[thunk(Value::Bool(false))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_type_of(&[thunk(Value::Bool(false))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("Bool".into()));
     }
 
     #[test]
     fn type_of_dict() {
-        let result = builtin_type_of(
+        let result = mat(builtin_type_of(
             &[thunk(Value::Dict(IndexMap::new()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("Dict".into()));
     }
 
     #[test]
     fn type_of_function() {
         let func = zero_arg_fn(Expr::Int(0));
-        let result = builtin_type_of(&[thunk(func)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_type_of(&[thunk(func)], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("Function".into()));
     }
 
@@ -2534,14 +2546,14 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             _: Span,
-        ) -> EvalResult<Value> {
-            Ok(Value::Int(0))
+        ) -> EvalResult<Rc<Thunk>> {
+            ok_val(Value::Int(0))
         }
         let builtin = Value::Builtin {
             name: "dummy",
             func: dummy,
         };
-        let result = builtin_type_of(&[thunk(builtin)], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_type_of(&[thunk(builtin)], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("Function".into()));
     }
 
@@ -2557,73 +2569,73 @@ mod tests {
 
     #[test]
     fn from_json_int() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String("42".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn from_json_float() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String("3.14".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Float(3.14));
     }
 
     #[test]
     fn from_json_string() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String(r#""hello""#.into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn from_json_bool_true() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String("true".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Bool(true));
     }
 
     #[test]
     fn from_json_bool_false() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String("false".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::Bool(false));
     }
 
     #[test]
     fn from_json_null_becomes_empty_dict() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String("null".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             _ => panic!("expected empty Dict for null"),
@@ -2632,13 +2644,13 @@ mod tests {
 
     #[test]
     fn from_json_array() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String("[1, 2, 3]".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -2655,7 +2667,7 @@ mod tests {
 
     #[test]
     fn from_json_object() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String(
                 r#"{"name": "Alice", "age": 30}"#.into(),
             ))],
@@ -2663,7 +2675,7 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -2679,13 +2691,13 @@ mod tests {
     #[test]
     fn from_json_nested_structure() {
         let json = r#"{"users": [{"name": "Bob"}, {"name": "Eve"}]}"#;
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String(json.into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 let users = materialize(&map[&Key::String("users".into())], None, 0).unwrap();
@@ -2744,13 +2756,13 @@ mod tests {
 
     #[test]
     fn from_json_empty_object() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String("{}".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             _ => panic!("expected empty Dict"),
@@ -2759,13 +2771,13 @@ mod tests {
 
     #[test]
     fn from_json_empty_array() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String("[]".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             _ => panic!("expected empty Dict"),
@@ -2774,13 +2786,13 @@ mod tests {
 
     #[test]
     fn from_json_mixed_array() {
-        let result = builtin_from_json(
+        let result = mat(builtin_from_json(
             &[thunk(Value::String(r#"[1, "two", true, null]"#.into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 4);
@@ -2826,7 +2838,7 @@ mod tests {
     #[test]
     fn keys_empty_dict() {
         let dict = thunk_dict(IndexMap::new());
-        let result = builtin_keys(&[dict], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_keys(&[dict], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 0),
             other => panic!("expected Dict, got {other:?}"),
@@ -2841,7 +2853,7 @@ mod tests {
         map.insert(Key::Int(2), thunk(Value::String("c".into())));
         let dict = thunk_dict(map);
 
-        let result = builtin_keys(&[dict], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_keys(&[dict], &no_named(), 0, call_span()));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
@@ -2864,7 +2876,7 @@ mod tests {
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
         let dict = thunk_dict(map);
 
-        let result = builtin_keys(&[dict], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_keys(&[dict], &no_named(), 0, call_span()));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 2);
@@ -2888,7 +2900,7 @@ mod tests {
         map.insert(Key::Int(5), thunk(Value::String("third".into())));
         let dict = thunk_dict(map);
 
-        let result = builtin_keys(&[dict], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_keys(&[dict], &no_named(), 0, call_span()));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
@@ -2911,7 +2923,7 @@ mod tests {
         map.insert(Key::String("m".into()), thunk(Value::Int(3)));
         let dict = thunk_dict(map);
 
-        let result = builtin_keys(&[dict], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_keys(&[dict], &no_named(), 0, call_span()));
         match result {
             Value::Dict(keys_map) => {
                 let k0 = materialize(&keys_map[&Key::Int(0)], None, 0).unwrap();
@@ -2928,7 +2940,7 @@ mod tests {
     #[test]
     fn length_empty_dict() {
         let dict = thunk_dict(IndexMap::new());
-        let result = builtin_length(&[dict], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_length(&[dict], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(0));
     }
 
@@ -2939,7 +2951,7 @@ mod tests {
         map.insert(Key::String("b".into()), thunk(Value::Int(2)));
         map.insert(Key::String("c".into()), thunk(Value::Int(3)));
         let dict = thunk_dict(map);
-        let result = builtin_length(&[dict], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_length(&[dict], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(3));
     }
 
@@ -2949,7 +2961,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(Value::String("x".into())));
         map.insert(Key::Int(1), thunk(Value::String("y".into())));
         let dict = thunk_dict(map);
-        let result = builtin_length(&[dict], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_length(&[dict], &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(2));
     }
 
@@ -2962,13 +2974,13 @@ mod tests {
         right.insert(Key::String("c".into()), thunk(Value::Int(3)));
         right.insert(Key::String("d".into()), thunk(Value::Int(4)));
 
-        let result = builtin_merge(
+        let result = mat(builtin_merge(
             &[thunk_dict(left), thunk_dict(right)],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 4);
@@ -2990,13 +3002,13 @@ mod tests {
         right.insert(Key::String("y".into()), thunk(Value::Int(99)));
         right.insert(Key::String("z".into()), thunk(Value::Int(3)));
 
-        let result = builtin_merge(
+        let result = mat(builtin_merge(
             &[thunk_dict(left), thunk_dict(right)],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -3013,13 +3025,13 @@ mod tests {
 
     #[test]
     fn merge_empty_dicts() {
-        let result = builtin_merge(
+        let result = mat(builtin_merge(
             &[thunk_dict(IndexMap::new()), thunk_dict(IndexMap::new())],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 0),
             other => panic!("expected Dict, got {other:?}"),
@@ -3030,13 +3042,13 @@ mod tests {
     fn merge_left_empty() {
         let mut right = IndexMap::new();
         right.insert(Key::Int(0), thunk(Value::String("only".into())));
-        let result = builtin_merge(
+        let result = mat(builtin_merge(
             &[thunk_dict(IndexMap::new()), thunk_dict(right)],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
@@ -3051,13 +3063,13 @@ mod tests {
     fn merge_right_empty() {
         let mut left = IndexMap::new();
         left.insert(Key::Int(0), thunk(Value::String("only".into())));
-        let result = builtin_merge(
+        let result = mat(builtin_merge(
             &[thunk_dict(left), thunk_dict(IndexMap::new())],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
@@ -3079,13 +3091,13 @@ mod tests {
         let mut right = IndexMap::new();
         right.insert(Key::String("b".into()), Rc::clone(&right_thunk));
 
-        let result = builtin_merge(
+        let result = mat(builtin_merge(
             &[thunk_dict(left), thunk_dict(right)],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert!(Rc::ptr_eq(&map[&Key::String("a".into())], &left_thunk));
@@ -3104,13 +3116,13 @@ mod tests {
         right.insert(Key::String("d".into()), thunk(Value::Int(3)));
         right.insert(Key::String("c".into()), thunk(Value::Int(4)));
 
-        let result = builtin_merge(
+        let result = mat(builtin_merge(
             &[thunk_dict(left), thunk_dict(right)],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 let keys: Vec<&Key> = map.keys().collect();
@@ -3281,7 +3293,7 @@ mod tests {
     fn append_to_empty_dict() {
         let empty = thunk_dict(IndexMap::new());
         let result =
-            builtin_append(&[empty, thunk(Value::Int(42))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_append(&[empty, thunk(Value::Int(42))], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
@@ -3298,13 +3310,13 @@ mod tests {
         map.insert(Key::Int(0), thunk(Value::String("a".into())));
         map.insert(Key::Int(1), thunk(Value::String("b".into())));
         let dict = thunk_dict(map);
-        let result = builtin_append(
+        let result = mat(builtin_append(
             &[dict, thunk(Value::String("c".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -3322,7 +3334,7 @@ mod tests {
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
         let dict = thunk_dict(map);
         let result =
-            builtin_append(&[dict, thunk(Value::Int(99))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_append(&[dict, thunk(Value::Int(99))], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -3341,7 +3353,7 @@ mod tests {
         map.insert(Key::Int(5), thunk(Value::Int(50)));
         let dict = thunk_dict(map);
         let result =
-            builtin_append(&[dict, thunk(Value::Int(60))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_append(&[dict, thunk(Value::Int(60))], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -3357,13 +3369,13 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("first".into())));
         let dict = thunk_dict(map);
-        let result = builtin_append(
+        let result = mat(builtin_append(
             &[dict, thunk(Value::String("second".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -3382,7 +3394,7 @@ mod tests {
         let empty = thunk_dict(IndexMap::new());
         let val_thunk = thunk(Value::Int(7));
         let result =
-            builtin_append(&[empty, Rc::clone(&val_thunk)], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_append(&[empty, Rc::clone(&val_thunk)], &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 // The inserted thunk should be the same Rc (not a copy)
@@ -3443,51 +3455,51 @@ mod tests {
 
     #[test]
     fn str_no_args() {
-        let result = builtin_str(&[], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_str(&[], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("".into()));
     }
 
     #[test]
     fn str_single_int() {
-        let result = builtin_str(&[thunk(Value::Int(42))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_str(&[thunk(Value::Int(42))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("42".into()));
     }
 
     #[test]
     fn str_single_negative_int() {
-        let result = builtin_str(&[thunk(Value::Int(-7))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_str(&[thunk(Value::Int(-7))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("-7".into()));
     }
 
     #[test]
     fn str_single_float() {
         let result =
-            builtin_str(&[thunk(Value::Float(3.14))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_str(&[thunk(Value::Float(3.14))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("3.14".into()));
     }
 
     #[test]
     fn str_single_string() {
-        let result = builtin_str(
+        let result = mat(builtin_str(
             &[thunk(Value::String("hello".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn str_single_bool_true() {
-        let result = builtin_str(&[thunk(Value::Bool(true))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_str(&[thunk(Value::Bool(true))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("true".into()));
     }
 
     #[test]
     fn str_single_bool_false() {
         let result =
-            builtin_str(&[thunk(Value::Bool(false))], &no_named(), 0, call_span()).unwrap();
+            mat(builtin_str(&[thunk(Value::Bool(false))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("false".into()));
     }
 
@@ -3501,19 +3513,19 @@ mod tests {
                 test_span(1, 1, 1, 5),
             )),
         );
-        let result = builtin_str(&[thunk(Value::Dict(map))], &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_str(&[thunk(Value::Dict(map))], &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("[x: <thunk>]".into()));
     }
 
     #[test]
     fn str_single_empty_string() {
-        let result = builtin_str(
+        let result = mat(builtin_str(
             &[thunk(Value::String("".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("".into()));
     }
 
@@ -3524,7 +3536,7 @@ mod tests {
             thunk(Value::String(" ".into())),
             thunk(Value::String("World".into())),
         ];
-        let result = builtin_str(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_str(&args, &no_named(), 0, call_span()));
         assert_eq!(result, Value::String("Hello World".into()));
     }
 
@@ -3538,7 +3550,7 @@ mod tests {
             thunk(Value::String(", ok: ".into())),
             thunk(Value::Bool(true)),
         ];
-        let result = builtin_str(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_str(&args, &no_named(), 0, call_span()));
         assert_eq!(
             result,
             Value::String("count: 42, ratio: 3.14, ok: true".into())
@@ -3547,7 +3559,7 @@ mod tests {
 
     #[test]
     fn split_basic() {
-        let result = builtin_split(
+        let result = mat(builtin_split(
             &[
                 thunk(Value::String(",".into())),
                 thunk(Value::String("a,b,c".into())),
@@ -3556,7 +3568,7 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -3573,7 +3585,7 @@ mod tests {
 
     #[test]
     fn split_empty_parts() {
-        let result = builtin_split(
+        let result = mat(builtin_split(
             &[
                 thunk(Value::String(",".into())),
                 thunk(Value::String("a,,b".into())),
@@ -3582,7 +3594,7 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -3595,7 +3607,7 @@ mod tests {
 
     #[test]
     fn split_single_char_separator() {
-        let result = builtin_split(
+        let result = mat(builtin_split(
             &[
                 thunk(Value::String("/".into())),
                 thunk(Value::String("a/b/c/d".into())),
@@ -3604,7 +3616,7 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 4),
             other => panic!("expected Dict, got {other:?}"),
@@ -3613,7 +3625,7 @@ mod tests {
 
     #[test]
     fn split_no_match() {
-        let result = builtin_split(
+        let result = mat(builtin_split(
             &[
                 thunk(Value::String(",".into())),
                 thunk(Value::String("hello".into())),
@@ -3622,7 +3634,7 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
@@ -3635,7 +3647,7 @@ mod tests {
 
     #[test]
     fn split_multi_char_separator() {
-        let result = builtin_split(
+        let result = mat(builtin_split(
             &[
                 thunk(Value::String("::".into())),
                 thunk(Value::String("a::b::c".into())),
@@ -3644,7 +3656,7 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
@@ -3661,7 +3673,7 @@ mod tests {
 
     #[test]
     fn split_empty_input() {
-        let result = builtin_split(
+        let result = mat(builtin_split(
             &[
                 thunk(Value::String(",".into())),
                 thunk(Value::String("".into())),
@@ -3670,7 +3682,7 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
@@ -3683,7 +3695,7 @@ mod tests {
 
     #[test]
     fn replace_basic() {
-        let result = builtin_replace(
+        let result = mat(builtin_replace(
             &[
                 thunk(Value::String("world".into())),
                 thunk(Value::String("Rust".into())),
@@ -3693,13 +3705,13 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello Rust".into()));
     }
 
     #[test]
     fn replace_multiple_occurrences() {
-        let result = builtin_replace(
+        let result = mat(builtin_replace(
             &[
                 thunk(Value::String("a".into())),
                 thunk(Value::String("o".into())),
@@ -3709,13 +3721,13 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("bonono".into()));
     }
 
     #[test]
     fn replace_no_match() {
-        let result = builtin_replace(
+        let result = mat(builtin_replace(
             &[
                 thunk(Value::String("xyz".into())),
                 thunk(Value::String("abc".into())),
@@ -3725,13 +3737,13 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn replace_empty_pattern() {
-        let result = builtin_replace(
+        let result = mat(builtin_replace(
             &[
                 thunk(Value::String("".into())),
                 thunk(Value::String("-".into())),
@@ -3741,13 +3753,13 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("-a-b-c-".into()));
     }
 
     #[test]
     fn replace_to_empty() {
-        let result = builtin_replace(
+        let result = mat(builtin_replace(
             &[
                 thunk(Value::String("l".into())),
                 thunk(Value::String("".into())),
@@ -3757,199 +3769,199 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("heo".into()));
     }
 
     #[test]
     fn upper_basic() {
-        let result = builtin_upper(
+        let result = mat(builtin_upper(
             &[thunk(Value::String("hello".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("HELLO".into()));
     }
 
     #[test]
     fn upper_mixed_case() {
-        let result = builtin_upper(
+        let result = mat(builtin_upper(
             &[thunk(Value::String("Hello World".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("HELLO WORLD".into()));
     }
 
     #[test]
     fn upper_already_upper() {
-        let result = builtin_upper(
+        let result = mat(builtin_upper(
             &[thunk(Value::String("ABC".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("ABC".into()));
     }
 
     #[test]
     fn upper_empty() {
-        let result = builtin_upper(
+        let result = mat(builtin_upper(
             &[thunk(Value::String("".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("".into()));
     }
 
     #[test]
     fn upper_with_numbers() {
-        let result = builtin_upper(
+        let result = mat(builtin_upper(
             &[thunk(Value::String("abc123".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("ABC123".into()));
     }
 
     #[test]
     fn lower_basic() {
-        let result = builtin_lower(
+        let result = mat(builtin_lower(
             &[thunk(Value::String("HELLO".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn lower_mixed_case() {
-        let result = builtin_lower(
+        let result = mat(builtin_lower(
             &[thunk(Value::String("Hello World".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello world".into()));
     }
 
     #[test]
     fn lower_already_lower() {
-        let result = builtin_lower(
+        let result = mat(builtin_lower(
             &[thunk(Value::String("abc".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("abc".into()));
     }
 
     #[test]
     fn lower_empty() {
-        let result = builtin_lower(
+        let result = mat(builtin_lower(
             &[thunk(Value::String("".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("".into()));
     }
 
     #[test]
     fn trim_basic() {
-        let result = builtin_trim(
+        let result = mat(builtin_trim(
             &[thunk(Value::String("  hello  ".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_leading_only() {
-        let result = builtin_trim(
+        let result = mat(builtin_trim(
             &[thunk(Value::String("   hello".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_trailing_only() {
-        let result = builtin_trim(
+        let result = mat(builtin_trim(
             &[thunk(Value::String("hello   ".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_no_whitespace() {
-        let result = builtin_trim(
+        let result = mat(builtin_trim(
             &[thunk(Value::String("hello".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_all_whitespace() {
-        let result = builtin_trim(
+        let result = mat(builtin_trim(
             &[thunk(Value::String("   ".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("".into()));
     }
 
     #[test]
     fn trim_tabs_and_newlines() {
-        let result = builtin_trim(
+        let result = mat(builtin_trim(
             &[thunk(Value::String("\t\nhello\n\t".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn trim_empty() {
-        let result = builtin_trim(
+        let result = mat(builtin_trim(
             &[thunk(Value::String("".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(result, Value::String("".into()));
     }
 
@@ -4683,73 +4695,73 @@ mod tests {
 
     #[test]
     fn add_int_int() {
-        let r = builtin_add(
+        let r = mat(builtin_add(
             &[thunk(Value::Int(3)), thunk(Value::Int(5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(8));
     }
 
     #[test]
     fn add_int_float() {
-        let r = builtin_add(
+        let r = mat(builtin_add(
             &[thunk(Value::Int(3)), thunk(Value::Float(2.5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(5.5));
     }
 
     #[test]
     fn add_float_int() {
-        let r = builtin_add(
+        let r = mat(builtin_add(
             &[thunk(Value::Float(2.5)), thunk(Value::Int(3))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(5.5));
     }
 
     #[test]
     fn add_float_float() {
-        let r = builtin_add(
+        let r = mat(builtin_add(
             &[thunk(Value::Float(1.5)), thunk(Value::Float(2.5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(4.0));
     }
 
     #[test]
     fn add_negative_ints() {
-        let r = builtin_add(
+        let r = mat(builtin_add(
             &[thunk(Value::Int(-10)), thunk(Value::Int(3))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(-7));
     }
 
     #[test]
     fn add_zeros() {
-        let r = builtin_add(
+        let r = mat(builtin_add(
             &[thunk(Value::Int(0)), thunk(Value::Int(0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(0));
     }
 
@@ -4805,73 +4817,73 @@ mod tests {
 
     #[test]
     fn sub_int_int() {
-        let r = builtin_sub(
+        let r = mat(builtin_sub(
             &[thunk(Value::Int(10)), thunk(Value::Int(3))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(7));
     }
 
     #[test]
     fn sub_int_float() {
-        let r = builtin_sub(
+        let r = mat(builtin_sub(
             &[thunk(Value::Int(10)), thunk(Value::Float(3.5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(6.5));
     }
 
     #[test]
     fn sub_float_int() {
-        let r = builtin_sub(
+        let r = mat(builtin_sub(
             &[thunk(Value::Float(10.5)), thunk(Value::Int(3))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(7.5));
     }
 
     #[test]
     fn sub_float_float() {
-        let r = builtin_sub(
+        let r = mat(builtin_sub(
             &[thunk(Value::Float(10.5)), thunk(Value::Float(3.5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(7.0));
     }
 
     #[test]
     fn sub_result_negative() {
-        let r = builtin_sub(
+        let r = mat(builtin_sub(
             &[thunk(Value::Int(3)), thunk(Value::Int(10))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(-7));
     }
 
     #[test]
     fn sub_to_zero() {
-        let r = builtin_sub(
+        let r = mat(builtin_sub(
             &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(0));
     }
 
@@ -4917,85 +4929,85 @@ mod tests {
 
     #[test]
     fn mul_int_int() {
-        let r = builtin_mul(
+        let r = mat(builtin_mul(
             &[thunk(Value::Int(4)), thunk(Value::Int(5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(20));
     }
 
     #[test]
     fn mul_int_float() {
-        let r = builtin_mul(
+        let r = mat(builtin_mul(
             &[thunk(Value::Int(4)), thunk(Value::Float(2.5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(10.0));
     }
 
     #[test]
     fn mul_float_int() {
-        let r = builtin_mul(
+        let r = mat(builtin_mul(
             &[thunk(Value::Float(2.5)), thunk(Value::Int(4))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(10.0));
     }
 
     #[test]
     fn mul_float_float() {
-        let r = builtin_mul(
+        let r = mat(builtin_mul(
             &[thunk(Value::Float(2.5)), thunk(Value::Float(3.0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(7.5));
     }
 
     #[test]
     fn mul_by_zero() {
-        let r = builtin_mul(
+        let r = mat(builtin_mul(
             &[thunk(Value::Int(42)), thunk(Value::Int(0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(0));
     }
 
     #[test]
     fn mul_negative() {
-        let r = builtin_mul(
+        let r = mat(builtin_mul(
             &[thunk(Value::Int(-3)), thunk(Value::Int(4))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(-12));
     }
 
     #[test]
     fn mul_by_negative_one() {
-        let r = builtin_mul(
+        let r = mat(builtin_mul(
             &[thunk(Value::Int(42)), thunk(Value::Int(-1))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Int(-42));
     }
 
@@ -5017,13 +5029,13 @@ mod tests {
 
     #[test]
     fn div_float_int_int_returns_float() {
-        let r = builtin_div_float(
+        let r = mat(builtin_div_float(
             &[thunk(Value::Int(10)), thunk(Value::Int(3))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match r {
             Value::Float(f) => {
                 assert!((f - 10.0 / 3.0).abs() < 1e-10, "expected ~3.333, got {f}")
@@ -5034,13 +5046,13 @@ mod tests {
 
     #[test]
     fn div_float_int_int_exact_returns_float() {
-        let r = builtin_div_float(
+        let r = mat(builtin_div_float(
             &[thunk(Value::Int(10)), thunk(Value::Int(2))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match r {
             Value::Float(f) => assert_eq!(f, 5.0),
             other => panic!("expected Float(5.0), got {other:?}"),
@@ -5049,13 +5061,13 @@ mod tests {
 
     #[test]
     fn div_float_int_float() {
-        let r = builtin_div_float(
+        let r = mat(builtin_div_float(
             &[thunk(Value::Int(10)), thunk(Value::Float(3.0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         match r {
             Value::Float(f) => {
                 assert!((f - 10.0 / 3.0).abs() < 1e-10, "expected ~3.333, got {f}")
@@ -5066,13 +5078,13 @@ mod tests {
 
     #[test]
     fn div_float_float_float() {
-        let r = builtin_div_float(
+        let r = mat(builtin_div_float(
             &[thunk(Value::Float(7.5)), thunk(Value::Float(2.5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(3.0));
     }
 
@@ -5114,67 +5126,67 @@ mod tests {
 
     #[test]
     fn div_float_negative_zero() {
-        let r = builtin_div_float(
+        let r = mat(builtin_div_float(
             &[thunk(Value::Float(-0.0)), thunk(Value::Float(1.0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Float(0.0));
     }
 
     #[test]
     fn eq_int_int_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn eq_int_int_not_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Int(5)), thunk(Value::Int(6))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_float_float_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Float(3.14)), thunk(Value::Float(3.14))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn eq_float_float_not_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Float(3.14)), thunk(Value::Float(2.71))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_string_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[
                 thunk(Value::String("hello".into())),
                 thunk(Value::String("hello".into())),
@@ -5183,13 +5195,13 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn eq_string_not_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[
                 thunk(Value::String("hello".into())),
                 thunk(Value::String("world".into())),
@@ -5198,73 +5210,73 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_bool_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Bool(true)), thunk(Value::Bool(true))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn eq_bool_not_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_cross_type_int_float_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Int(5)), thunk(Value::Float(5.0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn eq_cross_type_float_int_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Float(5.0)), thunk(Value::Int(5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn eq_cross_type_int_float_not_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Int(5)), thunk(Value::Float(5.1))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_dict_never_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[
                 thunk(Value::Dict(IndexMap::new())),
                 thunk(Value::Dict(IndexMap::new())),
@@ -5273,55 +5285,55 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_different_types_not_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Int(1)), thunk(Value::String("1".into()))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_bool_vs_int_not_equal() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Bool(true)), thunk(Value::Int(1))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_nan_not_equal_to_self() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Float(f64::NAN)), thunk(Value::Float(f64::NAN))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn eq_negative_zero_float() {
-        let r = builtin_eq(
+        let r = mat(builtin_eq(
             &[thunk(Value::Float(-0.0)), thunk(Value::Float(0.0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
@@ -5333,55 +5345,55 @@ mod tests {
 
     #[test]
     fn lt_int_int_true() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Int(3)), thunk(Value::Int(5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn lt_int_int_false() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Int(5)), thunk(Value::Int(3))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn lt_int_int_equal_is_false() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn lt_float_float() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Float(2.5)), thunk(Value::Float(3.5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn lt_string_lexicographic() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[
                 thunk(Value::String("apple".into())),
                 thunk(Value::String("banana".into())),
@@ -5390,13 +5402,13 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn lt_string_lexicographic_reverse() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[
                 thunk(Value::String("banana".into())),
                 thunk(Value::String("apple".into())),
@@ -5405,13 +5417,13 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn lt_string_equal_is_false() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[
                 thunk(Value::String("same".into())),
                 thunk(Value::String("same".into())),
@@ -5420,13 +5432,13 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn lt_string_prefix() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[
                 thunk(Value::String("ab".into())),
                 thunk(Value::String("abc".into())),
@@ -5435,43 +5447,43 @@ mod tests {
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn lt_cross_type_int_float() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Int(3)), thunk(Value::Float(3.5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn lt_cross_type_float_int() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Float(2.5)), thunk(Value::Int(3))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn lt_cross_type_equal_values() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Int(5)), thunk(Value::Float(5.0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
@@ -5489,49 +5501,49 @@ mod tests {
 
     #[test]
     fn lt_bool_false_lt_true() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Bool(false)), thunk(Value::Bool(true))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn lt_bool_true_lt_false() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn lt_bool_false_lt_false() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Bool(false)), thunk(Value::Bool(false))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
     #[test]
     fn lt_bool_true_lt_true() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Bool(true)), thunk(Value::Bool(true))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
@@ -5558,25 +5570,25 @@ mod tests {
 
     #[test]
     fn lt_negative_numbers() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Int(-10)), thunk(Value::Int(-5))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(true));
     }
 
     #[test]
     fn lt_nan_float() {
-        let r = builtin_lt(
+        let r = mat(builtin_lt(
             &[thunk(Value::Float(f64::NAN)), thunk(Value::Float(1.0))],
             &no_named(),
             0,
             call_span(),
         )
-        .unwrap();
+        );
         assert_eq!(r, Value::Bool(false));
     }
 
@@ -5587,7 +5599,7 @@ mod tests {
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
-        let result = builtin_if(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_if(&args, &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(42));
     }
 
@@ -5598,7 +5610,7 @@ mod tests {
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
-        let result = builtin_if(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_if(&args, &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(99));
     }
 
@@ -5616,7 +5628,7 @@ mod tests {
         ));
 
         let args = vec![thunk(Value::Bool(true)), thunk(Value::Int(42)), error_thunk];
-        let result = builtin_if(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_if(&args, &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(42));
     }
 
@@ -5638,7 +5650,7 @@ mod tests {
             error_thunk,
             thunk(Value::Int(99)),
         ];
-        let result = builtin_if(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_if(&args, &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(99));
     }
 
@@ -5786,7 +5798,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("lib.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_include(&args, &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -5808,7 +5820,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("num.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_include(&args, &no_named(), 0, call_span()));
         assert_eq!(result, Value::Int(42));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5878,7 +5890,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("outer.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_include(&args, &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 let inner =
@@ -5914,7 +5926,7 @@ mod tests {
         let args = vec![thunk(Value::String(
             file_path.to_string_lossy().into_owned(),
         ))];
-        let result = builtin_include(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_include(&args, &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 let val =
@@ -5982,7 +5994,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("multi.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_include(&args, &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 let y = materialize(map.get(&Key::String("y".into())).unwrap(), None, 0).unwrap();
@@ -6002,7 +6014,7 @@ mod tests {
         setup_include_ctx(&dir);
 
         let args = vec![thunk(Value::String("stdlib_test.llt".into()))];
-        let result = builtin_include(&args, &no_named(), 0, call_span()).unwrap();
+        let result = mat(builtin_include(&args, &no_named(), 0, call_span()));
         match result {
             Value::Dict(map) => {
                 let val =

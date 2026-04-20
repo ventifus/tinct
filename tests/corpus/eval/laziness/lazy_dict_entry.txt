@@ -1,0 +1,6 @@
+# Lazy evaluation: accessing one dict entry does not force other entries
+[x: 1  y: [call $error "unused"]]
+---
+$$.x
+===
+Int(1)

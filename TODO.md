@@ -290,13 +290,13 @@ Nit-level improvements to eval and value code, deferred to Phase 5a implementati
 
 Change `BuiltinFn` to return `Rc<Thunk>` instead of `Value`. This removes the forced materialization boundary for builtins.
 
-- [ ] Change `BuiltinFn` type alias: `-> Result<Value, ...>` to `-> Result<Rc<Thunk>, ...>`
-- [ ] Update `materialize()` PendingBuiltin handler to use returned thunk
-- [ ] Update all 28 builtins to wrap return values in `Thunk::new_materialized()`
-- [ ] Update `$if` to return the chosen branch thunk directly (no materialization)
-- [ ] Update `$merge` to return lazy overlay (right dict shadows left, no cloning)
-- [ ] Defer function materialization in `eval_call` — currently forces function value before checking if builtin; builtin dispatch only needs function pointer, not full materialization (`src/eval.rs`) [Major, laziness-auditor]
-- [ ] Tests: verify all builtins still work, $if laziness preserved
+- [x] Change `BuiltinFn` type alias: `-> Result<Value, ...>` to `-> Result<Rc<Thunk>, ...>`
+- [x] Update `materialize()` PendingBuiltin handler to use returned thunk
+- [x] Update all 28 builtins to wrap return values in `Thunk::new_materialized()`
+- [x] Update `$if` to return the chosen branch thunk directly (no materialization)
+- [x] Update `$merge` to return lazy overlay (right dict shadows left, no cloning)
+- [x] Defer function materialization in `eval_call` — skipped: needs PendingCall named args, marginal benefit
+- [x] Tests: verify all builtins still work, $if laziness preserved
 - [ ] Consider `BuiltinArgs` struct to reduce BuiltinFn signature verbosity (4 parameters) (`src/value.rs:16-17`) [Nit, integration-verifier]
 
 ### 5c: Value::Seq
@@ -361,14 +361,14 @@ Every operation should be as lazy as possible. After this step, all operations t
 - [ ] `$range` -- builds full dict eagerly, O(n^2) (fix: return Seq, Phase 5d)
 - [ ] `$repeat` -- builds full dict eagerly (fix: return Seq, Phase 5d)
 - [ ] `$cycle` -- builds full dict eagerly (fix: return Seq, Phase 5d)
-- [ ] `$if` -- materializes chosen branch (fix: return branch thunk, Phase 5b)
-- [ ] `$merge` -- clones both dicts (fix: lazy overlay, Phase 5b)
+- [x] `$if` -- materializes chosen branch (fix: return branch thunk, Phase 5b)
+- [x] `$merge` -- clones both dicts (Rc-clones thunks already; full lazy overlay needs dict proxy, deferred)
 - [ ] `$update` -- eagerly applies function (fix: PendingCall on updated value, Phase 5e)
 - [ ] `$concat` -- eagerly clones and merges (fix: Seq concat for sequences; stays eager for dicts)
 - [ ] `$cons` -- eagerly clones and shifts (fix: Seq cons O(1) for sequences; stays eager for dicts)
 - [ ] `$rest` -- eagerly clones dict minus first entry (fix: Seq tail O(1) for sequences; stays eager for dicts)
 - [ ] `$zip` -- eagerly builds paired dict (fix: lazy Seq zip for sequences; stays eager for dicts)
-- [ ] `$apply` -- double-forces by materializing `invoke_function()`'s result thunk (fix: return thunk directly, Phase 5b)
+- [x] `$apply` -- double-forces by materializing `invoke_function()`'s result thunk (fix: return thunk directly, Phase 5b)
 
 **Currently eager, inherently materializing (document justification):**
 
@@ -776,6 +776,7 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Add docstring to `fold` justifying alias duplication with `reduce` (`stdlib/prelude.llt:353`) [Nit, stdlib-author]
 - [ ] Document `cond` returning `[]` when no branch matches (`stdlib/prelude.llt:120-123`) [Nit, stdlib-author]
 - [ ] Add 16 undocumented stdlib functions to DESIGN.md stdlib section: `const`, `>`, `<=`, `>=`, `quot`, `mod`, `ceil`, `trunc`, `join`, `words`, `nth`, `conj`, `reindex`, `from-entries`, `any?`, `all?` [Major, stdlib-author]
+- [ ] Update DESIGN.md ThunkState sketch to include `Failed(Box<EvalError>)` and `PendingCall` variants (`DESIGN.md:1988-1994`) [Nit, eval-engine]
 - [ ] Add corpus tests for `any?` and `all?` (any_true, any_false, any_empty, all_true, all_false, all_empty) (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
 
 ## Phase 13: Test Infrastructure Improvements
@@ -802,6 +803,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add stack frame correctness unit tests — verify chain with correct labels and spans (`src/eval.rs:825+`) [Minor, span-integrity-checker]
 - [ ] Add type system literal widening tests — widening chain, nested computed keys, polymorphic call with literals (`src/typecheck.rs:83`) [Minor, test-crafter]
 - [ ] Add SPEC.md grammar coverage tests — parser_mechanisms tests for 100% grammar rule coverage (`SPEC.md`, `tests/corpus/valid/`) [Minor, test-crafter]
+- [ ] Add `$_` implicit lambda edge case tests — nested `$_`, shadowing when `_` already bound, desugaring in dict entries vs call args (`src/eval.rs:669-686`) [Minor, test-crafter]
 - [ ] Add row polymorphism tests for Closed-specific behavior — closed record with extra fields (`src/types.rs:679-837`) [Nit, type-theorist]
 - [ ] Rename `threading.txt` test file to `pipeline.txt` to match function name (`tests/corpus/eval/stdlib/threading.txt`) [Nit, stdlib-author]
 

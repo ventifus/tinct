@@ -1,0 +1,4 @@
+# Lazy evaluation: $if does not materialize the unchosen true branch
+[call $if false [call $error "should not trigger"] 99]
+===
+Int(99)

@@ -13,8 +13,9 @@ use crate::error::{EvalError, EvalResult};
 /// Signature for built-in functions: receives positional args, named args,
 /// the current evaluation depth (for propagating `MAX_EVAL_DEPTH`
 /// through `materialize` calls), and the call-site span (for error reporting).
+/// Returns an `Rc<Thunk>` to allow builtins to participate in lazy evaluation.
 pub type BuiltinFn =
-    fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> EvalResult<Value>;
+    fn(&[Rc<Thunk>], &IndexMap<String, Rc<Thunk>>, usize, Span) -> EvalResult<Rc<Thunk>>;
 
 /// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +268,13 @@ impl Thunk {
         *self.state.borrow_mut() = new_state;
     }
 
+    pub fn try_get_materialized(&self) -> Option<Value> {
+        match &*self.state.borrow() {
+            ThunkState::Materialized(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
     /// Atomically read the current state, compute a new state, and write it back.
     ///
     /// The closure receives an immutable reference to the current [`ThunkState`].
@@ -517,9 +525,9 @@ mod tests {
             _: &[Rc<Thunk>],
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
-            _: Span,
-        ) -> EvalResult<Value> {
-            Ok(Value::Int(0))
+            span: Span,
+        ) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), span)))
         }
         let b = Value::Builtin {
             name: "test",
@@ -706,9 +714,9 @@ mod tests {
             _args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
-            _call_span: Span,
-        ) -> EvalResult<Value> {
-            Ok(Value::Int(0))
+            call_span: Span,
+        ) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), call_span)))
         }
         let builtin = Value::Builtin {
             name: "test_fn",
@@ -788,9 +796,9 @@ mod tests {
             _args: &[Rc<Thunk>],
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
-            _call_span: Span,
-        ) -> EvalResult<Value> {
-            Ok(Value::Int(0))
+            call_span: Span,
+        ) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), call_span)))
         }
         let builtin = Value::Builtin {
             name: "test_builtin",

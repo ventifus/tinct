@@ -924,9 +924,23 @@ pub fn materialize(
     } else if let Some((func, args, named, pending_depth, call_span)) = thunk.take_pending_builtin()
     {
         match func(&args, &named, pending_depth, call_span).map_err(&decorate) {
-            Ok(value) => {
-                thunk.set_state(ThunkState::Materialized(value.clone()));
-                Ok(value)
+            Ok(result_thunk) => {
+                // Fast path: if the builtin already materialized its result, skip recursion.
+                if let Some(value) = result_thunk.try_get_materialized() {
+                    thunk.set_state(ThunkState::Materialized(value.clone()));
+                    Ok(value)
+                } else {
+                    match materialize(&result_thunk, mat_span, depth + 1).map_err(&decorate) {
+                        Ok(value) => {
+                            thunk.set_state(ThunkState::Materialized(value.clone()));
+                            Ok(value)
+                        }
+                        Err(e) => {
+                            thunk.cache_failure(&e);
+                            Err(e)
+                        }
+                    }
+                }
             }
             Err(e) => {
                 thunk.cache_failure(&e);
@@ -982,11 +996,25 @@ pub fn materialize(
                 }
             }
             Value::Builtin { func, .. } => {
-                // Call the builtin directly with the args
                 match func(&args, &IndexMap::new(), depth, call_span).map_err(&decorate) {
-                    Ok(value) => {
-                        thunk.set_state(ThunkState::Materialized(value.clone()));
-                        Ok(value)
+                    Ok(result_thunk) => {
+                        if let Some(value) = result_thunk.try_get_materialized() {
+                            thunk.set_state(ThunkState::Materialized(value.clone()));
+                            Ok(value)
+                        } else {
+                            match materialize(&result_thunk, mat_span, depth + 1)
+                                .map_err(&decorate)
+                            {
+                                Ok(value) => {
+                                    thunk.set_state(ThunkState::Materialized(value.clone()));
+                                    Ok(value)
+                                }
+                                Err(e) => {
+                                    thunk.cache_failure(&e);
+                                    Err(e)
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         thunk.cache_failure(&e);
@@ -1896,11 +1924,11 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             _call_span: Span,
-        ) -> EvalResult<Value> {
+        ) -> EvalResult<Rc<Thunk>> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
+                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(Value::Int(x + y), test_span(1, 1, 1, 1)))),
                 _ => panic!("test expects Int args"),
             }
         }
@@ -3746,8 +3774,8 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             _: Span,
-        ) -> EvalResult<Value> {
-            Ok(Value::Int(0))
+        ) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), test_span(1, 1, 1, 1))))
         }
         let val = Value::Builtin {
             name: "test",
@@ -4431,11 +4459,11 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             _call_span: Span,
-        ) -> EvalResult<Value> {
+        ) -> EvalResult<Rc<Thunk>> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
+                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(Value::Int(x + y), test_span(1, 1, 1, 1)))),
                 _ => panic!("test expects Int args"),
             }
         }
@@ -4483,11 +4511,11 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             _call_span: Span,
-        ) -> EvalResult<Value> {
+        ) -> EvalResult<Rc<Thunk>> {
             let a = materialize(&args[0], None, 0)?;
             let b = materialize(&args[1], None, 0)?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x * y)),
+                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(Value::Int(x * y), test_span(1, 1, 1, 1)))),
                 _ => panic!("test expects Int args"),
             }
         }
@@ -4768,7 +4796,7 @@ mod tests {
             _named: &IndexMap<String, Rc<Thunk>>,
             _depth: usize,
             call_span: Span,
-        ) -> EvalResult<Value> {
+        ) -> EvalResult<Rc<Thunk>> {
             Err(EvalError::new("builtin intentionally failed", call_span).into())
         }
 

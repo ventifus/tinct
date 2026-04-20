@@ -439,8 +439,8 @@ mod tests {
             _: &IndexMap<String, Rc<Thunk>>,
             _: usize,
             _: ast::Span,
-        ) -> Result<Value, Box<error::EvalError>> {
-            Ok(Value::Int(0))
+        ) -> Result<Rc<Thunk>, Box<error::EvalError>> {
+            Ok(Rc::new(Thunk::new_materialized(Value::Int(0), ast::Span::origin())))
         }
         let b = Value::Builtin {
             name: "test",
@@ -489,9 +489,8 @@ mod tests {
         let env = builtins::create_stdlib_env().expect("stdlib failed");
 
         let initial_input = stdin_json.map(|json| {
-            let val = builtins::json_to_value(&json, 0, ast::Span::origin())
-                .expect("json_to_value failed");
-            Rc::new(Thunk::new_materialized(val, ast::Span::origin()))
+            builtins::json_to_value(&json, 0, ast::Span::origin())
+                .expect("json_to_value failed")
         });
 
         let thunk =
