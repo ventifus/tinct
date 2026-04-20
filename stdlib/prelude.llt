@@ -108,16 +108,8 @@ trunc: [fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]
 # String (derived from str, split, filter)
 # ============================================================================
 
-join: [fn [sep xs]
-    [call $if [call $= [call $length $xs] 0]
-        ""
-        [call $join-impl $sep $xs [call $keys $xs] 1 [call $str $xs[0]]]]]
-
-join-impl: [fn [sep xs ks i acc]
-    [call $if [call $>= $i [call $length $ks]]
-        $acc
-        [call $join-impl $sep $xs $ks [call $+ $i 1]
-            [call $str $acc $sep [call $str $xs[$ks[$i]]]]]]]
+# join is a Rust-native builtin (O(n) performance, dual-dispatch on Dict/Seq).
+# See src/builtins.rs for implementation.
 
 words: [fn [s]
     [call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]]
@@ -343,6 +335,9 @@ sort-merge: [fn [cmp left right]
 # Universal Collection Operations (preserve keys)
 # ============================================================================
 
+# reduce, drop, map, filter are Rust-native builtins (dual-dispatch on Dict/Seq).
+# See src/builtins.rs for implementations.
+
 # Apply a function to every [key value] pair, returning new values under same keys.
 map-entries: [fn [f xs] [call $map-entries-impl $f $xs [call $keys $xs] 0 []]]
 
@@ -357,18 +352,7 @@ map-entries-step: [fn [f xs ks i acc current-key]
             [call $make-entry $current-key
                 [call $f [key: $current-key value: $xs[$current-key]]]]]]]
 
-# Left fold over a collection.
-reduce: [fn [f init xs] [call $reduce-impl $f $init $xs [call $keys $xs] 0]]
-
-reduce-impl: [fn [f acc xs ks i]
-    [call $if [call $>= $i [call $length $ks]]
-        $acc
-        [call $reduce-step $f $acc $xs $ks $i $ks[$i]]]]
-
-reduce-step: [fn [f acc xs ks i current-key]
-    [call $reduce-impl $f [call $f $acc $xs[$current-key]] $xs $ks [call $+ $i 1]]]
-
-# Alias for reduce.
+# Alias for reduce (Rust-native builtin).
 fold: [fn [f init xs] [call $reduce $f $init $xs]]
 
 # Take a slice by position (start inclusive, end exclusive). Preserves keys.
@@ -383,20 +367,6 @@ slice-impl: [fn [xs ks start end i acc]
 
 slice-step: [fn [xs ks start end i acc current-key]
     [call $slice-impl $xs $ks $start $end [call $+ $i 1]
-        [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
-
-# Skip the first n entries. Preserves keys.
-drop: [fn [n xs] [call $drop-impl $xs [call $keys $xs] $n 0 []]]
-
-drop-impl: [fn [xs ks n i acc]
-    [call $if [call $>= $i [call $length $ks]]
-        $acc
-        [call $if [call $< $i $n]
-            [call $drop-impl $xs $ks $n [call $+ $i 1] $acc]
-            [call $drop-step $xs $ks $n $i $acc $ks[$i]]]]]
-
-drop-step: [fn [xs ks n i acc current-key]
-    [call $drop-impl $xs $ks $n [call $+ $i 1]
         [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
 
 # Pair entries from two collections by position. Returns a list of pairs.

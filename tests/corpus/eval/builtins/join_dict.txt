@@ -1,0 +1,4 @@
+# join on dict with string values
+[call $join ", " [hello world foo]]
+===
+String("hello, world, foo")

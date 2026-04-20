@@ -1,0 +1,4 @@
+# reduce on seq: sum first 5 elements
+[call $reduce [fn [acc x] [call $+ $acc $x]] 0 [call $take 5 [call $range 1]]]
+===
+Int(15)

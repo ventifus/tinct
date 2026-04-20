@@ -1193,6 +1193,17 @@ If the included file needs to reference local bindings, use namespaced import in
 
 Duplicate names during merge are errors (consistent with the duplicate-keys-are-errors rule). Include cycle detection is required — even with lazy values, the scope structure must be known at include time.
 
+### Dual-Dispatch Builtins Typed as `Any`
+
+**Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. The type checker assigns these builtins type `Any` because:
+
+1. LLT has no union types — the precise input type `Dict | Seq` cannot be expressed
+2. Separate functions (`$map-dict`, `$map-seq`) would be verbose and break the polymorphic API
+3. Overloaded function types would require type system extensions (type classes or similar)
+4. `Any` is already used for other inherently dynamic operations (e.g., `$from-json`)
+
+Type assertions (`[@Type $expr]`) provide a runtime narrowing mechanism when concrete types are needed. This decision will be revisited if the type system gains union types or type classes in future phases.
+
 ### Document Separator Grammar
 
 The `---` separator is recognized at the file level only. It must appear on its own (not as part of a bare word like `----` or `---foo`):
@@ -1335,7 +1346,7 @@ first-ten: [call $collect [call $take 10 $squares]]
 
 **Principle:** Only implement in Rust what cannot be expressed in LLT itself. Everything else is LLT code loaded from a prelude file at startup.
 
-**Rust-native builtins (39 total):**
+**Rust-native builtins (44 total):**
 
 | Group | Functions | Rationale |
 |-------|-----------|-----------|
@@ -1348,7 +1359,7 @@ first-ten: [call $collect [call $take 10 $squares]]
 | Parsing | `to-int`, `to-float` | String-to-number parsing only (e.g., `"42"` to `42`). Numeric conversion (float-to-int) uses `floor`/`round`/`trunc`; int-to-float uses arithmetic promotion (`[call $+ $x 0.0]`). |
 | Evaluation control | `eval`, `error`, `try`, `apply` | `eval` deep-forces thunks (evaluator access); `error` constructs EvalError; `try` catches materialization errors; `apply` spreads a dict as positional args. |
 | Type introspection | `type-of` | Inspects the Value enum variant; no LLT expression can determine a value's type. |
-| Sequences | `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) return infinite or finite Seq (O(1) construction). `take` is dual-dispatch: on Dict preserves keys, on Seq returns finite Seq. All require `Rc<Thunk>` manipulation unavailable in LLT. |
+| Sequences | `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) return infinite or finite Seq (O(1) construction). `take`, `map`, `filter`, `drop` are dual-dispatch: on Dict preserve keys, on Seq return Seq. `reduce` accumulates with early termination on empty Seq. `join` converts Dict/Seq to string with separator (O(n²) concatenation). All require `Rc<Thunk>` manipulation unavailable in LLT. |
 | I/O | `from-json`, `include` | `from-json` parses a JSON string into an LLT dict; requires a JSON parser (serde_json). `include` evaluates an LLT file and returns its result; requires filesystem access, cycle detection, and path resolution. |
 
 **Derived functions (moved from Rust to LLT):**
@@ -1363,7 +1374,6 @@ first-ten: [call $collect [call $take 10 $squares]]
 | `mod` | `[fn [a b] [call $- $a [call $* [call $quot $a $b] $b]]]` | Algebraic identity: `a - (a quot b) * b` |
 | `ceil` | `[fn [x] [call $- 0 [call $floor [call $- 0 $x]]]]` | `ceil(x) = -floor(-x)` |
 | `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
-| `join` | Recursive accumulation with `str` | String concatenation via `str` + recursion |
 | `words` | `[call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]` | `split` + `filter` |
 
 Note: `and` and `or` are also LLT-derived (`[fn [a b] [call $if $a $b false]]` works via lazy args, giving short-circuit semantics for free). Similarly, `get` is just `[fn [xs k] $xs[$k]]` using bracket access.
@@ -1372,9 +1382,8 @@ Note: `and` and `or` are also LLT-derived (`[fn [a b] [call $if $a $b false]]` w
 
 Everything else is implemented in LLT using the Rust builtins above plus language features (bracket access, dict literals, `fn`, `call`, recursion via letrec). Key implementation patterns:
 
-- **Derived primitives**: `not` from `if`, comparison operators from `<`, `mod` from arithmetic, `ceil`/`trunc` from `floor`, `join`/`words` from `str`/`split`.
+- **Derived primitives**: `not` from `if`, comparison operators from `<`, `mod` from arithmetic, `ceil`/`trunc` from `floor`, `words` from `split`.
 - **Short-circuit logic** via lazy args: `and` = `[fn [a b] [call $if $a $b false]]`.
-- **Dict iteration** via `keys` + bracket access + recursion: `map`, `filter`, `reduce` all follow the pattern of getting `keys`, iterating with a recursive helper, building results with `merge`.
 - **Dict utilities** as wrappers: `get` = `[fn [xs k] $xs[$k]]`, `empty?` = `[fn [xs] [call $= [call $length $xs] 0]]`, `has?` wraps `try` around bracket access.
 - **Control flow** from `if`: `cond` = nested `if`, `when`/`unless` = single-arm `if`.
 - **Composition** is pure LLT: `identity` = `[fn [x] $x]`, `compose` = `[fn [f g] [fn [x] [call $f [call $g $x]]]]`.
@@ -1391,14 +1400,14 @@ The LLT stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `inclu
 This ensures Rust builtins are available to LLT stdlib code (e.g., `and` references `$if`), and user code sees both layers:
 
 ```
-Rust builtins ($+, $-, $<, $=, $if, $keys, $merge, $str, $floor, ...)
-  └── LLT stdlib ($not, $>, $mod, $ceil, $and, $map, $filter, $compose, ...)
+Rust builtins ($+, $-, $<, $=, $if, $keys, $merge, $str, $floor, $map, $filter, $reduce, $drop, $join, ...)
+  └── LLT stdlib ($not, $>, $mod, $ceil, $and, $fold, $compose, ...)
         └── User code
 ```
 
 ### Stdlib Function Reference (62 functions)
 
-All functions below are implemented in LLT itself in `stdlib/prelude.llt`. They are loaded at startup via `create_stdlib_env()` and available to all user code. Private implementation details (functions suffixed with `-impl`) are omitted.
+Functions available to all user code. Most are implemented in LLT in `stdlib/prelude.llt`; some performance-critical operations (`map`, `filter`, `reduce`, `drop`, `join`, `take`, and all sequence constructors) are Rust-native builtins with dual-dispatch on Dict vs Seq. Private implementation details (functions suffixed with `-impl`) are omitted.
 
 **Utility Functions:**
 
@@ -1448,7 +1457,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `join` | `[fn [sep xs] ...]` | Join a list of strings with a separator |
+| `join` | `[fn [sep xs] ...]` | Join values as strings with separator (Rust builtin, O(n); dual-dispatch Dict/Seq) |
 | `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings |
 
 **Control Flow:**
@@ -1503,11 +1512,11 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `map` | `[fn [f xs] ...]` | Apply function to every value, preserving keys |
 | `map-entries` | `[fn [f xs] ...]` | Apply function to every `[key value]` pair |
 | `filter` | `[fn [pred xs] ...]` | Keep values where predicate returns true (returns Seq) |
-| `reduce` | `[fn [f init xs] ...]` | Left fold over a collection |
+| `reduce` | `[fn [f init xs] ...]` | Left fold (Rust builtin; dual-dispatch Dict/Seq) |
 | `fold` | `[fn [f init xs] ...]` | Alias for `reduce` |
 | `slice` | `[fn [xs start end] ...]` | Positional slice (start inclusive, end exclusive) |
 | `take` | `[fn [n xs] ...]` | Take the first n entries, preserving keys |
-| `drop` | `[fn [n xs] ...]` | Skip the first n entries, preserving keys |
+| `drop` | `[fn [n xs] ...]` | Skip first n entries (Rust builtin; dual-dispatch Dict/Seq) |
 | `zip` | `[fn [xs ys] ...]` | Pair entries from two collections by position |
 | `flatten` | `[fn [xs] ...]` | Flatten nested lists one level deep |
 | `find-deep` | `[fn [xs target] ...]` | Recursively search for a key in nested dicts |
@@ -1655,6 +1664,31 @@ Both support lazy evaluation, but `PendingCall` works at the LLT function level 
 **Error reporting:** When `PendingCall` materialization fails, the definition-site span comes from the function's body, the materialization-site span from where the thunk was forced, and a stack frame is added with the deferred call's creation span (from `call_span`).
 
 **Motivation:** Operations like `$map` on dicts need to create new thunks that apply a function to each value, but they can't store AST nodes (the function comes from a runtime variable). `PendingCall` lets them defer function application without needing to construct new AST `CallExpr` nodes.
+
+### Type System and Dual-Dispatch Builtins
+
+Several builtins dispatch on their input type (Dict vs Seq), producing different output types depending on the input:
+
+| Builtin | Dict input | Seq input |
+|---------|------------|-----------|
+| `$map` | Dict (same keys, lazy PendingCall values) | Seq (lazy transform) |
+| `$filter` | Seq (must evaluate predicates) | Seq (lazy filter) |
+| `$take` | Dict (first n entries by insertion order) | Seq (first n elements) |
+| `$drop` | Dict (skip first n entries by insertion order) | Seq (skip first n elements) |
+| `$reduce` | Single value (accumulated over entries) | Single value (accumulated over elements) |
+| `$join` | String (concatenates values) | String (concatenates elements) |
+
+**Current type system strategy: `Any` for all dual-dispatch builtins.** The type checker (typecheck.rs) assigns type `Any` to these operations. This is the correct choice for now because:
+
+1. **LLT has no union types.** The precise input type would be `Dict | Seq`, which cannot be expressed in the current type system. Without union types, there is no way to accurately represent "accepts either Dict or Seq."
+
+2. **Separate functions would be verbose.** Naming conventions like `$map-dict` and `$map-seq` would work but break the clean, polymorphic API that makes LLT expressive.
+
+3. **Overloaded function types require type system extensions.** True ad-hoc polymorphism (overloading) would require type classes or similar mechanisms, which are not planned for the current phase.
+
+4. **The type checker already handles `Any` uniformly.** Builtins that cannot be precisely typed (e.g., `$from-json`) already use `Any`, and type assertions (`[@Type $expr]`) provide a runtime escape hatch for narrowing back to concrete types.
+
+**Future work:** If the type system gains union types (Phase 9½) or type classes, dual-dispatch builtins could be typed more precisely. Until then, `Any` is the pragmatic choice — it permits all valid uses without introducing false positives.
 
 **`Failed` thunk state:**
 

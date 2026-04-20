@@ -356,12 +356,12 @@ Move `$map` and `$filter` to Rust builtins with dual-dispatch on Dict vs Seq. No
 
 Additional sequence operations and typing decisions for dual-dispatch ops.
 
-- [ ] `$drop` on seq: return seq skipping first n elements
-- [ ] `$reduce` on seq: accumulate, materializing each step
-- [ ] Move `drop`, `reduce` from LLT prelude to Rust builtins
-- [ ] Decide typing strategy for dual-dispatch ops (`$map`/`$filter` on Record vs Seq): `Any` escape hatch, union types, or separate functions [Major, type-theorist]
-- [ ] Document `join` O(n^2) due to repeated str concatenation; optimize in Rust builtin (`stdlib/prelude.llt:88-97`) [Minor, stdlib-author]
-- [ ] Tests: drop on seq, reduce on seq and dict
+- [x] `$drop` on seq: return seq skipping first n elements
+- [x] `$reduce` on seq: accumulate, materializing each step
+- [x] Move `drop`, `reduce` from LLT prelude to Rust builtins
+- [x] Decide typing strategy for dual-dispatch ops (`$map`/`$filter` on Record vs Seq): `Any` escape hatch, union types, or separate functions [Major, type-theorist]
+- [x] Document `join` O(n^2) due to repeated str concatenation; optimize in Rust builtin (`stdlib/prelude.llt:88-97`) [Minor, stdlib-author]
+- [x] Tests: drop on seq, reduce on seq and dict
 
 ### 5f: Include Caching
 
@@ -377,11 +377,11 @@ Every operation should be as lazy as possible. After this step, all operations t
 
 **Currently eager, should become lazy:**
 
-- [ ] `$map` on dict -- returns eager dict (fix: PendingCall thunks, Phase 5e)
-- [ ] `$filter` on dict -- returns eager dict (fix: return Seq, Phase 5e)
-- [ ] `$range` -- builds full dict eagerly, O(n^2) (fix: return Seq, Phase 5d)
-- [ ] `$repeat` -- builds full dict eagerly (fix: return Seq, Phase 5d)
-- [ ] `$cycle` -- builds full dict eagerly (fix: return Seq, Phase 5d)
+- [x] `$map` on dict -- returns eager dict (fix: PendingCall thunks, Phase 5e)
+- [x] `$filter` on dict -- returns eager dict (fix: return Seq, Phase 5e)
+- [x] `$range` -- builds full dict eagerly, O(n^2) (fix: return Seq, Phase 5d)
+- [x] `$repeat` -- builds full dict eagerly (fix: return Seq, Phase 5d)
+- [x] `$cycle` -- builds full dict eagerly (fix: return Seq, Phase 5d)
 - [x] `$if` -- materializes chosen branch (fix: return branch thunk, Phase 5b)
 - [x] `$merge` -- clones both dicts (Rc-clones thunks already; full lazy overlay needs dict proxy, deferred)
 - [ ] `$update` -- eagerly applies function (fix: PendingCall on updated value, Phase 5e)
@@ -830,6 +830,8 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add Failed state same-span deduplication test — access Failed thunk twice with same span, verify no duplicate stack frames (`src/eval.rs`) [Minor, test-crafter]
 - [ ] Add Failed state None→Some→Some edge case test — first access with None, then Some(span1), then Some(span2); verifies is_none() path (`src/eval.rs`) [Minor, test-crafter]
 - [ ] Add doc comment to Failed state handler explaining dual-span model conditional update strategy (`src/eval.rs:873-894`) [Nit, span-integrity-checker + eval-engine]
+- [ ] Add error corpus tests for drop/reduce/join type/arity mismatches — `drop_wrong_type.txt`, `reduce_wrong_type.txt`, `join_wrong_type.txt` (`tests/corpus/eval/errors/`) [Major, test-crafter]
+- [ ] Add unit tests for builtin_drop, builtin_reduce, builtin_join (PendingCall chain construction, thunk state, span propagation) (`src/builtins.rs`) [Minor, test-crafter]
 
 ### 13a½: Additional Test Coverage
 

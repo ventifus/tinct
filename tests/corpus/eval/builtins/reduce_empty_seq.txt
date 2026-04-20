@@ -1,0 +1,4 @@
+# reduce on empty seq returns init
+[call $reduce [fn [acc x] [call $+ $acc $x]] 42 []]
+===
+Int(42)

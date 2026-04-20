@@ -1,0 +1,4 @@
+# drop on seq: skip first 3 elements
+[call $head [call $drop 3 [call $range 0 10]]]
+===
+Int(3)

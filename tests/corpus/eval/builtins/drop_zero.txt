@@ -1,0 +1,4 @@
+# drop 0 returns collection unchanged
+[call $collect [call $drop 0 [call $seq a [call $seq b [call $seq c []]]]]]
+===
+Dict({0: String("a"), 1: String("b"), 2: String("c")})

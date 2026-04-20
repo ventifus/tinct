@@ -15,7 +15,7 @@
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
 //! **Type introspection:** `type-of`
 //! **I/O:** `from-json`, `include`
-//! **Sequences:** `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`
+//! **Sequences:** `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -1693,8 +1693,7 @@ fn builtin_filter(
 
             // Wrap materialized values in Materialized-state thunks so the
             // step helper's materialize() calls are O(1) by construction
-            let dict_thunk =
-                Rc::new(Thunk::new_materialized(Value::Dict(map.clone()), call_span));
+            let dict_thunk = Rc::new(Thunk::new_materialized(Value::Dict(map.clone()), call_span));
             let mut keys_map = IndexMap::with_capacity(keys.len());
             for (i, k) in keys.into_iter().enumerate() {
                 let key_value = match k {
@@ -2043,6 +2042,279 @@ fn builtin_take(
     }
 }
 
+/// `drop`: Drop the first n elements from a Dict or Seq.
+///
+/// - For Dict: skip first n entries by position, return Dict with remaining entries
+/// - For Seq: eagerly traverse n elements, return remaining tail thunk
+///
+/// Args: (n, xs)
+fn builtin_drop(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("drop", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let n = materialize(&args[0], None, depth)?;
+    let n_int = match n {
+        Value::Int(i) => i,
+        other => {
+            return Err(EvalError::new(
+                format!("drop: n must be Int, got {}", other.type_name()),
+                call_span,
+            )
+            .into())
+        }
+    };
+
+    if n_int <= 0 {
+        // Return xs unchanged
+        return Ok(Rc::clone(&args[1]));
+    }
+
+    let xs = materialize(&args[1], None, depth)?;
+    match xs {
+        Value::Dict(ref map) => {
+            // Dict: skip first n entries by position
+            let dropped: IndexMap<Key, Rc<Thunk>> = map
+                .iter()
+                .skip(n_int as usize)
+                .map(|(k, v)| (k.clone(), Rc::clone(v)))
+                .collect();
+            ok_val(Value::Dict(dropped))
+        }
+        Value::Seq { head: _, tail } => {
+            // Seq: eagerly traverse n elements by materializing head/tail in a loop
+            let mut remaining = Rc::clone(&tail);
+            let mut count = n_int - 1; // Already consumed head
+
+            while count > 0 {
+                let val = materialize(&remaining, None, depth)?;
+                match val {
+                    Value::Dict(_) => {
+                        // Sequence ended before n elements
+                        return ok_val(Value::Dict(IndexMap::new()));
+                    }
+                    Value::Seq { head: _, tail } => {
+                        remaining = Rc::clone(&tail);
+                        count -= 1;
+                    }
+                    other => {
+                        return Err(EvalError::new(
+                            format!("drop: invalid Seq tail, got {}", other.type_name()),
+                            call_span,
+                        )
+                        .into());
+                    }
+                }
+            }
+
+            Ok(remaining)
+        }
+        other => Err(EvalError::new(
+            format!("drop: expected Dict or Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// `reduce`: Fold a function over a Dict or Seq.
+///
+/// - For Dict: build a chain of PendingCall thunks, one per value
+/// - For Seq: use recursive helper to build lazy chain
+///
+/// Args: (f, init, xs)
+fn builtin_reduce(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("reduce", named, call_span)?;
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+
+    let f_thunk = Rc::clone(&args[0]);
+    let init_thunk = Rc::clone(&args[1]);
+    let xs = materialize(&args[2], None, depth)?;
+
+    match xs {
+        Value::Dict(ref map) => {
+            // Dict path: build a chain of PendingCall thunks
+            let mut acc = init_thunk;
+            for (_key, value_thunk) in map.iter() {
+                acc = Rc::new(Thunk::new_pending_call(
+                    Rc::clone(&f_thunk),
+                    vec![acc, Rc::clone(value_thunk)],
+                    call_span,
+                    value_thunk.span,
+                    "reduce".to_string(),
+                ));
+            }
+            Ok(acc)
+        }
+        Value::Seq { head, tail } => {
+            // Seq path: use recursive step function
+            let step_args = vec![
+                Rc::clone(&f_thunk),
+                init_thunk,
+                Rc::clone(&head),
+                Rc::clone(&tail),
+            ];
+            Ok(Rc::new(Thunk::new_pending_builtin(
+                builtin_reduce_seq_step,
+                step_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            )))
+        }
+        other => Err(EvalError::new(
+            format!("reduce: expected Dict or Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// Helper for `reduce` on Seq: process one element and recurse.
+///
+/// Args: (f, acc, head, tail)
+fn builtin_reduce_seq_step(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("reduce_seq_step", named, call_span)?;
+    if args.len() != 4 {
+        return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
+    }
+
+    let f_thunk = Rc::clone(&args[0]);
+    let acc_thunk = Rc::clone(&args[1]);
+    let head_thunk = Rc::clone(&args[2]);
+    let tail_thunk = Rc::clone(&args[3]);
+
+    // Create new accumulator: f(acc, head)
+    let new_acc = Rc::new(Thunk::new_pending_call(
+        Rc::clone(&f_thunk),
+        vec![acc_thunk, head_thunk],
+        call_span,
+        tail_thunk.span,
+        "reduce".to_string(),
+    ));
+
+    // Check if tail is empty (sequence end)
+    let tail_val = materialize(&tail_thunk, None, depth)?;
+    match tail_val {
+        Value::Dict(_) => {
+            // Empty dict = end of sequence, return accumulator
+            Ok(new_acc)
+        }
+        Value::Seq { head, tail } => {
+            // Continue reducing
+            let step_args = vec![
+                Rc::clone(&f_thunk),
+                new_acc,
+                Rc::clone(&head),
+                Rc::clone(&tail),
+            ];
+            Ok(Rc::new(Thunk::new_pending_builtin(
+                builtin_reduce_seq_step,
+                step_args,
+                IndexMap::new(),
+                depth,
+                call_span,
+            )))
+        }
+        other => Err(EvalError::new(
+            format!("reduce: invalid Seq tail, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// `join`: Join elements with a separator string.
+///
+/// - For Dict: materialize values, stringify each, join with separator
+/// - For Seq: traverse head/tail chain, stringify each element, join
+///
+/// Args: (sep, xs)
+fn builtin_join(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("join", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let sep = materialize(&args[0], None, depth)?;
+    let sep_str = require_string("join", sep, call_span)?;
+
+    let xs = materialize(&args[1], None, depth)?;
+    match xs {
+        Value::Dict(ref map) => {
+            // Dict path: iterate values, materialize, stringify, join
+            let mut parts = Vec::with_capacity(map.len());
+            for (_key, value_thunk) in map.iter() {
+                let val = materialize(value_thunk, None, depth)?;
+                parts.push(stringify(&val));
+            }
+            ok_val(Value::String(parts.join(&sep_str)))
+        }
+        Value::Seq { head, tail } => {
+            // Seq path: traverse head/tail chain, collect strings
+            let mut parts = Vec::new();
+            let mut current_head = Rc::clone(&head);
+            let mut current_tail = Rc::clone(&tail);
+
+            loop {
+                // Materialize and stringify current head
+                let head_val = materialize(&current_head, None, depth)?;
+                parts.push(stringify(&head_val));
+
+                // Check tail
+                let tail_val = materialize(&current_tail, None, depth)?;
+                match tail_val {
+                    Value::Dict(_) => {
+                        // End of sequence
+                        break;
+                    }
+                    Value::Seq { head, tail } => {
+                        current_head = Rc::clone(&head);
+                        current_tail = Rc::clone(&tail);
+                    }
+                    other => {
+                        return Err(EvalError::new(
+                            format!("join: invalid Seq tail, got {}", other.type_name()),
+                            call_span,
+                        )
+                        .into());
+                    }
+                }
+            }
+
+            ok_val(Value::String(parts.join(&sep_str)))
+        }
+        other => Err(EvalError::new(
+            format!("join: expected Dict or Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
 /// Returns all builtin definitions as (name, function) pairs.
 ///
 /// All builtins conform to the standard `BuiltinFn` signature, including `if`
@@ -2102,6 +2374,9 @@ pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
         ("map", builtin_map),
         ("filter", builtin_filter),
         ("take", builtin_take),
+        ("drop", builtin_drop),
+        ("reduce", builtin_reduce),
+        ("join", builtin_join),
     ]
 }
 
@@ -5774,8 +6049,11 @@ mod tests {
         assert!(names.contains(&"map"), "missing map");
         assert!(names.contains(&"filter"), "missing filter");
         assert!(names.contains(&"take"), "missing take");
+        assert!(names.contains(&"drop"), "missing drop");
+        assert!(names.contains(&"reduce"), "missing reduce");
+        assert!(names.contains(&"join"), "missing join");
         // Total count
-        assert_eq!(names.len(), 41, "expected 41 builtins, got {}", names.len());
+        assert_eq!(names.len(), 44, "expected 44 builtins, got {}", names.len());
     }
 
     #[test]
