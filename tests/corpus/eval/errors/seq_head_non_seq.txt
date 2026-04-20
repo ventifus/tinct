@@ -1,0 +1,4 @@
+# head: error on non-Seq
+[call $head 42]
+===
+expected Seq

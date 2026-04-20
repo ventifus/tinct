@@ -15,6 +15,7 @@
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
 //! **Type introspection:** `type-of`
 //! **I/O:** `from-json`, `include`
+//! **Sequences:** `seq`, `head`, `tail`, `collect`, `seq?`
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -1089,6 +1090,161 @@ fn builtin_include(
     })
 }
 
+/// `seq`: Low-level cons constructor for lazy linked-list sequences.
+///
+/// Creates a `Seq` with the given head and tail. Both args remain as thunks
+/// (fully lazy, no materialization). The tail is NOT validated eagerly -- if it
+/// eventually materializes to a non-Seq/non-empty-dict, that's an error at
+/// materialization time, not construction time.
+fn builtin_seq(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    _depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    reject_named("seq", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    ok_val(Value::Seq {
+        head: Rc::clone(&args[0]),
+        tail: Rc::clone(&args[1]),
+    })
+}
+
+/// `head`: Extract the first element of a sequence.
+///
+/// Materializes the argument to verify it's a Seq, then returns the head thunk
+/// directly (lazy -- the head is not materialized). Empty dict (terminal value)
+/// produces a specific error message.
+fn builtin_head(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    let val = expect_one_arg("head", args, named, depth, call_span)?;
+    match val {
+        Value::Seq { head, .. } => Ok(Rc::clone(&head)),
+        Value::Dict(ref map) if map.is_empty() => Err(EvalError::new(
+            "head on empty sequence",
+            call_span,
+        )
+        .into()),
+        other => Err(EvalError::new(
+            format!("head: expected Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// `tail`: Extract the rest of a sequence.
+///
+/// Materializes the argument to verify it's a Seq, then returns the tail thunk
+/// directly (lazy -- the tail is not materialized). Empty dict (terminal value)
+/// produces a specific error message.
+fn builtin_tail(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    let val = expect_one_arg("tail", args, named, depth, call_span)?;
+    match val {
+        Value::Seq { tail, .. } => Ok(Rc::clone(&tail)),
+        Value::Dict(ref map) if map.is_empty() => Err(EvalError::new(
+            "tail on empty sequence",
+            call_span,
+        )
+        .into()),
+        other => Err(EvalError::new(
+            format!("tail: expected Seq, got {}", other.type_name()),
+            call_span,
+        )
+        .into()),
+    }
+}
+
+/// `collect`: Materialize a Seq into a dict with integer keys.
+///
+/// Iterates through the sequence spine, collecting head thunks into an IndexMap
+/// with keys 0, 1, 2, ... Head elements remain as thunks (lazy). Each tail is materialized to check
+/// if it's another Seq or the terminal value (empty dict). Terminal condition:
+/// tail materializes to an empty dict (Dict with 0 entries). If tail is anything
+/// other than Seq or empty dict, error. Empty dict as input returns empty dict.
+fn builtin_collect(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    let val = expect_one_arg("collect", args, named, depth, call_span)?;
+
+    // Handle empty dict (terminal value) as input
+    if let Value::Dict(ref d) = val {
+        if d.is_empty() {
+            return ok_val(Value::Dict(IndexMap::new()));
+        }
+    }
+
+    if !matches!(val, Value::Seq { .. }) {
+        return Err(EvalError::new(
+            format!("collect: expected Seq, got {}", val.type_name()),
+            call_span,
+        )
+        .into());
+    }
+
+    let mut map = IndexMap::new();
+    let mut index = 0i64;
+    let mut current = val;
+
+    loop {
+        match current {
+            Value::Seq { head, tail } => {
+                // Insert head thunk (not materialized -- stay lazy)
+                map.insert(Key::Int(index), Rc::clone(&head));
+                index = index
+                    .checked_add(1)
+                    .ok_or_else(|| EvalError::new("collect: integer key overflow", call_span))?;
+
+                // Materialize tail to check if we should continue
+                current = materialize(&tail, None, depth)?;
+            }
+            Value::Dict(ref d) if d.is_empty() => {
+                // Terminal: empty dict
+                break;
+            }
+            other => {
+                return Err(EvalError::new(
+                    format!(
+                        "collect: expected Seq or empty dict as tail, got {}",
+                        other.type_name()
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+        }
+    }
+
+    ok_val(Value::Dict(map))
+}
+
+/// `seq?`: Type predicate for sequences.
+///
+/// Returns true if the argument materializes to a Seq, false otherwise.
+fn builtin_seq_check(
+    args: &[Rc<Thunk>],
+    named: &IndexMap<String, Rc<Thunk>>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<Rc<Thunk>> {
+    let val = expect_one_arg("seq?", args, named, depth, call_span)?;
+    ok_val(Value::Bool(matches!(val, Value::Seq { .. })))
+}
+
 /// Returns all builtin definitions as (name, function) pairs.
 ///
 /// All builtins conform to the standard `BuiltinFn` signature, including `if`
@@ -1134,6 +1290,12 @@ pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
         // I/O
         ("from-json", builtin_from_json),
         ("include", builtin_include),
+        // Sequences
+        ("seq", builtin_seq),
+        ("head", builtin_head),
+        ("tail", builtin_tail),
+        ("collect", builtin_collect),
+        ("seq?", builtin_seq_check),
     ]
 }
 
@@ -4689,8 +4851,14 @@ mod tests {
         // I/O
         assert!(names.contains(&"from-json"), "missing from-json");
         assert!(names.contains(&"include"), "missing include");
+        // Sequences
+        assert!(names.contains(&"seq"), "missing seq");
+        assert!(names.contains(&"head"), "missing head");
+        assert!(names.contains(&"tail"), "missing tail");
+        assert!(names.contains(&"collect"), "missing collect");
+        assert!(names.contains(&"seq?"), "missing seq?");
         // Total count
-        assert_eq!(names.len(), 28, "expected 28 builtins, got {}", names.len());
+        assert_eq!(names.len(), 33, "expected 33 builtins, got {}", names.len());
     }
 
     #[test]
@@ -6024,5 +6192,249 @@ mod tests {
             other => panic!("expected Dict, got {:?}", other),
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Sequence builtins tests
+
+    #[test]
+    fn seq_basic() {
+        let head_val = thunk(Value::Int(1));
+        let tail_val = thunk(Value::Int(2));
+        let result = mat(builtin_seq(
+            &[head_val.clone(), tail_val.clone()],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        match result {
+            Value::Seq { head, tail } => {
+                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(1));
+                assert_eq!(materialize(&tail, None, 0).unwrap(), Value::Int(2));
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn seq_arity_zero() {
+        let result = builtin_seq(&[], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn seq_arity_one() {
+        let result = builtin_seq(&[thunk(Value::Int(1))], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn seq_arity_three() {
+        let result = builtin_seq(
+            &[
+                thunk(Value::Int(1)),
+                thunk(Value::Int(2)),
+                thunk(Value::Int(3)),
+            ],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn seq_lazy() {
+        // Head can be a thunk wrapping a VarRef to a nonexistent variable.
+        // If we tried to materialize this thunk, it would error (undefined variable).
+        // But seq construction should succeed because it doesn't materialize args.
+        let undef_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(Spanned::new(
+                Expr::VarRef("undefined_var".to_string()),
+                test_span(1, 1, 1, 5),
+            )),
+            Rc::new(RefCell::new(Environment::new())),
+            test_span(1, 1, 1, 5),
+        ));
+        let tail_val = thunk(Value::Int(2));
+        // seq construction should succeed even though head would error if materialized
+        let result = builtin_seq(&[undef_thunk, tail_val], &no_named(), 0, call_span());
+        assert!(result.is_ok());
+        // Verify the result is a Seq
+        match mat(result) {
+            Value::Seq { .. } => {} // Success
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn head_basic() {
+        let seq_val = thunk(Value::Seq {
+            head: thunk(Value::String("first".into())),
+            tail: thunk(Value::Dict(IndexMap::new())),
+        });
+        let result = builtin_head(&[seq_val], &no_named(), 0, call_span());
+        assert!(result.is_ok());
+        let head = mat(result);
+        assert_eq!(head, Value::String("first".into()));
+    }
+
+    #[test]
+    fn head_non_seq() {
+        let result = builtin_head(&[thunk(Value::Int(42))], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn head_arity_zero() {
+        let result = builtin_head(&[], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn head_arity_two() {
+        let result = builtin_head(
+            &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+            &no_named(),
+            0,
+            call_span(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn head_empty_dict() {
+        let result = builtin_head(&[thunk(Value::Dict(IndexMap::new()))], &no_named(), 0, call_span());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("empty sequence"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn tail_empty_dict() {
+        let result = builtin_tail(&[thunk(Value::Dict(IndexMap::new()))], &no_named(), 0, call_span());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("empty sequence"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn tail_basic() {
+        let seq_val = thunk(Value::Seq {
+            head: thunk(Value::String("first".into())),
+            tail: thunk(Value::Int(99)),
+        });
+        let result = builtin_tail(&[seq_val], &no_named(), 0, call_span());
+        assert!(result.is_ok());
+        let tail = mat(result);
+        assert_eq!(tail, Value::Int(99));
+    }
+
+    #[test]
+    fn tail_non_seq() {
+        let result = builtin_tail(&[thunk(Value::String("not a seq".into()))], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn collect_basic() {
+        // Build a 3-element sequence: Seq(1, Seq(2, Seq(3, {})))
+        let seq_val = thunk(Value::Seq {
+            head: thunk(Value::Int(1)),
+            tail: thunk(Value::Seq {
+                head: thunk(Value::Int(2)),
+                tail: thunk(Value::Seq {
+                    head: thunk(Value::Int(3)),
+                    tail: thunk(Value::Dict(IndexMap::new())),
+                }),
+            }),
+        });
+        let result = mat(builtin_collect(&[seq_val], &no_named(), 0, call_span()));
+        match result {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 3);
+                assert_eq!(
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap(),
+                    Value::Int(1)
+                );
+                assert_eq!(
+                    materialize(map.get(&Key::Int(1)).unwrap(), None, 0).unwrap(),
+                    Value::Int(2)
+                );
+                assert_eq!(
+                    materialize(map.get(&Key::Int(2)).unwrap(), None, 0).unwrap(),
+                    Value::Int(3)
+                );
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn collect_empty_tail() {
+        // Single element: Seq(42, {})
+        let seq_val = thunk(Value::Seq {
+            head: thunk(Value::Int(42)),
+            tail: thunk(Value::Dict(IndexMap::new())),
+        });
+        let result = mat(builtin_collect(&[seq_val], &no_named(), 0, call_span()));
+        match result {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 1);
+                assert_eq!(
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap(),
+                    Value::Int(42)
+                );
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn collect_non_seq() {
+        let result = builtin_collect(&[thunk(Value::Int(123))], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn collect_invalid_tail() {
+        // Seq with non-empty dict as tail (should error)
+        let mut map = IndexMap::new();
+        map.insert(Key::String("x".into()), thunk(Value::Int(1)));
+        let seq_val = thunk(Value::Seq {
+            head: thunk(Value::Int(1)),
+            tail: thunk(Value::Dict(map)),
+        });
+        let result = builtin_collect(&[seq_val], &no_named(), 0, call_span());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn seq_check_true() {
+        let seq_val = thunk(Value::Seq {
+            head: thunk(Value::Int(1)),
+            tail: thunk(Value::Dict(IndexMap::new())),
+        });
+        let result = mat(builtin_seq_check(&[seq_val], &no_named(), 0, call_span()));
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn seq_check_false() {
+        let result = mat(builtin_seq_check(
+            &[thunk(Value::String("not a seq".into()))],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn seq_check_dict() {
+        let result = mat(builtin_seq_check(
+            &[thunk(Value::Dict(IndexMap::new()))],
+            &no_named(),
+            0,
+            call_span(),
+        ));
+        assert_eq!(result, Value::Bool(false));
     }
 }

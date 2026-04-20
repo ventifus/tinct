@@ -1,0 +1,4 @@
+# tail: extract tail, then head of tail
+[call $head [call $tail [call $seq 1 [call $seq 2 []]]]]
+===
+Int(2)

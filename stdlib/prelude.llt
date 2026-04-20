@@ -194,7 +194,8 @@ get-in-or: [fn [xs path default]
             $default]]]
 
 # Check if a collection is empty.
-empty?: [fn [xs] [call $= [call $length $xs] 0]]
+# Seq values are never empty (always have a head), so return false immediately.
+empty?: [fn [xs] [call $if [call $seq? $xs] false [call $= [call $length $xs] 0]]]
 
 # Set a key in a dict (returns new dict with key added/updated).
 set: [fn [xs k v] [call $merge $xs [call $make-entry $k $v]]]

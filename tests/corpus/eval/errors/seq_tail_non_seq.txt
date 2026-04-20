@@ -1,0 +1,4 @@
+# tail: error on non-Seq
+[call $tail 42]
+===
+expected Seq

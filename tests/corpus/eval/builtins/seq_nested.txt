@@ -1,0 +1,4 @@
+# seq: nested values in seq
+[call $collect [call $seq [x: 1] [call $seq [y: 2] []]]]
+===
+Dict({0: Dict({"x": Int(1)}), 1: Dict({"y": Int(2)})})

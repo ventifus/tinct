@@ -316,9 +316,9 @@ Add `Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)` for lazy sequences — core t
 Sequence builtins, type system integration, and stdlib fixes for Seq.
 
 - [x] Add `Type::Seq(Box<Type>)` to type system — monomorphic in element type, not a subtype of Record (`types.rs`)
-- [ ] Sequence builtins (Rust-native): `seq`, `head`, `tail`, `collect`, `seq?`
-- [ ] Tests: seq construction, head/tail, collect, type-of
-- [ ] Fix `empty?` to not hang on infinite sequences — currently does not short-circuit (`stdlib/prelude.llt:156`) [Minor, stdlib-author]
+- [x] Sequence builtins (Rust-native): `seq`, `head`, `tail`, `collect`, `seq?`
+- [x] Tests: seq construction, head/tail, collect, type-of
+- [x] Fix `empty?` to not hang on infinite sequences — currently does not short-circuit (`stdlib/prelude.llt:156`) [Minor, stdlib-author]
 
 ### 5d: Sequence Constructors
 

@@ -1,0 +1,4 @@
+# tail: returns empty dict for single-element seq
+[call $collect [call $tail [call $seq 1 []]]]
+===
+Dict({})

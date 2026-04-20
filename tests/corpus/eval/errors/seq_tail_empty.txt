@@ -1,0 +1,4 @@
+# tail: error on empty seq
+[call $tail []]
+===
+tail on empty sequence

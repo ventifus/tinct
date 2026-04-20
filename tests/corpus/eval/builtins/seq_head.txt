@@ -1,0 +1,4 @@
+# head: extract first element from seq
+[call $head [call $seq 42 []]]
+===
+Int(42)

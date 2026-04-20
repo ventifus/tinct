@@ -1,0 +1,4 @@
+# seq?: returns false for dict
+[call $seq? [x: 1]]
+===
+Bool(false)

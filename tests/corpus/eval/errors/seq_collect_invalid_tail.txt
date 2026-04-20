@@ -1,0 +1,4 @@
+# collect: error when tail is non-empty dict (not Seq or terminal)
+[call $collect [call $seq 1 [x: 2]]]
+===
+expected Seq or empty dict as tail

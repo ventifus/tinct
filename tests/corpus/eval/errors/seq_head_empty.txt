@@ -1,0 +1,4 @@
+# head: error on empty seq
+[call $head []]
+===
+head on empty sequence

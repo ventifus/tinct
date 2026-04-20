@@ -1337,7 +1337,7 @@ first-ten: [call $collect [call $take 10 $squares]]
 
 **Principle:** Only implement in Rust what cannot be expressed in LLT itself. Everything else is LLT code loaded from a prelude file at startup.
 
-**Rust-native builtins (28 total):**
+**Rust-native builtins (33 total):**
 
 | Group | Functions | Rationale |
 |-------|-----------|-----------|
@@ -1350,6 +1350,7 @@ first-ten: [call $collect [call $take 10 $squares]]
 | Parsing | `to-int`, `to-float` | String-to-number parsing only (e.g., `"42"` to `42`). Numeric conversion (float-to-int) uses `floor`/`round`/`trunc`; int-to-float uses arithmetic promotion (`[call $+ $x 0.0]`). |
 | Evaluation control | `eval`, `error`, `try`, `apply` | `eval` deep-forces thunks (evaluator access); `error` constructs EvalError; `try` catches materialization errors; `apply` spreads a dict as positional args. |
 | Type introspection | `type-of` | Inspects the Value enum variant; no LLT expression can determine a value's type. |
+| Sequences | `seq`, `head`, `tail`, `collect`, `seq?` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. All require `Rc<Thunk>` manipulation unavailable in LLT. |
 | I/O | `from-json`, `include` | `from-json` parses a JSON string into an LLT dict; requires a JSON parser (serde_json). `include` evaluates an LLT file and returns its result; requires filesystem access, cycle detection, and path resolution. |
 
 **Derived functions (moved from Rust to LLT):**
@@ -1770,11 +1771,11 @@ This table documents every operation's current materialization behavior and the 
 | `$cycle` | Eager: builds full dict | Return lazy Seq, O(1) construction; infinite if 1-arg | 5d | Enables infinite cycling |
 | `$iterate` | Not yet implemented | Return lazy infinite Seq: `x, f(x), f(f(x)), ...` | 5d | New lazy sequence constructor |
 | `$unfold` | Not yet implemented | Return lazy Seq from step function | 5d | New lazy sequence constructor |
-| `$seq` | Not yet implemented | Low-level Seq constructor (cons cell) | 5c | Rust builtin for Seq construction |
-| `$collect` | Not yet implemented | Materialize Seq into dict with integer keys 0..n | 5c | Seq → Dict boundary |
-| `$head` | Not yet implemented | Materialize head of Seq | 5c | Forces first element |
-| `$tail` | Not yet implemented | Return tail Seq (lazy, does not materialize) | 5c | Structural Seq operation |
-| `$seq?` | Not yet implemented | Type check: returns Bool | 5c | Type introspection |
+| `$seq` | Implemented (5c½) | Low-level Seq constructor (cons cell) | 5c½ | Rust builtin for Seq construction |
+| `$collect` | Implemented (5c½) | Materialize Seq into dict with integer keys 0..n | 5c½ | Seq → Dict boundary |
+| `$head` | Implemented (5c½) | Extract head of Seq (returns thunk, lazy) | 5c½ | Structural Seq operation |
+| `$tail` | Implemented (5c½) | Return tail Seq (lazy, does not materialize) | 5c½ | Structural Seq operation |
+| `$seq?` | Implemented (5c½) | Type check: returns Bool | 5c½ | Type introspection |
 | **Arithmetic & Comparison** | | | | |
 | `$+`, `$-`, `$*`, `$/` | Materialize both operands | No change (inherently materializing) | — | Must inspect numeric values |
 | `$quot`, `$mod` | Materialize both operands | No change (inherently materializing) | — | Depends on arithmetic |
