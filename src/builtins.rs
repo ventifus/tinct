@@ -17,6 +17,7 @@
 //! **I/O:** `from-json`, `include`
 //! **Sequences:** `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -914,7 +915,7 @@ fn builtin_apply(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 default_env: &closure_env,
                 call_span,
                 depth,
-                origin: "call $apply".to_string(),
+                origin: Cow::Borrowed("call $apply"),
             })
         }
         Value::Builtin { func, .. } => {
@@ -1365,6 +1366,7 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             IndexMap::new(),
             depth,
             call_span,
+            Cow::Borrowed("call $range"),
         ));
         ok_val(Value::Seq { head, tail })
     } else {
@@ -1399,6 +1401,7 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $range"),
             ));
             ok_val(Value::Seq { head, tail })
         }
@@ -1430,6 +1433,7 @@ fn builtin_repeat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         IndexMap::new(),
         0, // depth doesn't matter for PendingBuiltin (checked at materialization)
         call_span,
+        Cow::Borrowed("call $repeat"),
     ));
     ok_val(Value::Seq { head, tail })
 }
@@ -1496,6 +1500,7 @@ fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         IndexMap::new(),
         depth,
         call_span,
+        Cow::Borrowed("call $cycle"),
     ));
 
     ok_val(Value::Seq { head, tail })
@@ -1569,9 +1574,10 @@ fn builtin_iterate(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let f_of_x = Rc::new(Thunk::new_pending_call(
         Rc::clone(&f),
         vec![Rc::clone(&x)],
+        IndexMap::new(),
         call_span,
         call_span,
-        "iterate".to_string(),
+        Cow::Borrowed("iterate"),
     ));
 
     // tail = iterate(f, f(x))
@@ -1582,6 +1588,7 @@ fn builtin_iterate(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         IndexMap::new(),
         0, // depth checked at materialization
         call_span,
+        Cow::Borrowed("call $iterate"),
     ));
 
     ok_val(Value::Seq { head, tail })
@@ -1611,9 +1618,10 @@ fn builtin_unfold_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let step_result_thunk = Rc::new(Thunk::new_pending_call(
         step.clone(),
         vec![seed],
+        IndexMap::new(),
         call_span,
         call_span,
-        "unfold".to_string(),
+        Cow::Borrowed("unfold"),
     ));
     let step_result = materialize(&step_result_thunk, None, depth)?;
 
@@ -1639,6 +1647,7 @@ fn builtin_unfold_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $unfold"),
             ));
 
             ok_val(Value::Seq { head, tail })
@@ -1688,6 +1697,7 @@ fn builtin_unfold(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         IndexMap::new(),
         depth,
         call_span,
+        Cow::Borrowed("call $unfold"),
     ));
     Ok(result)
 }
@@ -1721,9 +1731,10 @@ fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 let pending_call = Rc::new(Thunk::new_pending_call(
                     Rc::clone(&f_thunk),
                     vec![Rc::clone(value_thunk)],
+                    IndexMap::new(),
                     call_span,
                     value_thunk.span,
-                    format!("map {}", key),
+                    Cow::Owned(format!("map {}", key)),
                 ));
                 new_map.insert(key.clone(), pending_call);
             }
@@ -1734,9 +1745,10 @@ fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let new_head = Rc::new(Thunk::new_pending_call(
                 Rc::clone(&f_thunk),
                 vec![Rc::clone(&head)],
+                IndexMap::new(),
                 call_span,
                 head.span,
-                "map head".to_string(),
+                Cow::Borrowed("map head"),
             ));
             let tail_args = vec![Rc::clone(&f_thunk), Rc::clone(&tail)];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
@@ -1745,6 +1757,7 @@ fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $map"),
             ));
             ok_val(Value::Seq {
                 head: new_head,
@@ -1815,6 +1828,7 @@ fn builtin_filter(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $filter"),
             ));
             Ok(result_thunk)
         }
@@ -1827,6 +1841,7 @@ fn builtin_filter(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $filter"),
             ));
             Ok(result_thunk)
         }
@@ -1945,9 +1960,10 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let pred_call = Rc::new(Thunk::new_pending_call(
         Rc::clone(&pred_thunk),
         vec![Rc::clone(&value_thunk)],
+        IndexMap::new(),
         call_span,
         value_thunk.span,
-        format!("filter-dict pred {}", current_key),
+        Cow::Owned(format!("filter-dict pred {}", current_key)),
     ));
     let pred_result = materialize(&pred_call, None, depth)?;
 
@@ -1979,6 +1995,7 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         IndexMap::new(),
         depth,
         call_span,
+        Cow::Borrowed("call $filter"),
     ));
 
     if passes {
@@ -2017,9 +2034,10 @@ fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let pred_call = Rc::new(Thunk::new_pending_call(
                 Rc::clone(&pred_thunk),
                 vec![Rc::clone(&head)],
+                IndexMap::new(),
                 call_span,
                 head.span,
-                "filter-seq pred".to_string(),
+                Cow::Borrowed("filter-seq pred"),
             ));
             let pred_result = materialize(&pred_call, None, depth)?;
 
@@ -2046,6 +2064,7 @@ fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     IndexMap::new(),
                     depth,
                     call_span,
+                    Cow::Borrowed("call $filter"),
                 ));
                 ok_val(Value::Seq {
                     head,
@@ -2060,6 +2079,7 @@ fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     IndexMap::new(),
                     depth,
                     call_span,
+                    Cow::Borrowed("call $filter"),
                 ));
                 Ok(next_thunk)
             }
@@ -2130,6 +2150,7 @@ fn builtin_take(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $take"),
             ));
             ok_val(Value::Seq {
                 head: new_head,
@@ -2200,6 +2221,7 @@ fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $drop"),
             )))
         }
         other => Err(EvalError::new(
@@ -2248,6 +2270,7 @@ fn builtin_drop_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $drop"),
             )))
         }
         other => Err(EvalError::new(
@@ -2289,9 +2312,10 @@ fn builtin_reduce(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 acc = Rc::new(Thunk::new_pending_call(
                     Rc::clone(&f_thunk),
                     vec![acc, Rc::clone(value_thunk)],
+                    IndexMap::new(),
                     call_span,
                     value_thunk.span,
-                    "reduce".to_string(),
+                    Cow::Borrowed("reduce"),
                 ));
             }
             Ok(acc)
@@ -2310,6 +2334,7 @@ fn builtin_reduce(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $reduce"),
             )))
         }
         other => Err(EvalError::new(
@@ -2344,9 +2369,10 @@ fn builtin_reduce_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let new_acc = Rc::new(Thunk::new_pending_call(
         Rc::clone(&f_thunk),
         vec![acc_thunk, head_thunk],
+        IndexMap::new(),
         call_span,
         tail_thunk.span,
-        "reduce".to_string(),
+        Cow::Borrowed("reduce"),
     ));
 
     // Check if tail is empty (sequence end)
@@ -2370,6 +2396,7 @@ fn builtin_reduce_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 IndexMap::new(),
                 depth,
                 call_span,
+                Cow::Borrowed("call $reduce"),
             )))
         }
         other => Err(EvalError::new(

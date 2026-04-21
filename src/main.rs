@@ -1,16 +1,16 @@
 //! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use tinct::{
-    clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
-    json_to_value, materialize, parse, set_include_context, value_to_display_string, value_to_json,
-    IncludeContext, Span, Thunk, MAX_FILE_SIZE,
-};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Read};
 use std::process;
 use std::rc::Rc;
+use tinct::{
+    clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
+    json_to_value, materialize, parse, set_include_context, value_to_display_string, value_to_json,
+    IncludeContext, Span, Thunk, MAX_FILE_SIZE,
+};
 
 const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
 

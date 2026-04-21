@@ -1,5 +1,6 @@
 //! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
 
+use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -187,6 +188,7 @@ pub enum ThunkState {
     PendingCall {
         func: Rc<Thunk>,
         args: Vec<Rc<Thunk>>,
+        named: IndexMap<String, Rc<Thunk>>,
         call_span: Span,
     },
     InProgress,
@@ -201,7 +203,7 @@ pub struct Thunk {
     pub(crate) span: Span,
     /// Label describing this thunk's origin (e.g. "call $f").
     /// Used for stack trace construction when materialization fails.
-    pub(crate) origin: String,
+    pub(crate) origin: Cow<'static, str>,
 }
 
 impl Thunk {
@@ -213,7 +215,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::Unevaluated { expr, env }),
             span,
-            origin: String::new(),
+            origin: Cow::Borrowed(""),
         }
     }
 
@@ -221,7 +223,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::Materialized(value)),
             span,
-            origin: String::new(),
+            origin: Cow::Borrowed(""),
         }
     }
 
@@ -231,6 +233,7 @@ impl Thunk {
         named: IndexMap<String, Rc<Thunk>>,
         depth: usize,
         span: Span,
+        origin: Cow<'static, str>,
     ) -> Self {
         Self {
             state: RefCell::new(ThunkState::PendingBuiltin {
@@ -241,21 +244,23 @@ impl Thunk {
                 call_span: span,
             }),
             span,
-            origin: String::new(),
+            origin,
         }
     }
 
     pub fn new_pending_call(
         func: Rc<Thunk>,
         args: Vec<Rc<Thunk>>,
+        named: IndexMap<String, Rc<Thunk>>,
         call_span: Span,
         span: Span,
-        origin: String,
+        origin: Cow<'static, str>,
     ) -> Self {
         Self {
             state: RefCell::new(ThunkState::PendingCall {
                 func,
                 args,
+                named,
                 call_span,
             }),
             span,
@@ -264,7 +269,7 @@ impl Thunk {
     }
 
     /// Set the origin label for this thunk (used in stack traces).
-    pub fn with_origin(mut self, label: String) -> Self {
+    pub fn with_origin(mut self, label: Cow<'static, str>) -> Self {
         self.origin = label;
         self
     }
@@ -356,14 +361,17 @@ impl Thunk {
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn take_pending_call(&self) -> Option<(Rc<Thunk>, Vec<Rc<Thunk>>, Span)> {
+    pub fn take_pending_call(
+        &self,
+    ) -> Option<(Rc<Thunk>, Vec<Rc<Thunk>>, IndexMap<String, Rc<Thunk>>, Span)> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingCall {
                 func,
                 args,
+                named,
                 call_span,
-            } => Some((func, args, call_span)),
+            } => Some((func, args, named, call_span)),
             other => {
                 *state = other;
                 None
