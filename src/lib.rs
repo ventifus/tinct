@@ -18,6 +18,7 @@
 pub mod ast;
 pub(crate) mod error;
 pub(crate) mod eval;
+pub mod formatter;
 pub mod lexer;
 pub mod parser;
 #[cfg(test)]
@@ -53,6 +54,9 @@ pub use builtins::{
 
 /// Error types with source spans and stack traces.
 pub use error::{EvalError, StackFrame};
+
+/// Formatter: canonical source reformatter.
+pub use formatter::format_source;
 
 #[cfg(feature = "repl")]
 pub use repl::run_repl;

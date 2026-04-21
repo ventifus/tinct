@@ -135,6 +135,18 @@ ts-test:
 ts-parse FILE:
     {{container}} run {{ts_run_flags}} -v {{project_name}}-ts-node:/workspace/tree-sitter-llt/node_modules {{node_image}} sh -c "npm install --no-save tree-sitter-cli && npx tree-sitter parse /workspace/{{FILE}}"
 
+# Format LLT source file and print to stdout
+fmt-llt FILE:
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- fmt {{FILE}}
+
+# Check LLT source formatting (exit 1 if unformatted)
+fmt-llt-check FILE:
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- fmt --check {{FILE}}
+
+# Format LLT source file in place
+fmt-llt-fix FILE:
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- fmt --in-place {{FILE}}
+
 # Interactive shell in container (for debugging)
 shell:
     {{container}} run -it {{run_flags}} {{rust_image}} /bin/bash
