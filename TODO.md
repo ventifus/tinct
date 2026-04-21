@@ -525,18 +525,21 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 
 **Goal:** Identical AST output from both parsers, selectable at parse time. Once the new parser passes the full test suite and matches pest output on all corpus files, it becomes the default and pest is removed.
 
-### lexer: Lexer (`src/lexer.rs`)
+### lexer-core: Lexer Core (`src/lexer.rs`)
 
 Tokenizer producing a flat token stream. Whitespace-sensitivity for access chains handled here.
 
-- [ ] Token enum: OpenBracket, CloseBracket, Colon, Semicolon, Dot, Range, At, Ellipsis, DocSeparator, Newline, Comment(String), Int(i64), Float(f64), BareWord(String), QuotedString(String), VarRef(String), BoolLit(bool)
-- [ ] Single-pass tokenization with source spans on every token
-- [ ] Whitespace-sensitive access detection: Dot/OpenBracket immediately after VarRef or CloseBracket (no whitespace) emits access-context tokens
-- [ ] Comment tokens (`#` to EOL, preserves text for formatter)
-- [ ] Newline tokens (significant whitespace for blank line detection; consecutive Newlines encode blank lines)
-- [ ] String escapes (`\"`, `\\`, `\n`, `\t`, `\r`)
-- [ ] Bare word denylist matching grammar.pest rules
-- [ ] CRLF line ending support: track line boundaries correctly for `\r\n` (pest and LSP convert.rs both assume `\n` only)
+- [x] Token enum: OpenBracket, CloseBracket, Colon, Semicolon, Dot, Range, At, Ellipsis, DocSeparator, Newline, Comment(String), Int(i64), Float(f64), BareWord(String), QuotedString(String), VarRef(String), BoolLit(bool)
+- [x] Single-pass tokenization with source spans on every token
+- [x] Whitespace-sensitive access detection: Dot/OpenBracket immediately after VarRef or CloseBracket (no whitespace) emits access-context tokens
+- [x] Comment tokens (`#` to EOL, preserves text for formatter)
+- [x] Newline tokens (significant whitespace for blank line detection; consecutive Newlines encode blank lines)
+- [x] String escapes (`\"`, `\\`, `\n`, `\t`, `\r`)
+- [x] Bare word denylist matching grammar.pest rules
+- [x] CRLF line ending support: track line boundaries correctly for `\r\n` (pest and LSP convert.rs both assume `\n` only)
+
+### grammar-comments: Grammar Documentation
+
 - [ ] Add inline comments to grammar.pest explaining why access_expr/access_chain are compound-atomic (`grammar.pest:137-148`) [Major, grammar-architect]
 - [ ] Fix grammar.pest COMMENT rule misleading NEWLINE comment (`grammar.pest:8`) [Nit, grammar-architect]
 
