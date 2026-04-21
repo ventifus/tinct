@@ -540,8 +540,8 @@ Tokenizer producing a flat token stream. Whitespace-sensitivity for access chain
 
 ### grammar-comments: Grammar Documentation
 
-- [ ] Add inline comments to grammar.pest explaining why access_expr/access_chain are compound-atomic (`grammar.pest:137-148`) [Major, grammar-architect]
-- [ ] Fix grammar.pest COMMENT rule misleading NEWLINE comment (`grammar.pest:8`) [Nit, grammar-architect]
+- [x] Add inline comments to grammar.pest explaining why access_expr/access_chain are compound-atomic (`grammar.pest:137-148`) [Major, grammar-architect]
+- [x] Fix grammar.pest COMMENT rule misleading NEWLINE comment (`grammar.pest:8`) [Nit, grammar-architect]
 
 ### formatter: Formatter/Pretty-Printer (`tinct fmt`)
 
