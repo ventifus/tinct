@@ -440,7 +440,9 @@ fn eval_error_undefined_var() {
 
 #[test]
 fn no_subcommand_shows_usage() {
-    let output = Command::new(tinct_bin()).output().expect("failed to run tinct");
+    let output = Command::new(tinct_bin())
+        .output()
+        .expect("failed to run tinct");
 
     // clap exits non-zero when no subcommand is given
     assert!(!output.status.success());

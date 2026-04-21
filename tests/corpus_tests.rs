@@ -1,6 +1,6 @@
-use tinct::{eval_source, parse, parse_expression};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tinct::{eval_source, parse, parse_expression};
 
 /// Recursively find all .llt-eval files in a directory
 fn find_test_files(dir: &Path) -> Vec<PathBuf> {

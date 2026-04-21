@@ -189,67 +189,69 @@ Issue **APPROVE** if no fix-now findings. Issue **REQUEST_CHANGES** if any fix-n
 
 ## Training Resources
 
-Training is about building the theoretical foundation needed to verify LLT's soundness. Study these resources to understand the formal models, then apply that understanding to prove (or disprove) that LLT's implementations correctly realize those models.
+Training is about internalizing the theorems, invariants, and proof obligations from the CS literature, then applying that understanding to verify whether LLT's code satisfies them. The primary training corpus is academic papers. Use `WebFetch` to retrieve papers from arXiv, ACM DL, or author homepages. Use `WebSearch` to find papers by title or topic when URLs aren't known.
 
-### Git Repos — Study as Implementations of Formal Models
+### Papers — The Theorems LLT Must Satisfy
 
-Study these not for "how they code" but for how they realize specific theoretical models. Extract the invariants each implementation maintains, the proof obligations it satisfies, and the trade-offs it accepts.
+These are the foundational results. For each paper, extract: (1) what it proves, (2) what invariants the proven system requires, (3) whether LLT maintains those invariants.
 
-**Type Systems & Inference:**
-- **nickel-lang/nickel** (github.com/nickel-lang/nickel) — Gradual typing + row polymorphism. Study: `core/src/typecheck/` — how row unification preserves principal types, how blame tracking satisfies the gradual guarantee.
-- **elm/compiler** (github.com/elm/compiler) — HM with levels-based generalization. Study: `compiler/src/Type/` — how rank/level tracking prevents unsound generalization (the key invariant LLT must also maintain).
-- **dhall-lang/dhall-haskell** (github.com/dhall-lang/dhall-haskell) — Normalization-by-evaluation. Study: `dhall/src/Dhall/TypeCheck.hs` — totality guarantees and how they're maintained.
-- **cue-lang/cue** (github.com/cue-lang/cue) — Lattice-based types. Study: `internal/core/adt/` — how value lattice unification differs from HM unification and what properties it provides instead.
+**Type inference (currently implemented — verify soundness):**
+- Damas & Milner 1982: "Principal type-schemes for functional programs" — proves principal type existence for HM. LLT's inference must produce principal types or document why it doesn't.
+- Robinson 1965: "A machine-oriented logic based on the resolution principle" — the unification algorithm at the core of `unify()` in types.rs.
+- Rémy 1994: "Type inference for records in natural extension of ML" — proves decidable inference with row variables. LLT's row unification must satisfy Rémy's conditions for this guarantee.
+- Leijen 2005: "Extensible records with scoped labels" — alternative row formulation with scoped labels. Understand what it trades vs Rémy.
+- Kiselyov 2013 (Oleg): "How OCaml type checker works — or what polymorphism and garbage collection have in common" — levels-based generalization. The practical algorithm Elm uses and LLT needs for sound let-polymorphism.
 
-**Evaluation & Runtime:**
-- **NixOS/nix** (github.com/NixOS/nix) — Call-by-need with blackholing. Study: `src/libexpr/eval.cc` — map thunk states to Launchbury's semantics, verify blackholing corresponds to the InProgress sentinel model.
-- **google/jsonnet** (github.com/google/jsonnet) — Lazy object fields. Study: `core/vm.cpp` — identify which abstract machine the evaluator corresponds to.
-- **nickel-lang/nickel** — Also study `core/src/eval/` — explicit abstract machine implementation, verify continuation defunctionalization.
+**Evaluation (currently implemented — verify correspondence):**
+- Launchbury 1993: "A natural semantics for lazy evaluation" — the formal semantics for call-by-need. LLT's thunk lifecycle (Unevaluated → InProgress → Materialized) must be a faithful implementation.
+- Sestoft 1997: "Deriving a lazy abstract machine" — derives the lazy Krivine machine from Launchbury's semantics. Shows how to go from natural semantics to an implementable machine.
+- Reynolds 1972: "Definitional interpreters for higher-order programming languages" — proves the correspondence between recursive interpreters and abstract machines via defunctionalization. LLT's PendingBuiltin/PendingCall are defunctionalized continuations.
 
-**Parsing:**
-- **pest-parser/pest** (github.com/pest-parser/pest) — PEG implementation. Study: packrat memoization correctness guarantees (Ford's O(n) theorem and its preconditions).
+**Abstract machines (designed, not yet implemented):**
+- Felleisen & Friedman 1986: "Control operators, the SECD-machine, and the λ-calculus" — CEK machine foundations. The target model for tinct's iterative-eval migration.
+- Danvy & Nielsen 2003: "Defunctionalization at work" — systematic defunctionalization from higher-order to first-order. The technique for converting LLT's recursive evaluator to a CEK machine.
+- Peyton Jones 1992: "Implementing lazy functional languages on stock hardware: the Spineless Tagless G-machine" — compiled lazy evaluation. Relevant for understanding GHC's approach vs LLT's interpreted approach.
+- Ager, Biernacki, Danvy, Midtgaard 2003: "A functional correspondence between evaluators and abstract machines" — systematic derivation of abstract machines from interpreters via CPS + defunctionalization. The theoretical blueprint for iterative-eval.
 
-**Optimization & Runtime:**
-- **ghc/ghc** (gitlab.haskell.org/ghc/ghc) — STG machine, strictness analysis. Study: `compiler/GHC/Stg/` — the formal model, `compiler/GHC/Core/Opt/` — which theorems justify each optimization pass.
+**Row polymorphism (planned — understand proof obligations):**
+- Rémy 1989: "Typechecking records and variants in a natural extension of ML" (original row types paper) — field presence/absence flags, row variable mechanics.
+- Gaster & Jones 1996: "A polymorphic type system for extensible records and variants" — Haskell-oriented row types with qualified types. Alternative to Rémy.
+- Harper & Pierce 1991: "A record calculus based on symmetric concatenation" — record concatenation typing, relevant to LLT's `$merge` operation.
+
+**Gradual typing (planned — understand the gradual guarantee):**
+- Siek & Taha 2006: "Gradual typing for functional languages" — foundational gradual typing with consistency relation.
+- Wadler & Findler 2009: "Well-typed programs can't be blamed" — the blame theorem. If LLT adopts gradual typing, this is the correctness criterion for Type::Any boundaries.
+- Garcia, Clark, Tanter 2016: "Abstracting gradual typing" (AGT) — systematic derivation of gradual type systems from static ones. Could guide LLT's Type::Any semantics.
+
+**Optimization (planned — understand what's possible):**
+- Mycroft 1981: "Abstract interpretation and optimising transformations for applicative programs" — strictness analysis via abstract interpretation. Foundation for demand analysis.
+- Cousot & Cousot 1977: "Abstract interpretation: a unified lattice model for static analysis of programs" — the general framework underlying strictness analysis.
+- Gill, Launchbury, Peyton Jones 1993: "A short cut to deforestation" — proves fusion correctness for foldr/build. Applicable to LLT's sequence pipelines.
+- Coutts, Leshchinskiy, Stewart 2007: "Stream fusion: from lists to streams to nothing at all" — stream fusion. Directly relevant to LLT's Seq type.
+
+**Parsing (currently implemented):**
+- Ford 2004: "Parsing expression grammars: a recognition-based syntactic foundation" — proves O(n) parsing with packrat memoization. Preconditions: no left recursion, finite lookahead.
+- Warth, Douglass, Millstein 2008: "Packrat parsers can support left recursion" — extends PEG with left recursion. Relevant if LLT's hand-written parser needs this.
+
+**Data structures & runtime:**
+- Tarjan 1975: "Efficiency of a good but not linear set union algorithm" — O(α(n)) union-find. Directly applicable to type substitution chains.
+- Tofte & Talpin 1997: "Region-based memory management" — region/arena allocation for functional languages. Relevant to the arena allocation migration.
+- Bagwell 2001: "Ideal hash trees" (HAMTs) — persistent hash maps with near-O(1) performance. Alternative to IndexMap for LLT dicts.
+
+**Pretty-printing (referenced in design):**
+- Wadler 2003: "A prettier printer" — the algebra of pretty-printing combinators. Referenced in DESIGN.md as "overkill" for the formatter.
+- Lindig 2000: "Strictly pretty" — efficient imperative implementation of Wadler's algorithm.
 
 ### Local Documents — Verify Against Formal Models
 - `DESIGN.md` — For each design decision, identify the formal model it should correspond to. Flag decisions that lack formal grounding.
 - `TODO.md` — For open design questions, determine whether theory provides a definitive answer.
-- `src/types.rs` — Verify unification against Robinson's algorithm, substitution against Algorithm W, row types against Remy 1994.
+- `src/types.rs` — Verify unification against Robinson's algorithm, substitution against Algorithm W, row types against Rémy 1994.
 - `src/typecheck.rs` — Verify inference produces principal types, generalization is sound, instantiation creates fresh variables correctly.
 - `src/eval.rs` — Verify thunk lifecycle against Launchbury 1993, identify the abstract machine correspondence, verify cycle detection completeness.
 - `src/value.rs` — Verify thunk state transitions are monotonic, environment representation maintains lexical scoping.
 
-### Key Papers — The Theorems LLT Must Satisfy
-
-These are the foundational results. Training should focus on understanding what each paper proves and what invariants the proven system requires — then checking whether LLT maintains those invariants.
-
-**Type inference:**
-- Damas & Milner 1982: "Principal type-schemes for functional programs" — proves principal type existence for HM. LLT's inference must produce principal types or document why it doesn't.
-- Remy 1994: "Type inference for records in natural extension of ML" — proves decidable inference with row variables. LLT's row unification must satisfy Remy's conditions for this guarantee.
-- Leijen 2005: "Extensible records with scoped labels" — alternative row formulation. Understand what it trades vs Remy.
-
-**Evaluation:**
-- Launchbury 1993: "A natural semantics for lazy evaluation" — the formal semantics for call-by-need. LLT's thunk lifecycle must be a faithful implementation.
-- Peyton Jones 1992: "Implementing lazy functional languages on stock hardware: the STG machine" — compiled lazy evaluation. Relevant for the iterative-eval migration.
-- Felleisen & Friedman 1986: "Control operators, the SECD-machine, and the λ-calculus" — CEK machine. The target model for iterative-eval.
-- Reynolds 1972: "Definitional interpreters for higher-order programming languages" — proves the correspondence between recursive interpreters and abstract machines via defunctionalization.
-
-**Parsing:**
-- Ford 2004: "Parsing expression grammars" — proves O(n) parsing with packrat memoization. Preconditions: no left recursion, finite lookahead.
-
-**Typing extensions:**
-- Wadler & Findler 2009: "Well-typed programs can't be blamed" — the gradual guarantee. If LLT adopts gradual typing, this is the correctness criterion.
-- Siek & Taha 2006: "Gradual typing for functional languages" — foundational gradual typing.
-
-**Optimization:**
-- Gill, Launchbury, Peyton Jones 1993: "A short cut to deforestation" — proves fusion correctness for foldr/build. Applicable to LLT's sequence pipelines.
-- Cousot & Cousot 1977: "Abstract interpretation" — foundational framework for strictness analysis.
-
-**Data structures:**
-- Tarjan 1975: "Efficiency of a good but not linear set union algorithm" — O(α(n)) union-find. Directly applicable to type substitution chains.
-
 ### Focus Areas for Training
+- Retrieve and read the actual papers (use WebFetch/WebSearch to find PDFs or HTML versions)
 - Extract the proof obligations from each paper: what invariants must the implementation maintain?
 - Map those obligations to specific code locations in LLT
 - Identify where LLT satisfies the obligation, where it's unclear, and where it definitely doesn't
