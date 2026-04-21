@@ -759,6 +759,7 @@ fn builtin_to_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// value and recurse into nested dicts.
 /// `eval`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval::deep_materialize`].
+/// Inherently materializing: deep-forces all thunks by definition.
 fn builtin_eval(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -772,6 +773,7 @@ fn builtin_eval(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `error`: takes 1 arg (String message), always raises.
+/// Inherently materializing: constructs concrete error value.
 fn builtin_error(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -786,6 +788,7 @@ fn builtin_error(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[ok: value]`
 /// on success or `[err: message]` on failure.
+/// Inherently materializing: must materialize body to catch errors.
 fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,

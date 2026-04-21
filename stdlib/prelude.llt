@@ -56,6 +56,7 @@ and: [fn [a b] [call $if $a $b false]]
 or: [fn [a b] [call $if $a true $b]]
 
 # Short-circuit predicate test: returns true if any element satisfies pred.
+# Inherently materializing: short-circuits but materializes elements until condition met.
 any?: [fn [pred xs] [call $any?-impl $pred $xs [call $keys $xs] 0]]
 
 any?-impl: [fn [pred xs ks i]
@@ -66,6 +67,7 @@ any?-impl: [fn [pred xs ks i]
             [call $any?-impl $pred $xs $ks [call $+ $i 1]]]]]
 
 # Short-circuit predicate test: returns true if all elements satisfy pred.
+# Inherently materializing: short-circuits but materializes elements until condition failed.
 all?: [fn [pred xs] [call $all?-impl $pred $xs [call $keys $xs] 0]]
 
 all?-impl: [fn [pred xs ks i]
@@ -483,6 +485,7 @@ compose: [fn [f g] [fn [x] [call $f [call $g $x]]]]
 # ============================================================================
 
 # Call a function; if it errors, return the default value.
+# Inherently materializing: must materialize body to catch errors.
 try-or: [fn [f default]
     [call $try-or-impl [call $try $f] $default]]
 
@@ -503,6 +506,7 @@ try-or-impl: [fn [try-result default]
 # ============================================================================
 
 # Assert a condition; if false, raise an error with the given message.
+# Inherently materializing: must materialize condition to check.
 assert: [fn [cond msg] [call $if $cond true [call $error $msg]]]
 
 ]
