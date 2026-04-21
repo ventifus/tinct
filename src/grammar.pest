@@ -5,7 +5,7 @@
 // Skipped automatically between tokens in non-atomic rules.
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }  // NEWLINE is a pest built-in rule
+COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }  // NEWLINE is pest built-in matching \n or \r\n
 
 // === File and Document Structure ===
 
@@ -131,8 +131,12 @@ key = { bracket_expr | var_ref | quoted_string | bare_token }
 bare_token = { float_lit | int_lit | bool_lit | bare_word }
 
 // === Access chains ===
-// Compound-atomic: no implicit whitespace between var_ref and the chain.
-// This makes $a.b parse as one access_expr, but $a .b as two separate tokens.
+// Compound-atomic ($) rules: prevent implicit whitespace matching between tokens.
+// WHY: Whitespace sensitivity for access chains. $a.b is access, $a .b is not.
+// The $ prefix tells pest not to insert WHITESPACE/COMMENT matching between rule elements.
+// This implements the tokenization rule from DESIGN.md §Tokenization Rules: dot
+// immediately after $ref (no whitespace) triggers dot-access parsing; whitespace
+// before dot makes it part of a bare word.
 
 access_expr = ${ var_ref ~ access_chain+ }
 
