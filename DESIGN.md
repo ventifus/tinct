@@ -2015,6 +2015,183 @@ This table documents every operation's current materialization behavior and the 
 
 ---
 
+### Allocation Strategy — Phased Approach
+
+**Decision:** Two-phase strategy. Phase 1 applies backward-compatible optimizations to the current `Rc<Thunk>` + `IndexMap<String, Rc<Thunk>>` runtime. Phase 2 introduces arena allocation and flat environments bundled with the iterative evaluator (`iterative-eval`).
+
+**Current allocation profile:**
+
+| Component | Representation | Cost |
+|-----------|---------------|------|
+| Thunks | `Rc<Thunk>` with `RefCell<ThunkState>` | Individual heap alloc per thunk, triple indirection |
+| Environments | `Rc<RefCell<Environment>>` with `IndexMap<String, Rc<Thunk>>` + parent chain | O(depth) variable lookup |
+| Dict keys | `Key::String(String)` | Cloned 2× per dict entry (env bindings + dict_map) |
+| Thunk origin | `origin: String` | Allocated per thunk, usually empty |
+
+**Phase 1 (perf-foundations):** Backward-compatible optimizations. Baseline: ~113 `Rc::new(Thunk)` calls in eval.rs, ~142 `IndexMap::new()` calls in builtins.rs. Expected impact: 75-85% of addressable allocation cost.
+
+- **Dict literal fast-path** (Nix `maybeThunk`): In `eval_dict`, when `entry.value.node` is `Int|Float|Bool|Str`, create `Materialized` thunks directly instead of wrapping in `Unevaluated`. Eliminates ~40-60% of thunk allocations for config-heavy files. Safe because literals are side-effect-free, deterministic, and don't participate in letrec cycles.
+- **String interning**: `HashSet<Rc<str>>` with `Borrow<str>` lookup (avoids key duplication of `HashMap<String, Rc<str>>`). Interns *structural identifiers only* — `Key::String`, variable names, builtin names, and thunk origins. Does NOT intern user data strings (may be large and unique). Reduces key cloning to `Rc::clone` and enables O(1) pointer-equality comparison. Scoped to evaluation session lifetime (lives in `EvalContext`, cleared per `eval_file()`). Production alternative: `lasso::Rodeo` for zero-copy Spur handles.
+- **Key cloning reduction**: Eliminate the 2× `String` clone per dict entry in `eval_dict` (once into `dict_env` bindings, once into `dict_map`). Use `entry_mut()` pattern or restructure insert order. ~30% of dict allocation cost.
+- **AST cloning reduction**: Change `CallExpr` args from `Spanned<Expr>` to `Rc<Spanned<Expr>>` so `eval_call` can `Rc::clone` instead of deep-cloning entire AST subtrees per argument. ~20-40% of call overhead. Internal refactor to ast.rs and parser.rs; backward-compatible at the public API level.
+- **func_label allocation reduction**: `format!("${name}")` on every PendingCall creation → `Cow<'static, str>` for the common VarRef case (most calls). Only allocate for DotAccess labels. ~5-10% of call overhead.
+- **Capacity hints**: `IndexMap::with_capacity(entries.len())` on all dict construction paths (`eval_dict`, `builtin_drop` Dict path, range access, `builtin_split`).
+- **SmallVec**: `SmallVec<[Rc<Thunk>; 4]>` for call args (most calls have ≤4 args), `SmallVec<[StackFrame; 8]>` for error stacks.
+- **Origin optimization**: `origin: String` → `Rc<str>` via string interner, with static empty sentinel for the common case.
+
+**Phase 2 (iterative-eval):** Arena allocation + flat environments, bundled with the recursive-to-iterative evaluator conversion.
+
+- **Arena allocator**: Replace `Rc<Thunk>` with arena-allocated thunks. Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB). Alternatives (typed-arena, bumpalo) require unsafe and don't offer clear wins for LLT's use case.
+- **Flat environments with slot indices**: Replace `IndexMap<String, Rc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe (each call writes to its own activation frame).
+- **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection.
+
+**Arena lifetime and persistent values:** The arena model works for single-shot CLI evaluation, but REPL and LSP require special handling. REPL accumulates session env across inputs — thunks from previous arenas must survive. LSP persists DocumentState across edits. Three options (to be decided during Phase 2 design): (1) session-scoped arena that grows monotonically with periodic compaction; (2) copy-out on persist — deep-materialize values that escape to session env; (3) hybrid model with arena for evaluation-local thunks and `Rc<Thunk>` for persistent thunks.
+
+**Rationale:** The iterative evaluator is already planned and shares prerequisites with arena allocation — both require explicit frame management and compile-time analysis. Bundling avoids two separate invasive refactors. Phase 1 captures 75-85% of addressable allocation wins with near-zero risk. Profiling data from Phase 1 guides whether Phase 2's arena is necessary.
+
+**Measurement plan:** Phase 1 must establish baseline metrics before and after optimization: total allocations per eval (count `Rc::new`, `IndexMap::new`, `Vec::new`), peak memory usage (heaptrack RSS on dict-heavy and deeply-nested workloads), and allocation hotspots (which paths account for >10% of allocations). Decision threshold for Phase 2: if Phase 1 achieves >80% allocation reduction, defer Phase 2 indefinitely; if <50%, proceed.
+
+**Key tradeoff:** Environment lookup stays O(depth) until Phase 2, but string interning makes each lookup step cheaper (pointer comparison vs byte comparison), and the literal fast-path reduces total thunk allocations significantly.
+
+**Precedent:** Nix uses flat `Value*[]` arrays with de Bruijn levels and Boehm GC. Jsonnet uses GC heap with flat bindings. Nickel uses `Rc<RefCell<Closure>>` (same as LLT's current approach). Phase 1 keeps LLT at Nickel's level; Phase 2 moves toward Nix's level.
+
+**Constraint:** Phase 2's arena model must handle letrec self-reference safely in Rust (thunk slots allocated before fill, no dangling pointers). Research into safe Rust arena patterns (typed-arena, bumpalo, or index-based arenas with `Vec<Thunk>` + `ThunkId` handles) is required before Phase 2 implementation. Study how Rust projects (salsa, rustc's `ty::TyCtxt`, cranelift) solve arena + interior references.
+
+### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
+
+**Decision:** Replace the recursive `eval()` / `materialize()` call stack with an iterative CEK machine (Control-Environment-Kontinuation). Continuations are defunctionalized — each closure that CPS would create becomes a variant in a `Cont` enum, stored in a `Vec<Cont>` stack.
+
+**Problem:** `eval()` and `materialize()` are mutually recursive across 8+ call patterns. Deeply-nested lazy chains exhaust the Rust call stack before `MAX_EVAL_DEPTH` fires. LLT works around this with a 64MB worker thread stack.
+
+**Architecture:** Two enums, one loop.
+
+`Action` represents what to do now (the "control" register):
+
+```rust
+enum Action {
+    Eval { expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize },
+    Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, depth: usize },
+    Continue(Result<Value, Box<EvalError>>),
+}
+```
+
+`Cont` represents what to do with the result (the reified continuation / "kontinuation" stack):
+
+```rust
+enum Cont {
+    // eval() continuations — access chains
+    DotAccessForce { field: String, span: Span, depth: usize },
+    BracketForceTarget { key_expr: Rc<Spanned<Expr>>, env: ..., span: Span, depth: usize },
+    BracketForceKey { target: Value, span: Span },
+    RangeForceTarget { start_expr: ..., end_expr: ..., env: ..., span: Span, depth: usize },
+    RangeForceStart { target: Value, end_expr: ..., env: ..., span: Span, depth: usize },
+    RangeForceEnd { target: Value, start: Value, span: Span },
+
+    // eval() continuations — calls and type assertions
+    CallForceFunc { args: Box<Vec<Rc<Thunk>>>, named: Box<IndexMap<...>>, env: ..., span: Span, depth: usize, label: String },
+    TypeAssertCheck { annotation: ..., env: ..., span: Span, depth: usize },
+    TypeAssertForce { type_expr: ..., default_expr: Option<...>, env: ..., span: Span, depth: usize },
+
+    // eval() continuations — dict construction
+    DictBuildKey { value_expr: Rc<Spanned<Expr>>, remaining: ..., env: ..., span: Span, depth: usize },
+
+    // eval() continuations — function defaults
+    BindArgDefault { param: String, remaining_params: ..., env: ..., depth: usize },
+
+    // materialize() continuations
+    Memoize { thunk: Rc<Thunk>, mat_span: Option<Span>, origin: String },
+    PendingBuiltinForceResult { thunk: Rc<Thunk>, mat_span: Option<Span>, ... },
+    PendingCallForceFunc { thunk: Rc<Thunk>, args: Box<Vec<Rc<Thunk>>>, call_span: Span, ... },
+    PendingCallForceResult { thunk: Rc<Thunk>, mat_span: Option<Span>, ... },
+
+    // Document pipeline
+    DocumentScope { remaining: Vec<Spanned<Expr>>, env: ..., depth: usize },
+
+    // Deep materialization
+    DeepEntries { map: Rc<IndexMap<Key, Rc<Thunk>>>, idx: usize, ... },
+    DeepSeqTail { tail: Rc<Thunk>, ... },
+}
+```
+
+Large fields in `CallForceFunc` and `PendingCallForceFunc` are boxed to keep the `Cont` enum ≤96 bytes. `DeepEntries` holds an `Rc` to the original map plus an index rather than cloning entries into a `Vec`.
+
+The main loop is a two-register machine — `action` (what's happening now) and `stack` (what's waiting):
+
+```rust
+fn run(initial: Action) -> Result<Value, Box<EvalError>> {
+    let mut stack: Vec<Cont> = Vec::with_capacity(64);
+    let mut action = initial;
+
+    loop {
+        action = match action {
+            Action::Eval { expr, env, depth } => {
+                match &expr.node {
+                    Expr::Int(n) => Action::Continue(Ok(Value::Int(*n))),
+                    Expr::DotAccess { expr, field } => {
+                        stack.push(Cont::DotAccessForce { field, span, depth });
+                        Action::Eval { expr, env, depth }
+                    }
+                    // ...
+                }
+            }
+            Action::Materialize { thunk, mat_span, depth } => {
+                match /* thunk state */ {
+                    Materialized(v) => Action::Continue(Ok(v.clone())),
+                    Unevaluated { expr, env } => {
+                        stack.push(Cont::Memoize { thunk, mat_span, origin });
+                        Action::Eval { expr, env, depth: depth + 1 }
+                    }
+                    // ...
+                }
+            }
+            Action::Continue(result) => {
+                match stack.pop() {
+                    None => return result,
+                    Some(cont) => /* dispatch on cont, produce next Action */
+                }
+            }
+        };
+    }
+}
+```
+
+**How this works:** Instead of recursive calls, each continuation point becomes a `Cont` variant pushed onto the stack. When a sub-computation completes (`Action::Continue`), the top continuation is popped and dispatched. The `Cont` variant stores exactly the state that a closure would have captured — no more, no less.
+
+**Memoize error handling:** On `Err`, `Cont::Memoize` must call `cache_failure()` (set `ThunkState::Failed`) before propagating the error up the continuation stack. This ensures failed thunks cache their error and don't retry on every access.
+
+**Builtin return dispatch:** Builtins return `Rc<Thunk>`, not `Value`. After a builtin call, the CEK machine inspects the result: if the thunk is already `Materialized`, extract the value and produce `Action::Continue(Ok(value))`. If it is `Unevaluated` or `PendingBuiltin`, produce `Action::Materialize { thunk: result_thunk, ... }` — but only if the calling context demands materialization. Builtins like `$if` and `$get` return lazy thunks that must not be auto-materialized when used as dict values or function arguments.
+
+**deep_materialize:** Not a separate recursive function — it is expressed as `DeepEntries` and `DeepSeqTail` continuations within the same CEK loop. No separate recursive helper.
+
+**Tail-call optimization:** In tail position (e.g., last expression in a function body), set `action = Action::Eval { body, ... }` without pushing a `Cont`. The current frame is reused. TCO for recursive stdlib functions (`fold`, `map`, `filter`) follows the same pattern: detect tail calls during the variable resolution pass, mark them, and skip the continuation push. TCO applies to user-defined function calls only. Builtin calls always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
+
+**Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack. Each `Cont::CallForceFunc` carries the call-site span and label, replacing the current `EvalError::stack` vector. This gives precise "materialized at" context for every frame in the stack.
+
+**Cont variant count:** ~18-20 variants, one per continuation point in the current recursive evaluator. Each variant stores only its specific continuation data (Rc pointers + Span + small fields). Target frame size: ≤96 bytes per Cont (achieved by boxing large fields in the biggest variants).
+
+**Relationship to perf-foundations:** This design is Phase 2 of the allocation strategy. Arena allocation and flat environments integrate naturally: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
+
+**Precedent:** Jsonnet's VM uses 22 `FrameKind` variants with a value register (production-tested at Google). Nickel uses an iterative stack machine with `OpFirst`/`OpSecond` continuations (production Rust). Both are defunctionalized CPS machines. The theoretical foundation is Felleisen & Friedman's CEK machine.
+
+**Recursive call sites being converted:**
+
+| Current recursive call | Becomes |
+|----------------------|---------|
+| `eval()` → `eval()` (TypeAssert, desugar, defaults) | `Action::Eval` + `Cont::TypeAssertCheck` etc. |
+| `eval_call()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::CallForceFunc` |
+| `eval_dot_access()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DotAccessForce` |
+| `eval_bracket_access()` → `eval()` + `materialize()` ×2 | `Action::Eval` + `Cont::BracketForceTarget` → `Cont::BracketForceKey` |
+| `eval_range_access()` → `materialize()` ×3 | `Action::Materialize` + `Cont::RangeForceTarget` → `Cont::RangeForceStart` → `Cont::RangeForceEnd` |
+| `eval_dict()` → computed key materialization | `Action::Eval` + `Cont::DictBuildKey` |
+| `eval_document()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DocumentScope` (`$$` bound as `Unevaluated` thunk, never materialized) |
+| `bind_args_thunks()` → default eval | `Action::Eval` + `Cont::BindArgDefault` |
+| `materialize()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::Memoize` |
+| `materialize()` → builtin call + `materialize()` | Builtin dispatch + `Cont::PendingBuiltinForceResult` |
+| `materialize()` → `materialize()` (PendingCall) | `Action::Materialize` + `Cont::PendingCallForceFunc` → `Cont::PendingCallForceResult` |
+| `deep_materialize()` → `materialize()` + recurse | `Action::Materialize` + `Cont::DeepEntries` / `Cont::DeepSeqTail` (within CEK loop, no separate helper) |
+
+---
+
 ## Open Questions / TODO
 
 Design questions that still need to be resolved. All other design questions have been resolved and appear in the Confirmed Decisions section above.

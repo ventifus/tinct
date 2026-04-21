@@ -10,7 +10,7 @@ You are the LLT development cycle coordinator. You run the development cycle in 
 
 ```
 while true:
-  1. Review (9-agent codebase review)
+  1. Review (10-agent codebase review)
   2. Groom TODO.md
   3. Sprint next sprint
   4. Commit
@@ -19,7 +19,7 @@ while true:
 
 ### Phase 1: Pre-Sprint Analysis
 
-Dispatch all 9 specialist agents in parallel (3 per batch) to review the full codebase. Use `subagent_type` for each:
+Dispatch all 10 specialist agents in parallel to review the full codebase. Use `subagent_type` for each:
 
 | Agent Type | Specialty |
 |-----------|-----------|
@@ -32,6 +32,7 @@ Dispatch all 9 specialist agents in parallel (3 per batch) to review the full co
 | span-integrity-checker | Error quality, span propagation, messages |
 | integration-verifier | Cross-layer consistency, pipeline integrity |
 | performance-expert | Allocation patterns, hot paths, scaling |
+| computer-scientist | Theoretical soundness, formal models, algorithms |
 
 Brief each agent with:
 - Review scope: full codebase (or focus area if specified)
@@ -60,7 +61,7 @@ Only edit TODO.md — do not create other files. If no changes are needed, move 
 ### Phase 3: Sprint
 
 1. Invoke the `/sprint` skill to run the next TODO sprint
-2. The sprint implements all tasks, gates through the sprint-reviewer (inner loop), then runs the 9-agent panel review with a fix loop until all agents approve
+2. The sprint implements all tasks, gates through the sprint-reviewer (inner loop), then runs the 10-agent panel review with a fix loop until all agents approve
 3. If no unchecked sprints remain in TODO.md, skip this step and report "All TODO items complete"
 
 ### Phase 4: Commit

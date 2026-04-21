@@ -77,6 +77,7 @@ Do NOT check off the TODO item yet — the agent review may surface changes.
 Dispatch specialist agents to review the draft design for soundness, consistency, and feasibility.
 
 **Always include:**
+- `computer-scientist` — theoretical soundness, formal model correspondence, proof obligations
 - `type-theorist` — type system implications, inference interactions, soundness
 
 **Include when relevant** (select based on what the design touches):

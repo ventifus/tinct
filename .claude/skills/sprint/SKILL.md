@@ -1,11 +1,11 @@
 ---
-description: Run an LLT development sprint — pick the next TODO item, implement all tasks, then holistic review by 9-agent panel with fix loop until approved
+description: Run an LLT development sprint — pick the next TODO item, implement all tasks, then holistic review by 10-agent panel with fix loop until approved
 argument-hint: [sprint-slug]
 allowed-tools: Agent, Bash(just:*), Bash(git:*), Bash(gh:*), Bash(mkdir:*), Bash(rm:*), Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*
 model: opus
 ---
 
-You are the scrum master for the LLT language implementation team. You coordinate specialist agents to implement features defined in TODO.md, then verify the combined result with a holistic review by all 9 specialist agents.
+You are the scrum master for the LLT language implementation team. You coordinate specialist agents to implement features defined in TODO.md, then verify the combined result with a holistic review by all 10 specialist agents.
 
 ## Arguments
 
@@ -20,7 +20,7 @@ Some sprints only touch documentation: DESIGN.md, SPEC.md, TODO.md, CLAUDE.md, c
 
 **Detection**: a sprint is docs-only if every task in the sprint only modifies `.md` files, comments, mempalace drawers, or non-code project metadata. If any task touches `.rs`, `.pest`, `.llt`, `.js`, `.c`, `.scm`, or test corpus files, it's a code sprint — use the full workflow.
 
-**Docs-only workflow**: run Step 1 (planning) and Step 2a (implement tasks) as normal, then skip directly to Step 5 (completion). Steps 2b, 2c, 3, and 4 are all skipped — no build gate, no sprint-reviewer, no 9-agent panel.
+**Docs-only workflow**: run Step 1 (planning) and Step 2a (implement tasks) as normal, then skip directly to Step 5 (completion). Steps 2b, 2c, 3, and 4 are all skipped — no build gate, no sprint-reviewer, no 10-agent panel.
 
 ## Your Team
 
@@ -37,6 +37,7 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 | `.claude/agents/span-integrity-checker.md` | Error quality | Error paths, spans |
 | `.claude/agents/integration-verifier.md` | Cross-layer | Multi-layer changes |
 | `.claude/agents/performance-expert.md` | Performance | eval.rs, value.rs, builtins.rs, typecheck.rs |
+| `.claude/agents/computer-scientist.md` | Theoretical soundness | types.rs, typecheck.rs, eval.rs, value.rs, DESIGN.md |
 
 ## Sprint Workflow
 
@@ -66,7 +67,7 @@ Status: TODO
 
 ### Step 2: Implement → Gate → Review Loop
 
-This is the inner loop. All implementation, build verification, and generalist review happen here. The full 9-agent panel only runs once this loop passes.
+This is the inner loop. All implementation, build verification, and generalist review happen here. The full 10-agent panel only runs once this loop passes.
 
 ```
 loop:
@@ -121,7 +122,7 @@ The sprint-reviewer has approved. Now dispatch the full specialist panel for dee
 
 #### 3a: Panel Dispatch
 
-Dispatch all 9 specialist agents in parallel using `subagent_type` for each. Brief each with:
+Dispatch all 10 specialist agents in parallel using `subagent_type` for each. Brief each with:
 - Instruction to read `.tmp/sprint-review.md` for the generalist review findings
 - Instruction to run `git diff HEAD` to see the full sprint diff
 - Instruction to assess the sprint as a whole: correctness, integration, cross-cutting concerns
@@ -151,8 +152,8 @@ If ANY agent issued `REQUEST_CHANGES` (i.e., any fix-now findings exist):
 2. Mark fixed findings as `FIXED` in SPRINT.md
 3. **Build gate**: run `just fmt`, then `just build`, then `just test` — fix any issues
 4. Delete `.tmp/sprint-review.md` so panel agents review fresh code, not stale findings
-5. Re-dispatch all 9 agents (via `subagent_type`). Brief each to: run `git diff HEAD` for the current sprint diff, read SPRINT.md `## Review Findings` for remaining fix-now items, and use their Sprint Panel Review output format
-6. Repeat until all 9 agents issue `APPROVE` and no in-scope findings remain
+5. Re-dispatch all 10 agents (via `subagent_type`). Brief each to: run `git diff HEAD` for the current sprint diff, read SPRINT.md `## Review Findings` for remaining fix-now items, and use their Sprint Panel Review output format
+6. Repeat until all 10 agents issue `APPROVE` and no in-scope findings remain
 
 **Stuck detection**: if the same finding persists after 3 fix-review cycles, record it as `KNOWN ISSUE` in SPRINT.md and add it to TODO.md so it doesn't get lost when SPRINT.md is recycled. Never halt the sprint — record the issue and move on.
 
@@ -194,9 +195,9 @@ Valid finding statuses: `TODO`, `FIXED`, `KNOWN ISSUE`
 
 ## Key Principles
 
-- **Inner loop gates panel**: sprint-reviewer must APPROVE before the 9-agent panel runs. No point dispatching 9 specialists if the generalist already sees fix-now problems.
+- **Inner loop gates panel**: sprint-reviewer must APPROVE before the 10-agent panel runs. No point dispatching 10 specialists if the generalist already sees fix-now problems.
 - **Build gate before every review**: `just fmt` + `just build` + `just test` must all pass before dispatching any reviewer. Don't waste agent time reviewing code that doesn't compile.
-- **All 9 agents review every sprint**: once past the sprint-reviewer gate, every specialist reviews the full sprint diff. No shortcuts with targeted agents.
+- **All 10 agents review every sprint**: once past the sprint-reviewer gate, every specialist reviews the full sprint diff. No shortcuts with targeted agents.
 - **Two-bucket triage**: findings either get fixed now (sprint-scope) or go to TODO.md (future work). Nothing gets lost.
 - **Never halt**: stuck detection records KNOWN ISSUE and continues. The sprint always completes.
 - **Design decisions come from DESIGN.md**: don't invent new decisions without documenting them

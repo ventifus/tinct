@@ -91,17 +91,21 @@ all?-impl: [fn [pred xs ks i]
 
 # Integer quotient: truncates toward zero (like Clojure's quot).
 # Uses $/ (float division) then $trunc (toward-zero truncation to Int).
+# Inherently materializing: derived from arithmetic operations.
 quot: [fn [a b] [call $trunc [call $/ $a $b]]]
 
+# Inherently materializing: derived from arithmetic operations.
 mod: [fn [a b] [call $- $a [call $* [call $quot $a $b] $b]]]
 
 # ============================================================================
 # Numeric Conversion (derived from floor, round, +)
 # ============================================================================
 
+# Inherently materializing: derived from arithmetic operations.
 ceil: [fn [x] [call $- 0 [call $floor [call $- 0 $x]]]]
 
 # Truncate toward zero.
+# Inherently materializing: derived from arithmetic operations.
 trunc: [fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]
 
 # ============================================================================
@@ -168,6 +172,7 @@ get-or: [fn [xs k default]
 # Returns error when any intermediate key is missing.
 # Use get-in-or for a default fallback on missing keys.
 # Usage: [call $get-in $data [key1 key2 key3]]
+# Inherently materializing: must traverse nested dict path, accessing each level.
 get-in: [fn [xs path]
     [call $if [call $= [call $length $path] 0]
         $xs
@@ -178,6 +183,7 @@ get-in: [fn [xs path]
 # Traverse nested dicts by a list of keys with a default fallback.
 # Returns default when any intermediate key is missing.
 # Usage: [call $get-in-or $data [key1 key2 key3] fallback]
+# Inherently materializing: must traverse nested dict path, accessing each level.
 get-in-or: [fn [xs path default]
     [call $if [call $= [call $length $path] 0]
         $xs
@@ -187,6 +193,7 @@ get-in-or: [fn [xs path default]
 
 # Check if a collection is empty.
 # Seq values are never empty (always have a head), so return false immediately.
+# Inherently materializing: depends on $length which counts all entries.
 empty?: [fn [xs] [call $if [call $seq? $xs] false [call $= [call $length $xs] 0]]]
 
 # Set a key in a dict (returns new dict with key added/updated).
@@ -417,6 +424,7 @@ zip-step: [fn [xs ys xks yks i acc xk yk]
         [call $append $acc [$xs[$xk] $ys[$yk]]]]]
 
 # Flatten nested lists one level deep.
+# Inherently materializing: must inspect each value to check if it is a list.
 flatten: [fn [xs] [call $flatten-impl $xs [call $keys $xs] 0 []]]
 
 flatten-impl: [fn [xs ks i acc]
@@ -432,6 +440,7 @@ flatten-step: [fn [xs ks i acc current-key]
             [call $append $acc $xs[$current-key]]]]]
 
 # Recursively search for a key in nested dicts.
+# Inherently materializing: must traverse nested structure recursively to search.
 find-deep: [fn [xs target]
     [call $find-deep-impl $xs $target [call $keys $xs] 0]]
 
