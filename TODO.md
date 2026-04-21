@@ -412,14 +412,14 @@ Document why these core eval/dict operations must materialize. Add comments at e
 
 Document why these collection/comparison operations must materialize.
 
-- [ ] `$flatten` -- must inspect values to check if they are lists (inherently materializing)
-- [ ] `$length` -- must know all entries (on seqs: must traverse entirely)
-- [ ] `$empty?` -- depends on `$length`, inherently materializing
-- [ ] `$get-in`, `$get-in-or` -- must traverse nested dict path, materializing each step
-- [ ] `$=`, `$<` and comparisons -- must inspect values
-- [ ] `$+`, `$-`, `$*`, `$/` and arithmetic -- must compute
-- [ ] `$quot`, `$mod`, `$ceil`, `$trunc` -- derived arithmetic, inherently materializing
-- [ ] `$find-deep` -- must traverse structure
+- [x] `$flatten` -- must inspect values to check if they are lists (inherently materializing)
+- [x] `$length` -- must know all entries (on seqs: must traverse entirely)
+- [x] `$empty?` -- depends on `$length`, inherently materializing
+- [x] `$get-in`, `$get-in-or` -- must traverse nested dict path, materializing each step
+- [x] `$=`, `$<` and comparisons -- must inspect values
+- [x] `$+`, `$-`, `$*`, `$/` and arithmetic -- must compute
+- [x] `$quot`, `$mod`, `$ceil`, `$trunc` -- derived arithmetic, inherently materializing
+- [x] `$find-deep` -- must traverse structure
 
 ### doc-eagerness-string: Document Inherent Eagerness — String & Conversion
 
@@ -440,6 +440,14 @@ Document why these control flow operations must materialize.
 - [ ] `$try`, `$try-or` -- must materialize body to catch errors
 - [ ] `$assert` -- must materialize condition to check
 - [ ] `$any?`, `$all?` -- short-circuit but materializes elements until condition met/failed
+
+### eval-correctness-2: Eval Correctness Fixes (Cycle 1 Review)
+
+Correctness issues found by eval-engine and computer-scientist reviews (2026-04-20 cycle 1).
+
+- [ ] Fix cycle detection leaving thunk in InProgress instead of Failed — after circular dependency error, thunk stays InProgress permanently; should transition to Failed for error caching and consistent subsequent access (`src/eval.rs:897-907`) [Major, eval-engine]
+- [ ] Add named args support to PendingCall — `ThunkState::PendingCall` only stores positional args (`Vec<Rc<Thunk>>`); named args with defaults lost in lazy function application. Add `named: IndexMap<String, Rc<Thunk>>` field and thread through `materialize()` (`src/value.rs:186-190`, `src/eval.rs:983`) [Minor, eval-engine]
+- [ ] Add origin parameter to `new_pending_builtin()` — always sets `origin: String::new()`, making builtin calls invisible in stack traces; inconsistent with `new_pending_call` which accepts explicit origin (`src/value.rs:228-246`) [Nit, eval-engine]
 
 ### lazy-inventory: Laziness Inventory — Already Lazy (reference)
 
@@ -612,14 +620,16 @@ Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 
 Performance improvements identified by performance-expert review (2026-04-19) that don't depend on the Parser Rewrite.
 
-- [ ] Design allocation strategy (arena vs Rc, flat env vs chain)
+- [x] Design allocation strategy (arena vs Rc, flat env vs chain) — see DESIGN.md §Allocation Strategy — Phased Approach
 - [ ] Arena allocation for thunks/environments — reduce per-thunk Rc<RefCell<ThunkState>> overhead, improve cache locality
 - [ ] Flat environment with slot indices — replace O(n) chain walk with O(1) slot lookup (requires compile-time slot assignment)
 - [ ] String interning for dict keys and small strings — reduce allocation pressure, improve key comparison
 - [ ] Path-compressed union-find for type substitutions — make Substitution::apply() O(α(n)) amortized instead of O(size)
 - [ ] Dict literal fast-path in eval_dict — skip Unevaluated thunk for `Int | Float | Bool | Str` literals, create Materialized directly (Nix `maybeThunk` optimization, ~40-60% fewer thunk allocations for config-heavy files) [Major, eval-engine + performance-expert]
+- [ ] Key cloning reduction in eval_dict — string keys cloned 2× per entry (once into dict_env bindings, once into dict_map). Use entry_mut() pattern or restructure insert order. ~30% of dict allocation cost. (`src/eval.rs:346-352`) [Major, performance-expert, design-review]
+- [ ] func_label allocation reduction — `format!("${name}")` on every PendingCall creation → `Cow<'static, str>` for VarRef case (most common), only allocate for DotAccess. ~5-10% call overhead. (`src/eval.rs:387-396`) [Minor, performance-expert, design-review]
 - [ ] Capacity hints for hot-path allocations — `IndexMap::with_capacity(entries.len())` in dict construction, `String::with_capacity()` in `builtin_str` [Minor, performance-expert]
-- [ ] Reduce bind_args_thunks allocation — reuse closure env when no param name shadowing instead of always creating new `Rc<RefCell<Environment>>` per call (`src/eval.rs:527-529`) [Major, performance-expert]
+- [ ] Reduce bind_args_thunks allocation — deferred to iterative-eval: env reuse is unsafe in current `Rc<RefCell<Environment>>` model (recursive calls share closure_env, param bindings leak between calls). Flat environments in Phase 2 make reuse trivially safe. (`src/eval.rs:527-529`) [Major, performance-expert, deferred]
 - [ ] Bounded Display depth for Value — limit `Value::Dict` Display impl to max 3 levels, print `...` beyond that to prevent deep traversal in error messages (`src/value.rs:113-143`) [Minor, performance-expert]
 - [ ] Document performance characteristics in DESIGN.md — Environment O(depth) lookup, IndexMap ~20% vs HashMap, thunk triple-boxing cost, Substitution::apply() tree walk cost [Minor, performance-expert]
 - [ ] Add per-variable depth limit to Substitution::apply() — long chains >256 types silently return start of chain; either raise error or document truncation (`src/types.rs:141-144`) [Critical, type-theorist]
@@ -628,7 +638,7 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Add clarifying comment to `bind_args_thunks` double conflict check (`src/eval.rs:573-587`) [Nit, eval-engine]
 - [ ] Consider `matches!` instead of `!=` in `key_in_range` (`src/eval.rs:22-50`) [Nit, eval-engine]
 - [ ] Extract `MAX_APPLY_DEPTH` constant to shared location — duplicated in `src/types.rs:127` and `src/eval.rs:42` [Nit, performance-expert]
-- [ ] Avoid AST clone in eval_call argument thunk creation — `(*arg).clone()` clones entire `Spanned<Expr>` subtree per argument; consider `Rc<Spanned<Expr>>` to share immutable AST nodes (`src/eval.rs:416-435`) [Minor, performance-expert]
+- [ ] Avoid AST clone in eval_call argument thunk creation — change `CallExpr` args to `Rc<Spanned<Expr>>` so eval_call does `Rc::clone` instead of deep-cloning AST subtrees per argument. Internal refactor to ast.rs/parser.rs, backward-compatible at public API. ~20-40% call overhead reduction. (`src/eval.rs:416-435`) [Major, performance-expert, design-review promoted]
 - [ ] Avoid intermediate Vec in value_to_display_string — collects all formatted entries into Vec<String> then joins; write directly to String with_capacity instead (`src/lib.rs:194-204`) [Minor, performance-expert]
 - [ ] Avoid intermediate Vec in builtin_split — `input.split(sep).collect::<Vec<&str>>()` then maps to thunks; use iterator directly (`src/builtins.rs:525-535`) [Nit, performance-expert]
 - [ ] Cache materialized dict in `builtin_cycle_step` — currently re-materializes immutable dict on every iteration; store IndexMap directly (`src/builtins.rs:1375-1443`) [Major, performance-expert]
@@ -645,7 +655,10 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 
 Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. LLT's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
 
-- [ ] Design `Frame` enum for explicit continuation stack (similar to Jsonnet's 22 `FrameKind` variants)
+- [x] Design `Frame` enum for explicit continuation stack — see DESIGN.md §Iterative Evaluator — Defunctionalized CPS (CEK Machine). Uses `Action` enum (Eval/Materialize/Continue) + `Cont` enum (~18-20 defunctionalized continuation variants, boxed large fields for ≤96B frames) in an iterative two-register loop. Agent-reviewed: eval-engine, laziness-auditor, performance-expert.
+- [ ] Research safe Rust arena patterns for thunks/environments — typed-arena, bumpalo, index-based arenas (Vec<Thunk> + ThunkId handles), and how to handle letrec self-reference without dangling pointers. Study how Rust projects (salsa, rustc's ty::TyCtxt, cranelift) solve arena + interior references. Assess whether GhostCell or similar can replace RefCell for environment mutation.
+- [ ] Design arena lifetime policy for REPL/LSP — REPL accumulates session env across inputs (thunks from previous arenas must survive); LSP persists DocumentState across edits. Options: session-scoped arena with compaction, copy-out on persist (deep-materialize escaping values), or hybrid (arena for eval-local, Rc for persistent). See DESIGN.md §Allocation Strategy.
+- [ ] Environment reuse in bind_args_thunks — safe with flat environments (each call writes to own activation frame). Deferred from perf-foundations where it was unsafe with shared `Rc<RefCell<Environment>>`. (`src/eval.rs:527-529`)
 - [ ] Convert `materialize()` from recursive to iterative with `Vec<Frame>` work stack
 - [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative
 - [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame
@@ -730,6 +743,10 @@ Future type system work identified by type-theorist review (2026-04-19).
 - [ ] Document `check_call` not verifying named args exist in params — intentional: named args are eval-time (`src/typecheck.rs:389-447`) [Nit, type-theorist]
 - [ ] Consider `HashMap` instead of `IndexMap` for type alias registry — order doesn't matter (`src/types.rs:386`) [Nit, type-theorist]
 - [ ] Clarify `Fn@T` with zero params — document whether it means thunk or nullary function (`src/typecheck.rs:536-541`) [Nit, type-theorist]
+- [ ] Fix monomorphic function calls skipping argument type checking — `!func_ty.has_type_vars()` early return bypasses argument-parameter type unification; monomorphic calls should still verify argument types match parameters (`src/typecheck.rs:421-422`) [Major, computer-scientist]
+- [ ] Fix open-record unification silently dropping non-shared fields — only shared fields unified, unique fields ignored without constraint; Remy-style would bind fresh row variables to capture remainders (`src/types.rs:334-338`) [Major, computer-scientist]
+- [ ] Fix letrec forward-reference typing to Any — single-pass dict inference binds forward refs to `Type::Any` instead of fixpoint iteration (Mycroft 1984); masks type errors in mutually recursive dict entries (`src/typecheck.rs:225`) [Minor, computer-scientist]
+- [ ] Document literal promotion symmetry in unification — `IntLiteral↔Int` unification is bidirectional; in a subtyping-aware system `IntLiteral <: Int` but not vice versa; reduces diagnostic value (`src/types.rs:263-264`) [Minor, computer-scientist]
 
 ## Stdlib Expansion
 
@@ -849,7 +866,7 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Update DESIGN.md concat classification to note dual-dispatch: Seq path is lazy O(1), Dict path is eager O(m) (`DESIGN.md:1257`) [Minor, grammar-architect]
 - [ ] Add comment to Seq cycle detection in `deep_materialize` explaining raw pointer identity pattern (`src/eval.rs:1093-1100`) [Nit, integration-verifier]
 - [ ] Update DESIGN.md ThunkState sketch to include `Failed(Box<EvalError>)` and `PendingCall` variants (`DESIGN.md:1988-1994`) [Nit, eval-engine]
-- [ ] Add corpus tests for `any?` and `all?` (any_true, any_false, any_empty, all_true, all_false, all_empty) (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
+- [x] Add corpus tests for `any?` and `all?` (any_true, any_false, any_empty, all_true, all_false, all_empty) (`tests/corpus/eval/stdlib/`) [Major, stdlib-author] — tests already exist: any.llt-eval, any_empty.llt-eval, any_shortcircuit.llt-eval, all.llt-eval, all_empty.llt-eval, all_shortcircuit.llt-eval
 
 ## Test Infrastructure
 
@@ -875,7 +892,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add error corpus tests for drop/reduce/join type/arity mismatches — `drop_wrong_type.txt`, `reduce_wrong_type.txt`, `join_wrong_type.txt` (`tests/corpus/eval/errors/`) [Major, test-crafter]
 - [ ] Add unit tests for builtin_drop, builtin_reduce, builtin_join (PendingCall chain construction, thunk state, span propagation) (`src/builtins.rs`) [Major, test-crafter]
 - [ ] Add include caching corpus tests — same file included twice returns identical result, nested includes share cache, verify cache interaction with cycle detection (`tests/corpus/eval/builtins/`) [Major, test-crafter]
-- [ ] Add concat edge case corpus tests — empty dicts (`concat [] []`, `concat [a] []`, `concat [] [a]`), testing the `empty?` branch (`tests/corpus/eval/stdlib/`) [Minor, test-crafter]
+- [x] Add concat edge case corpus tests — empty dicts (`concat [] []`, `concat [a] []`, `concat [] [a]`), testing the `empty?` branch (`tests/corpus/eval/stdlib/`) [Minor, test-crafter] — tests exist: concat.llt-eval, concat_dict.llt-eval, concat_seq.llt-eval, concat_seq_dict.llt-eval
 - [ ] Add concat error corpus tests — invalid input types, type mismatches (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
 
 ### test-additional: Additional Test Coverage

@@ -192,6 +192,7 @@ fn reject_named(
 }
 
 /// `+`: Addition with auto-promotion. Int + Int -> Int, any Float operand -> Float.
+/// Inherently materializing: must extract numeric values to compute sum.
 fn builtin_add(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -210,6 +211,7 @@ fn builtin_add(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `-`: Subtraction with auto-promotion. Int - Int -> Int, any Float operand -> Float.
+/// Inherently materializing: must extract numeric values to compute difference.
 fn builtin_sub(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -228,6 +230,7 @@ fn builtin_sub(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `*`: Multiplication with auto-promotion. Int * Int -> Int, any Float operand -> Float.
+/// Inherently materializing: must extract numeric values to compute product.
 fn builtin_mul(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -246,6 +249,7 @@ fn builtin_mul(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `/`: Float division. ALWAYS returns Float, even for Int / Int. Division by zero produces an error.
+/// Inherently materializing: must extract numeric values to compute quotient.
 fn builtin_div_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -276,6 +280,7 @@ fn builtin_div_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Works on Int, Float, String, Bool. Cross-type Int/Float comparison
 /// promotes Int to Float. Dict/Function/Builtin are never equal (returns false,
 /// not an error).
+/// Inherently materializing: must inspect values to determine equality.
 fn builtin_eq(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -308,6 +313,7 @@ fn builtin_eq(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Works on Int, Float, String. Cross-type Int/Float comparison promotes
 /// Int to Float. String comparison is lexicographic. Incompatible types
 /// (e.g. Int vs String, Bool vs anything) produce a type error.
+/// Inherently materializing: must inspect values to determine ordering.
 fn builtin_lt(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
