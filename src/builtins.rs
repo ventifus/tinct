@@ -505,6 +505,7 @@ fn builtin_append(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Materializes each argument and concatenates their string representations.
 /// With zero args, returns an empty string.
+/// Inherently materializing: must inspect values to convert to string representation.
 fn builtin_str(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -525,6 +526,7 @@ fn builtin_str(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Takes 2 args: `separator` (String), `input` (String).
 /// Returns a Dict with integer keys `0..n` mapping to the split substrings.
+/// Inherently materializing: must inspect string content to split into substrings.
 fn builtin_split(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -560,6 +562,7 @@ fn builtin_split(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Takes 3 args: `pattern` (String), `replacement` (String), `input` (String).
 /// Returns a new String with all occurrences of `pattern` replaced by `replacement`.
+/// Inherently materializing: must inspect string content to find and replace patterns.
 fn builtin_replace(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -583,6 +586,7 @@ fn builtin_replace(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `upper`: Convert a string to uppercase. Takes 1 arg (String).
+/// Inherently materializing: must inspect string content to convert case.
 fn builtin_upper(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -596,6 +600,7 @@ fn builtin_upper(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `lower`: Convert a string to lowercase. Takes 1 arg (String).
+/// Inherently materializing: must inspect string content to convert case.
 fn builtin_lower(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -611,6 +616,7 @@ fn builtin_lower(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `trim`: Remove leading and trailing whitespace from a string.
 ///
 /// Takes 1 arg (String). Returns the trimmed string.
+/// Inherently materializing: must inspect string content to identify and remove whitespace.
 fn builtin_trim(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -667,6 +673,7 @@ fn float_to_int_builtin(
 /// - Float input: applies `f64::floor()` then converts to `i64`.
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
+/// Inherently materializing: must inspect numeric value to convert/round.
 fn builtin_floor(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -683,6 +690,7 @@ fn builtin_floor(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Float input: applies `f64::round()` (half-away-from-zero) then converts to `i64`.
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
+/// Inherently materializing: must inspect numeric value to convert/round.
 fn builtin_round(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -697,6 +705,7 @@ fn builtin_round(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Parses the string as an integer via `str::parse::<i64>()`. Returns Int.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
+/// Inherently materializing: must inspect string content to parse integer value.
 fn builtin_to_int(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -718,6 +727,7 @@ fn builtin_to_int(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Parses the string as a float via `str::parse::<f64>()`. Returns Float.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
+/// Inherently materializing: must inspect string content to parse float value.
 fn builtin_to_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -919,6 +929,7 @@ fn builtin_apply(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
 /// Both `Function` and `Builtin` return "Function" (from the user's perspective).
+/// Inherently materializing: must inspect value variant to determine type.
 fn builtin_type_of(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -985,6 +996,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
 }
 
 /// `from-json`: takes 1 arg (String containing JSON), parses into LLT value.
+/// Inherently materializing: must parse entire JSON string to construct value.
 fn builtin_from_json(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -2371,6 +2383,7 @@ fn builtin_reduce_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - For Seq: traverse head/tail chain, stringify each element, join
 ///
 /// Args: (sep, xs)
+/// Inherently materializing: must inspect and stringify all elements to concatenate.
 fn builtin_join(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,

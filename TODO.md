@@ -425,11 +425,11 @@ Document why these collection/comparison operations must materialize.
 
 Document why these string/conversion operations must materialize.
 
-- [ ] `$str`, `$split`, `$replace`, `$upper`, `$lower`, `$trim` -- must inspect string content
-- [ ] `$join`, `$words` -- derived string ops, inherently materializing
-- [ ] `$to-int`, `$to-float`, `$floor`, `$round` -- must convert
-- [ ] `$type-of` -- must inspect value variant
-- [ ] `$from-json` -- must parse entire JSON string
+- [x] `$str`, `$split`, `$replace`, `$upper`, `$lower`, `$trim` -- must inspect string content
+- [x] `$join`, `$words` -- derived string ops, inherently materializing
+- [x] `$to-int`, `$to-float`, `$floor`, `$round` -- must convert
+- [x] `$type-of` -- must inspect value variant
+- [x] `$from-json` -- must parse entire JSON string
 
 ### doc-eagerness-control: Document Inherent Eagerness — Control Flow
 
@@ -883,7 +883,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add `deep_materialize` corpus tests through the public API
 - [ ] Materialization behavior corpus tests proving stdlib laziness categories (test-crafter review)
 - [ ] Add `test_type_of_seq()` unit test verifying `builtin_type_of` returns `"Seq"` for `Value::Seq` — all other Value variants have type-of tests but Seq is missing (`src/builtins.rs`) [Major, integration-verifier]
-- [ ] Add corpus test `type_of_seq.txt` — `[call $type-of [call $seq 1 []]]` returns `"Seq"` (`tests/corpus/eval/builtins/`) [Minor, integration-verifier]
+- [x] Add corpus test `type_of_seq.txt` — `[call $type-of [call $seq 1 []]]` returns `"Seq"` (`tests/corpus/eval/builtins/`) [Minor, integration-verifier] — exists as seq_type_of.llt-eval
 - [ ] Add sequence constructor error path corpus tests — `range_start_overflow.txt`, `iterate_non_function.txt`, `unfold_invalid_return.txt`, `cycle_empty.txt` (`tests/corpus/eval/errors/`) [Critical, test-crafter]
 - [ ] Add laziness proof tests for map/filter — `map_preserves_thunks.txt`, `filter_selective_materialization.txt` proving unused values stay unevaluated (`tests/corpus/eval/laziness/`) [Critical, test-crafter]
 - [ ] Add Failed state same-span deduplication test — access Failed thunk twice with same span, verify no duplicate stack frames (`src/eval.rs`) [Minor, test-crafter]

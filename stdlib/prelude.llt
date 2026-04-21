@@ -115,6 +115,7 @@ trunc: [fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]
 # join is a Rust-native builtin (O(n) performance, dual-dispatch on Dict/Seq).
 # See src/builtins.rs for implementation.
 
+# Inherently materializing: splits string content, derived from $split.
 words: [fn [s]
     [call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]]
 
