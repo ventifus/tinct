@@ -435,11 +435,11 @@ Document why these string/conversion operations must materialize.
 
 Document why these control flow operations must materialize.
 
-- [ ] `$eval` -- deep-forces all thunks by definition
-- [ ] `$error` -- constructs error value (structural, but the error itself is concrete)
-- [ ] `$try`, `$try-or` -- must materialize body to catch errors
-- [ ] `$assert` -- must materialize condition to check
-- [ ] `$any?`, `$all?` -- short-circuit but materializes elements until condition met/failed
+- [x] `$eval` -- deep-forces all thunks by definition
+- [x] `$error` -- constructs error value (structural, but the error itself is concrete)
+- [x] `$try`, `$try-or` -- must materialize body to catch errors
+- [x] `$assert` -- must materialize condition to check
+- [x] `$any?`, `$all?` -- short-circuit but materializes elements until condition met/failed
 
 ### eval-correctness-2: Eval Correctness Fixes (Cycle 1 Review)
 
