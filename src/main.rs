@@ -8,8 +8,8 @@ use std::process;
 use std::rc::Rc;
 use tinct::{
     clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
-    json_to_value, materialize, parse, set_include_context, value_to_display_string, value_to_json,
-    IncludeContext, Span, Thunk, MAX_FILE_SIZE,
+    format_source, json_to_value, materialize, parse, set_include_context,
+    value_to_display_string, value_to_json, IncludeContext, Span, Thunk, MAX_FILE_SIZE,
 };
 
 const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
@@ -37,6 +37,19 @@ enum Commands {
         /// Input LLT file. Use `-` to read LLT source from stdin.
         file: String,
     },
+    /// Format LLT source code to canonical style.
+    Fmt {
+        /// Check formatting without writing changes (exit 1 if unformatted).
+        #[arg(long)]
+        check: bool,
+
+        /// Write formatted output back to the file in place.
+        #[arg(short, long)]
+        in_place: bool,
+
+        /// Input LLT file. Use `-` to read from stdin.
+        file: String,
+    },
     /// Start an interactive REPL session.
     #[cfg(feature = "repl")]
     Repl,
@@ -60,6 +73,11 @@ fn main() {
         .stack_size(WORKER_STACK_SIZE)
         .spawn(move || match cli.command {
             Commands::Eval { format, eval, file } => run_eval(&file, &format, eval),
+            Commands::Fmt {
+                check,
+                in_place,
+                file,
+            } => run_fmt(&file, check, in_place),
             #[cfg(feature = "repl")]
             Commands::Repl => tinct::repl::run_repl(),
             #[cfg(feature = "lsp")]
@@ -165,6 +183,33 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
 
     clear_include_context();
     result
+}
+
+fn run_fmt(file_path: &str, check: bool, in_place: bool) -> Result<(), String> {
+    let source = read_source(file_path)?;
+    let formatted = format_source(&source).map_err(|e| format!("{e}"))?;
+
+    if check {
+        if source != formatted {
+            if file_path == "-" {
+                return Err("stdin: not formatted".to_string());
+            }
+            return Err(format!("{file_path}: not formatted"));
+        }
+        return Ok(());
+    }
+
+    if in_place {
+        if file_path == "-" {
+            return Err("--in-place cannot be used with stdin".to_string());
+        }
+        std::fs::write(file_path, &formatted)
+            .map_err(|e| format!("error writing {file_path}: {e}"))?;
+        return Ok(());
+    }
+
+    print!("{formatted}");
+    Ok(())
 }
 
 /// Read LLT source from a file path or stdin (when path is `-`).

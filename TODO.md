@@ -548,7 +548,7 @@ Tokenizer producing a flat token stream. Whitespace-sensitivity for access chain
 Uses the hand-written lexer's token stream (comment-preserving, unlike pest). See DESIGN.md §Formatter for full design.
 
 - [x] Design formatting rules (single-line threshold, comment attachment, semicolon handling) — see DESIGN.md §Formatter
-- [ ] Formatting engine (`src/formatter.rs`)
+- [x] Formatting engine (`src/formatter.rs`)
   - Indent nested `[]` by 2 spaces per depth
   - One entry per line (unless bracket expr fits within 80 chars AND has ≤4 entries)
   - Comments: line-affinity attachment (trailing = same line, leading = own line)
@@ -558,9 +558,9 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
   - Collapse multiple blank lines to one
   - Access chains never broken across lines
   - Strip trailing whitespace, ensure trailing newline
-- [ ] CLI subcommand: `Fmt` variant with `--check`, `--in-place`, `--stdin` (zero config)
-- [ ] Tests (idempotency, comment preservation, indentation, single-line vs multi-line, edge cases)
-- [ ] Just recipes: `just fmt-llt FILE`, `just fmt-llt-check FILE`
+- [x] CLI subcommand: `Fmt` variant with `--check`, `--in-place`, `--stdin` (zero config)
+- [x] Tests (idempotency, comment preservation, indentation, single-line vs multi-line, edge cases)
+- [x] Just recipes: `just fmt-llt FILE`, `just fmt-llt-check FILE`
 
 ### iterative-parser: Iterative parser (`src/parser2.rs`)
 
