@@ -68,3 +68,12 @@ rules:
     pattern: /tmp\b
     message: Use .tmp/ in the project directory for temporary files, not /tmp. Create it with mkdir -p .tmp/ if needed.
     suggest: .tmp/
+
+  - name: no-python
+    pattern: \bpython3?\b
+    message: Python is not used in this project. Use Rust or shell tools instead.
+
+  - name: no-ripgrep
+    pattern: \brg\b
+    message: Use the built-in Grep tool instead of rg (ripgrep). Grep is available as a native Claude Code tool.
+    suggest: Grep tool

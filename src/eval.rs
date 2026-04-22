@@ -57,11 +57,7 @@ pub fn eval(
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     if depth > MAX_EVAL_DEPTH {
-        return Err(EvalError::new(
-            format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
-            expr.span,
-        )
-        .into());
+        return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, expr.span).into());
     }
     // $_ implicit lambda desugaring: if the expression directly contains VarRef("_")
     // and `_` is not already bound in the current environment, wrap it in [fn [_] <expr>].
@@ -1076,11 +1072,7 @@ fn deep_materialize_impl(
     visited: &mut std::collections::HashSet<*const Thunk>,
 ) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
-        return Err(EvalError::new(
-            format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
-            Span::origin(),
-        )
-        .into());
+        return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, Span::origin()).into());
     }
     match val {
         Value::Dict(map) => {

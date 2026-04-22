@@ -5002,7 +5002,7 @@ impl fmt::Display for ErrorKind {
             Self::IntegerOverflow { op } =>
                 write!(f, "{op}: integer overflow"),
             Self::FloatNotFinite { builtin, value } =>
-                write!(f, "{builtin}: {value} cannot be converted to Int"),
+                write!(f, "{builtin}: {value} is not a finite number"),
             Self::EmptyCollection { op } =>
                 write!(f, "{op} on empty collection"),
             Self::DepthExceeded { limit } =>

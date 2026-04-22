@@ -26,7 +26,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::error::{EvalError, EvalResult};
+use crate::error::{ErrorKind, EvalError, EvalResult};
 // Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -103,8 +103,19 @@ fn expect_one_arg(
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
-/// before casting. Returns an error if the value would saturate.
+/// before casting. Returns an error if the value is non-finite or would saturate.
 fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> EvalResult<i64> {
+    if !f.is_finite() {
+        return Err(Box::new(EvalError {
+            kind: ErrorKind::FloatNotFinite {
+                builtin: name.to_string(),
+                value: f,
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }));
+    }
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
         return Err(EvalError::new(format!("{name}: {f} is out of Int range"), call_span).into());
     }
@@ -162,11 +173,16 @@ fn stringify(value: &Value) -> String {
 fn require_dict(name: &str, value: Value, call_span: Span) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
-        other => Err(EvalError::new(
-            format!("{name}: expected Dict, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => Err(Box::new(EvalError {
+            kind: ErrorKind::TypeMismatch {
+                context: Some(name.to_string()),
+                expected: "Dict".to_string(),
+                got: other.type_name().to_string(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        })),
     }
 }
 
@@ -174,11 +190,16 @@ fn require_dict(name: &str, value: Value, call_span: Span) -> EvalResult<IndexMa
 fn require_string(name: &str, value: Value, call_span: Span) -> EvalResult<String> {
     match value {
         Value::String(s) => Ok(s),
-        other => Err(EvalError::new(
-            format!("{name}: expected String, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => Err(Box::new(EvalError {
+            kind: ErrorKind::TypeMismatch {
+                context: Some(name.to_string()),
+                expected: "String".to_string(),
+                got: other.type_name().to_string(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        })),
     }
 }
 
@@ -189,9 +210,7 @@ fn reject_named(
     call_span: Span,
 ) -> EvalResult<()> {
     if !named.is_empty() {
-        return Err(
-            EvalError::new(format!("{name} does not accept named arguments"), call_span).into(),
-        );
+        return Err(EvalError::named_arg_rejected(name, call_span).into());
     }
     Ok(())
 }
@@ -788,7 +807,7 @@ fn builtin_error(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx;
     let val = expect_one_arg("error", args, named, depth, call_span)?;
     let msg = require_string("error", val, call_span)?;
-    Err(EvalError::new(msg, call_span).into())
+    Err(EvalError::user_error(msg, call_span).into())
 }
 
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[ok: value]`
