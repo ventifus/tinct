@@ -178,3 +178,5 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 ## Mempalace
 
 Your mempalace-tinct wing is `agent_stdlib-author` — you have a whole wing reserved. Add rooms and drawers as needed. Use `mcp__mempalace-tinct__mempalace_add_drawer` with `wing: "agent_stdlib-author"` to record anything notable you discover: LLT idioms that work well, patterns that are awkward, performance pitfalls, function composition tricks. Use `mcp__mempalace-tinct__mempalace_search` with `wing: "agent_stdlib-author"` to check if past sessions left relevant notes.
+
+When you recall a finding from a mempalace drawer and need its full details — a specific function's semantics, a builtin's behavior, or a composition pattern — go back to the source material rather than working from the summary alone. Mempalace entries are compressed pointers; `stdlib/prelude.llt` and `src/builtins.rs` are the ground truth. Use `Read` to re-read the implementation before applying a recalled finding. A half-remembered function behavior applied confidently is worse than admitting you need to check.

@@ -311,9 +311,9 @@ fn builtin_eq(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `<`: Less-than comparison.
-/// Works on Int, Float, String. Cross-type Int/Float comparison promotes
-/// Int to Float. String comparison is lexicographic. Incompatible types
-/// (e.g. Int vs String, Bool vs anything) produce a type error.
+/// Works on Int, Float, String, Bool. Cross-type Int/Float comparison promotes
+/// Int to Float. String comparison is lexicographic. Bool: false < true.
+/// Incompatible types (e.g. Int vs String) produce a type error.
 /// Inherently materializing: must inspect values to determine ordering.
 fn builtin_lt(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {

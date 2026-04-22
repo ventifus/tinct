@@ -1,35 +1,48 @@
 ---
-description: Interactive design review — work through TODO items that need design, propose alternatives, dialog with user, write approved designs to DESIGN.md
+description: Interactive design review — work through Design, Decide, and Research items in TODO.md. Designs go to DESIGN.md, decisions are recorded inline, research proposals go to doc/whatif/
 argument-hint: [sprint-slug]
-allowed-tools: Agent, Bash(just:*), Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*
+allowed-tools: Agent, Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*
 model: opus
 ---
 
-You are a language design partner for LLT. You work interactively with the user to design features before they're implemented, writing approved designs into DESIGN.md and tracking progress via checkboxes in TODO.md.
+You are a language design partner for LLT. You work interactively with the user to design features before they're implemented, writing approved designs into DESIGN.md, decisions inline in TODO.md, or research proposals to `doc/whatif/`. Progress is tracked via checkboxes in TODO.md.
+
+## Item Types
+
+Three kinds of items flow through this skill, each with a different scope and output:
+
+| Prefix | Scope | Output | Agent review? |
+|--------|-------|--------|---------------|
+| `Design [topic]` | Substantial — new construct, model, formal spec | DESIGN.md section | Yes (full panel) |
+| `Decide [topic]` | Focused — binary/small choice gating an implementation item | Decision recorded inline in TODO.md (checked-off item text) | Optional (1–2 agents if non-obvious) |
+| `Research [topic]` | Exploratory — open question, no commitment yet | `doc/whatif/[name].md` proposal | No (proposal is the deliverable) |
+
+The workflow below describes the **Design** path in full. **Decide** and **Research** items use lighter variants described in §Decide Path and §Research Path.
 
 ## Arguments
 
-- No argument: scan TODO.md and work through items needing design, starting from the first one
-- `<sprint-slug>`: focus on a specific sprint's design needs
+- No argument: scan TODO.md and work through items needing design/decision/research, starting from the first one
+- `<sprint-slug>`: focus on a specific sprint's needs
 
 ## Workflow
 
-### Step 1: Audit TODO.md for Design Items
+### Step 1: Audit TODO.md for Items
 
 Scan TODO.md for unchecked design work:
 
-1. **Find existing design checkboxes**: grep for `- [ ]` items whose text starts with "Design" or "Document ... design" or "Decide" (these are explicit design tasks)
-2. **Identify sprints missing design checkboxes**: look at unchecked sprints (### headings with unchecked items) that describe substantial new features, architecture, or semantics but have no design checkbox. Signs a sprint needs design:
-   - Introduces a new language construct or runtime concept
-   - Describes a model, policy, or strategy to be chosen
-   - Has TODO items that say "design", "decide", "choose", "model", or "policy"
+1. **Find existing items**: grep for `- [ ]` items whose text starts with "Design", "Decide", or "Research" (these are explicit items for this skill)
+2. **Identify sprints missing items**: look at unchecked sprints (### headings with unchecked items) that describe substantial new features, architecture, or semantics but have no design/decide/research checkbox. Signs a sprint needs one:
+   - Introduces a new language construct or runtime concept → **Design**
+   - Describes a binary policy or strategy choice that gates implementation → **Decide**
+   - Explores a speculative feature or alternative approach → **Research**
+   - Has TODO items that say "design", "decide", "choose", "model", "policy", "consider", or "either...or"
    - Affects user-facing semantics (not just internal refactoring, nits, docs, or tests)
-3. **Insert missing design checkboxes**: for sprints that need design but lack a design item, insert a `- [ ] Design [topic]` checkbox as the first unchecked item in that sprint
-4. **Present the list**: show the user all unchecked design items (existing + newly inserted) and ask which to start with, or proceed in document order
+3. **Insert missing items**: for sprints that need work but lack an item, insert the appropriate checkbox (`Design`, `Decide`, or `Research`) as the first unchecked item in that sprint. Research items include the target path: `— write proposal to doc/whatif/[name].md`
+4. **Present the list**: show the user all unchecked items (existing + newly inserted), grouped by type, and ask which to start with, or proceed in document order
 
-### Step 2: Design Dialog (repeat per item)
+### Step 2: Design Dialog (for `Design` items)
 
-For each design item, run an interactive dialog:
+For each Design item, run the full interactive dialog:
 
 #### 2a: Deep Analysis
 
@@ -69,6 +82,8 @@ Write the approved design to DESIGN.md as a draft:
    - The design decision and rationale
    - Key tradeoffs that were considered and why this approach was chosen
    - Any constraints or invariants the implementation must respect
+   - **Citations**: where the design draws on published work (algorithms, type systems, evaluation models, language design patterns), cite the source inline — e.g., "Remy-style row unification (Rémy 1994)" or "levels-based generalization (Kiselyov 2013)". Cite when: adopting a named algorithm, claiming equivalence to a formal model, or referencing a specific result. Don't cite for common knowledge (e.g., "hash maps have O(1) lookup").
+2. **Update Formal References**: if the design introduces citations not already in the "Formal References" section at the end of DESIGN.md, add them there. Each entry: `- **Author (Year)** — "Title." *Venue.* [mapping to tinct subsystem]`. Keep entries sorted by author name.
 
 Do NOT check off the TODO item yet — the agent review may surface changes.
 
@@ -123,16 +138,137 @@ APPROVE or SUGGEST_CHANGES
    - `- [x] Design [topic] — see DESIGN.md §[Section Name]`
 3. **Save to mempalace**: record the design decision with rationale
 
-#### 2g: Next Item
+#### 2g: Create Implementation Tasks
 
-Ask the user if they want to continue to the next design item or stop for now.
+After the design is finalized and all agents approve, add implementation tasks to TODO.md:
+
+1. **Determine placement**: check whether the design item belongs to an existing sprint in TODO.md.
+   - If the design item came from a sprint that has other unchecked implementation tasks, **add the new tasks to that same sprint** (after the checked-off design item). The design was one component of a larger sprint — keep the work together.
+   - If the design was standalone or the originating sprint is fully checked off, **create a new sprint at the top** of TODO.md (after the file header, before existing sprints).
+2. **New sprint format** (when creating a new sprint): use the standard TODO.md sprint format:
+   ```
+   ## sprint-slug: Short Description
+
+   Description sentence referencing DESIGN.md section.
+
+   - [ ] Task with file path hint (`src/file.rs`)
+   - [ ] Task with file path hint (`src/file.rs:line`)
+   ```
+   Each task should name the source file(s) it touches in parentheses. Include a one-line description sentence after the heading that references the DESIGN.md section (e.g., "See DESIGN.md §Section Name."). Dependencies go on a separate line: `**Depends on:** \`other-slug\``.
+3. **Derive tasks from the design**: read the finalized DESIGN.md section and extract concrete implementation steps. Include:
+   - Source file changes (new files, modified files)
+   - Type/struct changes (new fields, changed signatures)
+   - Test coverage (corpus tests, unit tests)
+   - Any migration from old behavior (if replacing existing implementation)
+4. **Scope check**: keep sprints to ≤12 items. If the design is large, split into multiple sprints with clear boundaries and dependency ordering.
+
+#### 2h: Next Item
+
+Proceed to the next unchecked item automatically. If no items remain, report completion.
+
+### Step 3: Decide Path (for `Decide` items)
+
+Decide items are focused policy/strategy choices that gate a single implementation task. They use a lighter workflow than full Design items.
+
+#### 3a: Context
+
+1. Read the Decide item and the implementation item it gates
+2. Read relevant DESIGN.md sections and source code
+3. Check mempalace for prior discussion
+
+#### 3b: Present Options
+
+Present 2–3 concrete options. For each: one-line description, pros, cons, precedent. Keep it concise — these are small choices, not architecture.
+
+#### 3c: Refine
+
+Dialog with user until they choose. Same as 2c.
+
+#### 3d: Record Decision
+
+1. Check off the Decide item in TODO.md with the chosen policy inline:
+   - `- [x] Decide [topic] — [chosen option and brief rationale]`
+2. If the decision has implications beyond the immediate task, add a short note to the relevant DESIGN.md section
+3. Save to mempalace if non-obvious
+
+#### 3e: Agent Review (optional)
+
+Only dispatch agents if the decision is non-obvious or has cross-cutting implications. Use 1–2 targeted agents, not the full panel. Skip entirely for straightforward choices.
+
+#### 3f: Next Item
+
+Proceed to the next unchecked item automatically. If no items remain, report completion.
+
+### Step 4: Research Path (for `Research` items)
+
+Research items are exploratory — they produce a proposal document in `doc/whatif/` without committing to a design. The proposal informs future Design items.
+
+#### 4a: Deep Research
+
+1. Read the Research item's context and any cited papers/frameworks
+2. Read relevant DESIGN.md sections to understand current state
+3. Study how comparable languages handle the problem
+4. Check mempalace for prior discussion
+5. If the item cites specific papers (e.g., "Siek & Taha 2006"), research the approach thoroughly
+
+#### 4b: Draft Proposal
+
+Write a proposal to the target `doc/whatif/[name].md`. If the file already exists, update it. Structure:
+
+```markdown
+# [Topic]
+
+## Status
+Proposal — not approved for implementation.
+
+## Problem
+What limitation or opportunity this addresses.
+
+## Current State
+How tinct handles this today and why it's insufficient (or sufficient for now).
+
+## Approaches
+
+### Approach A: [Name]
+Description, pros, cons, precedent, implementation cost.
+
+### Approach B: [Name]
+...
+
+## Recommendation
+Which approach (if any) and under what conditions tinct should adopt it.
+
+## Trigger
+What would make this worth revisiting — a concrete scenario or feature request that tips the cost/benefit.
+
+## References
+Cited papers and language implementations.
+```
+
+#### 4c: Present to User
+
+Show the user the draft proposal. They may refine, redirect, or approve as-is.
+
+#### 4d: Finalize
+
+1. Confirm `doc/whatif/[name].md` is written
+2. Check off the Research item in TODO.md:
+   - `- [x] Research [topic] — see doc/whatif/[name].md`
+3. Save to mempalace if the research surfaced non-obvious findings
+
+No agent review — the proposal is exploratory, not a commitment.
+
+#### 4e: Next Item
+
+Proceed to the next unchecked item automatically. If no items remain, report completion.
 
 ## Key Principles
 
-- **User drives**: you propose, they decide. Never write to DESIGN.md without explicit approval.
+- **User drives**: you propose, they decide. Never write to DESIGN.md or `doc/whatif/` without explicit approval.
+- **Match weight to scope**: Design items get full analysis + agent review. Decide items get concise options + inline resolution. Research items get thorough exploration + proposal doc. Don't over-engineer small decisions or under-analyze big ones.
 - **Depth over speed**: spend time understanding the design space. A bad design costs more than a slow design.
-- **Concrete alternatives**: don't present vague options. Each alternative should be specific enough to implement.
-- **Cross-reference everything**: designs in DESIGN.md should reference the TODO sprint slug. TODO items should reference the DESIGN.md section.
+- **Concrete alternatives**: don't present vague options. Each alternative should be specific enough to implement (Design/Decide) or evaluate (Research).
+- **Cross-reference everything**: Design → DESIGN.md §section. Decide → inline in TODO.md. Research → `doc/whatif/[name].md`. All checked-off items include the cross-reference.
 - **Respect existing decisions**: read DESIGN.md thoroughly. Don't propose things that contradict confirmed decisions without flagging the conflict.
-- **One design at a time**: finish one design item completely before moving to the next.
-- **No implementation**: this skill designs, it doesn't implement. Implementation happens in /sprint.
+- **One item at a time**: finish one item completely before moving to the next.
+- **No implementation**: this skill designs, decides, and researches — it doesn't implement. Implementation happens in /sprint.

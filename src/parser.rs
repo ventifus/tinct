@@ -390,24 +390,14 @@ fn build_call(
         .expect("grammar guarantees call_form has call_args");
     let mut args = Vec::new();
     let mut named_args = Vec::new();
-    let mut saw_named = false;
 
     for child in call_args_pair.into_inner() {
         match child.as_rule() {
             Rule::named_arg => {
-                saw_named = true;
                 let na = build_named_arg(child, lines, depth)?;
                 named_args.push(na);
             }
-            // All other child rules (value, access_expr, bracket_expr, atom, etc.)
-            // are positional arguments handled uniformly by build_value.
             _ => {
-                if saw_named {
-                    return Err(ParseError {
-                        message: "positional argument after named argument".to_string(),
-                        span: Some(make_span(&child, lines)),
-                    });
-                }
                 let val = build_value(child, lines, depth)?;
                 args.push(val);
             }
@@ -665,15 +655,11 @@ fn build_dict_entries(
     depth: usize,
 ) -> Result<Vec<Spanned<Entry>>, ParseError> {
     let mut entries = Vec::new();
-    let mut saw_keyed = false;
     let mut seen_keys = std::collections::HashSet::new();
     for child in pair.into_inner() {
         if child.as_rule() == Rule::entry {
-            let entry_span = make_span(&child, lines);
             let entry = build_entry(child, lines, depth)?;
             if let Some(ref key_expr) = entry.node.key {
-                saw_keyed = true;
-                // Duplicate key detection: compare literal key text
                 let key_text = key_to_string(&key_expr.node);
                 if let Some(key_text) = key_text {
                     if seen_keys.contains(&key_text) {
@@ -684,11 +670,6 @@ fn build_dict_entries(
                     }
                     seen_keys.insert(key_text);
                 }
-            } else if saw_keyed && !matches!(&entry.node.value.node, Expr::Rest(_)) {
-                return Err(ParseError {
-                    message: "positional entry after named entry".to_string(),
-                    span: Some(entry_span),
-                });
             }
             entries.push(entry);
         }
@@ -2500,37 +2481,28 @@ mod tests {
     }
 
     #[test]
-    fn test_error_positional_after_named_in_dict() {
-        let err = parse_err("[key: value pos]");
-        assert!(
-            err.message.contains("positional entry after named entry"),
-            "got: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_error_positional_after_named_in_call() {
-        let err = parse_err("[call $f key: 1 $x]");
-        assert!(
-            err.message
-                .contains("positional argument after named argument"),
-            "got: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_positional_before_named_ok() {
-        let ast = parse_ok("[a b key: val]");
+    fn test_mixed_positional_and_named_in_dict() {
+        let ast = parse_ok("[a key: val b]");
         match &ast.node {
             Expr::Dict(entries) => {
                 assert_eq!(entries.len(), 3);
                 assert!(entries[0].node.key.is_none());
-                assert!(entries[1].node.key.is_none());
-                assert!(entries[2].node.key.is_some());
+                assert!(entries[1].node.key.is_some());
+                assert!(entries[2].node.key.is_none());
             }
             other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mixed_positional_and_named_in_call() {
+        let ast = parse_ok("[call $f key: 1 $x]");
+        match &ast.node {
+            Expr::Call { args, named_args, .. } => {
+                assert_eq!(args.len(), 1);
+                assert_eq!(named_args.len(), 1);
+            }
+            other => panic!("expected Call, got {other:?}"),
         }
     }
 

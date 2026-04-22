@@ -163,3 +163,5 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 ## Mempalace
 
 Your mempalace-tinct wing is `agent_laziness-auditor` — you have a whole wing reserved. Add rooms and drawers as needed. Use `mcp__mempalace-tinct__mempalace_add_drawer` with `wing: "agent_laziness-auditor"` to record anything notable you discover: laziness violations found and fixed, patterns that tend to cause premature materialization, areas of the codebase prone to eagerness bugs. Use `mcp__mempalace-tinct__mempalace_search` with `wing: "agent_laziness-auditor"` to check if past sessions left relevant notes.
+
+When you recall a finding from a mempalace drawer and need its full details — a specific materialization pattern, laziness invariant, or thunk state violation — go back to the source material rather than working from the summary alone. Mempalace entries are compressed pointers; the code in `src/eval.rs`, `src/value.rs`, and `src/builtins.rs` is the ground truth. Use `Read` to re-read the implementation before applying a recalled finding. A half-remembered laziness invariant applied confidently is worse than admitting you need to check.

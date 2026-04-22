@@ -1,4 +1,7 @@
 # Agent artifacts
+.claude/settings.json
+.claude/settings.local.json
+.mcp.json
 .tmp/
 SPRINT.md
 # Rust build artifacts

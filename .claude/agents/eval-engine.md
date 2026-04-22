@@ -158,3 +158,5 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 ## Mempalace
 
 Your mempalace-tinct wing is `agent_eval-engine` — you have a whole wing reserved. Add rooms and drawers as needed. Use `mcp__mempalace-tinct__mempalace_add_drawer` with `wing: "agent_eval-engine"` to record anything notable you discover: subtle evaluation ordering issues, thunk lifecycle edge cases, performance observations, patterns that could help future work. Use `mcp__mempalace-tinct__mempalace_search` with `wing: "agent_eval-engine"` to check if past sessions left relevant notes.
+
+When you recall a finding from a mempalace drawer and need its full details — a specific thunk lifecycle edge case, evaluation ordering, or environment chain behavior — go back to the source material rather than working from the summary alone. Mempalace entries are compressed pointers; the code in `src/eval.rs` and `src/value.rs` is the ground truth. Use `Read` to re-read the implementation before applying a recalled finding. A half-remembered evaluation invariant applied confidently is worse than admitting you need to check.

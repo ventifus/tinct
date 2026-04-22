@@ -112,7 +112,7 @@ No Rust installation required. All commands run in containers:
 just build          # Build debug version
 just test           # Run all tests (unit + corpus)
 just test-corpus    # Run only corpus tests
-just run            # Eval test_input.txt, output JSON
+just run            # Eval test_input.llt, output JSON
 just repl           # Start interactive REPL
 just ci             # Run full CI pipeline
 just --list         # See all commands
@@ -125,9 +125,9 @@ If you have Rust installed:
 ```bash
 cargo build --release
 cargo test
-cargo run -- eval test_input.txt
-cargo run -- eval --format llt test_input.txt  # LLT display format
-cargo run -- eval --eval test_input.txt         # Deep-force all thunks
+cargo run -- eval test_input.llt
+cargo run -- eval --format llt test_input.llt  # LLT display format
+cargo run -- eval --eval test_input.llt         # Deep-force all thunks
 echo '{"x": 1}' | cargo run -- eval -           # Read LLT from stdin
 echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as $$
 cargo run --features repl -- repl               # Start interactive REPL
@@ -154,7 +154,7 @@ cargo run --features repl -- repl               # Start interactive REPL
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
 | `tests/cli_tests.rs` | CLI integration tests: file eval, format flags, stdin JSON, error handling |
-| `test_input.txt` | Example input demonstrating syntax |
+| `test_input.llt` | Example input demonstrating syntax |
 | `Cargo.toml` | Dependencies: pest, indexmap, serde_json, clap, rustyline (optional) |
 | `justfile` | Containerized build commands |
 

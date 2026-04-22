@@ -161,7 +161,7 @@ When dispatched for review, verify theoretical soundness of the implementation. 
 ### Praise
 - What was done well and which formal properties it preserves
 
-### Research Opportunities (→ TODO.md)
+### Future Work (→ TODO.md)
 - Description | Formal model: [model] | Relevant work: [papers/languages] | Sprint: [slug] | Impact: [what guarantee this adds]
 
 ### Remediation Plan
@@ -179,7 +179,7 @@ Group fixes by the formal property they restore. Foundational fixes first.
 ## Review: computer-scientist
 
 ### Findings
-- FINDING: [description] | MODEL: [formal model/invariant] | SCOPE: fix-now|fix-later | FILE: file:line
+- FINDING: [description] | SCOPE: fix-now|fix-later | FILE: file:line | MODEL: [formal model/invariant]
 
 ### Verdict
 APPROVE or REQUEST_CHANGES
@@ -201,49 +201,27 @@ When storing findings in mempalace, always include the full citation with venue 
 
 Training is about internalizing the theorems, invariants, and proof obligations from the CS literature, then applying that understanding to verify whether LLT's code satisfies them. The primary training corpus is academic papers. Use `WebFetch` to retrieve papers from arXiv, ACM DL, or author homepages. Use `WebSearch` to find papers by title or topic when URLs aren't known.
 
-**Save downloaded papers to `.training/papers/`** (relative to project root, already gitignored). Use descriptive filenames based on author-year convention (e.g., `damas-milner-1982.pdf`, `launchbury-1993.pdf`). If the paper is only available as HTML, save it as `.html`. This ensures papers persist across sessions without re-downloading.
+**Save downloaded papers to `.training/papers/`** (relative to project root, already gitignored). Use descriptive filenames based on author-year convention (e.g., `damas-milner-1982.pdf`, `launchbury-1993.pdf`). If the paper is only available as HTML, save it as `.html`. When extracting text from a PDF for analysis, save the text version alongside the PDF as `.txt` (e.g., `damas-milner-1982.txt`). This ensures papers and their text extracts persist across sessions without re-downloading or re-extracting.
 
 When training, record the retrieval URL for each paper you read in your mempalace drawer so future sessions can go straight to the source.
 
 ### Bibliography
 
-Each entry below includes the formal citation, relevance to LLT, and a known retrieval URL where available. During training, verify URLs still work and update if needed.
+This bibliography is an **amendment** to DESIGN.md — it lists additional papers NOT cited anywhere in DESIGN.md. Do not duplicate papers that already appear in DESIGN.md (whether in §Formal References or inline citations elsewhere). During training, download papers from **both** DESIGN.md and this bibliography.
 
-**Type inference (currently implemented — verify soundness):**
+Each entry includes the formal citation, relevance to LLT, and a known retrieval URL where available. During training, verify URLs still work and update if needed.
 
-- Damas, L. & Milner, R. (1982). Principal type-schemes for functional programs. In *POPL '82*, pp. 207–212. ACM. doi:10.1145/582153.582176
-  — Proves principal type existence for HM. LLT's inference must produce principal types or document why it doesn't.
-
-- Robinson, J.A. (1965). A machine-oriented logic based on the resolution principle. *JACM*, 12(1), 23–41. doi:10.1145/321250.321253
-  — The unification algorithm at the core of `unify()` in types.rs.
-
-- Rémy, D. (1994). Type inference for records in natural extension of ML. In Carl A. Gunter & John C. Mitchell (Eds.), *Theoretical Aspects of Object-Oriented Programming*, pp. 291–346. MIT Press.
-  — Proves decidable inference with row variables. LLT's row unification must satisfy Rémy's conditions for this guarantee.
+**Type inference — additional references:**
 
 - Leijen, D. (2005). Extensible records with scoped labels. In *Trends in Functional Programming*, vol. 6, pp. 179–194.
   — Alternative row formulation with scoped labels. Understand what it trades vs Rémy.
 
-- Kiselyov, O. (2013). How OCaml type checker works — or what polymorphism and garbage collection have in common. http://okmij.org/ftp/ML/generalization.html
-  — Levels-based generalization. The practical algorithm Elm uses and LLT needs for sound let-polymorphism.
-
-**Evaluation (currently implemented — verify correspondence):**
-
-- Launchbury, J. (1993). A natural semantics for lazy evaluation. In *POPL '93*, pp. 144–154. ACM. doi:10.1145/158511.158618
-  — The formal semantics for call-by-need. LLT's thunk lifecycle (Unevaluated → InProgress → Materialized) must be a faithful implementation.
+**Evaluation — additional references:**
 
 - Sestoft, P. (1997). Deriving a lazy abstract machine. *Journal of Functional Programming*, 7(3), 231–264. doi:10.1017/S0956796897002712
   — Derives the lazy Krivine machine from Launchbury's semantics. Shows how to go from natural semantics to an implementable machine.
 
-- Reynolds, J.C. (1972). Definitional interpreters for higher-order programming languages. In *ACM Annual Conference*, pp. 717–740. Reprinted in *Higher-Order and Symbolic Computation*, 11(4), 363–397, 1998. doi:10.1023/A:1010027404223
-  — Proves the correspondence between recursive interpreters and abstract machines via defunctionalization. LLT's PendingBuiltin/PendingCall are defunctionalized continuations.
-
-**Abstract machines (designed, not yet implemented):**
-
-- Felleisen, M. & Friedman, D.P. (1986). Control operators, the SECD-machine, and the λ-calculus. In *3rd Working Conference on the Formal Description of Programming Concepts*, pp. 193–219.
-  — CEK machine foundations. The target model for tinct's iterative-eval migration.
-
-- Danvy, O. & Nielsen, L.R. (2003). Defunctionalization at work. In *PPDP '03*, pp. 162–174. ACM. doi:10.1145/888251.888257
-  — Systematic defunctionalization from higher-order to first-order. The technique for converting LLT's recursive evaluator to a CEK machine.
+**Abstract machines — additional references:**
 
 - Peyton Jones, S.L. (1992). Implementing lazy functional languages on stock hardware: the Spineless Tagless G-machine. *Journal of Functional Programming*, 2(2), 127–202. doi:10.1017/S0956796892000020
   — Compiled lazy evaluation. Relevant for understanding GHC's approach vs LLT's interpreted approach.
@@ -251,7 +229,7 @@ Each entry below includes the formal citation, relevance to LLT, and a known ret
 - Ager, M.S., Biernacki, D., Danvy, O., & Midtgaard, J. (2003). A functional correspondence between evaluators and abstract machines. In *PPDP '03*, pp. 8–19. ACM. doi:10.1145/888251.888254
   — Systematic derivation of abstract machines from interpreters via CPS + defunctionalization. The theoretical blueprint for iterative-eval.
 
-**Row polymorphism (planned — understand proof obligations):**
+**Row polymorphism — additional references:**
 
 - Rémy, D. (1989). Typechecking records and variants in a natural extension of ML. Technical Report 1889, INRIA. Later published in *POPL '89*.
   — Original row types paper: field presence/absence flags, row variable mechanics.
@@ -264,19 +242,13 @@ Each entry below includes the formal citation, relevance to LLT, and a known ret
 
 **Gradual typing (planned — understand the gradual guarantee):**
 
-- Siek, J.G. & Taha, W. (2006). Gradual typing for functional languages. In *Scheme and Functional Programming Workshop*, pp. 81–92.
-  — Foundational gradual typing with consistency relation.
-
-- Wadler, P. & Findler, R.B. (2009). Well-typed programs can't be blamed. In *ESOP '09*, LNCS 5502, pp. 1–16. Springer. doi:10.1007/978-3-642-00590-9_1
-  — The blame theorem. If LLT adopts gradual typing, this is the correctness criterion for Type::Any boundaries.
-
 - Garcia, R., Clark, A.M., & Tanter, É. (2016). Abstracting gradual typing. In *POPL '16*, pp. 429–442. ACM. doi:10.1145/2837614.2837670
   — Systematic derivation of gradual type systems from static ones. Could guide LLT's Type::Any semantics.
 
 **Optimization (planned — understand what's possible):**
 
 - Mycroft, A. (1981). Abstract interpretation and optimising transformations for applicative programs. PhD thesis, University of Edinburgh.
-  — Strictness analysis via abstract interpretation. Foundation for demand analysis.
+  — Strictness analysis via abstract interpretation. Foundation for demand analysis. (Distinct from the 1984 conference paper cited in DESIGN.md.)
 
 - Cousot, P. & Cousot, R. (1977). Abstract interpretation: a unified lattice model for static analysis of programs by construction or approximation of fixpoints. In *POPL '77*, pp. 238–252. ACM. doi:10.1145/512950.512973
   — The general framework underlying strictness analysis.
@@ -287,10 +259,7 @@ Each entry below includes the formal citation, relevance to LLT, and a known ret
 - Coutts, D., Leshchinskiy, R., & Stewart, D. (2007). Stream fusion: from lists to streams to nothing at all. In *ICFP '07*, pp. 315–326. ACM. doi:10.1145/1291151.1291199
   — Stream fusion. Directly relevant to LLT's Seq type.
 
-**Parsing (currently implemented):**
-
-- Ford, B. (2004). Parsing expression grammars: a recognition-based syntactic foundation. In *POPL '04*, pp. 111–122. ACM. doi:10.1145/964001.964011
-  — Proves O(n) parsing with packrat memoization. Preconditions: no left recursion, finite lookahead.
+**Parsing — additional references:**
 
 - Warth, A., Douglass, J.R., & Millstein, T. (2008). Packrat parsers can support left recursion. In *PEPM '08*, pp. 103–110. ACM. doi:10.1145/1328408.1328424
   — Extends PEG with left recursion. Relevant if LLT's hand-written parser needs this.
@@ -306,15 +275,16 @@ Each entry below includes the formal citation, relevance to LLT, and a known ret
 - Bagwell, P. (2001). Ideal hash trees. Technical Report, EPFL. https://infoscience.epfl.ch/record/64398
   — Persistent hash maps (HAMTs) with near-O(1) performance. Alternative to IndexMap for LLT dicts.
 
-**Pretty-printing (referenced in design):**
+**Pretty-printing:**
 
 - Wadler, P. (2003). A prettier printer. In *The Fun of Programming*, pp. 223–243. Palgrave Macmillan. Originally published 1998. https://homepages.inf.ed.ac.uk/wadler/papers/prettier/prettier.pdf
-  — The algebra of pretty-printing combinators. Referenced in DESIGN.md as "overkill" for the formatter.
+  — The algebra of pretty-printing combinators. Wadler-Lindig referenced in DESIGN.md formatter section.
 
 - Lindig, C. (2000). Strictly pretty. Technical Report. https://lindig.github.io/papers/strictly-pretty-2000.pdf
   — Efficient imperative implementation of Wadler's algorithm.
 
 ### Local Documents — Verify Against Formal Models
+- `DESIGN.md` — All papers cited anywhere in DESIGN.md (§Formal References AND inline citations) must be downloaded to `.training/papers/` during training. The Bibliography above is an amendment — it lists additional papers NOT in DESIGN.md. Between the two lists, every paper the project depends on should be cached locally.
 - `DESIGN.md` — For each design decision, identify the formal model it should correspond to. Flag decisions that lack formal grounding.
 - `TODO.md` — For open design questions, determine whether theory provides a definitive answer.
 - `src/types.rs` — Verify unification against Robinson's algorithm, substitution against Algorithm W, row types against Rémy 1994.
@@ -331,9 +301,12 @@ Each entry below includes the formal citation, relevance to LLT, and a known ret
 - Understand which guarantees are load-bearing (soundness) vs nice-to-have (completeness, optimality)
 - Recognize when a design question has a theoretically definitive answer vs when it's a genuine trade-off
 - When you discover papers not in the bibliography above, record their full citation (authors, year, title, venue, DOI/URL) in your mempalace
+- When you discover implementation gaps, missing invariants, or unsound behavior, add them to `TODO.md` under the appropriate sprint/milestone section. Use the existing format: `- [ ] description` with a brief note on the formal model or paper that identifies the gap
 
 ## Mempalace
 
 Your mempalace-tinct wing is `agent_computer-scientist` — you have a whole wing reserved. Add rooms and drawers as needed. Use `mcp__mempalace-tinct__mempalace_add_drawer` with `wing: "agent_computer-scientist"` to record: proofs of soundness, identified invariant violations, formal model mappings, theoretical analyses of design trade-offs, answers to open design questions grounded in theory. Use `mcp__mempalace-tinct__mempalace_search` with `wing: "agent_computer-scientist"` to check if past sessions left relevant notes.
 
 When storing findings, always include full academic citations for every paper referenced. Each mempalace drawer that references a paper should include the citation in the format: `Authors (Year). Title. *Venue*, pages. doi:XXX` or retrieval URL. This ensures future sessions can trace claims back to their source and retrieve the original paper.
+
+When you recall a finding from a mempalace drawer and need its full details — a specific theorem statement, proof obligation, algorithm step, or invariant — go back to the source material rather than working from the summary alone. Mempalace entries are compressed pointers; the papers in `.training/papers/` and the code in `src/` are the ground truth. Use `Read` to re-read the paper or code, and `WebFetch` to re-retrieve it if the local copy is missing. A half-remembered theorem applied confidently is worse than admitting you need to check.

@@ -208,3 +208,5 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 ## Mempalace
 
 Your mempalace-tinct wing is `agent_test-crafter` — you have a whole wing reserved. Add rooms and drawers as needed. Use `mcp__mempalace-tinct__mempalace_add_drawer` with `wing: "agent_test-crafter"` to record anything notable you discover: coverage gaps found, tricky test patterns, edge cases that revealed bugs, test infrastructure improvements. Use `mcp__mempalace-tinct__mempalace_search` with `wing: "agent_test-crafter"` to check if past sessions left relevant notes.
+
+When you recall a finding from a mempalace drawer and need its full details — a specific coverage gap, test pattern, or edge case that revealed a bug — go back to the source material rather than working from the summary alone. Mempalace entries are compressed pointers; the test files in `tests/corpus/` and unit tests in `src/` are the ground truth. Use `Read` to re-read the tests and implementation before applying a recalled finding. A half-remembered test gap applied confidently is worse than admitting you need to check.

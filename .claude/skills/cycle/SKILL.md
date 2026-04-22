@@ -10,7 +10,7 @@ You are the LLT development cycle coordinator. You run the development cycle in 
 
 ```
 while true:
-  1. Review (10-agent codebase review)
+  1. Review (specialist codebase review)
   2. Groom TODO.md
   3. Sprint next sprint
   4. Commit
@@ -19,7 +19,7 @@ while true:
 
 ### Phase 1: Pre-Sprint Analysis
 
-Dispatch all 10 specialist agents in parallel to review the full codebase. Use `subagent_type` for each:
+Dispatch all specialist agents in parallel to review the full codebase. Use `subagent_type` for each:
 
 | Agent Type | Specialty |
 |-----------|-----------|
@@ -60,15 +60,20 @@ Only edit TODO.md — do not create other files. If no changes are needed, move 
 
 ### Phase 3: Sprint
 
-1. Invoke the `/sprint` skill to run the next TODO sprint
-2. The sprint implements all tasks, gates through the sprint-reviewer (inner loop), then runs the 10-agent panel review with a fix loop until all agents approve
-3. If no unchecked sprints remain in TODO.md, skip this step and report "All TODO items complete"
+1. If no unchecked sprints remain in TODO.md, skip this phase and report "All TODO items complete"
+2. Invoke the `/sprint` skill to run the next TODO sprint
+3. **Resumption anchor** — after `/sprint` completes and returns control, you are the **cycle coordinator**. The sprint is done. Proceed to step 4, then Phase 4 (Commit).
+4. Check the sprint's response for the `NEEDS_DESIGN` signal. If the sprint reports `NEEDS_DESIGN: [slug] — [items]`:
+   - Log to mempalace: `"Cycle #N | Sprint: [slug] | HALTED: unresolved design work"`
+   - Stop the cycle and report: `"Cycle halted: sprint [slug] has unresolved design work. Run /design [slug] first, then resume /cycle."`
+   - Do NOT proceed to Phase 4 or loop back to Phase 1
+5. Otherwise the sprint implements all tasks, gates through the sprint-reviewer (inner loop), then runs the specialist panel review with a fix loop until all agents approve
 
 ### Phase 4: Commit
 
 1. Check if there are any changes to commit (`git status --short`). If no changes, skip the commit.
 2. Run `just test` one final time to confirm everything is green
-3. Stage all changes: `git add -u` for tracked files, then `git add src/ tests/ stdlib/` to pick up any new source, test, or stdlib files
+3. Stage all changes: `git add -u` for tracked files, then `git add -A --ignore-errors` to pick up any new files (gitignore already excludes SPRINT.md, .tmp/, .training/, etc.)
 4. Create a single commit. The sprint reports its slug and description — use them for the message:
    - Analysis + sprint: `"[slug]: [description]"`
    - Analysis only (sprint skipped): `"review: update TODO with codebase health findings"`
@@ -80,9 +85,10 @@ After every cycle, check if we're done:
 1. Read `TODO.md` and count unchecked items (`- [ ]`)
 2. Check the review from Phase 1: were there zero new findings at any severity?
 3. **If all items checked AND zero new findings**: log completion to mempalace and exit
-4. **Otherwise**: log cycle summary to mempalace and loop back to Phase 1
+4. **If all items checked AND only Nit-level findings remain, AND the previous cycle also produced only Nit-level findings**: log completion to mempalace, add the nits to TODO.md, and exit. Two consecutive nit-only cycles means we've converged.
+5. **Otherwise**: log cycle summary to mempalace and loop back to Phase 1
 
-The cycle churns until the codebase converges — all TODO items complete and reviewers find nothing new. This is intentional: Minor/Nit items are real work that gets sprinted and fixed, not deferred.
+The cycle churns until the codebase converges — all TODO items complete and reviewers find nothing new. Minor/Nit items are real work that gets sprinted and fixed, not deferred — but two consecutive nit-only review cycles signal convergence.
 
 ## Cycle Logging
 

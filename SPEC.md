@@ -1,8 +1,8 @@
-# LLT Language Specification
+# tinct Language Specification
 
-Version 0.1 — derived from DESIGN.md (61 confirmed decisions)
+Version 0.2 — derived from DESIGN.md
 
-This document is a formal specification of the LLT language syntax. It defines the lexical grammar (tokenization), syntactic grammar (parsing), AST node types, desugaring rules, and static constraints. A conforming parser must accept all inputs described by this grammar and reject all others.
+This document is a formal specification of the tinct language syntax. It defines the lexical grammar (tokenization), syntactic grammar (parsing), AST node types, desugaring rules, and static constraints. A conforming parser must accept all inputs described by this grammar and reject all others.
 
 For design rationale, see [DESIGN.md](DESIGN.md).
 
@@ -50,7 +50,7 @@ WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }
 ```
 
-The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the line (or end of input if the comment is on the last line).
+The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the line (or end of input if the comment is on the last line). `NEWLINE` is a pest built-in rule matching line endings (`\n`, `\r\n`, `\r`).
 
 **Whitespace significance:** Although whitespace is skipped between tokens in most contexts, it is *significant* for distinguishing access chains from separate expressions:
 
@@ -191,7 +191,7 @@ This order is enforced by PEG's ordered choice in the `atom` rule.
 
 ### 3.1 File, Document, and Expression
 
-An LLT file contains one or more documents separated by `---`. Each document contains one or more expressions. This is the top-level grammar:
+A tinct file contains one or more documents separated by `---`. Each document contains one or more expressions. This is the top-level grammar:
 
 ```pest
 file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
@@ -247,7 +247,7 @@ named_arg = { named_arg_key ~ ":" ~ value }
 named_arg_key = @{ "$" ~ var_ident | bare_word }
 ```
 
-`call` requires exact arity — the number of positional arguments must match the function's parameter count (enforced at evaluation time, not parse time). Named arguments follow positional arguments.
+Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See DESIGN.md §Call Convention for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
 
 Examples:
 ```
@@ -364,7 +364,7 @@ Quoted strings are valid as keys, allowing keys that contain spaces, colons, or 
 
 **Value boundary rule:** every entry's value is exactly one token or one bracket expression. After parsing a key's value, the next whitespace-separated token starts a new entry.
 
-**Positional-before-named constraint:** all auto-indexed (positional) entries must precede all keyed (named) entries within a single `[]`. See section 5.1.
+**Mixed ordering:** positional (auto-indexed) and keyed (named) entries may appear in any order within a single `[]`. Auto-indices are assigned sequentially to positional entries regardless of where keyed entries appear.
 
 **Semicolons:** `;` acts as an entry separator, equivalent to whitespace. It allows multiple entries on one line:
 
@@ -441,6 +441,8 @@ The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annot
 - Lowercase first letter = type variable (`a`, `b`, `k`, `v`)
 - `Any` = dynamic escape hatch
 
+**Type inference context.** The type system uses type schemes (`∀α₁...αₙ. τ`) for polymorphic bindings via levels-based let-generalization (Kiselyov 2013). Type variables carry an integer level for scope tracking (`TypeVar(String, u32)`). These are type checker internals — the parser produces bare type names as strings. See DESIGN.md §Let-Generalization for details.
+
 ---
 
 ## 4. AST Node Types
@@ -450,7 +452,7 @@ Every grammar rule maps to an AST node. All nodes carry source span information 
 ### 4.1 Top-Level Types
 
 ```rust
-/// A complete LLT file — one or more documents separated by ---
+/// A complete tinct file — one or more documents separated by ---
 struct File {
     documents: Vec<Spanned<Document>>,
 }
@@ -528,6 +530,7 @@ enum Expr {
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Box<Spanned<Expr>>,
+        resolved_type: Option<Type>,   // None from parser; filled by type checker
     },
 
     // Generalized annotation in value position
@@ -595,17 +598,19 @@ enum Annotation {
 
 These constraints are enforced by the parser. Violations produce parse errors with source locations.
 
-### 5.1 Positional-Before-Named Ordering
+### 5.1 Mixed Positional and Named Ordering
 
-Within any `[]` (dict entries or call arguments), all positional (auto-indexed) entries must appear before all named (keyed) entries:
+Positional (auto-indexed) and keyed (named) entries may appear in any order within `[]`, for both dict entries and call arguments. Auto-indices are assigned sequentially to positional entries regardless of interleaving:
 
 ```
-[a b key: val]        # valid: positional a, b; then named key
-[key: val a b]        # ERROR: positional a after named key
-[a key: val b]        # ERROR: positional b after named key
+[a b key: val]        # valid: 0: a, 1: b, key: val
+[key: val a b]        # valid: key: val, 0: a, 1: b
+[a key: val b]        # valid: 0: a, key: val, 1: b
 ```
 
-Rest entries (`...` and `...name`) are exempt from positional-before-named ordering -- they may appear at any position within a bracket expression. For example, `[name: String ...]` is valid even though `...` is an unkeyed entry appearing after a keyed entry.
+Rest entries (`...` and `...name`) may also appear at any position.
+
+**Call argument binding.** While the parser allows any ordering, the evaluator binds arguments to parameters using a priority chain: positional arguments bind by index first, then named arguments fill remaining parameters, then defaults apply. See DESIGN.md §Call Convention for the formal C-PRIORITY binding rules.
 
 ### 5.2 Special Form Arity
 
@@ -663,7 +668,7 @@ When no `type:` key is present, the bracket is interpreted as a type expression 
 
 ## 6. Desugaring Rules
 
-These transformations are applied by the parser when building the AST. They are not separate passes — they describe how surface syntax maps to AST nodes.
+Sections 6.1–6.4 describe transformations applied by the parser when building the AST. Section 6.5 describes a post-parse transformation that runs before type checking.
 
 ### 6.1 Access Chains
 
@@ -717,6 +722,50 @@ The parser examines the first token of every `[]` to detect special forms:
 Edge cases:
 - `[call: something]` — `call` followed by `:` makes it a key, not a keyword. Parsed as `Dict`.
 - `[$call $x]` — `$call` is a variable reference, not the bare keyword `call`. Parsed as `Dict`.
+
+### 6.5 `$_` Implicit Lambda Desugaring
+
+`$_` desugaring is a **post-parse, pre-typecheck source-to-source AST transformation**. The parser produces `$_` as `VarRef("_")` with no special treatment. A separate pass (`desugar_underscores`) rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation.
+
+**Pipeline placement:**
+
+```
+source → parse → desugar_underscores → typecheck → eval
+```
+
+**DIRECT predicate.** An expression is "direct" if it is `$_` or an access chain rooted at `$_`:
+
+```
+DIRECT(e) = match e with:
+  | VarRef("_")              → true
+  | DotAccess(e', _)         → DIRECT(e')
+  | BracketAccess(e', _)     → DIRECT(e')    -- target only, not key
+  | RangeAccess(e', _, _)    → DIRECT(e')    -- target only, not bounds
+  | _                        → false
+```
+
+**WRAP rules.** The pass checks WRAP conditions on raw (un-desugared) children before recursing:
+
+| Rule | Condition | Result |
+|------|-----------|--------|
+| WRAP-CALL | Any arg or named arg value is DIRECT (func position excluded) | Wrap in `Fn([_], Call(...))` |
+| WRAP-DICT | Any entry value is DIRECT | Wrap in `Fn([_], Dict(...))` |
+| WRAP-DOT | Standalone `$_.field` (not inside a Call/Dict that claims it) | Wrap in `Fn([_], DotAccess(...))` |
+| WRAP-BRACKET | Standalone `$_[key]` | Wrap in `Fn([_], BracketAccess(...))` |
+| WRAP-RANGE | Standalone `$_[lo..hi]` | Wrap in `Fn([_], RangeAccess(...))` |
+
+**Exclusions.** The following positions do NOT trigger desugaring:
+
+- **Func position in Call:** `[call $_ ...]` — `$_` as the function is an ordinary variable lookup
+- **Bracket access keys:** `$data[$_]` — `$_` in key position
+- **Range bounds:** `$data[$_..5]`
+- **Dict entry keys:** `[$_: value]`
+
+**Scoping.** Each `$_` binds to the innermost enclosing bracket that triggers a WRAP rule. If `_` is a parameter of an enclosing `Fn`, inner `$_` references are ordinary variable references, not desugaring triggers. A depth counter tracks this lexically.
+
+**Span preservation.** Generated `Fn` nodes reuse the span of the original expression so error messages reference user-written syntax, not the desugared form.
+
+See DESIGN.md §`$_` Desugaring — Formal Specification for the complete rewrite rules, shadowing semantics, and invariants (syntactic determinism, idempotence, type visibility).
 
 ---
 
@@ -1012,7 +1061,7 @@ Fn {
     $sort]
 ```
 
-Note: `$_` desugaring is an evaluator concern, not a parser concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. The evaluator wraps `[...]` expressions containing `$_` in implicit lambdas. See DESIGN.md for the `$_` lambda scope rule (nested bracket boundary).
+Note: `$_` desugaring is a **pre-typecheck AST transformation**, not a parser or evaluator concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. A desugaring pass (`desugar_underscores`) then rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation. See DESIGN.md §`$_` Desugaring for the formal rewrite rules and scope boundary definition.
 
 **AST:**
 ```
@@ -1098,6 +1147,7 @@ RangeAccess {
 TypeAssert {
     annotation: Annotation::Simple("Number"),
     expr: VarRef("expr"),
+    resolved_type: None,
 }
 ```
 
@@ -1116,6 +1166,7 @@ TypeAssert {
         Entry { key: Some(Str("default")), value: Int(0) },
     ]),
     expr: DotAccess { expr: VarRef("config"), field: "port" },
+    resolved_type: None,
 }
 ```
 
@@ -1254,6 +1305,111 @@ File {
 ```
 
 ---
+
+## 9. Runtime Errors
+
+tinct uses exceptions-by-default: errors propagate upward through materialization chains until caught by `$try` or reported to the user. This section specifies the observable error format — what users see when evaluation fails.
+
+### 9.1 Error Structure
+
+Every error contains:
+
+| Field | Description | Example |
+|-------|------------|---------|
+| **message** | What went wrong | `"key not found: name"` |
+| **definition site** | Where the problematic expression was written | `input.llt:3:5-3:12` |
+| **materialization site** | Where the value was first forced (if different) | `input.llt:10:1-10:8` |
+| **stack trace** | Chain of intermediate materialization points | `in x at input.llt:5:5-5:15` |
+
+The **definition site** and **materialization site** form a dual-span model: "the error was *defined* here but *triggered* there." When both sites are the same (e.g., an immediate expression like `[call $/ 1 0]`), the materialization site is omitted.
+
+Example: given `[x: [call $/ 1 0]  y: $x]`, accessing `y` produces an error with definition site at `[call $/ 1 0]` (where the division was written) and materialization site at `$x` (where the thunk was first forced).
+
+### 9.2 Display Format
+
+```
+{message} (defined at {file}:{line}:{col}-{line}:{col})
+  (materialized at {file}:{line}:{col}-{line}:{col})
+  in {label} at {file}:{line}:{col}-{line}:{col}
+  in {label} at {file}:{line}:{col}-{line}:{col}
+```
+
+The materialization line is omitted when it equals the definition site or is absent. Stack frames are printed in the order they were added during propagation — innermost (closest to the error source) first, outermost (closest to the output root) last.
+
+### 9.3 Error Categories
+
+| Category | Message pattern | Definition site points to |
+|----------|----------------|--------------------------|
+| **Key not found** | `"key not found: {key}"` | Access expression (`$dict.key`, `$dict[key]`) |
+| **Type mismatch** | `"type mismatch: expected {expected}, got {got}"` | Expression that produced the wrong type |
+| **Missing argument** | `"missing argument for required parameter '{name}'"` | Call expression |
+| **Arity mismatch** | `"arity mismatch: expected at most {n} arguments, got {m}"` | Call expression |
+| **Positional/named overlap** | `"parameter '{name}' received both positional and named argument"` | Call expression |
+| **Unknown named arg** | `"unexpected named argument: {name}"` | Call expression |
+| **Circular dependency** | `"circular dependency detected while evaluating {name}"` | Thunk definition (dict entry) |
+| **Depth exceeded** | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
+| **Duplicate key** | `"duplicate key: {key}"` | Second occurrence of the key |
+| **Undefined variable** | `"undefined variable: ${name}"` | Variable reference expression |
+| **Division by zero** | `"division by zero"` | `$/` call expression |
+| **User error** | `"{user message}"` | `$error` call expression |
+
+The categories above are exhaustive — every runtime error falls into one of these categories. The four call convention errors (missing argument, arity mismatch, positional/named overlap, unknown named arg) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from DESIGN.md §Call Convention. Exact message wording may vary across releases; the patterns shown are representative.
+
+#### Builtin-Specific Errors
+
+Builtin error messages are prefixed with the builtin name when the error originates from the builtin itself (not from argument materialization). The table below shows representative examples; not all builtins are listed.
+
+| Builtin | Message pattern | Definition site |
+|---------|----------------|-----------------|
+| `$merge` | `"merge: expected Dict, got {type}"` | Call expression |
+| `$map`, `$filter`, etc. | `"{name}: expected Dict or Seq, got {type}"` | Call expression |
+| `$try` | `"try: expected a zero-argument function, got {n} parameters"` | Call expression |
+| `$+`, `$-`, `$*` | `"integer overflow"` | Call expression |
+| `$<` | `"type mismatch: expected comparable types"` | Call expression |
+
+### 9.4 Error Catching with `$try`
+
+`$try` takes a zero-argument function and returns a tagged dict:
+
+```lisp
+[call $try [fn [] [call $/ 10 2]]]    # → [ok: 5]
+[call $try [fn [] [call $/ 1 0]]]     # → [err: "division by zero"]
+```
+
+**Result shape:** `[ok: value]` on success, `[err: message]` on failure. The `message` is the error's message string — spans and stack traces are not included in the caught value.
+
+**What `$try` catches:** Errors from evaluating the function's body. Errors from materializing the function itself (e.g., if the function argument is a broken thunk) are *not* caught — they propagate to `$try`'s caller.
+
+**`$try-or`** is a stdlib convenience: `[call $try-or [fn [] expr] default]` returns `default` if `expr` fails.
+
+### 9.5 Lazy Error Behavior
+
+Errors in tinct are lazy — they don't occur until a value is materialized:
+
+```lisp
+[
+    x: [call $/ 1 0]        # No error yet — x is a thunk
+    y: [call $+ $x 1]       # Materializing y forces x → error
+    z: 42                    # Fine — x never forced through z
+]
+```
+
+Accessing `z` succeeds. Accessing `y` fails with the division-by-zero error from `x`, with `x`'s definition as the definition site and `y`'s access as the materialization site.
+
+Once a thunk fails, the error is cached permanently. Subsequent accesses return the same error with additional stack frame context showing where the re-access occurred.
+
+### 9.6 Span Assignment Corrections
+
+The following span assignments are normative corrections to the current implementation (tracked in TODO.md):
+
+| Finding | Current behavior | Correct behavior |
+|---------|-----------------|------------------|
+| Builtin errors use `call_span` for definition site | Error points to `[call $merge ...]` for both spans | `def_span` should be the operand that caused the error; `call_span` becomes `mat_span` |
+| Access chain errors lack materialization site | `$dict.key` errors show only definition site | Should include materialization site when access is in a different expression than the dict |
+| Builtin name missing from stack frames | Stack traces show generic `"materialized"` for builtin-originating errors | Should include the builtin name as the stack frame label (e.g., `"in $merge at ..."`) |
+| Duplicate spans shown | `"defined at X (materialized at X)"` when sites match | Suppress materialization site when it equals definition site |
+| Depth limit errors lack call-site context | `def_span` points to the thunk being forced | Should also include `mat_span` pointing to the call site that triggered the depth limit |
+| Access vs. call span attribution | Access expression errors (`$d.k`) and call expression errors (`[call $f ...]`) use the same span logic | Access chains should attribute `def_span` to the access target; call expressions should attribute `def_span` to the call site |
 
 ## Appendix A: Token Disambiguation Summary
 
