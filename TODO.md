@@ -19,23 +19,50 @@ Define the structured error types and update EvalError to use them.
 - [x] Update named constructors (`key_not_found`, `type_mismatch`, `arity_mismatch`, `circular_dependency`) to construct `ErrorKind` variants (`src/error.rs:59-82`)
 - [x] Add `EvalError::internal(message, span)` replacing `EvalError::new` — construct `ErrorKind::Internal` (`src/error.rs:28-35`)
 
-### error-structured-migrate: Call Site Migration
+### error-structured-migrate-a: Priority Semantic Fixes
 
-Migrate all error construction sites to use ErrorKind variants.
+Fix error classification bugs where the wrong ErrorKind variant is produced.
 
-- [ ] Migrate eval.rs `EvalError::new` call sites (~13) to typed `ErrorKind` variants (`src/eval.rs`)
-- [ ] Migrate builtins.rs `EvalError::new` call sites (~72) to typed `ErrorKind` variants (`src/builtins.rs`)
+- [x] Migrate `$error` builtin to use `ErrorKind::UserError` instead of `EvalError::new` (→ Internal E099) — `$error` is the canonical user error source; every user-generated error displays `[E099]` (internal) instead of `[E080]` (user). Add `EvalError::user_error(msg, span)` constructor. (`src/builtins.rs:791`) [Major, computer-scientist]
+- [x] Migrate `eval()` depth check to use `EvalError::depth_exceeded()` — currently `EvalError::new()` → Internal (E099), inconsistent with `materialize()` which correctly uses `depth_exceeded()`. Breaks `is_cacheable()` invariant when integrated. (`src/eval.rs:59-64`) [Major, computer-scientist + eval-engine]
+- [x] Migrate `deep_materialize_impl()` depth check to use `EvalError::depth_exceeded()` — same issue as `eval()` depth check (`src/eval.rs`) [Minor, eval-engine]
+- [x] Generalize `FloatNotFinite` Display message — currently says "cannot be converted to Int" but variant covers all non-finite contexts; change to context-independent message like "{builtin}: result is not finite ({value})" (`src/error.rs:228-230`) [Minor, span-integrity-checker + computer-scientist]
+- [x] Migrate `require_dict` and `require_string` helpers to use `EvalError::type_mismatch()` — currently use `EvalError::new(format!(...))` → Internal, losing structured error classification (`src/builtins.rs:165-169,177-181`) [Minor, span-integrity-checker]
+- [x] Migrate `reject_named` to use `ErrorKind::NamedArgRejected` variant — currently `EvalError::new(format!(...))` → Internal (`src/builtins.rs:192-194`) [Nit, span-integrity-checker + integration-verifier]
+- [x] Migrate `checked_f64_to_i64` to use `ErrorKind::FloatNotFinite` — currently `EvalError::new(format!(...))` → Internal (`src/builtins.rs:108-109`) [Nit, span-integrity-checker]
+
+### error-structured-migrate-b: Bulk Migration
+
+Migrate remaining EvalError::new call sites across eval.rs and builtins.rs.
+
+- [ ] Migrate eval.rs remaining `EvalError::new` call sites (~13) to typed `ErrorKind` variants (`src/eval.rs`)
+- [ ] Migrate builtins.rs remaining `EvalError::new` call sites (~72) to typed `ErrorKind` variants (`src/builtins.rs`)
 - [ ] Update `builtin_try` to extract `e.kind.to_string()` instead of `e.message` (`src/builtins.rs:864`)
 - [ ] Update all `err.message` references in unit tests to `err.kind.to_string()` or pattern matching (`src/error.rs`, `src/eval.rs`)
-- [ ] Update SPEC.md §9 with `ErrorKind` variants, error codes in display format (§9.2), and revised exhaustiveness claim in §9.3
+- [ ] Add PROP-CYCLE bypass comment to circular dependency error construction — explain why it skips DECORATE closure. (`src/eval.rs:899-908`) [Nit, eval-engine panel]
+- [ ] Document `.message()` as compatibility shim — clarify that `.kind` field is canonical API, `.message()` is for test migration. New code should match on `.kind`. (`src/error.rs`) [Minor, integration-verifier]
+
+### error-structured-migrate-c: Safety Integration + Spec
+
+Error safety mechanisms and specification updates.
+
 - [ ] Add `ErrorKind::is_catchable()` method returning `false` for `DepthExceeded` — `$try` currently catches ALL errors including depth-exceeded, defeating the safety net. Users can circumvent depth limits via `$until` + `$try` wrapping deeply recursive code. GHC makes `StackOverflow` uncatchable; Racket separates `exn:fail:resource`. Have `builtin_try` check `is_catchable()` and re-raise uncatchable errors directly. (`src/builtins.rs:793-871`, `src/error.rs`) [Critical, computer-scientist]
 - [ ] Integrate `is_cacheable()` into `cache_failure` — currently `Thunk::cache_failure()` unconditionally caches all errors including DepthExceeded. Requires state-restore mechanism: save pre-InProgress thunk state so non-cacheable errors can restore it instead of transitioning to Failed. (`src/value.rs:384-386`) [Major, eval-engine + computer-scientist panel]
 - [ ] Fix `FloatNotFinite` containing `f64` with `PartialEq` derive — `f64::NAN != f64::NAN` so two FloatNotFinite errors with NaN values compare as not-equal. Will affect Failed thunk cache identity when variant is constructed. (`src/error.rs`) [Minor, computer-scientist panel]
+- [ ] Update SPEC.md §9 with `ErrorKind` variants, error codes in display format (§9.2), and revised exhaustiveness claim in §9.3
+- [ ] Update DESIGN.md §Error Semantics field name: `message` → `kind` — spec still references old field name (`DESIGN.md`) [Minor, eval-engine]
+- [ ] Update DESIGN.md error constructors table to reflect ErrorKind variants — either expand or add "representative" note (`DESIGN.md`) [Minor, eval-engine]
+
+### error-structured-migrate-d: Test Coverage
+
+ErrorKind test coverage to validate migration and prevent regressions.
+
 - [ ] Add ErrorKind Display unit tests for all 25 variants — only 4 of 25 tested (KeyNotFound, TypeMismatch, ArityMismatch, CircularDependency). (`src/error.rs`) [Major, test-crafter panel]
 - [ ] Add ArityBound Display unit tests — no isolated tests for Exact/AtMost/Range Display impls. (`src/error.rs`) [Minor, test-crafter panel]
 - [ ] Add is_cacheable() unit tests — verify DepthExceeded returns false, all others true. (`src/error.rs`) [Minor, test-crafter panel]
 - [ ] Add error code prefix verification to corpus error tests — substring matching doesn't check for `[E0XX]` prefix. (`tests/corpus/eval/errors/`) [Minor, test-crafter panel]
-- [ ] Add PROP-CYCLE bypass comment to circular dependency error construction — explain why it skips DECORATE closure. (`src/eval.rs:899-908`) [Nit, eval-engine panel]
+- [ ] Add `ErrorKind::code()` exhaustiveness unit test — assert all variants return "E" + digits, prevents silent breakage when new variants added (`src/error.rs`) [Minor, test-crafter]
+- [ ] Add stack frame propagation integration tests — test multi-level error propagation through nested materialization chains (dict → thunk → builtin → error), verify frames accumulate correctly (`src/error.rs`) [Major, test-crafter]
 
 ## underscore-desugar: $_ Pre-Typecheck Desugaring Pass
 
@@ -297,6 +324,7 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [x] Design arena lifetime policy for REPL/LSP — arena lifetime = one document section (between `---` boundaries). At `---`, selectively migrate `$$`-reachable thunks from arena to Rc-backed storage (preserves laziness, closures, infinite sequences), bind as `$$`, drop arena. See DESIGN.md §Allocation Strategy.
 - [ ] Environment reuse in bind_args_thunks — safe with flat environments (each call writes to own activation frame). Deferred from perf-foundations where it was unsafe with shared `Rc<RefCell<Environment>>`. (`src/eval.rs:527-529`)
 - [ ] Fix DESIGN.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (`DESIGN.md §Iterative Evaluator`) [Minor, computer-scientist]
+- [ ] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
 - [ ] Convert `materialize()` from recursive to iterative with `Vec<Frame>` work stack
 - [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative
 - [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame
@@ -495,6 +523,8 @@ Core error model improvements. Foundation for all later error work.
 - [ ] Deduplicate redundant span output when definition-site == materialization-site — show single span instead of identical pair (`src/error.rs`) [Major, span-integrity-checker]
 - [ ] Add dual-span pattern to access chain errors — `DotAccess`, `BracketAccess` errors currently only report definition-site (`src/eval.rs`) [Major, span-integrity-checker]
 - [ ] Fix builtin errors using call_span for definition-site — should use operand's span as definition-site, call_span as materialization-site (`src/builtins.rs:82-91`) [Major, span-integrity-checker]
+- [ ] Fix builtin helper functions materializing with `None` mat_span instead of operand span — `expect_one_arg`, `extract_num_pair`, `require_dict`, `require_string` all call `materialize()` with `None`, losing dual-span error context. Should pass `Some(&args[i].span)`. (`src/builtins.rs:102,131-132`) [Major, span-integrity-checker]
+- [ ] Fix `TypeMismatch::context` field always `None` for general type mismatches — error constructors in eval.rs always pass `None` for context, losing "which operation failed" info. Either make context mandatory and thread builtin name, or add `EvalError::with_context()` builder. (`src/error.rs:42-51`) [Major, span-integrity-checker]
 
 ### error-context: Error Context & Suggestions
 
@@ -568,7 +598,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] PendingBuiltin state transition unit tests — verify Unevaluated→PendingBuiltin→Materialized lifecycle, error recovery, cycle detection in isolation (`src/value.rs`, `src/eval.rs`) [Critical, test-crafter]
 - [ ] Add error corpus tests with span assertions — current tests check message content only, not definition_span, materialization_span, or stack frame accuracy (`tests/corpus/eval/errors/`) [Critical, test-crafter + span-integrity-checker]
 - [ ] Add selective materialization unit tests — use mock/panic functions to prove unused branches stay unevaluated (`src/eval.rs`) [Critical, test-crafter]
-- [ ] Expand `tests/corpus/eval/laziness/` with more negative tests proving unused expressions are NOT evaluated (current: 2 tests, target: 10+)
+- [ ] Expand `tests/corpus/eval/laziness/` with more negative tests proving unused expressions are NOT evaluated (current: 9 tests, target: 15+)
 - [ ] Add builtins.rs unit tests for additional edge cases — NaN, overflow, Unicode, cycle detection (337 tests exist, expand for special values) (`src/builtins.rs`) [Major, test-crafter]
 - [ ] Add typecheck corpus tests (currently zero; Nickel has 90+ granular typecheck test files)
 - [ ] Add `deep_materialize` corpus tests through the public API
@@ -658,6 +688,12 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **SPEC.md describes parser only, not eval semantics** — add note linking to DESIGN.md for eval semantics (`SPEC.md:1-12`) [Nit, integration-verifier]
 - [ ] **SPEC.md §4 missing Value::Seq documentation** — `Value::Seq` exists in code (`src/value.rs:84-85`) and DESIGN.md covers it extensively, but SPEC.md §4.2 (Expr enum) and §4.4 (Node Semantics) don't mention Seq; add §4.5 or amend §4.4 to document runtime Seq values created by builtins [Major, integration-verifier]
 - [ ] **SPEC.md §9.3 exhaustiveness claim overstated** — line 1356 claims error categories are exhaustive but omits `IntegerOverflow`, `FloatNotFinite`, `IncludeCycle`, `IncludeNotFound`, `IncludeReadError`, `Internal`; qualify claim or expand list [Major, integration-verifier]
+- [ ] **SPEC.md §6.4 keyword colon lookahead only matches horizontal whitespace** — `colon_ahead` rule (`grammar.pest:76`) is `ws_chars* ~ ":"` where `ws_chars` excludes newlines; SPEC.md says "not followed by (optional whitespace then) `:`" without specifying horizontal-only. `call\n: value` parses as CallExpr not Dict. Document horizontal-only constraint. (`src/grammar.pest:70-77`, `SPEC.md:710-725`) [Major, grammar-architect]
+- [ ] **SPEC.md §5.3 duplicate key detection contradicts parser** — SPEC.md:634 claims VarRef keys participate in duplicate detection (`[$k: a $k: b]` is parse error) but parser only checks literal string keys. VarRef and bracket-expr keys defer to runtime. Update SPEC.md to clarify literal-keys-only parse-time detection. (`src/parser.rs:684-724`, `SPEC.md:634`) [Major, grammar-architect]
+- [ ] **SPEC.md:173 tree-sitter divergence note references nonexistent grammar** — no `grammar.js` or tree-sitter directory exists in repository. Remove or mark as "planned". (`SPEC.md:173`) [Major, grammar-architect]
+- [ ] **SPEC.md §2.4 token precedence order missing structural punctuation** — omits `@` (annotation) which is structural and not a bare word character. Add note for `@`, `[`, `]`, `:`, `;` as structural punctuation. (`SPEC.md:176-186`) [Minor, grammar-architect]
+- [ ] **SPEC.md §2.1 whitespace significance lacks lexer cross-reference** — hand-written lexer (`src/lexer.rs:120-129`) uses `last_significant_token` tracking for O(1) whitespace-sensitive access detection, distinct from pest's compound-atomic mechanism. Add cross-reference. (`SPEC.md:54-62`, `src/lexer.rs:120-129`) [Minor, grammar-architect]
+- [ ] **SPEC.md §5.2 call arity checking not specified as eval-time** — reader might infer parser validates call arity; add note that arity beyond function position is eval-time per DESIGN.md §Call Convention. (`SPEC.md:619`) [Minor, grammar-architect]
 - [ ] **SPEC.md missing document pipeline/$include semantics** — DESIGN.md has complete formal spec (§Document Pipeline and $include) but SPEC.md only covers `---` syntax in §3.1; add evaluation semantics for `$$` binding, `$include` cycle detection, and caching [Minor, integration-verifier]
 
 ### DESIGN.md vs Code (from REVIEW.md)
@@ -678,6 +714,8 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [x] ~~**DESIGN.md stale builtin count "44 total"**~~ — was verified correct at 44, now stale again after concat builtin added (now 45). New tracking item in stdlib-docs section. [Resolved then re-staled, 2026-04-22]
 - [ ] **Include cache code comments** — add skip-guard rationale at cache hit, clarify "Check cache" comment placement, add doc comment to cache field (`src/builtins.rs:1036-1039,52`) [Nit, eval-engine]
 - [ ] **IncludeContext::new() constructor** — add constructor to reduce breaking changes when fields are added; low priority pre-1.0 (`src/builtins.rs:54`) [Nit, integration-verifier]
+- [ ] **DESIGN.md §Literal Recognition references "tokenizer" but should reference "lexer"** — both pest grammar (`grammar.pest`) and hand-written lexer (`src/lexer.rs`) exist; cross-reference both for precedence rules (`DESIGN.md:198-220`, `src/lexer.rs`) [Major, grammar-architect]
+- [ ] **Formatter `is_fn_params` heuristic fragile** — operates on flat token stream without AST context; heuristics at `src/formatter.rs:418-450` can misfire on comments containing "fn" before brackets. Either pass AST to formatter or document best-effort nature. (`src/formatter.rs:418-450`) [Major, grammar-architect]
 
 ### DESIGN.md documentation gaps (eval-engine review)
 
@@ -708,22 +746,27 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Add `checked_add` to `auto_index` in `eval_dict` for consistency — `builtin_append` uses `checked_add` for same kind of integer key computation; `auto_index += 1` is unchecked. Overflow is unreachable (memory exhaustion first) but inconsistent. (`src/eval.rs:331`) [Nit, computer-scientist]
 - [ ] Rename `zip-seq`/`zip-dict` to `zip-seq-impl`/`zip-dict-impl` — inconsistent with other internal helpers which use `-impl` suffix (`has?-impl`, `cond-impl`, `nth-impl`, etc.) (`stdlib/prelude.llt:410,417`) [Nit, stdlib-author]
 - [ ] Move `join` from Rust builtin to LLT stdlib — implementable as one-line reduce: `[fn [sep xs] [call $reduce [fn [acc x] [call $if [call $= $acc ""] [call $str $x] [call $str $acc $sep $x]]] "" $xs]]`. LLT-First Principle violation; 71 lines of Rust for what 1 line of LLT handles. Defer to Phase 10 (after dual-dispatch reduce complete). (`src/builtins.rs:1823-1894`, `stdlib/prelude.llt`) [Major, stdlib-author]
+- [ ] Remove redundant `debug_assert!(depth <= MAX_PARSE_DEPTH)` — line 182 is compiled out in release builds; the `if depth >= MAX_PARSE_DEPTH` on line 183 is the actual runtime check. (`src/parser.rs:182-183`) [Nit, grammar-architect]
+- [ ] Rename error corpus test `quot_div_by_zero.llt-eval` to `division_by_zero.llt-eval` — inconsistent with `ErrorKind::DivisionByZero` and other test naming (`tests/corpus/eval/errors/`) [Nit, test-crafter]
+- [ ] Clarify SPEC.md §3.5 semicolons — says `;` is "equivalent to whitespace" but it's actually an optional entry separator; reword to "optional entry separator for multiple entries on one line" (`SPEC.md:368-372`) [Nit, grammar-architect]
+- [ ] Clarify SPEC.md §6.2 auto-indexing — titled as "desugaring" but is actually eval-time key assignment, not AST rewrite. Only §6.5 (`$_` desugaring) is true AST transformation. (`SPEC.md:669-697`) [Nit, grammar-architect]
 
 ## Future Features
 
 Deferred features moved from DESIGN.md. Evaluate when triggered.
 
-- [ ] Research pattern matching — type dispatch, destructuring, exhaustiveness. Biggest enabler for self-hosting more Rust builtins. See `doc/whatif/pattern-matching.md`
-- [ ] Research parameterized type aliases — `Mapper: [type [a b] [Fn@b [a]]]`. Deferred until variable name collision becomes a real problem. Textual expansion is sufficient for now
-- [ ] Research `let` binding form — non-recursive local bindings. Dict entries (letrec) cover all current needs. Add `let` if non-recursive scoping is needed later
-- [ ] Research quasiquoting — AST-as-data representation. Prerequisite for procedural macros if ever adopted. See `doc/whatif/macros.md`
-- [ ] Research custom call aliases — users can already define wrappers; no built-in alias for `call` needed yet
+- [x] Research pattern matching — see doc/whatif/pattern-matching.md. Recommends [match] special form (Approach A) with 5-phase adoption: type predicates → basic match → dict/seq destructuring → guards/or-patterns → exhaustiveness checking. Nickel is the only lazy config lang with full PM; Nix/Jsonnet skip it
+- [x] Research parameterized type aliases — see doc/whatif/parameterized-type-aliases.md. Recommends hybrid approach (C): keep current non-parameterized behavior, add explicit `[type [a b] body]` syntax for aliases that need fresh instantiation. Deferred until variable name collision becomes a real problem
+- [x] Research `let` binding form — see doc/whatif/let-binding.md. Recommends status quo (Approach D): sequential expressions + letrec dicts cover all needs. Non-recursive `let` would duplicate existing sequential scoping with higher cognitive load
+- [x] Research quasiquoting — see doc/whatif/quasiquoting.md. Recommends quote/unquote/unquote-splice as special form keywords (Approach A), phased with macro system. AST-as-dict schema mirrors Expr enum. Gated on macro system adoption
+- [x] Research custom call aliases — see doc/whatif/call-aliases.md. Recommends status quo: `call` is a core principle (Principle 3), not syntactic overhead. Users have `$->`, `$_`, and wrapper functions
 - [x] Research gradual typing — see doc/whatif/gradual-typing.md. Three-phase adoption (formalize → split Any → blame tracking). Gated on Any-as-top-and-bottom causing a real soundness bug or union types/type classes forcing the split
-- [ ] Research `list?` vs `dict?` predicates — since lists are dicts, need to decide if/how to distinguish at runtime. `$seq?` and `$type-of` exist. Probably shouldn't add more
-- [ ] Research string interpolation — `"Hello $name"` in double-quoted strings. Deferred because `$str`/`$words` cover the need. `$` sigils make future interpolation natural
-- [ ] Research float dict keys — precision issues (`0.1 + 0.2 ≠ 0.3`) and NaN incomparability. Integer and string keys cover all current needs
-- [ ] Research width-specific numeric types — `Int32`, `Int64`, `Float32`, `Decimal`, etc. Range constraints on `Int`/`Float`, implementable via contracts system. `Decimal` would need a new Value variant
+- [x] Research `list?` vs `dict?` predicates — see doc/whatif/type-predicates.md. Recommends type predicates for Value variants ($int?, $dict?, etc.) WITHOUT $list? (lists are dicts, Principle 1). Part of pattern matching Phase 1
+- [x] Research string interpolation — see doc/whatif/string-interpolation.md. Recommends separate syntax (i"...") to avoid breaking existing "$" in strings. Deferred: $str covers the need
+- [x] Research float dict keys — see doc/whatif/float-dict-keys.md. Recommends status quo: IEEE 754 precision (0.1+0.2≠0.3) and NaN make float keys unreliable. Int+String keys cover all needs
+- [x] Research width-specific numeric types — see doc/whatif/numeric-types.md. Recommends status quo: i64/f64 cover all config needs. Decimal as targeted extension if financial data needed. Range contracts via @ annotations as future path
 - [x] Research typeclasses — see doc/whatif/typeclasses.md. Two-phase adoption (constrained type vars → full Haskell-style classes). Gated on Any typing for dual-dispatch causing false positives or user-defined types needing protocols
 - [x] Research union types — see doc/whatif/union-types.md. Three-phase path: type classes → annotation-only unions → inferred unions via Simple-sub. Gated on nullable types or tagged union patterns becoming common
 - [x] Research algebraic subtyping — see doc/whatif/algebraic-subtypes.md. Simple-sub (Parreaux 2020) replacement for [U-SUBSUME] + Robinson. 4-step migration path. Gated on union types being insufficient without inferred unions or Any-as-top-and-bottom causing soundness problems
 - [x] Research macros — see doc/whatif/macros.md. Recommends procedural AST macros (Approach B). Laziness reduces need; gated on second syntactic desugaring or user-requested domain-specific syntax
+- [x] Research templating — see doc/whatif/templating.md. Formatters as tinct pipeline programs: `$emit` builtin for stdout, multi-file pipeline CLI, stdlib/fmt/ formatters written in tinct. Template mode deferred; literate mode independent
