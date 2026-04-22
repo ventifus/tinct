@@ -1,5 +1,5 @@
-use crate::lexer::{tokenize, LexError, Token};
 use crate::ast::Spanned;
+use crate::lexer::{tokenize, LexError, Token};
 
 pub fn format_source(input: &str) -> Result<String, LexError> {
     let tokens = tokenize(input)?;
@@ -450,7 +450,13 @@ impl<'a> Formatter<'a> {
             Token::BareWord(s) => s.len(),
             Token::QuotedString(s) => s.len() + 2,
             Token::VarRef(s) => s.len() + 1,
-            Token::BoolLit(b) => if *b { 4 } else { 5 },
+            Token::BoolLit(b) => {
+                if *b {
+                    4
+                } else {
+                    5
+                }
+            }
         }
     }
 
@@ -667,8 +673,7 @@ impl<'a> Formatter<'a> {
                     continue;
                 }
                 token => {
-                    let is_continuation =
-                        after_colon || after_dot || after_at || after_ellipsis;
+                    let is_continuation = after_colon || after_dot || after_at || after_ellipsis;
 
                     if !is_continuation {
                         self.output.push('\n');
@@ -824,10 +829,7 @@ mod tests {
     #[test]
     fn test_leading_comment() {
         let input = "# header comment\n[x: 1]";
-        assert_eq!(
-            format_source(input).unwrap(),
-            "# header comment\n[x: 1]\n"
-        );
+        assert_eq!(format_source(input).unwrap(), "# header comment\n[x: 1]\n");
     }
 
     #[test]
@@ -871,10 +873,7 @@ mod tests {
 
     #[test]
     fn test_access_chain_in_dict() {
-        assert_eq!(
-            format_source("[x: $a.b[0].c]").unwrap(),
-            "[x: $a.b[0].c]\n"
-        );
+        assert_eq!(format_source("[x: $a.b[0].c]").unwrap(), "[x: $a.b[0].c]\n");
     }
 
     #[test]
@@ -1034,9 +1033,6 @@ mod tests {
 
     #[test]
     fn test_annotated_key() {
-        assert_eq!(
-            format_source("[x@Int: 1]").unwrap(),
-            "[x@Int: 1]\n"
-        );
+        assert_eq!(format_source("[x@Int: 1]").unwrap(), "[x@Int: 1]\n");
     }
 }

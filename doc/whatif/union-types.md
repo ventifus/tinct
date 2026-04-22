@@ -108,23 +108,72 @@ auditing all `Any` sites. See `doc/whatif/gradual-typing.md`.
 
 ## Recommendation
 
-**Don't adopt now.** Union types require either algebraic subtyping (heavy)
-or type classes (moderate) to be useful. The `Any` typing for dual-dispatch
-builtins is imprecise but not causing real errors — the runtime dispatch
-catches type mismatches.
+**Three-phase adoption: type classes first, then annotation-only unions,
+then inferred unions via Simple-sub.**
 
-**Revisit when:**
-- The `Any` typing for dual-dispatch builtins causes a real false positive
-  (program type-checks but fails at runtime because `$map` was called on
-  a non-Dict/non-Seq value and the type checker didn't catch it)
-- Nullable types are needed (currently tinct uses `$if` with Null checks)
+### Phase 1: Type Classes (no union types)
+
+Solve the dual-dispatch typing problem without union types by adding
+constrained polymorphism (see `doc/whatif/typeclasses.md`):
+
+```
+$map : Functor f => (a → b) → f a → f b
+```
+
+where `Functor` has instances for Dict and Seq. This covers the primary
+motivation (precise typing for `$map`, `$filter`, etc.) without any union
+type machinery.
+
+### Phase 2: Annotation-Only Unions
+
+Add `Type::Union(Vec<Type>)` with subtyping rules [UNION-INJ-L],
+[UNION-INJ-R], [UNION-ELIM]. Unions appear only in explicit type
+annotations and builtin signatures — `unify` never produces them
+(Option A from §Unification above).
+
+This enables:
+- `Int | Null` for nullable values
+- `[ok: a] | [err: String]` for result types
+- Explicit union annotations on user-defined functions
+
+Implementation: add `Union` variant to `Type`. Extend `is_subtype` with
+three new rules. Extend `is_consistent` (from gradual typing, see
+`doc/whatif/gradual-typing.md`) for union consistency. No changes to
+`unify` — unions are not inferred, only checked.
+
+### Phase 3: Inferred Unions (Simple-sub)
+
+If annotation-only unions prove insufficient — specifically, if `$if`
+return types and other inferred positions need unions — adopt Simple-sub
+(Parreaux 2020) for full algebraic subtyping with inferred union and
+intersection types. See `doc/whatif/algebraic-subtypes.md` for the
+complete analysis.
+
+This is the heaviest phase: `unify` becomes `constrain`, type variables
+carry bounds instead of bindings, and `Any` must split into
+Top/Bottom/Gradual. Only adopt if Phases 1–2 are insufficient.
+
+### Prerequisites
+
+- Phase 1 requires `let-generalization` and `builtin-type-signatures`
+- Phase 2 requires Phase 1 (type classes provide the Functor abstraction
+  that makes unions less urgent) and `gradual-typing` Phase 2 (splitting
+  `Any` into `Unknown` + `Top`)
+- Phase 3 requires `doc/whatif/algebraic-subtypes.md` adoption
+
+### Trigger
+
+Phase 1 (type classes): see `doc/whatif/typeclasses.md` §Trigger.
+
+Phase 2 (annotation unions): begin when:
+- Nullable types are needed (`Int | Null` instead of `Any`)
 - Tagged union / sum type patterns become common in user code
+- `$try` result types need `[ok: a] | [err: String]` precision
 
-**If we do adopt,** the path of least resistance is:
-1. Add type classes first (see `doc/whatif/typeclasses.md`)
-2. Type dual-dispatch builtins with `Functor f => ...` constraints
-3. If more expressiveness is still needed, consider Simple-sub
-   (Parreaux 2020) for union types with algebraic subtyping
+Phase 3 (inferred unions): begin when:
+- `$if` return types need inferred unions (not just annotated)
+- Annotation-only unions create too much annotation burden
+- Row polymorphism needs width subtyping built into the lattice
 
 ## References
 

@@ -213,19 +213,22 @@ Research items are exploratory — they produce a proposal document in `doc/what
 
 #### 4b: Draft Proposal
 
-Write a proposal to the target `doc/whatif/[name].md`. If the file already exists, update it. Structure:
+Write a proposal to the target `doc/whatif/[name].md`. If the file already exists, update it.
+
+**Framing principle:** whatif docs are *advocates* for their feature. They open with "What would it take to...?" and then make the best case for adoption — concrete approaches backed by research and formal methods, with a recommended phased implementation path. They are NOT "here's why you shouldn't" documents. Present the feature as a genuine proposal: how to do it well, what the best approach is, and when to adopt it.
+
+Structure:
 
 ```markdown
-# [Topic]
+# What If: [Feature] for tinct
 
-## Status
-Proposal — not approved for implementation.
-
-## Problem
-What limitation or opportunity this addresses.
+What would it take to [add/adopt/implement feature] in tinct?
 
 ## Current State
-How tinct handles this today and why it's insufficient (or sufficient for now).
+How tinct handles this today and what's missing.
+
+## What [Feature] Would Provide
+The concrete value — what becomes possible that isn't today.
 
 ## Approaches
 
@@ -235,15 +238,27 @@ Description, pros, cons, precedent, implementation cost.
 ### Approach B: [Name]
 ...
 
-## Recommendation
-Which approach (if any) and under what conditions tinct should adopt it.
+## What Would Change
+Concrete impact on tinct subsystems (type system, evaluator, parser, etc.).
 
-## Trigger
-What would make this worth revisiting — a concrete scenario or feature request that tips the cost/benefit.
+## Recommendation
+Lead with the recommended adoption path — phased, with concrete steps.
+Structure as phases (Phase 1, Phase 2, etc.) with clear scope for each.
+Include prerequisites and dependencies on other features.
+
+### Trigger
+What conditions should prompt adoption — concrete scenarios, not vague
+"when needed." These are starting conditions, not reasons to delay.
 
 ## References
 Cited papers and language implementations.
 ```
+
+**Anti-patterns to avoid:**
+- "Don't adopt now" as the lead recommendation
+- Framing complexity as a reason not to do something (instead: acknowledge complexity and show how to manage it via phasing)
+- Status Quo as an "approach" (only document proposed future states)
+- Vague triggers like "when needed" (use concrete scenarios)
 
 #### 4c: Present to User
 
@@ -272,3 +287,4 @@ Proceed to the next unchecked item automatically. If no items remain, report com
 - **Respect existing decisions**: read DESIGN.md thoroughly. Don't propose things that contradict confirmed decisions without flagging the conflict.
 - **One item at a time**: finish one item completely before moving to the next.
 - **No implementation**: this skill designs, decides, and researches — it doesn't implement. Implementation happens in /sprint.
+- **Whatif docs advocate**: Research proposals in `doc/whatif/` make the best case for their feature. They open with "What would it take to...?" and recommend a concrete phased adoption path. They are genuine proposals, not "here's why you shouldn't" documents.
