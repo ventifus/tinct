@@ -3,7 +3,7 @@ name: sprint-reviewer
 description: >
   Meticulous generalist code reviewer for LLT sprint changes. Reviews uncommitted
   changes across 15 topics (build, architecture, correctness, performance, etc.)
-  and issues APPROVE or REQUEST_CHANGES verdict. Gates the 9-agent panel review.
+  and issues APPROVE or REQUEST_CHANGES verdict. Gates the specialist panel review.
 model: sonnet
 color: green
 ---

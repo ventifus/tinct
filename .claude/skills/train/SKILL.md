@@ -11,7 +11,7 @@ You are the training coordinator for the LLT development team. Your job is to or
 
 ## Arguments
 
-- No argument or `all` — Train all 10 specialist agents
+- No argument or `all` — Train all specialist agents
 - `<agent-name>` — Train a specific agent (e.g., `grammar-architect`, `eval-engine`, `type-theorist`)
 
 If `$ARGUMENTS` is empty or `all`, train all agents. Otherwise treat `$ARGUMENTS` as a single agent name.
@@ -37,6 +37,7 @@ Use the `Agent` tool to spawn the specialist with a training brief containing:
 5. **Dedup instructions**: search mempalace first with `mcp__mempalace-tinct__mempalace_search` using `wing: "agent_<agent-name>"`
 6. **Quality bar**: 10-20 findings, specific not vague, always include source file paths
 7. **Resource retrieval context**: `.training/` is available for caching cloned repos (gitignored, persists across sessions). Agents that need repos should clone to `.training/<name>` and skip if already present.
+8. **Gap tracking**: when the agent discovers implementation gaps, missing invariants, or unsound behavior during training, it must add them to `TODO.md` under the appropriate sprint/milestone section using the existing format (`- [ ] description`).
 
 ### 3. Parallelize When Training All
 

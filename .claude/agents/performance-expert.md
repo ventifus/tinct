@@ -188,3 +188,5 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 ## Mempalace
 
 Your mempalace-tinct wing is `agent_performance-expert` — you have a whole wing reserved. Add rooms and drawers as needed. Use `mcp__mempalace-tinct__mempalace_add_drawer` with `wing: "agent_performance-expert"` to record anything notable you discover: hot path measurements, allocation counts, data structure alternatives considered, optimization opportunities deferred. Use `mcp__mempalace-tinct__mempalace_search` with `wing: "agent_performance-expert"` to check if past sessions left relevant notes.
+
+When you recall a finding from a mempalace drawer and need its full details — a specific allocation pattern, hot path measurement, or optimization opportunity — go back to the source material rather than working from the summary alone. Mempalace entries are compressed pointers; the code in `src/` is the ground truth, and measurements may have changed since the last session. Use `Read` to re-read the implementation before applying a recalled finding. A half-remembered performance characteristic applied confidently is worse than admitting you need to check.

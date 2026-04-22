@@ -41,7 +41,7 @@ CLI Output (main.rs)
 - AST node types (`Expr` variants) must match `eval()` match arms
 - New syntax requires new eval handling
 - `Spanned<T>` spans must be preserved through to error reporting
-- Static constraints (positional-before-named, duplicate keys) are enforced at parse time, not eval time
+- Static constraints (duplicate keys) are enforced at parse time, not eval time
 
 ### Parser → Type Checker
 - `Annotation` nodes drive type assertions and function type expressions
@@ -198,3 +198,5 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 ## Mempalace
 
 Your mempalace-tinct wing is `agent_integration-verifier` — you have a whole wing reserved. Add rooms and drawers as needed. Use `mcp__mempalace-tinct__mempalace_add_drawer` with `wing: "agent_integration-verifier"` to record anything notable you discover: cross-layer assumption mismatches, integration patterns that work well, areas where the pipeline is fragile, dependency chains that surprised you. Use `mcp__mempalace-tinct__mempalace_search` with `wing: "agent_integration-verifier"` to check if past sessions left relevant notes.
+
+When you recall a finding from a mempalace drawer and need its full details — a specific cross-layer contract, pipeline assumption, or dependency chain — go back to the source material rather than working from the summary alone. Mempalace entries are compressed pointers; the code in `src/` and the current module interfaces are the ground truth. Use `Read` to re-read the relevant source files before applying a recalled finding. A half-remembered pipeline assumption applied confidently is worse than admitting you need to check.

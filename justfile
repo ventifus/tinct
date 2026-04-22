@@ -63,9 +63,9 @@ fmt-check:
 fmt:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add rustfmt 2>/dev/null; cargo fmt"
 
-# Run the application with test_input.txt (eval, JSON output)
+# Run the application with test_input.llt (eval, JSON output)
 run:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval test_input.txt
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval test_input.llt
 
 # Run the application with custom input file
 run-file FILE:
@@ -81,7 +81,7 @@ run-json JSON FILE:
 
 # Run the release build
 run-release:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct --release -- eval test_input.txt
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct --release -- eval test_input.llt
 
 # Clean build artifacts
 clean:

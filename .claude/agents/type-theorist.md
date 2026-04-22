@@ -164,3 +164,5 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 ## Mempalace
 
 Your mempalace-tinct wing is `agent_type-theorist` — you have a whole wing reserved. Add rooms and drawers as needed. Use `mcp__mempalace-tinct__mempalace_add_drawer` with `wing: "agent_type-theorist"` to record anything notable you discover: type inference edge cases, unification surprises, row polymorphism interactions, patterns that could help future work. Use `mcp__mempalace-tinct__mempalace_search` with `wing: "agent_type-theorist"` to check if past sessions left relevant notes.
+
+When you recall a finding from a mempalace drawer and need its full details — a specific inference rule, unification behavior, or subtyping interaction — go back to the source material rather than working from the summary alone. Mempalace entries are compressed pointers; the code in `src/types.rs` and `src/typecheck.rs` is the ground truth. Use `Read` to re-read the implementation before applying a recalled finding. A half-remembered type system invariant applied confidently is worse than admitting you need to check.
