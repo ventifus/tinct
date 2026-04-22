@@ -855,10 +855,7 @@ fn attach_materialization_context(
 /// a value was defined and where it was forced.
 pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
-        let mut err = EvalError::new(
-            format!("maximum evaluation depth exceeded ({MAX_EVAL_DEPTH})"),
-            thunk.span,
-        );
+        let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk.span);
         if let Some(span) = mat_span {
             err = err.with_materialization_span(*span);
         }
@@ -1222,9 +1219,9 @@ mod tests {
         let expr = sp(Expr::VarRef("missing".into()));
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message.contains("undefined variable: $missing"),
+            err.message().contains("undefined variable: $missing"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -1417,9 +1414,9 @@ mod tests {
                 let x_thunk = map.get(&Key::String("x".into())).unwrap();
                 let err = materialize(x_thunk, None, 0).unwrap_err();
                 assert!(
-                    err.message.contains("circular dependency"),
+                    err.message().contains("circular dependency"),
                     "got: {}",
-                    err.message
+                    err.message()
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -1447,18 +1444,18 @@ mod tests {
         // First materialization: should detect the cycle and fail
         let err1 = materialize(&x_thunk, None, 0).unwrap_err();
         assert!(
-            err1.message.contains("circular dependency"),
+            err1.message().contains("circular dependency"),
             "first error: got: {}",
-            err1.message
+            err1.message()
         );
 
         // Check that the thunk is now in Failed state, not stuck in InProgress
         match &*x_thunk.state() {
             ThunkState::Failed(cached_err) => {
                 assert!(
-                    cached_err.message.contains("circular dependency"),
+                    cached_err.message().contains("circular dependency"),
                     "cached error should mention circular dependency, got: {}",
-                    cached_err.message
+                    cached_err.message()
                 );
             }
             other => panic!("expected Failed state after cycle detection, got {other:?}"),
@@ -1467,9 +1464,9 @@ mod tests {
         // Second materialization: should return the cached circular dependency error
         let err2 = materialize(&x_thunk, None, 0).unwrap_err();
         assert!(
-            err2.message.contains("circular dependency"),
+            err2.message().contains("circular dependency"),
             "second error: got: {}",
-            err2.message
+            err2.message()
         );
     }
 
@@ -1496,20 +1493,20 @@ mod tests {
         // First attempt: should fail with "undefined variable"
         let err1 = materialize(&x_thunk, None, 0).unwrap_err();
         assert!(
-            err1.message.contains("undefined variable: $missing"),
+            err1.message().contains("undefined variable: $missing"),
             "first attempt: got: {}",
-            err1.message
+            err1.message()
         );
 
         // Second attempt: should produce the SAME error, not "circular dependency"
         let err2 = materialize(&x_thunk, None, 0).unwrap_err();
         assert!(
-            err2.message.contains("undefined variable: $missing"),
+            err2.message().contains("undefined variable: $missing"),
             "second attempt should not be poisoned, got: {}",
-            err2.message
+            err2.message()
         );
         assert!(
-            !err2.message.contains("circular dependency"),
+            !err2.message().contains("circular dependency"),
             "thunk was poisoned: got circular dependency on retry"
         );
     }
@@ -1566,9 +1563,9 @@ mod tests {
         let expr = sp(Expr::Dict(entries));
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message.contains("duplicate key: x"),
+            err.message().contains("duplicate key: x"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -1710,11 +1707,11 @@ mod tests {
         });
         let err = eval(&call_expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("type mismatch"),
+            err.message().contains("type mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("Function"), "got: {}", err.message);
+        assert!(err.message().contains("Function"), "got: {}", err.message());
     }
 
     #[test]
@@ -1749,9 +1746,9 @@ mod tests {
         });
         let err = eval(&call_expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -1780,9 +1777,9 @@ mod tests {
         });
         let err = eval(&call_expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -1896,9 +1893,9 @@ mod tests {
         });
         let err = eval(&call_expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("unexpected named argument: z"),
+            err.message().contains("unexpected named argument: z"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -1941,10 +1938,10 @@ mod tests {
         });
         let err = eval(&call_expr, env, 0).unwrap_err();
         assert!(
-            err.message
+            err.message()
                 .contains("received both positional and named argument"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2085,10 +2082,10 @@ mod tests {
         let expr = sp(Expr::Rest(None));
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message
+            err.message()
                 .contains("rest marker (...) is only valid inside type expressions"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2097,10 +2094,10 @@ mod tests {
         let expr = sp(Expr::Rest(Some("x".into())));
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message
+            err.message()
                 .contains("rest marker (...) is only valid inside type expressions"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2253,9 +2250,9 @@ mod tests {
         let expr = sp(Expr::VarRef("_".into()));
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message.contains("undefined variable: $_"),
+            err.message().contains("undefined variable: $_"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2319,9 +2316,9 @@ mod tests {
         });
         let err = eval(&expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("key not found: missing"),
+            err.message().contains("key not found: missing"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2342,14 +2339,14 @@ mod tests {
         });
         let err = eval(&expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("type mismatch"),
+            err.message().contains("type mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2425,9 +2422,9 @@ mod tests {
         });
         let err = eval(&expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("key not found: z"),
+            err.message().contains("key not found: z"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2612,9 +2609,9 @@ mod tests {
         });
         let err = eval(&expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("comparable key types"),
+            err.message().contains("comparable key types"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2675,10 +2672,10 @@ mod tests {
         });
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message
+            err.message()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2691,10 +2688,10 @@ mod tests {
         });
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message
+            err.message()
                 .contains("type assertion failed: expected String, got Int"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2739,10 +2736,10 @@ mod tests {
         });
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message
+            err.message()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2819,10 +2816,10 @@ mod tests {
         });
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message
+            err.message()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2947,9 +2944,9 @@ mod tests {
         let expr = sp(Expr::Int(42));
         let err = eval(&expr, empty_env(), MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(
-            err.message.contains("maximum evaluation depth exceeded"),
+            err.message().contains("maximum evaluation depth exceeded"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2959,9 +2956,9 @@ mod tests {
         let thunk = Thunk::new_materialized(Value::Int(1), span);
         let err = materialize(&thunk, None, MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(
-            err.message.contains("maximum evaluation depth exceeded"),
+            err.message().contains("maximum evaluation depth exceeded"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2987,9 +2984,9 @@ mod tests {
         let mat_span = test_span(5, 1, 5, 5);
         let err = materialize(&x_thunk, Some(&mat_span), 0).unwrap_err();
         assert!(
-            err.message.contains("undefined variable: $missing"),
+            err.message().contains("undefined variable: $missing"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert_eq!(
             err.materialization_span,
@@ -3014,7 +3011,7 @@ mod tests {
                 let x_thunk = map.get(&Key::String("x".into())).unwrap();
                 let mat_span = test_span(10, 1, 10, 5);
                 let err = materialize(x_thunk, Some(&mat_span), 0).unwrap_err();
-                assert!(err.message.contains("circular dependency"));
+                assert!(err.message().contains("circular dependency"));
                 assert_eq!(err.materialization_span, Some(mat_span));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -3038,14 +3035,14 @@ mod tests {
         });
         let err = eval(&expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("type mismatch"),
+            err.message().contains("type mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3067,14 +3064,14 @@ mod tests {
         });
         let err = eval(&expr, env, 0).unwrap_err();
         assert!(
-            err.message.contains("type mismatch"),
+            err.message().contains("type mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3128,16 +3125,16 @@ mod tests {
         let expr = sp(Expr::Dict(entries));
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message.contains("type mismatch"),
+            err.message().contains("type mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected String or Int"),
+            err.message().contains("expected String or Int"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Bool"), "got: {}", err.message);
+        assert!(err.message().contains("got Bool"), "got: {}", err.message());
     }
 
     #[test]
@@ -3150,16 +3147,20 @@ mod tests {
         let expr = sp(Expr::Dict(entries));
         let err = eval(&expr, empty_env(), 0).unwrap_err();
         assert!(
-            err.message.contains("type mismatch"),
+            err.message().contains("type mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected String or Int"),
+            err.message().contains("expected String or Int"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Float"), "got: {}", err.message);
+        assert!(
+            err.message().contains("got Float"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3269,14 +3270,14 @@ mod tests {
         });
         let err = eval_document(&doc, empty_env(), 0).unwrap_err();
         assert!(
-            err.message.contains("type mismatch"),
+            err.message().contains("type mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3690,9 +3691,9 @@ mod tests {
                 let y_thunk = map.get(&Key::String("y".into())).unwrap();
                 let err = materialize(y_thunk, None, 0).unwrap_err();
                 assert!(
-                    err.message.contains("undefined variable: $x"),
+                    err.message().contains("undefined variable: $x"),
                     "got: {}",
-                    err.message
+                    err.message()
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -3906,9 +3907,9 @@ mod tests {
     fn test_deep_materialize_depth_limit() {
         let err = deep_materialize(&Value::Int(1), MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(
-            err.message.contains("maximum evaluation depth exceeded"),
+            err.message().contains("maximum evaluation depth exceeded"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4137,7 +4138,7 @@ mod tests {
 
         let outer_seq = materialize(&current, None, 0).unwrap();
         let err = deep_materialize(&outer_seq, 0).unwrap_err();
-        assert!(err.message.contains("maximum evaluation depth exceeded"));
+        assert!(err.message().contains("maximum evaluation depth exceeded"));
     }
 
     // ── Stack trace / call stack reconstruction tests ──────────────────
@@ -4182,9 +4183,9 @@ mod tests {
         let thunk = eval(&call_expr, env, 0).unwrap();
         let err = materialize(&thunk, None, 0).unwrap_err();
         assert!(
-            err.message.contains("undefined variable: $missing"),
+            err.message().contains("undefined variable: $missing"),
             "got: {}",
-            err.message
+            err.message()
         );
         // The stack should contain a frame for "call $f"
         assert!(
@@ -4266,7 +4267,7 @@ mod tests {
 
         let thunk = eval(&call_expr, env, 0).unwrap();
         let err = materialize(&thunk, None, 0).unwrap_err();
-        assert!(err.message.contains("undefined variable: $missing"));
+        assert!(err.message().contains("undefined variable: $missing"));
 
         // Should have frames for both call sites
         let labels: Vec<&str> = err.stack.iter().map(|f| f.label.as_str()).collect();
@@ -4331,7 +4332,7 @@ mod tests {
         let thunk = eval(&access_expr, env, 0).unwrap();
         let mat_span = test_span(3, 1, 3, 10);
         let err = materialize(&thunk, Some(&mat_span), 0).unwrap_err();
-        assert!(err.message.contains("undefined variable: $missing"));
+        assert!(err.message().contains("undefined variable: $missing"));
         // The materialization span should be set
         assert!(err.materialization_span.is_some());
     }
@@ -4354,7 +4355,7 @@ mod tests {
         );
 
         let err = eval(&access_expr, env, 0).unwrap_err();
-        assert!(err.message.contains("undefined variable: $nonexistent"));
+        assert!(err.message().contains("undefined variable: $nonexistent"));
         // Should have an "accessing .field" frame
         assert!(
             err.stack.iter().any(|f| f.label == "accessing .field"),
@@ -4380,7 +4381,7 @@ mod tests {
         );
 
         let err = eval(&access_expr, env, 0).unwrap_err();
-        assert!(err.message.contains("undefined variable: $nonexistent"));
+        assert!(err.message().contains("undefined variable: $nonexistent"));
         assert!(
             err.stack.iter().any(|f| f.label == "accessing [..]"),
             "expected 'accessing [..]' frame, got: {:?}",
@@ -4412,7 +4413,7 @@ mod tests {
         );
 
         let err = eval(&access_expr, env, 0).unwrap_err();
-        assert!(err.message.contains("undefined variable: $nonexistent"));
+        assert!(err.message().contains("undefined variable: $nonexistent"));
         assert!(
             err.stack.iter().any(|f| f.label == "accessing [..:..]"),
             "expected 'accessing [..:..]' frame, got: {:?}",
@@ -4465,7 +4466,7 @@ mod tests {
         // Materialize with a different span (simulating a reference from $b)
         let b_span = test_span(3, 1, 3, 5);
         let err = materialize(&thunk, Some(&b_span), 0).unwrap_err();
-        assert!(err.message.contains("undefined variable: $missing"));
+        assert!(err.message().contains("undefined variable: $missing"));
         assert_eq!(
             err.materialization_span,
             Some(b_span),
@@ -4571,7 +4572,7 @@ mod tests {
         );
 
         let err = eval(&call_expr, env, 0).unwrap_err();
-        assert!(err.message.contains("arity mismatch"));
+        assert!(err.message().contains("arity mismatch"));
         assert!(
             err.stack.iter().any(|f| f.label == "call $f"),
             "expected 'call $f' frame, got: {:?}",
@@ -4789,10 +4790,10 @@ mod tests {
 
         let err = materialize(&pending, None, 0).unwrap_err();
         assert!(
-            err.message
+            err.message()
                 .contains("expected Function or Builtin, got Int"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5030,16 +5031,16 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, 0).unwrap_err();
         assert!(
-            err1.message.contains("undefined variable: $undefined"),
+            err1.message().contains("undefined variable: $undefined"),
             "first error: got: {}",
-            err1.message
+            err1.message()
         );
 
         // Check that the thunk is now in Failed state
         match &*x_thunk.state() {
             ThunkState::Failed(cached_err) => {
                 assert!(cached_err
-                    .message
+                    .message()
                     .contains("undefined variable: $undefined"));
             }
             other => panic!("expected Failed state, got {other:?}"),
@@ -5048,9 +5049,9 @@ mod tests {
         // Second materialization: should return the cached error
         let err2 = materialize(&x_thunk, None, 0).unwrap_err();
         assert!(
-            err2.message.contains("undefined variable: $undefined"),
+            err2.message().contains("undefined variable: $undefined"),
             "second error: got: {}",
-            err2.message
+            err2.message()
         );
     }
 
@@ -5127,7 +5128,7 @@ mod tests {
 
         // First materialization: error should have stack frames
         let err1 = materialize(&thunk, None, 0).unwrap_err();
-        assert!(err1.message.contains("undefined variable: $nonexistent"));
+        assert!(err1.message().contains("undefined variable: $nonexistent"));
         let frame_count1 = err1.stack.len();
         assert!(frame_count1 > 0, "should have at least one stack frame");
 
@@ -5170,7 +5171,7 @@ mod tests {
 
         // First materialization: should fail
         let err1 = materialize(&thunk, None, 0).unwrap_err();
-        assert!(err1.message.contains("builtin intentionally failed"));
+        assert!(err1.message().contains("builtin intentionally failed"));
 
         // Check that the thunk is now in Failed state
         match &*thunk.state() {
@@ -5180,7 +5181,7 @@ mod tests {
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, 0).unwrap_err();
-        assert!(err2.message.contains("builtin intentionally failed"));
+        assert!(err2.message().contains("builtin intentionally failed"));
     }
 
     #[test]
@@ -5208,7 +5209,9 @@ mod tests {
 
         // First materialization: should fail
         let err1 = materialize(&pending, None, 0).unwrap_err();
-        assert!(err1.message.contains("undefined variable: $does_not_exist"));
+        assert!(err1
+            .message()
+            .contains("undefined variable: $does_not_exist"));
 
         // Check that the thunk is now in Failed state
         match &*pending.state() {
@@ -5218,7 +5221,9 @@ mod tests {
 
         // Second materialization: should return cached error
         let err2 = materialize(&pending, None, 0).unwrap_err();
-        assert!(err2.message.contains("undefined variable: $does_not_exist"));
+        assert!(err2
+            .message()
+            .contains("undefined variable: $does_not_exist"));
     }
 
     #[test]
@@ -5241,7 +5246,7 @@ mod tests {
         // First materialization should fail with undefined variable error
         let err = materialize(&pending, None, 0).unwrap_err();
         assert!(err
-            .message
+            .message()
             .contains("undefined variable: $nonexistent_func"));
 
         // The thunk should be in Failed state, NOT InProgress
@@ -5254,9 +5259,9 @@ mod tests {
         // Second access should return cached error, NOT "circular dependency"
         let err2 = materialize(&pending, None, 0).unwrap_err();
         assert!(err2
-            .message
+            .message()
             .contains("undefined variable: $nonexistent_func"));
-        assert!(!err2.message.contains("circular dependency"));
+        assert!(!err2.message().contains("circular dependency"));
     }
 
     #[test]
@@ -5272,7 +5277,9 @@ mod tests {
 
         // First materialization: should fail
         let err1 = materialize(&thunk, None, 0).unwrap_err();
-        assert!(err1.message.contains("undefined variable: $undefined_var"));
+        assert!(err1
+            .message()
+            .contains("undefined variable: $undefined_var"));
 
         // Check that the thunk is now in Failed state
         match &*thunk.state() {
@@ -5282,7 +5289,9 @@ mod tests {
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, 0).unwrap_err();
-        assert!(err2.message.contains("undefined variable: $undefined_var"));
+        assert!(err2
+            .message()
+            .contains("undefined variable: $undefined_var"));
     }
 
     #[test]
@@ -5328,9 +5337,11 @@ mod tests {
             .join()
             .unwrap();
         assert!(
-            result.message.contains("maximum evaluation depth exceeded"),
+            result
+                .message()
+                .contains("maximum evaluation depth exceeded"),
             "got: {}",
-            result.message
+            result.message()
         );
     }
 }

@@ -280,19 +280,19 @@ mod tests {
     #[test]
     fn test_json_float_nan_error() {
         let err = value_to_json(&Value::Float(f64::NAN), 0).unwrap_err();
-        assert!(err.message.contains("NaN"));
+        assert!(err.message().contains("NaN"));
     }
 
     #[test]
     fn test_json_float_infinity_error() {
         let err = value_to_json(&Value::Float(f64::INFINITY), 0).unwrap_err();
-        assert!(err.message.contains("Infinity"));
+        assert!(err.message().contains("Infinity"));
     }
 
     #[test]
     fn test_json_float_neg_infinity_error() {
         let err = value_to_json(&Value::Float(f64::NEG_INFINITY), 0).unwrap_err();
-        assert!(err.message.contains("Infinity"));
+        assert!(err.message().contains("Infinity"));
     }
 
     #[test]
@@ -445,7 +445,7 @@ mod tests {
             env: Rc::new(RefCell::new(Environment::new())),
         };
         let err = value_to_json(&f, 0).unwrap_err();
-        assert!(err.message.contains("cannot serialize Function to JSON"));
+        assert!(err.message().contains("cannot serialize Function to JSON"));
     }
 
     #[test]
@@ -461,7 +461,7 @@ mod tests {
             )),
         };
         let err = value_to_json(&seq, 0).unwrap_err();
-        assert!(err.message.contains("cannot serialize Seq"));
+        assert!(err.message().contains("cannot serialize Seq"));
     }
 
     #[test]
@@ -477,13 +477,15 @@ mod tests {
             func: dummy,
         };
         let err = value_to_json(&b, 0).unwrap_err();
-        assert!(err.message.contains("cannot serialize Function to JSON"));
+        assert!(err.message().contains("cannot serialize Function to JSON"));
     }
 
     #[test]
     fn test_json_depth_limit() {
         let err = value_to_json(&Value::Int(1), eval::MAX_EVAL_DEPTH + 1).unwrap_err();
-        assert!(err.message.contains("maximum serialization depth exceeded"));
+        assert!(err
+            .message()
+            .contains("maximum serialization depth exceeded"));
     }
 
     #[test]

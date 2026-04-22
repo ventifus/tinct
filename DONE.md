@@ -598,3 +598,14 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
 - [x] Fix `builtin_iterate` passing `depth: 0` to PendingBuiltin tail — captured depth from BuiltinArgs, passes `depth + 1`. [Major, computer-scientist]
 - [x] Increment depth in sequence combinator PendingBuiltin chains — incremented depth in 11 PendingBuiltin creation sites (range, repeat, cycle, iterate, unfold, map, filter, drop, reduce). [Major, computer-scientist]
 - [x] Migrate `concat` Seq path from stdlib to Rust builtin — implemented as PendingBuiltin chain with dual Seq/Dict dispatch. [Major, computer-scientist]
+
+### error-structured-types: ErrorKind Type Definitions
+
+- [x] Add `ErrorKind` enum with 25 variants and `ArityBound` enum to `src/error.rs`
+- [x] Add `ErrorKind::code()` method returning stable error code strings
+- [x] Add `ErrorKind::is_cacheable()` method returning `false` for `DepthExceeded`
+- [x] Add `Display` impl for `ErrorKind` and `ArityBound` (rustc style)
+- [x] Replace `message: String` with `kind: ErrorKind` in `EvalError` struct
+- [x] Update `EvalError::Display` to include error code prefix `[E001]`
+- [x] Update named constructors to construct `ErrorKind` variants
+- [x] Add `EvalError::internal(message, span)` replacing `EvalError::new` (kept as backward-compatible shim)

@@ -6,20 +6,36 @@ Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work
 
 Implement the `ErrorKind` enum and migrate all error construction sites. See DESIGN.md §Structured Error Model.
 
-- [ ] Add `ErrorKind` enum with 27 variants and `ArityBound` enum to `src/error.rs`
-- [ ] Add `ErrorKind::code()` method returning stable error code strings (`src/error.rs`)
-- [ ] Add `ErrorKind::is_cacheable()` method returning `false` for `DepthExceeded` (`src/error.rs`)
-- [ ] Add `Display` impl for `ErrorKind` and `ArityBound` (`src/error.rs`)
-- [ ] Replace `message: String` with `kind: ErrorKind` in `EvalError` struct (`src/error.rs:20-25`)
-- [ ] Update `EvalError::Display` to include error code prefix `[E001]` (`src/error.rs:85-95`)
-- [ ] Update named constructors (`key_not_found`, `type_mismatch`, `arity_mismatch`, `circular_dependency`) to construct `ErrorKind` variants (`src/error.rs:59-82`)
-- [ ] Add `EvalError::internal(message, span)` replacing `EvalError::new` — construct `ErrorKind::Internal` (`src/error.rs:28-35`)
+### error-structured-types: ErrorKind Type Definitions
+
+Define the structured error types and update EvalError to use them.
+
+- [x] Add `ErrorKind` enum with 25 variants and `ArityBound` enum to `src/error.rs`
+- [x] Add `ErrorKind::code()` method returning stable error code strings (`src/error.rs`)
+- [x] Add `ErrorKind::is_cacheable()` method returning `false` for `DepthExceeded` (`src/error.rs`)
+- [x] Add `Display` impl for `ErrorKind` and `ArityBound` (`src/error.rs`)
+- [x] Replace `message: String` with `kind: ErrorKind` in `EvalError` struct (`src/error.rs:20-25`)
+- [x] Update `EvalError::Display` to include error code prefix `[E001]` (`src/error.rs:85-95`)
+- [x] Update named constructors (`key_not_found`, `type_mismatch`, `arity_mismatch`, `circular_dependency`) to construct `ErrorKind` variants (`src/error.rs:59-82`)
+- [x] Add `EvalError::internal(message, span)` replacing `EvalError::new` — construct `ErrorKind::Internal` (`src/error.rs:28-35`)
+
+### error-structured-migrate: Call Site Migration
+
+Migrate all error construction sites to use ErrorKind variants.
+
 - [ ] Migrate eval.rs `EvalError::new` call sites (~13) to typed `ErrorKind` variants (`src/eval.rs`)
 - [ ] Migrate builtins.rs `EvalError::new` call sites (~72) to typed `ErrorKind` variants (`src/builtins.rs`)
 - [ ] Update `builtin_try` to extract `e.kind.to_string()` instead of `e.message` (`src/builtins.rs:864`)
 - [ ] Update all `err.message` references in unit tests to `err.kind.to_string()` or pattern matching (`src/error.rs`, `src/eval.rs`)
 - [ ] Update SPEC.md §9 with `ErrorKind` variants, error codes in display format (§9.2), and revised exhaustiveness claim in §9.3
 - [ ] Add `ErrorKind::is_catchable()` method returning `false` for `DepthExceeded` — `$try` currently catches ALL errors including depth-exceeded, defeating the safety net. Users can circumvent depth limits via `$until` + `$try` wrapping deeply recursive code. GHC makes `StackOverflow` uncatchable; Racket separates `exn:fail:resource`. Have `builtin_try` check `is_catchable()` and re-raise uncatchable errors directly. (`src/builtins.rs:793-871`, `src/error.rs`) [Critical, computer-scientist]
+- [ ] Integrate `is_cacheable()` into `cache_failure` — currently `Thunk::cache_failure()` unconditionally caches all errors including DepthExceeded. Requires state-restore mechanism: save pre-InProgress thunk state so non-cacheable errors can restore it instead of transitioning to Failed. (`src/value.rs:384-386`) [Major, eval-engine + computer-scientist panel]
+- [ ] Fix `FloatNotFinite` containing `f64` with `PartialEq` derive — `f64::NAN != f64::NAN` so two FloatNotFinite errors with NaN values compare as not-equal. Will affect Failed thunk cache identity when variant is constructed. (`src/error.rs`) [Minor, computer-scientist panel]
+- [ ] Add ErrorKind Display unit tests for all 25 variants — only 4 of 25 tested (KeyNotFound, TypeMismatch, ArityMismatch, CircularDependency). (`src/error.rs`) [Major, test-crafter panel]
+- [ ] Add ArityBound Display unit tests — no isolated tests for Exact/AtMost/Range Display impls. (`src/error.rs`) [Minor, test-crafter panel]
+- [ ] Add is_cacheable() unit tests — verify DepthExceeded returns false, all others true. (`src/error.rs`) [Minor, test-crafter panel]
+- [ ] Add error code prefix verification to corpus error tests — substring matching doesn't check for `[E0XX]` prefix. (`tests/corpus/eval/errors/`) [Minor, test-crafter panel]
+- [ ] Add PROP-CYCLE bypass comment to circular dependency error construction — explain why it skips DECORATE closure. (`src/eval.rs:899-908`) [Nit, eval-engine panel]
 
 ## underscore-desugar: $_ Pre-Typecheck Desugaring Pass
 
@@ -145,6 +161,7 @@ Found by eval-engine codebase review (2026-04-20).
 
 - [x] Design value-level vs pointer-level cycle detection strategy for `deep_materialize` — decision: pointer identity + depth/fuel backstop is sufficient; cross-type cycles through distinct allocations are nearly impossible in Rc-sharing model. No changes needed; CEK migration (iterative `Cont::DeepEntries`/`Cont::DeepSeqTail`) subsumes the stack overflow concern. (`src/eval.rs:1109-1139`) [Major, eval-engine]
 - [ ] Document deep_materialize Seq→Dict terminal case — docstring doesn't explain that Seq tail eventually materializes to empty Dict `[]` as terminal value, and infinite sequences hit MAX_EVAL_DEPTH (`src/eval.rs:1056-1069`) [Minor, eval-engine]
+- [ ] Fix deep_materialize breaking Launchbury sharing — creates new `Rc<Thunk>` allocations for every Dict entry/Seq element, so two references that shared the same thunk via `Rc::clone` will have `Rc::ptr_eq` return false after deep_materialize. Only affects `--eval` output path. Fix: maintain `HashMap<*const Thunk, Rc<Thunk>>` during traversal to reuse forced replacements. (`src/eval.rs:1090-1107`) [Minor, computer-scientist]
 
 ### seq-resource-safety: Sequence Resource Safety
 
@@ -159,6 +176,9 @@ Resource safety gaps in sequence combinators. Found by computer-scientist codeba
 - [ ] Fix `$take` PendingBuiltin depth to use `depth + 1` — take doesn't increment depth in its chain, creating a depth-reset interposition layer. `$take 500 [call $range 0]` fails at ~257 elements because range's depth accumulates but take's doesn't. Practical sequence length limit of N < MAX_EVAL_DEPTH for composed pipelines is undocumented. Self-terminating (bounded by n) so depth tracking is redundant for take itself but constrains composed pipelines. (`src/builtins.rs:2166`) [Minor, computer-scientist panel]
 - [ ] Fix `$filter` Seq initial PB depth inconsistency — filter Seq initial PB uses `depth + 1` but filter Dict initial PB uses `depth`. Other combinators (drop, reduce, unfold) consistently use `depth` for initial deferral and `depth + 1` for recursive steps. (`src/builtins.rs:1844,1857`) [Nit, computer-scientist panel]
 - [ ] Correct TODO.md PendingBuiltin/CEK fuel correspondence description — depth in PendingBuiltin chains is an indirect stack-depth proxy that fires when builtins call `materialize`, not a true fuel counter (Sestoft 1997). In a CEK machine, continuation stack is checked on every transition; here, depth is checked only on `materialize` entry. The true resource safety for `$collect` comes from `MAX_COLLECT_SIZE`, not depth. Both mechanisms are complementary. [Minor, computer-scientist panel]
+- [ ] Add type validation to concat_seq_step terminal case — when xs_tail materializes to Dict (sequence terminator), `ys_thunk` is returned directly without type checking; `concat(seq(1, 2, 3), 42)` defers the type error until consumer forces past last element. Distinct from empty-xs Dict path (line 157). Either eagerly validate ys or document intentional deferral. (`src/builtins.rs:2598-2600`) [Minor, computer-scientist]
+- [ ] Fix concat/collect error paths to use operand span as definition-site — 4 error paths in `builtin_concat` (Dict ys type mismatch, initial xs type mismatch, step tail type mismatch) and `builtin_collect` (tail type mismatch) use `call_span` as definition-site instead of `args[N].span`. Should use `EvalError::type_mismatch(..., operand_span).with_materialization_span(call_span)`. (`src/builtins.rs:2565-2579, 2616-2623, 2305-2313`) [Major, span-integrity-checker]
+- [ ] Resolve concat_seq_step depth increment inconsistency — uses `depth + 1` (line 2609) where other step functions (filter_seq_step, drop_seq_step, reduce_seq_step) use `depth` for the recursive PendingBuiltin. Either change to `depth` for consistency or document why concat needs `depth + 1`. (`src/builtins.rs:2609`) [Minor, eval-engine]
 
 ### float-nan-infinity: Float NaN/Infinity Propagation
 
@@ -245,6 +265,7 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Document performance characteristics in DESIGN.md — Environment O(depth) lookup, IndexMap ~20% vs HashMap, thunk triple-boxing cost, Substitution::apply() tree walk cost [Minor, performance-expert]
 - [x] Decide Substitution::apply() depth limit behavior — Option A: raise TypeError on >256-depth chains ("type substitution exceeded maximum depth"). Analogous to MAX_EVAL_DEPTH → EvalError. Silent truncation defeats purpose of type checking. OCaml/Haskell precedent. Union-find migration will subsume.
 - [ ] Add per-variable depth limit to Substitution::apply() — implement chosen behavior (`src/types.rs:141-144`) [Critical, type-theorist]
+- [ ] Fix Substitution::apply depth counter conflating chain depth with structural width — single `depth` parameter increments for both TypeVar chain-following and structural descent into Record fields/Function params. A record type with >256 fields (K8s manifests) would silently return un-substituted type variables. The `visited: HashSet<String>` already prevents infinite TypeVar chains (Tarjan 1975), so depth counter should only guard structural recursion. Either increment depth only on TypeVar resolution, or use separate counters. (`src/types.rs:145-198`) [Major, computer-scientist]
 - [ ] Document Environment DAG invariant — add doc comment and debug-mode cycle detector (`src/value.rs:333-392`) [Major, eval-engine]
 - [ ] Cache four-pass dict inference key resolution — `infer_expr` resolves keys twice across passes (`src/typecheck.rs:272-295`) [Minor, type-theorist]
 - [ ] Add clarifying comment to `bind_args_thunks` double conflict check (`src/eval.rs:573-587`) [Nit, eval-engine]
@@ -272,7 +293,7 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. LLT's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
 
 - [x] Design `Frame` enum for explicit continuation stack — see DESIGN.md §Iterative Evaluator — Defunctionalized CPS (CEK Machine). Uses `Action` enum (Eval/Materialize/Continue) + `Cont` enum (~18-20 defunctionalized continuation variants, boxed large fields for ≤96B frames) in an iterative two-register loop. Agent-reviewed: eval-engine, laziness-auditor, performance-expert.
-- [ ] Research safe Rust arena patterns for thunks/environments — typed-arena, bumpalo, index-based arenas (Vec<Thunk> + ThunkId handles), and how to handle letrec self-reference without dangling pointers. Study how Rust projects (salsa, rustc's ty::TyCtxt, cranelift) solve arena + interior references. Assess whether GhostCell or similar can replace RefCell for environment mutation.
+- [x] Research safe Rust arena patterns for thunks/environments — see doc/whatif/arena-patterns.md. Recommends hand-rolled `Vec<Thunk>` + `ThunkId(u32)` with RefCell (cranelift entity pattern). typed-arena/bumpalo can't handle cyclic graphs; GhostCell ergonomic cost prohibitive; slotmap/thunderdome add unnecessary deletion overhead. 4-step adoption: variable resolution → arena types → CEK machine → selective migration
 - [x] Design arena lifetime policy for REPL/LSP — arena lifetime = one document section (between `---` boundaries). At `---`, selectively migrate `$$`-reachable thunks from arena to Rc-backed storage (preserves laziness, closures, infinite sequences), bind as `$$`, drop arena. See DESIGN.md §Allocation Strategy.
 - [ ] Environment reuse in bind_args_thunks — safe with flat environments (each call writes to own activation frame). Deferred from perf-foundations where it was unsafe with shared `Rc<RefCell<Environment>>`. (`src/eval.rs:527-529`)
 - [ ] Fix DESIGN.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (`DESIGN.md §Iterative Evaluator`) [Minor, computer-scientist]
@@ -368,6 +389,7 @@ Future type system work identified by type-theorist review (2026-04-19). Updated
 - [ ] Fix type display using two spaces between fields — consider single space (`src/types.rs:345-367`) [Nit, type-theorist]
 - [ ] Fix DESIGN.md "pure Robinson" unification claim — DESIGN.md §Unification claims unification is pure Robinson with subtyping handled by [U-SUBSUME]/`check_expr`, but code implements 8 bidirectional literal promotion rules directly in `unify()` (`IntLiteral↔Int`, `IntLiteral↔Number`, `Int↔Number`, `Float↔Number`, `IntLiteral↔Float`, `StringLiteral↔Str`). When `bidirectional-typing` lands, either remove promotions from `unify()` and rely on [SUB]/[U-SUBSUME], or update DESIGN.md to document pragmatic approach as intentional. (`src/types.rs:263-289`, `DESIGN.md`) [Major, type-theorist]
 - [ ] Add comment explaining `IntLiteral(n) ~ Float` literal-specific promotion (`src/types.rs:263`) [Nit, type-theorist]
+- [ ] Fix IntLiteral-Float edge case: `unify` accepts `(IntLiteral, Float)` but `is_subtype` rejects it — when bidirectional-typing lands and promotions are replaced by `is_subtype` fallback, `unify(IntLiteral(42), Float)` will start failing. Either add `IntLiteral <: Float` to `is_subtype` or remove the arm from `unify` now. (`src/types.rs:289` vs `src/types.rs:42-84`) [Nit, computer-scientist]
 - [ ] Fix `TypeEnv::with_parent` taking `Rc` instead of `&Rc` — minor API ergonomics (`src/types.rs:399-405`) [Nit, type-theorist]
 - [ ] Add `Eq` derive to `TypeError` (`src/types.rs:444-448`) [Nit, type-theorist]
 - [ ] Document `TypeMap` using `(offset, offset)` as key instead of `Span` — offsets are sufficient (`src/typecheck.rs:16`) [Nit, type-theorist]
@@ -533,6 +555,9 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Add comment to Seq cycle detection in `deep_materialize` explaining raw pointer identity pattern (`src/eval.rs:1093-1100`) [Nit, integration-verifier]
 - [ ] Add 4 missing papers to DESIGN.md §Formal References — Findler & Felleisen (2002) contracts, Reynolds (1972) defunctionalization, Sestoft (1997) lazy abstract machine, Remy (1989) original row types; all cited inline in DESIGN.md but missing from the references section [Minor, computer-scientist]
 - [ ] Update DESIGN.md ThunkState sketch to include `Failed(Box<EvalError>)` and `PendingCall` variants (`DESIGN.md:1988-1994`) [Nit, eval-engine]
+- [ ] Delete stale concat comment block in stdlib/prelude.llt — function definition correctly removed (migrated to Rust builtin) but 3-line comment block remains as confusing dead documentation (`stdlib/prelude.llt:301-303`) [Major, stdlib-author]
+- [ ] Sync DESIGN.md concat documentation after builtin migration — concat still listed as stdlib function at line 3075, non-existent `concat-seq` listed at line 3185, Sequences builtin row at line 2940 missing concat, concat Seq path marked as future work at line 5439 but already implemented. Move to builtin docs, remove stale entries, update status markers. (`DESIGN.md:2940, 3075, 3185, 5439`) [Major, integration-verifier]
+- [ ] Update DESIGN.md builtin count after concat migration — line 2927 says "44 total" but `standard_builtins()` now registers 45 builtins after concat addition. Previous "verified correct" resolution (TODO.md:651) is now stale. (`DESIGN.md:2927`) [Minor, stdlib-author + integration-verifier]
 
 ## Test Infrastructure
 
@@ -560,6 +585,8 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add unit tests for builtin_drop, builtin_reduce, builtin_join (PendingCall chain construction, thunk state, span propagation) (`src/builtins.rs`) [Major, test-crafter]
 - [ ] Add include caching corpus tests — same file included twice returns identical result, nested includes share cache, verify cache interaction with cycle detection (`tests/corpus/eval/builtins/`) [Major, test-crafter]
 - [ ] Add concat error corpus tests — invalid input types, type mismatches (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
+- [ ] Add 4 missing concat unit tests — concat_seq (basic Seq chaining), concat_seq_empty_xs, concat_seq_empty_ys, concat_dict (Dict path eager merge). Other dual-dispatch builtins (map, filter, drop, reduce, join) have comprehensive unit test coverage for both paths. (`src/builtins.rs`) [Critical, test-crafter]
+- [ ] Fix concat_large_seq corpus test label — comment claims it verifies "lazy evaluation" but actually tests collect's depth behavior (300 elements << 1M limit). Relabel to clarify it tests depth, not MAX_COLLECT_SIZE boundary. (`tests/corpus/eval/builtins/concat_large_seq.llt-eval:2-4`) [Minor, test-crafter]
 
 ### test-additional: Additional Test Coverage
 
@@ -648,7 +675,7 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **DESIGN.md BuiltinFn signature section omits BuiltinArgs struct** — update to mention builtin-thunk-return parameter bundling (`DESIGN.md:1732-1744`) [Minor, integration-verifier]
 - [ ] **DESIGN.md include caching description sparse** — expand line 1835 to document cache key (canonical PathBuf), cache scope (thread-local), error non-caching rationale, cache lifetime (`DESIGN.md:1835`) [Minor, eval-engine]
 - [ ] **CLAUDE.md IncludeContext description missing cache field** — update builtins.rs row to mention include result cache for memoization (`CLAUDE.md:30`) [Minor, integration-verifier]
-- [x] ~~**DESIGN.md stale builtin count "44 total"**~~ — verified correct: `standard_builtins()` registers exactly 44 builtins (16 Sequences builtins already included in count) [Resolved, 2026-04-22]
+- [x] ~~**DESIGN.md stale builtin count "44 total"**~~ — was verified correct at 44, now stale again after concat builtin added (now 45). New tracking item in stdlib-docs section. [Resolved then re-staled, 2026-04-22]
 - [ ] **Include cache code comments** — add skip-guard rationale at cache hit, clarify "Check cache" comment placement, add doc comment to cache field (`src/builtins.rs:1036-1039,52`) [Nit, eval-engine]
 - [ ] **IncludeContext::new() constructor** — add constructor to reduce breaking changes when fields are added; low priority pre-1.0 (`src/builtins.rs:54`) [Nit, integration-verifier]
 
@@ -691,12 +718,12 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [ ] Research `let` binding form — non-recursive local bindings. Dict entries (letrec) cover all current needs. Add `let` if non-recursive scoping is needed later
 - [ ] Research quasiquoting — AST-as-data representation. Prerequisite for procedural macros if ever adopted. See `doc/whatif/macros.md`
 - [ ] Research custom call aliases — users can already define wrappers; no built-in alias for `call` needed yet
-- [ ] Research gradual typing — formalization of `Any` semantics (Phase 2 type roadmap), full consistency relation + blame tracking (Phase 3). Gated on `Any`-as-top-and-bottom causing a real soundness bug. See `doc/whatif/gradual-typing.md`
+- [x] Research gradual typing — see doc/whatif/gradual-typing.md. Three-phase adoption (formalize → split Any → blame tracking). Gated on Any-as-top-and-bottom causing a real soundness bug or union types/type classes forcing the split
 - [ ] Research `list?` vs `dict?` predicates — since lists are dicts, need to decide if/how to distinguish at runtime. `$seq?` and `$type-of` exist. Probably shouldn't add more
 - [ ] Research string interpolation — `"Hello $name"` in double-quoted strings. Deferred because `$str`/`$words` cover the need. `$` sigils make future interpolation natural
 - [ ] Research float dict keys — precision issues (`0.1 + 0.2 ≠ 0.3`) and NaN incomparability. Integer and string keys cover all current needs
 - [ ] Research width-specific numeric types — `Int32`, `Int64`, `Float32`, `Decimal`, etc. Range constraints on `Int`/`Float`, implementable via contracts system. `Decimal` would need a new Value variant
-- [ ] Research typeclasses — ad-hoc polymorphism for extensible numeric operations, generic serialization, custom equality/ordering. Phase 3 type roadmap, gated on user-defined types needing protocol participation. See `doc/whatif/typeclasses.md`
-- [ ] Research union types — `Int | Str`, nullable types, precise dual-dispatch typing. Three-phase path: type classes → annotation-only unions → inferred unions via Simple-sub. See `doc/whatif/union-types.md`
-- [ ] Research algebraic subtyping — Simple-sub (Parreaux 2020) constraint-solving replacement for [U-SUBSUME] + Robinson unification. Enables inferred union/intersection types. See `doc/whatif/algebraic-subtypes.md`
-- [ ] Research macros — unifying desugaring under a macro system. Laziness reduces need; recommended to defer until module system exists. See `doc/whatif/macros.md`
+- [x] Research typeclasses — see doc/whatif/typeclasses.md. Two-phase adoption (constrained type vars → full Haskell-style classes). Gated on Any typing for dual-dispatch causing false positives or user-defined types needing protocols
+- [x] Research union types — see doc/whatif/union-types.md. Three-phase path: type classes → annotation-only unions → inferred unions via Simple-sub. Gated on nullable types or tagged union patterns becoming common
+- [x] Research algebraic subtyping — see doc/whatif/algebraic-subtypes.md. Simple-sub (Parreaux 2020) replacement for [U-SUBSUME] + Robinson. 4-step migration path. Gated on union types being insufficient without inferred unions or Any-as-top-and-bottom causing soundness problems
+- [x] Research macros — see doc/whatif/macros.md. Recommends procedural AST macros (Approach B). Laziness reduces need; gated on second syntactic desugaring or user-requested domain-specific syntax

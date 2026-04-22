@@ -244,7 +244,7 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str) -> Diag
         code: None,
         code_description: None,
         source: Some("tinct-eval".to_string()),
-        message: err.message.clone(),
+        message: err.message(),
         related_information: None,
         tags: None,
         data: None,

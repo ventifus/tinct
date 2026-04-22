@@ -865,7 +865,7 @@ fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             result.insert(
                 Key::String("err".to_string()),
                 Rc::new(Thunk::new_materialized(
-                    Value::String(e.message.clone()),
+                    Value::String(e.message()),
                     call_span,
                 )),
             );
@@ -2890,7 +2890,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("NaN"), "got: {}", err.message);
+        assert!(err.message().contains("NaN"), "got: {}", err.message());
     }
 
     #[test]
@@ -2902,7 +2902,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("Infinity"), "got: {}", err.message);
+        assert!(err.message().contains("Infinity"), "got: {}", err.message());
     }
 
     #[test]
@@ -2914,7 +2914,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("Infinity"), "got: {}", err.message);
+        assert!(err.message().contains("Infinity"), "got: {}", err.message());
     }
 
     #[test]
@@ -2927,9 +2927,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected Int or Float"),
+            err.message().contains("expected Int or Float"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2943,9 +2943,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected Int or Float"),
+            err.message().contains("expected Int or Float"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2959,9 +2959,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected Int or Float"),
+            err.message().contains("expected Int or Float"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2975,9 +2975,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -2991,9 +2991,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3009,9 +3009,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3025,9 +3025,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("out of Int range"),
+            err.message().contains("out of Int range"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3041,9 +3041,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("out of Int range"),
+            err.message().contains("out of Int range"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3181,7 +3181,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("NaN"), "got: {}", err.message);
+        assert!(err.message().contains("NaN"), "got: {}", err.message());
     }
 
     #[test]
@@ -3193,7 +3193,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("Infinity"), "got: {}", err.message);
+        assert!(err.message().contains("Infinity"), "got: {}", err.message());
     }
 
     #[test]
@@ -3205,7 +3205,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("Infinity"), "got: {}", err.message);
+        assert!(err.message().contains("Infinity"), "got: {}", err.message());
     }
 
     #[test]
@@ -3218,9 +3218,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected Int or Float"),
+            err.message().contains("expected Int or Float"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3234,9 +3234,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected Int or Float"),
+            err.message().contains("expected Int or Float"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3250,9 +3250,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3266,9 +3266,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3282,9 +3282,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("out of Int range"),
+            err.message().contains("out of Int range"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3298,9 +3298,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("out of Int range"),
+            err.message().contains("out of Int range"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3357,7 +3357,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("cannot parse"), "got: {}", err.message);
+        assert!(
+            err.message().contains("cannot parse"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3369,7 +3373,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("cannot parse"), "got: {}", err.message);
+        assert!(
+            err.message().contains("cannot parse"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3381,7 +3389,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("cannot parse"), "got: {}", err.message);
+        assert!(
+            err.message().contains("cannot parse"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3393,7 +3405,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("cannot parse"), "got: {}", err.message);
+        assert!(
+            err.message().contains("cannot parse"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3406,14 +3422,14 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("Int"),
+            err.message().contains("Int"),
             "should mention Int, got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3427,9 +3443,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3443,9 +3459,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3459,9 +3475,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3475,9 +3491,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3494,9 +3510,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3588,7 +3604,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("cannot parse"), "got: {}", err.message);
+        assert!(
+            err.message().contains("cannot parse"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3600,7 +3620,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("cannot parse"), "got: {}", err.message);
+        assert!(
+            err.message().contains("cannot parse"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3612,7 +3636,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("non-finite"), "got: {}", err.message);
+        assert!(
+            err.message().contains("non-finite"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3624,7 +3652,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("non-finite"), "got: {}", err.message);
+        assert!(
+            err.message().contains("non-finite"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3636,7 +3668,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("non-finite"), "got: {}", err.message);
+        assert!(
+            err.message().contains("non-finite"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3648,7 +3684,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("non-finite"), "got: {}", err.message);
+        assert!(
+            err.message().contains("non-finite"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3661,9 +3701,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3677,9 +3717,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3693,9 +3733,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3709,9 +3749,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3728,9 +3768,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3746,9 +3786,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3762,7 +3802,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("cannot parse"), "got: {}", err.message);
+        assert!(
+            err.message().contains("cannot parse"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3917,9 +3961,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -3932,7 +3976,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert_eq!(err.message, "boom");
+        assert_eq!(err.message(), "boom");
     }
 
     #[test]
@@ -3944,7 +3988,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert_eq!(err.message, "division by zero");
+        assert_eq!(err.message(), "division by zero");
     }
 
     #[test]
@@ -3957,11 +4001,11 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("String"), "got: {}", err.message);
+        assert!(err.message().contains("String"), "got: {}", err.message());
     }
 
     #[test]
@@ -3974,9 +4018,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4056,9 +4100,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected Function"),
+            err.message().contains("expected Function"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4073,9 +4117,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("zero-argument"),
+            err.message().contains("zero-argument"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4089,9 +4133,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4243,9 +4287,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4263,9 +4307,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected Function"),
+            err.message().contains("expected Function"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4280,9 +4324,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4296,9 +4340,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4397,9 +4441,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4557,7 +4601,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("invalid JSON"), "got: {}", err.message);
+        assert!(
+            err.message().contains("invalid JSON"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -4570,9 +4618,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4586,9 +4634,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -4664,9 +4712,10 @@ mod tests {
         let deep = build_deep(MAX_EVAL_DEPTH + 1);
         let err = json_to_value(&deep, 0, call_span()).unwrap_err();
         assert!(
-            err.message.contains("maximum JSON nesting depth exceeded"),
+            err.message()
+                .contains("maximum JSON nesting depth exceeded"),
             "expected depth error, got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5018,9 +5067,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5035,9 +5084,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5051,9 +5100,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5068,9 +5117,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5085,9 +5134,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5102,9 +5151,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5117,13 +5166,13 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("keys"), "got: {}", err.message);
+        assert!(err.message().contains("keys"), "got: {}", err.message());
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Int"), "got: {}", err.message);
+        assert!(err.message().contains("got Int"), "got: {}", err.message());
     }
 
     #[test]
@@ -5135,8 +5184,12 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("keys"), "got: {}", err.message);
-        assert!(err.message.contains("got String"), "got: {}", err.message);
+        assert!(err.message().contains("keys"), "got: {}", err.message());
+        assert!(
+            err.message().contains("got String"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -5148,8 +5201,8 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("keys"), "got: {}", err.message);
-        assert!(err.message.contains("got Bool"), "got: {}", err.message);
+        assert!(err.message().contains("keys"), "got: {}", err.message());
+        assert!(err.message().contains("got Bool"), "got: {}", err.message());
     }
 
     #[test]
@@ -5161,13 +5214,17 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("length"), "got: {}", err.message);
+        assert!(err.message().contains("length"), "got: {}", err.message());
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got String"), "got: {}", err.message);
+        assert!(
+            err.message().contains("got String"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -5180,13 +5237,13 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("merge"), "got: {}", err.message);
+        assert!(err.message().contains("merge"), "got: {}", err.message());
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Int"), "got: {}", err.message);
+        assert!(err.message().contains("got Int"), "got: {}", err.message());
     }
 
     #[test]
@@ -5199,13 +5256,17 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("merge"), "got: {}", err.message);
+        assert!(err.message().contains("merge"), "got: {}", err.message());
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got String"), "got: {}", err.message);
+        assert!(
+            err.message().contains("got String"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -5346,7 +5407,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("2"), "got: {}", err.message);
+        assert!(err.message().contains("2"), "got: {}", err.message());
     }
 
     #[test]
@@ -5362,7 +5423,7 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("2"), "got: {}", err.message);
+        assert!(err.message().contains("2"), "got: {}", err.message());
     }
 
     #[test]
@@ -5374,11 +5435,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("append"), "got: {}", err.message);
+        assert!(err.message().contains("append"), "got: {}", err.message());
         assert!(
-            err.message.contains("expected Dict"),
+            err.message().contains("expected Dict"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5394,7 +5455,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("key overflow"), "got: {}", err.message);
+        assert!(
+            err.message().contains("key overflow"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -5933,11 +5998,15 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("expected 2"), "got: {}", err.message);
+        assert!(
+            err.message().contains("expected 2"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -5954,9 +6023,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -5973,11 +6042,15 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("expected 3"), "got: {}", err.message);
+        assert!(
+            err.message().contains("expected 3"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -5990,9 +6063,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6009,9 +6082,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6025,9 +6098,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6044,9 +6117,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6060,16 +6133,16 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Int"), "got: {}", err.message);
+        assert!(err.message().contains("got Int"), "got: {}", err.message());
     }
 
     #[test]
@@ -6082,14 +6155,14 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6107,11 +6180,11 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Int"), "got: {}", err.message);
+        assert!(err.message().contains("got Int"), "got: {}", err.message());
     }
 
     #[test]
@@ -6128,11 +6201,11 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Bool"), "got: {}", err.message);
+        assert!(err.message().contains("got Bool"), "got: {}", err.message());
     }
 
     #[test]
@@ -6149,11 +6222,15 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Float"), "got: {}", err.message);
+        assert!(
+            err.message().contains("got Float"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -6166,16 +6243,16 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Int"), "got: {}", err.message);
+        assert!(err.message().contains("got Int"), "got: {}", err.message());
     }
 
     #[test]
@@ -6188,16 +6265,16 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Bool"), "got: {}", err.message);
+        assert!(err.message().contains("got Bool"), "got: {}", err.message());
     }
 
     #[test]
@@ -6210,16 +6287,20 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
-        assert!(err.message.contains("got Float"), "got: {}", err.message);
+        assert!(
+            err.message().contains("got Float"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -6234,9 +6315,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6252,9 +6333,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6270,9 +6351,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6288,9 +6369,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6306,9 +6387,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6324,9 +6405,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6342,9 +6423,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6360,9 +6441,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6381,9 +6462,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6403,9 +6484,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6421,9 +6502,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6439,9 +6520,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6457,9 +6538,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6475,9 +6556,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6493,9 +6574,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6511,9 +6592,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6533,9 +6614,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6553,9 +6634,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6572,9 +6653,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6593,9 +6674,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6611,9 +6692,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6629,9 +6710,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6648,9 +6729,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6667,9 +6748,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("named arguments"),
+            err.message().contains("named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6812,7 +6893,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("type mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("type mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -6824,7 +6909,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -6840,7 +6929,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -6853,9 +6946,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("integer overflow"),
+            err.message().contains("integer overflow"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -6934,7 +7027,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -6946,7 +7043,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -6962,7 +7063,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -6974,7 +7079,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("type mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("type mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7064,9 +7173,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("integer overflow"),
+            err.message().contains("integer overflow"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -7136,7 +7245,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("division by zero"), "got: {}", e.message);
+        assert!(
+            e.message().contains("division by zero"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7148,7 +7261,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("division by zero"), "got: {}", e.message);
+        assert!(
+            e.message().contains("division by zero"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7160,7 +7277,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("division by zero"), "got: {}", e.message);
+        assert!(
+            e.message().contains("division by zero"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7368,7 +7489,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7513,7 +7638,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("type mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("type mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7572,7 +7701,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("type mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("type mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7584,7 +7717,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7705,11 +7842,15 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("type mismatch"), "got: {}", e.message);
         assert!(
-            e.message.contains("Bool"),
+            e.message().contains("type mismatch"),
+            "got: {}",
+            e.message()
+        );
+        assert!(
+            e.message().contains("Bool"),
             "expected Bool mentioned, got: {}",
-            e.message
+            e.message()
         );
     }
 
@@ -7727,7 +7868,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("type mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("type mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7740,7 +7885,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7758,7 +7907,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(e.message.contains("arity mismatch"), "got: {}", e.message);
+        assert!(
+            e.message().contains("arity mismatch"),
+            "got: {}",
+            e.message()
+        );
     }
 
     #[test]
@@ -7824,9 +7977,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("not available"),
+            err.message().contains("not available"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -7845,9 +7998,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("expected String"),
+            err.message().contains("expected String"),
             "got: {}",
-            err.message
+            err.message()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -7866,7 +8019,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("cannot open"), "got: {}", err.message);
+        assert!(
+            err.message().contains("cannot open"),
+            "got: {}",
+            err.message()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -7930,7 +8087,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message.contains("parse error"), "got: {}", err.message);
+        assert!(
+            err.message().contains("parse error"),
+            "got: {}",
+            err.message()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -7954,9 +8115,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("circular include"),
+            err.message().contains("circular include"),
             "got: {}",
-            err.message
+            err.message()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -7977,9 +8138,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("circular include"),
+            err.message().contains("circular include"),
             "got: {}",
-            err.message
+            err.message()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8072,9 +8233,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
 
         // Two arguments
@@ -8090,9 +8251,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("arity mismatch"),
+            err.message().contains("arity mismatch"),
             "got: {}",
-            err.message
+            err.message()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8114,9 +8275,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message.contains("does not accept named arguments"),
+            err.message().contains("does not accept named arguments"),
             "got: {}",
-            err.message
+            err.message()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8470,9 +8631,9 @@ mod tests {
         });
         let err = result.unwrap_err();
         assert!(
-            err.message.contains("empty sequence"),
+            err.message().contains("empty sequence"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -8486,9 +8647,9 @@ mod tests {
         });
         let err = result.unwrap_err();
         assert!(
-            err.message.contains("empty sequence"),
+            err.message().contains("empty sequence"),
             "got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -8699,12 +8860,12 @@ mod tests {
         );
         let err = collect_result.unwrap_err();
         // Accept either error - both are valid protections
-        let is_depth_error = err.message.contains("maximum evaluation depth");
-        let is_size_error = err.message.contains("exceeded maximum collection size");
+        let is_depth_error = err.message().contains("maximum evaluation depth");
+        let is_size_error = err.message().contains("exceeded maximum collection size");
         assert!(
             is_depth_error || is_size_error,
             "expected depth or size limit error, got: {}",
-            err.message
+            err.message()
         );
     }
 
@@ -9054,7 +9215,7 @@ mod tests {
             call_span: call_span(),
         });
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("empty"));
+        assert!(result.unwrap_err().message().contains("empty"));
     }
 
     #[test]
