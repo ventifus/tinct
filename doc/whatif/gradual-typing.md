@@ -183,34 +183,49 @@ evaluation, not just point-of-failure reporting.
 
 ## Recommendation
 
-**Don't adopt now.** tinct's `Any`-as-top-and-bottom has not caused a
-soundness problem in practice. The main risk (type lattice collapse) is
-theoretical — no user has reported a program that type-checked but shouldn't
-have due to `Any` semantics.
+**Three-phase adoption using AGT (Garcia et al. 2016):**
 
-**Revisit when:**
-- A user reports a program that type-checked incorrectly due to `Any`
-  semantics (the collapse causes a false positive)
-- TypeAssert proxy contracts prove insufficient for runtime type safety at
-  boundaries (blame tracking needed for practical debugging)
-- The type system gains union types or type classes, which interact badly
-  with `Any`-as-top-and-bottom (algebraic subtyping requires splitting `Any`
-  into Top/Bottom — see `doc/whatif/algebraic.md` §6 "Any Type")
+### Phase 1: Formalize (documentation only)
 
-**If we do adopt,** formalize the consistency relation first (documentation
-only, no code change). This establishes the rules before implementation.
-Then split `Type::Any` into `Unknown` + `Top` as a single migration. Use
-AGT (Garcia et al. 2016) to derive the gradual rules systematically from
-the existing static type system.
+Document the consistency relation that `Any` actually implements today.
+Define what the Gradual Guarantee means for tinct. Identify blame
+boundaries — every point where `Unknown` would meet concrete types. This
+establishes the rules before any code changes and validates the design
+against Garcia et al.'s systematic derivation.
 
-## Trigger for Phase 2 Formalization
+### Phase 2: Split `Any`
 
-Before reaching Phase 3, the type system extension roadmap (DESIGN.md §Type
-System Extension Roadmap) calls for formalizing `Any`'s semantics in Phase 2
-as documentation work: document the consistency relation that `Any` actually
-implements, define what the Gradual Guarantee means for tinct, and identify
-blame boundaries. This formalization does not require code changes but
-establishes the foundation for Phase 3 if it's ever triggered.
+Replace `Type::Any` with `Unknown` + `Top` in a single migration. Audit
+every use of `Any` and reclassify: unannotated params → `Unknown`, builtin
+returns → `Unknown`, TypeAssert upper bound → `Top`. Add the consistency
+relation as `is_consistent()` alongside `is_subtype()`. Update ~20 call
+sites from `is_subtype(_, Any)` to `is_consistent`.
+
+### Phase 3: Blame tracking
+
+Add blame provenance to `Unknown → Concrete` boundaries. tinct's
+TypeAssert proxy contracts (Findler & Felleisen 2002) already provide the
+structural mechanism via `guard_span`. Extend this to non-TypeAssert
+boundaries — builtin returns and unannotated params. Automatic insertion
+of guards at `Unknown → Concrete` boundaries is the full realization;
+explicit-only (TypeAssert sites) is the pragmatic starting point.
+
+### Prerequisites
+
+- `let-generalization` complete (type schemes must carry `Unknown` correctly)
+- `bidirectional-typing` complete (synthesis/checking modes interact with
+  consistency relation)
+- Union types or type classes adoption would force Phase 2 — `Any`-as-top-
+  and-bottom is incompatible with algebraic subtyping (see
+  `doc/whatif/algebraic-subtypes.md` §6)
+
+### Trigger
+
+Phase 1 (formalization) can begin at any time — it's documentation work.
+Phase 2 (split `Any`) should follow when:
+- The type system gains union types or type classes
+- `Any`-as-top-and-bottom causes a type-checking false positive
+- TypeAssert contracts prove insufficient without blame tracking
 
 ## References
 

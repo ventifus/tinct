@@ -6153,24 +6153,6 @@ Design questions that still need to be resolved. All other design questions have
 
 ---
 
-## Future Features
-
-Evaluate these later:
-
-- **Parameterized type aliases** — `Mapper: [type [a b] [Fn@b [a]]]`. Deferred until variable name collision becomes a real problem. Textual expansion is sufficient for now.
-- **`let` binding form** — Use dict entries for all bindings for now. Add `let` for local bindings if needed later.
-- **Pattern matching** — Not yet designed.
-- **Quasiquoting** — Not yet specified.
-- **Custom call aliases** — Users can define their own; no built-in alias for `call`.
-- **Gradual typing** — Decided mandatory types instead. Formalization of `Any` semantics is Phase 2 of the type system extension roadmap (documentation only). Full gradual typing (consistency relation, blame tracking) is Phase 3, gated on `Any`-as-top-and-bottom causing a real soundness bug. See `doc/whatif/gradual-typing.md`.
-- **`list?` vs `dict?` predicates** — Since lists are dicts, need to decide if/how to distinguish at runtime (probably shouldn't).
-- **String interpolation** — `"Hello $name"` in double-quoted strings. Deferred because `$str`/`$words` cover the need. `$` sigils make future interpolation natural and non-breaking to add.
-- **Float dict keys** — Floats as dict keys have precision issues (`0.1 + 0.2 ≠ 0.3`) and NaN is incomparable. Integer and string keys cover all current needs. Revisit if a use case arises.
-- **Width-specific numeric types** — `Int32`, `Int64`, `Int128`, `UInt64`, `Float32`, `Decimal`, etc. These are range constraints on `Int`/`Float`, implementable via the contracts system once it exists. `Decimal` would need a new Value variant if precise decimal arithmetic is required.
-- **Typeclasses** — Ad-hoc polymorphism for extensible numeric operations, generic serialization, custom equality/ordering. Not needed while the set of built-in types is small and the promotion table is hardcoded. Phase 3 of the type system extension roadmap, gated on user-defined types needing protocol participation. See `doc/whatif/typeclasses.md`.
-
----
-
 ## Common Patterns
 
 ### Shared Base Config

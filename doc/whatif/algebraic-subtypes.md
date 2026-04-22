@@ -302,23 +302,85 @@ comparison against materialized value).
 
 ## Recommendation
 
-**Don't adopt now.** tinct's current subtyping needs are narrow (literal→base
-promotion, record width via row polymorphism) and well-served by [U-SUBSUME] +
-bidirectional checking. The complexity cost of algebraic subtyping is not
-justified by the current use cases.
+**Adopt Simple-sub (Parreaux 2020) as a constraint-solving replacement for
+[U-SUBSUME] + Robinson unification.**
 
-**Revisit when:**
-- Union types become necessary (dual-dispatch builtins are the trigger — if
-  `Any` typing for `$map`/`$filter` causes real type-checking failures, unions
-  are the fix)
-- The `Any`-as-top-and-bottom semantics causes a soundness problem
-- Row polymorphism implementation reveals that Rémy-style unification interacts
-  badly with [U-SUBSUME]
+### Why Simple-sub over Dolan's Biunification
 
-**If we do adopt,** use Simple-sub (Parreaux 2020) as the starting point —
-it's closer to Algorithm W, more amenable to incremental adoption, and produces
-better error messages than Dolan's original biunification. The Lorenz et al.
-(2024) extension for row polymorphism would be directly applicable.
+Parreaux (2020) distills Dolan & Mycroft (2017) into an algorithm closer to
+Algorithm W — it uses the same AST-walking structure, the same
+let-generalization strategy, and produces better error messages. The key
+differences from tinct's current approach:
+
+1. `unify(τ₁, τ₂)` becomes `constrain(τ₁ <: τ₂)` — inequality constraints
+   instead of equality
+2. Type variables carry upper/lower bounds instead of equality bindings
+3. Union and intersection types emerge naturally from bound compaction
+4. [U-SUBSUME] is unnecessary — subtyping is built into the solver
+
+Simple-sub is ~500 lines for a minimal implementation. tinct's full system
+(row polymorphism, literal types, let-generalization, TypeAssert, gradual
+typing) would be larger, but the Lorenz et al. (2024) extension for row
+variables provides a direct template.
+
+### Migration Path
+
+#### Step 1: Constraint Infrastructure
+
+Add the constraint representation alongside existing unification. Type
+variables gain `TypeVarBounds { lower: Vec<Type>, upper: Vec<Type> }`
+in addition to the current substitution map. New `constrain(τ₁ <: τ₂)`
+function that decomposes structural types with polarity awareness
+(covariant fields, contravariant params).
+
+#### Step 2: Migrate Unification Call Sites
+
+Replace `unify()` calls with `constrain()` calls, one subsystem at a time:
+1. Literal-to-base promotion (currently [U-SUBSUME]) → `constrain(IntLiteral <: Int)`
+2. Function application → `constrain(arg <: param)`, `constrain(ret <: expected)`
+3. Record width subtyping → `constrain(wider <: narrower)` with field decomposition
+4. Let-generalization → bounds-carrying type schemes
+
+#### Step 3: Union/Intersection Types
+
+With the constraint solver in place, add `Type::Union` and
+`Type::Intersection` as bound compaction results. These appear in inferred
+types when a variable has multiple lower bounds (union) or multiple upper
+bounds (intersection).
+
+#### Step 4: `Any` Split
+
+Split `Type::Any` into `Top`, `Bottom`, and `Unknown` (gradual). This is
+required for lattice soundness — `Any`-as-top-and-bottom collapses the
+algebraic subtyping lattice. Coordinate with `doc/whatif/gradual-typing.md`
+Phase 2.
+
+### Error Message Strategy
+
+Constraint provenance is the main risk. Each constraint records its source
+span and the reason it was generated (function call, field access, type
+annotation). When bounds are unsatisfiable, the error traces back through
+the provenance chain to show *why* the conflict arose, not just *that* it
+exists. Parreaux's simpler constraint representation helps — bounds are
+concrete types, not automata states.
+
+### Prerequisites
+
+- `let-generalization` complete (bounds must propagate through type schemes)
+- `bidirectional-typing` complete (checking mode provides better constraint
+  generation, though algebraic subtyping makes it optional)
+- `gradual-typing` Phase 2 (`Any` split into Unknown + Top)
+- `row-polymorphism` implementation stable (Lorenz et al. 2024 extends
+  Simple-sub with row variables, but the base row system must be solid)
+
+### Trigger
+
+Adopt when:
+- Union types become necessary for precise dual-dispatch typing (and type
+  classes alone are insufficient — see `doc/whatif/union-types.md` Phase 3)
+- `Any`-as-top-and-bottom causes a soundness problem in the type checker
+- Rémy-style row unification interacts badly with [U-SUBSUME], creating
+  false positives or missed errors at record boundaries
 
 ## References
 

@@ -19,6 +19,7 @@ Implement the `ErrorKind` enum and migrate all error construction sites. See DES
 - [ ] Update `builtin_try` to extract `e.kind.to_string()` instead of `e.message` (`src/builtins.rs:864`)
 - [ ] Update all `err.message` references in unit tests to `err.kind.to_string()` or pattern matching (`src/error.rs`, `src/eval.rs`)
 - [ ] Update SPEC.md §9 with `ErrorKind` variants, error codes in display format (§9.2), and revised exhaustiveness claim in §9.3
+- [ ] Add `ErrorKind::is_catchable()` method returning `false` for `DepthExceeded` — `$try` currently catches ALL errors including depth-exceeded, defeating the safety net. Users can circumvent depth limits via `$until` + `$try` wrapping deeply recursive code. GHC makes `StackOverflow` uncatchable; Racket separates `exn:fail:resource`. Have `builtin_try` check `is_catchable()` and re-raise uncatchable errors directly. (`src/builtins.rs:793-871`, `src/error.rs`) [Critical, computer-scientist]
 
 ## underscore-desugar: $_ Pre-Typecheck Desugaring Pass
 
@@ -145,6 +146,20 @@ Found by eval-engine codebase review (2026-04-20).
 - [x] Design value-level vs pointer-level cycle detection strategy for `deep_materialize` — decision: pointer identity + depth/fuel backstop is sufficient; cross-type cycles through distinct allocations are nearly impossible in Rc-sharing model. No changes needed; CEK migration (iterative `Cont::DeepEntries`/`Cont::DeepSeqTail`) subsumes the stack overflow concern. (`src/eval.rs:1109-1139`) [Major, eval-engine]
 - [ ] Document deep_materialize Seq→Dict terminal case — docstring doesn't explain that Seq tail eventually materializes to empty Dict `[]` as terminal value, and infinite sequences hit MAX_EVAL_DEPTH (`src/eval.rs:1056-1069`) [Minor, eval-engine]
 
+### seq-resource-safety: Sequence Resource Safety
+
+Resource safety gaps in sequence combinators. Found by computer-scientist codebase review (2026-04-22).
+
+- [x] Add `MAX_COLLECT_SIZE` limit to `builtin_collect` — iterates Seq spine in a Rust `loop` with no iteration count limit; `depth` parameter never incremented inside the loop (iterative, not recursive on Rust call stack), so `MAX_EVAL_DEPTH` never fires. `[call $collect [call $range 0]]` loops until memory exhaustion. DoS vector for user-supplied tinct code. Add limit (e.g., 1,000,000) and suggest `$take` before `$collect` in error message. (`src/builtins.rs:1275-1302`) [Critical, computer-scientist]
+- [x] Fix `builtin_iterate` passing `depth: 0` to PendingBuiltin tail — `BuiltinArgs` destructuring uses `..` to ignore `depth`, then hardcodes `0` for the recursive tail thunk. Resets depth counter on every step, so depth backstop never fires for `iterate` chains. Compare `builtin_unfold_step` which correctly passes caller's `depth`. One-line fix. (`src/builtins.rs:1555-1592`) [Major, computer-scientist]
+- [x] Increment depth in sequence combinator PendingBuiltin chains — `range`, `unfold_step`, `drop_seq_step`, `reduce_seq_step` all create recursive PendingBuiltin chains storing the same `depth` value (never incrementing). A `$filter` examining millions of elements before finding a match will not be caught by `MAX_EVAL_DEPTH`. PendingBuiltin chains are defunctionalized continuations (Reynolds 1972); in a CEK machine each continuation push would consume one unit of fuel. Either increment depth per step, add separate `steps` counter, or document that sequence combinators rely on `$take`/`MAX_COLLECT_SIZE` instead of depth limits. (`src/builtins.rs:1363-1370, 1644-1651, 2238-2260, 2351-2383`) [Major, computer-scientist]
+- [x] Migrate `concat` Seq path from stdlib to Rust builtin (correctness, not just perf) — `stdlib/prelude.llt:303-308` implements `concat` for Seq via recursive user function call (`[call $seq [call $head $xs] [call $concat [call $tail $xs] $ys]]`); each step of left sequence consumes one `MAX_EVAL_DEPTH` level, so sequences > ~256 elements error. Without TCO (Clinger 1998), recursive cons-list operations consume stack proportional to list length. Implement as Rust builtin using PendingBuiltin chain (matching `map`/`filter` pattern). (`stdlib/prelude.llt:303-308`) [Major, computer-scientist]
+- [ ] Add type validation to concat empty-xs path — `builtin_concat` returns `ys_thunk` directly when xs is empty Dict without checking ys type; `concat([], 42)` succeeds incorrectly. Add materialize+match guard. (`src/builtins.rs`) [Minor, computer-scientist + eval-engine panel]
+- [ ] Add `checked_add` to concat Dict path index arithmetic — `idx += 1` is unchecked, inconsistent with `builtin_collect` and `builtin_append` which use `checked_add`. Overflow unreachable in practice but violates codebase convention. (`src/builtins.rs`) [Nit, eval-engine + performance-expert panel]
+- [ ] Fix `$take` PendingBuiltin depth to use `depth + 1` — take doesn't increment depth in its chain, creating a depth-reset interposition layer. `$take 500 [call $range 0]` fails at ~257 elements because range's depth accumulates but take's doesn't. Practical sequence length limit of N < MAX_EVAL_DEPTH for composed pipelines is undocumented. Self-terminating (bounded by n) so depth tracking is redundant for take itself but constrains composed pipelines. (`src/builtins.rs:2166`) [Minor, computer-scientist panel]
+- [ ] Fix `$filter` Seq initial PB depth inconsistency — filter Seq initial PB uses `depth + 1` but filter Dict initial PB uses `depth`. Other combinators (drop, reduce, unfold) consistently use `depth` for initial deferral and `depth + 1` for recursive steps. (`src/builtins.rs:1844,1857`) [Nit, computer-scientist panel]
+- [ ] Correct TODO.md PendingBuiltin/CEK fuel correspondence description — depth in PendingBuiltin chains is an indirect stack-depth proxy that fires when builtins call `materialize`, not a true fuel counter (Sestoft 1997). In a CEK machine, continuation stack is checked on every transition; here, depth is checked only on `materialize` entry. The true resource safety for `$collect` comes from `MAX_COLLECT_SIZE`, not depth. Both mechanisms are complementary. [Minor, computer-scientist panel]
+
 ### float-nan-infinity: Float NaN/Infinity Propagation
 
 Float arithmetic can silently produce NaN or Infinity values that propagate through the evaluator unchecked. Only caught at JSON serialization, far from the cause. Found by computer-scientist codebase review (2026-04-20).
@@ -208,7 +223,7 @@ Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append`
 **Note:** The Sequences milestone addresses much of this by moving `map`, `filter`, `range`, `take`, `drop`, `reduce` to Rust builtins with lazy dispatch. The items below track remaining performance work not covered by that milestone.
 
 Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
-- [ ] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning)
+- [ ] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning). Note: `concat` Seq path is also a correctness issue (hits depth limit at ~256 elements), tracked separately in seq-resource-safety
 - [ ] `sort`, `sort-by` / `sort-merge` -- single Rust builtin using Vec::sort_by would be O(n log n) (laziness-auditor review: $sort uses eager $cons per element)
 - [ ] `zip`, `flatten`, `find-deep` -- recursive traversal or lazy seq versions for perf
 
@@ -236,6 +251,8 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Consider `matches!` instead of `!=` in `key_in_range` (`src/eval.rs:22-50`) [Nit, eval-engine]
 - [ ] Extract `MAX_APPLY_DEPTH` constant to shared location — duplicated in `src/types.rs:127` and `src/eval.rs:42` [Nit, performance-expert]
 - [ ] Avoid AST clone in eval_call argument thunk creation — change `CallExpr` args to `Rc<Spanned<Expr>>` so eval_call does `Rc::clone` instead of deep-cloning AST subtrees per argument. Internal refactor to ast.rs/parser.rs, backward-compatible at public API. ~20-40% call overhead reduction. (`src/eval.rs:416-435`) [Major, performance-expert, design-review promoted]
+- [ ] Avoid AST clone in `Expr::Fn` body — `body.as_ref().clone()` deep-clones entire body AST subtree on every function creation. For closures in loops (lambda args to `$map`/`$filter`), repeated allocation cost. Change `Expr::Fn.body` from `Box<Spanned<Expr>>` to `Rc<Spanned<Expr>>` in AST definition, then `Rc::clone(body)` instead of deep-cloning. Consolidate with call-arg Rc migration above. (`src/eval.rs:170-171`, `src/ast.rs:106`) [Major, computer-scientist]
+- [ ] Optimize `cache_failure` to skip clone when already Failed — `cache_failure()` always creates fresh Failed state with `Box::new(err.clone())`, even if thunk is already Failed with identical error. Common in deep call chains where same error propagates through multiple layers. Check current state and skip clone if already `Failed`. (`src/value.rs:384-386`) [Major, eval-engine]
 - [ ] Avoid intermediate Vec in value_to_display_string — collects all formatted entries into Vec<String> then joins; write directly to String with_capacity instead (`src/lib.rs:194-204`) [Minor, performance-expert]
 - [ ] Avoid intermediate Vec in builtin_split — `input.split(sep).collect::<Vec<&str>>()` then maps to thunks; use iterator directly (`src/builtins.rs:525-535`) [Nit, performance-expert]
 - [ ] Cache materialized dict in `builtin_cycle_step` — currently re-materializes immutable dict on every iteration; store IndexMap directly (`src/builtins.rs:1375-1443`) [Major, performance-expert]
@@ -319,7 +336,7 @@ Design and implement four unprivileged sandboxing layers. See DESIGN.md §Sandbo
 
 ## type-extensions: Type System Extensions
 
-Future type system work identified by type-theorist review (2026-04-19).
+Future type system work identified by type-theorist review (2026-04-19). Updated by type-theorist review (2026-04-22).
 
 - [x] Design type system extension roadmap (Seq types, gradual typing, type classes, error recovery) — see DESIGN.md §Type System Extension Roadmap, `doc/whatif/gradual-typing.md`, `doc/whatif/typeclasses.md`, `doc/whatif/union-types.md`
 - [ ] Add Type::Seq inference to typecheck.rs — sequence builtins ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) currently infer as Any; annotate return types in `check_call` for LSP hover and type safety (`src/typecheck.rs`) [Major, type-theorist]
@@ -349,6 +366,7 @@ Future type system work identified by type-theorist review (2026-04-19).
 - [ ] Remove unused `Substitution` from `instantiate` return type — or document why returned (`src/types.rs:318-330`) [Nit, type-theorist]
 - [ ] Document `Type::is_subtype` not short-circuiting on `Any` in nested positions (`src/types.rs:42-83`) [Nit, type-theorist]
 - [ ] Fix type display using two spaces between fields — consider single space (`src/types.rs:345-367`) [Nit, type-theorist]
+- [ ] Fix DESIGN.md "pure Robinson" unification claim — DESIGN.md §Unification claims unification is pure Robinson with subtyping handled by [U-SUBSUME]/`check_expr`, but code implements 8 bidirectional literal promotion rules directly in `unify()` (`IntLiteral↔Int`, `IntLiteral↔Number`, `Int↔Number`, `Float↔Number`, `IntLiteral↔Float`, `StringLiteral↔Str`). When `bidirectional-typing` lands, either remove promotions from `unify()` and rely on [SUB]/[U-SUBSUME], or update DESIGN.md to document pragmatic approach as intentional. (`src/types.rs:263-289`, `DESIGN.md`) [Major, type-theorist]
 - [ ] Add comment explaining `IntLiteral(n) ~ Float` literal-specific promotion (`src/types.rs:263`) [Nit, type-theorist]
 - [ ] Fix `TypeEnv::with_parent` taking `Rc` instead of `&Rc` — minor API ergonomics (`src/types.rs:399-405`) [Nit, type-theorist]
 - [ ] Add `Eq` derive to `TypeError` (`src/types.rs:444-448`) [Nit, type-theorist]
@@ -536,7 +554,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add Failed state same-span deduplication test — access Failed thunk twice with same span, verify no duplicate stack frames (`src/eval.rs`) [Minor, test-crafter]
 - [ ] Add Failed state None→Some→Some edge case test — first access with None, then Some(span1), then Some(span2); verifies is_none() path (`src/eval.rs`) [Minor, test-crafter]
 - [ ] Add doc comment to Failed state handler explaining dual-span model conditional update strategy (`src/eval.rs:873-894`) [Nit, span-integrity-checker + eval-engine]
-- [ ] Add formatter error path tests — test `format_source()` returning `Err(LexError)` for unterminated strings, invalid escapes, bare `$` (`src/formatter.rs`) [Critical, test-crafter]
+- [ ] Add formatter error path tests — test `format_source()` returning `Err(LexError)` for unterminated strings, invalid escapes, bare `$`. Zero tests exist for error paths; all 48 formatter tests test successful formatting only. (`src/formatter.rs`) [Critical, test-crafter]
 - [ ] Add Seq deep_materialize cycle corpus test — end-to-end corpus test for `--eval` forcing cyclic Seq structure (unit test exists at `src/eval.rs`, no corpus test) (`tests/corpus/eval/`) [Major, test-crafter + eval-engine]
 - [ ] Add error corpus tests for drop/reduce/join type/arity mismatches — `drop_wrong_type.txt`, `reduce_wrong_type.txt`, `join_wrong_type.txt` (`tests/corpus/eval/errors/`) [Major, test-crafter]
 - [ ] Add unit tests for builtin_drop, builtin_reduce, builtin_join (PendingCall chain construction, thunk state, span propagation) (`src/builtins.rs`) [Major, test-crafter]
@@ -636,5 +654,49 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 
 ### DESIGN.md documentation gaps (eval-engine review)
 
-- [ ] **Letrec key parent scope justification** — document in DESIGN.md why dict keys in letrec evaluation use the parent scope rather than the letrec env (`src/eval.rs`, `DESIGN.md`) [Minor, eval-engine]
+- [ ] **Letrec key parent scope justification** — document in DESIGN.md why dict keys in letrec evaluation use the parent scope rather than the letrec env. Include note that effectful expressions (currently only `$include`) in computed keys execute in parent scope context. (`src/eval.rs:327`, `DESIGN.md`) [Minor, eval-engine]
 - [ ] **Cycle detection recovery strategy** — document in DESIGN.md what happens after InProgress cycle detection fires: thunk state management, error propagation, and whether thunk is left in InProgress or restored (`src/value.rs`, `DESIGN.md`) [Minor, eval-engine]
+- [ ] **deep_materialize visited set semantics** — visited set uses permanent insertion without removal; for 10,000-entry Dicts, HashSet grows and never shrinks. Clarify in DESIGN.md whether visited is scoped per-branch or global (currently global, matching Nix's `forceValueDeep`). (`src/eval.rs:1091-1098`) [Minor, eval-engine]
+- [ ] **Materialization span semantics for PendingCall func error** — when `func_thunk` materialization fails in PendingCall handler, `call_span` is passed as mat_span. Nested errors get call_span instead of inner expression's access site. Consistent with PendingBuiltin, but DESIGN.md §Error Semantics doesn't specify mat_span semantics for nested forcing during thunk state resolution. Clarify in DESIGN.md Part 1. (`src/eval.rs:968`) [Minor, eval-engine]
+
+### parser-docs: Parser Documentation Fixes
+
+Found by computer-scientist codebase review (2026-04-22).
+
+- [ ] Fix `parse_expression` docstring — incorrectly claims scope-chain correspondence; `parse_expression` discards earlier expressions entirely without evaluating them for bindings (`src/parser.rs:68`) [Minor, computer-scientist]
+- [ ] Document `key_to_string` computed key duplicate detection as best-effort — returns None for `DotAccess`, `BracketAccess`, `Call` etc., so `build_dict_entries` silently skips duplicate detection for computed keys. Add code comment noting parse-time detection is literal-keys-only; computed keys checked at eval-time by `eval_dict`. (`src/parser.rs:682-691`) [Minor, computer-scientist]
+
+### builtins-message-polish: Builtin Error Message Polish
+
+Found by computer-scientist codebase review (2026-04-22).
+
+- [ ] Fix `$to-float` error message for NaN/Infinity — says "cannot parse" but value was parsed successfully; issue is policy rejection of non-finite values. Change to `"to-float: \"{s}\" parses to a non-finite value (NaN/Infinity not allowed)"`. (`src/builtins.rs:741-756`) [Minor, computer-scientist]
+- [ ] Add `$eq`/`$<` precision loss warning for integers > 2^53 — `9007199254740993i64 as f64` rounds to `9007199254740992.0`, producing incorrect cross-type equality. Add range check before `as f64` promotion: error if integer abs value > 2^53. Matches Jsonnet approach. Tracked in DESIGN.md §Equality P3 as known property but no runtime guard. (`src/builtins.rs:305-306`) [Minor, computer-scientist]
+
+### misc-nits: Miscellaneous Nits
+
+Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
+
+- [ ] Consider `unreachable!()` in `unescape` unknown escape fallback — currently silently preserves `\q` as `\q`; grammar enforces valid escapes, so branch is dead code. `unreachable!()` would catch grammar-parser inconsistencies during development. (`src/parser.rs:903-906`) [Nit, computer-scientist]
+- [ ] Add `checked_add` to `auto_index` in `eval_dict` for consistency — `builtin_append` uses `checked_add` for same kind of integer key computation; `auto_index += 1` is unchecked. Overflow is unreachable (memory exhaustion first) but inconsistent. (`src/eval.rs:331`) [Nit, computer-scientist]
+- [ ] Rename `zip-seq`/`zip-dict` to `zip-seq-impl`/`zip-dict-impl` — inconsistent with other internal helpers which use `-impl` suffix (`has?-impl`, `cond-impl`, `nth-impl`, etc.) (`stdlib/prelude.llt:410,417`) [Nit, stdlib-author]
+- [ ] Move `join` from Rust builtin to LLT stdlib — implementable as one-line reduce: `[fn [sep xs] [call $reduce [fn [acc x] [call $if [call $= $acc ""] [call $str $x] [call $str $acc $sep $x]]] "" $xs]]`. LLT-First Principle violation; 71 lines of Rust for what 1 line of LLT handles. Defer to Phase 10 (after dual-dispatch reduce complete). (`src/builtins.rs:1823-1894`, `stdlib/prelude.llt`) [Major, stdlib-author]
+
+## Future Features
+
+Deferred features moved from DESIGN.md. Evaluate when triggered.
+
+- [ ] Research pattern matching — type dispatch, destructuring, exhaustiveness. Biggest enabler for self-hosting more Rust builtins. See `doc/whatif/pattern-matching.md`
+- [ ] Research parameterized type aliases — `Mapper: [type [a b] [Fn@b [a]]]`. Deferred until variable name collision becomes a real problem. Textual expansion is sufficient for now
+- [ ] Research `let` binding form — non-recursive local bindings. Dict entries (letrec) cover all current needs. Add `let` if non-recursive scoping is needed later
+- [ ] Research quasiquoting — AST-as-data representation. Prerequisite for procedural macros if ever adopted. See `doc/whatif/macros.md`
+- [ ] Research custom call aliases — users can already define wrappers; no built-in alias for `call` needed yet
+- [ ] Research gradual typing — formalization of `Any` semantics (Phase 2 type roadmap), full consistency relation + blame tracking (Phase 3). Gated on `Any`-as-top-and-bottom causing a real soundness bug. See `doc/whatif/gradual-typing.md`
+- [ ] Research `list?` vs `dict?` predicates — since lists are dicts, need to decide if/how to distinguish at runtime. `$seq?` and `$type-of` exist. Probably shouldn't add more
+- [ ] Research string interpolation — `"Hello $name"` in double-quoted strings. Deferred because `$str`/`$words` cover the need. `$` sigils make future interpolation natural
+- [ ] Research float dict keys — precision issues (`0.1 + 0.2 ≠ 0.3`) and NaN incomparability. Integer and string keys cover all current needs
+- [ ] Research width-specific numeric types — `Int32`, `Int64`, `Float32`, `Decimal`, etc. Range constraints on `Int`/`Float`, implementable via contracts system. `Decimal` would need a new Value variant
+- [ ] Research typeclasses — ad-hoc polymorphism for extensible numeric operations, generic serialization, custom equality/ordering. Phase 3 type roadmap, gated on user-defined types needing protocol participation. See `doc/whatif/typeclasses.md`
+- [ ] Research union types — `Int | Str`, nullable types, precise dual-dispatch typing. Three-phase path: type classes → annotation-only unions → inferred unions via Simple-sub. See `doc/whatif/union-types.md`
+- [ ] Research algebraic subtyping — Simple-sub (Parreaux 2020) constraint-solving replacement for [U-SUBSUME] + Robinson unification. Enables inferred union/intersection types. See `doc/whatif/algebraic-subtypes.md`
+- [ ] Research macros — unifying desugaring under a macro system. Laziness reduces need; recommended to defer until module system exists. See `doc/whatif/macros.md`

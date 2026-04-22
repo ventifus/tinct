@@ -300,17 +300,7 @@ conj: [fn [xs x] [call $append $xs $x]]
 # Concatenate two collections.
 # If xs is Seq: lazily chain xs and ys (O(1) initial, O(n) on materialization).
 # If xs is Dict: eagerly append all elements from ys (O(m) where m = length(ys)).
-concat: [fn [xs ys]
-    [call $if [call $seq? $xs]
-        [call $seq [call $head $xs] [call $concat [call $tail $xs] $ys]]
-        [call $if [call $empty? $xs]
-            $ys
-            [call $concat-impl $xs $ys 0 [call $length $ys]]]]]
-
-concat-impl: [fn [acc ys i len]
-    [call $if [call $>= $i $len]
-        $acc
-        [call $concat-impl [call $append $acc $ys[$i]] $ys [call $+ $i 1] $len]]]
+# Now implemented as Rust builtin for better performance and depth limit handling.
 
 # Reverse a list. Inherently materializing: must know all entries to reverse.
 reverse: [fn [xs] [call $reverse-impl $xs [call $- [call $length $xs] 1] []]]

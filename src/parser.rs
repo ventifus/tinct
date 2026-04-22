@@ -2498,7 +2498,9 @@ mod tests {
     fn test_mixed_positional_and_named_in_call() {
         let ast = parse_ok("[call $f key: 1 $x]");
         match &ast.node {
-            Expr::Call { args, named_args, .. } => {
+            Expr::Call {
+                args, named_args, ..
+            } => {
                 assert_eq!(args.len(), 1);
                 assert_eq!(named_args.len(), 1);
             }

@@ -327,29 +327,76 @@ typeclasses + row polymorphism.
 
 ## Recommendation
 
-**Don't adopt now.** tinct has no user-defined types, so the only types
-participating in protocols (Eq, Ord, Num) are built-in. The hardcoded
-promotion table and runtime dispatch table cover all current needs. Type
-classes add significant infrastructure for a problem that doesn't exist yet.
+**Two-phase adoption: constrained type variables, then full type classes.**
 
-**Immediate value:** Add `$deep-eq` and `$shallow-eq` as builtins typed
-`Any → Any → Bool`. This solves the practical need (comparing config dicts)
-without type system changes. Key-set equality semantics (order-independent).
+### Phase 1: Constrained Type Variables (Elm-style)
 
-**Revisit when:**
-- User-defined types are added and need to participate in equality,
-  comparison, or arithmetic protocols
-- The `Any` typing for dual-dispatch builtins causes real false positives
-  (a program type-checks but fails at runtime due to calling `$map` on
-  a non-mappable type)
+Start with Alternative 3 — a fixed set of built-in constraints with no
+user-extensible class declarations:
+
+```
+comparable : types that support $=, $<  (Int, Float, Str)
+number     : types that support $+, $- (Int, Float)
+appendable : types that support $++    (Str, Seq, Dict)
+mappable   : types that support $map   (Dict, Seq)
+```
+
+This replaces `Any` typing on overloaded builtins with constrained
+signatures:
+
+```
+$= : comparable → comparable → Bool   (was: Any → Any → Bool)
+$+ : number → number → number         (was: Any → Any → Any)
+$map : (a → b) → mappable a → mappable b  (was: Any)
+```
+
+Implementation: add `Vec<Constraint>` to `TypeScheme`. During inference,
+using `$=` on a type variable `α` records `Comparable α`. During
+let-generalization, constraints on generalized variables become part of
+the scheme. During instantiation, constraints are checked against the
+fixed instance sets. No class declarations, no dictionary passing, no
+instance resolution.
+
+**Immediate value (pre-typeclass):** Add `$deep-eq` and `$shallow-eq` as
+builtins typed `Any → Any → Bool`. This solves the practical need
+(comparing config dicts) without type system changes. Key-set equality
+semantics (order-independent). When Phase 1 lands, `$deep-eq` gains
+constrained typing.
+
+### Phase 2: Full Type Classes (Haskell-style)
+
+Evolve to Alternative 1 when extensibility is needed. The Phase 1
+constraints become type classes with fixed instance sets — this is
+forward-compatible by design. Phase 2 adds:
+
+- Class declarations with method signatures
+- Instance declarations (initially only for built-in types)
+- Superclass hierarchy (Ord implies Eq)
+- Dictionary passing at runtime
+
+Phase 2 is gated on user-defined types or structural contracts needing
+type-level protocol validation.
+
+### Prerequisites
+
+- `let-generalization` complete (constraints propagate through type schemes)
+- `builtin-type-signatures` complete (constrained builtins need signatures
+  to check against)
+- `$deep-eq` / `$shallow-eq` builtins (immediate value, no type system
+  changes)
+
+### Trigger
+
+Phase 1 should begin when:
+- `Any` typing for dual-dispatch builtins causes a real false positive
+- Dual-dispatch builtins need precise static checking
+- The type system needs to distinguish "supports equality" from "any type"
+
+Phase 2 should follow when:
+- User-defined types need to participate in equality, comparison, or
+  arithmetic protocols
 - Structural contracts need type-level validation (e.g., "this record
   implements the Serializable protocol")
-
-**If we do adopt,** start with Alternative 3 (constrained type variables)
-for a minimal implementation, then evolve to Alternative 1 (full type
-classes) if extensibility is needed. Alternative 3 can be made
-forward-compatible with full type classes by treating the built-in
-constraints as type classes with fixed instance sets.
 
 ## References
 

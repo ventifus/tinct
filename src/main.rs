@@ -8,8 +8,8 @@ use std::process;
 use std::rc::Rc;
 use tinct::{
     clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
-    format_source, json_to_value, materialize, parse, set_include_context,
-    value_to_display_string, value_to_json, IncludeContext, Span, Thunk, MAX_FILE_SIZE,
+    format_source, json_to_value, materialize, parse, set_include_context, value_to_display_string,
+    value_to_json, IncludeContext, Span, Thunk, MAX_FILE_SIZE,
 };
 
 const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
