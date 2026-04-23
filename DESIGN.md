@@ -1386,8 +1386,8 @@ An **access chain** is a sequence of projections applied left-to-right to a targ
 **Chains.** An access chain `C = π₁ · π₂ · ... · πₙ` applied to target expression `t` evaluates as left-to-right composition:
 
 ```
-eval_chain(t, [], ρ, d) = eval(t, ρ, d)                          (empty chain)
-eval_chain(t, [π₁, ...πₙ], ρ, d) = eval_chain(apply(π₁, t, ρ, d), [π₂, ...πₙ], ρ, d)
+eval_chain(t, [], ρ, Σ, d) = eval(t, ρ, Σ, d)                          (empty chain)
+eval_chain(t, [π₁, ...πₙ], ρ, Σ, d) = eval_chain(apply(π₁, t, ρ, Σ, d), [π₂, ...πₙ], ρ, Σ, d)
 ```
 
 **Parser correspondence:** The parser produces nested AST nodes for chains. `$a.b[0].c` parses as:
@@ -1409,11 +1409,11 @@ Each projection forces its target to a `Dict`, then extracts by key. All three r
 **[FORCE-DICT]** — Common target forcing
 
 ```
-θ_target = eval(target, ρ, d+1)
-v = force(θ_target, d+1)                    (inherent materialization — must know dict structure)
+θ_target = eval(target, ρ, Σ, d+1)
+v = force(θ_target, Σ, d+1)                 (inherent materialization — must know dict structure)
 v = Dict(map)                               (target must be Dict; type error otherwise)
 ────────────────────────────────────────────
-force_dict(target, ρ, d) ⇒ map
+force_dict(target, ρ, Σ, d) ⇒ map
 ```
 
 If `v` is not a `Dict`, evaluation fails with `type_mismatch("Dict", v.type_name(), span)`. This is inherent materialization (§Selective Materialization) — the dict structure must be known to perform key lookup. FORCE-DICT is a composite rule combining `eval`, `force`, and pattern match — it is not a primitive judgment of the Thunk Lifecycle. All three projection rules below conclude with `⇒ Rc<Thunk>` — ACCESS-DOT and ACCESS-BRACKET return an alias to an existing thunk in the dict, while ACCESS-RANGE wraps its result in a fresh `Materialized` thunk.
@@ -1421,11 +1421,11 @@ If `v` is not a `Dict`, evaluation fails with `type_mismatch("Dict", v.type_name
 **[ACCESS-DOT]** — Dot access: `$target.field`
 
 ```
-map = force_dict(target, ρ, d)
+map = force_dict(target, ρ, Σ, d)
 key = String(field)                          (field is a literal string from the AST)
 map[key] = θ                                 (look up key; error if absent)
 ────────────────────────────────────────────
-eval_dot(target, field, ρ, d) ⇒ θ
+eval_dot(target, field, ρ, Σ, d) ⇒ θ
 ```
 
 Error case: if `key ∉ dom(map)`, error `key_not_found(field, span)`. No default — missing keys are always errors (§No Null — Missing Keys Are Errors).
@@ -1433,11 +1433,11 @@ Error case: if `key ∉ dom(map)`, error `key_not_found(field, span)`. No defaul
 **[ACCESS-BRACKET]** — Bracket access: `$target[key_expr]`
 
 ```
-map = force_dict(target, ρ, d)
-key = eval_key(key_expr, ρ, d)              (evaluate key expression to String or Int)
+map = force_dict(target, ρ, Σ, d)
+key = eval_key(key_expr, ρ, Σ, d)           (evaluate key expression to String or Int)
 map[key] = θ                                 (look up key; error if absent)
 ────────────────────────────────────────────
-eval_bracket(target, key_expr, ρ, d) ⇒ θ
+eval_bracket(target, key_expr, ρ, Σ, d) ⇒ θ
 ```
 
 `eval_key` evaluates the key expression and materializes it to obtain a concrete `String` or `Int` key. This is the same `eval_key` used by DICT-SCOPE (§Scope Chain Semantics) — key evaluation is shared infrastructure.
@@ -1447,15 +1447,15 @@ Error case: if `key ∉ dom(map)`, error `key_not_found(key, span)`.
 **[ACCESS-RANGE]** — Range access: `$target[start..end]`
 
 ```
-map = force_dict(target, ρ, d)
-s = start.map(|e| eval_key(e, ρ, d))        (optional start bound, evaluated)
-e = end.map(|e| eval_key(e, ρ, d))          (optional end bound, evaluated)
+map = force_dict(target, ρ, Σ, d)
+s = start.map(|e| eval_key(e, ρ, Σ, d))     (optional start bound, evaluated)
+e = end.map(|e| eval_key(e, ρ, Σ, d))       (optional end bound, evaluated)
 
 result = {}
 ∀(k, θ) ∈ map (in insertion order):
   key_in_range(k, s, e) ⟹ result[k] ← θ   (include matching entries)
 ────────────────────────────────────────────
-eval_range(target, start, end, ρ, d) ⇒ Materialized(Dict(result))
+eval_range(target, start, end, ρ, Σ, d) ⇒ Materialized(Dict(result))
 ```
 
 **Range semantics:** Half-open interval `[start, end)` — start inclusive, end exclusive. When `start` is `None`, all keys from the beginning are included. When `end` is `None`, all keys to the end are included. When both are `None` (`$data[..]`), all entries are included (identity slice).
@@ -1496,7 +1496,7 @@ Five properties that hold for all access chains.
 
 *Statement:* Each projection in a chain invokes FORCE-DICT exactly once. In a chain `π₁ · π₂ · ... · πₙ`, FORCE-DICT is invoked `n` times — once per step. FORCE-DICT evaluates and forces the target — if the target thunk is already `Materialized`, forcing is a cache hit (FORCE-CACHED from §Thunk Lifecycle).
 
-*Proof sketch:* By induction on chain length. Each `apply(πᵢ, ...)` invokes FORCE-DICT, which calls `force(θ, d+1)`. The result of step `i` becomes the target of step `i+1`. No step forces the target of a different step. ∎
+*Proof sketch:* By induction on chain length. Each `apply(πᵢ, ...)` invokes FORCE-DICT, which calls `force(θ, Σ, d+1)`. The result of step `i` becomes the target of step `i+1`. No step forces the target of a different step. ∎
 
 **Property 2: Result Laziness**
 
@@ -1508,11 +1508,11 @@ Five properties that hold for all access chains.
 
 *Statement:* If projection `πᵢ` in a chain fails, projections `πᵢ₊₁, ..., πₙ` are never evaluated.
 
-*Proof sketch:* By the chain recurrence, `eval_chain(t, [π₁, ...πₙ], ρ, d)` first computes `apply(π₁, t, ρ, d)`. If this returns an error, the recurrence has no value to pass to the next step, so the chain terminates with that error. By induction, no subsequent projection is evaluated. ∎
+*Proof sketch:* By the chain recurrence, `eval_chain(t, [π₁, ...πₙ], ρ, Σ, d)` first computes `apply(π₁, t, ρ, Σ, d)`. If this returns an error, the recurrence has no value to pass to the next step, so the chain terminates with that error. By induction, no subsequent projection is evaluated. ∎
 
 **Property 4: Depth Consumption**
 
-*Statement:* A chain of length `n` consumes `n` depth levels — each FORCE-DICT invocation increments depth by 1 (via `eval(target, ρ, d+1)` and `force(θ, d+1)` in `eval_as_dict`).
+*Statement:* A chain of length `n` consumes `n` depth levels — each FORCE-DICT invocation increments depth by 1 (via `eval(target, ρ, Σ, d+1)` and `force(θ, Σ, d+1)` in `eval_as_dict`).
 
 *Proof sketch:* By inspection of FORCE-DICT, which passes `d+1` to both `eval` and `force`. Each chain step invokes FORCE-DICT once (Property 1), so `n` steps consume `n` depth levels. For `MAX_EVAL_DEPTH = 256` and typical chain lengths (1–5), this is negligible. After the CEK migration removes MAX_EVAL_DEPTH, this property becomes moot. ∎
 
@@ -2238,13 +2238,26 @@ Formalizes the two scoping mechanisms described above (letrec within dicts, sequ
     | (B, Some(ρ_parent))  — child environment
 ```
 
-**Thunks.** Thunks follow the lifecycle specified in §Thunk Lifecycle — Formal Specification. For scoping purposes, the relevant states are `Unevaluated(expr, ρ_capture)` (closes over an environment) and `Materialized(v)` (holds a value). The `ρ_capture` in an unevaluated thunk is the environment in which the expression will be evaluated — this is how letrec mutual visibility works: all entries in a dict capture the same shared `ρ_dict`.
+**Thunks.** Thunks follow the lifecycle specified in §Thunk Lifecycle — Formal Specification. For scoping purposes, the relevant states are `Unevaluated(expr, ρ_capture, Σ)` (closes over an environment and EvalContext) and `Materialized(v)` (holds a value). The `ρ_capture` in an unevaluated thunk is the environment in which the expression will be evaluated — this is how letrec mutual visibility works: all entries in a dict capture the same shared `ρ_dict`. The `Σ` captured in the thunk ensures that deferred evaluation uses the allocation-time EvalContext (see EvalContext definition above).
 
 **Keys.** Dict entries have keys `k ∈ Key = String(s) | Int(n)`. Only `String` keys produce scope bindings; `Int` keys are positional and do not enter any environment.
 
 **Document pipeline variable.** The variable written `$$` in tinct source code appears as `$` in formal notation — `$` is the actual identifier name per the lexer rules. `$$` is syntactic sugar for `VarRef("$")`.
 
-**Notation conventions.** `ρ(x)` denotes lookup of name `x` in environment `ρ` (defined formally in Part 3). `ρ[x ↦ θ]` denotes extending `ρ`'s bindings with `x` bound to thunk `θ`. `dom(ρ)` is the set of names bound directly in `ρ` (not including parent bindings). `eval(e, ρ, d)` is the evaluation judgment from §Thunk Lifecycle. The rules below use an implementation-oriented notation mixing imperative state updates (`ρ.B[s] ← θ`) with declarative judgments, following the same convention as §Thunk Lifecycle — Formal Specification Part 2.
+**EvalContext (Σ).** All evaluation judgments thread an EvalContext `Σ`, which packages session-level infrastructure distinct from the variable environment `ρ`:
+
+```
+Σ = (config, state)  where
+  config : EvalConfig  = { base_dir: Path, stdlib_env: ρ }     — immutable per session
+  state  : EvalState   = { include_guard: Set<Path>,            — mutable, shared across
+                           include_cache: Map<Path, Rc<Thunk>> }   nested includes
+```
+
+`config` holds the filesystem root for relative path resolution and the stdlib environment for included files. `state` holds the include guard set (cycle detection) and include cache (memoization), both shared across nested `$include` calls. The `$include` formal specification (§Document Pipeline and $include) defines `Σ`'s mutations; other evaluation rules thread `Σ` without modifying it.
+
+**Thunks capture `Σ`.** `Unevaluated(expr, ρ, Σ)` stores the EvalContext at thunk creation time. This is load-bearing for `$include`: when a thunk created in file A is later forced in file B's evaluation context, the thunk must resolve paths and check the include guard relative to A's context (the allocation-time context), not B's. This parallels Launchbury's (1993) treatment of environments — thunks close over their allocation-time state.
+
+**Notation conventions.** `ρ(x)` denotes lookup of name `x` in environment `ρ` (defined formally in Part 3). `ρ[x ↦ θ]` denotes extending `ρ`'s bindings with `x` bound to thunk `θ`. `dom(ρ)` is the set of names bound directly in `ρ` (not including parent bindings). `eval(e, ρ, Σ, d)` is the evaluation judgment from §Thunk Lifecycle. The rules below use an implementation-oriented notation mixing imperative state updates (`ρ.B[s] ← θ`) with declarative judgments, following the same convention as §Thunk Lifecycle — Formal Specification Part 2.
 
 ##### Part 2: Environment Construction Rules
 
@@ -2257,27 +2270,27 @@ entries = [(k₁, e₁), ..., (kₙ, eₙ)]       (dict entries, keys + value ex
 ρ_dict = ({}, Some(ρ_parent))               (fresh child env linked to parent)
 
 ∀i ∈ 1..n:
-  kᵢ = eval_key(key_exprᵢ, ρ_parent, d)    (keys evaluated in PARENT scope)
-  θᵢ = Unevaluated(eᵢ, ρ_dict)             (values close over SHARED dict env)
+  kᵢ = eval_key(key_exprᵢ, ρ_parent, Σ, d) (keys evaluated in PARENT scope)
+  θᵢ = Unevaluated(eᵢ, ρ_dict, Σ)          (values close over SHARED dict env + context)
   kᵢ = String(sᵢ) ⟹ ρ_dict.B[sᵢ] ← θᵢ    (string keys become bindings)
   kᵢ = Int(_)     ⟹ no binding             (int keys are positional only)
 
 ∀i ≠ j: kᵢ ≠ kⱼ                             (duplicate keys are errors)
 ────────────────────────────────────────────
-eval_dict(entries, ρ_parent, d) ⇒ Dict([(k₁,θ₁), ..., (kₙ,θₙ)])
+eval_dict(entries, ρ_parent, Σ, d) ⇒ Dict([(k₁,θ₁), ..., (kₙ,θₙ)])
 ```
 
 When `entries = []` (empty dict), the quantifications over `i ∈ 1..n` are vacuous, and the rule produces `Dict([])` with `ρ_dict` containing no bindings.
 
 The `∀i` is processed sequentially (source order). Bindings are inserted incrementally, so entry `i+1`'s thunk is created after entry `i`'s binding exists in `ρ_dict`. However, because no thunk is forced during construction (all remain `Unevaluated` — see construction-time non-forcing invariant below), the final state of `ρ_dict` is independent of insertion order, and the sequential semantics is observationally equivalent to simultaneous binding.
 
-**Construction-time non-forcing invariant:** No thunk in `ρ_dict` is forced during the execution of the DICT-SCOPE `∀i` loop. `Thunk::new_unevaluated` creates thunks without forcing them, and `eval_key` evaluates in `ρ_parent` (not `ρ_dict`), so key evaluation cannot trigger forcing of sibling value thunks. Therefore, by the time any thunk is subsequently forced, `ρ_dict.B` contains all string-keyed bindings. This is the analogue of Launchbury's (1993) heap allocation step, which adds all letrec bindings before evaluating the body.
+**Construction-time non-forcing invariant:** No thunk in `ρ_dict` is forced during the execution of the DICT-SCOPE `∀i` loop. `Thunk::new_unevaluated` creates thunks (capturing `Σ`) without forcing them, and `eval_key` evaluates in `ρ_parent` (not `ρ_dict`), so key evaluation cannot trigger forcing of sibling value thunks. Therefore, by the time any thunk is subsequently forced, `ρ_dict.B` contains all string-keyed bindings. This is the analogue of Launchbury's (1993) heap allocation step, which adds all letrec bindings before evaluating the body.
 
 **Key isolation invariant:** Key expressions evaluate in `ρ_parent`, not `ρ_dict`. This prevents key computation from depending on sibling values that are unevaluated thunks, ensuring key evaluation is deterministic regardless of entry order. Without this invariant, `[x: 1  [call $x]: 2]` would cause the key expression `[call $x]` to reference `x` from `ρ_dict`, creating a dependency on the sibling entry `x: 1` (an unevaluated thunk), which breaks key evaluation determinism. Key evaluation itself requires materialization of the key expression's result (to obtain a concrete `String` or `Int` key) — this is inherent materialization in the sense of §Selective Materialization, since the key's identity must be known to populate `dict_map`.
 
 **Computed keys cannot reference sibling entries.** Because keys evaluate in `ρ_parent`, a computed key like `$k` in `[k: hello  $k: 42]` resolves `k` via `ρ_parent`, not the dict's own letrec scope `ρ_dict`. If `k` is not bound in any enclosing scope, this is an unbound-variable error. This is intentional: allowing computed keys to see the dict's own bindings would create order-dependent key evaluation (the key at position 2 depends on the binding at position 1, which hasn't been evaluated yet during key computation). The key isolation invariant is strict — no exceptions for "earlier" entries.
 
-**Letrec sharing invariant:** All value thunks `θᵢ` capture `ρ_dict` — the same mutable environment. When any `θᵢ` is forced, it evaluates in `ρ_dict`, which by then contains bindings for all string-keyed siblings (guaranteed by the construction-time non-forcing invariant). This is the mechanism behind mutual recursion: `even?` and `odd?` both capture the same `ρ_dict` and can reference each other through it.
+**Letrec sharing invariant:** All value thunks `θᵢ` capture `ρ_dict` and `Σ` — the same mutable environment and EvalContext. When any `θᵢ` is forced, it evaluates in `ρ_dict`, which by then contains bindings for all string-keyed siblings (guaranteed by the construction-time non-forcing invariant). This is the mechanism behind mutual recursion: `even?` and `odd?` both capture the same `ρ_dict` and can reference each other through it.
 
 **Referential integrity:** For any string-keyed entry `sᵢ ↦ θᵢ`, the thunk accessible via `lookup(sᵢ, ρ_dict)` (scope chain) and via `dict_map[String(sᵢ)]` (dict field access) is the same `Rc<Thunk>` identity (`eval.rs:348-353` uses `Rc::clone`). Forcing either access path memoizes the result for both — there is no divergence between `$x` within a dict and `.x` access on the dict from outside.
 
@@ -2287,27 +2300,27 @@ The `∀i` is processed sequentially (source order). Bindings are inserted incre
 Base case:
   exprs = []                                   (empty document)
   ────────────────────────────────────────────
-  eval_document([], ρ_input, d) ⇒ Materialized(Dict([]))
+  eval_document([], ρ_input, Σ, d) ⇒ Materialized(Dict([]))
 
 Recursive case:
   exprs = [e₁, ..., eₙ]                       (document expressions, n ≥ 1)
   ρ₀ = ρ_input                                (initial scope — typically builtins + $$)
 
   ∀i ∈ 1..n-1:                                (intermediate expressions)
-    θᵢ = eval(eᵢ, ρᵢ₋₁, d)
-    vᵢ = force(θᵢ, d)                         (intermediate results are materialized)
+    θᵢ = eval(eᵢ, ρᵢ₋₁, Σ, d)
+    vᵢ = force(θᵢ, Σ, d)                      (intermediate results are materialized)
     vᵢ = Dict(mapᵢ)                           (intermediate must be Dict — type error otherwise)
     ρᵢ = ({}, Some(ρᵢ₋₁))                    (fresh child env linked to prior scope)
     ∀(k, θ) ∈ mapᵢ:
       k = String(s) ⟹ ρᵢ.B[s] ← θ           (string keys become bindings)
       k = Int(_)    ⟹ no binding              (int keys are positional only)
 
-  θₙ = eval(eₙ, ρₙ₋₁, d)                     (last expression: lazy, any type)
+  θₙ = eval(eₙ, ρₙ₋₁, Σ, d)                  (last expression: lazy, any type)
   ────────────────────────────────────────────
-  eval_document(exprs, ρ_input, d) ⇒ θₙ
+  eval_document(exprs, ρ_input, Σ, d) ⇒ θₙ
 ```
 
-When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_document([e₁], ρ_input, d) ⇒ eval(e₁, ρ_input, d)` — a single expression is evaluated lazily with no scope chain construction.
+When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_document([e₁], ρ_input, Σ, d) ⇒ eval(e₁, ρ_input, Σ, d)` — a single expression is evaluated lazily with no scope chain construction.
 
 **Intermediate materialization:** Expressions `e₁..eₙ₋₁` are forced to extract their dict bindings into the scope chain. This is inherent materialization — the scope chain construction itself requires knowing the dict's keys to create named bindings. Note that the thunks `θ` extracted from `mapᵢ` are inserted into `ρᵢ` *without further materialization* — only the dict structure is forced, not the individual entry values. Those values remain lazy and are forced only when accessed via `$name` in subsequent expressions. The last expression `eₙ` is returned as a lazy thunk, preserving tinct's call-by-need semantics.
 
@@ -2323,13 +2336,13 @@ d = depth                                    (evaluation depth; 0 at top-level)
 
 ∀j ∈ 1..m:
   ρ_docⱼ = ({$ ↦ θⱼ₋₁}, Some(ρ_base))     (fresh scope with only $$ bound)
-  θⱼ = eval_document(docⱼ.exprs, ρ_docⱼ, d)
+  θⱼ = eval_document(docⱼ.exprs, ρ_docⱼ, Σ, d)
 
 ────────────────────────────────────────────
-eval_file(documents, ρ_base, input_thunk, d) ⇒ θₘ
+eval_file(documents, ρ_base, Σ, input_thunk, d) ⇒ θₘ
 ```
 
-The binding name is `$`; the user-facing syntax `$$` desugars to `VarRef("$")` (see Part 1). At top-level invocation `d = 0`, but when called from `$include` (`builtins.rs:1126`), `d = depth + 1`, propagating the depth counter into nested file evaluation.
+The binding name is `$`; the user-facing syntax `$$` desugars to `VarRef("$")` (see Part 1). At top-level invocation `d = 0`, but when called from `$include` (`builtins.rs:1126`), `d = depth + 1`, propagating the depth counter into nested file evaluation. `Σ` is threaded unchanged through document boundaries — the include guard and cache are shared across all documents in a file.
 
 Documents are totally isolated — `ρ_docⱼ` inherits only from `ρ_base` (builtins), not from prior documents' scope chains. Data flows exclusively through `$$` (`θⱼ₋₁`). This is the `let*` analog at the document level, but with no shared scope between documents.
 
@@ -2366,7 +2379,7 @@ Five properties that hold for all well-formed tinct programs. Each property foll
 
 *Statement:* For a dict constructed by DICT-SCOPE with entries `{s₁, ..., sₙ}` (string keys), forcing any thunk `θᵢ` can resolve `$sⱼ` for all `j ∈ 1..n`, including `j = i`.
 
-*Proof sketch:* By DICT-SCOPE, all `θᵢ = Unevaluated(eᵢ, ρ_dict)`. By the construction-time non-forcing invariant, no thunk is forced during DICT-SCOPE construction, so by the time any `θᵢ` is subsequently forced, `ρ_dict.B` contains `{s₁ ↦ θ₁, ..., sₙ ↦ θₙ}` — all string-keyed bindings are present. When `θᵢ` is forced, `eval(eᵢ, ρ_dict, d)` has access to `ρ_dict`, and `lookup(sⱼ, ρ_dict)` succeeds via LOOKUP clause (1) for any `j`. Self-reference (`i = j`) is valid because forcing `θᵢ` transitions it to `InProgress` — a subsequent self-reference triggers FORCE-CYCLE (§Thunk Lifecycle), producing a cycle error rather than diverging. Mutual reference (`i ≠ j`) succeeds provided `θⱼ` is not already `InProgress` (no transitive cycle). This matches Nakata & Hasegawa's (2009) operational treatment of cyclic call-by-need: the `InProgress` state acts as a blackhole, ensuring termination for all reference patterns. ∎
+*Proof sketch:* By DICT-SCOPE, all `θᵢ = Unevaluated(eᵢ, ρ_dict, Σ)`. By the construction-time non-forcing invariant, no thunk is forced during DICT-SCOPE construction, so by the time any `θᵢ` is subsequently forced, `ρ_dict.B` contains `{s₁ ↦ θ₁, ..., sₙ ↦ θₙ}` — all string-keyed bindings are present. When `θᵢ` is forced, `eval(eᵢ, ρ_dict, Σ, d)` has access to `ρ_dict`, and `lookup(sⱼ, ρ_dict)` succeeds via LOOKUP clause (1) for any `j`. Self-reference (`i = j`) is valid because forcing `θᵢ` transitions it to `InProgress` — a subsequent self-reference triggers FORCE-CYCLE (§Thunk Lifecycle), producing a cycle error rather than diverging. Mutual reference (`i ≠ j`) succeeds provided `θⱼ` is not already `InProgress` (no transitive cycle). This matches Nakata & Hasegawa's (2009) operational treatment of cyclic call-by-need: the `InProgress` state acts as a blackhole, ensuring termination for all reference patterns. ∎
 
 **Property 3: Heap Monotonicity**
 
@@ -2384,11 +2397,11 @@ Five properties that hold for all well-formed tinct programs. Each property foll
 
 **Property 5: Determinism**
 
-*Statement:* For the pure subset of tinct (no I/O builtins such as `$include`), `eval_document(exprs, ρ, d)` produces the same result thunk for the same input tuple `(exprs, ρ, d)`, and `lookup(x, ρ)` returns the same thunk for the same name and environment.
+*Statement:* For the pure subset of tinct (no I/O builtins such as `$include`), `eval_document(exprs, ρ, Σ, d)` produces the same result thunk for the same input tuple `(exprs, ρ, Σ, d)`, and `lookup(x, ρ)` returns the same thunk for the same name and environment.
 
 *Proof sketch:* LOOKUP is deterministic by construction — it is a linear scan of a fixed chain with a deterministic stopping condition (first match or `None`). DICT-SCOPE processes entries in source order; key evaluation in `ρ_parent` is deterministic by induction (keys are expressions evaluated in an already-determined environment); duplicate detection is deterministic (insertion-order `IndexMap`). SEQ-SCOPE processes expressions in source order, materializing each intermediate result deterministically. The only potential source of non-determinism — letrec evaluation order — is resolved by lazy evaluation: thunks are created in source order but forced on demand, and Ariola & Felleisen's (1997) confluence theorem (for the storeless calculus, transferred to tinct's heap model via Launchbury's (1993) adequacy result) guarantees that the order of forcing does not affect the final value in the pure call-by-need calculus. Non-determinism enters only through `$include` (file system I/O), which is outside the pure subset. ∎
 
-**Depth and FORCE-DEPTH:** Determinism holds for the full input tuple `(exprs, ρ, d)` — depth `d` is part of the input, not ambient context. The same thunk may produce different results when forced at different depths (FORCE-DEPTH is the only forcing rule that does not transition thunk state — see Semantic Commitment 3 in §Thunk Lifecycle). This is not non-determinism but context-sensitivity: `eval_document` with a fixed `d` is a deterministic function. After the CEK migration removes MAX_EVAL_DEPTH, this caveat becomes moot.
+**Depth and FORCE-DEPTH:** Determinism holds for the full input tuple `(exprs, ρ, Σ, d)` — depth `d` is part of the input, not ambient context. The same thunk may produce different results when forced at different depths (FORCE-DEPTH is the only forcing rule that does not transition thunk state — see Semantic Commitment 3 in §Thunk Lifecycle). This is not non-determinism but context-sensitivity: `eval_document` with a fixed `d` is a deterministic function. After the CEK migration removes MAX_EVAL_DEPTH, this caveat becomes moot.
 
 ##### Part 5: Implementation Correspondence
 
@@ -2400,12 +2413,12 @@ The formal rules map directly to the implementation:
 | SEQ-SCOPE | `eval_document()` | `eval.rs:199-249` |
 | DOC-PIPELINE | `eval_file_with_input()` | `eval.rs:281-307` |
 | LOOKUP | `Environment::get()` | `value.rs:445-460` |
-| Key isolation | `eval_key(key_expr, parent_env, d)` | `eval.rs:327` |
+| Key isolation | `eval_key(key_expr, parent_env, Σ, d)` | `eval.rs:327` |
 | String-key filter | `if let Key::String(name) = key` | `eval.rs:234, 347` |
-| Letrec sharing | `Thunk::new_unevaluated(expr, dict_env)` | `eval.rs:340-344` |
+| Letrec sharing | `Thunk::new_unevaluated(expr, dict_env, ctx)` | `eval.rs:340-344` |
 | Cycle detection | `InProgress` → FORCE-CYCLE | §Thunk Lifecycle — Formal Specification, Part 2: Forcing Rules |
 
-**Deviations from Launchbury (1993):** Launchbury's original semantics threads an explicit heap `Γ` through all judgments: `Γ : e ⇓ Γ' : v`. tinct uses mutable `Rc<RefCell<Environment>>` instead of an explicit heap, which is operationally equivalent but obscures heap threading in the formal presentation. The correspondence is: Launchbury's `Γ[x ↦ e]` = tinct's `env.borrow_mut().insert(x, thunk)`, and Launchbury's `Γ(x)` = tinct's `env.borrow().bindings.get(x)`. The mutable cell model is standard in implementations (GHC uses a similar approach via `IORef` for thunk update).
+**Deviations from Launchbury (1993):** Launchbury's original semantics threads an explicit heap `Γ` through all judgments: `Γ : e ⇓ Γ' : v`. tinct uses mutable `Rc<RefCell<Environment>>` instead of an explicit heap, which is operationally equivalent but obscures heap threading in the formal presentation. The correspondence is: Launchbury's `Γ[x ↦ e]` = tinct's `env.borrow_mut().insert(x, thunk)`, and Launchbury's `Γ(x)` = tinct's `env.borrow().bindings.get(x)`. The mutable cell model is standard in implementations (GHC uses a similar approach via `IORef` for thunk update). tinct extends Launchbury's judgment with an explicit `Σ` (EvalContext) parameter: `eval(e, ρ, Σ, d)`. The `Σ` parameter threads session-level infrastructure (include state, stdlib environment) that has no analogue in Launchbury's pure calculus — it corresponds to the global store in Sestoft's (1997) derived machines.
 
 **Deviations from Nakata & Hasegawa (2009):** Nakata & Hasegawa prove that cyclic call-by-need with blackholing (InProgress detection) terminates for all terms, producing either a value or a cycle error. tinct's `InProgress` state is exactly their blackhole. The deviation is that tinct additionally caches cycle errors via the `Failed` state (§Thunk Lifecycle), which Nakata & Hasegawa do not address — their semantics re-evaluates on each access. tinct's error memoization is a conservative extension: it preserves the value/error distinction while avoiding redundant cycle detection.
 
@@ -2424,7 +2437,7 @@ The formal rules map directly to the implementation:
 ```
 
 DICT-SCOPE creates `ρ_dict` with parent `ρ_builtins`:
-- `ρ_dict.B = {even? ↦ θ₁, odd? ↦ θ₂, result ↦ θ₃}` where all `θᵢ = Unevaluated(eᵢ, ρ_dict)`
+- `ρ_dict.B = {even? ↦ θ₁, odd? ↦ θ₂, result ↦ θ₃}` where all `θᵢ = Unevaluated(eᵢ, ρ_dict, Σ)`
 - Forcing `θ₃` evaluates `[call $even? 4]` in `ρ_dict`
 - `lookup(even?, ρ_dict)` → `θ₁` (clause 1) → forces `θ₁` → creates closure capturing `ρ_dict`
 - The closure body references `$odd?` → `lookup(odd?, ρ_dict)` → `θ₂` (clause 1) ✓ mutual visibility
@@ -3277,9 +3290,9 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 
 ##### Part 2: Forcing Rules
 
-Forcing (materialization) dispatches on the current state to produce a value or error. Rules use the judgment form `force(θ, d) ⇒ v` where θ is a thunk, d is the current depth, and v is the resulting value.
+Forcing (materialization) dispatches on the current state to produce a value or error. Rules use the judgment form `force(θ, Σ, d) ⇒ v` where θ is a thunk, Σ is the EvalContext, d is the current depth, and v is the resulting value. The thunk's captured `Σ` (from construction time) is used for `eval` calls; the caller's `Σ` is threaded for `force` continuation calls. In practice these are the same `Rc<EvalContext>` — thunks share `Σ` with their creation site.
 
-**Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`θ.state ← InProgress`) with declarative judgments (`eval(expr, env, d+1) ⇒ θ'`). A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `force(θ, d, σ) ⇒ (v, σ')`. The notation here maps directly to the `materialize()` implementation for ease of cross-checking.
+**Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`θ.state ← InProgress`) with declarative judgments (`eval(expr, env, Σ, d+1) ⇒ θ'`). A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `force(θ, Σ, d, σ) ⇒ (v, σ')`. The notation here maps directly to the `materialize()` implementation for ease of cross-checking.
 
 **Precondition:** FORCE-DEPTH is checked before state dispatch. All other rules implicitly have `d ≤ MAX_EVAL_DEPTH` as a precondition.
 
@@ -3287,7 +3300,7 @@ Forcing (materialization) dispatches on the current state to produce a value or 
 ```
 d > MAX_EVAL_DEPTH
 ───────────────────────────
-force(θ, d) ⇒ error("maximum evaluation depth exceeded")
+force(θ, Σ, d) ⇒ error("maximum evaluation depth exceeded")
 θ.state unchanged             (depth is a stack property, not a thunk property; see Commitment 3)
 ```
 
@@ -3297,14 +3310,14 @@ FORCE-DEPTH does not update θ.state because the depth limit is context-dependen
 ```
 θ.state = Materialized(v)
 ───────────────────────────
-force(θ, d) ⇒ v
+force(θ, Σ, d) ⇒ v
 ```
 
 **[FORCE-FAILED]**
 ```
 θ.state = Failed(e)
 ───────────────────────────
-force(θ, d) ⇒ error(e')
+force(θ, Σ, d) ⇒ error(e')
 ```
 
 The materialization span update has three cases (`eval.rs:876-896`): (1) if e has no materialization span and one is available, set it; (2) if the access span matches the existing materialization span, no-op; (3) if the access span differs and is not already in the stack, add it as a stack frame (preserving the original materialization span). This Failed → Failed diagnostic refinement is an intentional relaxation of strict idempotence at the error-representation level — the error's identity and root cause are fixed, but diagnostic annotations accumulate across access paths.
@@ -3313,30 +3326,30 @@ The materialization span update has three cases (`eval.rs:876-896`): (1) if e ha
 ```
 θ.state = InProgress
 ───────────────────────────
-force(θ, d) ⇒ error("circular dependency")
+force(θ, Σ, d) ⇒ error("circular dependency")
 θ.state ← Failed(err)         (memoize the cycle error)
 ```
 
 **[FORCE-EVAL]**
 ```
-θ.state = Unevaluated(expr, env)
+θ.state = Unevaluated(expr, env, Σ_θ)
 θ.state ← InProgress                          (blackhole)
-eval(expr, env, d+1) ⇒ θ'
-force(θ', d+1) ⇒ v
+eval(expr, env, Σ_θ, d+1) ⇒ θ'
+force(θ', Σ, d+1) ⇒ v
 θ.state ← Materialized(v)                     (memoize)
 ───────────────────────────
-force(θ, d) ⇒ v
+force(θ, Σ, d) ⇒ v
 ```
 
 **[FORCE-EVAL-ERR]**
 ```
-θ.state = Unevaluated(expr, env)
+θ.state = Unevaluated(expr, env, Σ_θ)
 θ.state ← InProgress
-eval(expr, env, d+1) ⇒ θ'
-force(θ', d+1) ⇒ error(e)
+eval(expr, env, Σ_θ, d+1) ⇒ θ'
+force(θ', Σ, d+1) ⇒ error(e)
 θ.state ← Failed(e)                           (memoize error)
 ───────────────────────────
-force(θ, d) ⇒ error(e)
+force(θ, Σ, d) ⇒ error(e)
 ```
 
 **[FORCE-BUILTIN]**
@@ -3344,10 +3357,10 @@ force(θ, d) ⇒ error(e)
 θ.state = PendingBuiltin(f, args, named, pd, cs)
 θ.state ← InProgress
 f(args, named, pd, cs) ⇒ θ'
-force(θ', d+1) ⇒ v
+force(θ', Σ, d+1) ⇒ v
 θ.state ← Materialized(v)
 ───────────────────────────
-force(θ, d) ⇒ v
+force(θ, Σ, d) ⇒ v
 ```
 
 The builtin receives `pd` (the pending depth captured at PendingBuiltin construction time) for its own recursion budget, but the subsequent `force(θ', d+1)` uses the current depth `d`. A PendingBuiltin created at depth 10 but forced at depth 200 runs the builtin with depth-context 10 but recurses at depth 201.
@@ -3358,24 +3371,24 @@ The builtin receives `pd` (the pending depth captured at PendingBuiltin construc
 ```
 θ.state = PendingCall(f_θ, args, named, cs)
 θ.state ← InProgress
-force(f_θ, d+1) ⇒ Function(params, body, env)
-invoke(params, body, env, args, named) ⇒ θ'
-force(θ', d+1) ⇒ v
+force(f_θ, Σ, d+1) ⇒ Function(params, body, env)
+invoke(params, body, env, args, named, Σ) ⇒ θ'
+force(θ', Σ, d+1) ⇒ v
 θ.state ← Materialized(v)
 ───────────────────────────
-force(θ, d) ⇒ v
+force(θ, Σ, d) ⇒ v
 ```
 
 **[FORCE-CALL-BUILTIN]**
 ```
 θ.state = PendingCall(f_θ, args, named, cs)
 θ.state ← InProgress
-force(f_θ, d+1) ⇒ Builtin(func)
+force(f_θ, Σ, d+1) ⇒ Builtin(func)
 func(args, named, d, cs) ⇒ θ'
-force(θ', d+1) ⇒ v
+force(θ', Σ, d+1) ⇒ v
 θ.state ← Materialized(v)
 ───────────────────────────
-force(θ, d) ⇒ v
+force(θ, Σ, d) ⇒ v
 ```
 
 If `force(f_θ)` produces a value that is neither Function nor Builtin, the forcing fails with a type mismatch error (`eval.rs:1043-1049`), which is cached in Failed state.
@@ -3384,7 +3397,7 @@ Error variants for FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN follow FORC
 
 **Error decoration:** All errors are decorated via `attach_materialization_context` (`eval.rs:803-831`) before caching, adding the materialization span (if not already set) and origin stack frames. The decoration happens in the `map_err(&decorate)` chain before `cache_failure` is called.
 
-**Fast path:** In FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN, if θ' is already Materialized, skip the recursive `force` and extract the value directly. This is observationally equivalent to the general rule — FORCE-CACHED fires immediately on the recursive `force(θ', d+1)` — but avoids the function call overhead (`eval.rs:944-945` for PendingBuiltin, `eval.rs:1020-1022` for PendingCall).
+**Fast path:** In FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN, if θ' is already Materialized, skip the recursive `force` and extract the value directly. This is observationally equivalent to the general rule — FORCE-CACHED fires immediately on the recursive `force(θ', Σ, d+1)` — but avoids the function call overhead (`eval.rs:944-945` for PendingBuiltin, `eval.rs:1020-1022` for PendingCall).
 
 ##### Part 3: Semantic Properties
 
@@ -3415,8 +3428,8 @@ Implicit decisions in the current implementation, made explicit:
 
 These states are defunctionalized continuations (Reynolds 1972). Each is observationally equivalent to an Unevaluated thunk holding an expression that would perform the same computation:
 
-- `PendingBuiltin(f, args, named, d, cs)` ≡ `Unevaluated([call $f ...args ...named], env)` where env binds the arg thunks
-- `PendingCall(f_θ, args, named, cs)` ≡ `Unevaluated([call <force f_θ> ...args ...named], env)`
+- `PendingBuiltin(f, args, named, d, cs)` ≡ `Unevaluated([call $f ...args ...named], env, Σ)` where env binds the arg thunks
+- `PendingCall(f_θ, args, named, cs)` ≡ `Unevaluated([call <force f_θ> ...args ...named], env, Σ)`
 
 The equivalence for PendingCall holds because `eval` of `[call ...]` already performs dynamic dispatch on the callee — if `f_θ` materializes to a Builtin rather than a Function, both the PendingCall path (FORCE-CALL-BUILTIN) and the hypothetical Unevaluated path would dispatch to the same builtin.
 
@@ -3606,65 +3619,65 @@ All 44 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 
 Delta rules specify the forcing behavior for builtins marked ‡ in the signature table, plus dual-dispatch builtins (†) whose Dict/Seq paths have materially different forcing patterns. Builtins marked † without ‡ (e.g., `$take`, `$drop`) follow the same dual-dispatch pattern as `$map`/`$filter` but with simpler per-path logic — their forcing is fully characterized by the signature.
 
-Rules use the judgment form `δ(f, [θ₁, ..., θₙ], d, cs) ⇒ r` where f is the builtin, θᵢ are argument thunks, d is the current depth, cs is the call span, and r is the result (a thunk or error). All current delta rules use positional args only; named args are empty (`∅`) and omitted from rules for brevity.
+Rules use the judgment form `δ(f, [θ₁, ..., θₙ], Σ, d, cs) ⇒ r` where f is the builtin, θᵢ are argument thunks, Σ is the EvalContext, d is the current depth, cs is the call span, and r is the result (a thunk or error). All current delta rules use positional args only; named args are empty (`∅`) and omitted from rules for brevity. `Σ` is threaded through `force` calls but is not modified by delta rules — builtins that need include state (only `$include`) access it via the captured `Σ`, not the delta rule parameter.
 
 **Depth in PendingBuiltin:** When constructing a PendingBuiltin, builtins that perform no materialization themselves (e.g., `$repeat`, `$iterate`, `$unfold`) store depth `0` because the stored depth is only used when the PendingBuiltin is eventually forced (the materialization-site depth governs recursive forcing via FORCE-BUILTIN in §Thunk Lifecycle). Builtins that materialize within the step function (e.g., `$filter` step, `$reduce` step) store the current `depth` for their internal materialization calls.
 
 **[DELTA-IF-TRUE]**
 ```
-force(θ_cond, d) ⇒ true
+force(θ_cond, Σ, d) ⇒ true
 ───────────────────────────
-δ(if, [θ_cond, θ_then, θ_else], d, cs) ⇒ θ_then
+δ(if, [θ_cond, θ_then, θ_else], Σ, d, cs) ⇒ θ_then
 ```
 
 **[DELTA-IF-FALSE]**
 ```
-force(θ_cond, d) ⇒ false
+force(θ_cond, Σ, d) ⇒ false
 ───────────────────────────
-δ(if, [θ_cond, θ_then, θ_else], d, cs) ⇒ θ_else
+δ(if, [θ_cond, θ_then, θ_else], Σ, d, cs) ⇒ θ_else
 ```
 
-**Branch isolation guarantee:** The unchosen branch is never forced. `θ_then` and `θ_else` are returned via `Rc::clone` — no state transition occurs on the unchosen thunk. This is the foundational selective materialization property from which `$and`, `$or`, `$when`, `$unless`, and `$cond` derive their short-circuit behavior (see Part 5). The chosen branch thunk is returned to the caller; its subsequent forcing happens via FORCE-BUILTIN in §Thunk Lifecycle, which calls `force(θ', d+1)` on the builtin's result — the separation between "builtin execution" and "result forcing" is what makes `$if`'s laziness guarantee possible.
+**Branch isolation guarantee:** The unchosen branch is never forced. `θ_then` and `θ_else` are returned via `Rc::clone` — no state transition occurs on the unchosen thunk. This is the foundational selective materialization property from which `$and`, `$or`, `$when`, `$unless`, and `$cond` derive their short-circuit behavior (see Part 5). The chosen branch thunk is returned to the caller; its subsequent forcing happens via FORCE-BUILTIN in §Thunk Lifecycle, which calls `force(θ', Σ, d+1)` on the builtin's result — the separation between "builtin execution" and "result forcing" is what makes `$if`'s laziness guarantee possible.
 
 **[DELTA-SEQ]**
 ```
 ───────────────────────────
-δ(seq, [θ_head, θ_tail], d, cs) ⇒ Materialized(Seq(Rc::clone(θ_head), Rc::clone(θ_tail)))
+δ(seq, [θ_head, θ_tail], Σ, d, cs) ⇒ Materialized(Seq(Rc::clone(θ_head), Rc::clone(θ_tail)))
 ```
 
 No arguments are forced. Both pass through as thunks within the Seq value. This is the coinductive guard — `$seq` enables corecursive definitions by deferring evaluation of both head and tail.
 
 **[DELTA-HEAD]**
 ```
-force(θ_xs, d) ⇒ Seq(θ_h, θ_t)
+force(θ_xs, Σ, d) ⇒ Seq(θ_h, θ_t)
 ───────────────────────────
-δ(head, [θ_xs], d, cs) ⇒ θ_h
+δ(head, [θ_xs], Σ, d, cs) ⇒ θ_h
 ```
 
 **[DELTA-TAIL]**
 ```
-force(θ_xs, d) ⇒ Seq(θ_h, θ_t)
+force(θ_xs, Σ, d) ⇒ Seq(θ_h, θ_t)
 ───────────────────────────
-δ(tail, [θ_xs], d, cs) ⇒ θ_t
+δ(tail, [θ_xs], Σ, d, cs) ⇒ θ_t
 ```
 
 DELTA-HEAD and DELTA-TAIL materialize the container to verify it is a Seq, but return the extracted thunk *without forcing it*. The head/tail thunk retains its original state (Unevaluated, PendingCall, etc.). Empty dict `[]` as input produces a specific error (`"head/tail on empty sequence"`).
 
 **[DELTA-COLLECT-EMPTY]**
 ```
-force(θ_xs, d) ⇒ Dict({})
+force(θ_xs, Σ, d) ⇒ Dict({})
 ───────────────────────────
-δ(collect, [θ_xs], d, cs) ⇒ Materialized(Dict({}))
+δ(collect, [θ_xs], Σ, d, cs) ⇒ Materialized(Dict({}))
 ```
 
 **[DELTA-COLLECT]**
 ```
-force(θ_xs, d) ⇒ Seq(θ_h₁, θ_t₁)
-force(θ_t₁, d) ⇒ Seq(θ_h₂, θ_t₂)
+force(θ_xs, Σ, d) ⇒ Seq(θ_h₁, θ_t₁)
+force(θ_t₁, Σ, d) ⇒ Seq(θ_h₂, θ_t₂)
 ...
-force(θ_tₙ, d) ⇒ Dict({})          (terminal)
+force(θ_tₙ, Σ, d) ⇒ Dict({})          (terminal)
 ───────────────────────────
-δ(collect, [θ_xs], d, cs) ⇒ Materialized(Dict({0↦θ_h₁, 1↦θ_h₂, ..., n↦θ_hₙ}))
+δ(collect, [θ_xs], Σ, d, cs) ⇒ Materialized(Dict({0↦θ_h₁, 1↦θ_h₂, ..., n↦θ_hₙ}))
 ```
 
 Collect materializes the Seq *spine* (all tail thunks) but head thunks pass through into the result Dict without forcing. This is the key distinction: `$collect` is strict in the structure but lazy in the values.
@@ -3672,7 +3685,7 @@ Collect materializes the Seq *spine* (all tail thunks) but head thunks pass thro
 **[DELTA-ITERATE]**
 ```
 ───────────────────────────
-δ(iterate, [θ_f, θ_x], d, cs) ⇒ Materialized(Seq(
+δ(iterate, [θ_f, θ_x], Σ, d, cs) ⇒ Materialized(Seq(
     Rc::clone(θ_x),
     PendingBuiltin(iterate, [Rc::clone(θ_f), PendingCall(θ_f, [θ_x])], d, cs)
 ))
@@ -3682,80 +3695,80 @@ Fully lazy: neither f nor x is forced. The result Seq's head is x (unchanged thu
 
 **[DELTA-TRY]**
 ```
-force(θ_func, d) ⇒ Function(params, body, env)    where |params| = 0
-eval(body, env, d+1) ⇒ θ_body
-force(θ_body, d+1) ⇒ v
+force(θ_func, Σ, d) ⇒ Function(params, body, env)    where |params| = 0
+eval(body, env, Σ, d+1) ⇒ θ_body
+force(θ_body, Σ, d+1) ⇒ v
 ───────────────────────────
-δ(try, [θ_func], d, cs) ⇒ Materialized(Dict({"ok"↦Materialized(v)}))
+δ(try, [θ_func], Σ, d, cs) ⇒ Materialized(Dict({"ok"↦Materialized(v)}))
 
-force(θ_func, d) ⇒ Function(params, body, env)    where |params| = 0
-eval(body, env, d+1) ⇒ θ_body
-force(θ_body, d+1) ⇒ error(e)
+force(θ_func, Σ, d) ⇒ Function(params, body, env)    where |params| = 0
+eval(body, env, Σ, d+1) ⇒ θ_body
+force(θ_body, Σ, d+1) ⇒ error(e)
 ───────────────────────────
-δ(try, [θ_func], d, cs) ⇒ Materialized(Dict({"err"↦Materialized(e.message)}))
+δ(try, [θ_func], Σ, d, cs) ⇒ Materialized(Dict({"err"↦Materialized(e.message)}))
 ```
 
 `$try` materializes the function argument and invokes it. On success, returns `[ok: value]`; on error, returns `[err: message]`. The error is caught — `$try` itself does not propagate errors (it is the catching boundary). Also handles Builtin callees (dispatches with zero args).
 
 **[DELTA-MAP-DICT]**
 ```
-force(θ_xs, d) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
+force(θ_xs, Σ, d) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 ∀i. θ'ᵢ = PendingCall(θ_f, [θᵢ], ∅, cs)
 ───────────────────────────
-δ(map, [θ_f, θ_xs], d, cs) ⇒ Materialized(Dict({k₁↦θ'₁, ..., kₙ↦θ'ₙ}))
+δ(map, [θ_f, θ_xs], Σ, d, cs) ⇒ Materialized(Dict({k₁↦θ'₁, ..., kₙ↦θ'ₙ}))
 ```
 
 `θ_f` is never forced — it is captured by reference (`Rc::clone`) in each PendingCall. No values are computed; the result Dict is O(n) to construct and O(1) per element access.
 
 **[DELTA-MAP-SEQ]**
 ```
-force(θ_xs, d) ⇒ Seq(θ_h, θ_t)
+force(θ_xs, Σ, d) ⇒ Seq(θ_h, θ_t)
 θ'_h = PendingCall(θ_f, [θ_h], ∅, cs)
 θ'_t = PendingBuiltin(map, [Rc::clone(θ_f), θ_t], ∅, d, cs)
 ───────────────────────────
-δ(map, [θ_f, θ_xs], d, cs) ⇒ Materialized(Seq(θ'_h, θ'_t))
+δ(map, [θ_f, θ_xs], Σ, d, cs) ⇒ Materialized(Seq(θ'_h, θ'_t))
 ```
 
 Recursive structure: head is a PendingCall, tail is a PendingBuiltin that will apply DELTA-MAP-DICT or DELTA-MAP-SEQ when forced.
 
 **[DELTA-FILTER-DICT]**
 ```
-force(θ_xs, d) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
+force(θ_xs, Σ, d) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 θ_step = PendingBuiltin(filter_dict_step, [θ_pred, θ_xs_mat, θ_keys, θ_idx], ∅, d, cs)
     where θ_xs_mat, θ_keys, θ_idx are pre-computed materialized thunks
 ───────────────────────────
-δ(filter, [θ_pred, θ_xs], d, cs) ⇒ θ_step
+δ(filter, [θ_pred, θ_xs], Σ, d, cs) ⇒ θ_step
 ```
 
 The predicate `θ_pred` is not forced at the top level — it is captured for deferred evaluation in the step function. The step function materializes one element at a time, applies the predicate, and either includes or skips it. Returns a Seq (not a Dict) because filtered keys are unpredictable.
 
 **[DELTA-FILTER-SEQ]**
 ```
-force(θ_xs, d) ⇒ Seq(_, _)
+force(θ_xs, Σ, d) ⇒ Seq(_, _)
 θ_step = PendingBuiltin(filter_seq_step, [θ_pred, θ_xs], d, cs)
 ───────────────────────────
-δ(filter, [θ_pred, θ_xs], d, cs) ⇒ θ_step
+δ(filter, [θ_pred, θ_xs], Σ, d, cs) ⇒ θ_step
 ```
 
 The step function receives the *original seq thunk* (not destructured head/tail) and materializes it internally to obtain head and tail. This avoids redundant materialization since the dispatch already forced the collection. Lazy filter on sequences: the step function forces head, applies predicate, and either includes it (Seq node) or skips it (recurse on tail). Elements are tested only when the result Seq is consumed.
 
 **[DELTA-REDUCE-DICT]**
 ```
-force(θ_xs, d) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
+force(θ_xs, Σ, d) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 acc₀ = θ_init
 ∀i. accᵢ = PendingCall(θ_f, [accᵢ₋₁, θᵢ], ∅, cs)
 ───────────────────────────
-δ(reduce, [θ_f, θ_init, θ_xs], d, cs) ⇒ accₙ
+δ(reduce, [θ_f, θ_init, θ_xs], Σ, d, cs) ⇒ accₙ
 ```
 
 Builds a chain of PendingCall thunks without forcing any values. The entire reduction is deferred — nothing computes until the result thunk is forced. At that point, the chain unwinds from the inside out.
 
 **[DELTA-REDUCE-SEQ]**
 ```
-force(θ_xs, d) ⇒ Seq(θ_h, θ_t)
+force(θ_xs, Σ, d) ⇒ Seq(θ_h, θ_t)
 θ_step = PendingBuiltin(reduce_seq_step, [θ_f, θ_init, θ_h, θ_t], ∅, d, cs)
 ───────────────────────────
-δ(reduce, [θ_f, θ_init, θ_xs], d, cs) ⇒ θ_step
+δ(reduce, [θ_f, θ_init, θ_xs], Σ, d, cs) ⇒ θ_step
 ```
 
 Seq reduction uses a step function that materializes the tail to check for termination, then recurses. Unlike Dict reduction, Seq reduction is incremental (processes one element per step function invocation).
@@ -3765,7 +3778,7 @@ Seq reduction uses a step function that materializes the tail to check for termi
 Six builtins (`map`, `filter`, `take`, `drop`, `reduce`, `join`) dispatch on the runtime type of their collection argument:
 
 ```
-force(θ_xs, d) ⇒ v
+force(θ_xs, Σ, d) ⇒ v
     v = Dict(...)  →  apply Dict-specific rule
     v = Seq(...)   →  apply Seq-specific rule
     otherwise      →  type error
@@ -3796,8 +3809,8 @@ Standard library functions defined in `stdlib/prelude.llt` inherit their materia
 ```
 and(θ_a, θ_b)
   = if(θ_a, θ_b, false)
-  DELTA-IF-TRUE:  force(θ_a) ⇒ true  → θ_b    (b is forced only when the caller forces the result)
-  DELTA-IF-FALSE: force(θ_a) ⇒ false → false   (b is never touched)
+  DELTA-IF-TRUE:  force(θ_a, Σ, d) ⇒ true  → θ_b    (b is forced only when the caller forces the result)
+  DELTA-IF-FALSE: force(θ_a, Σ, d) ⇒ false → false   (b is never touched)
 ```
 
 This compositional guarantee means that making `$if` lazier (e.g., returning the branch as a thunk in Phase 5b — see §Current vs Planned Laziness Analysis) automatically improves all derived control flow functions without code changes.
@@ -3806,7 +3819,7 @@ This compositional guarantee means that making `$if` lazier (e.g., returning the
 
 **Branch isolation (fundamental guarantee):**
 
-For any builtin with `Sc` positions, the unchosen arguments are never forced, never transition state, and never appear in error traces. Formally: if `δ(if, [θ_c, θ_t, θ_e], d, cs) ⇒ θ_t`, then θ_e's `ThunkState` is unchanged after the call.
+For any builtin with `Sc` positions, the unchosen arguments are never forced, never transition state, and never appear in error traces. Formally: if `δ(if, [θ_c, θ_t, θ_e], Σ, d, cs) ⇒ θ_t`, then θ_e's `ThunkState` is unchanged after the call.
 
 **No unnecessary forcing (structural guarantee):**
 
@@ -3874,7 +3887,7 @@ For each pᵢ ∈ P, exactly one case applies (in priority order):
 (i)   i < |pos|                               ⟹  env_call(pᵢ) = pos[i]
 (ii)  i ≥ |pos| ∧ pᵢ.name ∈ dom(named)       ⟹  env_call(pᵢ) = named[pᵢ.name]
 (iii) i ≥ |pos| ∧ pᵢ.name ∉ dom(named)
-      ∧ ¬required(pᵢ)                         ⟹  env_call(pᵢ) = eval(default(pᵢ), env_d)
+      ∧ ¬required(pᵢ)                         ⟹  env_call(pᵢ) = eval(default(pᵢ), env_d, Σ)
 ```
 
 If none of the three cases applies (i.e., i ≥ |pos|, not named, and required), C-COVERAGE is violated — no valid binding exists.
@@ -3953,7 +3966,7 @@ For i = 0, ..., |P|-1:
     else if pᵢ.name ∈ dom(named):
         envᵢ₊₁ = envᵢ[pᵢ.name ↦ named[pᵢ.name]]                  (named arg fills gap)
     else if ¬required(pᵢ):
-        envᵢ₊₁ = envᵢ[pᵢ.name ↦ eval(default(pᵢ), env_d, d+1)]  (default value)
+        envᵢ₊₁ = envᵢ[pᵢ.name ↦ eval(default(pᵢ), env_d, Σ, d+1)]  (default value)
     else:
         unreachable (BIND-ARITY guarantees every required pᵢ has i < |pos| ∨ pᵢ.name ∈ dom(named))
 ───────────────────────────
@@ -4047,7 +4060,7 @@ The binding algorithm produces four distinct error classes. Each corresponds to 
 | Positional/named overlap | C-NO-OVERLAP | `"parameter '{k}' received both positional and named argument"` | BIND-NAMED |
 | Nonexistent named arg | C-NAMED-VALID | `"unexpected named argument: {k}"` | BIND-NAMED |
 
-Default evaluation errors (from `eval(default(pᵢ), env_d)` in BIND-POSITIONAL) are not binding errors — they propagate as normal evaluation errors with the default expression's span.
+Default evaluation errors (from `eval(default(pᵢ), env_d, Σ)` in BIND-POSITIONAL) are not binding errors — they propagate as normal evaluation errors with the default expression's span.
 
 **Implementation note:** The current implementation (eval.rs:520-626) uses a count-based arity check and restricts named args to `default:` params. Adopting the Kotlin model requires two implementation changes: (1) replace the count check with per-parameter coverage, (2) remove the `get_default(p).is_some()` guard in the named-arg validity check. The spec documents the target semantics.
 
@@ -4062,7 +4075,7 @@ $apply:        default_env = closure environment  (env_c)
 
 **Why `$apply` uses `env_c`:** `$apply` receives a function value and a dict of arguments at runtime — there is no caller-side AST context. Default expressions reference names from the function's definition site, not the call site. Using the closure environment ensures defaults resolve correctly.
 
-**Formal consequence:** The binding constraints [C-PRIORITY case (iii)] use `eval(default(pᵢ), env_d)`. The environment `env_d` is a parameter of the judgment, not fixed. This makes the specification parametric over the default evaluation strategy — both `eval_call` and `$apply` are instances of the same binding algorithm with different `env_d` values.
+**Formal consequence:** The binding constraints [C-PRIORITY case (iii)] use `eval(default(pᵢ), env_d, Σ)`. The environment `env_d` and EvalContext `Σ` are parameters of the judgment, not fixed. This makes the specification parametric over the default evaluation strategy — both `eval_call` and `$apply` are instances of the same binding algorithm with different `env_d` values (but sharing `Σ`).
 
 **Correctness is preserved:** The correctness proof (Part 3) is parametric in `env_d`. Changing `env_d` affects which values defaults evaluate to, but not the structure of the binding (which params get positional vs named vs default). Soundness, completeness, and uniqueness hold for any `env_d`.
 
@@ -4140,9 +4153,9 @@ Two builtins form the comparison basis. All others are derived compositions.
 **EQ — Total equality (`$=`):**
 
 ```
-EQ(θ₁, θ₂, d, s) :
-  v₁ = materialize(θ₁, _, d)
-  v₂ = materialize(θ₂, _, d)
+EQ(θ₁, θ₂, Σ, d, s) :
+  v₁ = materialize(θ₁, _, Σ, d)
+  v₂ = materialize(θ₂, _, Σ, d)
   ─────────────────────────────
   ⟨v₁, v₂⟩ ↦ Bool(dispatch_eq(v₁, v₂))
 ```
@@ -4150,15 +4163,15 @@ EQ(θ₁, θ₂, d, s) :
 **LT — Partial ordering (`$<`):**
 
 ```
-LT(θ₁, θ₂, d, s) :
-  v₁ = materialize(θ₁, _, d)
-  v₂ = materialize(θ₂, _, d)
+LT(θ₁, θ₂, Σ, d, s) :
+  v₁ = materialize(θ₁, _, Σ, d)
+  v₂ = materialize(θ₂, _, Σ, d)
   ─────────────────────────────
   ⟨v₁, v₂⟩ ↦ Bool(dispatch_lt(v₁, v₂))    if defined
   ⟨v₁, v₂⟩ ↦ Error(type_mismatch, s)       otherwise
 ```
 
-The `_` in `materialize(θ, _, d)` is the materialization span (`Option<&Span>`), passed as `None` by both builtins — it is a diagnostic concern, not a semantic parameter. The span `s` is the call-site span: unused in EQ (total function, never errors) but required for LT error reporting.
+The `_` in `materialize(θ, _, Σ, d)` is the materialization span (`Option<&Span>`), passed as `None` by both builtins — it is a diagnostic concern, not a semantic parameter. The span `s` is the call-site span: unused in EQ (total function, never errors) but required for LT error reporting.
 
 Both builtins require exactly 2 positional arguments and reject named arguments (`reject_named`). Both are **inherently materializing**: they must inspect the concrete values of both operands to produce a result. This is a §Selective Materialization boundary — comparison always forces. If materialization of either operand raises an error (cycle detection, division by zero, depth limit), that error propagates immediately — comparison dispatch is never reached.
 
@@ -4300,7 +4313,7 @@ The divergence is intentional: `Value::PartialEq` uses Rust's native dispatch (n
 
 **P9 — Partiality of LT:** `$<` errors on type pairs not in the dispatch table (LT-ERROR). The comparable domain is: {Int, Float} × {Int, Float} ∪ String × String ∪ Bool × Bool.
 
-**P10 — Materialization obligation:** Both `$=` and `$<` call `materialize(θ, _, d)` on both arguments before dispatch. This is a forcing operation (§Thunk Lifecycle: FORCE-EVAL, FORCE-BUILTIN, or FORCE-CALL depending on the thunk's state) — the thunk moves from Unevaluated/PendingCall/PendingBuiltin to Evaluated, and the resulting value is cached for subsequent access. If materialization detects a cycle (thunk in InProgress state), it raises a circular dependency error via FORCE-CYCLE — comparison dispatch is never reached. Note: for Dict/Seq values, `$=` materializes the outer structure (forces the thunk to produce a `Value::Dict` or `Value::Seq`) but does NOT recursively force field values — it matches on the Value variant and returns `false` (EQ-INCOMP) immediately.
+**P10 — Materialization obligation:** Both `$=` and `$<` call `materialize(θ, _, Σ, d)` on both arguments before dispatch. This is a forcing operation (§Thunk Lifecycle: FORCE-EVAL, FORCE-BUILTIN, or FORCE-CALL depending on the thunk's state) — the thunk moves from Unevaluated/PendingCall/PendingBuiltin to Evaluated, and the resulting value is cached for subsequent access. If materialization detects a cycle (thunk in InProgress state), it raises a circular dependency error via FORCE-CYCLE — comparison dispatch is never reached. Note: for Dict/Seq values, `$=` materializes the outer structure (forces the thunk to produce a `Value::Dict` or `Value::Seq`) but does NOT recursively force field values — it matches on the Value variant and returns `false` (EQ-INCOMP) immediately.
 
 #### Merge — Formal Specification
 
@@ -4327,11 +4340,11 @@ Keys are materialized values (`Key` type: Int, String). Values are thunks — `$
 **[MERGE]**
 
 ```
-materialize(θ_L, _, d) ⇒ Dict(L)
-materialize(θ_R, _, d) ⇒ Dict(R)
+materialize(θ_L, _, Σ, d) ⇒ Dict(L)
+materialize(θ_R, _, Σ, d) ⇒ Dict(R)
 Result = L ⊕ R
 ───────────────────────────
-merge(θ_L, θ_R, d, s) ⇒ ok_val(Dict(Result))
+merge(θ_L, θ_R, Σ, d, s) ⇒ ok_val(Dict(Result))
 ```
 
 where `L ⊕ R` (right-biased merge) is defined as:
@@ -4470,8 +4483,8 @@ The overlay introduces two observable differences, both intentional:
 | Spec element | Implementation |
 |-------------|----------------|
 | MERGE rule | `builtin_merge` (`builtins.rs:435-462`) |
-| `materialize(θ_L, _, d)` | `materialize(&args[0], None, depth)` (line 446) |
-| `materialize(θ_R, _, d)` | `materialize(&args[1], None, depth)` (line 447) |
+| `materialize(θ_L, _, Σ, d)` | `materialize(&args[0], None, depth)` (line 446) |
+| `materialize(θ_R, _, Σ, d)` | `materialize(&args[1], None, depth)` (line 447) |
 | `require_dict` | `require_dict("merge", left_val, call_span)` (lines 448-449) |
 | LEFT-KEEP | First loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 455-457) |
 | RIGHT-BIAS | Second loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 459-461) |
@@ -4582,14 +4595,14 @@ Errors propagate upward through materialization chains via Rust's `?` operator (
 **[PROP-EVAL]** — Unevaluated thunk evaluation:
 
 ```
-eval(expr, env, d+1) ⇒ Err(ε)
+eval(expr, env, Σ_θ, d+1) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
 if ε'.kind.is_cacheable():
   thunk.state ← Failed(ε')
 else:
-  thunk.state ← Unevaluated(expr, env)   // restore original state
+  thunk.state ← Unevaluated(expr, env, Σ_θ)   // restore original state
 ──────────────────────────
-materialize(thunk, mat_span, d) ⇒ Err(ε')
+materialize(thunk, mat_span, Σ, d) ⇒ Err(ε')
 ```
 
 Note: `eval()` may internally call `materialize()` recursively (e.g., for PendingCall resolution). PROP-EVAL covers the outer eval → error path; nested materialization within eval follows PROP-RESULT or PROP-BUILTIN depending on the thunk state encountered.
@@ -4604,21 +4617,21 @@ if ε'.kind.is_cacheable():
 else:
   thunk.state ← PendingBuiltin(func, args, named, pd, cs)   // restore
 ──────────────────────────
-materialize(thunk, mat_span, d) ⇒ Err(ε')
+materialize(thunk, mat_span, Σ, d) ⇒ Err(ε')
 ```
 
 **[PROP-RESULT]** — Recursive materialization of result thunk:
 
 ```
 func(...) ⇒ Ok(θ_result)
-materialize(θ_result, mat_span, d+1) ⇒ Err(ε)
+materialize(θ_result, mat_span, Σ, d+1) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
 if ε'.kind.is_cacheable():
   thunk.state ← Failed(ε')
 else:
   thunk.state ← restore(original_state)   // restore pre-InProgress state
 ──────────────────────────
-materialize(thunk, mat_span, d) ⇒ Err(ε')
+materialize(thunk, mat_span, Σ, d) ⇒ Err(ε')
 ```
 
 **State restoration for non-cacheable errors:** `is_cacheable()` returns `false` only for `DepthExceeded`. When a non-cacheable error occurs, the thunk's original state (Unevaluated, PendingBuiltin, or PendingCall) is restored instead of transitioning to Failed. This preserves the PROP-DEPTH invariant: a thunk that fails at depth N may succeed at depth N-1, so its semantic state must remain "not yet computed." The restoration is a backward transition in the state DAG (InProgress → original state), which is sound because `DepthExceeded` is an administrative interruption, not a semantic failure (see §Thunk Lifecycle, Semantic Commitment #3).
@@ -4633,7 +4646,7 @@ thunk.state = InProgress
 ε.mat_span ← mat_span
 thunk.state ← Failed(ε)
 ──────────────────────────
-materialize(thunk, mat_span, d) ⇒ Err(ε)
+materialize(thunk, mat_span, Σ, d) ⇒ Err(ε)
 ```
 
 Note: PROP-CYCLE constructs the error inline at the detection site — it does *not* pass through DECORATE. This is the only propagation rule that bypasses decoration, because the error originates at the forcing site itself rather than propagating from a deeper call.
@@ -4645,7 +4658,7 @@ d > MAX_EVAL_DEPTH
 ε = depth_exceeded(MAX_EVAL_DEPTH, thunk.span)
 ε.mat_span ← mat_span
 ──────────────────────────
-materialize(thunk, mat_span, d) ⇒ Err(ε)
+materialize(thunk, mat_span, Σ, d) ⇒ Err(ε)
 ```
 
 Note: PROP-DEPTH does *not* transition to Failed — the thunk state is unchanged (§Thunk Lifecycle, Semantic Commitment #3). The same thunk may succeed at a lower depth.
@@ -4657,7 +4670,7 @@ Note: PROP-DEPTH does *not* transition to Failed — the thunk state is unchange
 **[MEMO-CACHE]** — On first error, cache in Failed state:
 
 ```
-materialize(thunk, ...) ⇒ Err(ε)
+materialize(thunk, ..., Σ, ...) ⇒ Err(ε)
 ε.kind.is_cacheable()
 ──────────────────────────
 thunk.state ← Failed(ε)
@@ -4666,7 +4679,7 @@ thunk.state ← Failed(ε)
 **[MEMO-SKIP]** — Non-cacheable error, restore thunk state:
 
 ```
-materialize(thunk, ...) ⇒ Err(ε)
+materialize(thunk, ..., Σ, ...) ⇒ Err(ε)
 ¬ε.kind.is_cacheable()
 ──────────────────────────
 thunk.state ← restore(original_state)   // pre-InProgress state
@@ -4689,7 +4702,7 @@ thunk.state = Failed(ε_cached)
 (3) if mat_span is None:
       (no decoration, no cache update — return ε' unchanged)
 ──────────────────────────
-materialize(thunk, mat_span, d) ⇒ Err(ε')
+materialize(thunk, mat_span, Σ, d) ⇒ Err(ε')
 ```
 
 MEMO-REACCESS mirrors DECORATE but operates on the cached error. Cache updates are progressive: each new access site enriches the cached error's stack. This is the Failed self-edge in the thunk lifecycle DAG — it refines diagnostic metadata without changing the error's semantic content (message, def_span).
@@ -4701,43 +4714,43 @@ MEMO-REACCESS mirrors DECORATE but operates on the cached error. Cache updates a
 **[TRY]** — Error catching:
 
 ```
-materialize(θ_func, _, d) ⇒ Function([], body, env)
-θ_body = Thunk::new_unevaluated(body, env, body.span)
-materialize(θ_body, _, d) ⇒ Ok(v)
+materialize(θ_func, _, Σ, d) ⇒ Function([], body, env)
+θ_body = Thunk::new_unevaluated(body, env, Σ, body.span)
+materialize(θ_body, _, Σ, d) ⇒ Ok(v)
 ──────────────────────────
-try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
+try(θ_func, Σ, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 ```
 
 **[TRY-ERR]** — Error caught:
 
 ```
-materialize(θ_func, _, d) ⇒ Function([], body, env)
-θ_body = Thunk::new_unevaluated(body, env, body.span)
-materialize(θ_body, _, d) ⇒ Err(ε)
+materialize(θ_func, _, Σ, d) ⇒ Function([], body, env)
+θ_body = Thunk::new_unevaluated(body, env, Σ, body.span)
+materialize(θ_body, _, Σ, d) ⇒ Err(ε)
 ε.kind.is_catchable()
 ──────────────────────────
-try(θ_func, d, s) ⇒ ok_val(Dict({err ↦ θ(ε.kind.to_string())}))
+try(θ_func, Σ, d, s) ⇒ ok_val(Dict({err ↦ θ(ε.kind.to_string())}))
 ```
 
 **[TRY-UNCATCHABLE]** — Uncatchable error re-raised:
 
 ```
-materialize(θ_func, _, d) ⇒ Function([], body, env)
-θ_body = Thunk::new_unevaluated(body, env, body.span)
-materialize(θ_body, _, d) ⇒ Err(ε)
+materialize(θ_func, _, Σ, d) ⇒ Function([], body, env)
+θ_body = Thunk::new_unevaluated(body, env, Σ, body.span)
+materialize(θ_body, _, Σ, d) ⇒ Err(ε)
 ¬ε.kind.is_catchable()
 ──────────────────────────
-try(θ_func, d, s) ⇒ Err(ε)
+try(θ_func, Σ, d, s) ⇒ Err(ε)
 ```
 
 **[TRY-BUILTIN]** — Builtin zero-arg function:
 
 ```
-materialize(θ_func, _, d) ⇒ Builtin(f)
+materialize(θ_func, _, Σ, d) ⇒ Builtin(f)
 f([], {}, d, s) ⇒ Ok(θ_result)
-materialize(θ_result, _, d) ⇒ Ok(v)
+materialize(θ_result, _, Σ, d) ⇒ Ok(v)
 ──────────────────────────
-try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
+try(θ_func, Σ, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 ```
 
 (Catchable error variant: same structure, `Err(ε), ε.kind.is_catchable() ⇒ Dict({err ↦ θ(ε.kind.to_string())})`; uncatchable errors re-raised per TRY-UNCATCHABLE)
@@ -5189,19 +5202,18 @@ This section formalizes the inter-file include mechanism. The intra-file documen
 
 ##### Part 1: Include State
 
-The include system maintains mutable state `Σ` shared across nested include calls:
+The include system uses the EvalContext `Σ` (defined in §Scope Chain Semantics — Formal Specification, Part 1) shared across nested include calls. The include-relevant fields are:
 
 ```
-Σ = ⟨base_dir, guard, cache, stdlib_env⟩  where
-  base_dir   : Path              — directory of the currently-evaluating file
-  guard      : Set<Path>         — canonical paths currently being evaluated (cycle detection)
-  cache      : Map<Path, Rc<Thunk>>  — canonical path → evaluated result (memoization)
-  stdlib_env : ρ                 — environment for included files (builtins + stdlib)
+Σ.config.base_dir   : Path              — directory of the currently-evaluating file
+Σ.state.include_guard : Set<Path>        — canonical paths currently being evaluated (cycle detection)
+Σ.state.include_cache : Map<Path, Rc<Thunk>>  — canonical path → evaluated result (memoization)
+Σ.config.stdlib_env  : ρ                — environment for included files (builtins + stdlib)
 ```
 
-`Σ` is stored in a thread-local (`INCLUDE_CTX`). All mutations are scoped: `guard` entries are pushed before recursion and popped after (even on error); `base_dir` is saved and restored around each include. `cache` entries are append-only — once a file is cached, its result is never replaced.
+`Σ` is threaded explicitly as `&Rc<EvalContext>` through `eval`/`materialize` calls and captured by thunks at allocation time. All mutations are scoped: `guard` entries are pushed before recursion and popped after (even on error); `base_dir` changes create a new `EvalContext` via `ctx.with_base_dir()` (sharing the same `Rc<RefCell<EvalState>>`). `cache` entries are append-only — once a file is cached, its result is never replaced.
 
-**Thread-local model:** `Σ` uses thread-local storage rather than parameter threading. This is an implementation choice (builtins receive `BuiltinArgs`, not `Σ`), not a semantic requirement. The planned EvalContext migration (§EvalContext) will replace the thread-local with an explicit `Rc<RefCell<EvalContext>>` parameter, but the formal semantics are unchanged — `Σ` transitions are the same regardless of how `Σ` is threaded.
+**Notation shorthand:** For brevity, the include rules below write `Σ.base_dir`, `Σ.guard`, `Σ.cache`, and `Σ.stdlib_env` to mean `Σ.config.base_dir`, `Σ.state.include_guard`, `Σ.state.include_cache`, and `Σ.config.stdlib_env` respectively.
 
 ##### Part 2: Path Resolution
 
@@ -5264,8 +5276,8 @@ file = parse(source)                                    (parse tinct source)
 saved_base = Σ.base_dir
 Σ.base_dir ← parent(canonical)                         (set base_dir for nested includes)
 
-θ = eval_file(file, Σ.stdlib_env, d + 1)               (evaluate all documents)
-v = materialize(θ, None, d + 1)                         (EAGER materialization — see Part 4)
+θ = eval_file(file, Σ.stdlib_env, Σ, d + 1)             (evaluate all documents; Σ shared)
+v = materialize(θ, None, Σ, d + 1)                      (EAGER materialization — see Part 4)
 
 Σ.base_dir ← saved_base                                (restore base_dir)
 Σ.guard ← Σ.guard \ {canonical}                        (pop guard)
@@ -5314,15 +5326,15 @@ This is consistent with Nix's `import` (which also eagerly evaluates the importe
 
 *Correspondence:* `builtins.rs:1129-1135` — the `restore` closure runs in both the `Ok` and `Err` branches of the match on `eval_result`. This ensures that a failed include does not leave stale entries in the guard set (which would cause false cycle-detection errors for subsequent includes of the same file from different call sites).
 
-**Known defect:** The `materialize` call at `builtins.rs:1142` uses the `?` operator, which returns before `restore` runs if materialization fails. This means P3 is violated for materialization errors — the guard entry and modified `base_dir` are not restored. This should be fixed by capturing the materialize result before calling restore: `let val_result = materialize(...); restore(cell); let val = val_result?;`.
+**Resolved (2026-04-23):** The implementation at `builtins.rs:1084-1093` uses an explicit `match` on the materialize result to ensure `cleanup()` runs on both `Ok` and `Err` paths before returning. This guarantees P3 is fully satisfied — the include guard and `base_dir` are restored even when materialization fails.
 
-**P4 — Include determinism (conditional):** For a fixed filesystem state, the document pipeline `eval_file(file, ρ, d)` is deterministic. When the filesystem changes between evaluations, results may differ — `$include` is the sole source of nondeterminism in tinct (see §Thunk Lifecycle — Semantic Properties, Determinism; also Semantic Commitment 2 in §Thunk Lifecycle — Semantic Commitments).
+**P4 — Include determinism (conditional):** For a fixed filesystem state, the document pipeline `eval_file(file, ρ, Σ, d)` is deterministic. When the filesystem changes between evaluations, results may differ — `$include` is the sole source of nondeterminism in tinct (see §Thunk Lifecycle — Semantic Properties, Determinism; also Semantic Commitment 2 in §Thunk Lifecycle — Semantic Commitments).
 
 **P5 — Include isolation:** An included file has no access to the including file's scope chain. Included files evaluate in `Σ.stdlib_env` (builtins + stdlib only), with `$$` initialized to the empty dict:
 
 ```
 include(path, Σ, d, s):
-  eval_file(file, Σ.stdlib_env, d + 1)     ← stdlib env, not caller's env
+  eval_file(file, Σ.stdlib_env, Σ, d + 1)  ← stdlib env, not caller's env; Σ shared for guard/cache
 ```
 
 This matches the document isolation property of DOC-PIPELINE (§Scope Chain Semantics Part 2): included files are semantically equivalent to the first document in a standalone file. Data must flow through the include result, not through shared scope:
@@ -5585,7 +5597,7 @@ migrate(value, arena, thunk_table, env_table) → Rc<Thunk>:
     thunk_table[id] = rc                     (insert before recursing — breaks cycles)
     rc.fill(match thunk.state:
       Materialized(v)            → Materialized(migrate_value(v, arena, thunk_table, env_table))
-      Unevaluated(expr, env)     → Unevaluated(expr, migrate_env(env, arena, thunk_table, env_table))
+      Unevaluated(expr, env, Σ)  → Unevaluated(expr, migrate_env(env, arena, thunk_table, env_table), Σ)
       PendingBuiltin(f, args, …) → PendingBuiltin(f, migrate_args(args, …), …)
       PendingCall(f_θ, args, …)  → PendingCall(migrate(f_θ, …), migrate_args(…), …)
       Failed(e)                  → Failed(e)
@@ -5654,8 +5666,8 @@ Per execution context:
 
 ```rust
 enum Action {
-    Eval { expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize },
-    Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, depth: usize },
+    Eval { expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, ctx: Rc<EvalContext>, depth: usize },
+    Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, ctx: Rc<EvalContext>, depth: usize },
     Continue(Result<Value, Box<EvalError>>),
 }
 ```
@@ -5722,9 +5734,9 @@ fn run(initial: Action) -> Result<Value, Box<EvalError>> {
             Action::Materialize { thunk, mat_span, depth } => {
                 match /* thunk state */ {
                     Materialized(v) => Action::Continue(Ok(v.clone())),
-                    Unevaluated { expr, env } => {
+                    Unevaluated { expr, env, ctx } => {
                         stack.push(Cont::Memoize { thunk, mat_span, origin });
-                        Action::Eval { expr, env, depth: depth + 1 }
+                        Action::Eval { expr, env, ctx, depth: depth + 1 }
                     }
                     // ...
                 }

@@ -1,0 +1,766 @@
+# Standard Library
+
+## Language vs Stdlib Boundary
+
+### Special Forms vs Stdlib Functions
+
+**Lazy evaluation means most "control flow" is just regular functions.** In an eager language, `if` must be a special form because both branches would be evaluated before `if` runs. In LLT, all arguments are thunks — the unused branch is never materialized.
+
+Only constructs that affect **binding structure** or **dict construction** need to be special forms (built into the language). The parser recognizes these by checking the first entry of every `[]`:
+
+| Language-level (special forms) | Why |
+|-------------------------------|-----|
+| `call` | Triggers function application (exact arity required) |
+| `fn` | Introduces parameter bindings, creates a new scope |
+| `type` | Compile-time type declaration, not a runtime value |
+
+Everything else can be a regular function in the stdlib:
+
+| Stdlib function | How it works with lazy eval |
+|----------------|----------------------------|
+| `if` | Materializes `cond`, returns the matching branch thunk (other branch never materialized) |
+| `cond` | Materializes conditions in order, returns first matching branch |
+| `when` | Like one-armed `if`; materializes condition, returns body or `[]` |
+| `unless` | Inverse of `when`; materializes condition, returns body or `[]` |
+| `and` | Materializes first arg; if false, returns false without materializing second |
+| `or` | Materializes first arg; if true, returns true without materializing second |
+| `not` | Materializes its argument; returns the boolean inverse |
+
+```tinct
+# These are stdlib functions, not special forms:
+[call $if [call $> $x 0] positive non-positive]
+[call $and [call $valid? $input] [call $process $input]]  # process never called if invalid
+[call $or $cached-value [call $expensive-compute]]        # compute skipped if cached
+```
+
+### Language vs Stdlib
+
+Tracking what must be built into the language vs what can be implemented in the stdlib.
+
+## Language Builtins (Special Forms)
+
+These require special evaluation or parsing rules — they can't be expressed as regular functions. The parser recognizes them by checking the first entry of every `[]`:
+
+- `call` — function application (exact arity required)
+- `fn` — function definition (creates scope, binds params)
+- `type` — type alias declaration
+
+## Stdlib Functions
+
+These leverage lazy evaluation and can be regular functions. Each function is classified by its **thunk behavior** — whether it preserves thunks, creates new ones, or materializes values:
+
+- **Structural** — rearranges entries without inspecting values. Thunks pass through untouched.
+- **Lazy-transforming** — applies a function to values but produces new thunks. No computation until the result is materialized.
+- **Materializing** — must compute values to determine the result.
+- **Selective** — materializes some arguments, leaves others as thunks (e.g., short-circuit evaluation).
+
+**Control flow** (selective):
+
+| Function | Materialization behavior |
+|----------|------------------------|
+| `if` | **Current:** Materializes condition and the chosen branch. **Phase 5b** (see §Current vs Planned Laziness Analysis)**:** Will return the chosen branch as a thunk (other never materialized). |
+| `cond` | Materializes conditions in order; returns first matching branch as thunk |
+| `when`, `unless` | Materializes condition; returns body or `[]` |
+| `and` | Materializes first; if false, returns false without materializing second |
+| `or` | Materializes first; if true, returns true without materializing second |
+| `not` | Materializes its argument |
+
+**List operations** (integer keys only, always renumber to dense 0..n):
+
+| Function | Materialization behavior |
+|----------|------------------------|
+| `first`, `rest` | Structural — returns thunks in new positions |
+| `cons`, `conj`, `concat` | Structural — combines thunks into new structure |
+| `reverse`, `reindex` | Structural — reorders/renumbers, values untouched |
+| `sort`, `sort-by` | **Materializing** — must compare values to determine order. `$sort` uses lexicographic comparison for strings, numeric comparison for numbers. Sorting mixed types (e.g., strings and numbers in the same collection) is a type error caught at compile time. |
+
+**Dict operations** (any key type, preserve keys):
+
+| Function | Materialization behavior |
+|----------|------------------------|
+| `get`, `get-or`, `has?` | Structural — key lookup, returns thunk |
+| `get-in`, `get-in-or` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. `get-in-or` returns a default on missing keys instead of erroring. |
+| `set`, `remove` | Structural — add/remove entries |
+| `merge` | **Current:** Eagerly clones both input dicts. **Phase 5b** (see §Current vs Planned Laziness Analysis)**:** Will use lazy overlay (right dict's keys shadow left dict's keys, no deep copy until access). |
+| `keys` | Structural — keys are always evaluated, not thunks |
+| `values`, `entries` | Structural — returns thunks |
+| `update` | Lazy-transforming — produces thunk `[call $f $old-value]` |
+
+**Universal collections** (any collection, preserve keys, insertion order):
+
+| Function | Materialization behavior |
+|----------|------------------------|
+| `nth`, `last`, `slice` | Structural — positional access, returns thunks |
+| `take`, `drop` | Structural — positional subsequence, thunks preserved |
+| `zip` | Structural — pairs entries, values stay thunks |
+| `length`, `empty?` | Structural — counts entries, ignores values |
+| `map`, `map-entries` | Lazy-transforming — on dicts, returns dict with PendingCall thunks; on seqs, returns lazy seq |
+| `filter` | On dicts, returns Seq (must evaluate predicates); on seqs, returns lazy seq |
+| `reduce`, `fold` | **Materializing** — accumulates, materializes each step |
+| `find-deep` | **Materializing** — must traverse structure looking for keys |
+| `flatten` | **Materializing** — must inspect values to check if they are lists |
+
+**Arithmetic & comparison** (materializing — must evaluate operands):
+- `+`, `-`, `*` (auto-promote: Int op Int → Int, mixed → Float)
+- `/` (always returns Float), `quot`, `mod` (Int only, return Int; both are prelude functions)
+- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values -- there is no structural/deep equality. This will be revisited when typeclasses are added.
+- `to-int`, `to-float`, `floor`, `ceil`, `round` (numeric conversions)
+
+**Strings** (materializing — must evaluate arguments):
+- `str` (exact concat), `words` (split by space, filter empties), `join` (with separator)
+- `split`, `replace`
+- `upper`, `lower`, `trim`
+
+**Composition** (structural — builds function pipelines, no values materialized):
+- `->` (threading)
+- `compose`
+- `apply` — call function with list spread as positional args
+
+**Sequences** (lazy computation -- produce `Seq` values):
+- `range`, `repeat`, `cycle`, `iterate`, `unfold` -- constructors (finite or infinite)
+- `seq` -- low-level cons: `[call $seq $head $tail-thunk]`
+- `collect` -- materializes a Seq into a dict with integer keys
+- `head`, `tail` -- destructors
+- `seq?` -- type check
+
+**Utility:**
+
+| Function | Materialization behavior |
+|----------|------------------------|
+| `identity` | Structural — returns its argument as-is |
+| `type-of` | **Materializing** — must evaluate to determine type. Returns `"Function"` for both user-defined functions and Rust-native builtins (intentionally indistinguishable to user code). |
+| `assert` | **Materializing** — must evaluate condition |
+| `error` | Structural — constructs error value, not materialized until propagated |
+| `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[ok: value]` on success or `[err: message]` on failure (tagged dict, not a special type). |
+
+**Materialization** (runtime-supported):
+- `eval` — recursively forces all thunks (runtime-supported, may diverge on infinite structures)
+- `from-json` — parses JSON string into LLT dict (pure function, safe on untrusted input)
+
+**Key implications for lazy evaluation:**
+
+```tinct
+# $map on dict is lazy — returns dict with PendingCall thunks
+big-result: [call $map [fn [x] [call $expensive $x]] $big-dict]
+$big-result.widget          # Only this one element gets computed
+
+# $filter on dict returns a Seq (must evaluate predicates to decide inclusion)
+# Other fields on kept users remain thunks until accessed
+expensive: [call $collect [call $filter [fn [x] [call $> $x.price 100]] $products]]
+
+# $sort must materialize everything — can't sort without comparing
+sorted: [call $sort $big-list]  # All values materialized immediately
+
+# Infinite sequences — lazy all the way
+naturals: [call $range 0]   # O(1), nothing computed
+squares: [call $map [fn [n] [call $* $n $n]] $naturals]  # still O(1)
+first-ten: [call $collect [call $take 10 $squares]]
+# -> [0 1 4 9 16 25 36 49 64 81]
+```
+
+## Rust-Native vs LLT-Implemented Boundary
+
+**Principle:** Only implement in Rust what cannot be expressed in LLT itself. Everything else is LLT code loaded from a prelude file at startup.
+
+**Rust-native builtins (44 total):**
+
+| Group | Functions | Rationale |
+|-------|-----------|-----------|
+| Arithmetic | `+`, `-`, `*`, `/` | Operate on host numeric types (i64, f64); no LLT primitive can perform arithmetic. |
+| Comparison | `=`, `<` | Compare host values; cross-type Int/Float comparison requires host-level coercion. `>`, `<=`, `>=` are derived from `<` and `not`. |
+| Control | `if` | Requires selective materialization (only materialize the chosen branch). `not` is derived: `[fn [x] [call $if $x false true]]`. |
+| Dict primitives | `keys`, `length`, `merge`, `append` | Operate on the IndexMap directly: `keys` extracts the key set, `length` reads `IndexMap::len()`, `merge` right-biased combines two IndexMaps, `append` inserts a value at the next integer key. |
+| Strings | `str`, `split`, `replace`, `upper`, `lower`, `trim` | Strings are opaque values; all operations that inspect or transform string content require Rust. `join` and `words` are derived from `str`/`split` + recursion. |
+| Numeric | `floor`, `round` | `floor` truncates toward negative infinity (Rust `f64::floor`). `round` rounds half-away-from-zero (Rust `f64::round`). `ceil` and `trunc` are derived from `floor` and comparison. |
+| Parsing | `to-int`, `to-float` | String-to-number parsing only (e.g., `"42"` to `42`). Numeric conversion (float-to-int) uses `floor`/`round`/`trunc`; int-to-float uses arithmetic promotion (`[call $+ $x 0.0]`). |
+| Evaluation control | `eval`, `error`, `try`, `apply` | `eval` deep-forces thunks (evaluator access); `error` constructs EvalError; `try` catches materialization errors; `apply` spreads a dict as positional args. |
+| Type introspection | `type-of` | Inspects the Value enum variant; no LLT expression can determine a value's type. |
+| Sequences | `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) return infinite or finite Seq (O(1) construction). `take`, `map`, `filter`, `drop` are dual-dispatch: on Dict preserve keys, on Seq return Seq. `reduce` accumulates with early termination on empty Seq. `join` converts Dict/Seq to string with separator (O(n²) concatenation). All require `Rc<Thunk>` manipulation unavailable in LLT. |
+| I/O | `from-json`, `include` | `from-json` parses a JSON string into an LLT dict; requires a JSON parser (serde_json). `include` evaluates an LLT file and returns its result; requires filesystem access, cycle detection, and path resolution. |
+
+**Derived functions (moved from Rust to LLT):**
+
+| Function | Derivation | Why not Rust |
+|----------|-----------|--------------|
+| `not` | `[fn [x] [call $if $x false true]]` | `if` already handles Bool dispatch |
+| `>` | `[fn [a b] [call $< $b $a]]` | Argument swap |
+| `<=` | `[fn [a b] [call $not [call $< $b $a]]]` | Negated `>` |
+| `>=` | `[fn [a b] [call $not [call $< $a $b]]]` | Negated `<` |
+| `quot` | `[fn [a b] [call $trunc [call $/ $a $b]]]` | Truncation toward zero (Clojure semantics) |
+| `mod` | `[fn [a b] [call $- $a [call $* [call $quot $a $b] $b]]]` | Algebraic identity: `a - (a quot b) * b` |
+| `ceil` | `[fn [x] [call $- 0 [call $floor [call $- 0 $x]]]]` | `ceil(x) = -floor(-x)` |
+| `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
+| `words` | `[call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]` | `split` + `filter` |
+
+Note: `and` and `or` are also LLT-derived (`[fn [a b] [call $if $a $b false]]` works via lazy args, giving short-circuit semantics for free). Similarly, `get` is just `[fn [xs k] $xs[$k]]` using bracket access.
+
+**LLT-implemented stdlib:**
+
+Everything else is implemented in LLT using the Rust builtins above plus language features (bracket access, dict literals, `fn`, `call`, recursion via letrec). Key implementation patterns:
+
+- **Derived primitives**: `not` from `if`, comparison operators from `<`, `mod` from arithmetic, `ceil`/`trunc` from `floor`, `words` from `split`.
+- **Short-circuit logic** via lazy args: `and` = `[fn [a b] [call $if $a $b false]]`.
+- **Dict utilities** as wrappers: `get` = `[fn [xs k] $xs[$k]]`, `empty?` = `[fn [xs] [call $= [call $length $xs] 0]]`, `has?` wraps `try` around bracket access.
+- **Control flow** from `if`: `cond` = nested `if`, `when`/`unless` = single-arm `if`.
+- **Composition** is pure LLT: `identity` = `[fn [x] $x]`, `compose` = `[fn [f g] [fn [x] [call $f [call $g $x]]]]`.
+- **List operations** use `keys` + `length` + `merge` + recursion to build new integer-keyed dicts.
+
+**Loading mechanism:**
+
+The LLT stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `include_str!`. At startup:
+
+1. Create root environment with Rust-native builtins
+2. Parse and evaluate `prelude.llt` with root environment as parent
+3. User code's environment inherits from the stdlib environment
+
+This ensures Rust builtins are available to LLT stdlib code (e.g., `and` references `$if`), and user code sees both layers:
+
+```
+Rust builtins ($+, $-, $<, $=, $if, $keys, $merge, $str, $floor, $map, $filter, $reduce, $drop, $join, ...)
+  └── LLT stdlib ($not, $>, $mod, $ceil, $and, $fold, $compose, ...)
+        └── User code
+```
+
+## Stdlib Function Reference (62 functions)
+
+Functions available to all user code. Most are implemented in LLT in `stdlib/prelude.llt`; some performance-critical operations (`map`, `filter`, `reduce`, `drop`, `join`, `take`, and all sequence constructors) are Rust-native builtins with dual-dispatch on Dict vs Seq. Private implementation details (functions suffixed with `-impl`) are omitted.
+
+**Utility Functions:**
+
+Functions primarily used internally by other stdlib functions, but also available to user code.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `make-entry` | `[fn [k v] ...]` | Construct a single-entry dict from a computed key and value |
+
+**Identity:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `identity` | `[fn [x] $x]` | Returns its argument unchanged |
+
+**Logic:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `not` | `[fn [x] ...]` | Boolean negation |
+| `and` | `[fn [a b] ...]` | Short-circuit AND: returns `$b` if `$a` is true, else `false` |
+| `or` | `[fn [a b] ...]` | Short-circuit OR: returns `true` if `$a` is true, else `$b` |
+
+**Comparison (derived from `<` and `=`):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `>` | `[fn [a b] ...]` | Greater than |
+| `<=` | `[fn [a b] ...]` | Less than or equal |
+| `>=` | `[fn [a b] ...]` | Greater than or equal |
+
+**Arithmetic (derived from `+`, `-`, `*`, `/`):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `quot` | `[fn [a b] ...]` | Integer quotient, truncates toward zero (Clojure semantics) |
+| `mod` | `[fn [a b] ...]` | Remainder: `a - (a quot b) * b` |
+
+**Numeric Conversion (derived from `floor`):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `ceil` | `[fn [x] ...]` | Ceiling: smallest integer >= x. Derived as `-floor(-x)` |
+| `trunc` | `[fn [x] ...]` | Truncate toward zero: `floor` for positive, `ceil` for negative |
+
+**String (derived from `str`, `split`, `filter`):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `join` | `[fn [sep xs] ...]` | Join values as strings with separator (Rust builtin, O(n); dual-dispatch Dict/Seq) |
+| `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings |
+
+**Control Flow:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `when` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is true, else `[]` |
+| `unless` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is false, else `[]` |
+| `cond` | `[fn [pairs] ...]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
+
+**Dict Utilities:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `get` | `[fn [xs k] ...]` | Get value by key (bracket access wrapper) |
+| `has?` | `[fn [xs k] ...]` | Check if a key exists (uses `$try` around access) |
+| `get-or` | `[fn [xs k default] ...]` | Get value by key with fallback default |
+| `get-in` | `[fn [xs path] ...]` | Traverse nested dicts by a list of keys; errors on missing key |
+| `get-in-or` | `[fn [xs path default] ...]` | Traverse nested dicts with fallback default |
+| `empty?` | `[fn [xs] ...]` | Check if a collection has zero entries |
+| `set` | `[fn [xs k v] ...]` | Return new dict with key added/updated |
+| `remove` | `[fn [xs k] ...]` | Return new dict with key removed |
+| `update` | `[fn [xs k f] ...]` | Apply function `$f` to the value at key `$k` |
+| `values` | `[fn [xs] ...]` | Get all values as an integer-indexed list |
+| `entries` | `[fn [xs] ...]` | Get all entries as a list of `[key: k value: v]` dicts |
+
+**List Operations (integer keys, dense 0..n output):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `first` | `[fn [xs] ...]` | Get the first element (key 0) |
+| `nth` | `[fn [xs n] ...]` | Get element by insertion-order position (supports negative indices) |
+| `last` | `[fn [xs] ...]` | Get the last element by insertion-order position |
+| `rest` | `[fn [xs] ...]` | All elements except the first, reindexed from 0 |
+| `cons` | `[fn [x xs] ...]` | Prepend an element, reindexing from 0 |
+| `conj` | `[fn [xs x] ...]` | Append an element (delegates to `$append`) |
+| `concat` | `[fn [xs ys] ...]` | Concatenate two lists, reindexing the second |
+| `reverse` | `[fn [xs] ...]` | Reverse a list |
+| `reindex` | `[fn [xs] ...]` | Rebuild with dense 0..n integer keys |
+
+**Sorting:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `sort` | `[fn [xs] ...]` | Sort using natural ordering (mergesort) |
+| `sort-by` | `[fn [cmp xs] ...]` | Sort using a custom comparator function |
+
+**Universal Collection Operations (preserve keys):**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `map` | `[fn [f xs] ...]` | Apply function to every value, preserving keys |
+| `map-entries` | `[fn [f xs] ...]` | Apply function to every `[key value]` pair |
+| `filter` | `[fn [pred xs] ...]` | Keep values where predicate returns true (returns Seq) |
+| `reduce` | `[fn [f init xs] ...]` | Left fold (Rust builtin; dual-dispatch Dict/Seq) |
+| `fold` | `[fn [f init xs] ...]` | Alias for `reduce` |
+| `slice` | `[fn [xs start end] ...]` | Positional slice (start inclusive, end exclusive) |
+| `take` | `[fn [n xs] ...]` | Take the first n entries, preserving keys |
+| `drop` | `[fn [n xs] ...]` | Skip first n entries (Rust builtin; dual-dispatch Dict/Seq) |
+| `zip` | `[fn [xs ys] ...]` | Pair entries from two collections by position |
+| `flatten` | `[fn [xs] ...]` | Flatten nested lists one level deep |
+| `find-deep` | `[fn [xs target] ...]` | Recursively search for a key in nested dicts |
+
+**Composition:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `compose` | `[fn [f g] ...]` | Compose two functions: `(compose f g)(x) = f(g(x))` |
+| `->` | `[fn [x ...stages] ...]` | Thread a value through a series of functions |
+
+**Error Handling:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `try-or` | `[fn [f default] ...]` | Call a function; return default if it errors |
+
+**Sequences:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `range` | `[fn [start] ...]` or `[fn [start end] ...]` | Seq of integers from start (inclusive); infinite if 1-arg, finite (end exclusive) if 2-arg |
+| `repeat` | `[fn [val] ...]` | Infinite Seq of copies of val; for finite, use `[call $take n [call $repeat val]]` |
+| `cycle` | `[fn [xs] ...]` | Infinite Seq cycling through dict entries; for finite, use `[call $take n [call $cycle xs]]` |
+| `iterate` | `[fn [f x] ...]` | Infinite seq: x, f(x), f(f(x)), ... |
+| `unfold` | `[fn [step seed] ...]` | Seq from step function; step returns `[value state]` or `[]` to stop |
+| `take` | `[fn [n xs] ...]` | Dual-dispatch: on Dict, take first n entries preserving keys; on Seq, return finite Seq of first n elements |
+| `seq` | `[fn [head tail] ...]` | Low-level seq constructor (cons cell) |
+| `collect` | `[fn [s] ...]` | Materialize seq into dict with integer keys 0..n |
+| `head` | `[fn [s] ...]` | First element of seq |
+| `tail` | `[fn [s] ...]` | Rest of seq (seq, not materialized) |
+| `seq?` | `[fn [x] ...]` | True if x is a Seq |
+
+**Assertions:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `assert` | `[fn [cond msg] ...]` | Assert condition; error with message if false |
+
+## Two Map Variants
+
+- `map` — transforms values, preserves keys
+- `map-entries` — transforms (key, value) pairs, can change keys
+
+## Threading `->` in Stdlib
+
+Not language syntax. Implemented in stdlib:
+
+```tinct
+->: [fn [data ...stages]
+    [call $reduce [fn [acc f] [call $f $acc]] $data $stages]]
+```
+
+## Equality and Comparison — Formal Specification
+
+This section formalizes the two primitive comparison builtins (`$=` and `$<`) and the three derived comparison operators (`$>`, `$<=`, `$>=`). The specification defines type-dispatch semantics, totality and partiality properties, cross-type promotion, and the algebraic properties these relations satisfy or intentionally violate.
+
+### Part 1: Primitive Relations
+
+Two builtins form the comparison basis. All others are derived compositions.
+
+**EQ — Total equality (`$=`):**
+
+```
+EQ(θ₁, θ₂, d, s) :
+  v₁ = materialize(θ₁, _, d)
+  v₂ = materialize(θ₂, _, d)
+  ─────────────────────────────
+  ⟨v₁, v₂⟩ ↦ Bool(dispatch_eq(v₁, v₂))
+```
+
+**LT — Partial ordering (`$<`):**
+
+```
+LT(θ₁, θ₂, d, s) :
+  v₁ = materialize(θ₁, _, d)
+  v₂ = materialize(θ₂, _, d)
+  ─────────────────────────────
+  ⟨v₁, v₂⟩ ↦ Bool(dispatch_lt(v₁, v₂))    if defined
+  ⟨v₁, v₂⟩ ↦ Error(type_mismatch, s)       otherwise
+```
+
+The `_` in `materialize(θ, _, d)` is the materialization span (`Option<&Span>`), passed as `None` by both builtins — it is a diagnostic concern, not a semantic parameter. The span `s` is the call-site span: unused in EQ (total function, never errors) but required for LT error reporting.
+
+Both builtins require exactly 2 positional arguments and reject named arguments (`reject_named`). Both are **inherently materializing**: they must inspect the concrete values of both operands to produce a result. This is a §Selective Materialization boundary — comparison always forces. If materialization of either operand raises an error (cycle detection, division by zero, depth limit), that error propagates immediately — comparison dispatch is never reached.
+
+### Part 2: Type-Dispatch Tables
+
+**`dispatch_eq(v₁, v₂) → bool`:**
+
+| v₁ | v₂ | Result | Rule |
+|----|----|--------|------|
+| Int(a) | Int(b) | a == b | EQ-INT |
+| Float(a) | Float(b) | a == b (IEEE 754) | EQ-FLOAT |
+| String(a) | String(b) | a == b (byte equality) | EQ-STR |
+| Bool(a) | Bool(b) | a == b | EQ-BOOL |
+| Int(a) | Float(b) | (a as f64) == b | EQ-PROMOTE-IF |
+| Float(a) | Int(b) | a == (b as f64) | EQ-PROMOTE-FI |
+| _ | _ | false | EQ-INCOMP |
+
+**`dispatch_lt(v₁, v₂) → bool | ⊥`:**
+
+| v₁ | v₂ | Result | Rule |
+|----|----|--------|------|
+| Int(a) | Int(b) | a < b | LT-INT |
+| Float(a) | Float(b) | a < b (IEEE 754) | LT-FLOAT |
+| String(a) | String(b) | a < b (lexicographic) | LT-STR |
+| Bool(a) | Bool(b) | ¬a ∧ b (false < true) | LT-BOOL |
+| Int(a) | Float(b) | (a as f64) < b | LT-PROMOTE-IF |
+| Float(a) | Int(b) | a < (b as f64) | LT-PROMOTE-FI |
+| _ | _ | ⊥ (type error) | LT-ERROR |
+
+The critical difference: EQ-INCOMP returns `false` (totality), while LT-ERROR raises a type error (partiality). This reflects the design that "are these equal?" always has a reasonable answer (no, different types are never equal), while "is this less than that?" has no meaningful answer across incompatible types.
+
+### Part 3: Cross-Type Promotion Semantics
+
+Int/Float promotion uses Rust's `as f64` cast, which is the IEEE 754 `convertToFloat64` operation. This is exact for integers in the range [−2⁵³, 2⁵³] but loses precision outside it:
+
+```
+Promotion: Int(n) → Float(n as f64)
+
+Exact range:  |n| ≤ 2⁵³ (9,007,199,254,740,992)
+Loss example: Int(2⁵³ + 1) promotes to Float(2⁵³)
+              → EQ-PROMOTE: [call $= 9007199254740993 9007199254740992.0] = true  (!)
+```
+
+**Design rationale:** The alternative — rejecting cross-type comparison entirely — would force users to manually cast in every mixed expression. The promotion follows JavaScript, Python, Ruby, and Lua conventions. The precision-loss edge case affects only integers outside the safe range, which is rare in configuration contexts.
+
+Promotion is **symmetric**: `EQ-PROMOTE-IF` and `EQ-PROMOTE-FI` always produce the same result because IEEE 754 `==` is symmetric and `as f64` is deterministic.
+
+### Part 4: Derived Relations
+
+Three comparison operators are derived from `$<` and `$not` in `stdlib/prelude.llt`:
+
+```
+GT(a, b)  ≡  LT(b, a)               # >:  [fn [a b] [call $< $b $a]]
+LEQ(a, b) ≡  ¬LT(b, a)              # <=: [fn [a b] [call $not [call $< $b $a]]]
+GEQ(a, b) ≡  ¬LT(a, b)              # >=: [fn [a b] [call $not [call $< $a $b]]]
+```
+
+Note: `$<=` is defined as `¬GT` (not as `LT ∨ EQ`), and `$>=` as `¬LT` (not as `GT ∨ EQ`). These are equivalent for total orders but diverge in the presence of NaN (see Part 5). The stdlib definitions are correct because `$<` is a strict weak order on each comparable type (NaN is incomparable to everything, and `¬(NaN < x)` correctly yields `true` for `$>=`... but see the NaN anomaly below).
+
+### Part 5: IEEE 754 NaN Behavior
+
+Float comparison follows IEEE 754 semantics inherited from Rust's `f64` operations:
+
+```
+EQ-FLOAT with NaN:   NaN == NaN → false     (IEEE 754 §5.11)
+LT-FLOAT with NaN:   NaN < x   → false      (for any x, including NaN)
+                      x < NaN   → false      (for any x, including NaN)
+```
+
+**Consequence for derived relations:**
+
+```
+[call $=  NaN NaN]  → false    (NaN ≠ NaN — correct per IEEE 754)
+[call $<  NaN 1.0]  → false    (NaN is unordered)
+[call $>  NaN 1.0]  → false    (= $< 1.0 NaN → false)
+[call $<= NaN 1.0]  → true     (= $not [$< 1.0 NaN] = $not false = true — ANOMALY)
+[call $>= NaN 1.0]  → true     (= $not [$< NaN 1.0] = $not false = true — ANOMALY)
+```
+
+The `$<=` and `$>=` anomalies arise because the stdlib derives them via negation of the *swapped* `$<`, rather than via `LT ∨ EQ`. Under IEEE 754, `¬(b < a)` is *not* equivalent to `a ≤ b` when either operand is NaN. This is a known deviation: IEEE 754 §5.11 defines `totalOrder` separately from the partial comparison predicates.
+
+**NaN-vs-NaN anomaly:**
+
+```
+[call $<= NaN NaN]  → true     (= $not [$< NaN NaN] = $not false = true)
+[call $>= NaN NaN]  → true     (= $not [$< NaN NaN] = $not false = true)
+```
+
+Both `$<= NaN NaN` and `$>= NaN NaN` return `true`, even though `$= NaN NaN` returns `false`. Tinct reports NaN as both "less-than-or-equal-to itself" and "greater-than-or-equal-to itself" while simultaneously reporting it as "not equal to itself."
+
+**NaN/Infinity rejection (decided):** Tinct enforces the invariant that **all floats are finite**. Non-finite values are rejected at two layers: (1) `$from-json` rejects `f64::INFINITY` and `f64::NAN` from `serde_json::Number::as_f64()` at parse time, closing the entry path, and (2) arithmetic builtins (`$+`, `$-`, `$*`, `$/`) reject non-finite results via a shared `check_float_result` helper, catching overflow (`1e308 + 1e308`) at point of origin. This matches the consensus approach for config languages targeting JSON output (Jsonnet, Nickel, CUE all reject non-finite floats). With this invariant, the `$<=`/`$>=` NaN anomaly documented above becomes unreachable — it is retained as documentation of IEEE 754 behavior but cannot occur in practice.
+
+**Pragmatic justification for the anomaly documentation:** The `$<=`/`$>=` NaN anomaly is documented but not fixed (no `$is-nan` check in derived comparisons) because the finite-float invariant makes it unreachable. If the invariant were ever relaxed, the negation-based derivation would need revisiting.
+
+### Part 6: Key Ordering (`Key::PartialOrd`)
+
+Separate from value comparison, the `Key` type has its own partial ordering used by range access (`$data[start..end]`):
+
+```
+Key::partial_cmp:
+  (Int(a),    Int(b))    → Some(a.cmp(b))     # total within Int keys
+  (String(a), String(b)) → Some(a.cmp(b))     # total within String keys (lexicographic)
+  (Int(_),    String(_)) → None                # mixed key types: incomparable
+  (String(_), Int(_))    → None                # mixed key types: incomparable
+```
+
+Mixed-type key comparison in range access raises an error (via `key_in_range`, §Access Chain Evaluation). `Key::PartialOrd` is semantically equivalent to the Int/String subset of `dispatch_lt` but exists as a separate relation because it operates at the `Key` level (before value materialization), while `$<` operates at the `Value` level (after materialization). Range access needs to filter dict keys without forcing any values — it compares keys directly from the `IndexMap<Key, Rc<Thunk>>`, never touching the thunks. This is an optimization that preserves laziness: `$data[2..5]` filters keys without materializing any values.
+
+### Part 7: `Value::PartialEq` vs `$=` Divergence
+
+The Rust-level `Value::PartialEq` implementation differs from the `$=` builtin:
+
+| Aspect | `Value::PartialEq` | `$=` builtin |
+|--------|-------------------|-------------|
+| Int/Float cross-type | `false` (different variants) | promotes Int → Float |
+| Dict, Function, Builtin, Seq | `false` (catch-all) | `false` (catch-all) |
+| NaN == NaN | `false` (IEEE 754 via `f64::eq`) | `false` (IEEE 754 via `f64::eq`) |
+| Used by | Internal Rust code, tests | User-facing tinct programs |
+
+The divergence is intentional: `Value::PartialEq` uses Rust's native dispatch (no cross-variant matching), while `$=` adds the Int/Float promotion rules (EQ-PROMOTE-IF, EQ-PROMOTE-FI) that users expect from a dynamically-typed numeric tower. Internal Rust code must use `Value::PartialEq` for exact variant matching (tests, pattern matching). User-facing tinct programs must use `$=` via the builtin. Never compare `Value` instances directly in user-facing contexts — the missing cross-type promotion would silently give wrong answers for mixed Int/Float comparisons.
+
+### Part 8: Properties
+
+**P1 — EQ reflexivity (conditional):** `∀v. dispatch_eq(v, v) = true` **iff** `v ∉ {NaN, Dict, Function, Builtin, Seq}`. NaN violates reflexivity per IEEE 754. Dict/Function/Builtin/Seq return false even for identity (same Rc pointer) because no structural comparison is performed — structural dict equality would violate lazy evaluation by forcing all field thunks (e.g., comparing `[x: [call $/ 1 0]]` with itself would force the division-by-zero error in an unreferenced field). **Future breaking change:** if typeclasses add user-defined equality, `[call $= [x: 1] [x: 1]]` would change from `false` to `true`. Current code relying on dicts always being unequal may break.
+
+**P2 — EQ symmetry:** `∀v₁, v₂. dispatch_eq(v₁, v₂) = dispatch_eq(v₂, v₁)`. Holds unconditionally — the dispatch table is symmetric (EQ-PROMOTE-IF and EQ-PROMOTE-FI produce identical results; EQ-INCOMP is symmetric; IEEE 754 `==` is symmetric).
+
+**P3 — EQ transitivity (conditional):** `dispatch_eq(a, b) ∧ dispatch_eq(b, c) → dispatch_eq(a, c)` holds within each type. **WARNING: Cross-type promotion violates transitivity at the 2⁵³ boundary.** Concrete example: `dispatch_eq(Int(2⁵³+1), Float(2⁵³)) = true` (EQ-PROMOTE-IF, both promote to same float) and `dispatch_eq(Float(2⁵³), Int(2⁵³)) = true` (EQ-PROMOTE-FI), but `dispatch_eq(Int(2⁵³+1), Int(2⁵³)) = false` (EQ-INT, distinct integers). Programs relying on equivalence substitution for integers outside [−2⁵³, 2⁵³] will observe non-transitive equality.
+
+**P4 — LT irreflexivity:** `∀v. dispatch_lt(v, v) = false` wherever defined. Holds for Int, Float (excluding NaN, which returns false for `<` anyway), String, Bool. NaN: `NaN < NaN → false` — technically satisfies irreflexivity even though NaN is unordered.
+
+**P5 — LT asymmetry:** `dispatch_lt(a, b) = true → dispatch_lt(b, a) = false`. Holds for all comparable types. (Consequence: `dispatch_lt(a, b) ∧ dispatch_lt(b, a)` is impossible.)
+
+**P6 — LT transitivity:** `dispatch_lt(a, b) ∧ dispatch_lt(b, c) → dispatch_lt(a, c)` within each type. Cross-type Int/Float promotion inherits the same precision-boundary caveat as EQ transitivity (P3).
+
+**P7 — LT/EQ trichotomy (conditional):** Trichotomy holds within each type (excluding NaN): exactly one of `dispatch_lt(a, b)`, `dispatch_eq(a, b)`, `dispatch_lt(b, a)` is true. Two violations: (1) NaN — all three are false; (2) cross-type Int/Float at the precision boundary — promotion may cause both `dispatch_lt` and `dispatch_eq` to disagree with same-type comparisons (same caveat as P3).
+
+**P8 — Totality of EQ:** `$=` never errors. For any two values (including incompatible types), it returns a Bool. This is the defining characteristic that distinguishes it from `$<`.
+
+**P9 — Partiality of LT:** `$<` errors on type pairs not in the dispatch table (LT-ERROR). The comparable domain is: {Int, Float} × {Int, Float} ∪ String × String ∪ Bool × Bool.
+
+**P10 — Materialization obligation:** Both `$=` and `$<` call `materialize(θ, _, d)` on both arguments before dispatch. This is a forcing operation (§Thunk Lifecycle: FORCE-EVAL, FORCE-BUILTIN, or FORCE-CALL depending on the thunk's state) — the thunk moves from Unevaluated/PendingCall/PendingBuiltin to Evaluated, and the resulting value is cached for subsequent access. If materialization detects a cycle (thunk in InProgress state), it raises a circular dependency error via FORCE-CYCLE — comparison dispatch is never reached. Note: for Dict/Seq values, `$=` materializes the outer structure (forces the thunk to produce a `Value::Dict` or `Value::Seq`) but does NOT recursively force field values — it matches on the Value variant and returns `false` (EQ-INCOMP) immediately.
+
+## Merge — Formal Specification
+
+This section formalizes `$merge`, the only builtin that allows key collision. The specification defines operational semantics (right-biased merge with insertion-order preservation), algebraic properties, interaction with record typing (closed records now, forward-compatible with row variables), and the lazy overlay compatibility invariant for Phase 5b.
+
+`$merge` is the composition primitive: it underlies shared base config (`$merge $base $overrides`), `$set` (single-key overlay), `$from-entries` (construction from pairs), and `$map` on dicts (per-entry rebuild). Its semantics propagate through these dependents.
+
+### Part 1: Notation
+
+| Symbol | Meaning |
+|--------|---------|
+| `D = {k₁↦θ₁, ..., kₙ↦θₙ}` | A dict: ordered map from keys to thunks |
+| `K(D)` | Key set of D: `{k₁, ..., kₙ}` |
+| `D(k)` | Thunk bound to key k in D |
+| `\|D\|` | Number of entries in D |
+| `pos(D, k)` | Insertion-order position of key k in D (0-indexed) |
+| `∅` | Empty dict `{}` |
+| `θ` | A thunk (§Thunk Lifecycle) — values remain unevaluated |
+
+Keys are materialized values (`Key` type: Int, String). Values are thunks — `$merge` never materializes values, only dict structure.
+
+### Part 2: Operational Rule
+
+**[MERGE]**
+
+```
+materialize(θ_L, _, d) ⇒ Dict(L)
+materialize(θ_R, _, d) ⇒ Dict(R)
+Result = L ⊕ R
+───────────────────────────
+merge(θ_L, θ_R, d, s) ⇒ ok_val(Dict(Result))
+```
+
+where `L ⊕ R` (right-biased merge) is defined as:
+
+```
+L ⊕ R = D  where
+  dom(D) = K(L) ∪ K(R)
+  D(k) = R(k)           if k ∈ K(R)         [RIGHT-BIAS]
+  D(k) = L(k)           if k ∈ K(L) \ K(R)  [LEFT-KEEP]
+```
+
+**Iteration order of D:**
+
+```
+order(D) = order_L(L, R) ++ new(R, L)  where
+  order_L(L, R) = [k for k in L in insertion order]
+                  (values replaced by R(k) where k ∈ K(R), position unchanged)
+  new(R, L)     = [k for k in R in insertion order where k ∉ K(L)]
+```
+
+Left keys retain their positions. Right keys that collide replace the value at the left key's position. Right keys that are new are appended in their original order.
+
+**Strictness (current):** `S × S → D` (§Selective Materialization). Both arguments are materialized to inspect dict structure (key sets). Values are `Rc::clone` (thunk pointers copied, not forced). This is a structural materialization — it forces the thunks to produce `Value::Dict` but does not recurse into field values. Phase 5b changes strictness to `L × L → D` — the overlay defers both operands' materialization until access (see Part 5).
+
+When both operands are list-dicts (integer keys `0..n`), `$merge` performs positional override, not concatenation: `merge([a b c], [x y])` produces `{0:x, 1:y, 2:c}`. Use `$concat` for list concatenation.
+
+**Error cases:**
+
+| Condition | Error |
+|-----------|-------|
+| `args.len() ≠ 2` | Arity mismatch |
+| `materialize(θ_L) ⇒ v` where v is not Dict | Type error: "merge: expected Dict, got {type}" |
+| `materialize(θ_R) ⇒ v` where v is not Dict | Type error: "merge: expected Dict, got {type}" |
+| `materialize(θ_L)` or `materialize(θ_R)` raises error | Error propagates (cycle, depth limit) |
+
+Named arguments are rejected (`reject_named`).
+
+### Part 3: Typing Rules
+
+**Current state:** `$merge` is typed as `Any → Any → Any`. The rules below specify the target type for the type-extensions roadmap Phase 1 (§Type System Extension Roadmap) when `TypeEnv::with_builtins()` registers precise builtin signatures. When an operand has type `TypeVar(α)`, Phase 1 falls back to T-MERGE-ANY (treating unresolved type variables as `Any`). After row-variable unification, option (a) — unifying `α` with a fresh open record type — becomes available but is not required for Phase 1.
+
+**[T-MERGE] Closed records:**
+
+T-MERGE applies only when both operands have closed record types (`RowRest::Closed`). Open records (`RowRest::Open` or `RowRest::RowVar`) fall through to T-MERGE-ANY until row-variable unification is implemented.
+
+```
+Γ ⊢ L : Record(F_L, Closed),  Γ ⊢ R : Record(F_R, Closed)
+───────────────────────────────────────────────────────────
+Γ ⊢ merge(L, R) : Record(F_L ⊕ F_R, Closed)
+```
+
+where `F_L ⊕ F_R` is the field-level right-biased merge:
+
+```
+dom(F_L ⊕ F_R) = dom(F_L) ∪ dom(F_R)
+(F_L ⊕ F_R)(k) = F_R(k)     if k ∈ dom(F_R)          [T-RIGHT-BIAS]
+(F_L ⊕ F_R)(k) = F_L(k)     if k ∈ dom(F_L) \ dom(F_R) [T-LEFT-KEEP]
+```
+
+For shared keys, the right operand's type wins. This mirrors the runtime semantics: the right value is what gets returned on access.
+
+**[T-MERGE-ANY] Gradual fallback:**
+
+```
+Γ ⊢ L : Any   or   Γ ⊢ R : Any
+────────────────────────────────
+Γ ⊢ merge(L, R) : Any
+```
+
+If either operand has type `Any` (unannotated, forward reference, or gradual escape), the result is `Any`. The type checker cannot compute field-level merge without knowing the field sets. This also applies when an operand is a `TypeVar` (Phase 1) or has an open record type (pre-row-unification).
+
+**Design choice:** When only one operand is `Any`, partial information could be preserved (e.g., `merge(Any, Record(F, Closed)) : Record(F, Open)`). This is rejected: it complicates the gradual typing story (§Type System Extension Roadmap, Phase 3) and gains little in practice. Deferred to Phase 3 gradual typing formalization.
+
+**Forward compatibility with row variables:** When row-variable unification (§Row-Variable Unification — Kinded Rémy Model) is implemented, the typing rule generalizes to:
+
+```
+Γ ⊢ L : Record(F_L, ρ₁),  Γ ⊢ R : Record(F_R, ρ₂)
+─────────────────────────────────────────────────────
+Γ ⊢ merge(L, R) : Record(F_L ⊕ F_R, ρ₃)
+```
+
+where `ρ₃` captures fields from `ρ₁` and `ρ₂` not in the known field sets. The precise definition of `ρ₃` depends on the row-unification design — Harper & Pierce (1991) require disjointness (`K(ρ₁) ∩ K(ρ₂) = ∅`) for symmetric concatenation, but tinct's right-biased semantics relax this. Rémy (1994) handles non-disjoint row extensions via presence/absence flags; tinct's right-bias is a simpler alternative that achieves similar expressiveness without the full flag system.
+
+The row-unification sprint must define how `⊕` interacts with row tails, subject to three constraints:
+
+1. **Closed-record preservation:** When `ρ₁ = ρ₂ = ∅`, T-MERGE (closed records) is recovered as a special case.
+2. **Common-tail preservation:** When `ρ₁ = ρ₂ = ρ`, then `ρ₃ = ρ` — merge preserves the common tail because it neither adds nor removes fields from the unknown extension.
+3. **Principality:** The choice of `ρ₃` must preserve principal types. When `ρ₁ ≠ ρ₂`, options include: (a) fresh `ρ₃` constrained by `ρ₁` and `ρ₂`, (b) unify `ρ₁` and `ρ₂`, or (c) error on incompatible open records. See §Row-Variable Unification Case 4 (fresh row variable for shared unknown tail) for the pattern.
+
+### Part 4: Algebraic Properties
+
+**P1 — Right-bias identity:** `(L ⊕ R)(k) = R(k)` for all `k ∈ K(R)`. The right operand's value is always chosen for shared keys, regardless of the left operand's value. This is the defining property.
+
+**P2 — Left identity:** `∅ ⊕ R = R`. Merging an empty dict on the left produces the right dict unchanged. Both key set and iteration order are preserved.
+
+**P3 — Right identity:** `L ⊕ ∅ = L`. Merging an empty dict on the right produces the left dict unchanged.
+
+**P4 — Associativity (content and iteration order):** `(A ⊕ B) ⊕ C = A ⊕ (B ⊕ C)` on both key-value content and iteration order. The rightmost dict wins for any key: in both groupings, `C(k)` wins if `k ∈ K(C)`, else `B(k)` if `k ∈ K(B)`, else `A(k)`.
+
+Iteration-order proof: In `L ⊕ R`, the result order is `[keys from L in L's order] ++ [keys from R not in L, in R's order]`. For the three-operand case, both groupings produce `[A keys] ++ [B keys \ A] ++ [C keys \ (A ∪ B)]`, each segment preserving its source's insertion order. This follows from IndexMap's insert-at-existing-position semantics: the leftmost operand containing a key determines its position.
+
+**P5 — Non-commutativity:** `L ⊕ R ≠ R ⊕ L` in general. Counterexample: `{x↦1} ⊕ {x↦2} = {x↦2}`, but `{x↦2} ⊕ {x↦1} = {x↦1}`. Right-bias makes merge inherently directional.
+
+**P6 — Idempotence:** `D ⊕ D = D`. Merging a dict with itself produces the same dict (same keys, same thunks — `Rc::clone` of the same allocation).
+
+**P7 — Monoid structure:** `(Dict, ⊕, ∅)` forms a monoid over ordered maps: ⊕ is associative on both content and iteration order (P4) with identity element ∅ (P2, P3). It is not a commutative monoid (P5). This justifies n-ary merge as a left fold: `merge*(D₁, ..., Dₙ) = (...((D₁ ⊕ D₂) ⊕ D₃)... ⊕ Dₙ)`, where later operands take priority. By P4, any grouping produces the same result.
+
+**P8 — Value preservation:** `$merge` never materializes, transforms, or copies values. It copies thunk pointers (`Rc::clone`). After `D = L ⊕ R`, for any key k, `D(k)` is the exact same `Rc<Thunk>` as `R(k)` or `L(k)` — not a new thunk wrapping the old one. This preserves sharing (§Thunk Lifecycle: evaluate-at-most-once).
+
+### Part 5: Lazy Overlay Compatibility
+
+Phase 5b (§Current vs Planned Laziness Analysis) replaces eager cloning with a lazy overlay representation. The overlay defers the merge operation itself:
+
+```
+Overlay(L, R) — O(1) construction
+  access(k): if k ∈ K(R) then R(k) else L(k) — O(1) per key
+  iterate:   flatten to concrete IndexMap — O(|L| + |R|)
+```
+
+The lazy overlay must satisfy **behavioral equivalence**: for any program P, replacing the eager `L ⊕ R` with `Overlay(L, R)` produces the same observable results (modulo documented error timing differences). Specifically:
+
+1. **Same values:** `Overlay(L, R)(k) = (L ⊕ R)(k)` for all `k ∈ dom(L) ∪ dom(R)`
+2. **Same iteration order:** When flattened, `iterate(Overlay(L, R))` produces keys in the same order as `L ⊕ R`
+3. **Same sharing:** Overlay access must preserve the `Rc::clone` contract from P8 — `Overlay(L, R)(k)` returns `Rc::clone` of `R(k)` or `L(k)`, the same `Rc<Thunk>` that eager merge would produce. This is pointer-level identity (`Rc::ptr_eq`), not just logical equivalence.
+
+The overlay introduces two observable differences, both intentional:
+
+**Error timing:** Eager merge materializes both dicts at merge time; overlay defers materialization of *both* L and R until access or iteration. A dict that would fail materialization (e.g., contains a cycle) fails at merge time with eager semantics but at access time with overlay semantics. This is documented as an intentional change in §Current vs Planned Laziness Analysis.
+
+**Error ordering:** When both operands contain errors, eager merge reports L's error first (L is materialized before R at `builtins.rs:446-447`). Overlay reports whichever operand's error is triggered first by access patterns. Programs should not depend on which operand's error is reported when both are broken.
+
+**Chained overlays:** `Overlay(Overlay(A, B), C)` has O(k) access per key for k chained merges. Flattening on iteration prevents unbounded chain depth during traversal. Overlay chain traversal is structural (key lookup, not thunk forcing) and does not consume depth budget from `MAX_EVAL_DEPTH` — it is analogous to `$get` on a nested scope chain, not to recursive materialization.
+
+### Part 6: Implementation Correspondence
+
+| Spec element | Implementation |
+|-------------|----------------|
+| MERGE rule | `builtin_merge` (`builtins.rs:435-462`) |
+| `materialize(θ_L, _, d)` | `materialize(&args[0], None, depth)` (line 446) |
+| `materialize(θ_R, _, d)` | `materialize(&args[1], None, depth)` (line 447) |
+| `require_dict` | `require_dict("merge", left_val, call_span)` (lines 448-449) |
+| LEFT-KEEP | First loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 455-457) |
+| RIGHT-BIAS | Second loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 459-461) |
+| Iteration order | IndexMap preserves insertion order; `insert` on existing key replaces value at existing position |
+| Value preservation (P8) | `Rc::clone(thunk)` — pointer copy, no materialization |
+| `reject_named` | `reject_named("merge", named, call_span)` (line 442) |
+| Arity check | `args.len() != 2` (line 443) |
+
+### Part 7: Worked Example
+
+```tinct
+base:  [timeout: 30  retries: 3  env: staging]
+prod:  [call $merge $base [env: prod  timeout: 60]]
+```
+
+Applying MERGE:
+
+```
+L = {timeout↦θ(30), retries↦θ(3), env↦θ("staging")}
+R = {env↦θ("prod"), timeout↦θ(60)}
+
+K(L) = {timeout, retries, env}
+K(R) = {env, timeout}
+K(L) ∩ K(R) = {timeout, env}    (shared keys — R wins)
+K(R) \ K(L) = ∅                  (no new keys from R)
+
+L ⊕ R:
+  timeout → θ(60)     [RIGHT-BIAS: R has timeout]     pos 0 (from L)
+  retries → θ(3)      [LEFT-KEEP: only in L]          pos 1 (from L)
+  env     → θ("prod") [RIGHT-BIAS: R has env]         pos 2 (from L)
+
+Result: {timeout↦θ(60), retries↦θ(3), env↦θ("prod")}
+```
+
+Note: `timeout` stays at position 0 (its position in L), not position 1 (its position in R). `retries` stays at position 1. No new keys from R, so nothing appended. Values `θ(60)`, `θ(3)`, `θ("prod")` are thunk pointers — the integers and string are not materialized by `$merge`.

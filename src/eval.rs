@@ -59,6 +59,19 @@ impl EvalContext {
             })),
         })
     }
+
+    /// Create a new EvalContext with a different base_dir but sharing the same
+    /// state (include guard, cache) and stdlib_env. Avoids allocating a new
+    /// EvalConfig when only base_dir changes (e.g., during $include).
+    pub fn with_base_dir(&self, base_dir: PathBuf) -> Rc<Self> {
+        Rc::new(Self {
+            config: Rc::new(EvalConfig {
+                base_dir,
+                stdlib_env: Rc::clone(&self.config.stdlib_env),
+            }),
+            state: Rc::clone(&self.state),
+        })
+    }
 }
 
 /// Check whether `k` falls in the half-open range `[start, end)`.
@@ -860,6 +873,8 @@ fn attach_materialization_context(
 pub fn materialize(
     thunk: &Thunk,
     mat_span: Option<&Span>,
+    // Thunks use their captured ctx during materialization, not this parameter.
+    // This exists for API consistency and future use (e.g., trace hooks).
     _ctx: &Rc<EvalContext>,
     depth: usize,
 ) -> EvalResult<Value> {
@@ -5959,6 +5974,113 @@ mod tests {
         // Verify that the two contexts have independent caches
         assert_eq!(ctx1.state.borrow().include_cache.len(), 1);
         assert_eq!(ctx2.state.borrow().include_cache.len(), 1);
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir1).unwrap();
+        std::fs::remove_dir_all(&temp_dir2).unwrap();
+    }
+
+    #[test]
+    fn test_evalcontext_shared_state_different_config() {
+        // Create two temp directories
+        let temp_dir1 =
+            std::env::temp_dir().join(format!("tinct_test_shared1_{}", std::process::id()));
+        let temp_dir2 =
+            std::env::temp_dir().join(format!("tinct_test_shared2_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir1).unwrap();
+        std::fs::create_dir_all(&temp_dir2).unwrap();
+
+        // Create a test file in dir1
+        let test_file1 = temp_dir1.join("shared_test.llt");
+        std::fs::write(&test_file1, "[cached: true]").unwrap();
+
+        // Create ctx1 with base_dir = temp_dir1
+        let ctx1 = EvalContext::new(
+            temp_dir1.clone(),
+            crate::builtins::create_stdlib_env().unwrap(),
+        );
+
+        // Create ctx2 that shares ctx1's state but has a different base_dir
+        let ctx2 = ctx1.with_base_dir(temp_dir2.clone());
+
+        // Verify that ctx2 has a different base_dir
+        assert_eq!(ctx1.config.base_dir, temp_dir1);
+        assert_eq!(ctx2.config.base_dir, temp_dir2);
+
+        // Verify that ctx2 shares the same state as ctx1 (using Rc::ptr_eq)
+        assert!(
+            Rc::ptr_eq(&ctx1.state, &ctx2.state),
+            "ctx2 should share the same state Rc as ctx1"
+        );
+
+        // Include a file using ctx1 - this populates the include_cache
+        let include_expr1 = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("include".into()))),
+            args: vec![sp(Expr::Str("shared_test.llt".into()))],
+            named_args: vec![],
+        });
+        let result1 = eval(&include_expr1, Rc::clone(&ctx1.config.stdlib_env), &ctx1, 0).unwrap();
+        let _val1 = materialize(&result1, None, &ctx1, 0).unwrap();
+
+        // Verify that ctx1's include_cache has one entry
+        assert_eq!(
+            ctx1.state.borrow().include_cache.len(),
+            1,
+            "ctx1 include_cache should have exactly one entry"
+        );
+
+        // Verify that ctx2's include_cache ALSO has the same entry (shared state)
+        assert_eq!(
+            ctx2.state.borrow().include_cache.len(),
+            1,
+            "ctx2 include_cache should share the same entry as ctx1"
+        );
+
+        // Verify they reference the exact same cache HashMap
+        let cache_key = test_file1.canonicalize().unwrap();
+        assert!(
+            ctx1.state.borrow().include_cache.contains_key(&cache_key),
+            "ctx1 cache should contain the canonical path"
+        );
+        assert!(
+            ctx2.state.borrow().include_cache.contains_key(&cache_key),
+            "ctx2 cache should contain the same canonical path"
+        );
+
+        // Test include_guard sharing: create same file in both directories
+        let guard_path1 = temp_dir1.join("guard_test.llt");
+        let guard_path2 = temp_dir2.join("guard_test.llt");
+        std::fs::write(&guard_path1, "[x: 1]").unwrap();
+        std::fs::write(&guard_path2, "[x: 2]").unwrap();
+
+        // Insert the canonical path of guard_path2 into ctx1's include guard
+        let canonical_guard = guard_path2.canonicalize().unwrap();
+        ctx1.state
+            .borrow_mut()
+            .include_guard
+            .insert(canonical_guard.clone());
+
+        // Verify the guard is visible in ctx2 (shared state)
+        assert!(
+            ctx2.state.borrow().include_guard.contains(&canonical_guard),
+            "ctx2 include_guard should contain the path inserted via ctx1"
+        );
+
+        // Attempt to include the guarded file using ctx2 - should detect cycle
+        // This resolves to temp_dir2/guard_test.llt which is in the shared guard
+        let include_expr2 = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("include".into()))),
+            args: vec![sp(Expr::Str("guard_test.llt".into()))],
+            named_args: vec![],
+        });
+        let result2 = eval(&include_expr2, Rc::clone(&ctx2.config.stdlib_env), &ctx2, 0).unwrap();
+        let err = materialize(&result2, None, &ctx2, 0).unwrap_err();
+
+        assert!(
+            err.message().contains("circular include") || err.message().contains("cycle"),
+            "expected circular include error from shared guard, got: {}",
+            err.message()
+        );
 
         // Cleanup
         std::fs::remove_dir_all(&temp_dir1).unwrap();

@@ -214,7 +214,19 @@ Add a test by creating a `.llt-eval` file in the appropriate directory, then run
 
 ## Documentation
 
-- **[DESIGN.md](DESIGN.md)** -- Language design: vision, 61 confirmed decisions, open questions, roadmap
-- **[SPEC.md](SPEC.md)** -- Formal parser specification: lexical/syntactic grammar (PEG), AST node types, static constraints
-- **[TODO.md](TODO.md)** -- Implementation roadmap with current status
-- **[CLAUDE.md](CLAUDE.md)** -- Development guide and implementation details
+- **[doc/](doc/index.md)** -- Language specification (17 chapters): syntax, data model, functions, type system, evaluation, stdlib, tooling, examples, internals
+- **[TODO.md](TODO.md)** -- Implementation roadmap with current sprint status
+- **[DESIGN.md](DESIGN.md)** -- Legacy design doc (source material for `doc/`)
+- **[SPEC.md](SPEC.md)** -- Legacy parser spec (source material for `doc/`)
+
+## Development Workflow
+
+Features move through these stages in order:
+
+1. **Design** — explore the problem, evaluate alternatives
+2. **Whatif doc** (`doc/whatif/`) — write a proposal covering current state, what the feature provides, design, phased adoption, and references
+3. **Accept & update spec** — accepted whatifs are incorporated into the relevant `doc/` chapters; the spec describes tinct *as it will be*, including features pending implementation
+4. **Sprint** — one or more TODO.md sprints tracking implementation tasks
+5. **Complete** — sprint checked off; spec was already accurate
+
+The `doc/` directory is the language spec. It describes the intended language, not the current implementation state. Implementation follows the spec.

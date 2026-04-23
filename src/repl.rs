@@ -103,7 +103,7 @@ impl ReplSession {
     /// Create a new REPL session using a pre-created stdlib environment.
     ///
     /// This allows the caller to share the same `stdlib_env` with other
-    /// infrastructure (e.g., `IncludeContext`).
+    /// infrastructure (e.g., `EvalContext`).
     pub fn with_env(stdlib_env: Rc<RefCell<Environment>>) -> Self {
         // Create a session env as a child of stdlib, with $$ = empty dict.
         let session_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(

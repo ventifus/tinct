@@ -120,12 +120,12 @@ Thread EvalContext through eval pipeline, migrate include, update API.
 
 Fix-later findings from evalcontext-thread panel review (C34).
 
-- [ ] Add `EvalContext::with_base_dir()` helper to share config via `Rc::clone` instead of allocating new EvalConfig per include (`src/builtins.rs:1065-1072`) [Minor, eval-engine + performance-expert + computer-scientist C34]
-- [ ] Add cross-context state-sharing test — two contexts sharing `state: Rc::clone(&ctx1.state)` but different `config` should share include_cache and include_guard (`src/eval.rs`) [Minor, eval-engine + test-crafter + integration-verifier C34]
-- [ ] Add documenting comment on `materialize()` `_ctx` parameter explaining thunks use captured ctx, parameter exists for future use (`src/eval.rs:863`) [Minor, eval-engine + test-crafter + span-integrity-checker + computer-scientist C34]
-- [ ] Fix stale docstring in repl.rs:106 referencing `IncludeContext` (removed) — should say `EvalContext` (`src/repl.rs:106`) [Nit, computer-scientist C34]
-- [ ] Fix include guard leak on materialize failure — `?` operator in builtin_include skips cleanup() on Err path; match on result like eval_result (`src/builtins.rs:1091`) [Major, computer-scientist C34]
-- [ ] Update DESIGN.md evaluation judgment forms to include Sigma (EvalContext) parameter — `<e, rho, Sigma, d> => v` (`DESIGN.md:2247-2329`) [Minor, computer-scientist C34]
+- [x] Add `EvalContext::with_base_dir()` helper to share config via `Rc::clone` instead of allocating new EvalConfig per include (`src/builtins.rs:1065-1072`) [Minor, eval-engine + performance-expert + computer-scientist C34]
+- [x] Add cross-context state-sharing test — two contexts sharing `state: Rc::clone(&ctx1.state)` but different `config` should share include_cache and include_guard (`src/eval.rs`) [Minor, eval-engine + test-crafter + integration-verifier C34]
+- [x] Add documenting comment on `materialize()` `_ctx` parameter explaining thunks use captured ctx, parameter exists for future use (`src/eval.rs:863`) [Minor, eval-engine + test-crafter + span-integrity-checker + computer-scientist C34]
+- [x] Fix stale docstring in repl.rs:106 referencing `IncludeContext` (removed) — should say `EvalContext` (`src/repl.rs:106`) [Nit, computer-scientist C34]
+- [x] Fix include guard leak on materialize failure — `?` operator in builtin_include skips cleanup() on Err path; match on result like eval_result (`src/builtins.rs:1091`) [Major, computer-scientist C34]
+- [x] Update DESIGN.md evaluation judgment forms to include Sigma (EvalContext) parameter — `<e, rho, Sigma, d> => v` (`DESIGN.md:2247-2329`) [Minor, computer-scientist C34]
 
 ## let-generalization: Levels-Based Let-Generalization
 
@@ -362,6 +362,7 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [ ] Benchmark: compare recursive vs iterative on deep chains and large collections
 - [ ] Remove 64MB worker thread stack workaround once iterative eval eliminates deep recursion
 - [ ] Verify thunk lifecycle invariants after CEK migration — sharing preservation (thunk identity via `Rc<Thunk>` must be maintained through continuation dispatch), ThunkState simplification (PendingBuiltin/PendingCall subsumed by Cont variants), MAX_EVAL_DEPTH removal (replace with configurable `--max-depth`), monotonicity proof carries over. See DESIGN.md §Thunk Lifecycle — Relationship to CEK Machine Migration. [Major, computer-scientist]
+- [ ] Fix eval_call eagerly materializing function value — `eval_call` at `src/eval.rs:462-463` calls `materialize(&func_thunk, ...)` before creating argument thunks, forcing the function-position expression immediately even when the entire call result is never used. Launchbury (1993) call-by-need requires the application itself to be lazy. PendingCall exists for exactly this deferral but is only used by builtins ($map, $filter), not by eval_call. CEK machine migration naturally resolves this: the CALL continuation defers function forcing until the call result is demanded. (`src/eval.rs:462-463`) [Major, computer-scientist C35]
 
 ## row-unification: Full Row-Variable Unification (Remy-Style)
 
@@ -716,11 +717,13 @@ Improvements to test infrastructure identified by cross-language analysis and te
 
 - [ ] Integration tests for REPL/LSP — multi-line input, hover on nested expressions, multiple errors (test-crafter review)
 - [ ] Add LSP corpus tests (`tests/lsp_corpus/`) with `.llt` + `.expected.json` per position
-- [ ] IncludeContext API documentation — add docstrings to `eval_source()`, `eval_file()`, `eval_file_with_input()` warning that `$include` requires `set_include_context()` setup (`src/lib.rs`) [Major, integration-verifier]
+- [ ] EvalContext API documentation — add docstrings to `eval_source()`, `eval_file()`, `eval_file_with_input()` documenting EvalContext requirements and `$include` behavior (`src/lib.rs`) [Major, integration-verifier]
+- [ ] Expose `eval_file_with_input` in public API — main.rs can inject JSON via stdin but lib.rs callers cannot; add public wrapper or re-export (`src/lib.rs`) [Major, integration-verifier C35]
+- [ ] Fix test helpers using `create_root_env()` instead of `create_stdlib_env()` — tests skip stdlib loading, so they can't test stdlib-dependent behavior accurately (`src/eval.rs`, `src/builtins.rs`) [Minor, integration-verifier C35]
 - [ ] Document circular builtins⇄eval dependency — add safety comment at `src/builtins.rs:28` explaining the value-level vs import-level dependency [Minor, integration-verifier]
 - [ ] Cross-layer contracts documentation — add §Implementation Architecture to DESIGN.md documenting pipeline phases (parse→typecheck→eval→serialize), cross-layer contracts (BuiltinFn signature, serializer requirements, thread-local state discipline), Expr→eval exhaustiveness invariant, Value→serializer coverage, type checker advisory role, environment chain construction order [Major, integration-verifier]
 - [ ] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference — add test for display_string with NaN/Inf (`src/lib.rs:112-125, 176-211`) [Minor, integration-verifier]
-- [ ] Add lib.rs IncludeContext doc comment mentioning cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs:44-46`) [Minor, integration-verifier]
+- [ ] Add lib.rs EvalContext doc comment mentioning include cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs`) [Minor, integration-verifier]
 - [ ] Add DESIGN.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
 
 ## Documentation Divergences (DESIGN.md / SPEC.md / Code)
@@ -782,6 +785,8 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **DESIGN.md missing `desugared` field documentation** — `Expr::Fn` has a `desugared: bool` origin tag (Pombrio & Krishnamurthi 2014) set by `wrap_expr_in_lambda()`, but DESIGN.md §`$_` Desugaring doesn't mention it. Add paragraph explaining origin tracking motivation and tooling use cases. (`DESIGN.md:2096-2103`, `src/ast.rs:106-110`) [Nit, grammar-architect + computer-scientist C32]
 - [ ] **DESIGN.md `try_wrap` sketch signature diverges from code** — sketch shows `if let Some(wrapped) = try_wrap(expr, depth)` returning `Option` with depth parameter; actual code at `desugar.rs:71` is `fn try_wrap(expr: &mut Spanned<Expr>) -> bool` (no depth, returns bool, mutates in place). Update to `if try_wrap(expr) { return; }`. (`DESIGN.md:2113`, `src/desugar.rs:71`) [Major, computer-scientist C33]
 - [ ] **DESIGN.md `desugar_file` sketch takes `Spanned<File>` but code takes `File`** — sketch says `fn desugar_file(file: &mut Spanned<File>)`, actual at `desugar.rs:16` is `fn desugar_file(file: &mut File)`. (`DESIGN.md:2107`, `src/desugar.rs:16`) [Nit, computer-scientist C33]
+- [ ] **DESIGN.md FORCE-BUILTIN and FORCE-CALL omit captured Σ_θ** — FORCE-EVAL correctly shows `Unevaluated(expr, env, Σ_θ)` with thunk-captured context, but FORCE-BUILTIN and FORCE-CALL state patterns don't show `Σ_θ`. Implementation (`value.rs:183-197`) captures `ctx` in both variants; formal rules should match per Reynolds (1972) defunctionalization. (`DESIGN.md:3357, 3372`) [Minor, computer-scientist C35]
+- [ ] **`with_base_dir()` docstring inaccurate** — says "Avoids allocating a new EvalConfig" but it does allocate a new `EvalConfig`; it avoids allocating a new `EvalState`. Update docstring. (`src/eval.rs:63-64`) [Nit, computer-scientist C35]
 - [ ] **DESIGN.md WRAP-DICT pseudocode still shows selective recursion** — WRAP-CALL updated to unconditional `[DESUGAR(a, depth+1) | a ∈ args]` but WRAP-DICT still shows `[if DIRECT(e.value) then e else ...]`. Semantically equivalent but notational inconsistency. Update to `[e{value=DESUGAR(e.value, depth+1)} | e ∈ entries]`. (`DESIGN.md:2041-2044`) [Minor, computer-scientist C33]
 - [ ] **DESIGN.md Structured Error Model Part 9 `is_cacheable()` listed as "integration deferred"** — Part 9 says `"defined, integration deferred to error-structured-migrate"` but is_cacheable() was fully integrated in error-structured-migrate-c. Part 8 (Error Semantics) correctly shows MEMO-SKIP with line references. Part 9 contradicts Part 8. Change to `"integrated in eval.rs materialize()"`. (`DESIGN.md:5178`) [Major, computer-scientist C33]
 - [ ] **DESIGN.md Structured Error Model Part 9 PROP-DEPTH listed as "integration deferred"** — Part 9 says `"is_cacheable() integration deferred"` but is fully integrated. Change to match Part 8. (`DESIGN.md:5184`) [Major, computer-scientist C33]

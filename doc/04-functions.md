@@ -1,0 +1,624 @@
+# Functions
+
+## Explicit Function Application
+
+**`call` keyword.** No implicit head evaluation. Brackets are always data.
+
+```tinct
+[a b c]                # Data — always
+[call $f $a $b $c]     # Function call — $f is the function, $a $b $c are arguments
+```
+
+Syntactically, `[call $f $x]` is a bracket expression with unkeyed entries (the same parsing mechanism as `[a b c]`). The `call` keyword triggers special-form recognition: the parser interprets the remaining entries as function + arguments, not as data. The AST represents this as a `Call` node with `func`, `args`, and `named_args` — not as a dict.
+
+**Why:** Enables full lazy evaluation. Without `call`, the evaluator must eagerly materialize the head of every bracketed expression. With `call`, the entire application (including the function) can remain a thunk until materialized.
+
+**Parser recognition:** The parser checks the first entry of every `[]`. If it matches a keyword (`call`, `fn`, `type`), the parser emits a specialized AST node. Otherwise it emits a `Dict` node. This is a parser-level decision, not an evaluator-level one.
+
+```tinct
+[call $f $x $y]                # Parsed as CallExpr — requires exact arity
+[fn [x] [call $+ $x 1]]       # Parsed as FnExpr — function definition
+```
+
+**Edge cases:**
+- `[call: something]` — the `:` makes `call` a key, not a keyword. Parsed as `Dict`.
+- `$call` — a variable reference, not the keyword. `[$call $x]` is a `Dict`, not a `CallExpr`.
+
+**No built-in alias.** Users can define their own shorthand in stdlib or user code.
+
+### Formal Grammar
+
+```pest
+call_form = { keyword_call ~ value ~ call_args }
+
+call_args = { (named_arg | value)* }
+
+named_arg = { named_arg_key ~ ":" ~ value }
+
+named_arg_key = @{ "$" ~ var_ident | bare_word }
+```
+
+Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See [Call Convention — Formal Specification](#call-convention--formal-specification) for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
+
+Examples:
+```tinct
+[call $f $x $y]
+[call $fetch "https://example.com" timeout: 60]
+```
+
+## Function Definition
+
+**No `defn` special form.** Named functions are ordinary dict entries using `fn`:
+
+```tinct
+[
+    double: [fn@Number [x@Number] [call $* $x 2]]
+    add: [fn@Number [x@Number y@Number] [call $+ $x $y]]
+]
+```
+
+**Why:** Consistent with dict-first design. Every binding is a key-value pair, no exceptions. Fewer special forms to implement.
+
+### Formal Grammar
+
+```pest
+fn_form = { keyword_fn ~ fn_annotation? ~ param_list ~ value }
+
+fn_annotation = ${ "@" ~ annotation_value }
+
+param_list = { "[" ~ (variadic_param | param)* ~ "]" }
+
+param = ${ param_name ~ param_annotation? }
+
+param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
+
+param_annotation = ${ "@" ~ annotation_value }
+
+variadic_param = !{ "..." ~ param_name }
+```
+
+Examples:
+```tinct
+[fn [x] $x]
+[fn@Number [x@Number y@Number] [call $+ $x $y]]
+[fn@[type: Number  doc: "Sum"] [x@Number  y@[type: Number  default: 0]] [call $+ $x $y]]
+[fn [f ...args] [call $map $f $args]]
+```
+
+## Function Arguments
+
+**Positional first, then named.** Like Python.
+
+```tinct
+[call $fetch "https://example.com" timeout: 30  retries: 3]
+```
+
+## Variadic Parameters
+
+**`...name` collects remaining arguments.** Consistent with `...` in type annotations for open records.
+
+```tinct
+->: [fn [data ...stages]
+    [call $reduce [fn [acc f] [call $f $acc]] $data $stages]]
+
+# Called as:
+[call $-> $data $step1 $step2 $step3]
+# $data = ..., $stages = [$step1 $step2 $step3]
+```
+
+## Lambdas and `$_` Shorthand
+
+### No Auto-Curry
+
+**`call` requires exact arity.** Passing too few or too many arguments is an error. Use lambdas or `$_` shorthand to adapt arity.
+
+```tinct
+add: [fn@Number [x@Number y@Number] [call $+ $x $y]]
+
+[call $add 1 2]                # → 3 (exact arity)
+[call $add 1]                  # ERROR: $add expects 2 arguments, got 1
+```
+
+**`$_` implicit lambda shorthand:** Any `[...]` expression that directly contains `$_` (not nested inside an inner `[...]`) is automatically wrapped in a single-argument function. `$_` becomes the parameter. All occurrences of `$_` in that bracket refer to the same parameter.
+
+```tinct
+[call $add $_ 1]               # → [fn [_] [call $add $_ 1]]
+[call $> $_.age 30]            # → [fn [_] [call $> $_.age 30]]
+$_.name                        # → [fn [_] $_.name]  (access chain, no brackets)
+```
+
+**`$_` in dict values:** `$_` desugaring also applies to dict literals. If any entry value directly contains `$_`, the entire dict is wrapped in an implicit lambda:
+
+```tinct
+[name: $_.name  age: $_.age]   # → [fn [_] [name: $_.name  age: $_.age]]
+```
+
+This is useful for creating projection functions in pipelines:
+
+```tinct
+[call $map [name: $_.name  age: $_.age] $users]
+```
+
+**`$_` in func position:** `$_` in the function position of `[call $_ ...]` does **not** trigger implicit lambda desugaring. Only `$_` in arguments, named arguments, dict values, and access chains triggers desugaring. `[call $_ $x]` is a call where the function is looked up from the variable `_`, not an implicit lambda.
+
+**`$_` in access chain keys/bounds:** `$_` in the key position of bracket access (e.g., `$data[$_]`) or in range bounds (e.g., `$data[$_..5]`) does **not** trigger desugaring. Only `$_` as the *target* of an access chain (e.g., `$_[0]`, `$_.name`) triggers implicit lambda wrapping.
+
+**Scoping rule:** The lambda boundary is the innermost `[...]` that directly contains `$_`. Nested bracket expressions that contain their own `$_` create separate lambdas:
+
+```tinct
+[call $filter [call $> $_.age 30] $users]
+#            └─── inner $_ ───┘
+# Inner [call $> $_.age 30] contains $_ → becomes [fn [_] [call $> $_.age 30]]
+# Outer [call $filter ...] does NOT contain $_ directly → stays as-is
+# Result: [call $filter [fn [_] [call $> $_.age 30]] $users]
+```
+
+**Pipeline interaction:** `$->` threads a value through a list of single-argument functions. Each pipeline step is either a function reference (for 1-arg functions) or a `$_` expression that creates an implicit lambda:
+
+```tinct
+[call $-> $data.users
+    [call $filter [call $> $_.age 30] $_]   # two $_ levels: inner = element, outer = collection
+    [call $map $_.name $_]                  # inner $_.name = element transform, outer $_ = collection
+    $sort]                                  # ref: already 1-arg
+```
+
+Desugaring of `[call $filter [call $> $_.age 30] $_]`:
+1. Inner `[call $> $_.age 30]` contains `$_` → `[fn [_] [call $> $_.age 30]]`
+2. Outer `[call $filter ... $_]` still contains `$_` → `[fn [_] [call $filter [fn [_] [call $> $_.age 30]] $_]]`
+3. Each `$_` binds to its innermost enclosing lambda (lexical scoping)
+
+**`$apply` spreads a list into function arguments:**
+
+```tinct
+args: [5 10]
+[call $apply $+ $args]         # → [call $+ 5 10] → 15
+```
+
+**Why not auto-curry:** Auto-currying makes arity errors silent. Pass too few arguments and you get a partial application instead of an error. Explicit arity checking catches mistakes.
+
+### `$_` Desugaring — Formal Specification
+
+`$_` desugaring is a **pre-typecheck source-to-source AST transformation**. It runs after parsing and before both type checking and evaluation. The type checker and evaluator both see the desugared form (Scala, Clojure, and Elixir all desugar placeholder syntax before evaluation — none gate on the runtime environment). See Pombrio & Krishnamurthi (2014) for the formal framework motivating pre-evaluation desugaring; Krishnamurthi (2012, PLAI) for the standard pipeline ordering.
+
+**Pipeline placement:**
+
+```
+source → parse → desugar_underscores → typecheck → eval
+```
+
+The pass operates on `Spanned<File>` (multi-document) and `Spanned<Expr>` (single expression for REPL). Both `eval_source()` and REPL entry points call the desugar pass after parsing.
+
+**DIRECT predicate.** Tests whether an expression is `$_` or an access chain rooted at `$_`. Operates on **raw** (pre-desugaring) AST nodes. Access chain keys, range bounds, and dict entry keys are excluded — only the access *target* triggers desugaring:
+
+```
+DIRECT(e) = match e with:
+  | VarRef("_")              → true
+  | DotAccess(e', _)         → DIRECT(e')
+  | BracketAccess(e', _)     → DIRECT(e')    -- target only, not key
+  | RangeAccess(e', _, _)    → DIRECT(e')    -- target only, not bounds
+  | _                        → false
+```
+
+**Rewrite rules.** The pass checks WRAP conditions on **raw** (un-desugared) children *before* recursing. DIRECT subtrees are left as-is inside the generated `Fn` body — they are variable references to the `_` parameter, not candidates for further wrapping. Non-DIRECT children are recursed into at depth+1 (inside the generated lambda, `_` is bound). This avoids the greedy-wrapping problem where naive bottom-up traversal would wrap `$_.age` before its enclosing Call could claim it (Visser 1998).
+
+```
+DESUGAR(e, depth) =
+  -- Fn with _ param: increase depth, recurse into body only
+  | Fn(params, body) where "_" ∈ params
+      → Fn(params, DESUGAR(body, depth + 1))
+
+  -- At depth > 0, _ is bound — recurse children, never wrap
+  | _ where depth > 0
+      → RECURSE_CHILDREN(e, depth)
+
+  -- WRAP-CALL: check DIRECT on args/named values, then wrap
+  | Call(f, args, named)
+      where (∃ a ∈ args. DIRECT(a)
+             or ∃ n ∈ named. DIRECT(n.value))
+      → Fn([_], Call(                                    -- [WRAP-CALL]
+            DESUGAR(f, depth + 1),                       -- recurse func
+            [DESUGAR(a, depth + 1) | a ∈ args],          -- recurse all args
+            [n{value=DESUGAR(n.value, depth + 1)}        -- recurse all named vals
+             | n ∈ named]))
+
+  -- WRAP-DICT: same pattern — check raw, wrap, recurse non-DIRECT
+  | Dict(entries)
+      where ∃ entry ∈ entries. DIRECT(entry.value)
+      → Fn([_], Dict(                                   -- [WRAP-DICT]
+            [if DIRECT(e.value) then e
+             else e{value=DESUGAR(e.value, depth + 1)}
+             | e ∈ entries]))
+
+  -- WRAP-DOT/BRACKET/RANGE: standalone access chain rooted at $_
+  -- Only fires when no enclosing Call/Dict claimed it
+  | DotAccess(target, field)
+      where DIRECT(target)
+      → Fn([_], DotAccess(target, field))                -- [WRAP-DOT]
+
+  | BracketAccess(target, key)
+      where DIRECT(target)
+      → Fn([_], BracketAccess(                           -- [WRAP-BRACKET]
+            target, DESUGAR(key, depth + 1)))
+
+  | RangeAccess(target, lo, hi)
+      where DIRECT(target)
+      → Fn([_], RangeAccess(                             -- [WRAP-RANGE]
+            target, DESUGAR(lo, depth + 1),
+            DESUGAR(hi, depth + 1)))
+
+  -- PASS: no wrapping, recurse into all children
+  | _ → RECURSE_CHILDREN(e, depth)                       -- [PASS]
+```
+
+**WRAP rules summary:**
+
+| Rule | Condition | Result |
+|------|-----------|--------|
+| WRAP-CALL | Any arg or named arg value is DIRECT (func position excluded) | Wrap in `Fn([_], Call(...))` |
+| WRAP-DICT | Any entry value is DIRECT | Wrap in `Fn([_], Dict(...))` |
+| WRAP-DOT | Standalone `$_.field` (not inside a Call/Dict that claims it) | Wrap in `Fn([_], DotAccess(...))` |
+| WRAP-BRACKET | Standalone `$_[key]` | Wrap in `Fn([_], BracketAccess(...))` |
+| WRAP-RANGE | Standalone `$_[lo..hi]` | Wrap in `Fn([_], RangeAccess(...))` |
+
+**Exclusions.** The following positions do **not** trigger desugaring:
+
+- **Func position in Call:** The function position is excluded from the DIRECT check (not from the wrapping). WRAP-CALL fires when any arg or named value is DIRECT, regardless of whether the function itself is also DIRECT. When both func and an arg are DIRECT (e.g., `[call $_ $_]`), wrapping produces `[fn [_] [call $_ $_]]` where both references bind to the same `_` parameter. A bare `[call $_ $x]` (func is DIRECT, no args are DIRECT) does not trigger WRAP-CALL; the func `$_` falls through to PASS and is recursed normally.
+- **Bracket access keys:** `$data[$_]` — `$_` in the key position is not checked by DIRECT on the target.
+- **Range bounds:** `$data[$_..5]` — bounds are not checked by DIRECT on the target.
+- **Dict entry keys:** `[$_: value]` — WRAP-DICT checks `DIRECT(entry.value)` only, never `entry.key`.
+- **TypeAssert values:** `[@Number $_.age]` — TypeAssert is not a WRAP form. The inner `$_.age` triggers WRAP-DOT independently, producing `[@Number [fn [_] $_.age]]` (a type assertion on a function). This is likely a user error; the type checker will report a mismatch.
+
+**Boundary forms and scoping.** `Dict`, `Call`, and `Fn` are **lambda boundaries**. The WRAP rules check raw children before recursing, so each `$_` binds to the innermost enclosing bracket that triggers a WRAP rule:
+
+```
+[call $filter [call $> $_.age 30] $users]
+
+Traversal (top-down check, selective recursion):
+  1. Outer Call: DIRECT($users)? No. DIRECT([call $> $_.age 30])? No (Call is
+     not DIRECT). No WRAP. RECURSE_CHILDREN.
+  2. Inner Call: DIRECT($_.age)? Yes (in args). WRAP-CALL fires.
+     → Fn([_], [call $> $_.age 30])
+  3. Outer Call now has args = [<fn>, $users] — neither is DIRECT. Unchanged.
+  Result: [call $filter [fn [_] [call $> $_.age 30]] $users]  ✓
+```
+
+**Shadowing.** If `_` is a parameter of an enclosing `Fn`, inner `$_` references refer to that parameter — they are ordinary variable references, not desugaring triggers. The `depth` parameter tracks this lexically:
+
+- `depth = 0`: `$_` is unbound, WRAP rules apply.
+- `depth > 0`: `$_` is bound by an enclosing `Fn([_] ...)`, RECURSE_CHILDREN only.
+
+This replaced the eval-time `env.borrow().get("_").is_none()` check with a purely syntactic scope analysis. The lexical approach is more precise: desugaring depends only on AST structure, never on the runtime environment.
+
+**Invariants:**
+
+1. **Syntactic determinism.** The desugaring result depends only on the AST structure, never on the runtime environment. The same expression always desugars the same way.
+2. **Idempotence.** Applying `DESUGAR` to an already-desugared AST produces no changes (the generated `Fn` nodes have `_` as a single parameter, setting depth > 0 for inner references).
+3. **Type visibility.** After desugaring, the type checker sees `Fn` nodes and can infer function types for `$_` expressions. With the current type checker (unannotated params default to `Type::Any`), `[call $add $_ 1]` types as `Fn(Any → Number)`. With future bidirectional checking, the call-site context could refine the parameter type — e.g., `[call $map $_.name $users]` where `$users: Seq[[name: Str ...]]` could check the lambda against `Fn([name: Str ...] → Str)`. Row-polymorphic parameter inference (see row-unification section) would further improve this to `Fn([name: α ...ρ] → α)`.
+
+**Span preservation.** Generated `Fn` nodes reuse the span of the original expression. Error messages reference user-written syntax (`[call $add $_ 1]`), not the desugared form (`[fn [_] [call $add $_ 1]]`).
+
+**Implementation sketch:**
+
+```rust
+fn desugar_file(file: &mut Spanned<File>) { /* walk documents/expressions */ }
+fn desugar_expr(expr: &mut Spanned<Expr>) { desugar(expr, 0) }
+
+fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
+    // Check WRAP conditions on raw children BEFORE recursing
+    if depth == 0 {
+        if let Some(wrapped) = try_wrap(expr, depth) {
+            *expr = wrapped;
+            return;
+        }
+    }
+    // At depth > 0 or no WRAP match: recurse into children
+    recurse_children(expr, depth)
+}
+```
+
+**Migration from eval-time desugaring.** The implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) was removed when the AST pass was activated. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) moved to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) now call `desugar_expr()` before `eval()`. The migration resolved TODO.md:44 ("$_ desugaring AST shape mismatch between type checker and evaluator").
+
+## Call Convention — Formal Specification
+
+Specifies how arguments at a call site are bound to function parameters. This is a dual-layer specification: **binding constraints** (declarative — what a valid binding is) and a **binding algorithm** (phased operational rules — how to compute it), connected by a **correctness proof** showing the algorithm computes the unique solution satisfying the constraints.
+
+The constraint layer draws on Garrigue's (1995) treatment of labeled and optional arguments, which separates the binding environment for default evaluation from the closure environment. The phased algorithm follows the Kotlin/Scala model: any parameter is nameable at the call site, required and optional parameters may be freely interleaved in declarations, and the arity constraint is a per-parameter coverage check rather than a simple count (see C-COVERAGE below).
+
+### Notation
+
+A function definition `[fn [p₁ p₂@[default: e₂] ...p₃] body]` has:
+
+| Symbol | Meaning |
+|--------|---------|
+| `P = [p₁, ..., pₙ]` | Regular (non-variadic) parameters, ordered by position |
+| `V` | Variadic parameter (if present): the `...name` param, always last |
+| `required(pᵢ)` | `true` iff pᵢ has no `default:` annotation |
+| `default(pᵢ)` | The default expression from pᵢ's `default:` annotation |
+| `R = \|{pᵢ ∈ P \| required(pᵢ)}\|` | Count of required parameters |
+
+A call site `[call $f a₁ a₂ k₁: v₁]` provides:
+
+| Symbol | Meaning |
+|--------|---------|
+| `pos = [θ₁, ..., θₘ]` | Positional argument thunks, in order |
+| `named = {k₁↦θ'₁, ..., kⱼ↦θ'ⱼ}` | Named argument thunks, keyed by name |
+| `env_d` | Environment for evaluating default expressions |
+| `env_c` | Closure environment (parent of the call environment) |
+
+The environment parameter `env_d` is caller-controlled (Garrigue 1995): for normal calls, `env_d` is the caller's environment; for `$apply`, `env_d` is the closure environment (since `$apply` has no caller-side AST context for defaults).
+
+### Part 1: Binding Constraints (Declarative)
+
+A **valid binding** for parameters `P`, optional variadic `V`, positional args `pos`, named args `named`, and default environment `env_d` is an environment `env_call` (with parent `env_c`) satisfying all of the following constraints simultaneously:
+
+**[C-COVERAGE] Per-parameter coverage (Kotlin model):**
+
+```
+∀pᵢ ∈ P where required(pᵢ):  i < |pos|  ∨  pᵢ.name ∈ dom(named)
+V = ∅ ⟹ |pos| ≤ |P|                         (no excess args without variadic)
+```
+
+Every required parameter must be covered by either a positional argument at its index or a named argument. This replaces a simple count-based arity check (`|pos| ≥ R`), which is insufficient when required parameters are interleaved with optional ones. Example: `[fn [a@[default: 1] b] body]` with one positional arg — count-based check passes (1 ≥ 1) but `b` at index 1 is unreachable.
+
+**[C-PRIORITY] Binding priority chain:**
+
+For each pᵢ ∈ P, exactly one case applies (in priority order):
+
+```
+(i)   i < |pos|                               ⟹  env_call(pᵢ) = pos[i]
+(ii)  i ≥ |pos| ∧ pᵢ.name ∈ dom(named)       ⟹  env_call(pᵢ) = named[pᵢ.name]
+(iii) i ≥ |pos| ∧ pᵢ.name ∉ dom(named)
+      ∧ ¬required(pᵢ)                         ⟹  env_call(pᵢ) = eval(default(pᵢ), env_d)
+```
+
+If none of the three cases applies (i.e., i ≥ |pos|, not named, and required), C-COVERAGE is violated — no valid binding exists.
+
+**[C-NO-OVERLAP] Positional/named exclusivity:**
+
+```
+∀(k, _) ∈ named:  ¬∃i < |pos| such that pᵢ.name = k
+```
+
+A named argument must not target a parameter already bound positionally.
+
+**[C-NAMED-VALID] Named argument validity:**
+
+```
+∀(k, _) ∈ named:  ∃pᵢ ∈ P such that pᵢ.name = k
+```
+
+Named arguments may target any parameter (required or optional), but must target an existing parameter. This enables the Kotlin model: to reach a required parameter past an optional one, name it at the call site.
+
+**[C-VARIADIC] Variadic collection:**
+
+```
+V ≠ ∅ ⟹ env_call(V) = Dict({k↦pos[|P|+k] | k ∈ 0..(|pos|-|P|)})
+```
+
+Excess positional arguments (beyond `|P|`) are collected into a Dict with integer keys starting at 0. If `|pos| = |P|`, the variadic Dict is empty (`{}`).
+
+**[C-COMPLETE] Completeness:**
+
+```
+∀pᵢ ∈ P:  pᵢ.name ∈ dom(env_call)
+V ≠ ∅ ⟹ V.name ∈ dom(env_call)
+```
+
+Every parameter receives a binding.
+
+### Part 2: Binding Algorithm (Phased Rules)
+
+Five sequential phases compute the binding. The output of each phase flows into the next. The judgment form is `bind(P, V, pos, named, env_d, env_c) ⇒ env_call | error`.
+
+**[BIND-SPLIT]**
+
+```
+params = [p₁, ..., pₙ]
+    pₙ.variadic = true  →  P = [p₁, ..., pₙ₋₁],  V = pₙ
+    otherwise            →  P = [p₁, ..., pₙ],     V = ∅
+───────────────────────────
+split(params) ⇒ (P, V)
+```
+
+The variadic parameter, if present, is always the last parameter. This is enforced by the parser.
+
+**[BIND-ARITY]**
+
+```
+For each pᵢ ∈ P where required(pᵢ):
+    if i ≥ |pos| ∧ pᵢ.name ∉ dom(named):
+        error("missing argument for required parameter '{pᵢ.name}'")
+
+V = ∅ ∧ |pos| > |P|         ⟹  error("arity mismatch: expected at most |P| arguments, got |pos|")
+otherwise                    ⟹  pass
+───────────────────────────
+arity_check(P, V, pos, named) ⇒ pass | error
+```
+
+Per-parameter coverage check: each required parameter must be reachable via positional index or named argument. This handles interleaved required/optional parameters correctly — a required param at index 3 with an optional param at index 2 is valid if the required param is provided by name.
+
+**[BIND-POSITIONAL]**
+
+```
+env₀ = Environment(parent: env_c)
+For i = 0, ..., |P|-1:
+    if i < |pos|:
+        envᵢ₊₁ = envᵢ[pᵢ.name ↦ pos[i]]                          (positional arg)
+    else if pᵢ.name ∈ dom(named):
+        envᵢ₊₁ = envᵢ[pᵢ.name ↦ named[pᵢ.name]]                  (named arg fills gap)
+    else if ¬required(pᵢ):
+        envᵢ₊₁ = envᵢ[pᵢ.name ↦ eval(default(pᵢ), env_d, d+1)]  (default value)
+    else:
+        unreachable (BIND-ARITY guarantees every required pᵢ has i < |pos| ∨ pᵢ.name ∈ dom(named))
+───────────────────────────
+bind_positional(P, pos, named, env_d, env_c) ⇒ env_{|P|}
+```
+
+Parameters are bound left-to-right. For each parameter, the priority chain determines the source: positional arg first, then named arg, then default. This phase consumes named args that fill gaps beyond the positional args — BIND-NAMED handles only the unconsumed remainder.
+
+The `env_d` parameter controls where default expressions are evaluated — this is the Garrigue (1995) separation. Defaults are evaluated eagerly at call time (not wrapped as thunks), so default-evaluation errors surface at the call site. This is consistent with Garrigue's system and with Kotlin/Scala.
+
+**[BIND-NAMED]** (validation only)
+
+```
+For each (k, θ) ∈ named:
+    if ∃i < |pos| such that pᵢ.name = k:
+        error("parameter 'k' received both positional and named argument")
+    if ¬∃pᵢ ∈ P such that pᵢ.name = k:
+        error("unexpected named argument: k")
+───────────────────────────
+bind_named(P, pos, named, env_{|P|}) ⇒ env_{|P|} | error
+```
+
+BIND-NAMED is a pure validation phase — it performs no bindings. All named args that target valid parameters were already consumed by BIND-POSITIONAL (which checks `pᵢ.name ∈ dom(named)` for params past the positional args). After BIND-POSITIONAL, every param in P is bound in `env_{|P|}`. BIND-NAMED verifies two conditions: (1) overlap — no named arg targets a positionally-bound parameter, (2) existence — every named arg targets a parameter that exists. Named args may target any parameter (required or optional) — this is the Kotlin model.
+
+The implementation may split this into two loops for engineering clarity (one for overlap, one for existence) without affecting semantics.
+
+**[BIND-VARIADIC]**
+
+```
+V ≠ ∅:
+    var_dict = Dict({k↦pos[|P|+k] | k ∈ 0..(|pos|-|P|)})
+    env_call = env'[V.name ↦ Materialized(var_dict)]
+V = ∅:
+    env_call = env'
+───────────────────────────
+bind_variadic(V, P, pos, env') ⇒ env_call
+```
+
+The variadic parameter receives a Dict with integer keys. The Dict is materialized immediately (not a thunk) — the values within it are thunks from the positional args, preserving laziness of the individual arguments.
+
+### Part 3: Correctness Proof
+
+**Theorem (Correctness of Binding Algorithm).** The phased binding algorithm (Part 2) computes the unique valid binding (Part 1) when one exists, and produces an error otherwise.
+
+The proof has three parts: uniqueness of the declarative solution, soundness of the algorithm, and completeness.
+
+**Uniqueness.** For each pᵢ ∈ P, the priority chain [C-PRIORITY] is deterministic: cases (i), (ii), (iii) are mutually exclusive because they partition the space by the condition `i < |pos|` and membership `pᵢ.name ∈ dom(named)`. Given fixed inputs, at most one case applies per parameter, so at most one environment satisfies all constraints simultaneously. The variadic binding [C-VARIADIC] is likewise deterministic (a fixed subsequence of `pos`). ∎
+
+**Soundness.** Assume the algorithm produces `env_call` without error. Show each constraint holds:
+
+- **C-COVERAGE:** BIND-ARITY explicitly checks per-parameter coverage for each required param and the upper bound. If the algorithm proceeds past BIND-ARITY, both conditions hold. ✓
+
+- **C-PRIORITY:** BIND-POSITIONAL iterates over P in order. For each pᵢ:
+  - If `i < |pos|`: binds `pos[i]` — matches case (i).
+  - If `i ≥ |pos|` and `pᵢ.name ∈ dom(named)`: binds `named[pᵢ.name]` — matches case (ii).
+  - If `i ≥ |pos|` and `pᵢ.name ∉ dom(named)` and `¬required(pᵢ)`: binds default — matches case (iii).
+  - The else branch is unreachable: BIND-ARITY guarantees every required pᵢ has `i < |pos| ∨ pᵢ.name ∈ dom(named)`, so at least one of cases (i) or (ii) applies.
+
+  Each case in the algorithm corresponds exactly to the matching constraint case. ✓
+
+- **C-NO-OVERLAP:** BIND-NAMED checks `∃i < |pos| such that pᵢ.name = k` for each named arg and errors if true. If no error, the constraint holds. ✓
+
+- **C-NAMED-VALID:** BIND-NAMED checks that each named arg targets an existing parameter. If no error, the constraint holds. ✓
+
+- **C-VARIADIC:** BIND-VARIADIC constructs exactly the Dict specified by the constraint. ✓
+
+- **C-COMPLETE:** BIND-POSITIONAL binds every pᵢ ∈ P (loop runs for all |P| params). BIND-VARIADIC binds V if present. ✓
+
+All constraints satisfied. ∎
+
+**Completeness.** Assume the constraints have a valid solution. Show the algorithm does not error:
+
+- BIND-ARITY: C-COVERAGE guarantees every required pᵢ has `i < |pos| ∨ pᵢ.name ∈ dom(named)`, and `V = ∅ ⟹ |pos| ≤ |P|`. All checks pass.
+- BIND-POSITIONAL: For each pᵢ where `i ≥ |pos|`: either `pᵢ.name ∈ dom(named)` (case ii of C-PRIORITY) or `¬required(pᵢ)` (case iii). The else branch is unreachable.
+- BIND-NAMED overlap check: C-NO-OVERLAP guarantees no named arg targets a positionally-bound param.
+- BIND-NAMED existence check: C-NAMED-VALID guarantees all named args target existing params.
+- BIND-VARIADIC: No error conditions.
+
+No error is produced. ∎
+
+**Corollary (Unique binding).** Since the solution is unique and the algorithm computes it, `bind_args_thunks` produces the unique valid binding for any given call. There are no alternative valid bindings that the algorithm might miss.
+
+### Part 4: Error Taxonomy
+
+The binding algorithm produces four distinct error classes. Each corresponds to a constraint violation:
+
+| Error | Constraint violated | Message pattern | Source |
+|-------|-------------------|-----------------|--------|
+| Uncovered required param | C-COVERAGE | `"missing argument for required parameter '{pᵢ.name}'"` | BIND-ARITY |
+| Too many args | C-COVERAGE (upper) | `"arity mismatch: expected at most {|P|} arguments, got {|pos|}"` | BIND-ARITY |
+| Positional/named overlap | C-NO-OVERLAP | `"parameter '{k}' received both positional and named argument"` | BIND-NAMED |
+| Nonexistent named arg | C-NAMED-VALID | `"unexpected named argument: {k}"` | BIND-NAMED |
+
+Default evaluation errors (from `eval(default(pᵢ), env_d)` in BIND-POSITIONAL) are not binding errors — they propagate as normal evaluation errors with the default expression's span.
+
+**Implementation note:** The current implementation (eval.rs:520-626) uses a count-based arity check and restricts named args to `default:` params. Adopting the Kotlin model requires two implementation changes: (1) replace the count check with per-parameter coverage, (2) remove the `get_default(p).is_some()` guard in the named-arg validity check. The spec documents the target semantics.
+
+### Part 5: `$apply` and the Default Environment
+
+The `default_env` parameter is the key difference between normal calls and `$apply`:
+
+```
+eval_call:     default_env = caller's environment (env)
+$apply:        default_env = closure environment  (env_c)
+```
+
+**Why `$apply` uses `env_c`:** `$apply` receives a function value and a dict of arguments at runtime — there is no caller-side AST context. Default expressions reference names from the function's definition site, not the call site. Using the closure environment ensures defaults resolve correctly.
+
+**Formal consequence:** The binding constraints [C-PRIORITY case (iii)] use `eval(default(pᵢ), env_d)`. The environment `env_d` is a parameter of the judgment, not fixed. This makes the specification parametric over the default evaluation strategy — both `eval_call` and `$apply` are instances of the same binding algorithm with different `env_d` values.
+
+**Correctness is preserved:** The correctness proof (Part 3) is parametric in `env_d`. Changing `env_d` affects which values defaults evaluate to, but not the structure of the binding (which params get positional vs named vs default). Soundness, completeness, and uniqueness hold for any `env_d`.
+
+**Variadic typing precision:** The type checker assigns variadic parameters type `Record([], Closed)` regardless of actual arguments (§Type Inference Algorithm, Limitation #8). The runtime Dict has integer-keyed entries with the excess args' types. A precise type would require dependent types (the length depends on `|pos| - |P|`). The current typing is a sound over-approximation — accessing variadic fields produces type errors that succeed at runtime. See Limitation #8 for the planned fix (`Record([], Open)` or `Any`).
+
+**PendingCall interaction:** When a `PendingCall` thunk is forced, it invokes `invoke_function`, which calls `bind_args_thunks` — the same binding algorithm specified above. The forcing semantics (state transitions, memoization, error handling) are specified in §Thunk Lifecycle — Formal Specification, rules FORCE-CALL and FORCE-CALL-BUILTIN.
+
+### Part 6: Worked Example
+
+Trace all five phases for a call with interleaved required/optional parameters:
+
+```tinct
+greet: [fn [greeting@[default: "hello"] name sep@[default: " "]]
+    [call $str $greeting $sep $name]]
+
+[call $greet name: "Alice"]
+```
+
+**BIND-SPLIT:** `params = [greeting, name, sep]`. No variadic.
+- `P = [greeting, name, sep]`, `V = ∅`
+
+**BIND-ARITY:** Required params = `{name (index 1)}`.
+- `name`: `1 < |pos|`? No (`|pos| = 0`). `"name" ∈ dom(named)`? Yes. ✓ Covered.
+- Upper bound: `|pos| = 0 ≤ |P| = 3`. ✓
+
+**BIND-POSITIONAL:** `pos = []`, `named = {"name"↦θ_Alice}`.
+
+| i | param | `i < \|pos\|`? | `name ∈ dom(named)`? | `¬required`? | Binding |
+|---|-------|-----------|------------------|------------|---------|
+| 0 | `greeting` | No (0 < 0) | No | Yes | `eval("hello", env_d)` → `"hello"` |
+| 1 | `name` | No (1 < 0) | Yes | — | `named["name"]` → `θ_Alice` |
+| 2 | `sep` | No (2 < 0) | No | Yes | `eval(" ", env_d)` → `" "` |
+
+Result: `env₃ = {greeting↦"hello", name↦θ_Alice, sep↦" "}`
+
+**BIND-NAMED:** Validate named args.
+- `("name", θ_Alice)`: overlap? `∃i < 0` with `pᵢ.name = "name"`? No. ✓ Exists? `name ∈ P`? Yes. ✓
+
+**BIND-VARIADIC:** `V = ∅`, skip.
+
+**Result:** `env_call = {greeting↦"hello", name↦θ_Alice, sep↦" "}`. Evaluates to `"hello Alice"`.
+
+Without the Kotlin model, this call would fail — `name` has no `default:`, so it couldn't be named. The caller would have to write `[call $greet "hello" "Alice"]`, defeating the purpose of `greeting`'s default.
+
+**`PendingCall` thunk state:**
+
+To make dict-returning operations lazy, the thunk model gains a new state:
+
+```
+PendingCall(function: Rc<Thunk>, args: Vec<Rc<Thunk>>, call_span: Span)
+```
+
+`PendingCall` represents "apply this function to these arguments when forced." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result (transitioning to `Materialized`), just like `PendingBuiltin` does for builtin calls.
+
+This is different from `PendingBuiltin` in a key way:
+- **PendingBuiltin** stores a Rust function pointer (`BuiltinFn`) and its arguments — the builtin runs when materialized
+- **PendingCall** stores a user-defined function thunk, its argument thunks, and a `call_span: Span` (for error reporting) — invokes `invoke_function()` when materialized
+
+Both support lazy evaluation, but `PendingCall` works at the LLT function level (no AST needed), while `PendingBuiltin` works at the Rust builtin level.
+
+**Type transparency:** `PendingCall` is invisible to the type system — a `PendingCall(f, [x])` has the same inferred type as `f(x)`. No new `Type` variant is needed; HM type inference is unchanged.
+
+**Error reporting:** When `PendingCall` materialization fails, the definition-site span comes from the function's body, the materialization-site span from where the thunk was forced, and a stack frame is added with the deferred call's creation span (from `call_span`).
+
+**Motivation:** Operations like `$map` on dicts need to create new thunks that apply a function to each value, but they can't store AST nodes (the function comes from a runtime variable). `PendingCall` lets them defer function application without needing to construct new AST `CallExpr` nodes.

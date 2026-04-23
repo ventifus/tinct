@@ -1062,14 +1062,7 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .to_path_buf();
 
     // Create a new EvalContext with the included file's directory.
-    let included_ctx = crate::eval::EvalContext {
-        config: Rc::new(crate::eval::EvalConfig {
-            base_dir: included_file_dir,
-            stdlib_env: Rc::clone(&ctx.config.stdlib_env),
-        }),
-        state: Rc::clone(&ctx.state),
-    };
-    let included_ctx = Rc::new(included_ctx);
+    let included_ctx = ctx.with_base_dir(included_file_dir);
 
     let stdlib_env = Rc::clone(&ctx.config.stdlib_env);
 
@@ -1088,8 +1081,16 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // Eagerly materialize: the include guard is only valid while
             // the current file's canonical path is in the set. Returning
             // a lazy thunk would defer evaluation past the guard removal.
-            let val = crate::eval::materialize(&thunk, None, &included_ctx, depth + 1)?;
-            cleanup();
+            let val = match crate::eval::materialize(&thunk, None, &included_ctx, depth + 1) {
+                Ok(v) => {
+                    cleanup();
+                    v
+                }
+                Err(e) => {
+                    cleanup();
+                    return Err(e);
+                }
+            };
             let result_thunk = ok_val(val)?;
 
             // Cache the result thunk for future includes of this file.

@@ -26,3 +26,4 @@ Cargo.lock
 
 # Local memory palace
 .mempalace/
+.mempalace.backup/
