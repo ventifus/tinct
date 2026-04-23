@@ -135,11 +135,14 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
         }
     };
     set_include_context(IncludeContext {
-        base_dir,
+        base_dir: base_dir.clone(),
         include_guard: Rc::new(RefCell::new(HashSet::new())),
         stdlib_env: Rc::clone(&env),
         cache: Rc::new(RefCell::new(HashMap::new())),
     });
+
+    // Create evaluation context
+    let eval_ctx = tinct::EvalContext::new(base_dir, Rc::clone(&env));
 
     // Wrap evaluation logic in a closure so that clear_include_context() runs
     // on all exit paths (success and error), preventing stale thread-local state.
@@ -147,15 +150,15 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
         let initial_input = stdin_input;
 
         // Evaluate
-        let thunk =
-            eval_file_with_input(&ast.node, env, initial_input, 0).map_err(|e| format!("{e}"))?;
+        let thunk = eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, initial_input, 0)
+            .map_err(|e| format!("{e}"))?;
 
         // Materialize the result
-        let val = materialize(&thunk, None, 0).map_err(|e| format!("{e}"))?;
+        let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
 
         // Optionally deep-force all thunks
         let val = if force_eval {
-            deep_materialize(&val, 0).map_err(|e| format!("{e}"))?
+            deep_materialize(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?
         } else {
             val
         };
@@ -163,7 +166,7 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
         // Serialize and output
         match format {
             OutputFormat::Json => {
-                let json = value_to_json(&val, 0).map_err(|e| format!("{e}"))?;
+                let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
                 let output = serde_json::to_string_pretty(&json)
                     .map_err(|e| format!("JSON serialization error: {e}"))?;
                 println!("{output}");
@@ -174,9 +177,10 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
                 let display_val = if force_eval {
                     &val
                 } else {
-                    &deep_materialize(&val, 0).map_err(|e| format!("{e}"))?
+                    &deep_materialize(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?
                 };
-                let output = value_to_display_string(display_val, 0).map_err(|e| format!("{e}"))?;
+                let output = value_to_display_string(display_val, &eval_ctx, 0)
+                    .map_err(|e| format!("{e}"))?;
                 println!("{output}");
             }
         }

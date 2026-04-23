@@ -88,6 +88,7 @@ fn expect_one_arg(
     name: &str,
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
+    ctx: &Rc<crate::eval::EvalContext>,
     depth: usize,
     call_span: Span,
 ) -> EvalResult<Value> {
@@ -97,7 +98,7 @@ fn expect_one_arg(
     if !named.is_empty() {
         return Err(EvalError::named_arg_rejected(name, call_span).into());
     }
-    materialize(&args[0], None, depth)
+    materialize(&args[0], None, ctx, depth)
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
@@ -125,12 +126,17 @@ enum NumPair {
 }
 
 /// Extract two numeric operands with auto-promotion, enforcing arity == 2.
-fn extract_num_pair(args: &[Rc<Thunk>], depth: usize, call_span: Span) -> EvalResult<NumPair> {
+fn extract_num_pair(
+    args: &[Rc<Thunk>],
+    ctx: &Rc<crate::eval::EvalContext>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<NumPair> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], None, depth)?;
-    let right = materialize(&args[1], None, depth)?;
+    let left = materialize(&args[0], None, ctx, depth)?;
+    let right = materialize(&args[1], None, ctx, depth)?;
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => Ok(NumPair::Ints(*a, *b)),
         (Value::Int(a), Value::Float(b)) => Ok(NumPair::Floats(*a as f64, *b)),
@@ -193,15 +199,16 @@ fn reject_named(
 
 /// `+`: Addition with auto-promotion. Int + Int -> Int, any Float operand -> Float.
 /// Inherently materializing: must extract numeric values to compute sum.
-fn builtin_add(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("+", named, call_span)?;
-    match extract_num_pair(args, depth, call_span)? {
+    match extract_num_pair(args, &ctx, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_add(b)
             .map(|n| ok_val(Value::Int(n)))
@@ -212,15 +219,16 @@ fn builtin_add(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `-`: Subtraction with auto-promotion. Int - Int -> Int, any Float operand -> Float.
 /// Inherently materializing: must extract numeric values to compute difference.
-fn builtin_sub(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("-", named, call_span)?;
-    match extract_num_pair(args, depth, call_span)? {
+    match extract_num_pair(args, &ctx, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
             .map(|n| ok_val(Value::Int(n)))
@@ -231,15 +239,16 @@ fn builtin_sub(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `*`: Multiplication with auto-promotion. Int * Int -> Int, any Float operand -> Float.
 /// Inherently materializing: must extract numeric values to compute product.
-fn builtin_mul(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("*", named, call_span)?;
-    match extract_num_pair(args, depth, call_span)? {
+    match extract_num_pair(args, &ctx, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
             .map(|n| ok_val(Value::Int(n)))
@@ -250,15 +259,16 @@ fn builtin_mul(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `/`: Float division. ALWAYS returns Float, even for Int / Int. Division by zero produces an error.
 /// Inherently materializing: must extract numeric values to compute quotient.
-fn builtin_div_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("/", named, call_span)?;
-    match extract_num_pair(args, depth, call_span)? {
+    match extract_num_pair(args, &ctx, depth, call_span)? {
         NumPair::Ints(a, b) => {
             if b == 0 {
                 Err(EvalError::division_by_zero("/", call_span).into())
@@ -281,19 +291,20 @@ fn builtin_div_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// promotes Int to Float. Dict/Function/Builtin are never equal (returns false,
 /// not an error).
 /// Inherently materializing: must inspect values to determine equality.
-fn builtin_eq(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("=", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], None, depth)?;
-    let right = materialize(&args[1], None, depth)?;
+    let left = materialize(&args[0], None, &ctx, depth)?;
+    let right = materialize(&args[1], None, &ctx, depth)?;
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a == b,
@@ -314,19 +325,20 @@ fn builtin_eq(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Int to Float. String comparison is lexicographic. Bool: false < true.
 /// Incompatible types (e.g. Int vs String) produce a type error.
 /// Inherently materializing: must inspect values to determine ordering.
-fn builtin_lt(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("<", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], None, depth)?;
-    let right = materialize(&args[1], None, depth)?;
+    let left = materialize(&args[0], None, &ctx, depth)?;
+    let right = materialize(&args[1], None, &ctx, depth)?;
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a < b,
@@ -354,20 +366,21 @@ fn builtin_lt(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Materializes ONLY the condition, then materializes ONLY the chosen branch.
 /// The unchosen branch's thunk is never materialized -- this preserves lazy
 /// semantics because `eval_call` wraps each arg as a thunk before calling.
-fn builtin_if(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("if", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
 
     // Materialize only the condition
-    let condition = materialize(&args[0], None, depth)?;
+    let condition = materialize(&args[0], None, &ctx, depth)?;
 
     match condition {
         Value::Bool(true) => Ok(Rc::clone(&args[1])),
@@ -380,18 +393,19 @@ fn builtin_if(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// mapping to the key values (Int keys become Int values, String keys become
 /// String values). Insertion order is preserved.
 /// Inherently materializing: must access IndexMap to enumerate keys.
-fn builtin_keys(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("keys", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], None, depth)?;
+    let val = materialize(&args[0], None, &ctx, depth)?;
     let map = require_dict("keys", val, call_span)?;
 
     let origin = call_span;
@@ -411,18 +425,19 @@ fn builtin_keys(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `length`: Takes 1 arg (a Dict). Returns an Int with the number of entries.
 /// Inherently materializing: must access IndexMap to count entries.
-fn builtin_length(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("length", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], None, depth)?;
+    let val = materialize(&args[0], None, &ctx, depth)?;
     let map = require_dict("length", val, call_span)?;
     ok_val(Value::Int(map.len() as i64))
 }
@@ -431,19 +446,20 @@ fn builtin_length(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// entries from the left dict, then all entries from the right dict. If both
 /// have the same key, right wins. Values remain as thunks (no materialization
 /// of values).
-fn builtin_merge(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("merge", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left_val = materialize(&args[0], None, depth)?;
-    let right_val = materialize(&args[1], None, depth)?;
+    let left_val = materialize(&args[0], None, &ctx, depth)?;
+    let right_val = materialize(&args[1], None, &ctx, depth)?;
     let left = require_dict("merge", left_val, call_span)?;
     let right = require_dict("merge", right_val, call_span)?;
 
@@ -468,18 +484,19 @@ fn builtin_merge(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// This is O(n) for the clone but O(1) amortized for the insert itself,
 /// compared to the old LLT `append` which did a full `merge` (copying the
 /// entire accumulator into a new dict via two-dict iteration).
-fn builtin_append(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("append", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let dict_val = materialize(&args[0], None, depth)?;
+    let dict_val = materialize(&args[0], None, &ctx, depth)?;
     let mut map = require_dict("append", dict_val, call_span)?;
 
     // Compute the next integer key: max existing int key + 1, or 0 if none.
@@ -506,17 +523,18 @@ fn builtin_append(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Materializes each argument and concatenates their string representations.
 /// With zero args, returns an empty string.
 /// Inherently materializing: must inspect values to convert to string representation.
-fn builtin_str(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("str", named, call_span)?;
     let mut result = String::new();
     for arg in args {
-        let val = materialize(arg, None, depth)?;
+        let val = materialize(arg, None, &ctx, depth)?;
         result.push_str(&stringify(&val));
     }
     ok_val(Value::String(result))
@@ -527,19 +545,20 @@ fn builtin_str(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes 2 args: `separator` (String), `input` (String).
 /// Returns a Dict with integer keys `0..n` mapping to the split substrings.
 /// Inherently materializing: must inspect string content to split into substrings.
-fn builtin_split(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("split", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let sep_val = materialize(&args[0], None, depth)?;
-    let input_val = materialize(&args[1], None, depth)?;
+    let sep_val = materialize(&args[0], None, &ctx, depth)?;
+    let input_val = materialize(&args[1], None, &ctx, depth)?;
 
     let sep = require_string("split", sep_val, call_span)?;
     let input = require_string("split", input_val, call_span)?;
@@ -563,20 +582,21 @@ fn builtin_split(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes 3 args: `pattern` (String), `replacement` (String), `input` (String).
 /// Returns a new String with all occurrences of `pattern` replaced by `replacement`.
 /// Inherently materializing: must inspect string content to find and replace patterns.
-fn builtin_replace(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("replace", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
-    let pattern_val = materialize(&args[0], None, depth)?;
-    let replacement_val = materialize(&args[1], None, depth)?;
-    let input_val = materialize(&args[2], None, depth)?;
+    let pattern_val = materialize(&args[0], None, &ctx, depth)?;
+    let replacement_val = materialize(&args[1], None, &ctx, depth)?;
+    let input_val = materialize(&args[2], None, &ctx, depth)?;
 
     let pattern = require_string("replace", pattern_val, call_span)?;
     let replacement = require_string("replace", replacement_val, call_span)?;
@@ -587,28 +607,30 @@ fn builtin_replace(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `upper`: Convert a string to uppercase. Takes 1 arg (String).
 /// Inherently materializing: must inspect string content to convert case.
-fn builtin_upper(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_upper(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("upper", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("upper", args, named, &ctx, depth, call_span)?;
     let s = require_string("upper", val, call_span)?;
     ok_val(Value::String(s.to_uppercase()))
 }
 
 /// `lower`: Convert a string to lowercase. Takes 1 arg (String).
 /// Inherently materializing: must inspect string content to convert case.
-fn builtin_lower(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_lower(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("lower", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("lower", args, named, &ctx, depth, call_span)?;
     let s = require_string("lower", val, call_span)?;
     ok_val(Value::String(s.to_lowercase()))
 }
@@ -617,14 +639,15 @@ fn builtin_lower(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Takes 1 arg (String). Returns the trimmed string.
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
-fn builtin_trim(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_trim(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("trim", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("trim", args, named, &ctx, depth, call_span)?;
     let s = require_string("trim", val, call_span)?;
     ok_val(Value::String(s.trim().to_string()))
 }
@@ -640,10 +663,11 @@ fn float_to_int_builtin(
     op: fn(f64) -> f64,
     args: &[Rc<Thunk>],
     named: &IndexMap<String, Rc<Thunk>>,
+    ctx: &Rc<crate::eval::EvalContext>,
     depth: usize,
     call_span: Span,
 ) -> EvalResult<Rc<Thunk>> {
-    let val = expect_one_arg(name, args, named, depth, call_span)?;
+    let val = expect_one_arg(name, args, named, ctx, depth, call_span)?;
     match val {
         Value::Int(n) => ok_val(Value::Int(n)),
         Value::Float(f) => {
@@ -663,14 +687,15 @@ fn float_to_int_builtin(
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
 /// Inherently materializing: must inspect numeric value to convert/round.
-fn builtin_floor(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    float_to_int_builtin("floor", f64::floor, args, named, depth, call_span)
+        ctx,
+    } = ctx_arg;
+    float_to_int_builtin("floor", f64::floor, args, named, &ctx, depth, call_span)
 }
 
 /// `round`: Takes 1 numeric arg (Int or Float). Returns Int.
@@ -680,14 +705,15 @@ fn builtin_floor(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
 /// Inherently materializing: must inspect numeric value to convert/round.
-fn builtin_round(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    float_to_int_builtin("round", f64::round, args, named, depth, call_span)
+        ctx,
+    } = ctx_arg;
+    float_to_int_builtin("round", f64::round, args, named, &ctx, depth, call_span)
 }
 
 /// `to-int`: STRING-TO-NUMBER PARSING ONLY. Takes 1 String arg.
@@ -695,14 +721,15 @@ fn builtin_round(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Parses the string as an integer via `str::parse::<i64>()`. Returns Int.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
 /// Inherently materializing: must inspect string content to parse integer value.
-fn builtin_to_int(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("to-int", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("to-int", args, named, &ctx, depth, call_span)?;
     let s = require_string("to-int", val, call_span)?;
     match s.parse::<i64>() {
         Ok(n) => ok_val(Value::Int(n)),
@@ -715,14 +742,15 @@ fn builtin_to_int(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Parses the string as a float via `str::parse::<f64>()`. Returns Float.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
 /// Inherently materializing: must inspect string content to parse float value.
-fn builtin_to_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("to-float", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("to-float", args, named, &ctx, depth, call_span)?;
     let s = require_string("to-float", val, call_span)?;
     match s.parse::<f64>() {
         Ok(f) if f.is_finite() => ok_val(Value::Float(f)),
@@ -738,28 +766,30 @@ fn builtin_to_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `eval`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval::deep_materialize`].
 /// Inherently materializing: deep-forces all thunks by definition.
-fn builtin_eval(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("eval", args, named, depth, call_span)?;
-    let deep = crate::eval::deep_materialize(&val, depth)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("eval", args, named, &ctx, depth, call_span)?;
+    let deep = crate::eval::deep_materialize(&val, &ctx, depth)?;
     ok_val(deep)
 }
 
 /// `error`: takes 1 arg (String message), always raises.
 /// Inherently materializing: constructs concrete error value.
-fn builtin_error(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_error(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("error", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("error", args, named, &ctx, depth, call_span)?;
     let msg = require_string("error", val, call_span)?;
     Err(EvalError::user_error(msg, call_span).into())
 }
@@ -767,18 +797,19 @@ fn builtin_error(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[ok: value]`
 /// on success or `[err: message]` on failure.
 /// Inherently materializing: must materialize body to catch errors.
-fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("try", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let func_val = materialize(&args[0], None, depth)?;
+    let func_val = materialize(&args[0], None, &ctx, depth)?;
 
     let call_result = match func_val {
         Value::Function {
@@ -794,9 +825,10 @@ fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let body_thunk = Rc::new(Thunk::new_unevaluated(
                 Rc::clone(&body),
                 Rc::clone(&closure_env),
+                Rc::clone(&ctx),
                 body.span,
             ));
-            materialize(&body_thunk, None, depth)
+            materialize(&body_thunk, None, &ctx, depth)
         }
         Value::Builtin { func, .. } => {
             let builtin_args = BuiltinArgs {
@@ -804,9 +836,10 @@ fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 named: &IndexMap::new(),
                 depth,
                 call_span,
+                ctx: Rc::clone(&ctx),
             };
             match func(builtin_args) {
-                Ok(result_thunk) => materialize(&result_thunk, None, depth),
+                Ok(result_thunk) => materialize(&result_thunk, None, &ctx, depth),
                 Err(e) => Err(e),
             }
         }
@@ -850,19 +883,20 @@ fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// For user-defined functions, delegates to `eval::invoke_function` so that
 /// default values, named args, and variadics are handled identically to `call`.
-fn builtin_apply(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("apply", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let func_val = materialize(&args[0], None, depth)?;
-    let args_val = materialize(&args[1], None, depth)?;
+    let func_val = materialize(&args[0], None, &ctx, depth)?;
+    let args_val = materialize(&args[1], None, &ctx, depth)?;
 
     let arg_dict = match args_val {
         Value::Dict(map) => map,
@@ -888,6 +922,7 @@ fn builtin_apply(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 positional: &positional,
                 named: &IndexMap::new(),
                 default_env: &closure_env,
+                ctx: &ctx,
                 call_span,
                 depth,
                 origin: Cow::Borrowed("call $apply"),
@@ -899,6 +934,7 @@ fn builtin_apply(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 named: &IndexMap::new(),
                 depth,
                 call_span,
+                ctx: Rc::clone(&ctx),
             };
             func(builtin_args)
         }
@@ -909,14 +945,15 @@ fn builtin_apply(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
 /// Both `Function` and `Builtin` return "Function" (from the user's perspective).
 /// Inherently materializing: must inspect value variant to determine type.
-fn builtin_type_of(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("type-of", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("type-of", args, named, &ctx, depth, call_span)?;
     let name = match val.type_name() {
         "Builtin" => "Function",
         other => other,
@@ -972,14 +1009,15 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
 
 /// `from-json`: takes 1 arg (String containing JSON), parses into LLT value.
 /// Inherently materializing: must parse entire JSON string to construct value.
-fn builtin_from_json(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("from-json", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("from-json", args, named, &ctx, depth, call_span)?;
     let json_str = require_string("from-json", val, call_span)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| EvalError::json_parse(e.to_string(), call_span))?;
@@ -992,20 +1030,21 @@ fn builtin_from_json(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// directory. Absolute paths are used as-is. Cycle detection prevents A→B→A
 /// circular includes. The included file gets an empty `$$` and sees the stdlib
 /// environment but NOT the caller's scope.
-fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("include", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("include", args, named, &ctx, depth, call_span)?;
     let file_path_str = require_string("include", val, call_span)?;
 
     // Read the include context from the thread-local.
     INCLUDE_CTX.with(|cell| {
-        let mut ctx_ref = cell.borrow_mut();
-        let ctx = ctx_ref
+        let mut inc_ctx_ref = cell.borrow_mut();
+        let inc_ctx = inc_ctx_ref
             .as_mut()
             .ok_or_else(|| EvalError::include_not_available(call_span))?;
 
@@ -1014,7 +1053,7 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let resolved = if raw_path.is_absolute() {
             raw_path.to_path_buf()
         } else {
-            ctx.base_dir.join(raw_path)
+            inc_ctx.base_dir.join(raw_path)
         };
 
         // Canonicalize to detect cycles and normalize the path.
@@ -1023,12 +1062,12 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         })?;
 
         // Check cache first: if we've already evaluated this file, return the cached thunk.
-        if let Some(cached) = ctx.cache.borrow().get(&canonical) {
+        if let Some(cached) = inc_ctx.cache.borrow().get(&canonical) {
             return Ok(Rc::clone(cached));
         }
 
         // Cycle detection.
-        if ctx.include_guard.borrow().contains(&canonical) {
+        if inc_ctx.include_guard.borrow().contains(&canonical) {
             return Err(
                 EvalError::include_cycle(canonical.display().to_string(), call_span).into(),
             );
@@ -1063,30 +1102,33 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         })?;
 
         // Add to include guard before recursing.
-        ctx.include_guard.borrow_mut().insert(canonical.clone());
+        inc_ctx.include_guard.borrow_mut().insert(canonical.clone());
 
         // Save current base_dir and set new one for the included file.
-        let parent_base_dir = ctx.base_dir.clone();
-        ctx.base_dir = canonical
+        let parent_base_dir = inc_ctx.base_dir.clone();
+        inc_ctx.base_dir = canonical
             .parent()
             .unwrap_or_else(|| std::path::Path::new("/"))
             .to_path_buf();
 
-        let stdlib_env = Rc::clone(&ctx.stdlib_env);
+        let stdlib_env = Rc::clone(&inc_ctx.stdlib_env);
 
         // Evaluate the included file with empty $$ and the stdlib env.
         // We must drop the borrow before calling eval (which may re-enter
         // this builtin for nested includes).
-        drop(ctx_ref);
+        drop(inc_ctx_ref);
 
-        let eval_result = crate::eval::eval_file(&file.node, stdlib_env, depth + 1);
+        // Note: `ctx` here is from BuiltinArgs, not the INCLUDE_CTX. For now,
+        // we still use INCLUDE_CTX for include state, but pass the EvalContext
+        // for general evaluation infrastructure.
+        let eval_result = crate::eval::eval_file(&file.node, stdlib_env, &ctx, depth + 1);
 
         // Restore the context regardless of success/failure.
         let restore = |cell: &RefCell<Option<IncludeContext>>| {
-            let mut ctx_ref = cell.borrow_mut();
-            if let Some(ctx) = ctx_ref.as_mut() {
-                ctx.base_dir = parent_base_dir.clone();
-                ctx.include_guard.borrow_mut().remove(&canonical);
+            let mut inc_ctx_ref = cell.borrow_mut();
+            if let Some(inc_ctx) = inc_ctx_ref.as_mut() {
+                inc_ctx.base_dir = parent_base_dir.clone();
+                inc_ctx.include_guard.borrow_mut().remove(&canonical);
             }
         };
 
@@ -1095,14 +1137,15 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 // Eagerly materialize: the include guard is only valid while
                 // the current file's canonical path is in the set. Returning
                 // a lazy thunk would defer evaluation past the guard removal.
-                let val = crate::eval::materialize(&thunk, None, depth + 1)?;
+                let val = crate::eval::materialize(&thunk, None, &ctx, depth + 1)?;
                 restore(cell);
                 let result_thunk = ok_val(val)?;
 
                 // Cache the result thunk for future includes of this file.
                 INCLUDE_CTX.with(|cell| {
-                    if let Some(ctx) = cell.borrow_mut().as_mut() {
-                        ctx.cache
+                    if let Some(inc_ctx) = cell.borrow_mut().as_mut() {
+                        inc_ctx
+                            .cache
                             .borrow_mut()
                             .insert(canonical.clone(), Rc::clone(&result_thunk));
                     }
@@ -1124,13 +1167,13 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// (fully lazy, no materialization). The tail is NOT validated eagerly -- if it
 /// eventually materializes to a non-Seq/non-empty-dict, that's an error at
 /// materialization time, not construction time.
-fn builtin_seq(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_seq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ..
-    } = ctx;
+    } = ctx_arg;
     reject_named("seq", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -1146,14 +1189,15 @@ fn builtin_seq(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Materializes the argument to verify it's a Seq, then returns the head thunk
 /// directly (lazy -- the head is not materialized). Empty dict (terminal value)
 /// produces a specific error message.
-fn builtin_head(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_head(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("head", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("head", args, named, &ctx, depth, call_span)?;
     match val {
         Value::Seq { head, .. } => Ok(Rc::clone(&head)),
         Value::Dict(ref map) if map.is_empty() => {
@@ -1170,14 +1214,15 @@ fn builtin_head(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Materializes the argument to verify it's a Seq, then returns the tail thunk
 /// directly (lazy -- the tail is not materialized). Empty dict (terminal value)
 /// produces a specific error message.
-fn builtin_tail(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_tail(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("tail", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("tail", args, named, &ctx, depth, call_span)?;
     match val {
         Value::Seq { tail, .. } => Ok(Rc::clone(&tail)),
         Value::Dict(ref map) if map.is_empty() => {
@@ -1196,14 +1241,15 @@ fn builtin_tail(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// if it's another Seq or the terminal value (empty dict). Terminal condition:
 /// tail materializes to an empty dict (Dict with 0 entries). If tail is anything
 /// other than Seq or empty dict, error. Empty dict as input returns empty dict.
-fn builtin_collect(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("collect", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("collect", args, named, &ctx, depth, call_span)?;
 
     // Handle empty dict (terminal value) as input
     if let Value::Dict(ref d) = val {
@@ -1241,7 +1287,7 @@ fn builtin_collect(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
 
                 // Materialize tail to check if we should continue
-                current = materialize(&tail, None, depth)?;
+                current = materialize(&tail, None, &ctx, depth)?;
             }
             Value::Dict(ref d) if d.is_empty() => {
                 // Terminal: empty dict
@@ -1265,14 +1311,15 @@ fn builtin_collect(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `seq?`: Type predicate for sequences.
 ///
 /// Returns true if the argument materializes to a Seq, false otherwise.
-fn builtin_seq_check(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_seq_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
-    let val = expect_one_arg("seq?", args, named, depth, call_span)?;
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("seq?", args, named, &ctx, depth, call_span)?;
     ok_val(Value::Bool(matches!(val, Value::Seq { .. })))
 }
 
@@ -1283,13 +1330,14 @@ fn builtin_seq_check(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///   (empty if start >= end)
 ///
 /// Both args must be Int. Uses checked_add for overflow detection.
-fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("range", named, call_span)?;
     if args.len() != 1 && args.len() != 2 {
         return Err(EvalError {
@@ -1304,7 +1352,7 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     }
 
-    let start = materialize(&args[0], None, depth)?;
+    let start = materialize(&args[0], None, &ctx, depth)?;
     let start_int = match start {
         Value::Int(n) => n,
         other => {
@@ -1328,11 +1376,12 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             depth + 1,
             call_span,
             Cow::Borrowed("call $range"),
+            Rc::clone(&ctx),
         ));
         ok_val(Value::Seq { head, tail })
     } else {
         // Finite range: [start, start+1, ..., end-1]
-        let end = materialize(&args[1], None, depth)?;
+        let end = materialize(&args[1], None, &ctx, depth)?;
         let end_int = match end {
             Value::Int(n) => n,
             other => {
@@ -1365,6 +1414,7 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth + 1,
                 call_span,
                 Cow::Borrowed("call $range"),
+                Rc::clone(&ctx),
             ));
             ok_val(Value::Seq { head, tail })
         }
@@ -1376,14 +1426,15 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `[call $repeat val]` → infinite Seq: val, val, val, ...
 ///
 /// The value is kept as a thunk (fully lazy — never materialized).
-fn builtin_repeat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
+        ctx,
         ..
-    } = ctx;
+    } = ctx_arg;
     reject_named("repeat", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -1398,6 +1449,7 @@ fn builtin_repeat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         depth + 1,
         call_span,
         Cow::Borrowed("call $repeat"),
+        Rc::clone(&ctx),
     ));
     ok_val(Value::Seq { head, tail })
 }
@@ -1406,19 +1458,20 @@ fn builtin_repeat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Takes (dict_thunk, index_thunk) where dict is the original collection to cycle
 /// through and index is the current position (wrapped modulo length).
-fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("cycle_step", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let dict = materialize(&args[0], None, depth)?;
+    let dict = materialize(&args[0], None, &ctx, depth)?;
     let map = match &dict {
         Value::Dict(m) => m,
         other => {
@@ -1432,7 +1485,7 @@ fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let idx = materialize(&args[1], None, depth)?;
+    let idx = materialize(&args[1], None, &ctx, depth)?;
     let idx_int = match idx {
         Value::Int(i) => i,
         other => {
@@ -1469,6 +1522,7 @@ fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         depth + 1,
         call_span,
         Cow::Borrowed("call $cycle"),
+        Rc::clone(&ctx),
     ));
 
     ok_val(Value::Seq { head, tail })
@@ -1480,19 +1534,20 @@ fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Materializes xs to verify it's a non-empty Dict, then delegates to
 /// `cycle_step` helper for lazy iteration.
-fn builtin_cycle(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("cycle", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
 
-    let val = materialize(&args[0], None, depth)?;
+    let val = materialize(&args[0], None, &ctx, depth)?;
     match val {
         Value::Dict(ref map) => {
             if map.is_empty() {
@@ -1504,6 +1559,7 @@ fn builtin_cycle(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 named: &IndexMap::new(),
                 depth,
                 call_span,
+                ctx: Rc::clone(&ctx),
             })
         }
         other => {
@@ -1518,14 +1574,14 @@ fn builtin_cycle(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Both f and x are kept as thunks (fully lazy). The tail contains a PendingCall
 /// for f(x), wrapped in a PendingBuiltin for the next iterate step.
-fn builtin_iterate(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-        ..
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("iterate", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -1545,6 +1601,7 @@ fn builtin_iterate(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         call_span,
         Cow::Borrowed("iterate"),
+        Rc::clone(&ctx),
     ));
 
     // tail = iterate(f, f(x))
@@ -1556,6 +1613,7 @@ fn builtin_iterate(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         depth + 1,
         call_span,
         Cow::Borrowed("call $iterate"),
+        Rc::clone(&ctx),
     ));
 
     ok_val(Value::Seq { head, tail })
@@ -1566,13 +1624,14 @@ fn builtin_iterate(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes (step_function, seed) and calls step(seed), which should return either:
 /// - A 2-element dict [value next_seed] to continue
 /// - An empty dict [] to terminate
-fn builtin_unfold_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("unfold_step", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -1589,8 +1648,9 @@ fn builtin_unfold_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         call_span,
         Cow::Borrowed("unfold"),
+        Rc::clone(&ctx),
     ));
-    let step_result = materialize(&step_result_thunk, None, depth)?;
+    let step_result = materialize(&step_result_thunk, None, &ctx, depth)?;
 
     match step_result {
         Value::Dict(ref map) if map.is_empty() => {
@@ -1615,6 +1675,7 @@ fn builtin_unfold_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth + 1,
                 call_span,
                 Cow::Borrowed("call $unfold"),
+                Rc::clone(&ctx),
             ));
 
             ok_val(Value::Seq { head, tail })
@@ -1639,13 +1700,14 @@ fn builtin_unfold_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// or [] to stop.
 ///
 /// Fully lazy — the step function is not called until the result is materialized.
-fn builtin_unfold(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_unfold(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("unfold", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -1660,6 +1722,7 @@ fn builtin_unfold(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         depth,
         call_span,
         Cow::Borrowed("call $unfold"),
+        Rc::clone(&ctx),
     ));
     Ok(result)
 }
@@ -1670,20 +1733,21 @@ fn builtin_unfold(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - For Seq: applies f to each element, returning a lazy Seq.
 ///
 /// Args: (f, xs)
-fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("map", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
     let f_thunk = Rc::clone(&args[0]);
-    let xs = materialize(&args[1], None, depth)?;
+    let xs = materialize(&args[1], None, &ctx, depth)?;
 
     match xs {
         Value::Dict(ref map) => {
@@ -1697,6 +1761,7 @@ fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     call_span,
                     value_thunk.span,
                     Cow::Owned(format!("map {}", key)),
+                    Rc::clone(&ctx),
                 ));
                 new_map.insert(key.clone(), pending_call);
             }
@@ -1711,6 +1776,7 @@ fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 call_span,
                 head.span,
                 Cow::Borrowed("map head"),
+                Rc::clone(&ctx),
             ));
             let tail_args = vec![Rc::clone(&f_thunk), Rc::clone(&tail)];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
@@ -1720,6 +1786,7 @@ fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth + 1,
                 call_span,
                 Cow::Borrowed("call $map"),
+                Rc::clone(&ctx),
             ));
             ok_val(Value::Seq {
                 head: new_head,
@@ -1741,20 +1808,21 @@ fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - For Seq: evaluates pred for each element, returns lazy Seq of passing elements.
 ///
 /// Args: (pred, xs)
-fn builtin_filter(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("filter", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
     let pred_thunk = Rc::clone(&args[0]);
-    let xs = materialize(&args[1], None, depth)?;
+    let xs = materialize(&args[1], None, &ctx, depth)?;
 
     match xs {
         Value::Dict(ref map) => {
@@ -1792,6 +1860,7 @@ fn builtin_filter(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth,
                 call_span,
                 Cow::Borrowed("call $filter"),
+                Rc::clone(&ctx),
             ));
             Ok(result_thunk)
         }
@@ -1805,6 +1874,7 @@ fn builtin_filter(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth + 1,
                 call_span,
                 Cow::Borrowed("call $filter"),
+                Rc::clone(&ctx),
             ));
             Ok(result_thunk)
         }
@@ -1820,17 +1890,18 @@ fn builtin_filter(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper for filter on Dict: iterates through dict entries, building a Seq.
 ///
 /// Args: (pred, dict, keys, idx)
-fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         depth,
         call_span,
+        ctx,
         ..
-    } = ctx;
+    } = ctx_arg;
     let pred_thunk = Rc::clone(&args[0]);
     let dict_thunk = Rc::clone(&args[1]);
     let keys_thunk = Rc::clone(&args[2]);
-    let idx = materialize(&args[3], None, depth)?;
+    let idx = materialize(&args[3], None, &ctx, depth)?;
 
     let idx_int = match idx {
         Value::Int(i) => i,
@@ -1845,7 +1916,7 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let keys = materialize(&keys_thunk, None, depth)?;
+    let keys = materialize(&keys_thunk, None, &ctx, depth)?;
     let keys_map = match keys {
         Value::Dict(ref m) => m,
         other => {
@@ -1866,7 +1937,7 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Get the current key
     let key_value = match keys_map.get(&Key::Int(idx_int)) {
-        Some(thunk) => materialize(thunk, None, depth)?,
+        Some(thunk) => materialize(thunk, None, &ctx, depth)?,
         None => {
             return Err(EvalError::internal(
                 format!("filter-dict-step: key at index {} not found", idx_int),
@@ -1891,7 +1962,7 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     // Get the value from the dict
-    let dict = materialize(&dict_thunk, None, depth)?;
+    let dict = materialize(&dict_thunk, None, &ctx, depth)?;
     let dict_map = match dict {
         Value::Dict(ref m) => m,
         other => {
@@ -1924,8 +1995,9 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         value_thunk.span,
         Cow::Owned(format!("filter-dict pred {}", current_key)),
+        Rc::clone(&ctx),
     ));
-    let pred_result = materialize(&pred_call, None, depth)?;
+    let pred_result = materialize(&pred_call, None, &ctx, depth)?;
 
     let passes = match pred_result {
         Value::Bool(b) => b,
@@ -1955,6 +2027,7 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         depth,
         call_span,
         Cow::Borrowed("call $filter"),
+        Rc::clone(&ctx),
     ));
 
     if passes {
@@ -1972,16 +2045,17 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper for filter on Seq: lazily filters sequence elements.
 ///
 /// Args: (pred, seq)
-fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         depth,
         call_span,
+        ctx,
         ..
-    } = ctx;
+    } = ctx_arg;
     let pred_thunk = Rc::clone(&args[0]);
     let seq_thunk = Rc::clone(&args[1]);
-    let seq = materialize(&seq_thunk, None, depth)?;
+    let seq = materialize(&seq_thunk, None, &ctx, depth)?;
 
     match seq {
         Value::Dict(_) => {
@@ -1997,8 +2071,9 @@ fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 call_span,
                 head.span,
                 Cow::Borrowed("filter-seq pred"),
+                Rc::clone(&ctx),
             ));
-            let pred_result = materialize(&pred_call, None, depth)?;
+            let pred_result = materialize(&pred_call, None, &ctx, depth)?;
 
             let passes = match pred_result {
                 Value::Bool(b) => b,
@@ -2024,6 +2099,7 @@ fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     depth + 1,
                     call_span,
                     Cow::Borrowed("call $filter"),
+                    Rc::clone(&ctx),
                 ));
                 ok_val(Value::Seq {
                     head,
@@ -2039,6 +2115,7 @@ fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     depth + 1,
                     call_span,
                     Cow::Borrowed("call $filter"),
+                    Rc::clone(&ctx),
                 ));
                 Ok(next_thunk)
             }
@@ -2058,19 +2135,20 @@ fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - For Dict: takes first n entries by position, preserving keys. Returns Dict.
 /// - For Seq: takes first n elements, returning a Seq (or terminal empty dict).
 /// - If n <= 0: returns empty dict (terminal for Seq).
-fn builtin_take(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("take", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let n = materialize(&args[0], None, depth)?;
+    let n = materialize(&args[0], None, &ctx, depth)?;
     let n_int = match n {
         Value::Int(i) => i,
         other => {
@@ -2085,7 +2163,7 @@ fn builtin_take(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return ok_val(Value::Dict(IndexMap::new()));
     }
 
-    let xs = materialize(&args[1], None, depth)?;
+    let xs = materialize(&args[1], None, &ctx, depth)?;
     match xs {
         Value::Dict(ref map) => {
             // Dict: take first n entries by position
@@ -2107,6 +2185,7 @@ fn builtin_take(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth,
                 call_span,
                 Cow::Borrowed("call $take"),
+                Rc::clone(&ctx),
             ));
             ok_val(Value::Seq {
                 head: new_head,
@@ -2128,19 +2207,20 @@ fn builtin_take(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - For Seq: use lazy step function to drop elements one at a time
 ///
 /// Args: (n, xs)
-fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("drop", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let n = materialize(&args[0], None, depth)?;
+    let n = materialize(&args[0], None, &ctx, depth)?;
     let n_int = match n {
         Value::Int(i) => i,
         other => {
@@ -2155,7 +2235,7 @@ fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Ok(Rc::clone(&args[1]));
     }
 
-    let xs = materialize(&args[1], None, depth)?;
+    let xs = materialize(&args[1], None, &ctx, depth)?;
     match xs {
         Value::Dict(ref map) => {
             // Dict: skip first n entries by position
@@ -2177,6 +2257,7 @@ fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth,
                 call_span,
                 Cow::Borrowed("call $drop"),
+                Rc::clone(&ctx),
             )))
         }
         other => {
@@ -2191,15 +2272,16 @@ fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper for `drop` on Seq: lazily drop elements one at a time.
 ///
 /// Args: (n_remaining, seq)
-fn builtin_drop_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         depth,
         call_span,
+        ctx,
         ..
-    } = ctx;
+    } = ctx_arg;
 
-    let n = materialize(&args[0], None, depth)?;
+    let n = materialize(&args[0], None, &ctx, depth)?;
     let n_int = match n {
         Value::Int(i) => i,
         _ => unreachable!("drop_seq_step: n_remaining must be Int"),
@@ -2210,7 +2292,7 @@ fn builtin_drop_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Ok(Rc::clone(&args[1]));
     }
 
-    let seq = materialize(&args[1], None, depth)?;
+    let seq = materialize(&args[1], None, &ctx, depth)?;
     match seq {
         Value::Dict(_) => {
             // End of sequence before we finished dropping
@@ -2227,6 +2309,7 @@ fn builtin_drop_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth + 1,
                 call_span,
                 Cow::Borrowed("call $drop"),
+                Rc::clone(&ctx),
             )))
         }
         other => Err(EvalError::internal(
@@ -2244,13 +2327,14 @@ fn builtin_drop_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - For Seq: use recursive helper to build lazy chain
 ///
 /// Args: (f, init, xs)
-fn builtin_reduce(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("reduce", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
@@ -2258,7 +2342,7 @@ fn builtin_reduce(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let f_thunk = Rc::clone(&args[0]);
     let init_thunk = Rc::clone(&args[1]);
-    let xs = materialize(&args[2], None, depth)?;
+    let xs = materialize(&args[2], None, &ctx, depth)?;
 
     match xs {
         Value::Dict(ref map) => {
@@ -2272,6 +2356,7 @@ fn builtin_reduce(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     call_span,
                     value_thunk.span,
                     Cow::Borrowed("reduce"),
+                    Rc::clone(&ctx),
                 ));
             }
             Ok(acc)
@@ -2291,6 +2376,7 @@ fn builtin_reduce(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth,
                 call_span,
                 Cow::Borrowed("call $reduce"),
+                Rc::clone(&ctx),
             )))
         }
         other => {
@@ -2305,13 +2391,14 @@ fn builtin_reduce(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper for `reduce` on Seq: process one element and recurse.
 ///
 /// Args: (f, acc, head, tail)
-fn builtin_reduce_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("reduce_seq_step", named, call_span)?;
     if args.len() != 4 {
         return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
@@ -2330,10 +2417,11 @@ fn builtin_reduce_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         tail_thunk.span,
         Cow::Borrowed("reduce"),
+        Rc::clone(&ctx),
     ));
 
     // Check if tail is empty (sequence end)
-    let tail_val = materialize(&tail_thunk, None, depth)?;
+    let tail_val = materialize(&tail_thunk, None, &ctx, depth)?;
     match tail_val {
         Value::Dict(_) => {
             // Empty dict = end of sequence, return accumulator
@@ -2354,6 +2442,7 @@ fn builtin_reduce_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth + 1,
                 call_span,
                 Cow::Borrowed("call $reduce"),
+                Rc::clone(&ctx),
             )))
         }
         other => Err(EvalError::internal(
@@ -2371,28 +2460,29 @@ fn builtin_reduce_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Args: (sep, xs)
 /// Inherently materializing: must inspect and stringify all elements to concatenate.
-fn builtin_join(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("join", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let sep = materialize(&args[0], None, depth)?;
+    let sep = materialize(&args[0], None, &ctx, depth)?;
     let sep_str = require_string("join", sep, call_span)?;
 
-    let xs = materialize(&args[1], None, depth)?;
+    let xs = materialize(&args[1], None, &ctx, depth)?;
     match xs {
         Value::Dict(ref map) => {
             // Dict path: iterate values, materialize, stringify, join
             let mut parts = Vec::with_capacity(map.len());
             for (_key, value_thunk) in map.iter() {
-                let val = materialize(value_thunk, None, depth)?;
+                let val = materialize(value_thunk, None, &ctx, depth)?;
                 parts.push(stringify(&val));
             }
             ok_val(Value::String(parts.join(&sep_str)))
@@ -2405,11 +2495,11 @@ fn builtin_join(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             loop {
                 // Materialize and stringify current head
-                let head_val = materialize(&current_head, None, depth)?;
+                let head_val = materialize(&current_head, None, &ctx, depth)?;
                 parts.push(stringify(&head_val));
 
                 // Check tail
-                let tail_val = materialize(&current_tail, None, depth)?;
+                let tail_val = materialize(&current_tail, None, &ctx, depth)?;
                 match tail_val {
                     Value::Dict(_) => {
                         // End of sequence
@@ -2446,19 +2536,20 @@ fn builtin_join(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - For Dict: eagerly materialize both dicts and merge them with integer reindexing.
 ///
 /// Args: (xs, ys)
-fn builtin_concat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         depth,
         call_span,
-    } = ctx;
+        ctx,
+    } = ctx_arg;
     reject_named("concat", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let xs = materialize(&args[0], None, depth)?;
+    let xs = materialize(&args[0], None, &ctx, depth)?;
     let ys_thunk = Rc::clone(&args[1]);
 
     match xs {
@@ -2472,6 +2563,7 @@ fn builtin_concat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth + 1,
                 call_span,
                 Cow::Borrowed("call $concat"),
+                Rc::clone(&ctx),
             ));
             ok_val(Value::Seq {
                 head,
@@ -2485,7 +2577,7 @@ fn builtin_concat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 return Ok(ys_thunk);
             }
 
-            let ys = materialize(&ys_thunk, None, depth)?;
+            let ys = materialize(&ys_thunk, None, &ctx, depth)?;
             match ys {
                 Value::Dict(ref ys_map) => {
                     let mut result = IndexMap::with_capacity(xs_map.len() + ys_map.len());
@@ -2527,16 +2619,17 @@ fn builtin_concat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper for concat on Seq: lazily chains xs tail with ys.
 ///
 /// Args: (xs_tail, ys)
-fn builtin_concat_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         depth,
         call_span,
+        ctx,
         ..
-    } = ctx;
+    } = ctx_arg;
     let xs_tail_thunk = Rc::clone(&args[0]);
     let ys_thunk = Rc::clone(&args[1]);
-    let xs_tail = materialize(&xs_tail_thunk, None, depth)?;
+    let xs_tail = materialize(&xs_tail_thunk, None, &ctx, depth)?;
 
     match xs_tail {
         Value::Dict(_) => {
@@ -2553,6 +2646,7 @@ fn builtin_concat_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 depth + 1,
                 call_span,
                 Cow::Borrowed("call $concat"),
+                Rc::clone(&ctx),
             ));
             ok_val(Value::Seq {
                 head,
@@ -2656,6 +2750,10 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
 pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
     let root_env = create_root_env();
 
+    // Create a bootstrap EvalContext with just the root env (before stdlib is loaded)
+    let bootstrap_ctx =
+        crate::eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&root_env));
+
     let prelude_source = include_str!("../stdlib/prelude.llt");
     let mut file = crate::parser::parse(prelude_source).map_err(|e| {
         crate::error::EvalError::internal(format!("prelude parse error: {e}"), Span::origin())
@@ -2663,9 +2761,9 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 
     crate::desugar::desugar_file(&mut file.node);
 
-    let thunk = crate::eval::eval_file(&file.node, Rc::clone(&root_env), 0)?;
+    let thunk = crate::eval::eval_file(&file.node, Rc::clone(&root_env), &bootstrap_ctx, 0)?;
 
-    let val = crate::eval::materialize(&thunk, None, 0)?;
+    let val = crate::eval::materialize(&thunk, None, &bootstrap_ctx, 0)?;
 
     let dict = match val {
         Value::Dict(map) => map,
@@ -2710,8 +2808,12 @@ mod tests {
         test_span(1, 1, 1, 5)
     }
 
+    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+        crate::eval::EvalContext::new(std::path::PathBuf::from("."), create_root_env())
+    }
+
     fn mat(result: EvalResult<Rc<Thunk>>) -> Value {
-        crate::eval::materialize(&result.unwrap(), None, 0).unwrap()
+        crate::eval::materialize(&result.unwrap(), None, &test_ctx(), 0).unwrap()
     }
 
     /// Helper: make a zero-arg function whose body is a single expression.
@@ -2755,6 +2857,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -2766,6 +2869,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(-7));
     }
@@ -2777,6 +2881,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(0));
     }
@@ -2788,6 +2893,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(3));
     }
@@ -2800,6 +2906,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(-4));
     }
@@ -2811,6 +2918,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(5));
     }
@@ -2822,6 +2930,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(2));
     }
@@ -2833,6 +2942,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("NaN"), "got: {}", err.message());
@@ -2845,6 +2955,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2861,6 +2972,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2877,6 +2989,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2893,6 +3006,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2909,6 +3023,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2925,6 +3040,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2941,6 +3057,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2959,6 +3076,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2975,6 +3093,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -2991,6 +3110,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3007,6 +3127,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -3018,6 +3139,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(-7));
     }
@@ -3030,6 +3152,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(1));
     }
@@ -3042,6 +3165,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(-1));
     }
@@ -3053,6 +3177,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(2));
     }
@@ -3064,6 +3189,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(3));
     }
@@ -3076,6 +3202,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(-2));
     }
@@ -3088,6 +3215,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(-3));
     }
@@ -3099,6 +3227,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(2));
     }
@@ -3110,6 +3239,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(-2));
     }
@@ -3121,6 +3251,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(5));
     }
@@ -3132,6 +3263,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("NaN"), "got: {}", err.message());
@@ -3144,6 +3276,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3160,6 +3293,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3176,6 +3310,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3192,6 +3327,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3208,6 +3344,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3224,6 +3361,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3240,6 +3378,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3256,6 +3395,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3272,6 +3412,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -3283,6 +3424,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(-7));
     }
@@ -3294,6 +3436,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(0));
     }
@@ -3305,6 +3448,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(i64::MAX));
     }
@@ -3316,6 +3460,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3332,6 +3477,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3348,6 +3494,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3364,6 +3511,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3380,6 +3528,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3401,6 +3550,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3417,6 +3567,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3433,6 +3584,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3449,6 +3601,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3468,6 +3621,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3484,6 +3638,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(3.14));
     }
@@ -3496,6 +3651,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(42.0));
     }
@@ -3507,6 +3663,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(-2.5));
     }
@@ -3518,6 +3675,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(1.5e10));
     }
@@ -3529,6 +3687,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(2.5e-3));
     }
@@ -3540,6 +3699,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(0.0));
     }
@@ -3552,6 +3712,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(0.5));
     }
@@ -3563,6 +3724,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3579,6 +3741,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3595,6 +3758,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3611,6 +3775,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3627,6 +3792,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3643,6 +3809,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3659,6 +3826,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3675,6 +3843,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3691,6 +3860,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3707,6 +3877,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3726,6 +3897,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3744,6 +3916,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3761,6 +3934,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3777,6 +3951,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -3788,6 +3963,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -3799,6 +3975,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(3.14));
     }
@@ -3810,6 +3987,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Bool(true));
     }
@@ -3822,6 +4000,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
@@ -3840,13 +4019,14 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let a = materialize(&map[&Key::String("a".into())], None, 0).unwrap();
+                let a = materialize(&map[&Key::String("a".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(a, Value::Int(1));
-                let b = materialize(&map[&Key::String("b".into())], None, 0).unwrap();
+                let b = materialize(&map[&Key::String("b".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(b, Value::Int(2));
             }
             _ => panic!("expected Dict"),
@@ -3869,14 +4049,17 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(outer_map) => {
-                let x_val = materialize(&outer_map[&Key::String("x".into())], None, 0).unwrap();
+                let x_val = materialize(&outer_map[&Key::String("x".into())], None, &test_ctx(), 0)
+                    .unwrap();
                 match x_val {
                     Value::Dict(inner_map) => {
                         let y_val =
-                            materialize(&inner_map[&Key::String("y".into())], None, 0).unwrap();
+                            materialize(&inner_map[&Key::String("y".into())], None, &test_ctx(), 0)
+                                .unwrap();
                         assert_eq!(y_val, Value::Int(42));
                     }
                     _ => panic!("expected inner Dict"),
@@ -3891,7 +4074,12 @@ mod tests {
         // Create an unevaluated thunk wrapping a literal -- eval should force it
         let expr = Rc::new(Spanned::new(Expr::Int(99), test_span(1, 1, 1, 5)));
         let env = Rc::new(RefCell::new(Environment::new()));
-        let unevaluated = Rc::new(Thunk::new_unevaluated(expr, env, test_span(1, 1, 1, 5)));
+        let unevaluated = Rc::new(Thunk::new_unevaluated(
+            expr,
+            env,
+            test_ctx(),
+            test_span(1, 1, 1, 5),
+        ));
 
         let mut map = IndexMap::new();
         map.insert(Key::String("val".into()), unevaluated);
@@ -3902,10 +4090,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let v = materialize(&map[&Key::String("val".into())], None, 0).unwrap();
+                let v =
+                    materialize(&map[&Key::String("val".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v, Value::Int(99));
             }
             _ => panic!("expected Dict"),
@@ -3919,6 +4109,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3935,6 +4126,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert_eq!(err.message(), "boom");
@@ -3947,6 +4139,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert_eq!(err.message(), "division by zero");
@@ -3959,6 +4152,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3976,6 +4170,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -3994,11 +4189,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert!(map.contains_key(&Key::String("ok".into())));
-                let ok_val = materialize(&map[&Key::String("ok".into())], None, 0).unwrap();
+                let ok_val =
+                    materialize(&map[&Key::String("ok".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(ok_val, Value::Int(42));
             }
             _ => panic!("expected Dict"),
@@ -4013,10 +4210,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let ok_val = materialize(&map[&Key::String("ok".into())], None, 0).unwrap();
+                let ok_val =
+                    materialize(&map[&Key::String("ok".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(ok_val, Value::String("hello".into()));
             }
             _ => panic!("expected Dict"),
@@ -4032,11 +4231,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert!(map.contains_key(&Key::String("err".into())));
-                let err_val = materialize(&map[&Key::String("err".into())], None, 0).unwrap();
+                let err_val =
+                    materialize(&map[&Key::String("err".into())], None, &test_ctx(), 0).unwrap();
                 match err_val {
                     Value::String(msg) => {
                         assert!(
@@ -4058,6 +4259,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4075,6 +4277,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4091,6 +4294,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4114,10 +4318,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let ok_val = materialize(&map[&Key::String("ok".into())], None, 0).unwrap();
+                let ok_val =
+                    materialize(&map[&Key::String("ok".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(ok_val, Value::Int(99));
             }
             _ => panic!("expected Dict"),
@@ -4139,10 +4345,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let err_val = materialize(&map[&Key::String("err".into())], None, 0).unwrap();
+                let err_val =
+                    materialize(&map[&Key::String("err".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(err_val, Value::String("builtin error".into()));
             }
             _ => panic!("expected Dict"),
@@ -4165,6 +4373,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         // Should propagate as error, not return err dict
@@ -4189,6 +4398,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -4207,6 +4417,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(10));
     }
@@ -4225,18 +4436,22 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(20));
     }
 
     #[test]
     fn apply_with_builtin() {
-        fn add_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn add_builtin(builtin_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let BuiltinArgs {
-                args, call_span, ..
-            } = ctx;
-            let a = materialize(&args[0], None, 0)?;
-            let b = materialize(&args[1], None, 0)?;
+                args,
+                call_span,
+                ctx,
+                ..
+            } = builtin_ctx;
+            let a = materialize(&args[0], None, &ctx, 0)?;
+            let b = materialize(&args[1], None, &ctx, 0)?;
             match (a, b) {
                 (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y)),
                 _ => Err(EvalError::new("expected ints", call_span).into()),
@@ -4256,6 +4471,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(7));
     }
@@ -4272,6 +4488,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4292,6 +4509,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4309,6 +4527,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4325,6 +4544,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4341,6 +4561,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("Int".into()));
     }
@@ -4352,6 +4573,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("Float".into()));
     }
@@ -4363,6 +4585,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("String".into()));
     }
@@ -4374,6 +4597,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("Bool".into()));
     }
@@ -4385,6 +4609,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("Dict".into()));
     }
@@ -4397,6 +4622,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("Function".into()));
     }
@@ -4415,6 +4641,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("Function".into()));
     }
@@ -4426,6 +4653,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4442,6 +4670,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -4453,6 +4682,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Float(3.14));
     }
@@ -4464,6 +4694,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -4475,6 +4706,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Bool(true));
     }
@@ -4486,6 +4718,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Bool(false));
     }
@@ -4497,6 +4730,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
@@ -4511,15 +4745,16 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let v0 = materialize(&map[&Key::Int(0)], None, 0).unwrap();
+                let v0 = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v0, Value::Int(1));
-                let v1 = materialize(&map[&Key::Int(1)], None, 0).unwrap();
+                let v1 = materialize(&map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v1, Value::Int(2));
-                let v2 = materialize(&map[&Key::Int(2)], None, 0).unwrap();
+                let v2 = materialize(&map[&Key::Int(2)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v2, Value::Int(3));
             }
             _ => panic!("expected Dict"),
@@ -4535,13 +4770,16 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let name = materialize(&map[&Key::String("name".into())], None, 0).unwrap();
+                let name =
+                    materialize(&map[&Key::String("name".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(name, Value::String("Alice".into()));
-                let age = materialize(&map[&Key::String("age".into())], None, 0).unwrap();
+                let age =
+                    materialize(&map[&Key::String("age".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(age, Value::Int(30));
             }
             _ => panic!("expected Dict"),
@@ -4556,18 +4794,25 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let users = materialize(&map[&Key::String("users".into())], None, 0).unwrap();
+                let users =
+                    materialize(&map[&Key::String("users".into())], None, &test_ctx(), 0).unwrap();
                 match users {
                     Value::Dict(arr) => {
                         assert_eq!(arr.len(), 2);
-                        let user0 = materialize(&arr[&Key::Int(0)], None, 0).unwrap();
+                        let user0 = materialize(&arr[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
                         match user0 {
                             Value::Dict(u) => {
-                                let name =
-                                    materialize(&u[&Key::String("name".into())], None, 0).unwrap();
+                                let name = materialize(
+                                    &u[&Key::String("name".into())],
+                                    None,
+                                    &test_ctx(),
+                                    0,
+                                )
+                                .unwrap();
                                 assert_eq!(name, Value::String("Bob".into()));
                             }
                             _ => panic!("expected Dict for user"),
@@ -4587,6 +4832,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4603,6 +4849,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4619,6 +4866,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -4635,6 +4883,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
@@ -4649,6 +4898,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
@@ -4663,17 +4913,18 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 4);
-                let v0 = materialize(&map[&Key::Int(0)], None, 0).unwrap();
+                let v0 = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v0, Value::Int(1));
-                let v1 = materialize(&map[&Key::Int(1)], None, 0).unwrap();
+                let v1 = materialize(&map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v1, Value::String("two".into()));
-                let v2 = materialize(&map[&Key::Int(2)], None, 0).unwrap();
+                let v2 = materialize(&map[&Key::Int(2)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v2, Value::Bool(true));
-                let v3 = materialize(&map[&Key::Int(3)], None, 0).unwrap();
+                let v3 = materialize(&map[&Key::Int(3)], None, &test_ctx(), 0).unwrap();
                 match v3 {
                     Value::Dict(m) => assert!(m.is_empty()),
                     _ => panic!("expected empty Dict for null"),
@@ -4715,6 +4966,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 0),
@@ -4735,12 +4987,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
                 for i in 0..3 {
-                    let val = materialize(&keys_map[&Key::Int(i)], None, 0).unwrap();
+                    let val = materialize(&keys_map[&Key::Int(i)], None, &test_ctx(), 0).unwrap();
                     assert_eq!(val, Value::Int(i));
                 }
             }
@@ -4763,13 +5016,14 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 2);
-                let k0 = materialize(&keys_map[&Key::Int(0)], None, 0).unwrap();
+                let k0 = materialize(&keys_map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(k0, Value::String("name".into()));
-                let k1 = materialize(&keys_map[&Key::Int(1)], None, 0).unwrap();
+                let k1 = materialize(&keys_map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(k1, Value::String("age".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -4792,15 +5046,16 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
-                let k0 = materialize(&keys_map[&Key::Int(0)], None, 0).unwrap();
+                let k0 = materialize(&keys_map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(k0, Value::Int(0));
-                let k1 = materialize(&keys_map[&Key::Int(1)], None, 0).unwrap();
+                let k1 = materialize(&keys_map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(k1, Value::String("label".into()));
-                let k2 = materialize(&keys_map[&Key::Int(2)], None, 0).unwrap();
+                let k2 = materialize(&keys_map[&Key::Int(2)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(k2, Value::Int(5));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -4820,12 +5075,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(keys_map) => {
-                let k0 = materialize(&keys_map[&Key::Int(0)], None, 0).unwrap();
-                let k1 = materialize(&keys_map[&Key::Int(1)], None, 0).unwrap();
-                let k2 = materialize(&keys_map[&Key::Int(2)], None, 0).unwrap();
+                let k0 = materialize(&keys_map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+                let k1 = materialize(&keys_map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
+                let k2 = materialize(&keys_map[&Key::Int(2)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(k0, Value::String("z".into()));
                 assert_eq!(k1, Value::String("a".into()));
                 assert_eq!(k2, Value::String("m".into()));
@@ -4842,6 +5098,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(0));
     }
@@ -4858,6 +5115,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(3));
     }
@@ -4873,6 +5131,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(2));
     }
@@ -4891,6 +5150,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
@@ -4918,15 +5178,16 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let x = materialize(&map[&Key::String("x".into())], None, 0).unwrap();
+                let x = materialize(&map[&Key::String("x".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(x, Value::Int(1));
-                let y = materialize(&map[&Key::String("y".into())], None, 0).unwrap();
+                let y = materialize(&map[&Key::String("y".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(y, Value::Int(99));
-                let z = materialize(&map[&Key::String("z".into())], None, 0).unwrap();
+                let z = materialize(&map[&Key::String("z".into())], None, &test_ctx(), 0).unwrap();
                 assert_eq!(z, Value::Int(3));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -4940,6 +5201,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 0),
@@ -4956,11 +5218,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let v = materialize(&map[&Key::Int(0)], None, 0).unwrap();
+                let v = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v, Value::String("only".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -4976,11 +5239,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let v = materialize(&map[&Key::Int(0)], None, 0).unwrap();
+                let v = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
                 assert_eq!(v, Value::String("only".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5003,6 +5267,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
@@ -5027,6 +5292,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
@@ -5052,6 +5318,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -5069,6 +5336,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -5085,6 +5353,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -5102,6 +5371,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -5119,6 +5389,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -5136,6 +5407,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -5152,6 +5424,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("keys"), "got: {}", err.message());
@@ -5170,6 +5443,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("keys"), "got: {}", err.message());
@@ -5187,6 +5461,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("keys"), "got: {}", err.message());
@@ -5200,6 +5475,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("length"), "got: {}", err.message());
@@ -5223,6 +5499,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("merge"), "got: {}", err.message());
@@ -5242,6 +5519,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("merge"), "got: {}", err.message());
@@ -5265,11 +5543,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let val = materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap();
+                let val =
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(val, Value::Int(42));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5287,11 +5567,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let val = materialize(map.get(&Key::Int(2)).unwrap(), None, 0).unwrap();
+                let val =
+                    materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(val, Value::String("c".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5309,11 +5591,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let val = materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap();
+                let val =
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(val, Value::Int(99));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5332,11 +5616,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let val = materialize(map.get(&Key::Int(6)).unwrap(), None, 0).unwrap();
+                let val =
+                    materialize(map.get(&Key::Int(6)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(val, Value::Int(60));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5353,13 +5639,16 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let first = materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap();
+                let first =
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(first, Value::String("first".into()));
-                let second = materialize(map.get(&Key::Int(1)).unwrap(), None, 0).unwrap();
+                let second =
+                    materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(second, Value::String("second".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5376,6 +5665,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
@@ -5393,6 +5683,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("2"), "got: {}", err.message());
@@ -5409,6 +5700,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("2"), "got: {}", err.message());
@@ -5421,6 +5713,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(err.message().contains("append"), "got: {}", err.message());
@@ -5441,6 +5734,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -5457,6 +5751,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("".into()));
     }
@@ -5468,6 +5763,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("42".into()));
     }
@@ -5479,6 +5775,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("-7".into()));
     }
@@ -5490,6 +5787,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("3.14".into()));
     }
@@ -5501,6 +5799,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -5512,6 +5811,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("true".into()));
     }
@@ -5523,6 +5823,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("false".into()));
     }
@@ -5542,6 +5843,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("[x: <thunk>]".into()));
     }
@@ -5553,6 +5855,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("".into()));
     }
@@ -5569,6 +5872,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("Hello World".into()));
     }
@@ -5588,6 +5892,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(
             result,
@@ -5605,13 +5910,14 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap();
-                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, 0).unwrap();
-                let v2 = materialize(map.get(&Key::Int(2)).unwrap(), None, 0).unwrap();
+                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v2 = materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(v0, Value::String("a".into()));
                 assert_eq!(v1, Value::String("b".into()));
                 assert_eq!(v2, Value::String("c".into()));
@@ -5630,11 +5936,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, 0).unwrap();
+                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(v1, Value::String("".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5651,6 +5958,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 4),
@@ -5668,11 +5976,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap();
+                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(v0, Value::String("hello".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5689,13 +5998,14 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap();
-                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, 0).unwrap();
-                let v2 = materialize(map.get(&Key::Int(2)).unwrap(), None, 0).unwrap();
+                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v2 = materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(v0, Value::String("a".into()));
                 assert_eq!(v1, Value::String("b".into()));
                 assert_eq!(v2, Value::String("c".into()));
@@ -5714,11 +6024,12 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap();
+                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(v0, Value::String("".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5736,6 +6047,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello Rust".into()));
     }
@@ -5751,6 +6063,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("bonono".into()));
     }
@@ -5766,6 +6079,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -5781,6 +6095,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("-a-b-c-".into()));
     }
@@ -5796,6 +6111,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("heo".into()));
     }
@@ -5807,6 +6123,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("HELLO".into()));
     }
@@ -5818,6 +6135,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("HELLO WORLD".into()));
     }
@@ -5829,6 +6147,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("ABC".into()));
     }
@@ -5840,6 +6159,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("".into()));
     }
@@ -5851,6 +6171,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("ABC123".into()));
     }
@@ -5862,6 +6183,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -5873,6 +6195,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello world".into()));
     }
@@ -5884,6 +6207,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("abc".into()));
     }
@@ -5895,6 +6219,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("".into()));
     }
@@ -5906,6 +6231,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -5917,6 +6243,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -5928,6 +6255,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -5939,6 +6267,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -5950,6 +6279,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("".into()));
     }
@@ -5961,6 +6291,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("hello".into()));
     }
@@ -5972,6 +6303,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("".into()));
     }
@@ -5983,6 +6315,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6008,6 +6341,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6027,6 +6361,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6048,6 +6383,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6067,6 +6403,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6083,6 +6420,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6102,6 +6440,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6118,6 +6457,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6140,6 +6480,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6165,6 +6506,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6186,6 +6528,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6207,6 +6550,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6228,6 +6572,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6250,6 +6595,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6272,6 +6618,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6300,6 +6647,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6318,6 +6666,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6336,6 +6685,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6354,6 +6704,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6372,6 +6723,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6390,6 +6742,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6408,6 +6761,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6426,6 +6780,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6447,6 +6802,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6469,6 +6825,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6487,6 +6844,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6505,6 +6863,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6523,6 +6882,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6541,6 +6901,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6559,6 +6920,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6577,6 +6939,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6599,6 +6962,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6619,6 +6983,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6638,6 +7003,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6659,6 +7025,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6677,6 +7044,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6695,6 +7063,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6714,6 +7083,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6733,6 +7103,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6813,6 +7184,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(8));
     }
@@ -6824,6 +7196,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(5.5));
     }
@@ -6835,6 +7208,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(5.5));
     }
@@ -6846,6 +7220,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(4.0));
     }
@@ -6857,6 +7232,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(-7));
     }
@@ -6868,6 +7244,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(0));
     }
@@ -6879,6 +7256,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6895,6 +7273,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6915,6 +7294,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6931,6 +7311,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -6947,6 +7328,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(7));
     }
@@ -6958,6 +7340,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(6.5));
     }
@@ -6969,6 +7352,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(7.5));
     }
@@ -6980,6 +7364,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(7.0));
     }
@@ -6991,6 +7376,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(-7));
     }
@@ -7002,6 +7388,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(0));
     }
@@ -7013,6 +7400,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7029,6 +7417,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7049,6 +7438,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7065,6 +7455,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7081,6 +7472,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(20));
     }
@@ -7092,6 +7484,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(10.0));
     }
@@ -7103,6 +7496,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(10.0));
     }
@@ -7114,6 +7508,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(7.5));
     }
@@ -7125,6 +7520,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(0));
     }
@@ -7136,6 +7532,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(-12));
     }
@@ -7147,6 +7544,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Int(-42));
     }
@@ -7158,6 +7556,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7174,6 +7573,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match r {
             Value::Float(f) => {
@@ -7190,6 +7590,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match r {
             Value::Float(f) => assert_eq!(f, 5.0),
@@ -7204,6 +7605,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match r {
             Value::Float(f) => {
@@ -7220,6 +7622,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(3.0));
     }
@@ -7231,6 +7634,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7247,6 +7651,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7263,6 +7668,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7279,6 +7685,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Float(0.0));
     }
@@ -7290,6 +7697,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7301,6 +7709,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7312,6 +7721,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7323,6 +7733,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7337,6 +7748,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7351,6 +7763,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7362,6 +7775,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7373,6 +7787,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7384,6 +7799,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7395,6 +7811,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7406,6 +7823,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7420,6 +7838,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7431,6 +7850,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7442,6 +7862,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7453,6 +7874,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7464,6 +7886,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7475,6 +7898,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7491,6 +7915,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7502,6 +7927,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7513,6 +7939,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7524,6 +7951,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7538,6 +7966,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7552,6 +7981,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7566,6 +7996,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7580,6 +8011,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7591,6 +8023,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7602,6 +8035,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7613,6 +8047,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7624,6 +8059,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7640,6 +8076,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7651,6 +8088,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7662,6 +8100,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7673,6 +8112,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7687,6 +8127,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7703,6 +8144,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7719,6 +8161,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(true));
     }
@@ -7730,6 +8173,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(r, Value::Bool(false));
     }
@@ -7746,6 +8190,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -7762,6 +8207,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(99));
     }
@@ -7776,6 +8222,7 @@ mod tests {
         let error_thunk = Rc::new(Thunk::new_unevaluated(
             error_expr,
             env,
+            test_ctx(),
             test_span(1, 1, 1, 10),
         ));
 
@@ -7785,6 +8232,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -7799,6 +8247,7 @@ mod tests {
         let error_thunk = Rc::new(Thunk::new_unevaluated(
             error_expr,
             env,
+            test_ctx(),
             test_span(1, 1, 1, 10),
         ));
 
@@ -7812,6 +8261,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(99));
     }
@@ -7828,6 +8278,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7854,6 +8305,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7871,6 +8323,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7893,6 +8346,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7962,6 +8416,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -7983,6 +8438,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -8005,6 +8461,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -8028,13 +8485,26 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let x = materialize(map.get(&Key::String("x".into())).unwrap(), None, 0).unwrap();
+                let x = materialize(
+                    map.get(&Key::String("x".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
                 assert_eq!(x, Value::Int(42));
-                let y = materialize(map.get(&Key::String("y".into())).unwrap(), None, 0).unwrap();
+                let y = materialize(
+                    map.get(&Key::String("y".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
                 assert_eq!(y, Value::String("hello".into()));
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -8055,6 +8525,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Int(42));
         std::fs::remove_dir_all(&dir).ok();
@@ -8073,6 +8544,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -8100,6 +8572,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -8123,6 +8596,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -8152,16 +8626,23 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let inner =
-                    materialize(map.get(&Key::String("inner".into())).unwrap(), None, 0).unwrap();
+                let inner = materialize(
+                    map.get(&Key::String("inner".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
                 match inner {
                     Value::Dict(inner_map) => {
                         let val = materialize(
                             inner_map.get(&Key::String("val".into())).unwrap(),
                             None,
+                            &test_ctx(),
                             0,
                         )
                         .unwrap();
@@ -8193,11 +8674,17 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let val =
-                    materialize(map.get(&Key::String("val".into())).unwrap(), None, 0).unwrap();
+                let val = materialize(
+                    map.get(&Key::String("val".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
                 assert_eq!(val, Value::Int(77));
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -8218,6 +8705,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -8236,6 +8724,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -8260,6 +8749,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap_err();
         assert!(
@@ -8284,10 +8774,17 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let y = materialize(map.get(&Key::String("y".into())).unwrap(), None, 0).unwrap();
+                let y = materialize(
+                    map.get(&Key::String("y".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
                 assert_eq!(y, Value::Int(10));
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -8309,11 +8806,17 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
-                let val =
-                    materialize(map.get(&Key::String("result".into())).unwrap(), None, 0).unwrap();
+                let val = materialize(
+                    map.get(&Key::String("result".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
                 assert_eq!(val, Value::Int(3));
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -8337,6 +8840,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
 
         // Second include -- should hit cache
@@ -8345,15 +8849,26 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
 
         // Both should return the same value
         match (&result1, &result2) {
             (Value::Dict(map1), Value::Dict(map2)) => {
-                let val1 =
-                    materialize(map1.get(&Key::String("value".into())).unwrap(), None, 0).unwrap();
-                let val2 =
-                    materialize(map2.get(&Key::String("value".into())).unwrap(), None, 0).unwrap();
+                let val1 = materialize(
+                    map1.get(&Key::String("value".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
+                let val2 = materialize(
+                    map2.get(&Key::String("value".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
                 assert_eq!(val1, Value::Int(42));
                 assert_eq!(val2, Value::Int(42));
             }
@@ -8381,6 +8896,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
 
         // Second include with normalized path
@@ -8390,15 +8906,26 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
 
         // Both should return the same value
         match (&result1, &result2) {
             (Value::Dict(map1), Value::Dict(map2)) => {
-                let val1 =
-                    materialize(map1.get(&Key::String("value".into())).unwrap(), None, 0).unwrap();
-                let val2 =
-                    materialize(map2.get(&Key::String("value".into())).unwrap(), None, 0).unwrap();
+                let val1 = materialize(
+                    map1.get(&Key::String("value".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
+                let val2 = materialize(
+                    map2.get(&Key::String("value".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
                 assert_eq!(val1, Value::Int(99));
                 assert_eq!(val2, Value::Int(99));
             }
@@ -8426,6 +8953,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
 
         // Include file_c (which also includes shared.llt -- should hit cache)
@@ -8435,15 +8963,26 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
 
         // Verify that both got the shared value
         match (&result_a, &result_c) {
             (Value::Dict(map_a), Value::Dict(map_c)) => {
-                let a_val =
-                    materialize(map_a.get(&Key::String("a".into())).unwrap(), None, 0).unwrap();
-                let c_val =
-                    materialize(map_c.get(&Key::String("c".into())).unwrap(), None, 0).unwrap();
+                let a_val = materialize(
+                    map_a.get(&Key::String("a".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
+                let c_val = materialize(
+                    map_c.get(&Key::String("c".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
 
                 // Both should be dicts with "shared: 123"
                 match (&a_val, &c_val) {
@@ -8451,12 +8990,14 @@ mod tests {
                         let a_shared = materialize(
                             a_inner.get(&Key::String("shared".into())).unwrap(),
                             None,
+                            &test_ctx(),
                             0,
                         )
                         .unwrap();
                         let c_shared = materialize(
                             c_inner.get(&Key::String("shared".into())).unwrap(),
                             None,
+                            &test_ctx(),
                             0,
                         )
                         .unwrap();
@@ -8483,11 +9024,18 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(1));
-                assert_eq!(materialize(&tail, None, 0).unwrap(), Value::Int(2));
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(1)
+                );
+                assert_eq!(
+                    materialize(&tail, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(2)
+                );
             }
             other => panic!("expected Seq, got {:?}", other),
         }
@@ -8500,6 +9048,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8511,6 +9060,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8526,6 +9076,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8541,6 +9092,7 @@ mod tests {
                 test_span(1, 1, 1, 5),
             )),
             Rc::new(RefCell::new(Environment::new())),
+            test_ctx(),
             test_span(1, 1, 1, 5),
         ));
         let tail_val = thunk(Value::Int(2));
@@ -8550,6 +9102,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_ok());
         // Verify the result is a Seq
@@ -8570,6 +9123,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_ok());
         let head = mat(result);
@@ -8583,6 +9137,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8594,6 +9149,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8605,6 +9161,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8616,6 +9173,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         let err = result.unwrap_err();
         assert!(
@@ -8632,6 +9190,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         let err = result.unwrap_err();
         assert!(
@@ -8652,6 +9211,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_ok());
         let tail = mat(result);
@@ -8665,6 +9225,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8687,20 +9248,21 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
                 assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(1)
                 );
                 assert_eq!(
-                    materialize(map.get(&Key::Int(1)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(2)
                 );
                 assert_eq!(
-                    materialize(map.get(&Key::Int(2)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(3)
                 );
             }
@@ -8720,12 +9282,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
                 assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(42)
                 );
             }
@@ -8740,6 +9303,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8758,6 +9322,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -8773,6 +9338,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap();
 
@@ -8781,6 +9347,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap();
 
@@ -8789,22 +9356,23 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
 
         assert!(
             collect_result.is_ok(),
             "collect should succeed for 200 elements"
         );
-        match materialize(&collect_result.unwrap(), None, 0).unwrap() {
+        match materialize(&collect_result.unwrap(), None, &test_ctx(), 0).unwrap() {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 200);
                 // Spot-check first and last elements
                 assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(0)
                 );
                 assert_eq!(
-                    materialize(map.get(&Key::Int(199)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(199)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(199)
                 );
             }
@@ -8828,6 +9396,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap();
 
@@ -8839,6 +9408,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
 
         // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
@@ -8868,6 +9438,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Bool(true));
     }
@@ -8879,6 +9450,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Bool(false));
     }
@@ -8890,6 +9462,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         assert_eq!(result, Value::Bool(false));
     }
@@ -8904,15 +9477,22 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(0));
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(0)
+                );
                 // Materialize tail to get next element
-                let tail_val = materialize(&tail, None, 0).unwrap();
+                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
                 match tail_val {
                     Value::Seq { head: h2, .. } => {
-                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(1));
+                        assert_eq!(
+                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
+                            Value::Int(1)
+                        );
                     }
                     other => panic!("expected Seq for tail, got {:?}", other),
                 }
@@ -8929,6 +9509,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -8944,6 +9525,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -8959,12 +9541,16 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(0));
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(0)
+                );
                 // tail should be empty (terminal)
-                let tail_val = materialize(&tail, None, 0).unwrap();
+                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
                 match tail_val {
                     Value::Dict(map) if map.is_empty() => {} // Success
                     other => panic!("expected empty dict for tail, got {:?}", other),
@@ -8982,18 +9568,28 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(0));
-                let tail_val = materialize(&tail, None, 0).unwrap();
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(0)
+                );
+                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
                 match tail_val {
                     Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(1));
-                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        assert_eq!(
+                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
+                            Value::Int(1)
+                        );
+                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
                         match t2_val {
                             Value::Seq { head: h3, .. } => {
-                                assert_eq!(materialize(&h3, None, 0).unwrap(), Value::Int(2));
+                                assert_eq!(
+                                    materialize(&h3, None, &test_ctx(), 0).unwrap(),
+                                    Value::Int(2)
+                                );
                             }
                             other => panic!("expected Seq, got {:?}", other),
                         }
@@ -9012,6 +9608,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9027,6 +9624,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9038,6 +9636,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9049,6 +9648,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9063,18 +9663,28 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(42));
-                let tail_val = materialize(&tail, None, 0).unwrap();
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(42)
+                );
+                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
                 match tail_val {
                     Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(42));
-                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        assert_eq!(
+                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
+                            Value::Int(42)
+                        );
+                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
                         match t2_val {
                             Value::Seq { head: h3, .. } => {
-                                assert_eq!(materialize(&h3, None, 0).unwrap(), Value::Int(42));
+                                assert_eq!(
+                                    materialize(&h3, None, &test_ctx(), 0).unwrap(),
+                                    Value::Int(42)
+                                );
                             }
                             other => panic!("expected Seq, got {:?}", other),
                         }
@@ -9095,6 +9705,7 @@ mod tests {
                 test_span(1, 1, 1, 5),
             )),
             Rc::new(RefCell::new(Environment::new())),
+            test_ctx(),
             test_span(1, 1, 1, 5),
         ));
         // repeat construction should succeed without materializing arg
@@ -9103,6 +9714,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_ok());
         match mat(result) {
@@ -9118,6 +9730,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9129,6 +9742,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9148,36 +9762,37 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Seq { head, tail } => {
                 // First element: "a"
                 assert_eq!(
-                    materialize(&head, None, 0).unwrap(),
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
                     Value::String("a".into())
                 );
-                let tail_val = materialize(&tail, None, 0).unwrap();
+                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
                 match tail_val {
                     Value::Seq { head: h2, tail: t2 } => {
                         // Second element: "b"
                         assert_eq!(
-                            materialize(&h2, None, 0).unwrap(),
+                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
                             Value::String("b".into())
                         );
-                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
                         match t2_val {
                             Value::Seq { head: h3, tail: t3 } => {
                                 // Third element: "a" (cycling back)
                                 assert_eq!(
-                                    materialize(&h3, None, 0).unwrap(),
+                                    materialize(&h3, None, &test_ctx(), 0).unwrap(),
                                     Value::String("a".into())
                                 );
-                                let t3_val = materialize(&t3, None, 0).unwrap();
+                                let t3_val = materialize(&t3, None, &test_ctx(), 0).unwrap();
                                 match t3_val {
                                     Value::Seq { head: h4, .. } => {
                                         // Fourth element: "b"
                                         assert_eq!(
-                                            materialize(&h4, None, 0).unwrap(),
+                                            materialize(&h4, None, &test_ctx(), 0).unwrap(),
                                             Value::String("b".into())
                                         );
                                     }
@@ -9201,6 +9816,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().message().contains("empty"));
@@ -9213,6 +9829,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9224,6 +9841,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9245,19 +9863,23 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Seq { head, tail } => {
                 // Head should be x (0)
-                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(0));
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(0)
+                );
                 // Tail is a PendingBuiltin wrapping iterate(f, f(x))
                 // Materializing it returns another Seq (doesn't error yet)
-                let tail_val = materialize(&tail, None, 0).unwrap();
+                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
                 match tail_val {
                     Value::Seq { head: h2, .. } => {
                         // Trying to materialize h2 (which is PendingCall(Int(999), [Int(0)]))
                         // will error because Int(999) is not a function
-                        let h2_result = materialize(&h2, None, 0);
+                        let h2_result = materialize(&h2, None, &test_ctx(), 0);
                         assert!(h2_result.is_err());
                     }
                     other => panic!("expected Seq for tail, got {:?}", other),
@@ -9276,6 +9898,7 @@ mod tests {
                 test_span(1, 1, 1, 5),
             )),
             Rc::new(RefCell::new(Environment::new())),
+            test_ctx(),
             test_span(1, 1, 1, 5),
         ));
         let undef_x = Rc::new(Thunk::new_unevaluated(
@@ -9284,6 +9907,7 @@ mod tests {
                 test_span(1, 1, 1, 5),
             )),
             Rc::new(RefCell::new(Environment::new())),
+            test_ctx(),
             test_span(1, 1, 1, 5),
         ));
         let result = builtin_iterate(BuiltinArgs {
@@ -9291,6 +9915,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_ok());
         match mat(result) {
@@ -9306,6 +9931,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9325,12 +9951,13 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_ok());
         // Result is a PendingBuiltin, not yet materialized
         // Materializing it would call unfold_step, which would error because
         // step is Int(999), not a function
-        let result_val = materialize(&result.unwrap(), None, 0);
+        let result_val = materialize(&result.unwrap(), None, &test_ctx(), 0);
         assert!(result_val.is_err());
     }
 
@@ -9341,6 +9968,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9361,16 +9989,29 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
                 assert_eq!(
-                    materialize(map.get(&Key::String("a".into())).unwrap(), None, 0).unwrap(),
+                    materialize(
+                        map.get(&Key::String("a".into())).unwrap(),
+                        None,
+                        &test_ctx(),
+                        0
+                    )
+                    .unwrap(),
                     Value::Int(1)
                 );
                 assert_eq!(
-                    materialize(map.get(&Key::String("b".into())).unwrap(), None, 0).unwrap(),
+                    materialize(
+                        map.get(&Key::String("b".into())).unwrap(),
+                        None,
+                        &test_ctx(),
+                        0
+                    )
+                    .unwrap(),
                     Value::Int(2)
                 );
             }
@@ -9390,6 +10031,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -9409,6 +10051,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -9429,6 +10072,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) => {
@@ -9458,16 +10102,23 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(1));
-                let tail_val = materialize(&tail, None, 0).unwrap();
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(1)
+                );
+                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
                 match tail_val {
                     Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(2));
+                        assert_eq!(
+                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
+                            Value::Int(2)
+                        );
                         // tail of tail should be empty dict (terminal)
-                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
                         match t2_val {
                             Value::Dict(map) if map.is_empty() => {} // Success
                             other => panic!("expected empty dict, got {:?}", other),
@@ -9493,6 +10144,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -9507,6 +10159,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9521,6 +10174,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9532,6 +10186,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         });
         assert!(result.is_err());
     }
@@ -9563,30 +10218,41 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap();
 
         // Materialize the result to verify structure
-        let result_val = materialize(&result, None, 0).unwrap();
+        let result_val = materialize(&result, None, &test_ctx(), 0).unwrap();
         match result_val {
             Value::Seq { head: h1, tail: t1 } => {
-                assert_eq!(materialize(&h1, None, 0).unwrap(), Value::Int(1));
-                let t1_val = materialize(&t1, None, 0).unwrap();
+                assert_eq!(
+                    materialize(&h1, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(1)
+                );
+                let t1_val = materialize(&t1, None, &test_ctx(), 0).unwrap();
                 match t1_val {
                     Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(materialize(&h2, None, 0).unwrap(), Value::Int(2));
-                        let t2_val = materialize(&t2, None, 0).unwrap();
+                        assert_eq!(
+                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
+                            Value::Int(2)
+                        );
+                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
                         match t2_val {
                             Value::Seq { head: h3, tail: t3 } => {
-                                assert_eq!(materialize(&h3, None, 0).unwrap(), Value::Int(3));
-                                let t3_val = materialize(&t3, None, 0).unwrap();
+                                assert_eq!(
+                                    materialize(&h3, None, &test_ctx(), 0).unwrap(),
+                                    Value::Int(3)
+                                );
+                                let t3_val = materialize(&t3, None, &test_ctx(), 0).unwrap();
                                 match t3_val {
                                     Value::Seq { head: h4, tail: t4 } => {
                                         assert_eq!(
-                                            materialize(&h4, None, 0).unwrap(),
+                                            materialize(&h4, None, &test_ctx(), 0).unwrap(),
                                             Value::Int(4)
                                         );
-                                        let t4_val = materialize(&t4, None, 0).unwrap();
+                                        let t4_val =
+                                            materialize(&t4, None, &test_ctx(), 0).unwrap();
                                         match t4_val {
                                             Value::Dict(map) if map.is_empty() => {} // Success
                                             other => panic!("expected empty dict, got {:?}", other),
@@ -9619,6 +10285,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap();
 
@@ -9640,15 +10307,19 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         })
         .unwrap();
 
         // Materialize to verify: Seq(1, {})
-        let result_val = materialize(&result, None, 0).unwrap();
+        let result_val = materialize(&result, None, &test_ctx(), 0).unwrap();
         match result_val {
             Value::Seq { head, tail } => {
-                assert_eq!(materialize(&head, None, 0).unwrap(), Value::Int(1));
-                let tail_val = materialize(&tail, None, 0).unwrap();
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(1)
+                );
+                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
                 match tail_val {
                     Value::Dict(map) if map.is_empty() => {} // Success
                     other => panic!("expected empty dict, got {:?}", other),
@@ -9676,25 +10347,26 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
+            ctx: test_ctx(),
         }));
 
         match result {
             Value::Dict(ref map) => {
                 assert_eq!(map.len(), 4);
                 assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(1)
                 );
                 assert_eq!(
-                    materialize(map.get(&Key::Int(1)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(2)
                 );
                 assert_eq!(
-                    materialize(map.get(&Key::Int(2)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(3)
                 );
                 assert_eq!(
-                    materialize(map.get(&Key::Int(3)).unwrap(), None, 0).unwrap(),
+                    materialize(map.get(&Key::Int(3)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(4)
                 );
             }

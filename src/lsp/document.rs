@@ -36,7 +36,11 @@ impl DocumentState {
     /// The `stdlib_env` parameter is the cached stdlib environment from the
     /// [`DocumentStore`]. Each document evaluation creates a child scope, so
     /// the shared env is never mutated.
-    pub fn new(text: String, stdlib_env: &Rc<RefCell<Environment>>) -> Self {
+    pub fn new(
+        text: String,
+        stdlib_env: &Rc<RefCell<Environment>>,
+        eval_ctx: &Rc<crate::eval::EvalContext>,
+    ) -> Self {
         let ast = parse(&text);
         let mut type_errors = Vec::new();
         let mut eval_errors = Vec::new();
@@ -49,7 +53,7 @@ impl DocumentState {
             type_map = map;
 
             // Attempt evaluation to catch runtime errors early (child scope of cached stdlib env).
-            if let Err(err) = eval_file(&file.node, Rc::clone(stdlib_env), 0) {
+            if let Err(err) = eval_file(&file.node, Rc::clone(stdlib_env), eval_ctx, 0) {
                 eval_errors.push(*err);
             }
         }
@@ -73,6 +77,8 @@ pub struct DocumentStore {
     docs: HashMap<Url, DocumentState>,
     /// Cached stdlib environment, created once on construction.
     stdlib_env: Rc<RefCell<Environment>>,
+    /// Evaluation context for LSP sessions.
+    eval_ctx: Rc<crate::eval::EvalContext>,
 }
 
 impl DocumentStore {
@@ -81,16 +87,22 @@ impl DocumentStore {
         // so the LSP can still provide parsing/type-checking diagnostics.
         let stdlib_env =
             create_stdlib_env().unwrap_or_else(|_| Rc::new(RefCell::new(Environment::new())));
+        // Create evaluation context (current directory for LSP)
+        let eval_ctx =
+            crate::eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&stdlib_env));
         Self {
             docs: HashMap::new(),
             stdlib_env,
+            eval_ctx,
         }
     }
 
     /// Update or insert a document, re-parsing and re-analyzing the text.
     pub fn update_document(&mut self, url: Url, text: String) {
-        self.docs
-            .insert(url, DocumentState::new(text, &self.stdlib_env));
+        self.docs.insert(
+            url,
+            DocumentState::new(text, &self.stdlib_env, &self.eval_ctx),
+        );
     }
 
     /// Remove a document from the store.
@@ -119,10 +131,14 @@ mod tests {
         create_stdlib_env().unwrap()
     }
 
+    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+        crate::eval::EvalContext::new(std::path::PathBuf::from("."), test_env())
+    }
+
     #[test]
     fn test_document_state_valid_source() {
         let env = test_env();
-        let state = DocumentState::new("[x: 42]".to_string(), &env);
+        let state = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx());
         assert!(state.ast.is_ok());
         assert!(state.type_errors.is_empty());
         assert!(state.eval_errors.is_empty());
@@ -131,7 +147,7 @@ mod tests {
     #[test]
     fn test_document_state_parse_error() {
         let env = test_env();
-        let state = DocumentState::new("[unterminated".to_string(), &env);
+        let state = DocumentState::new("[unterminated".to_string(), &env, &test_ctx());
         assert!(state.ast.is_err());
         assert!(state.type_errors.is_empty());
         assert!(state.eval_errors.is_empty());
@@ -140,7 +156,7 @@ mod tests {
     #[test]
     fn test_document_state_type_error() {
         let env = test_env();
-        let state = DocumentState::new("[@Number hello]".to_string(), &env);
+        let state = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx());
         assert!(state.ast.is_ok());
         assert!(!state.type_errors.is_empty());
         // TypeAssert without default: also errors at runtime on type mismatch.
@@ -150,7 +166,7 @@ mod tests {
     #[test]
     fn test_document_state_eval_error() {
         let env = test_env();
-        let state = DocumentState::new("$undefined".to_string(), &env);
+        let state = DocumentState::new("$undefined".to_string(), &env, &test_ctx());
         assert!(state.ast.is_ok());
         assert!(!state.type_errors.is_empty()); // undefined variable is also a type error
         assert!(!state.eval_errors.is_empty());

@@ -36,13 +36,17 @@ pub mod repl;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 
+use std::rc::Rc;
+
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
 /// Parser entry points and error type.
 pub use parser::{parse, parse_expression, ParseError};
 
 /// Evaluation functions and depth limit.
-pub use eval::{deep_materialize, eval_file, eval_file_with_input, materialize, MAX_EVAL_DEPTH};
+pub use eval::{
+    deep_materialize, eval_file, eval_file_with_input, materialize, EvalContext, MAX_EVAL_DEPTH,
+};
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, and include context.
 ///
@@ -86,10 +90,13 @@ pub fn eval_source(input: &str) -> Result<String, String> {
     // Type errors are advisory; evaluation proceeds regardless.
     let _ = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
-    let thunk = eval::eval_file(&file.node, env, 0).map_err(|e| format!("{e}"))?;
-    let val = eval::materialize(&thunk, None, 0).map_err(|e| format!("{e}"))?;
-    let forced = eval::deep_materialize(&val, 0).map_err(|e| format!("{e}"))?;
-    value_to_display_string(&forced, 0).map_err(|e| format!("{e}"))
+    // Create evaluation context (current directory)
+    let ctx = eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&env));
+    let thunk =
+        eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(|e| format!("{e}"))?;
+    let val = eval::materialize(&thunk, None, &ctx, 0).map_err(|e| format!("{e}"))?;
+    let forced = eval::deep_materialize(&val, &ctx, 0).map_err(|e| format!("{e}"))?;
+    value_to_display_string(&forced, &ctx, 0).map_err(|e| format!("{e}"))
 }
 
 // value_to_json and value_to_display_string are kept separate; their logic diverges too much for a shared visitor.
@@ -106,6 +113,7 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 /// - Exceeding the maximum recursion depth ([`eval::MAX_EVAL_DEPTH`])
 pub fn value_to_json(
     val: &value::Value,
+    ctx: &std::rc::Rc<eval::EvalContext>,
     depth: usize,
 ) -> Result<serde_json::Value, Box<error::EvalError>> {
     use serde_json::Value as JV;
@@ -146,8 +154,8 @@ pub fn value_to_json(
             if is_array {
                 let mut arr = Vec::with_capacity(map.len());
                 for (_key, thunk) in map {
-                    let v = eval::materialize(thunk, None, depth)?;
-                    arr.push(value_to_json(&v, depth + 1)?);
+                    let v = eval::materialize(thunk, None, ctx, depth)?;
+                    arr.push(value_to_json(&v, ctx, depth + 1)?);
                 }
                 Ok(JV::Array(arr))
             } else {
@@ -157,8 +165,8 @@ pub fn value_to_json(
                         Key::Int(n) => n.to_string(),
                         Key::String(s) => s.clone(),
                     };
-                    let v = eval::materialize(thunk, None, depth)?;
-                    obj.insert(key_str, value_to_json(&v, depth + 1)?);
+                    let v = eval::materialize(thunk, None, ctx, depth)?;
+                    obj.insert(key_str, value_to_json(&v, ctx, depth + 1)?);
                 }
                 Ok(JV::Object(obj))
             }
@@ -190,6 +198,7 @@ pub fn value_to_json(
 /// dict-of-dicts structures. Uses the same limit as `eval::MAX_EVAL_DEPTH`.
 pub fn value_to_display_string(
     val: &value::Value,
+    ctx: &std::rc::Rc<eval::EvalContext>,
     depth: usize,
 ) -> Result<String, Box<error::EvalError>> {
     if depth > eval::MAX_EVAL_DEPTH {
@@ -207,12 +216,12 @@ pub fn value_to_display_string(
         value::Value::Dict(map) => {
             let mut parts = Vec::new();
             for (key, thunk) in map {
-                let v = eval::materialize(thunk, None, depth)?;
+                let v = eval::materialize(thunk, None, ctx, depth)?;
                 let key_str = match key {
                     value::Key::Int(n) => format!("{n}"),
                     value::Key::String(s) => format!("{s:?}"),
                 };
-                let val_str = value_to_display_string(&v, depth + 1)?;
+                let val_str = value_to_display_string(&v, ctx, depth + 1)?;
                 parts.push(format!("{key_str}: {val_str}"));
             }
             Ok(format!("Dict({{{}}})", parts.join(", ")))
@@ -224,8 +233,8 @@ pub fn value_to_display_string(
         value::Value::Builtin { name, .. } => Ok(format!("Builtin({name})")),
         value::Value::Seq { head, .. } => {
             // Materialize and display head element
-            let head_val = eval::materialize(head, None, depth)?;
-            let head_str = value_to_display_string(&head_val, depth + 1)?;
+            let head_val = eval::materialize(head, None, ctx, depth)?;
+            let head_str = value_to_display_string(&head_val, ctx, depth + 1)?;
             Ok(format!("Seq({}, ...)", head_str))
         }
     }
@@ -245,94 +254,98 @@ mod tests {
         Rc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 1)))
     }
 
+    fn test_ctx() -> Rc<eval::EvalContext> {
+        eval::EvalContext::new(std::path::PathBuf::from("."), builtins::create_root_env())
+    }
+
     #[test]
     fn test_json_int() {
-        let result = value_to_json(&Value::Int(42), 0).unwrap();
+        let result = value_to_json(&Value::Int(42), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(42));
     }
 
     #[test]
     fn test_json_int_negative() {
-        let result = value_to_json(&Value::Int(-100), 0).unwrap();
+        let result = value_to_json(&Value::Int(-100), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(-100));
     }
 
     #[test]
     fn test_json_int_zero() {
-        let result = value_to_json(&Value::Int(0), 0).unwrap();
+        let result = value_to_json(&Value::Int(0), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(0));
     }
 
     #[test]
     fn test_json_float() {
-        let result = value_to_json(&Value::Float(3.14), 0).unwrap();
+        let result = value_to_json(&Value::Float(3.14), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(3.14));
     }
 
     #[test]
     fn test_json_float_negative() {
-        let result = value_to_json(&Value::Float(-2.5), 0).unwrap();
+        let result = value_to_json(&Value::Float(-2.5), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(-2.5));
     }
 
     #[test]
     fn test_json_float_zero() {
-        let result = value_to_json(&Value::Float(0.0), 0).unwrap();
+        let result = value_to_json(&Value::Float(0.0), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(0.0));
     }
 
     #[test]
     fn test_json_float_nan_error() {
-        let err = value_to_json(&Value::Float(f64::NAN), 0).unwrap_err();
+        let err = value_to_json(&Value::Float(f64::NAN), &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("NaN"));
     }
 
     #[test]
     fn test_json_float_infinity_error() {
-        let err = value_to_json(&Value::Float(f64::INFINITY), 0).unwrap_err();
+        let err = value_to_json(&Value::Float(f64::INFINITY), &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("Infinity"));
     }
 
     #[test]
     fn test_json_float_neg_infinity_error() {
-        let err = value_to_json(&Value::Float(f64::NEG_INFINITY), 0).unwrap_err();
+        let err = value_to_json(&Value::Float(f64::NEG_INFINITY), &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("Infinity"));
     }
 
     #[test]
     fn test_json_string() {
-        let result = value_to_json(&Value::String("hello".into()), 0).unwrap();
+        let result = value_to_json(&Value::String("hello".into()), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!("hello"));
     }
 
     #[test]
     fn test_json_string_empty() {
-        let result = value_to_json(&Value::String("".into()), 0).unwrap();
+        let result = value_to_json(&Value::String("".into()), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(""));
     }
 
     #[test]
     fn test_json_string_with_special_chars() {
-        let result = value_to_json(&Value::String("line\nnewline".into()), 0).unwrap();
+        let result = value_to_json(&Value::String("line\nnewline".into()), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!("line\nnewline"));
     }
 
     #[test]
     fn test_json_bool_true() {
-        let result = value_to_json(&Value::Bool(true), 0).unwrap();
+        let result = value_to_json(&Value::Bool(true), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(true));
     }
 
     #[test]
     fn test_json_bool_false() {
-        let result = value_to_json(&Value::Bool(false), 0).unwrap();
+        let result = value_to_json(&Value::Bool(false), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(false));
     }
 
     #[test]
     fn test_json_dict_empty() {
         let dict = Value::Dict(IndexMap::new());
-        let result = value_to_json(&dict, 0).unwrap();
+        let result = value_to_json(&dict, &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!({}));
     }
 
@@ -344,7 +357,7 @@ mod tests {
             thunk(Value::String("Alice".into())),
         );
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
-        let result = value_to_json(&Value::Dict(map), 0).unwrap();
+        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!({"name": "Alice", "age": 30}));
     }
 
@@ -354,7 +367,7 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::Int(5), thunk(Value::String("five".into())));
         map.insert(Key::Int(10), thunk(Value::String("ten".into())));
-        let result = value_to_json(&Value::Dict(map), 0).unwrap();
+        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!({"5": "five", "10": "ten"}));
     }
 
@@ -363,7 +376,7 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("zero".into())));
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
-        let result = value_to_json(&Value::Dict(map), 0).unwrap();
+        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!({"0": "zero", "x": 1}));
     }
 
@@ -374,7 +387,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(Value::String("a".into())));
         map.insert(Key::Int(1), thunk(Value::String("b".into())));
         map.insert(Key::Int(2), thunk(Value::String("c".into())));
-        let result = value_to_json(&Value::Dict(map), 0).unwrap();
+        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(["a", "b", "c"]));
     }
 
@@ -382,7 +395,7 @@ mod tests {
     fn test_json_dict_array_single_element() {
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::Bool(true)));
-        let result = value_to_json(&Value::Dict(map), 0).unwrap();
+        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!([true]));
     }
 
@@ -393,7 +406,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(Value::String("b".into())));
         map.insert(Key::Int(0), thunk(Value::String("a".into())));
         // First key is 1 at index 0 -> not array-like
-        let result = value_to_json(&Value::Dict(map), 0).unwrap();
+        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!({"1": "b", "0": "a"}));
     }
 
@@ -403,7 +416,7 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::Int(1), thunk(Value::Int(10)));
         map.insert(Key::Int(2), thunk(Value::Int(20)));
-        let result = value_to_json(&Value::Dict(map), 0).unwrap();
+        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!({"1": 10, "2": 20}));
     }
 
@@ -414,7 +427,7 @@ mod tests {
         let mut outer = IndexMap::new();
         outer.insert(Key::String("inner".into()), thunk(Value::Dict(inner)));
         outer.insert(Key::String("y".into()), thunk(Value::Int(2)));
-        let result = value_to_json(&Value::Dict(outer), 0).unwrap();
+        let result = value_to_json(&Value::Dict(outer), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!({"inner": {"x": 1}, "y": 2}));
     }
 
@@ -434,7 +447,7 @@ mod tests {
         let mut arr = IndexMap::new();
         arr.insert(Key::Int(0), thunk(Value::Dict(obj1)));
         arr.insert(Key::Int(1), thunk(Value::Dict(obj2)));
-        let result = value_to_json(&Value::Dict(arr), 0).unwrap();
+        let result = value_to_json(&Value::Dict(arr), &test_ctx(), 0).unwrap();
         assert_eq!(
             result,
             serde_json::json!([{"name": "Alice"}, {"name": "Bob"}])
@@ -448,7 +461,7 @@ mod tests {
             body: Rc::new(ast::Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
         };
-        let err = value_to_json(&f, 0).unwrap_err();
+        let err = value_to_json(&f, &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("cannot serialize Function to JSON"));
     }
 
@@ -464,7 +477,7 @@ mod tests {
                 test_span(1, 1, 1, 1),
             )),
         };
-        let err = value_to_json(&seq, 0).unwrap_err();
+        let err = value_to_json(&seq, &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("cannot serialize Seq"));
     }
 
@@ -480,13 +493,13 @@ mod tests {
             name: "test",
             func: dummy,
         };
-        let err = value_to_json(&b, 0).unwrap_err();
+        let err = value_to_json(&b, &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("cannot serialize Function to JSON"));
     }
 
     #[test]
     fn test_json_depth_limit() {
-        let err = value_to_json(&Value::Int(1), eval::MAX_EVAL_DEPTH + 1).unwrap_err();
+        let err = value_to_json(&Value::Int(1), &test_ctx(), eval::MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(err
             .message()
             .contains("maximum serialization depth exceeded"));
@@ -495,19 +508,19 @@ mod tests {
     #[test]
     fn test_json_depth_limit_just_under() {
         // One below the limit should still succeed for a leaf value
-        let result = value_to_json(&Value::Int(1), eval::MAX_EVAL_DEPTH);
+        let result = value_to_json(&Value::Int(1), &test_ctx(), eval::MAX_EVAL_DEPTH);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_json_int_max() {
-        let result = value_to_json(&Value::Int(i64::MAX), 0).unwrap();
+        let result = value_to_json(&Value::Int(i64::MAX), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(i64::MAX));
     }
 
     #[test]
     fn test_json_int_min() {
-        let result = value_to_json(&Value::Int(i64::MIN), 0).unwrap();
+        let result = value_to_json(&Value::Int(i64::MIN), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(i64::MIN));
     }
 
@@ -524,15 +537,16 @@ mod tests {
         let mut file = parse(source).expect("parse failed");
         desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
+        let ctx = test_ctx();
 
         let initial_input = stdin_json.map(|json| {
             builtins::json_to_value(&json, 0, ast::Span::origin()).expect("json_to_value failed")
         });
 
-        let thunk =
-            eval::eval_file_with_input(&file.node, env, initial_input, 0).expect("eval failed");
-        let val = eval::materialize(&thunk, None, 0).expect("materialize failed");
-        value_to_json(&val, 0).expect("value_to_json failed")
+        let thunk = eval::eval_file_with_input(&file.node, env, &ctx, initial_input, 0)
+            .expect("eval failed");
+        let val = eval::materialize(&thunk, None, &ctx, 0).expect("materialize failed");
+        value_to_json(&val, &ctx, 0).expect("value_to_json failed")
     }
 
     #[test]
@@ -597,10 +611,11 @@ mod tests {
         let mut file = parse(source).expect("parse failed");
         desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
-        let thunk = eval::eval_file(&file.node, env, 0).expect("eval failed");
-        let val = eval::materialize(&thunk, None, 0).expect("materialize failed");
-        let forced = eval::deep_materialize(&val, 0).expect("deep_materialize failed");
-        let json = value_to_json(&forced, 0).expect("value_to_json failed");
+        let ctx = test_ctx();
+        let thunk = eval::eval_file(&file.node, env, &ctx, 0).expect("eval failed");
+        let val = eval::materialize(&thunk, None, &ctx, 0).expect("materialize failed");
+        let forced = eval::deep_materialize(&val, &ctx, 0).expect("deep_materialize failed");
+        let json = value_to_json(&forced, &ctx, 0).expect("value_to_json failed");
         assert_eq!(json, serde_json::json!({"a": {"b": {"c": 42}}}));
     }
 
@@ -610,10 +625,11 @@ mod tests {
         let mut file = parse(source).expect("parse failed");
         desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
-        let thunk = eval::eval_file(&file.node, env, 0).expect("eval failed");
-        let val = eval::materialize(&thunk, None, 0).expect("materialize failed");
-        let forced = eval::deep_materialize(&val, 0).expect("deep_materialize failed");
-        let display = value_to_display_string(&forced, 0).expect("display failed");
+        let ctx = test_ctx();
+        let thunk = eval::eval_file(&file.node, env, &ctx, 0).expect("eval failed");
+        let val = eval::materialize(&thunk, None, &ctx, 0).expect("materialize failed");
+        let forced = eval::deep_materialize(&val, &ctx, 0).expect("deep_materialize failed");
+        let display = value_to_display_string(&forced, &ctx, 0).expect("display failed");
         assert_eq!(display, "Dict({\"x\": Int(42)})");
     }
 
@@ -629,7 +645,7 @@ mod tests {
                 test_span(1, 1, 1, 1),
             )),
         };
-        let display = value_to_display_string(&seq, 0).expect("display failed");
+        let display = value_to_display_string(&seq, &test_ctx(), 0).expect("display failed");
         assert_eq!(display, "Seq(Int(1), ...)");
     }
 

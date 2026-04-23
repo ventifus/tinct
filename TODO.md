@@ -90,11 +90,22 @@ Replace thread-local `INCLUDE_CTX` with parameter-passed `EvalContext`. Unlocks 
 
 **Unlocks:** `sandbox` (filesystem allowlist lives in EvalConfig)
 
-- [ ] Create `EvalConfig` struct — `base_dir: PathBuf`, `stdlib_env: Rc<RefCell<Environment>>`, `allowed_paths: Vec<PathBuf>` (`src/eval.rs`)
-- [ ] Create `EvalState` struct — `include_guard: HashSet<PathBuf>`, `include_cache: HashMap<PathBuf, Rc<Thunk>>` (`src/eval.rs`)
-- [ ] Create `EvalContext` struct — `config: Rc<EvalConfig>`, `state: Rc<RefCell<EvalState>>` (`src/eval.rs`)
-- [ ] Add `ctx: Rc<EvalContext>` field to `ThunkState::Unevaluated`, `PendingBuiltin`, `PendingCall` (`src/value.rs:176-190`)
-- [ ] Add `ctx: Rc<EvalContext>` field to `BuiltinArgs` (`src/builtins.rs`)
+### evalcontext-types: EvalContext Type Definitions
+
+Define the EvalContext types and add ctx fields to existing structs.
+
+- [x] Create `EvalConfig` struct — `base_dir: PathBuf`, `stdlib_env: Rc<RefCell<Environment>>`, `allowed_paths: Vec<PathBuf>` (`src/eval.rs`)
+- [x] Create `EvalState` struct — `include_guard: HashSet<PathBuf>`, `include_cache: HashMap<PathBuf, Rc<Thunk>>` (`src/eval.rs`)
+- [x] Create `EvalContext` struct — `config: Rc<EvalConfig>`, `state: Rc<RefCell<EvalState>>` (`src/eval.rs`)
+- [x] Add `ctx: Rc<EvalContext>` field to `ThunkState::Unevaluated`, `PendingBuiltin`, `PendingCall` (`src/value.rs:176-190`)
+- [x] Add `ctx: Rc<EvalContext>` field to `BuiltinArgs` (`src/builtins.rs`)
+
+### evalcontext-thread: EvalContext Threading and Migration
+
+Thread EvalContext through eval pipeline, migrate include, update API.
+
+**Depends on:** `evalcontext-types`
+
 - [ ] Thread `EvalContext` through `eval()`, `materialize()`, and builtin dispatch (`src/eval.rs`)
 - [ ] Migrate `builtin_include` to use `ctx.state` instead of thread-local `INCLUDE_CTX` (`src/builtins.rs:1024-1170`)
 - [ ] Remove thread-local `INCLUDE_CTX` and `set_include_context`/`clear_include_context` (`src/builtins.rs:58-70`, `src/lib.rs`)
@@ -704,6 +715,7 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 
 ### SPEC.md vs Code (from REVIEW.md)
 
+- [ ] **SPEC.md:733 pipeline diagram still says `desugar_underscores`** — prose at lines 728 and 768 correctly references `desugar_file()`/`desugar_expr()`, but the ASCII pipeline diagram reads `source → parse → desugar_underscores → typecheck → eval`. Function `desugar_underscores` never existed. Change to `source → parse → desugar → typecheck → eval`. (`SPEC.md:733`) [Minor, computer-scientist C33]
 - [ ] **SPEC.md section 7 semicolon rule divergence** — SPEC.md:802-804 defines `semicolon = _{ ";" }` as standalone rule, but grammar.pest:119 uses `";"?` inline; either add rule to grammar.pest or inline in SPEC.md [Minor, grammar-architect]
 - [ ] **SPEC bare_word_char prose terminator list missing `$`** — SPEC.md formal grammar (`SPEC.md:161`) is correct and matches `grammar.pest:219-225`, but the prose terminator list (`SPEC.md:168-170`) omits `$`; add `$` to the bulleted list [Nit, grammar-architect]
 - [ ] **SPEC.md §3.4 access chain grammar missing dot exclusion clarity** — add inline comment showing `.` exclusion in `var_ident_char` (`SPEC.md:85-92`) [Major, grammar-architect]
@@ -754,6 +766,12 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **Formatter `is_fn_params` heuristic fragile** — operates on flat token stream without AST context; heuristics at `src/formatter.rs:418-450` can misfire on comments containing "fn" before brackets. Either pass AST to formatter or document best-effort nature. (`src/formatter.rs:418-450`) [Major, grammar-architect]
 
 - [ ] **DESIGN.md missing `desugared` field documentation** — `Expr::Fn` has a `desugared: bool` origin tag (Pombrio & Krishnamurthi 2014) set by `wrap_expr_in_lambda()`, but DESIGN.md §`$_` Desugaring doesn't mention it. Add paragraph explaining origin tracking motivation and tooling use cases. (`DESIGN.md:2096-2103`, `src/ast.rs:106-110`) [Nit, grammar-architect + computer-scientist C32]
+- [ ] **DESIGN.md `try_wrap` sketch signature diverges from code** — sketch shows `if let Some(wrapped) = try_wrap(expr, depth)` returning `Option` with depth parameter; actual code at `desugar.rs:71` is `fn try_wrap(expr: &mut Spanned<Expr>) -> bool` (no depth, returns bool, mutates in place). Update to `if try_wrap(expr) { return; }`. (`DESIGN.md:2113`, `src/desugar.rs:71`) [Major, computer-scientist C33]
+- [ ] **DESIGN.md `desugar_file` sketch takes `Spanned<File>` but code takes `File`** — sketch says `fn desugar_file(file: &mut Spanned<File>)`, actual at `desugar.rs:16` is `fn desugar_file(file: &mut File)`. (`DESIGN.md:2107`, `src/desugar.rs:16`) [Nit, computer-scientist C33]
+- [ ] **DESIGN.md WRAP-DICT pseudocode still shows selective recursion** — WRAP-CALL updated to unconditional `[DESUGAR(a, depth+1) | a ∈ args]` but WRAP-DICT still shows `[if DIRECT(e.value) then e else ...]`. Semantically equivalent but notational inconsistency. Update to `[e{value=DESUGAR(e.value, depth+1)} | e ∈ entries]`. (`DESIGN.md:2041-2044`) [Minor, computer-scientist C33]
+- [ ] **DESIGN.md Structured Error Model Part 9 `is_cacheable()` listed as "integration deferred"** — Part 9 says `"defined, integration deferred to error-structured-migrate"` but is_cacheable() was fully integrated in error-structured-migrate-c. Part 8 (Error Semantics) correctly shows MEMO-SKIP with line references. Part 9 contradicts Part 8. Change to `"integrated in eval.rs materialize()"`. (`DESIGN.md:5178`) [Major, computer-scientist C33]
+- [ ] **DESIGN.md Structured Error Model Part 9 PROP-DEPTH listed as "integration deferred"** — Part 9 says `"is_cacheable() integration deferred"` but is fully integrated. Change to match Part 8. (`DESIGN.md:5184`) [Major, computer-scientist C33]
+- [ ] **DESIGN.md Structured Error Model Part 9 EvalError line reference stale** — says `"error.rs:20-25"` but EvalError is now at `error.rs:408-413`. Part 8 correctly references 408-413. (`DESIGN.md:5180`) [Major, computer-scientist C33]
 
 ### DESIGN.md documentation gaps (eval-engine review)
 

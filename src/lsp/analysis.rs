@@ -266,10 +266,15 @@ mod tests {
         create_stdlib_env().unwrap()
     }
 
+    /// Helper: create an EvalContext for tests.
+    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+        crate::eval::EvalContext::new(std::path::PathBuf::from("."), test_env())
+    }
+
     #[test]
     fn test_hover_int_literal() {
         let env = test_env();
-        let doc = DocumentState::new("42".to_string(), &env);
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 0);
         assert_eq!(hover.as_deref(), Some("Int literal: 42 (42)"));
     }
@@ -278,7 +283,7 @@ mod tests {
     fn test_hover_var_ref() {
         let env = test_env();
         // $x is undefined, so no type is inferred -- just syntactic info.
-        let doc = DocumentState::new("$x".to_string(), &env);
+        let doc = DocumentState::new("$x".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 1);
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Variable: $x"));
@@ -288,7 +293,7 @@ mod tests {
     fn test_hover_var_ref_with_type() {
         let env = test_env();
         // $x is defined in scope, so hover should show its type.
-        let doc = DocumentState::new("[x: 42]\n[y: $x]".to_string(), &env);
+        let doc = DocumentState::new("[x: 42]\n[y: $x]".to_string(), &env, &test_ctx());
         // Offset 12 is inside "$x" in the second expression "[y: $x]"
         // "[x: 42]\n[y: $x]"
         //  0123456 7 89012345
@@ -302,7 +307,7 @@ mod tests {
     #[test]
     fn test_hover_string_literal() {
         let env = test_env();
-        let doc = DocumentState::new("\"hello\"".to_string(), &env);
+        let doc = DocumentState::new("\"hello\"".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 2);
         assert!(hover.is_some());
         let text = hover.unwrap();
@@ -316,7 +321,7 @@ mod tests {
     #[test]
     fn test_hover_no_match() {
         let env = test_env();
-        let doc = DocumentState::new("[x: 1]".to_string(), &env);
+        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx());
         // Hover on whitespace between entries.
         let hover = hover_at(&doc, 100);
         assert!(hover.is_none());
@@ -325,7 +330,7 @@ mod tests {
     #[test]
     fn test_diagnostics_parse_error() {
         let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env);
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx());
         let diags = diagnostics_for(&doc);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
@@ -335,7 +340,7 @@ mod tests {
     #[test]
     fn test_diagnostics_type_error() {
         let env = test_env();
-        let doc = DocumentState::new("[@Number hello]".to_string(), &env);
+        let doc = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx());
         let diags = diagnostics_for(&doc);
         assert!(!diags.is_empty());
         let type_diag = diags
@@ -348,7 +353,7 @@ mod tests {
     #[test]
     fn test_diagnostics_eval_error() {
         let env = test_env();
-        let doc = DocumentState::new("$undefined".to_string(), &env);
+        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx());
         let diags = diagnostics_for(&doc);
         assert!(!diags.is_empty());
         let eval_diag = diags
@@ -361,7 +366,7 @@ mod tests {
     #[test]
     fn test_diagnostics_valid_source() {
         let env = test_env();
-        let doc = DocumentState::new("[x: 42]".to_string(), &env);
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx());
         let diags = diagnostics_for(&doc);
         assert!(diags.is_empty());
     }
@@ -369,7 +374,7 @@ mod tests {
     #[test]
     fn test_hover_dict_entry_key() {
         let env = test_env();
-        let doc = DocumentState::new("[x: 42]".to_string(), &env);
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 1); // on 'x'
         assert!(hover.is_some());
     }
@@ -377,7 +382,7 @@ mod tests {
     #[test]
     fn test_hover_dict_entry_value() {
         let env = test_env();
-        let doc = DocumentState::new("[x: 42]".to_string(), &env);
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 4); // on '42'
         assert!(hover.is_some());
         let text = hover.unwrap();
@@ -388,7 +393,7 @@ mod tests {
     #[test]
     fn test_hover_nested_dict() {
         let env = test_env();
-        let doc = DocumentState::new("[a: [b: 1]]".to_string(), &env);
+        let doc = DocumentState::new("[a: [b: 1]]".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 8); // on '1'
         assert!(hover.is_some());
         let text = hover.unwrap();
@@ -398,7 +403,7 @@ mod tests {
     #[test]
     fn test_hover_function_param() {
         let env = test_env();
-        let doc = DocumentState::new("[fn [x] $x]".to_string(), &env);
+        let doc = DocumentState::new("[fn [x] $x]".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 5); // on 'x' in param list
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Parameter"));
@@ -407,7 +412,7 @@ mod tests {
     #[test]
     fn test_hover_call_expression() {
         let env = test_env();
-        let doc = DocumentState::new("[call $+ 1 2]".to_string(), &env);
+        let doc = DocumentState::new("[call $+ 1 2]".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 6); // on '$+'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Variable: $+"));
@@ -416,7 +421,7 @@ mod tests {
     #[test]
     fn test_hover_float_literal() {
         let env = test_env();
-        let doc = DocumentState::new("3.14".to_string(), &env);
+        let doc = DocumentState::new("3.14".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 0);
         assert_eq!(hover.as_deref(), Some("Float literal: 3.14 (Float)"));
     }
@@ -424,7 +429,7 @@ mod tests {
     #[test]
     fn test_hover_bool_literal() {
         let env = test_env();
-        let doc = DocumentState::new("true".to_string(), &env);
+        let doc = DocumentState::new("true".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 0);
         assert_eq!(hover.as_deref(), Some("Bool literal: true (Bool)"));
     }
@@ -433,7 +438,7 @@ mod tests {
     fn test_hover_type_not_shown_on_error() {
         let env = test_env();
         // $undefined has no type -- hover should show syntactic info only.
-        let doc = DocumentState::new("$undefined".to_string(), &env);
+        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 1);
         assert!(hover.is_some());
         let text = hover.unwrap();

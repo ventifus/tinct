@@ -17,6 +17,7 @@ pub struct BuiltinArgs<'a> {
     pub named: &'a IndexMap<String, Rc<Thunk>>,
     pub depth: usize,
     pub call_span: Span,
+    pub ctx: Rc<crate::eval::EvalContext>,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -177,6 +178,7 @@ pub enum ThunkState {
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        ctx: Rc<crate::eval::EvalContext>,
     },
     PendingBuiltin {
         func: BuiltinFn,
@@ -184,12 +186,14 @@ pub enum ThunkState {
         named: IndexMap<String, Rc<Thunk>>,
         depth: usize,
         call_span: Span,
+        ctx: Rc<crate::eval::EvalContext>,
     },
     PendingCall {
         func: Rc<Thunk>,
         args: Vec<Rc<Thunk>>,
         named: IndexMap<String, Rc<Thunk>>,
         call_span: Span,
+        ctx: Rc<crate::eval::EvalContext>,
     },
     InProgress,
     Materialized(Value),
@@ -210,10 +214,11 @@ impl Thunk {
     pub fn new_unevaluated(
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        ctx: Rc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Unevaluated { expr, env }),
+            state: RefCell::new(ThunkState::Unevaluated { expr, env, ctx }),
             span,
             origin: Cow::Borrowed(""),
         }
@@ -234,6 +239,7 @@ impl Thunk {
         depth: usize,
         span: Span,
         origin: Cow<'static, str>,
+        ctx: Rc<crate::eval::EvalContext>,
     ) -> Self {
         Self {
             state: RefCell::new(ThunkState::PendingBuiltin {
@@ -242,6 +248,7 @@ impl Thunk {
                 named,
                 depth,
                 call_span: span,
+                ctx,
             }),
             span,
             origin,
@@ -255,6 +262,7 @@ impl Thunk {
         call_span: Span,
         span: Span,
         origin: Cow<'static, str>,
+        ctx: Rc<crate::eval::EvalContext>,
     ) -> Self {
         Self {
             state: RefCell::new(ThunkState::PendingCall {
@@ -262,6 +270,7 @@ impl Thunk {
                 args,
                 named,
                 call_span,
+                ctx,
             }),
             span,
             origin,
@@ -321,10 +330,16 @@ impl Thunk {
     /// Take ownership of unevaluated data, atomically setting state to InProgress.
     /// Returns None if the thunk is not in the Unevaluated state.
     #[allow(clippy::type_complexity)]
-    pub fn take_unevaluated(&self) -> Option<(Rc<Spanned<Expr>>, Rc<RefCell<Environment>>)> {
+    pub fn take_unevaluated(
+        &self,
+    ) -> Option<(
+        Rc<Spanned<Expr>>,
+        Rc<RefCell<Environment>>,
+        Rc<crate::eval::EvalContext>,
+    )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
-            ThunkState::Unevaluated { expr, env } => Some((expr, env)),
+            ThunkState::Unevaluated { expr, env, ctx } => Some((expr, env, ctx)),
             other => {
                 *state = other;
                 None
@@ -343,6 +358,7 @@ impl Thunk {
         IndexMap<String, Rc<Thunk>>,
         usize,
         Span,
+        Rc<crate::eval::EvalContext>,
     )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
@@ -352,7 +368,8 @@ impl Thunk {
                 named,
                 depth,
                 call_span,
-            } => Some((func, args, named, depth, call_span)),
+                ctx,
+            } => Some((func, args, named, depth, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -363,7 +380,13 @@ impl Thunk {
     #[allow(clippy::type_complexity)]
     pub fn take_pending_call(
         &self,
-    ) -> Option<(Rc<Thunk>, Vec<Rc<Thunk>>, IndexMap<String, Rc<Thunk>>, Span)> {
+    ) -> Option<(
+        Rc<Thunk>,
+        Vec<Rc<Thunk>>,
+        IndexMap<String, Rc<Thunk>>,
+        Span,
+        Rc<crate::eval::EvalContext>,
+    )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingCall {
@@ -371,7 +394,8 @@ impl Thunk {
                 args,
                 named,
                 call_span,
-            } => Some((func, args, named, call_span)),
+                ctx,
+            } => Some((func, args, named, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -474,6 +498,13 @@ impl Default for Environment {
 mod tests {
     use super::*;
     use crate::test_util::test_span;
+
+    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+        crate::eval::EvalContext::new(
+            std::path::PathBuf::from("."),
+            Rc::new(RefCell::new(Environment::new())),
+        )
+    }
 
     #[test]
     fn test_key_hash_consistency() {
@@ -682,7 +713,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let expr = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, span);
+        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
 
         // Verify initial state
         assert!(matches!(&*thunk.state(), ThunkState::Unevaluated { .. }));
@@ -701,7 +732,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let expr = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, span);
+        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
 
         // Hold a mutable borrow while formatting Debug
         let _guard = thunk.state.borrow_mut();
