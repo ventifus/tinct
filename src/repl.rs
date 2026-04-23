@@ -84,6 +84,8 @@ pub struct ReplSession {
     env: Rc<RefCell<Environment>>,
     /// The previous evaluation result, accessible as `$$`.
     prev_result: Rc<Thunk>,
+    /// Evaluation context for session (include guard, etc.)
+    ctx: Rc<crate::eval::EvalContext>,
 }
 
 /// The outcome of a single REPL evaluation step.
@@ -119,9 +121,14 @@ impl ReplSession {
             .borrow_mut()
             .insert("$".to_string(), Rc::clone(&empty_dict));
 
+        // Create REPL session context (REPL runs in current directory)
+        let ctx =
+            crate::eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&stdlib_env));
+
         Self {
             env: session_env,
             prev_result: empty_dict,
+            ctx,
         }
     }
 
@@ -157,14 +164,15 @@ impl ReplSession {
         let result_thunk = eval_file_with_input(
             &file.node,
             Rc::clone(&self.env),
+            &self.ctx,
             Some(Rc::clone(&self.prev_result)),
             0,
         )
         .map_err(|e| format!("{e}"))?;
 
-        let val = materialize(&result_thunk, None, 0).map_err(|e| format!("{e}"))?;
-        let forced = deep_materialize(&val, 0).map_err(|e| format!("{e}"))?;
-        let display = value_to_display_string(&forced, 0).map_err(|e| format!("{e}"))?;
+        let val = materialize(&result_thunk, None, &self.ctx, 0).map_err(|e| format!("{e}"))?;
+        let forced = deep_materialize(&val, &self.ctx, 0).map_err(|e| format!("{e}"))?;
+        let display = value_to_display_string(&forced, &self.ctx, 0).map_err(|e| format!("{e}"))?;
 
         // Success: commit the result to session state.
         self.prev_result = result_thunk;
