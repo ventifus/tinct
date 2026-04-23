@@ -178,6 +178,7 @@ fn infer_expr(
             return_ann,
             params,
             body,
+            ..
         } => infer_fn(return_ann, params, body, env, expr.span, counter, type_map),
 
         Expr::TypeAlias(inner) => expand_type_alias(inner, env).map_err(|e| vec![e]),

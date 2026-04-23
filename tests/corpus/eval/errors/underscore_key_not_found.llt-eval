@@ -1,0 +1,6 @@
+# Desugared access chain where key doesn't exist
+# $_.missing desugars to [fn [_] $_.missing]
+# When called with [a: 1], key "missing" is not found
+[call $_.missing [a: 1]]
+===
+key not found: missing

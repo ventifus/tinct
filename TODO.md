@@ -84,44 +84,6 @@ ErrorKind test coverage to validate migration and prevent regressions.
 - [x] Add `ErrorKind::code()` exhaustiveness unit test — assert all variants return "E" + digits, prevents silent breakage when new variants added (`src/error.rs`) [Minor, test-crafter]
 - [x] Add stack frame propagation integration tests — test multi-level error propagation through nested materialization chains (dict → thunk → builtin → error), verify frames accumulate correctly (`src/error.rs`) [Major, test-crafter]
 
-## underscore-desugar: $_ Pre-Typecheck Desugaring Pass
-
-Replace eval-time `$_` desugaring with a pre-typecheck AST rewrite pass. See DESIGN.md §`$_` Desugaring — Formal Specification.
-
-### underscore-desugar-b: Pipeline Integration & Cleanup
-
-Wire desugar pass into pipeline and remove old eval-time desugaring.
-
-- [x] Integrate into pipeline: `eval_source()` calls `desugar_file()` after parsing, before typecheck (`src/lib.rs`)
-- [x] Remove eval-time desugaring: `should_desugar_underscore`, `contains_direct_underscore`, runtime env check (`src/eval.rs:66-74`)
-- [x] Migrate existing `test_underscore_*` tests to call `desugar_expr()` before eval
-- [x] Add tests: shadowing, exclusions (func position, bracket access keys, range bounds, dict entry keys), nested `$_`
-- [x] Reconcile WRAP-CALL `not DIRECT(f)` guard — DESIGN.md spec includes guard but implementation omits it; implementation's behavior for `[call $_ $_]` is arguably more useful (wraps both). Update spec to match implementation or add guard. (`src/desugar.rs:70-86`, `DESIGN.md:2029-2030`) [Minor, computer-scientist]
-
-### underscore-desugar-c: Doc Fixes & Spec Updates
-
-Update DESIGN.md and SPEC.md to reflect completed desugaring migration.
-
-- [x] Update DESIGN.md desugar sketch signatures to match `&mut` implementation — sketch shows value-returning API but code uses in-place mutation (`DESIGN.md:2110-2122`) [Nit, computer-scientist]
-- [x] Update DESIGN.md WRAP-CALL pseudocode to show unconditional recursion — spec shows selective `if DIRECT(a) then a else DESUGAR(a)` but impl recurses all children; proven equivalent but spec should match impl (`DESIGN.md:2034-2038`) [Nit, panel consensus]
-- [x] Update DESIGN.md line 2096 tense — still says "This replaces the current eval-time..." but migration is complete; update to past tense (`DESIGN.md:2096`) [Nit, computer-scientist]
-- [x] Update DESIGN.md line 2124 migration paragraph tense — entire paragraph uses future tense ("is removed once", "move to", "must call") for completed work; update to past tense (`DESIGN.md:2124`) [Nit, computer-scientist]
-- [x] Update SPEC.md `desugar_underscores` function name — SPEC.md §6.5 (line 728) and §8.6 (line 1064) reference a function `desugar_underscores` that doesn't exist; actual functions are `desugar_file()` and `desugar_expr()` in `src/desugar.rs` (`SPEC.md:728,1064`) [Minor, computer-scientist]
-- [x] Update SPEC.md §6.5 exclusion text for reconciled WRAP-CALL — line 759 says "`[call $_ ...]` — `$_` as the function is an ordinary variable lookup" which is incomplete after WRAP-CALL reconciliation; when both func and arg are DIRECT (e.g., `[call $_ $_]`), wrapping DOES fire and both references bind to the `_` parameter. Update to match DESIGN.md line 2071 explanation. (`SPEC.md:759`) [Minor, computer-scientist]
-- [x] Add precondition doc comment to `desugar()` noting parser-bounded AST depth — depends on MAX_PARSE_DEPTH but doesn't assert it; future programmatic AST construction (macros, quasiquoting) must respect bound (`src/desugar.rs:47`) [Nit, computer-scientist]
-- [x] Add desugar step to `eval_to_json_with_input` test helper — `lib.rs` test helper parses then evals without calling `desugar_file()`, skipping the desugaring step that all three production entry points (eval_source, main.rs, repl.rs) perform. Currently latent. (`src/lib.rs:520-535`) [Minor, computer-scientist]
-
-### underscore-desugar-d: Edge Case Tests
-
-Additional corpus and unit tests for desugaring edge cases.
-
-- [ ] Add explicit origin tags to synthetic `$_` desugared AST nodes — distinguish user-written lambdas from sugar-generated ones for future tooling. Pombrio & Krishnamurthi (2014). [Minor, computer-scientist]
-- [ ] Add test for `[call $_ $_]` (func and arg both DIRECT) — documents chosen behavior for edge case (`src/desugar.rs`) [Nit, computer-scientist]
-- [ ] Add test for `$_` in annotations inside shadowing functions — `[fn [_] [fn [x: [@Number $_]] $x]]` edge case; implementation correct but untested (`src/desugar.rs`) [Nit, test-crafter + sprint-reviewer]
-- [ ] Add corpus tests for exclusion positions — bracket key `$data[$_]`, range bounds `$data[$_..5]`, dict key `[$_: value]`; unit tests exist but corpus tests validate full pipeline (`tests/corpus/eval/`) [Minor, test-crafter + grammar-architect]
-- [ ] Add corpus test for func-only DIRECT case — `[call $_ $x]` should NOT wrap; documents asymmetry with arg-only case (`tests/corpus/eval/`) [Nit, test-crafter + integration-verifier]
-- [ ] Add corpus error tests for `$_` — undefined `$_`, key-not-found on desugared access chain, type mismatch inside desugared lambda; validates error span quality (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
-
 ## evalcontext-refactor: EvalContext Parameter Threading
 
 Replace thread-local `INCLUDE_CTX` with parameter-passed `EvalContext`. Unlocks LSP multi-file support and clean sandboxing. See DESIGN.md §EvalContext.
@@ -594,6 +556,8 @@ User-facing error presentation improvements.
 - [ ] Span-aware error recovery in REPL — show source line with caret pointing to error span (span-integrity-checker review)
 - [ ] `tinct explain <error-code>` command for extended help on error categories (span-integrity-checker review, Elm-inspired)
 - [ ] Add LSP `related_information` for materialization-site spans and stack frames (currently discarded)
+- [ ] Use `ErrorKind::code()` for LSP diagnostic error code — `eval_error_to_diagnostic()` sets `code: None` instead of using the structured error code from `ErrorKind::code()`. (`src/lsp/analysis.rs:237-249`) [Minor, span-integrity-checker C32]
+- [ ] Add `desugar_file()` call to LSP `DocumentState::new()` — pipeline is parse→typecheck→eval, missing the desugar step. User code containing `$_` will see un-desugared ASTs in LSP. (`src/lsp/document.rs:45-54`) [Minor, computer-scientist C32]
 
 ### error-message-polish: Error Message Polish (Minor)
 
@@ -788,6 +752,8 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **IncludeContext::new() constructor** — add constructor to reduce breaking changes when fields are added; low priority pre-1.0 (`src/builtins.rs:54`) [Nit, integration-verifier]
 - [ ] **DESIGN.md §Literal Recognition references "tokenizer" but should reference "lexer"** — both pest grammar (`grammar.pest`) and hand-written lexer (`src/lexer.rs`) exist; cross-reference both for precedence rules (`DESIGN.md:198-220`, `src/lexer.rs`) [Major, grammar-architect]
 - [ ] **Formatter `is_fn_params` heuristic fragile** — operates on flat token stream without AST context; heuristics at `src/formatter.rs:418-450` can misfire on comments containing "fn" before brackets. Either pass AST to formatter or document best-effort nature. (`src/formatter.rs:418-450`) [Major, grammar-architect]
+
+- [ ] **DESIGN.md missing `desugared` field documentation** — `Expr::Fn` has a `desugared: bool` origin tag (Pombrio & Krishnamurthi 2014) set by `wrap_expr_in_lambda()`, but DESIGN.md §`$_` Desugaring doesn't mention it. Add paragraph explaining origin tracking motivation and tooling use cases. (`DESIGN.md:2096-2103`, `src/ast.rs:106-110`) [Nit, grammar-architect + computer-scientist C32]
 
 ### DESIGN.md documentation gaps (eval-engine review)
 

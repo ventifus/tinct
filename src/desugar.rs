@@ -172,6 +172,7 @@ fn wrap_expr_in_lambda(expr: &mut Spanned<Expr>) {
             span,
         )],
         body: Box::new(Spanned::new(original_node, span)),
+        desugared: true,
     };
 }
 
@@ -241,6 +242,7 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             params,
             body,
             return_ann,
+            desugared: _,
         } => {
             // Check if `_` is a parameter (shadowing)
             let has_underscore_param = params.iter().any(|p| p.node.name == "_");
@@ -456,6 +458,7 @@ mod tests {
                 args: vec![sp(Expr::VarRef("_".into()))],
                 named_args: vec![],
             })),
+            desugared: false,
         });
 
         desugar_expr(&mut expr, 0);
@@ -827,6 +830,218 @@ mod tests {
         match &doc.expressions[1].node {
             Expr::Fn { .. } => {}
             _ => panic!("Expected second expression to be wrapped"),
+        }
+    }
+
+    /// Test origin tagging: desugared lambdas get `desugared: true`,
+    /// user-written lambdas keep `desugared: false`.
+    /// Per Pombrio & Krishnamurthi (2014) Abstraction Property.
+    #[test]
+    fn test_desugared_origin_tag() {
+        // Desugared lambda: [call $f $_] → [fn [_] [call $f $_]] with desugared=true
+        let mut desugared_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::VarRef("_".into()))],
+            named_args: vec![],
+        });
+        desugar_expr(&mut desugared_expr, 0);
+        match &desugared_expr.node {
+            Expr::Fn { desugared, .. } => {
+                assert!(
+                    *desugared,
+                    "synthetic lambda from $_ desugaring should have desugared=true"
+                );
+            }
+            _ => panic!("Expected Fn wrapper"),
+        }
+
+        // User-written lambda: [fn [x] $x] keeps desugared=false
+        let mut user_fn = sp(Expr::Fn {
+            return_ann: None,
+            params: vec![sp(Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            })],
+            body: Box::new(sp(Expr::VarRef("x".into()))),
+            desugared: false,
+        });
+        desugar_expr(&mut user_fn, 0);
+        match &user_fn.node {
+            Expr::Fn { desugared, .. } => {
+                assert!(
+                    !*desugared,
+                    "user-written lambda should keep desugared=false"
+                );
+            }
+            _ => panic!("Expected Fn to remain unchanged"),
+        }
+    }
+
+    /// Test that nested desugaring: inner $_ wrapped with desugared=true,
+    /// outer user Fn keeps desugared=false.
+    #[test]
+    fn test_desugared_nested_origin_tags() {
+        // [fn [x] [call $f $_]] — outer is user-written, inner gets wrapped
+        let mut expr = sp(Expr::Fn {
+            return_ann: None,
+            params: vec![sp(Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            })],
+            body: Box::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::VarRef("f".into()))),
+                args: vec![sp(Expr::VarRef("_".into()))],
+                named_args: vec![],
+            })),
+            desugared: false,
+        });
+
+        desugar_expr(&mut expr, 0);
+
+        // Outer Fn: user-written, desugared=false
+        match &expr.node {
+            Expr::Fn {
+                desugared, body, ..
+            } => {
+                assert!(
+                    !*desugared,
+                    "outer user-written Fn should keep desugared=false"
+                );
+
+                // Inner: body should now be wrapped in a desugared Fn
+                match &body.node {
+                    Expr::Fn {
+                        desugared: inner_desugared,
+                        ..
+                    } => {
+                        assert!(
+                            *inner_desugared,
+                            "inner $_ wrapper should have desugared=true"
+                        );
+                    }
+                    _ => panic!("Expected inner Fn wrapper from $_ desugaring"),
+                }
+            }
+            _ => panic!("Expected outer Fn"),
+        }
+    }
+
+    /// Test WRAP-CALL edge case: both func and arg are DIRECT
+    ///
+    /// `[call $_ $_]` wraps to `[fn [_] [call $_ $_]]` because WRAP-CALL
+    /// only checks args (positional and named), not the func position.
+    /// Both `$_` references then bind to the same generated parameter.
+    #[test]
+    fn test_wrap_call_both_direct() {
+        let mut expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("_".into()))),
+            args: vec![sp(Expr::VarRef("_".into()))],
+            named_args: vec![],
+        });
+
+        desugar_expr(&mut expr, 0);
+
+        // Should wrap because there IS a DIRECT arg (even though func is also DIRECT)
+        match &expr.node {
+            Expr::Fn { params, body, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "_");
+
+                // Body should be the original call with both positions referring to `$_`
+                match &body.node {
+                    Expr::Call { func, args, .. } => {
+                        assert!(matches!(func.node, Expr::VarRef(ref name) if name == "_"));
+                        assert_eq!(args.len(), 1);
+                        assert!(matches!(args[0].node, Expr::VarRef(ref name) if name == "_"));
+                    }
+                    _ => panic!("Expected Call in lambda body, got {:?}", body.node),
+                }
+            }
+            _ => panic!("Expected Fn wrapper, got {:?}", expr.node),
+        }
+    }
+
+    /// Test $_ inside annotation within shadowing function
+    ///
+    /// `[fn [_] [fn [x: [@Number $_]] $x]]` — the outer `[fn [_] ...]` shadows `$_`,
+    /// so the `$_` inside the annotation (at depth 1) should NOT trigger wrapping.
+    /// This tests that annotations recurse at the current depth (not depth+1).
+    #[test]
+    fn test_underscore_in_annotation_inside_shadowing_fn() {
+        let mut expr = sp(Expr::Fn {
+            return_ann: None,
+            params: vec![sp(Param {
+                name: "_".into(),
+                annotation: None,
+                variadic: false,
+            })],
+            body: Box::new(sp(Expr::Fn {
+                return_ann: None,
+                params: vec![sp(Param {
+                    name: "x".into(),
+                    annotation: Some(sp(Annotation::PropertyDict(vec![
+                        sp(Entry {
+                            key: Some(sp(Expr::Str("type".into()))),
+                            value: sp(Expr::VarRef("Number".into())),
+                        }),
+                        sp(Entry {
+                            key: None,
+                            value: sp(Expr::VarRef("_".into())),
+                        }),
+                    ]))),
+                    variadic: false,
+                })],
+                body: Box::new(sp(Expr::VarRef("x".into()))),
+                desugared: false,
+            })),
+            desugared: false,
+        });
+
+        desugar_expr(&mut expr, 0);
+
+        // Should remain unchanged — no wrapping because $_ is shadowed
+        match &expr.node {
+            Expr::Fn { params, body, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "_");
+
+                // Body should still be the inner Fn (not wrapped in another Fn)
+                match &body.node {
+                    Expr::Fn {
+                        params: inner_params,
+                        body: inner_body,
+                        ..
+                    } => {
+                        assert_eq!(inner_params.len(), 1);
+                        assert_eq!(inner_params[0].node.name, "x");
+
+                        // Annotation should still have PropertyDict with VarRef("_")
+                        match &inner_params[0].node.annotation {
+                            Some(ann_spanned) => {
+                                match &ann_spanned.node {
+                                    Annotation::PropertyDict(entries) => {
+                                        assert_eq!(entries.len(), 2);
+                                        // Second entry should have VarRef("_") unchanged
+                                        assert!(matches!(
+                                            entries[1].node.value.node,
+                                            Expr::VarRef(ref name) if name == "_"
+                                        ));
+                                    }
+                                    _ => panic!("Expected PropertyDict annotation"),
+                                }
+                            }
+                            None => panic!("Expected annotation on param x"),
+                        }
+
+                        // Body should be VarRef("x")
+                        assert!(matches!(inner_body.node, Expr::VarRef(ref name) if name == "x"));
+                    }
+                    _ => panic!("Expected inner Fn in body, got {:?}", body.node),
+                }
+            }
+            _ => panic!("Expected outer Fn, got {:?}", expr.node),
         }
     }
 }
