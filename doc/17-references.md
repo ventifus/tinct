@@ -1,0 +1,52 @@
+# References
+
+## Formal References
+
+Foundational papers grounding tinct's design decisions. Each citation identifies the formal model a subsystem corresponds to and the guarantees it provides.
+
+**Type inference:**
+- Damas, L. & Milner, R. (1982). Principal type-schemes for functional programs. In *POPL '82*, pp. 207–212. ACM. — Proves existence of principal types for Hindley-Milner. tinct uses levels-based let-generalization (Kiselyov 2013) with annotation-driven polymorphism. Principal types hold for the annotated subset; full principality requires all parameters to be annotated.
+- Robinson, J.A. (1965). A machine-oriented logic based on the resolution principle. *JACM*, 12(1), 23–41. — The unification algorithm at the core of `unify()` in `src/types.rs`. Robinson is purely syntactic (no subtyping); tinct extends it with [U-SUBSUME], a ground-type compatibility check using the subtype lattice. This is a pragmatic middle ground — full subtyping integration would require algebraic subtyping (Dolan & Mycroft 2017).
+- Dolan, S. & Mycroft, A. (2017). Polymorphism, subtyping, and type inference in MLsub. In *POPL '17*, pp. 228–242. ACM. — Introduces algebraic subtyping: a principled combination of ML-style parametric polymorphism with subtyping that preserves principal types. Uses polar types (input vs output) and extends unification to handle subtyping constraints directly. tinct intentionally does not adopt this — [U-SUBSUME] is a simpler ground-type compatibility check that avoids MLsub's complexity while covering tinct's literal-type subtyping needs. See `doc/whatif/algebraic.md` for analysis of what adoption would require.
+- Pierce, B.C. & Turner, D.N. (2000). Local type inference. *ACM TOPLAS*, 22(1), 1–44. — Foundational paper for bidirectional type checking. tinct's type checker uses synthesis (⇒) and checking (⇐) modes, with subsumption bridging subtyping and inference. `check_expr` uses `is_subtype` for concrete types and `unify` for types with variables.
+- Dunfield, J. & Krishnaswami, N.R. (2021). Bidirectional typing. *ACM Computing Surveys*, 54(5), 1–38. — Comprehensive survey of bidirectional typing. Establishes that bidirectional checking is the standard approach for combining HM inference with subtyping. tinct's design follows the "synthesize then subsume" pattern for checking positions.
+- Dunfield, J. & Pfenning, F. (2004). Tridirectional typechecking. In *POPL '04*, pp. 281–292. ACM. — Extends bidirectional typing to refinement types. Relevant because tinct's singleton literal types (`IntLiteral(42)`, `StringLiteral("hello")`) are subtypes of their base types (`Int`, `Str`) — a simpler form of the type refinements D&P handles. The subsumption rule [SUB] mediates between singleton and base types; [U-SUBSUME] provides confluence within unification.
+- Kiselyov, O. (2013). How OCaml type checker works — or what polymorphism and garbage collection have in common. — Levels-based approach to let-generalization used by tinct. Type variables carry integer levels; generalization quantifies variables whose level exceeds the enclosing scope.
+
+**Row polymorphism:**
+- Rémy, D. (1994). Type inference for records in natural extension of ML. In *Theoretical Aspects of Object-Oriented Programming*, pp. 291–346. MIT Press. — Proves decidable inference with row variables. tinct's row types (open records with `...`, named row variables with `...rest`) follow Rémy's approach. Full row-variable binding in `unify()` is planned but not yet implemented — current row unification is structural but does not bind row variables to remainders.
+
+**Coinductive types and productivity:**
+- Coquand, T. (1994). Infinite objects in type theory. In *Types for Proofs and Programs*, pp. 62–78. Springer. — Foundational treatment of coinductive types in type theory. Introduces the guardedness condition for productive corecursion. tinct's `Value::Seq` is a coinductive cons-cell; productivity is ensured pragmatically (productive-by-construction combinators + depth limit) rather than statically, since Coquand's proof requires totality.
+- Turner, D.A. (2004). Total functional programming. *J. Universal Computer Science*, 10(7), 751–768. — Argues for eliminating partiality via a data/codata distinction. tinct deliberately retains general recursion (Turing-completeness) at the cost of static productivity guarantees, following Haskell/Nix rather than Dhall/Turner.
+- Abel, A. & Pientka, B. (2013). Wellfounded recursion with copatterns: a unified approach to termination and productivity. In *ICFP '13*, pp. 185–196. ACM. — Unifies termination and productivity checking via sized types and copatterns. Cited as incompatible with HM inference, motivating tinct's pragmatic approach.
+- Abel, A. (2012). Type-based termination, inflationary fixed-points, and mixed inductive-coinductive types. In *FICS '12*, EPTCS 77, pp. 1–11. — Sized types for Agda's termination/productivity checker. Alternative to syntactic guardedness; requires constraint solving beyond unification.
+
+**Strictness analysis:**
+- Mycroft, A. (1981). Abstract interpretation and optimising transformations for applicative programs. Ph.D. thesis, University of Edinburgh. — Introduces per-argument strictness annotations for higher-order functional programs via abstract interpretation. tinct's strictness signature table (§Selective Materialization — Formal Specification) uses Mycroft's S/L classification to declare which builtin arguments are forced.
+
+**Call convention:**
+- Garrigue, J. (1995). Labeled and optional arguments for Objective Caml. In *JSSST Workshop*, pp. 1–14. — Formalizes labeled and optional function arguments with separate default evaluation environments. tinct's `default_env` parameter in `bind_args_thunks` (§Call Convention — Formal Specification) follows Garrigue's insight that the environment for evaluating defaults must be a parameter, not hard-coded — normal calls use the caller's environment, `$apply` uses the closure environment. tinct's Kotlin-model naming (any parameter is nameable) goes beyond Garrigue's labeled-only approach — see §Call Convention Part 1 C-NAMED-VALID.
+
+**Evaluation semantics:**
+- Plotkin, G.D. (1981). A structural approach to operational semantics. Tech. Rep. DAIMI FN-19, Aarhus University. — Foundational framework for structural operational semantics (SOS). tinct's delta rules for builtin materialization behavior (§Selective Materialization) follow Plotkin's style of inference rules with premises and conclusions.
+- Ariola, Z.M. & Felleisen, M. (1997). The call-by-need lambda calculus. *J. Functional Programming*, 7(3), 265–301. — Equational theory for call-by-need evaluation. Proves confluence (diamond property) for the pure call-by-need calculus. tinct's pure subset (no `$include`) satisfies this property; `$include` introduces evaluation-order dependence that breaks confluence (see §Thunk Lifecycle — Semantic Commitments).
+- Launchbury, J. (1993). A natural semantics for lazy evaluation. In *POPL '93*, pp. 144–154. ACM. — The formal semantics for call-by-need evaluation. tinct's thunk lifecycle (Unevaluated → InProgress → Materialized) is a faithful implementation of Launchbury's natural semantics, extended with PendingBuiltin, PendingCall, and Failed states for deferred computation and error caching. The scope chain semantics (§Scope Chain Semantics — Formal Specification) uses Launchbury's heap model for letrec environment construction and variable lookup. See §Thunk Lifecycle — Formal Specification for the complete state transition DAG and proof obligations.
+- Nakata, K. & Hasegawa, M. (2009). Small-step and big-step semantics for call-by-need. *J. Functional Programming*, 19(6), 699–722. — Extends Launchbury's natural semantics to handle cyclic references in letrec, proving that blackholing (InProgress detection) ensures termination for all terms. tinct's cycle detection via the `InProgress` thunk state is exactly Nakata & Hasegawa's blackhole mechanism. The scope chain semantics (§Scope Chain Semantics — Property 2) uses this result to prove mutual visibility terminates. tinct extends their model with error memoization (`Failed` state), which they do not address.
+- Peyton Jones, S.L., Reid, A., Henderson, F., Haskell, C.A. & Sestoft, P. (1999). A semantics for imprecise exceptions. In *PLDI '99*, pp. 25–36. ACM. — Formalizes exception semantics in a lazy language. tinct's `Failed` thunk state memoizes errors permanently (Semantic Commitment 1 in §Thunk Lifecycle), matching the deterministic subset of Peyton Jones et al.'s semantics — tinct has no non-deterministic exception selection since errors are purely deterministic.
+
+**Abstract machines:**
+- Danvy, O. & Nielsen, L.R. (2003). Defunctionalization at work. In *PPDP '03*, pp. 162–174. ACM. — Systematic defunctionalization from higher-order to first-order programs. tinct's PendingBuiltin and PendingCall thunk states are defunctionalized continuations in the sense of Reynolds (1972). The planned iterative evaluator (see Iterative Evaluator section) makes this CEK machine correspondence explicit, following Felleisen & Friedman (1986).
+
+**Desugaring:**
+- Pombrio, J. & Krishnamurthi, S. (2014). Resugaring: lifting evaluation sequences through syntactic sugar. In *PLDI '14*, pp. 361–371. ACM. — Formalizes how to map desugared evaluation steps back to surface syntax for error reporting. Motivates the universal practice of desugaring before evaluation. tinct's `$_` desugaring follows this pipeline: parse → desugar → typecheck → eval.
+- Krishnamurthi, S. (2012). *Programming Languages: Application and Interpretation (PLAI)*. — Textbook pipeline: parse → desugar → typecheck → evaluate. Desugaring produces a core language AST that all downstream passes consume. tinct's `$_` transformation is a desugaring in this sense.
+
+**Parsing:**
+- Ford, B. (2004). Parsing expression grammars: a recognition-based syntactic foundation. In *POPL '04*, pp. 111–122. ACM. — Proves O(n) parsing with packrat memoization. tinct's pest grammar (`src/grammar.pest`) implements a PEG with ordered choice, no left recursion, and finite lookahead.
+
+## Resources
+
+- [Crafting Interpreters](https://craftinginterpreters.com/) — evaluator implementation
+- [Write You a Haskell](http://dev.stephendiehl.com/fun/) — lazy evaluation
+- [pest.rs](https://pest.rs/) — PEG parser (used for `src/grammar.pest`)
