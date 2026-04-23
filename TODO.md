@@ -88,17 +88,18 @@ ErrorKind test coverage to validate migration and prevent regressions.
 
 Replace eval-time `$_` desugaring with a pre-typecheck AST rewrite pass. See DESIGN.md §`$_` Desugaring — Formal Specification.
 
-- [ ] Create `src/desugar.rs` module with `desugar_file()` and `desugar_expr()` public functions
-- [ ] Implement `is_direct_underscore(expr) -> bool` — DIRECT predicate (bare `$_` VarRef, not nested in sub-expression)
-- [ ] Implement DESUGAR rewrite: top-down WRAP check on raw children, wrapping in `[fn [_] original_expr]` when any child is DIRECT
-- [ ] Handle all WRAP cases: WRAP-CALL (args only, not func), WRAP-DICT (values only, not keys), WRAP-DOT, WRAP-BRACKET, WRAP-RANGE
-- [ ] Implement depth-based lexical shadowing — depth counter incremented inside `Fn` with `_` parameter, suppresses desugaring at depth > 0
-- [ ] Preserve spans: generated `Fn` nodes reuse span of original expression
+### underscore-desugar-b: Pipeline Integration & Tests
+
+Wire desugar pass into pipeline, remove old eval-time desugaring, add tests.
+
 - [ ] Integrate into pipeline: `eval_source()` calls `desugar_file()` after parsing, before typecheck (`src/lib.rs`)
 - [ ] Add explicit origin tags to synthetic `$_` desugared AST nodes — distinguish user-written lambdas from sugar-generated ones for future tooling. Pombrio & Krishnamurthi (2014). [Minor, computer-scientist]
 - [ ] Remove eval-time desugaring: `should_desugar_underscore`, `contains_direct_underscore`, runtime env check (`src/eval.rs:66-74`)
 - [ ] Migrate existing `test_underscore_*` tests to call `desugar_expr()` before eval
 - [ ] Add tests: shadowing, exclusions (func position, bracket access keys, range bounds, dict entry keys), nested `$_`
+- [ ] Reconcile WRAP-CALL `not DIRECT(f)` guard — DESIGN.md spec includes guard but implementation omits it; implementation's behavior for `[call $_ $_]` is arguably more useful (wraps both). Update spec to match implementation or add guard. (`src/desugar.rs:70-86`, `DESIGN.md:2029-2030`) [Minor, computer-scientist]
+- [ ] Add test for `[call $_ $_]` (func and arg both DIRECT) — documents chosen behavior for edge case (`src/desugar.rs`) [Nit, computer-scientist]
+- [ ] Add test for `$_` in annotations inside shadowing functions — `[fn [_] [fn [x: [@Number $_]] $x]]` edge case; implementation correct but untested (`src/desugar.rs`) [Nit, test-crafter + sprint-reviewer]
 
 ## evalcontext-refactor: EvalContext Parameter Threading
 
@@ -540,6 +541,7 @@ Core error model improvements. Foundation for all later error work.
 - [ ] Migrate freeform string error constructors to structured enum variants (`key_not_found`, `type_mismatch`, `arity_mismatch`)
 - [ ] Add structured error codes (E001, E002, ...) for programmatic error filtering and documentation linking
 - [x] Document dual-span error model in DESIGN.md — see DESIGN.md §Error Semantics — Formal Specification, Part 1: Error Representation
+- [ ] Migrate lib.rs remaining `EvalError::new()` call sites to typed ErrorKind constructors — 5 sites at lines 110, 124, 161, 166, 191 still use escape hatch constructor instead of named ErrorKind constructors (`src/lib.rs`) [Minor, integration-verifier]
 - [ ] Add builtin function name to error stack frames — builtin errors currently lack the function name in stack traces (`src/builtins.rs`, `src/error.rs`) [Major, span-integrity-checker]
 - [ ] Deduplicate redundant span output when definition-site == materialization-site — show single span instead of identical pair (`src/error.rs`) [Major, span-integrity-checker]
 - [ ] Add dual-span pattern to access chain errors — `DotAccess`, `BracketAccess` errors currently only report definition-site (`src/eval.rs`) [Major, span-integrity-checker]
@@ -581,9 +583,11 @@ Minor wording and span improvements.
 
 Nit-level error infrastructure cleanup.
 
+- [ ] Fix `ArityBound::Exact(1)` displaying "1 arguments" — grammatically incorrect singular; add singular/plural logic to ArityBound Display (`src/error.rs:21`) [Minor, computer-scientist]
 - [ ] Fix materialize depth check message duplicating constant (`src/eval.rs:812-820`) [Nit, eval-engine]
 - [ ] Simplify `EvalError::new` parameter from `impl Into<String>` to `String` (`src/error.rs:56-79`) [Nit, span-integrity-checker]
 - [ ] Standardize error category names (`src/error.rs:56+`) [Nit, span-integrity-checker]
+- [ ] Fix `from_json` inconsistent `.into()` usage — some error paths use `.into()` for boxing while adjacent paths use explicit `Box::new()`; standardize for consistency (`src/builtins.rs:984`) [Nit, computer-scientist]
 - [ ] Review PendingBuiltin error path span handling — may overwrite operand span (`src/eval.rs:886`) [Nit, span-integrity-checker]
 
 ## stdlib-docs: Stdlib Documentation
@@ -644,6 +648,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 
 ### test-additional: Additional Test Coverage
 
+- [ ] Fix `any?`/`all?` using `$length` for empty check — materializes entire collection (O(n)) just to check emptiness; breaks on infinite Seq (hangs). Replace with direct `$head`-based check or `$reduce` without empty guard. Also prevents Seq support since `$length` requires finite collection. (`stdlib/prelude.llt:60-78`) [Major, stdlib-author + computer-scientist]
 - [ ] Add stdlib corpus tests for `from-entries`, `any?`, `all?` — functions added in Phase 4b½ lack dedicated corpus verification; short-circuit semantics for `any?`/`all?` are critical for correctness (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
 - [ ] Add error corpus tests for arithmetic overflow ($+/$-/$* with i64 bounds), NaN/Infinity rejection ($floor/$round), string parse failure ($to-int/$to-float), TypeAssert failure, range mixed keys [Critical, test-crafter]
 - [ ] Add depth limit corpus tests (256 levels succeeds, 257 errors)
