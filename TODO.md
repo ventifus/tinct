@@ -53,6 +53,17 @@ Error safety mechanisms and specification updates.
 - [x] Update DESIGN.md §Error Semantics field name: `message` → `kind` — spec still references old field name (`DESIGN.md`) [Minor, eval-engine]
 - [x] Update DESIGN.md error constructors table to reflect ErrorKind variants — either expand or add "representative" note (`DESIGN.md`) [Minor, eval-engine]
 
+### error-structured-migrate-c2: Formal Rule Drift Fixes
+
+DESIGN.md inference rules don't reflect is_cacheable()/is_catchable() guards added in migrate-c.
+
+- [x] Update PROP-EVAL/PROP-BUILTIN/PROP-RESULT inference rules to add `is_cacheable()` precondition on Failed transition — rules show unconditional `thunk.state <- Failed(e')` but implementation conditionally restores pre-error state for non-cacheable errors. Add alternative conclusion showing state restoration when `!is_cacheable()`. (`DESIGN.md:4584-4617`) [Critical, computer-scientist]
+- [x] Add TRY-UNCATCHABLE rule and is_catchable() precondition to TRY-ERR — rule unconditionally converts Err(e) to err dict, but builtin_try now re-raises uncatchable errors (DepthExceeded). Add precondition `e.kind.is_catchable()` to TRY-ERR and new TRY-UNCATCHABLE rule showing re-raise. (`DESIGN.md:4690-4699`) [Critical, computer-scientist]
+- [x] Update MEMO-CACHE rule to add `is_cacheable()` precondition — rule and prose say "All error paths cache via cache_failure" unconditionally. Add precondition and MEMO-SKIP rule for non-cacheable errors. (`DESIGN.md:4648-4655`) [Critical, computer-scientist]
+- [x] Update Implementation Correspondence table line numbers after is_cacheable integration shifted eval.rs structure (`DESIGN.md:4745-4759`) [Minor, computer-scientist]
+- [x] Fix E2 property `e.message` to `e.kind` — field was replaced by ErrorKind in error-structured-types (`DESIGN.md:4725`) [Minor, computer-scientist]
+- [x] Add note to SPEC.md §9.4 that DepthExceeded errors are not catchable by $try — users may be surprised when $try doesn't catch resource limit errors (`SPEC.md:1436-1449`) [Minor, computer-scientist]
+
 ### error-structured-migrate-d: Test Coverage
 
 ErrorKind test coverage to validate migration and prevent regressions.
@@ -668,7 +679,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add LSP corpus tests (`tests/lsp_corpus/`) with `.llt` + `.expected.json` per position
 - [ ] IncludeContext API documentation — add docstrings to `eval_source()`, `eval_file()`, `eval_file_with_input()` warning that `$include` requires `set_include_context()` setup (`src/lib.rs`) [Major, integration-verifier]
 - [ ] Document circular builtins⇄eval dependency — add safety comment at `src/builtins.rs:28` explaining the value-level vs import-level dependency [Minor, integration-verifier]
-- [ ] Cross-layer contracts documentation — add section to DESIGN.md documenting BuiltinFn signature contract, serializer requirements, thread-local state discipline [Minor, integration-verifier]
+- [ ] Cross-layer contracts documentation — add §Implementation Architecture to DESIGN.md documenting pipeline phases (parse→typecheck→eval→serialize), cross-layer contracts (BuiltinFn signature, serializer requirements, thread-local state discipline), Expr→eval exhaustiveness invariant, Value→serializer coverage, type checker advisory role, environment chain construction order [Major, integration-verifier]
 - [ ] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference — add test for display_string with NaN/Inf (`src/lib.rs:112-125, 176-211`) [Minor, integration-verifier]
 - [ ] Add lib.rs IncludeContext doc comment mentioning cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs:44-46`) [Minor, integration-verifier]
 - [ ] Add DESIGN.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
@@ -696,6 +707,7 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **SPEC.md:173 tree-sitter divergence note references nonexistent grammar** — no `grammar.js` or tree-sitter directory exists in repository. Remove or mark as "planned". (`SPEC.md:173`) [Major, grammar-architect]
 - [ ] **SPEC.md §2.4 token precedence order missing structural punctuation** — omits `@` (annotation) which is structural and not a bare word character. Add note for `@`, `[`, `]`, `:`, `;` as structural punctuation. (`SPEC.md:176-186`) [Minor, grammar-architect]
 - [ ] **SPEC.md §2.1 whitespace significance lacks lexer cross-reference** — hand-written lexer (`src/lexer.rs:120-129`) uses `last_significant_token` tracking for O(1) whitespace-sensitive access detection, distinct from pest's compound-atomic mechanism. Add cross-reference. (`SPEC.md:54-62`, `src/lexer.rs:120-129`) [Minor, grammar-architect]
+- [ ] **SPEC.md §3.4 and §7 need dual parser/lexer implementation notes** — SPEC.md describes pest grammar as sole implementation but hand-written lexer provides alternative tokenization path. Add implementation notes to §3.4 Access Chains (distinguish compound-atomic vs last-token tracking) and §7 Complete Grammar (reference src/lexer.rs). (`SPEC.md:296-338, 774`) [Minor, grammar-architect]
 - [ ] **SPEC.md §5.2 call arity checking not specified as eval-time** — reader might infer parser validates call arity; add note that arity beyond function position is eval-time per DESIGN.md §Call Convention. (`SPEC.md:619`) [Minor, grammar-architect]
 - [ ] **SPEC.md missing document pipeline/$include semantics** — DESIGN.md has complete formal spec (§Document Pipeline and $include) but SPEC.md only covers `---` syntax in §3.1; add evaluation semantics for `$$` binding, `$include` cycle detection, and caching [Minor, integration-verifier]
 
