@@ -111,7 +111,10 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
     };
 
     // Parse
-    let ast = parse(&source).map_err(|e| format!("{e}"))?;
+    let mut ast = parse(&source).map_err(|e| format!("{e}"))?;
+
+    // Desugar $_ implicit lambdas (pre-typecheck AST transformation)
+    tinct::desugar::desugar_file(&mut ast.node);
 
     // Create stdlib environment
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;

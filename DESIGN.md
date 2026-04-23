@@ -2025,10 +2025,9 @@ DESUGAR(e, depth) =
   | _ where depth > 0
       → RECURSE_CHILDREN(e, depth)
 
-  -- WRAP-CALL: check DIRECT on raw children, then wrap
+  -- WRAP-CALL: check DIRECT on args/named values, then wrap
   | Call(f, args, named)
-      where not DIRECT(f)                               -- func position excluded
-        and (∃ a ∈ args. DIRECT(a)
+      where (∃ a ∈ args. DIRECT(a)
              or ∃ n ∈ named. DIRECT(n.value))
       → Fn([_], Call(                                    -- [WRAP-CALL]
             DESUGAR(f, depth + 1),                       -- recurse func
@@ -2069,7 +2068,7 @@ DESUGAR(e, depth) =
 
 **Exclusions.** The following positions do **not** trigger desugaring:
 
-- **Func position in Call:** `$_` or `$_.method` as the function in `[call $_ ...]` or `[call $_.method ...]` is an ordinary variable/access lookup. The WRAP-CALL rule requires `not DIRECT(f)`.
+- **Func position in Call:** The function position is excluded from the DIRECT check (not from the wrapping). WRAP-CALL fires when any arg or named value is DIRECT, regardless of whether the function itself is also DIRECT. When both func and an arg are DIRECT, wrapping produces `[fn [_] [call $_ $_]]` where both references bind to the same `_` parameter — useful for identity-like patterns. A bare `[call $_ $x]` (func is DIRECT, no args are DIRECT) does not trigger WRAP-CALL; the func `$_` falls through to PASS and is recursed normally.
 - **Bracket access keys:** `$data[$_]` — `$_` in the key position is not checked by DIRECT on the target.
 - **Range bounds:** `$data[$_..5]` — bounds are not checked by DIRECT on the target.
 - **Dict entry keys:** `[$_: value]` — WRAP-DICT checks `DIRECT(entry.value)` only, never `entry.key`.

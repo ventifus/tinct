@@ -1,5 +1,5 @@
 //! Core evaluation module: lazy evaluation with letrec dict scoping, document
-//! pipelines, function evaluation, and `$_` implicit lambda desugaring.
+//! pipelines, and function evaluation.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -56,12 +56,6 @@ pub fn eval(
 ) -> EvalResult<Rc<Thunk>> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, expr.span).into());
-    }
-    // $_ implicit lambda desugaring: if the expression directly contains VarRef("_")
-    // and `_` is not already bound in the current environment, wrap it in [fn [_] <expr>].
-    if should_desugar_underscore(&expr.node) && env.borrow().get("_").is_none() {
-        let lambda = wrap_in_lambda(expr);
-        return eval(&lambda, env, depth + 1);
     }
 
     match &expr.node {
@@ -648,71 +642,6 @@ fn get_default(param: &Param) -> Option<Spanned<Expr>> {
         .as_ref()
         .and_then(|ann| ann.node.get_property(DEFAULT_ANNOTATION_KEY))
         .cloned()
-}
-
-/// Check if an expression directly contains VarRef("_") (not nested in inner brackets).
-fn contains_direct_underscore(expr: &Expr) -> bool {
-    match expr {
-        Expr::VarRef(name) => name == "_",
-        // Access chains on $_ count as direct (e.g., $_.name)
-        Expr::DotAccess { expr: inner, .. } => contains_direct_underscore(&inner.node),
-        Expr::BracketAccess { expr: inner, .. } => contains_direct_underscore(&inner.node),
-        Expr::RangeAccess { expr: inner, .. } => contains_direct_underscore(&inner.node),
-        // Dict/Call/Fn create a new bracket boundary -- $_ inside them is NOT direct
-        Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } => false,
-        // Literals, TypeAlias, TypeAssert, Annotated cannot contain $_
-        _ => false,
-    }
-}
-
-/// Check if a Call expression has any direct $_ references in its args/named_args.
-fn call_has_direct_underscore(args: &[Spanned<Expr>], named_args: &[Spanned<NamedArg>]) -> bool {
-    args.iter().any(|a| contains_direct_underscore(&a.node))
-        || named_args
-            .iter()
-            .any(|na| contains_direct_underscore(&na.node.value.node))
-}
-
-/// Determine if an expression should be desugared into an implicit lambda.
-/// This applies when the expression directly contains $_ and is NOT itself
-/// a bare VarRef("_") (which would be just looking up the variable).
-fn should_desugar_underscore(expr: &Expr) -> bool {
-    match expr {
-        // A bare $_ is just a variable reference, not an implicit lambda
-        Expr::VarRef(_) => false,
-        // Access chains rooted at $_ → implicit lambda
-        Expr::DotAccess { expr: inner, .. }
-        | Expr::BracketAccess { expr: inner, .. }
-        | Expr::RangeAccess { expr: inner, .. } => contains_direct_underscore(&inner.node),
-        // Call with $_ in args → implicit lambda
-        Expr::Call {
-            args, named_args, ..
-        } => call_has_direct_underscore(args, named_args),
-        // Dict with $_ in entries → implicit lambda
-        Expr::Dict(entries) => entries
-            .iter()
-            .any(|e| contains_direct_underscore(&e.node.value.node)),
-        _ => false,
-    }
-}
-
-/// Wrap an expression in `[fn [_] <expr>]`.
-fn wrap_in_lambda(expr: &Spanned<Expr>) -> Spanned<Expr> {
-    Spanned::new(
-        Expr::Fn {
-            return_ann: None,
-            params: vec![Spanned::new(
-                Param {
-                    name: "_".to_string(),
-                    annotation: None,
-                    variadic: false,
-                },
-                expr.span,
-            )],
-            body: Box::new(expr.clone()),
-        },
-        expr.span,
-    )
 }
 
 /// Evaluate a target expression, materialize, and return the inner IndexMap if
@@ -2194,13 +2123,35 @@ mod tests {
     }
 
     #[test]
+    fn test_bare_underscore_is_not_lambda() {
+        // $_ alone is just a VarRef, not an implicit lambda
+        // It should fail with "undefined variable" if not in scope
+        let expr = sp(Expr::VarRef("_".into()));
+        let err = eval(&expr, empty_env(), 0).unwrap_err();
+        assert!(
+            err.message().contains("undefined variable: $_"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    // ── Integration tests for $_ desugaring + evaluation ──────────────────
+    // These tests verify that the AST-level desugaring (from src/desugar.rs)
+    // integrates correctly with evaluation. They manually call desugar_expr()
+    // before eval() to simulate the full pipeline.
+
+    #[test]
     fn test_underscore_access_chain_becomes_lambda() {
-        // $_.name → [fn [_] $_.name]
+        // $_.name → [fn [_] $_.name] after desugaring
         // Evaluating this should produce a Function, not look up $_
-        let expr = sp(Expr::DotAccess {
+        let mut expr = sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::VarRef("_".into()))),
             field: "name".into(),
         });
+
+        // Desugar before eval (simulates pipeline integration)
+        crate::desugar::desugar_expr(&mut expr, 0);
+
         let thunk = eval(&expr, empty_env(), 0).unwrap();
         let val = materialize(&thunk, None, 0).unwrap();
         match val {
@@ -2214,7 +2165,7 @@ mod tests {
 
     #[test]
     fn test_underscore_in_call_becomes_lambda() {
-        // [call $f $_] where $f is in scope → should produce a lambda
+        // [call $f $_] where $f is in scope → should produce a lambda after desugaring
         // The outer [call ...] contains $_ directly → wraps in [fn [_] [call $f $_]]
         let env = empty_env();
         let fn_val = Value::Function {
@@ -2230,11 +2181,16 @@ mod tests {
             "f".into(),
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
-        let call_expr = sp(Expr::Call {
+
+        let mut call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![sp(Expr::VarRef("_".into()))],
             named_args: vec![],
         });
+
+        // Desugar before eval
+        crate::desugar::desugar_expr(&mut call_expr, 0);
+
         let thunk = eval(&call_expr, Rc::clone(&env), 0).unwrap();
         let val = materialize(&thunk, None, 0).unwrap();
         match val {
@@ -2248,13 +2204,18 @@ mod tests {
 
     #[test]
     fn test_underscore_lambda_callable() {
-        // Create $_.name as a lambda, then call it with a dict that has name: "alice"
+        // Create $_.name as a lambda (via desugaring), then call it with a dict that has name: "alice"
         let env = empty_env();
-        // Build the $_.name expression → becomes [fn [_] $_.name]
-        let getter_expr = sp(Expr::DotAccess {
+
+        // Build the $_.name expression → becomes [fn [_] $_.name] after desugaring
+        let mut getter_expr = sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::VarRef("_".into()))),
             field: "name".into(),
         });
+
+        // Desugar to get the lambda
+        crate::desugar::desugar_expr(&mut getter_expr, 0);
+
         let getter_thunk = eval(&getter_expr, Rc::clone(&env), 0).unwrap();
         let getter_val = materialize(&getter_thunk, None, 0).unwrap();
         env.borrow_mut().insert(
@@ -2280,13 +2241,17 @@ mod tests {
     fn test_underscore_in_dict_entry() {
         // [a: $_.name] → desugars to [fn [_] [a: $_.name]]
         // Dict with $_ in a value position should desugar to an implicit lambda
-        let expr = sp(Expr::Dict(vec![sp(Entry {
+        let mut expr = sp(Expr::Dict(vec![sp(Entry {
             key: Some(sp(Expr::Str("a".into()))),
             value: sp(Expr::DotAccess {
                 expr: Box::new(sp(Expr::VarRef("_".into()))),
                 field: "name".into(),
             }),
         })]));
+
+        // Desugar before eval
+        crate::desugar::desugar_expr(&mut expr, 0);
+
         let thunk = eval(&expr, empty_env(), 0).unwrap();
         let val = materialize(&thunk, None, 0).unwrap();
         match val {
@@ -2316,7 +2281,8 @@ mod tests {
             "f".into(),
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
-        let call_expr = sp(Expr::Call {
+
+        let mut call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![],
             named_args: vec![sp(NamedArg {
@@ -2324,6 +2290,10 @@ mod tests {
                 value: sp(Expr::VarRef("_".into())),
             })],
         });
+
+        // Desugar before eval
+        crate::desugar::desugar_expr(&mut call_expr, 0);
+
         let thunk = eval(&call_expr, Rc::clone(&env), 0).unwrap();
         let val = materialize(&thunk, None, 0).unwrap();
         match val {
@@ -2333,19 +2303,6 @@ mod tests {
             }
             other => panic!("expected Function from $_ named arg desugaring, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_bare_underscore_is_not_lambda() {
-        // $_ alone is just a VarRef, not an implicit lambda
-        // It should fail with "undefined variable" if not in scope
-        let expr = sp(Expr::VarRef("_".into()));
-        let err = eval(&expr, empty_env(), 0).unwrap_err();
-        assert!(
-            err.message().contains("undefined variable: $_"),
-            "got: {}",
-            err.message()
-        );
     }
 
     fn dict_with_entries(entries: Vec<(&str, Value)>) -> Spanned<Expr> {

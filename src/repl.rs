@@ -145,7 +145,9 @@ impl ReplSession {
             ));
         }
 
-        let file = parse(input).map_err(|e| format!("{e}"))?;
+        let mut file = parse(input).map_err(|e| format!("{e}"))?;
+        // Desugar $_ implicit lambdas before evaluation
+        crate::desugar::desugar_file(&mut file.node);
 
         if file.node.documents.is_empty() {
             return Err("empty input".to_string());

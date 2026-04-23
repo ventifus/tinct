@@ -211,9 +211,27 @@ Research items are exploratory — they produce a proposal document in `doc/what
 4. Check mempalace for prior discussion
 5. If the item cites specific papers (e.g., "Siek & Taha 2006"), research the approach thoroughly
 
-#### 4b: Draft Proposal
+#### 4b: Present Analysis
 
-Write a proposal to the target `doc/whatif/[name].md`. If the file already exists, update it.
+Present the research findings to the user as a design space exploration. For each viable approach:
+
+- **Name**: a short label
+- **Description**: how it works in tinct
+- **Pros/Cons**: what's good and bad
+- **Precedent**: which languages use this and how it worked
+- **Interactions**: how it affects existing tinct features (lazy eval, row polymorphism, type inference, `$` sigil, etc.)
+
+End with a recommendation and reasoning, framed as a starting point for discussion.
+
+#### 4c: Refine
+
+Dialog with the user. They may ask questions, push back on assumptions, combine approaches, redirect the research, or narrow the scope. Follow their lead — this is collaborative exploration.
+
+When the user indicates the direction is settled (e.g., "let's go with that", "write it up", "sounds good"), proceed to 4d.
+
+#### 4d: Write Proposal
+
+Write the approved direction to the target `doc/whatif/[name].md`. If the file already exists, update it.
 
 **Framing principle:** whatif docs are *advocates* for their feature. They open with "What would it take to...?" and then make the best case for adoption — concrete approaches backed by research and formal methods, with a recommended phased implementation path. They are NOT "here's why you shouldn't" documents. Present the feature as a genuine proposal: how to do it well, what the best approach is, and when to adopt it.
 
@@ -225,11 +243,11 @@ Write a proposal to the target `doc/whatif/[name].md`. If the file already exist
 - Status Quo as an "approach" (only document proposed future states)
 - Vague triggers like "when needed" (use concrete scenarios)
 
-#### 4c: Present to User
+#### 4e: Present Draft
 
-Show the user the draft proposal. They may refine, redirect, or approve as-is.
+Show the user the written proposal. They may request revisions or approve as-is.
 
-#### 4d: Finalize
+#### 4f: Finalize
 
 1. Confirm `doc/whatif/[name].md` is written
 2. Check off the Research item in TODO.md:
@@ -238,7 +256,7 @@ Show the user the draft proposal. They may refine, redirect, or approve as-is.
 
 No agent review — the proposal is exploratory, not a commitment.
 
-#### 4e: Next Item
+#### 4g: Next Item
 
 Proceed to the next unchecked item automatically. If no items remain, report completion.
 

@@ -1,0 +1,4 @@
+# Nested $_ - access chain on $_ wraps to function
+[call [call $identity $_.x] [x: 100]]
+===
+Int(100)
