@@ -106,12 +106,26 @@ Thread EvalContext through eval pipeline, migrate include, update API.
 
 **Depends on:** `evalcontext-types`
 
-- [ ] Thread `EvalContext` through `eval()`, `materialize()`, and builtin dispatch (`src/eval.rs`)
-- [ ] Migrate `builtin_include` to use `ctx.state` instead of thread-local `INCLUDE_CTX` (`src/builtins.rs:1024-1170`)
-- [ ] Remove thread-local `INCLUDE_CTX` and `set_include_context`/`clear_include_context` (`src/builtins.rs:58-70`, `src/lib.rs`)
-- [ ] Update CLI (`main.rs`): construct `EvalContext` from file path
-- [ ] Update public API: `EvalContext`, `EvalConfig`, `EvalState` are public; remove `set_include_context`/`clear_include_context`
-- [ ] Update all include-related tests
+- [x] Thread `EvalContext` through `eval()`, `materialize()`, and builtin dispatch (`src/eval.rs`)
+- [x] Migrate `builtin_include` to use `ctx.state` instead of thread-local `INCLUDE_CTX` (`src/builtins.rs:1024-1170`)
+- [x] Remove thread-local `INCLUDE_CTX` and `set_include_context`/`clear_include_context` (`src/builtins.rs:58-70`, `src/lib.rs`)
+- [x] Update CLI (`main.rs`): construct `EvalContext` from file path
+- [x] Update public API: `EvalContext`, `EvalConfig`, `EvalState` are public; remove `set_include_context`/`clear_include_context`
+- [x] Update all include-related tests
+- [x] Add EvalContext isolation tests — two contexts with different base_dirs resolve includes independently, include cache persists across calls, include guard detects cycles via ctx.state [Critical, test-crafter C34]
+- [x] Add thunk memoization ctx preservation test — verify Unevaluated→Materialized transition preserves correct ctx (Rc::ptr_eq) [Critical, test-crafter C34]
+- [x] Suppress unused `ctx` parameter warning in `materialize()` — rename to `_ctx` with TODO comment (`src/eval.rs:863`) [Major, eval-engine C34]
+
+### evalcontext-polish: EvalContext Polish and Documentation
+
+Fix-later findings from evalcontext-thread panel review (C34).
+
+- [ ] Add `EvalContext::with_base_dir()` helper to share config via `Rc::clone` instead of allocating new EvalConfig per include (`src/builtins.rs:1065-1072`) [Minor, eval-engine + performance-expert + computer-scientist C34]
+- [ ] Add cross-context state-sharing test — two contexts sharing `state: Rc::clone(&ctx1.state)` but different `config` should share include_cache and include_guard (`src/eval.rs`) [Minor, eval-engine + test-crafter + integration-verifier C34]
+- [ ] Add documenting comment on `materialize()` `_ctx` parameter explaining thunks use captured ctx, parameter exists for future use (`src/eval.rs:863`) [Minor, eval-engine + test-crafter + span-integrity-checker + computer-scientist C34]
+- [ ] Fix stale docstring in repl.rs:106 referencing `IncludeContext` (removed) — should say `EvalContext` (`src/repl.rs:106`) [Nit, computer-scientist C34]
+- [ ] Fix include guard leak on materialize failure — `?` operator in builtin_include skips cleanup() on Err path; match on result like eval_result (`src/builtins.rs:1091`) [Major, computer-scientist C34]
+- [ ] Update DESIGN.md evaluation judgment forms to include Sigma (EvalContext) parameter — `<e, rho, Sigma, d> => v` (`DESIGN.md:2247-2329`) [Minor, computer-scientist C34]
 
 ## let-generalization: Levels-Based Let-Generalization
 
@@ -739,7 +753,7 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 
 ### DESIGN.md vs Code (from REVIEW.md)
 
-- [ ] **DESIGN.md EvalContext section misleading** — §EvalContext (DESIGN.md:2332-2378) documents the EvalContext/EvalConfig/EvalState design as current architecture, but code still uses thread-local INCLUDE_CTX. Add "**Not yet implemented — see TODO.md include-refactor**" note to section header (`DESIGN.md:2332`) [Critical, integration-verifier]
+- [ ] **DESIGN.md EvalContext section misleading** — §EvalContext documents design as current, but thread-local INCLUDE_CTX still active alongside new EvalContext types. Update to note: "Types defined and threaded (evalcontext-types), include migration pending (evalcontext-thread)". (`DESIGN.md:2332`) [Critical, integration-verifier + computer-scientist C34]
 - [ ] **Dot-in-bare-word conflict across SPEC/DESIGN/tree-sitter** — pest allows `.` in bare words but tree-sitter excludes it; document divergence and rationale (`SPEC.md:161`, `DESIGN.md:856`, `tree-sitter-llt/grammar.js:9`) [Critical, grammar-architect]
 - [ ] **Unrecorded tree-sitter decision: dot excluded from bare_word_char** — add confirmed decision to DESIGN.md documenting intentional divergence (`tree-sitter-llt/grammar.js:8-9`) [Critical, grammar-architect]
 - [ ] **Document separator missing from DESIGN.md Tokenization Rules** — add `---` subsection (`DESIGN.md:722-813`) [Major, grammar-architect]
@@ -809,6 +823,16 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Fix stale line range in `src/desugar.rs:7` docstring — references DESIGN.md lines 1993-2126 which shifted after recent edits [Nit, grammar-architect C31]
 - [ ] Fix `grammar.pest:8` comment capitalization inconsistency — uses different convention than other comments [Nit, grammar-architect C31]
 - [ ] Standardize "Inherently materializing" comment annotations in `stdlib/prelude.llt` — some materializing functions have this comment, others don't; either add to all or remove and document in DESIGN.md [Nit, stdlib-author C31]
+- [ ] **DESIGN.md formal evaluation rules missing ctx/Sigma parameter** — PROP-EVAL, PROP-BUILTIN, PROP-RESULT, PROP-DEPTH rules don't include the EvalContext (Σ) parameter in evaluation judgments after evalcontext-types sprint. Add Σ to judgment form: `⟨e, ρ, Σ⟩ ⇓ v`. (`DESIGN.md:2247-2329`) [Major, computer-scientist C34]
+- [ ] **DESIGN.md correspondence tables stale line numbers** — evalcontext-types shifted code ~40 lines. Three tables affected: Scope Chain (~2397-2406), Error Semantics (~4777-4793), $include cross-refs (~5344-5356). Update all line references. (`DESIGN.md`) [Major, computer-scientist C34]
+- [ ] **Error corpus tests lack span assertions** — 30 error test files validate message substrings only. No regression detection for definition_span, materialization_span, or stack frames. Extend `.llt-eval` format with span expectations (e.g., `# expect-def-span: 1:5-1:10`). (`tests/corpus_tests.rs:322-334`, `tests/corpus/eval/errors/`) [Major, span-integrity C34]
+- [ ] **SPEC.md missing error condition specifications** — §9 documents error structure/display/categories but not WHEN each ErrorKind variant is triggered. Add §9.7 with trigger conditions for all 26 variants. (`SPEC.md`) [Minor, span-integrity C34]
+- [ ] **DESIGN.md missing Error Reporting section** — dual-span model (definition-site vs materialization-site), stack frame accumulation, error caching semantics, mat_span update behavior scattered but not systematically documented. Add dedicated section. (`DESIGN.md`) [Major, span-integrity C34]
+- [ ] **Depth limit corpus tests** — no corpus error test for 257-level nested calls triggering `[E040]`. No test verifying `---` document separator resets depth. (`tests/corpus/eval/errors/`) [Major, test-crafter C34]
+- [ ] **DESIGN.md let-generalization section reads as implemented** — 195 lines of formal specification (lines 789-983) have no "Not yet implemented" marker. Add marker matching Bidirectional Typing section (line 437). (`DESIGN.md:789`) [Critical, type-theorist C34]
+- [ ] **DESIGN.md Limitation #7 "monomorphic call arguments now checked" claim is false** — line 998 says "resolved" but CALL-MONO is not implemented (part of bidirectional-typing milestone). Revert claim. (`DESIGN.md:998`) [Major, type-theorist C34]
+- [ ] **Row-unification milestone missing from TODO.md** — DESIGN.md references row-unification in multiple places, implementation 80% complete (only missing: row variable binding in unify Record case), but no formal TODO.md milestone. Add with tasks: partition-fields-and-bind, tests, DESIGN.md section. (`src/types.rs:319-339`) [Major, type-theorist C34]
+- [ ] **SPEC.md line 444 let-generalization reads as current** — says "type system uses type schemes" but let-generalization is not implemented. Change to "type system will use type schemes (planned)". (`SPEC.md:444`) [Minor, type-theorist C34]
 
 ## Future Features
 

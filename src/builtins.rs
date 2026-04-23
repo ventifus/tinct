@@ -19,8 +19,6 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -43,44 +41,6 @@ fn ok_val(v: Value) -> EvalResult<Rc<Thunk>> {
 
 /// Maximum file size for reading LLT files: 10 MB.
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
-
-/// Thread-local context for `$include` -- provides filesystem paths, cycle
-/// detection, and the stdlib environment to the builtin without changing the
-/// `BuiltinFn` signature.
-pub struct IncludeContext {
-    /// Directory of the currently-evaluating file (for relative path resolution).
-    pub base_dir: PathBuf,
-    /// Canonical paths currently being included -- push before recursing, pop after.
-    pub include_guard: Rc<RefCell<HashSet<PathBuf>>>,
-    /// The stdlib environment to use when evaluating included files.
-    pub stdlib_env: Rc<RefCell<Environment>>,
-    /// Cache of evaluated include results by canonical path.
-    pub cache: Rc<RefCell<HashMap<PathBuf, Rc<Thunk>>>>,
-}
-
-thread_local! {
-    static INCLUDE_CTX: RefCell<Option<IncludeContext>> = const { RefCell::new(None) };
-}
-
-/// Install an [`IncludeContext`] on the current thread.
-///
-/// Must be called before evaluating any code that uses `$include`. The context
-/// is stored in a thread-local and read by [`builtin_include`].
-pub fn set_include_context(ctx: IncludeContext) {
-    INCLUDE_CTX.with(|cell| {
-        *cell.borrow_mut() = Some(ctx);
-    });
-}
-
-/// Remove the [`IncludeContext`] from the current thread.
-///
-/// Call this after evaluation completes to prevent state from leaking between
-/// evaluations when LLT is used as a library.
-pub fn clear_include_context() {
-    INCLUDE_CTX.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
-}
 
 /// Helper: materialize a single positional argument, enforcing exact arity of 1
 /// and rejecting named arguments. Used by many single-arg builtins.
@@ -1041,124 +1001,110 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("include", args, named, &ctx, depth, call_span)?;
     let file_path_str = require_string("include", val, call_span)?;
 
-    // Read the include context from the thread-local.
-    INCLUDE_CTX.with(|cell| {
-        let mut inc_ctx_ref = cell.borrow_mut();
-        let inc_ctx = inc_ctx_ref
-            .as_mut()
-            .ok_or_else(|| EvalError::include_not_available(call_span))?;
+    // Resolve the path: relative to base_dir, or absolute as-is.
+    let raw_path = std::path::Path::new(&file_path_str);
+    let base_dir = &ctx.config.base_dir;
+    let resolved = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        base_dir.join(raw_path)
+    };
 
-        // Resolve the path: relative to base_dir, or absolute as-is.
-        let raw_path = std::path::Path::new(&file_path_str);
-        let resolved = if raw_path.is_absolute() {
-            raw_path.to_path_buf()
-        } else {
-            inc_ctx.base_dir.join(raw_path)
-        };
+    // Canonicalize to detect cycles and normalize the path.
+    let canonical = resolved.canonicalize().map_err(|e| {
+        EvalError::include_io_error(resolved.display().to_string(), e.to_string(), call_span)
+    })?;
 
-        // Canonicalize to detect cycles and normalize the path.
-        let canonical = resolved.canonicalize().map_err(|e| {
-            EvalError::include_io_error(resolved.display().to_string(), e.to_string(), call_span)
-        })?;
+    // Check cache first: if we've already evaluated this file, return the cached thunk.
+    if let Some(cached) = ctx.state.borrow().include_cache.get(&canonical) {
+        return Ok(Rc::clone(cached));
+    }
 
-        // Check cache first: if we've already evaluated this file, return the cached thunk.
-        if let Some(cached) = inc_ctx.cache.borrow().get(&canonical) {
-            return Ok(Rc::clone(cached));
+    // Cycle detection.
+    if ctx.state.borrow().include_guard.contains(&canonical) {
+        return Err(EvalError::include_cycle(canonical.display().to_string(), call_span).into());
+    }
+
+    // Check file size.
+    let metadata = std::fs::metadata(&canonical).map_err(|e| {
+        EvalError::include_io_error(canonical.display().to_string(), e.to_string(), call_span)
+    })?;
+    if metadata.len() > MAX_FILE_SIZE {
+        return Err(EvalError::include_file_too_large(
+            canonical.display().to_string(),
+            metadata.len(),
+            MAX_FILE_SIZE,
+            call_span,
+        )
+        .into());
+    }
+
+    // Read the file.
+    let source = std::fs::read_to_string(&canonical).map_err(|e| {
+        EvalError::include_io_error(canonical.display().to_string(), e.to_string(), call_span)
+    })?;
+
+    // Parse.
+    let file = crate::parser::parse(&source).map_err(|e| {
+        EvalError::include_parse_failed(canonical.display().to_string(), e.to_string(), call_span)
+    })?;
+
+    // Add to include guard before recursing.
+    ctx.state
+        .borrow_mut()
+        .include_guard
+        .insert(canonical.clone());
+
+    // Create new context for the included file with its directory as base_dir.
+    let included_file_dir = canonical
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/"))
+        .to_path_buf();
+
+    // Create a new EvalContext with the included file's directory.
+    let included_ctx = crate::eval::EvalContext {
+        config: Rc::new(crate::eval::EvalConfig {
+            base_dir: included_file_dir,
+            stdlib_env: Rc::clone(&ctx.config.stdlib_env),
+        }),
+        state: Rc::clone(&ctx.state),
+    };
+    let included_ctx = Rc::new(included_ctx);
+
+    let stdlib_env = Rc::clone(&ctx.config.stdlib_env);
+
+    // Evaluate the included file with empty $$ and the stdlib env.
+    let eval_result = crate::eval::eval_file(&file.node, stdlib_env, &included_ctx, depth + 1);
+
+    // Restore the base_dir and remove from include guard regardless of success/failure.
+    // Note: base_dir is in config which is immutable, so we don't need to restore it.
+    // We only need to remove from include_guard.
+    let cleanup = || {
+        ctx.state.borrow_mut().include_guard.remove(&canonical);
+    };
+
+    match eval_result {
+        Ok(thunk) => {
+            // Eagerly materialize: the include guard is only valid while
+            // the current file's canonical path is in the set. Returning
+            // a lazy thunk would defer evaluation past the guard removal.
+            let val = crate::eval::materialize(&thunk, None, &included_ctx, depth + 1)?;
+            cleanup();
+            let result_thunk = ok_val(val)?;
+
+            // Cache the result thunk for future includes of this file.
+            ctx.state
+                .borrow_mut()
+                .include_cache
+                .insert(canonical.clone(), Rc::clone(&result_thunk));
+
+            Ok(result_thunk)
         }
-
-        // Cycle detection.
-        if inc_ctx.include_guard.borrow().contains(&canonical) {
-            return Err(
-                EvalError::include_cycle(canonical.display().to_string(), call_span).into(),
-            );
+        Err(e) => {
+            cleanup();
+            Err(e)
         }
-
-        // Check file size.
-        let metadata = std::fs::metadata(&canonical).map_err(|e| {
-            EvalError::include_io_error(canonical.display().to_string(), e.to_string(), call_span)
-        })?;
-        if metadata.len() > MAX_FILE_SIZE {
-            return Err(EvalError::include_file_too_large(
-                canonical.display().to_string(),
-                metadata.len(),
-                MAX_FILE_SIZE,
-                call_span,
-            )
-            .into());
-        }
-
-        // Read the file.
-        let source = std::fs::read_to_string(&canonical).map_err(|e| {
-            EvalError::include_io_error(canonical.display().to_string(), e.to_string(), call_span)
-        })?;
-
-        // Parse.
-        let file = crate::parser::parse(&source).map_err(|e| {
-            EvalError::include_parse_failed(
-                canonical.display().to_string(),
-                e.to_string(),
-                call_span,
-            )
-        })?;
-
-        // Add to include guard before recursing.
-        inc_ctx.include_guard.borrow_mut().insert(canonical.clone());
-
-        // Save current base_dir and set new one for the included file.
-        let parent_base_dir = inc_ctx.base_dir.clone();
-        inc_ctx.base_dir = canonical
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("/"))
-            .to_path_buf();
-
-        let stdlib_env = Rc::clone(&inc_ctx.stdlib_env);
-
-        // Evaluate the included file with empty $$ and the stdlib env.
-        // We must drop the borrow before calling eval (which may re-enter
-        // this builtin for nested includes).
-        drop(inc_ctx_ref);
-
-        // Note: `ctx` here is from BuiltinArgs, not the INCLUDE_CTX. For now,
-        // we still use INCLUDE_CTX for include state, but pass the EvalContext
-        // for general evaluation infrastructure.
-        let eval_result = crate::eval::eval_file(&file.node, stdlib_env, &ctx, depth + 1);
-
-        // Restore the context regardless of success/failure.
-        let restore = |cell: &RefCell<Option<IncludeContext>>| {
-            let mut inc_ctx_ref = cell.borrow_mut();
-            if let Some(inc_ctx) = inc_ctx_ref.as_mut() {
-                inc_ctx.base_dir = parent_base_dir.clone();
-                inc_ctx.include_guard.borrow_mut().remove(&canonical);
-            }
-        };
-
-        match eval_result {
-            Ok(thunk) => {
-                // Eagerly materialize: the include guard is only valid while
-                // the current file's canonical path is in the set. Returning
-                // a lazy thunk would defer evaluation past the guard removal.
-                let val = crate::eval::materialize(&thunk, None, &ctx, depth + 1)?;
-                restore(cell);
-                let result_thunk = ok_val(val)?;
-
-                // Cache the result thunk for future includes of this file.
-                INCLUDE_CTX.with(|cell| {
-                    if let Some(inc_ctx) = cell.borrow_mut().as_mut() {
-                        inc_ctx
-                            .cache
-                            .borrow_mut()
-                            .insert(canonical.clone(), Rc::clone(&result_thunk));
-                    }
-                });
-
-                Ok(result_thunk)
-            }
-            Err(e) => {
-                restore(cell);
-                Err(e)
-            }
-        }
-    })
+    }
 }
 
 /// `seq`: Low-level cons constructor for lazy linked-list sequences.
@@ -8388,15 +8334,10 @@ mod tests {
         );
     }
 
-    /// Helper: set up an IncludeContext pointing at the given base directory.
-    fn setup_include_ctx(base_dir: &std::path::Path) {
+    /// Helper: create an EvalContext pointing at the given base directory.
+    fn include_ctx(base_dir: &std::path::Path) -> Rc<crate::eval::EvalContext> {
         let stdlib_env = create_stdlib_env().expect("stdlib env");
-        set_include_context(IncludeContext {
-            base_dir: base_dir.to_path_buf(),
-            include_guard: Rc::new(RefCell::new(std::collections::HashSet::new())),
-            stdlib_env,
-            cache: Rc::new(RefCell::new(HashMap::new())),
-        });
+        crate::eval::EvalContext::new(base_dir.to_path_buf(), stdlib_env)
     }
 
     /// Helper: write a temp file and return its path.
@@ -8407,30 +8348,10 @@ mod tests {
     }
 
     #[test]
-    fn include_no_context_error() {
-        // Clear any existing context
-        INCLUDE_CTX.with(|cell| *cell.borrow_mut() = None);
-        let args = vec![thunk(Value::String("test.llt".into()))];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: &no_named(),
-            depth: 0,
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(
-            err.message().contains("not available"),
-            "got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
     fn include_wrong_type_error() {
         let dir = std::env::temp_dir().join("llt_test_include_type");
         std::fs::create_dir_all(&dir).ok();
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::Int(42))];
         let err = builtin_include(BuiltinArgs {
@@ -8438,7 +8359,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         })
         .unwrap_err();
         assert!(
@@ -8453,7 +8374,7 @@ mod tests {
     fn include_file_not_found() {
         let dir = std::env::temp_dir().join("llt_test_include_notfound");
         std::fs::create_dir_all(&dir).ok();
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("nonexistent.llt".into()))];
         let err = builtin_include(BuiltinArgs {
@@ -8461,7 +8382,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         })
         .unwrap_err();
         assert!(
@@ -8477,7 +8398,7 @@ mod tests {
         let dir = std::env::temp_dir().join("llt_test_include_simple");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "lib.llt", "[x: 42 y: hello]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("lib.llt".into()))];
         let result = mat(builtin_include(BuiltinArgs {
@@ -8485,7 +8406,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -8517,7 +8438,7 @@ mod tests {
         let dir = std::env::temp_dir().join("llt_test_include_scalar");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "num.llt", "42");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("num.llt".into()))];
         let result = mat(builtin_include(BuiltinArgs {
@@ -8525,7 +8446,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         }));
         assert_eq!(result, Value::Int(42));
         std::fs::remove_dir_all(&dir).ok();
@@ -8536,7 +8457,7 @@ mod tests {
         let dir = std::env::temp_dir().join("llt_test_include_parse_err");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "bad.llt", "[x: ]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("bad.llt".into()))];
         let err = builtin_include(BuiltinArgs {
@@ -8544,7 +8465,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         })
         .unwrap_err();
         assert!(
@@ -8564,7 +8485,7 @@ mod tests {
         // file A the same way, triggering the cycle.
         write_temp_file(&dir, "a.llt", "[call $include \"b.llt\"]");
         write_temp_file(&dir, "b.llt", "[call $include \"a.llt\"]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("a.llt".into()))];
         let err = builtin_include(BuiltinArgs {
@@ -8572,7 +8493,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         })
         .unwrap_err();
         assert!(
@@ -8588,7 +8509,7 @@ mod tests {
         let dir = std::env::temp_dir().join("llt_test_include_self");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "self.llt", "[call $include \"self.llt\"]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("self.llt".into()))];
         let err = builtin_include(BuiltinArgs {
@@ -8596,7 +8517,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         })
         .unwrap_err();
         assert!(
@@ -8618,7 +8539,7 @@ mod tests {
             "[inner: [call $include \"sub/inner.llt\"]]",
         );
         write_temp_file(&dir.join("sub"), "inner.llt", "[val: 99]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("outer.llt".into()))];
         let result = mat(builtin_include(BuiltinArgs {
@@ -8626,7 +8547,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -8664,7 +8585,7 @@ mod tests {
         // Use a different directory as base to prove absolute path works
         let other_dir = std::env::temp_dir().join("llt_test_include_abs_other");
         std::fs::create_dir_all(&other_dir).ok();
-        setup_include_ctx(&other_dir);
+        let ctx = include_ctx(&other_dir);
 
         let args = vec![thunk(Value::String(
             file_path.to_string_lossy().into_owned(),
@@ -8674,7 +8595,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         }));
         match result {
             Value::Dict(map) => {
@@ -8697,7 +8618,7 @@ mod tests {
     fn include_arity_error() {
         let dir = std::env::temp_dir().join("llt_test_include_arity");
         std::fs::create_dir_all(&dir).ok();
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         // No arguments
         let err = builtin_include(BuiltinArgs {
@@ -8705,7 +8626,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -8724,7 +8645,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         })
         .unwrap_err();
         assert!(
@@ -8739,7 +8660,7 @@ mod tests {
     fn include_rejects_named_args() {
         let dir = std::env::temp_dir().join("llt_test_include_named");
         std::fs::create_dir_all(&dir).ok();
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("test.llt".into()))];
         let mut named = IndexMap::new();
@@ -8749,7 +8670,7 @@ mod tests {
             named: &named,
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         })
         .unwrap_err();
         assert!(
@@ -8766,7 +8687,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         // Two documents: first produces [x: 10], $$ pipeline passes to second
         write_temp_file(&dir, "multi.llt", "[x: 10]\n---\n[y: $$.x]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("multi.llt".into()))];
         let result = mat(builtin_include(BuiltinArgs {
@@ -8774,7 +8695,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         }));
         match result {
             Value::Dict(map) => {
@@ -8798,7 +8719,7 @@ mod tests {
         let dir = std::env::temp_dir().join("llt_test_include_stdlib");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "stdlib_test.llt", "[result: [call $+ 1 2]]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("stdlib_test.llt".into()))];
         let result = mat(builtin_include(BuiltinArgs {
@@ -8806,7 +8727,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         }));
         match result {
             Value::Dict(map) => {
@@ -8830,7 +8751,7 @@ mod tests {
         let dir = std::env::temp_dir().join("llt_test_include_cache");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "cached.llt", "[value: 42]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("cached.llt".into()))];
 
@@ -8840,7 +8761,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         // Second include -- should hit cache
@@ -8849,7 +8770,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         }));
 
         // Both should return the same value
@@ -8887,7 +8808,7 @@ mod tests {
         let subdir = dir.join("subdir");
         std::fs::create_dir_all(&subdir).ok();
         write_temp_file(&dir, "target.llt", "[value: 99]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         // First include with relative path
         let args1 = vec![thunk(Value::String("./target.llt".into()))];
@@ -8896,7 +8817,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         // Second include with normalized path
@@ -8906,7 +8827,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         }));
 
         // Both should return the same value
@@ -8944,7 +8865,7 @@ mod tests {
         write_temp_file(&dir, "shared.llt", "[shared: 123]");
         write_temp_file(&dir, "file_a.llt", "[a: [call $include \"shared.llt\"]]");
         write_temp_file(&dir, "file_c.llt", "[c: [call $include \"shared.llt\"]]");
-        setup_include_ctx(&dir);
+        let ctx = include_ctx(&dir);
 
         // Include file_a (which includes shared.llt)
         let args_a = vec![thunk(Value::String("file_a.llt".into()))];
@@ -8953,7 +8874,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         // Include file_c (which also includes shared.llt -- should hit cache)
@@ -8963,7 +8884,7 @@ mod tests {
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx,
         }));
 
         // Verify that both got the shared value

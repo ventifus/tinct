@@ -1,15 +1,12 @@
 //! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Read};
 use std::process;
 use std::rc::Rc;
 use tinct::{
-    clear_include_context, create_stdlib_env, deep_materialize, eval_file_with_input,
-    format_source, json_to_value, materialize, parse, set_include_context, value_to_display_string,
-    value_to_json, IncludeContext, Span, Thunk, MAX_FILE_SIZE,
+    create_stdlib_env, deep_materialize, eval_file_with_input, format_source, json_to_value,
+    materialize, parse, value_to_display_string, value_to_json, Span, Thunk, MAX_FILE_SIZE,
 };
 
 const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
@@ -119,7 +116,7 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
     // Create stdlib environment
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
 
-    // Set up include context for $include builtin
+    // Determine base directory for $include resolution
     let base_dir = if file_path == "-" {
         std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
     } else {
@@ -134,62 +131,49 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
                 .map_err(|e| format!("cannot determine working directory: {e}"))?,
         }
     };
-    set_include_context(IncludeContext {
-        base_dir: base_dir.clone(),
-        include_guard: Rc::new(RefCell::new(HashSet::new())),
-        stdlib_env: Rc::clone(&env),
-        cache: Rc::new(RefCell::new(HashMap::new())),
-    });
 
-    // Create evaluation context
+    // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
     let eval_ctx = tinct::EvalContext::new(base_dir, Rc::clone(&env));
 
-    // Wrap evaluation logic in a closure so that clear_include_context() runs
-    // on all exit paths (success and error), preventing stale thread-local state.
-    let result = (|| {
-        let initial_input = stdin_input;
+    let initial_input = stdin_input;
 
-        // Evaluate
-        let thunk = eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, initial_input, 0)
-            .map_err(|e| format!("{e}"))?;
+    // Evaluate
+    let thunk = eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, initial_input, 0)
+        .map_err(|e| format!("{e}"))?;
 
-        // Materialize the result
-        let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+    // Materialize the result
+    let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
 
-        // Optionally deep-force all thunks
-        let val = if force_eval {
-            deep_materialize(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?
-        } else {
-            val
-        };
+    // Optionally deep-force all thunks
+    let val = if force_eval {
+        deep_materialize(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?
+    } else {
+        val
+    };
 
-        // Serialize and output
-        match format {
-            OutputFormat::Json => {
-                let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
-                let output = serde_json::to_string_pretty(&json)
-                    .map_err(|e| format!("JSON serialization error: {e}"))?;
-                println!("{output}");
-            }
-            OutputFormat::Llt => {
-                // Deep-materialize for display (value_to_display_string needs it).
-                // Skip if --eval already deep-materialized above.
-                let display_val = if force_eval {
-                    &val
-                } else {
-                    &deep_materialize(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?
-                };
-                let output = value_to_display_string(display_val, &eval_ctx, 0)
-                    .map_err(|e| format!("{e}"))?;
-                println!("{output}");
-            }
+    // Serialize and output
+    match format {
+        OutputFormat::Json => {
+            let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+            let output = serde_json::to_string_pretty(&json)
+                .map_err(|e| format!("JSON serialization error: {e}"))?;
+            println!("{output}");
         }
+        OutputFormat::Llt => {
+            // Deep-materialize for display (value_to_display_string needs it).
+            // Skip if --eval already deep-materialized above.
+            let display_val = if force_eval {
+                &val
+            } else {
+                &deep_materialize(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?
+            };
+            let output =
+                value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+            println!("{output}");
+        }
+    }
 
-        Ok(())
-    })();
-
-    clear_include_context();
-    result
+    Ok(())
 }
 
 fn run_fmt(file_path: &str, check: bool, in_place: bool) -> Result<(), String> {

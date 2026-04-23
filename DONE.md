@@ -676,8 +676,24 @@ Additional corpus and unit tests for desugaring edge cases.
 
 Define the EvalContext types and add ctx fields to existing structs.
 
-- [x] Create `EvalConfig` struct — `base_dir: PathBuf`, `stdlib_env: Rc<RefCell<Environment>>`, `allowed_paths: Vec<PathBuf>` (`src/eval.rs`)
+- [x] Create `EvalConfig` struct — `base_dir: PathBuf`, `stdlib_env: Rc<RefCell<Environment>>` (`src/eval.rs`; `allowed_paths` deferred to sandbox sprint)
 - [x] Create `EvalState` struct — `include_guard: HashSet<PathBuf>`, `include_cache: HashMap<PathBuf, Rc<Thunk>>` (`src/eval.rs`)
 - [x] Create `EvalContext` struct — `config: Rc<EvalConfig>`, `state: Rc<RefCell<EvalState>>` (`src/eval.rs`)
 - [x] Add `ctx: Rc<EvalContext>` field to `ThunkState::Unevaluated`, `PendingBuiltin`, `PendingCall` (`src/value.rs:176-190`)
 - [x] Add `ctx: Rc<EvalContext>` field to `BuiltinArgs` (`src/builtins.rs`)
+
+### evalcontext-thread: EvalContext Threading and Migration
+
+Thread EvalContext through eval pipeline, migrate include, update API.
+
+**Depends on:** `evalcontext-types`
+
+- [x] Thread `EvalContext` through `eval()`, `materialize()`, and builtin dispatch (`src/eval.rs`)
+- [x] Migrate `builtin_include` to use `ctx.state` instead of thread-local `INCLUDE_CTX` (`src/builtins.rs:1024-1170`)
+- [x] Remove thread-local `INCLUDE_CTX` and `set_include_context`/`clear_include_context` (`src/builtins.rs:58-70`, `src/lib.rs`)
+- [x] Update CLI (`main.rs`): construct `EvalContext` from file path
+- [x] Update public API: `EvalContext`, `EvalConfig`, `EvalState` are public; remove `set_include_context`/`clear_include_context`
+- [x] Update all include-related tests
+- [x] Add EvalContext isolation tests — two contexts with different base_dirs resolve includes independently, include cache persists across calls, include guard detects cycles via ctx.state [Critical, test-crafter C34]
+- [x] Add thunk memoization ctx preservation test — verify Unevaluated→Materialized transition preserves correct ctx (Rc::ptr_eq) [Critical, test-crafter C34]
+- [x] Suppress unused `ctx` parameter warning in `materialize()` — rename to `_ctx` with TODO comment (`src/eval.rs:863`) [Major, eval-engine C34]

@@ -860,7 +860,7 @@ fn attach_materialization_context(
 pub fn materialize(
     thunk: &Thunk,
     mat_span: Option<&Span>,
-    ctx: &Rc<EvalContext>,
+    _ctx: &Rc<EvalContext>,
     depth: usize,
 ) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
@@ -5789,5 +5789,179 @@ mod tests {
             }
             other => panic!("expected Unevaluated state, got: {:?}", other),
         };
+    }
+
+    // === EvalContext isolation tests ===
+
+    #[test]
+    fn test_evalcontext_include_cache_persists_within_context() {
+        // Create a temp directory with a test file
+        let temp_dir = std::env::temp_dir().join(format!("tinct_test_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let test_file = temp_dir.join("test_cache.llt");
+        std::fs::write(&test_file, "[value: 42]").unwrap();
+
+        let ctx = EvalContext::new(
+            temp_dir.clone(),
+            crate::builtins::create_stdlib_env().unwrap(),
+        );
+
+        // First include: should evaluate and cache
+        let include_expr1 = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("include".into()))),
+            args: vec![sp(Expr::Str("test_cache.llt".into()))],
+            named_args: vec![],
+        });
+        let result1 = eval(&include_expr1, Rc::clone(&ctx.config.stdlib_env), &ctx, 0).unwrap();
+        let val1 = materialize(&result1, None, &ctx, 0).unwrap();
+
+        // Verify the cache contains the file
+        assert_eq!(
+            ctx.state.borrow().include_cache.len(),
+            1,
+            "include_cache should contain exactly one entry"
+        );
+
+        // Second include of the same file: should hit cache
+        let include_expr2 = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("include".into()))),
+            args: vec![sp(Expr::Str("test_cache.llt".into()))],
+            named_args: vec![],
+        });
+        let result2 = eval(&include_expr2, Rc::clone(&ctx.config.stdlib_env), &ctx, 0).unwrap();
+        let val2 = materialize(&result2, None, &ctx, 0).unwrap();
+
+        // Both results should be the same value
+        match (&val1, &val2) {
+            (Value::Dict(m1), Value::Dict(m2)) => {
+                assert_eq!(m1.len(), m2.len());
+                let v1 = m1.get(&Key::String("value".into())).unwrap();
+                let v2 = m2.get(&Key::String("value".into())).unwrap();
+                assert_eq!(
+                    materialize(v1, None, &ctx, 0).unwrap(),
+                    materialize(v2, None, &ctx, 0).unwrap()
+                );
+            }
+            _ => panic!("expected Dict values"),
+        }
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_evalcontext_include_guard_detects_cycles() {
+        // Create a temp directory with a test file
+        let temp_dir =
+            std::env::temp_dir().join(format!("tinct_test_guard_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let test_file = temp_dir.join("guard_test.llt");
+        std::fs::write(&test_file, "[x: 1]").unwrap();
+
+        let ctx = EvalContext::new(
+            temp_dir.clone(),
+            crate::builtins::create_stdlib_env().unwrap(),
+        );
+
+        // Manually insert the canonical path into the include guard
+        let canonical = test_file.canonicalize().unwrap();
+        ctx.state
+            .borrow_mut()
+            .include_guard
+            .insert(canonical.clone());
+
+        // Attempt to include the file: should detect cycle
+        let include_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("include".into()))),
+            args: vec![sp(Expr::Str("guard_test.llt".into()))],
+            named_args: vec![],
+        });
+        let result = eval(&include_expr, Rc::clone(&ctx.config.stdlib_env), &ctx, 0).unwrap();
+        let err = materialize(&result, None, &ctx, 0).unwrap_err();
+
+        assert!(
+            err.message().contains("circular include") || err.message().contains("cycle"),
+            "expected circular include error, got: {}",
+            err.message()
+        );
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_evalcontext_two_contexts_with_different_base_dirs() {
+        // Create two temp directories with identical file structure
+        let temp_dir1 =
+            std::env::temp_dir().join(format!("tinct_test_ctx1_{}", std::process::id()));
+        let temp_dir2 =
+            std::env::temp_dir().join(format!("tinct_test_ctx2_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir1).unwrap();
+        std::fs::create_dir_all(&temp_dir2).unwrap();
+
+        // Create test.llt in each directory with different content
+        let test_file1 = temp_dir1.join("test.llt");
+        let test_file2 = temp_dir2.join("test.llt");
+        std::fs::write(&test_file1, "[value: 100]").unwrap();
+        std::fs::write(&test_file2, "[value: 200]").unwrap();
+
+        // Create two independent EvalContexts with different base_dirs
+        let ctx1 = EvalContext::new(
+            temp_dir1.clone(),
+            crate::builtins::create_stdlib_env().unwrap(),
+        );
+        let ctx2 = EvalContext::new(
+            temp_dir2.clone(),
+            crate::builtins::create_stdlib_env().unwrap(),
+        );
+
+        // Include test.llt from ctx1
+        let include_expr1 = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("include".into()))),
+            args: vec![sp(Expr::Str("test.llt".into()))],
+            named_args: vec![],
+        });
+        let result1 = eval(&include_expr1, Rc::clone(&ctx1.config.stdlib_env), &ctx1, 0).unwrap();
+        let val1 = materialize(&result1, None, &ctx1, 0).unwrap();
+
+        // Include test.llt from ctx2
+        let include_expr2 = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("include".into()))),
+            args: vec![sp(Expr::Str("test.llt".into()))],
+            named_args: vec![],
+        });
+        let result2 = eval(&include_expr2, Rc::clone(&ctx2.config.stdlib_env), &ctx2, 0).unwrap();
+        let val2 = materialize(&result2, None, &ctx2, 0).unwrap();
+
+        // Verify that the two contexts resolved different files
+        match (&val1, &val2) {
+            (Value::Dict(m1), Value::Dict(m2)) => {
+                let v1_thunk = m1.get(&Key::String("value".into())).unwrap();
+                let v2_thunk = m2.get(&Key::String("value".into())).unwrap();
+                let v1 = materialize(v1_thunk, None, &ctx1, 0).unwrap();
+                let v2 = materialize(v2_thunk, None, &ctx2, 0).unwrap();
+                assert_eq!(
+                    v1,
+                    Value::Int(100),
+                    "ctx1 should resolve to temp_dir1/test.llt"
+                );
+                assert_eq!(
+                    v2,
+                    Value::Int(200),
+                    "ctx2 should resolve to temp_dir2/test.llt"
+                );
+            }
+            _ => panic!("expected Dict values"),
+        }
+
+        // Verify that the two contexts have independent caches
+        assert_eq!(ctx1.state.borrow().include_cache.len(), 1);
+        assert_eq!(ctx2.state.borrow().include_cache.len(), 1);
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir1).unwrap();
+        std::fs::remove_dir_all(&temp_dir2).unwrap();
     }
 }
