@@ -1446,6 +1446,8 @@ Builtin error messages are prefixed with the builtin name when the error origina
 
 **What `$try` catches:** Errors from evaluating the function's body. Errors from materializing the function itself (e.g., if the function argument is a broken thunk) are *not* caught — they propagate to `$try`'s caller.
 
+**Uncatchable errors:** `DepthExceeded` errors are not catchable by `$try` — they propagate through `$try` to the caller. Depth limit exhaustion is a resource boundary condition that must halt evaluation, not be masked by error handling. See `is_catchable()` in DESIGN.md §Error Semantics.
+
 **`$try-or`** is a stdlib convenience: `[call $try-or [fn [] expr] default]` returns `default` if `expr` fails.
 
 ### 9.5 Lazy Error Behavior

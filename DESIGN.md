@@ -4586,7 +4586,10 @@ Errors propagate upward through materialization chains via Rust's `?` operator (
 ```
 eval(expr, env, d+1) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
-thunk.state ← Failed(ε')
+if ε'.kind.is_cacheable():
+  thunk.state ← Failed(ε')
+else:
+  thunk.state ← Unevaluated(expr, env)   // restore original state
 ──────────────────────────
 materialize(thunk, mat_span, d) ⇒ Err(ε')
 ```
@@ -4598,7 +4601,10 @@ Note: `eval()` may internally call `materialize()` recursively (e.g., for Pendin
 ```
 func(args, named, pd, cs) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
-thunk.state ← Failed(ε')
+if ε'.kind.is_cacheable():
+  thunk.state ← Failed(ε')
+else:
+  thunk.state ← PendingBuiltin(func, args, named, pd, cs)   // restore
 ──────────────────────────
 materialize(thunk, mat_span, d) ⇒ Err(ε')
 ```
@@ -4609,12 +4615,17 @@ materialize(thunk, mat_span, d) ⇒ Err(ε')
 func(...) ⇒ Ok(θ_result)
 materialize(θ_result, mat_span, d+1) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
-thunk.state ← Failed(ε')
+if ε'.kind.is_cacheable():
+  thunk.state ← Failed(ε')
+else:
+  thunk.state ← restore(original_state)   // restore pre-InProgress state
 ──────────────────────────
 materialize(thunk, mat_span, d) ⇒ Err(ε')
 ```
 
-**PendingCall coverage:** PendingCall thunks have four error paths (function materialization, invoke_function, result materialization, type mismatch). All follow the same DECORATE + MEMO-CACHE pattern: function materialization failures and type mismatches are decorated inline; result materialization follows PROP-RESULT; invoke_function failures are decorated and cached. These are not separate rules because they share identical decoration and caching mechanics.
+**State restoration for non-cacheable errors:** `is_cacheable()` returns `false` only for `DepthExceeded`. When a non-cacheable error occurs, the thunk's original state (Unevaluated, PendingBuiltin, or PendingCall) is restored instead of transitioning to Failed. This preserves the PROP-DEPTH invariant: a thunk that fails at depth N may succeed at depth N-1, so its semantic state must remain "not yet computed." The restoration is a backward transition in the state DAG (InProgress → original state), which is sound because `DepthExceeded` is an administrative interruption, not a semantic failure (see §Thunk Lifecycle, Semantic Commitment #3).
+
+**PendingCall coverage:** PendingCall thunks have four error paths (function materialization, invoke_function, result materialization, type mismatch). All follow the same DECORATE + conditional-cache pattern: function materialization failures and type mismatches are decorated inline; result materialization follows PROP-RESULT; invoke_function failures are decorated and conditionally cached. PendingCall restoration requires cloning `func`, `args`, and `named` before evaluation (all `Rc::clone` — no materialization) since `take_pending_call()` consumes ownership.
 
 **[PROP-CYCLE]** — Circular dependency:
 
@@ -4649,10 +4660,21 @@ Note: PROP-DEPTH does *not* transition to Failed — the thunk state is unchange
 
 ```
 materialize(thunk, ...) ⇒ Err(ε)
+ε.kind.is_cacheable()
+──────────────────────────
 thunk.state ← Failed(ε)
 ```
 
-All error paths (PROP-EVAL, PROP-BUILTIN, PROP-RESULT, PROP-CYCLE) cache via `cache_failure`. The cached error includes decoration from DECORATE — `mat_span` and stack frames from the first materialization chain are preserved.
+**[MEMO-SKIP]** — Non-cacheable error, restore thunk state:
+
+```
+materialize(thunk, ...) ⇒ Err(ε)
+¬ε.kind.is_cacheable()
+──────────────────────────
+thunk.state ← restore(original_state)   // pre-InProgress state
+```
+
+Cacheable error paths (PROP-EVAL, PROP-BUILTIN, PROP-RESULT, PROP-CYCLE) cache via `cache_failure`. Non-cacheable errors (DepthExceeded) restore the thunk to its pre-InProgress state via MEMO-SKIP, allowing the same thunk to succeed at a shallower call depth. The cached error includes decoration from DECORATE — `mat_span` and stack frames from the first materialization chain are preserved.
 
 **[MEMO-REACCESS]** — On subsequent access of a Failed thunk:
 
@@ -4674,7 +4696,7 @@ materialize(thunk, mat_span, d) ⇒ Err(ε')
 
 MEMO-REACCESS mirrors DECORATE but operates on the cached error. Cache updates are progressive: each new access site enriches the cached error's stack. This is the Failed self-edge in the thunk lifecycle DAG — it refines diagnostic metadata without changing the error's semantic content (message, def_span).
 
-**Permanence:** Once a thunk reaches Failed, it never returns to any other state (§Thunk Lifecycle, Semantic Commitment #1). No retry, no recovery. This includes I/O failures from `$include`. The only exception: PROP-DEPTH does not cache (depth errors are context-dependent, not intrinsic to the thunk).
+**Permanence:** Once a thunk reaches Failed, it never returns to any other state (§Thunk Lifecycle, Semantic Commitment #1). No retry, no recovery. This includes I/O failures from `$include`. The only exception: non-cacheable errors (DepthExceeded) trigger MEMO-SKIP instead of MEMO-CACHE — the thunk state is restored rather than transitioning to Failed, because depth errors are context-dependent, not intrinsic to the thunk.
 
 ##### Part 6: `$try` Catching Boundary
 
@@ -4694,8 +4716,20 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 materialize(θ_func, _, d) ⇒ Function([], body, env)
 θ_body = Thunk::new_unevaluated(body, env, body.span)
 materialize(θ_body, _, d) ⇒ Err(ε)
+ε.kind.is_catchable()
 ──────────────────────────
 try(θ_func, d, s) ⇒ ok_val(Dict({err ↦ θ(ε.kind.to_string())}))
+```
+
+**[TRY-UNCATCHABLE]** — Uncatchable error re-raised:
+
+```
+materialize(θ_func, _, d) ⇒ Function([], body, env)
+θ_body = Thunk::new_unevaluated(body, env, body.span)
+materialize(θ_body, _, d) ⇒ Err(ε)
+¬ε.kind.is_catchable()
+──────────────────────────
+try(θ_func, d, s) ⇒ Err(ε)
 ```
 
 **[TRY-BUILTIN]** — Builtin zero-arg function:
@@ -4722,7 +4756,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **E1 — Error determinism:** For a given program state (environment, thunk graph), the same error is produced regardless of evaluation order. This follows from the pure subset's confluence (§Thunk Lifecycle, Semantic Properties). `$include` breaks this — file system state introduces nondeterminism.
 
-**E2 — Memoization permanence:** `Failed(ε)` is absorbing — no transition out of Failed exists. Formally: if `thunk.state = Failed(ε)` at time t, then `thunk.state = Failed(ε')` for all t' > t, where `ε'.message = ε.message ∧ ε'.def_span = ε.def_span ∧ (ε.mat_span = Some(s) → ε'.mat_span = Some(s))` — mat_span may transition from None to Some but never from Some(s) to Some(s') where s ≠ s'. Stack frames may grow monotonically.
+**E2 — Memoization permanence:** `Failed(ε)` is absorbing — no transition out of Failed exists. Formally: if `thunk.state = Failed(ε)` at time t, then `thunk.state = Failed(ε')` for all t' > t, where `ε'.kind = ε.kind ∧ ε'.def_span = ε.def_span ∧ (ε.mat_span = Some(s) → ε'.mat_span = Some(s))` — mat_span may transition from None to Some but never from Some(s) to Some(s') where s ≠ s'. Stack frames may grow monotonically.
 
 **E3 — Propagation preserves definition site:** DECORATE never modifies `ε.def_span`. The definition site is set at error construction and propagated unchanged through any number of materialization layers.
 
@@ -4730,7 +4764,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **E5 — `$try` isolation:** Errors caught by `$try` do not propagate to `$try`'s caller. `$try` converts errors to values — the error is consumed, not rethrown. There is no `$rethrow` mechanism.
 
-**E6 — Depth errors are non-caching:** PROP-DEPTH does not transition to Failed. A thunk that fails due to depth limits may succeed at a shallower call depth. This is the only error source that does not cache.
+**E6 — Depth errors are non-caching:** DepthExceeded errors have `is_cacheable() = false`, triggering MEMO-SKIP instead of MEMO-CACHE. The thunk state is restored to its pre-InProgress state, allowing the same thunk to succeed at a shallower call depth. This is the only error source that does not cache.
 
 **E7 — Stack frame monotonicity:** The `stack` field of a cached error grows monotonically — frames are appended, never removed or reordered. Each re-access of a Failed thunk from a new location adds at most one frame.
 
@@ -4744,19 +4778,21 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 | Spec element | Implementation |
 |-------------|----------------|
-| EvalError struct | `error.rs:20-25` |
-| DECORATE | `attach_materialization_context` (`eval.rs:803-831`) |
-| PROP-EVAL | `eval.rs:918-932` (Unevaluated path, `map_err(&decorate)` + `cache_failure`) |
-| PROP-BUILTIN | `eval.rs:941-964` (PendingBuiltin path) |
-| PROP-RESULT | `eval.rs:948-957`, `eval.rs:994-1003` (recursive materialize of result) |
-| PROP-CYCLE | `eval.rs:899-908` (InProgress handler, inline error construction) |
-| PROP-DEPTH | `eval.rs:857-866` (depth check, no state change) |
-| MEMO-CACHE | `thunk.cache_failure` (`value.rs:382-385`) |
-| MEMO-REACCESS | `eval.rs:876-898` (Failed state handler) |
-| TRY | `builtin_try` (`builtins.rs:793-871`) |
-| TRY catching boundary | `builtins.rs:829` (body materialize inside match) |
-| Error-to-value | `builtins.rs:859-868` (extract `e.message`) |
-| $error | `builtin_error` (`builtins.rs:778-788`) |
+| EvalError struct | `error.rs:408-413` |
+| DECORATE | `attach_materialization_context` (`eval.rs:815-843`) |
+| PROP-EVAL | `eval.rs:931-951` (Unevaluated path, `map_err(&decorate)` + conditional cache) |
+| PROP-BUILTIN | `eval.rs:952-1003` (PendingBuiltin path) |
+| PROP-RESULT | `eval.rs:967-987`, `eval.rs:1044-1063` (recursive materialize of result) |
+| PROP-CYCLE | `eval.rs:908-922` (InProgress handler, inline error construction) |
+| PROP-DEPTH | `eval.rs:869-875` (depth check, no state change) |
+| MEMO-CACHE | `thunk.cache_failure` (`value.rs:384-386`) |
+| MEMO-SKIP | `eval.rs:944-948`, `eval.rs:976-983`, `eval.rs:993-999` (non-cacheable state restore) |
+| MEMO-REACCESS | `eval.rs:885-906` (Failed state handler) |
+| TRY | `builtin_try` (`builtins.rs:800-884`) |
+| TRY-UNCATCHABLE | `builtins.rs:870-871` (`!e.kind.is_catchable()` re-raise) |
+| TRY catching boundary | `builtins.rs:837` (body materialize inside match) |
+| Error-to-value | `builtins.rs:873-881` (extract `e.kind.to_string()`) |
+| $error | `builtin_error` (`builtins.rs:785-795`) |
 
 #### Structured Error Model
 
