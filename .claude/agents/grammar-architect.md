@@ -24,10 +24,10 @@ You are a parser, grammar, and specification expert for the tinct language (file
 - **Document structure**: `file > document > expression`, `---` separator with `!bare_word_char` lookahead preventing `----` from matching
 
 ### Specification & Documentation
-- **doc/*.md**: Source of truth for the language. Chapters 01–11 cover language semantics, type system, evaluation, and stdlib. Chapters 15 (`doc/15-ast.md`) and 02 (`doc/02-syntax.md`) cover the parser and AST. Chapter 17 (`doc/17-references.md`) contains formal references.
+- **doc/*.md**: Forward spec for the language — describes how LLT **should** behave, not just how it currently does. When code and spec disagree, fix the code, not the doc. Chapters 01–11 cover language semantics, type system, evaluation, and stdlib. Chapters 15 (`doc/15-ast.md`) and 02 (`doc/02-syntax.md`) cover the parser and AST. Chapter 17 (`doc/17-references.md`) contains formal references.
 - **TODO.md**: Implementation roadmap — what's built, what's next, what's deferred
 - **CLAUDE.md**: Project instructions — architecture overview, file structure, build/test commands
-- **Spec drift detection**: code behaving differently from what doc/*.md describes
+- **Spec drift detection**: code behaving differently from what doc/*.md describes; the fix is always to the code
 - **Unrecorded decisions**: code making design choices not documented in doc/*.md
 - **Cross-reference consistency**: doc/*.md, CLAUDE.md, and TODO.md must agree
 
@@ -52,8 +52,8 @@ You are a parser, grammar, and specification expert for the tinct language (file
 
 ## When Working on Grammar or Spec Changes
 
-1. Read the relevant chapter of `doc/*.md` first — `doc/02-syntax.md` and `doc/15-ast.md` cover parser behavior
-2. Check the relevant `doc/*.md` chapters for confirmed decisions about the feature — new behavior must align with documented decisions
+1. Read the relevant chapter of `doc/*.md` first — `doc/02-syntax.md` and `doc/15-ast.md` cover parser behavior (docs are aspirational; if code diverges from the spec, fix the code)
+2. Check the relevant `doc/*.md` chapters for confirmed decisions about the feature — new behavior must align with documented decisions; if existing code already diverges, fix the code
 3. Read the current `grammar.pest` rules being modified
 4. Check `parser.rs` for the AST construction code that consumes the grammar rule
 5. Consider whitespace sensitivity implications — will the new rule interact with compound-atomic inheritance?
@@ -76,6 +76,8 @@ When dispatched for a full codebase review, review the entire project through yo
 
 ### Phase 1: doc/*.md Review
 
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc._
+
 1. Do syntax decisions align with PEG best practices and pest's capabilities?
 2. Are bracket-only, sigil-based, and keyword disambiguation decisions well-justified?
 3. Are there syntax design choices that conflict with parser maintainability or extensibility?
@@ -84,7 +86,7 @@ When dispatched for a full codebase review, review the entire project through yo
 6. Do any decisions contradict each other?
 7. Are open questions still open, or have they been silently decided in code?
 8. Should any decisions be revisited given implementation experience?
-9. Do grammar rules in `doc/02-syntax.md` and `doc/15-ast.md` match the actual `grammar.pest` implementation?
+9. Do grammar rules in `doc/02-syntax.md` and `doc/15-ast.md` match the actual `grammar.pest` implementation? (When they don't, fix the grammar to match the spec, not the spec to match the grammar.)
 10. Are static constraints accurately documented and complete?
 11. Are desugaring rules complete and consistent with parser behavior?
 12. Are whitespace sensitivity rules fully specified?

@@ -4,14 +4,24 @@ Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work
 
 ## let-generalization: Levels-Based Let-Generalization
 
-Implement proper Hindley-Milner let-polymorphism with levels-based generalization (Kiselyov 2013). Without this, polymorphism requires explicit annotations. See DESIGN.md §Let-Generalization (Levels-Based).
+Implement proper Hindley-Milner let-polymorphism with levels-based generalization (Kiselyov 2013). Without this, polymorphism requires explicit annotations. See doc/06-type-inference.md §Let-Generalization (Levels-Based).
 
-- [ ] Add `TypeScheme` struct — `vars: Vec<String>`, `body: Type`, `TypeScheme::mono(ty)` constructor (`src/types.rs`)
-- [ ] Add `InferState` struct — `name_counter: u32`, `level: u32`, `levels: HashMap<String, u32>` (`src/types.rs`)
-- [ ] Change `Type::TypeVar(String)` to `TypeVar(String, u32)` with manual `PartialEq` on name only (`src/types.rs:36`)
-- [ ] Change `RowRest::RowVar(String)` to `RowVar(String, u32)` with level (`src/types.rs`)
-- [ ] Change `TypeEnv.bindings` from `IndexMap<String, Type>` to `IndexMap<String, TypeScheme>` (`src/types.rs`)
-- [ ] Replace `counter: &Cell<u32>` parameter with `state: &mut InferState` in `infer_expr`/`infer_dict`/`infer_fn` (`src/typecheck.rs`)
+### let-gen-types: Type System Infrastructure
+
+Data structure changes and signature migration. All interdependent — must land together.
+
+- [x] Add `TypeScheme` struct — `vars: Vec<String>`, `body: Type`, `TypeScheme::mono(ty)` constructor (`src/types.rs`)
+- [x] Add `InferState` struct — `name_counter: u32`, `level: u32`, `levels: HashMap<String, u32>` (`src/types.rs`)
+- [x] Change `Type::TypeVar(String)` to `TypeVar(String, u32)` with manual `PartialEq` on name only (`src/types.rs:36`)
+- [x] Change `RowRest::RowVar(String)` to `RowVar(String, u32)` with level (`src/types.rs`)
+- [x] Change `TypeEnv.bindings` from `IndexMap<String, Type>` to `IndexMap<String, TypeScheme>` (`src/types.rs`)
+- [x] Replace `counter: &Cell<u32>` parameter with `state: &mut InferState` in `infer_expr`/`infer_dict`/`infer_fn` (`src/typecheck.rs`)
+- [x] Update all `TypeVar("a".into())` in tests to `TypeVar("a".into(), 0)` (`src/types.rs`, `src/typecheck.rs`)
+
+### let-gen-inference: Inference Rules and Generalization
+
+Inference logic that uses the new data structures from let-gen-types.
+
 - [ ] Implement `instantiate_scheme(scheme, state) -> Type` — freshen all vars at current level (`src/types.rs`)
 - [ ] Implement `generalize(level, ty) -> TypeScheme` — collect vars with level > given, abstract them (`src/types.rs`)
 - [ ] Update VAR rule: `instantiate_scheme(env.get(name)?, state)` (`src/typecheck.rs`)
@@ -19,7 +29,6 @@ Implement proper Hindley-Milner let-polymorphism with levels-based generalizatio
 - [ ] Implement symmetric level lowering in unify U-VAR rules (`src/types.rs`)
 - [ ] Implement Any-unification level zeroing: `unify(α, Any)` sets `level(α) = 0` (`src/types.rs`)
 - [ ] Update `typecheck_document` to thread `TypeScheme`s across `---` boundaries (`src/typecheck.rs`)
-- [ ] Update all `TypeVar("a".into())` in tests to `TypeVar("a".into(), 0)` (`src/types.rs`, `src/typecheck.rs`)
 - [ ] Fix letrec forward-reference typing to Any — resolved by 5-pass bind-all approach (`src/typecheck.rs:225`) [Minor, computer-scientist]
 - [ ] Add tests: polymorphic identity generalizes, nested dicts increment levels, Any-touched vars not generalized
 
@@ -517,6 +526,9 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Update DESIGN.md builtin count after concat migration — line 2927 says "44 total" but `standard_builtins()` now registers 45 builtins after concat addition. Previous "verified correct" resolution (TODO.md:651) is now stale. (`DESIGN.md:2927`) [Minor, stdlib-author + integration-verifier]
 - [ ] Remove false `$deep-eq` claim from doc/11-stdlib.md — line 106 states "Structural equality is available via `$deep-eq`" but this function does not exist in prelude.llt, src/builtins.rs, or anywhere in the codebase. Either implement (add to stdlib-missing-core) or remove the claim. (`doc/11-stdlib.md:106`) [Major, stdlib-author]
 - [ ] Update doc/11-stdlib.md builtin count from "44 total" to "47 total" — `standard_builtins()` at `src/builtins.rs:2619-2676` registers 47 builtins; doc says 44. (`doc/11-stdlib.md:165`) [Minor, stdlib-author]
+- [ ] Fix doc/11-stdlib.md total function count — heading says "62 functions" but actual count is ~96 (45 Rust-native + 51 LLT-implemented). Update line 224 and prose on line 226 ("Most are implemented in Tinct" → "Many" or give explicit split). (`doc/11-stdlib.md:224,226`) [Major, stdlib-author C38]
+- [ ] Add 6 missing functions to doc/11-stdlib.md reference tables — `const`, `any?`, `all?`, `until`, `from-entries` are implemented and public but absent from the function reference tables (lines 228-374). (`doc/11-stdlib.md:228-374`) [Major, stdlib-author C38]
+- [ ] Rename `zip-seq`/`zip-dict` to `zip-seq-impl`/`zip-dict-impl` in stdlib/prelude.llt — only internal helpers not following the -impl/-step/-check suffix convention; all 30+ others conform. (`stdlib/prelude.llt:400,407`) [Minor, stdlib-author C38]
 
 ## Test Infrastructure
 
@@ -566,6 +578,8 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add `$_` desugared lambda type inference tests — verify inferred types of desugared expressions (e.g., `$_.name` → `Fn(Any → Any)`); current tests only validate runtime behavior, not type inference (`src/typecheck.rs`) [Minor, test-crafter C31]
 - [ ] Add `$_` implicit lambda edge case tests — nested `$_`, shadowing when `_` already bound, desugaring in dict entries vs call args (`src/desugar.rs`) [Minor, test-crafter]
 - [ ] Add row polymorphism tests for Closed-specific behavior — closed record with extra fields (`src/types.rs:679-837`) [Nit, type-theorist]
+- [ ] Add `test_substitution_idempotence` to types.rs — construct `a → b → Int` substitution chain, verify `subst.apply(&subst.apply(&TypeVar("a"))) == subst.apply(&TypeVar("a"))`; validates claim in doc/05-type-annotations.md:203. (`src/types.rs`) [Minor, type-theorist C38]
+- [ ] Add RowRest/RowTail terminology clarification to doc/07-type-extensions.md — current implementation uses `RowRest` (src/types.rs:14); row-unification sprint will migrate to kinded `RowTail` per Rémy §Row-Variable Unification. Prevents reader confusion between current and target representations. (`doc/07-type-extensions.md:288`) [Minor, type-theorist C38]
 - [ ] Add === delimiter edge case tests — `delimiter_in_string.txt`, `delimiter_partial.txt`, `delimiter_triple_docs.txt` (`tests/corpus/valid/edge_cases/`) [Major, test-crafter]
 - [ ] Add CRLF line ending corpus test — create `.txt` with actual `\r\n` bytes (`tests/corpus/valid/edge_cases/crlf_line_endings.txt`) [Minor, test-crafter]
 - [ ] Add Unicode identifier corpus test — `[$café: espresso]` and other Unicode var names (`tests/corpus/valid/literals/unicode_identifiers.txt`) [Minor, test-crafter]
@@ -621,9 +635,9 @@ Improvements to test infrastructure identified by cross-language analysis and te
 Found by grammar-architect and computer-scientist review (2026-04-23). Commit 7b06e98 moved DESIGN.md (6643 lines) and SPEC.md (1509 lines) to `.tmp/`, splitting content into `doc/01-17` chapters. Cross-references across TODO.md, doc/whatif/, doc/, and source code were not updated.
 
 - [ ] Update systemic DESIGN.md/SPEC.md cross-references — 127 TODO.md references to "See DESIGN.md §X", 48+ references across 21 doc/*.md and doc/whatif/*.md files, and 4 source code comments (`src/grammar.pest:2,137`, `src/lexer.rs:6`, `src/desugar.rs:8`) all point to deleted files. Create mapping table: DESIGN.md section name → doc/ chapter, then bulk-update all references. [Major, grammar-architect + computer-scientist]
-- [ ] Fix doc/02-syntax.md:3 broken links — opens with "For the full language specification see [SPEC.md](../SPEC.md). For design context see [DESIGN.md](../DESIGN.md)." Both targets deleted in commit 7b06e98. Replace with reference to `doc/index.md` or remove. (`doc/02-syntax.md:3`) [Minor, computer-scientist]
-- [ ] Fix doc/16-architecture.md EvalContext threading description — three statements incorrectly use `Rc<RefCell<EvalContext>>`: line 66 "Threading pattern", line 68 "ThunkState captures", line 70 "BuiltinArgs gains". Actual implementation uses `Rc<EvalContext>` (interior mutability via `state: Rc<RefCell<EvalState>>` inside EvalContext). (`doc/16-architecture.md:66-70`) [Major, computer-scientist + integration-verifier]
-- [ ] Fix doc/16-architecture.md Value sketch using `LinkedHashMap` instead of `IndexMap` — sketch shows `Dict(LinkedHashMap<Key, Rc<Thunk>>)` but `src/value.rs:75` uses `Dict(IndexMap<Key, Rc<Thunk>>)`. (`doc/16-architecture.md:90`) [Nit, computer-scientist]
+- [x] Fix doc/02-syntax.md:3 broken links — opens with "For the full language specification see [SPEC.md](../SPEC.md). For design context see [DESIGN.md](../DESIGN.md)." Both targets deleted in commit 7b06e98. Replace with reference to `doc/index.md` or remove. (`doc/02-syntax.md:3`) [Minor, computer-scientist]
+- [x] Fix doc/16-architecture.md EvalContext threading description — three statements incorrectly use `Rc<RefCell<EvalContext>>`: line 66 "Threading pattern", line 68 "ThunkState captures", line 70 "BuiltinArgs gains". Actual implementation uses `Rc<EvalContext>` (interior mutability via `state: Rc<RefCell<EvalState>>` inside EvalContext). (`doc/16-architecture.md:66-70`) [Major, computer-scientist + integration-verifier]
+- [x] Fix doc/16-architecture.md Value sketch using `LinkedHashMap` instead of `IndexMap` — sketch shows `Dict(LinkedHashMap<Key, Rc<Thunk>>)` but `src/value.rs:75` uses `Dict(IndexMap<Key, Rc<Thunk>>)`. (`doc/16-architecture.md:90`) [Nit, computer-scientist]
 - [ ] Fix `materialize()` dead `_ctx` parameter — accepts `_ctx: &Rc<EvalContext>` but never uses it; thunks use their captured ctx instead (Launchbury 1993 — thunks carry creation-time context). Either remove parameter and update all call sites, or add doc comment explaining invariant. Naturally resolved by CEK machine migration. (`src/eval.rs:876-879`) [Minor, computer-scientist]
 
 ## Documentation Divergences (DESIGN.md / SPEC.md / Code)

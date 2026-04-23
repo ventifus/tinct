@@ -122,7 +122,7 @@ checker's condition analysis.
 
 ### Interaction with Lazy Evaluation
 
-Type predicates force their argument (strict in the DESIGN.md §Selective
+Type predicates force their argument (strict in the doc/08-evaluation.md §Selective
 Materialization sense). This is the same behavior as `$seq?` and `$type-of`.
 Forcing is necessary because the type of an unevaluated thunk is not known
 until materialization.
@@ -201,7 +201,7 @@ no changes to the predicates themselves.
 
 ## References
 
-- DESIGN.md §Principle 1: Dicts Are Fundamental — "A list is equivalent
+- doc/01-introduction.md §Principle 1: Dicts Are Fundamental — "A list is equivalent
   to a dict with integer keys." Motivates the absence of `$list?`.
 - doc/whatif/pattern-matching.md §Phase 1 — type predicates as the
   first step toward pattern matching.

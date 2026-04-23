@@ -2,7 +2,7 @@
 // @ts-check
 //
 // Tree-sitter grammar for LLT (tinct)
-// Ported from src/grammar.pest. See DESIGN.md and SPEC.md.
+// Ported from src/grammar.pest. See doc/02-syntax.md and doc/15-ast.md.
 
 // Dot excluded from bare_word (unlike pest) to avoid ambiguity with
 // range_expr/dot_access; bare words like file.txt must be quoted.

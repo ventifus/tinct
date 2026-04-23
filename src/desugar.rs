@@ -5,7 +5,7 @@
 //! expressions. The desugaring runs after parsing and before both type checking
 //! and evaluation.
 //!
-//! See DESIGN.md lines 1993-2126 for the complete formal specification.
+//! See doc/04-functions.md for the complete formal specification.
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, Param, Spanned};
 

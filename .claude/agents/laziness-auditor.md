@@ -63,7 +63,9 @@ When dispatched for a full codebase review, review the entire project through yo
 
 ### Phase 1: doc/*.md Review
 
-1. Are laziness decisions accurately documented in `doc/08-evaluation.md`? (what's lazy, what's eager, and why)
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc._
+
+1. Does the code implement the laziness decisions documented in `doc/08-evaluation.md`? (what's lazy, what's eager, and why — if code is more eager than the spec requires, fix the code)
 2. Is the materialization model clearly specified?
 3. Should any laziness decisions be revisited? (e.g., operations that are eager but could be lazy)
 4. Is the laziness inventory consistent with current behavior?

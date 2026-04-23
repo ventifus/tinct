@@ -15,7 +15,7 @@ This works but is verbose for multi-part strings. The `$` sigil for
 variable references makes interpolation syntactically natural — `$name`
 inside a string could reference the variable.
 
-DESIGN.md §Variable References notes: "Synergy with string
+doc/02-syntax.md §Variable References notes: "Synergy with string
 interpolation (if added): `"Hello $name"`"
 
 Existing alternatives:
@@ -238,7 +238,7 @@ Implementation:
 
 `i"Host: $config.host:$config.port"` — dot access chains expand
 inside interpolated strings, following the same compound-atomic rules
-as regular access expressions (DESIGN.md §Tokenization Rules).
+as regular access expressions (doc/02-syntax.md §Tokenization Rules).
 
 ### Phase 3: Expression Interpolation
 
@@ -265,7 +265,7 @@ lexer.
 
 ## References
 
-- DESIGN.md §Variable References — "Synergy with string interpolation
+- doc/02-syntax.md §Variable References — "Synergy with string interpolation
   (if added): `"Hello $name"`"
 - Kotlin string templates: `"Hello $name"` and `"Hello ${expr}"` —
   closest precedent for `$`-based interpolation with expression

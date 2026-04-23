@@ -2,7 +2,7 @@
 //! substitutions/unification for Hindley-Milner polymorphism,
 //! and type error definitions for the type checker.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -10,14 +10,26 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub enum RowRest {
     Closed,
     Open,
-    RowVar(String),
+    RowVar(String, u32),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+// Manual PartialEq for RowRest: RowVar compares name only, level ignored
+impl PartialEq for RowRest {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (RowRest::Closed, RowRest::Closed) => true,
+            (RowRest::Open, RowRest::Open) => true,
+            (RowRest::RowVar(n1, _), RowRest::RowVar(n2, _)) => n1 == n2,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Type {
     Int,
     IntLiteral(i64),
@@ -33,8 +45,38 @@ pub enum Type {
     },
     Seq(Box<Type>),
     #[allow(clippy::enum_variant_names)]
-    TypeVar(String),
+    TypeVar(String, u32),
     Any,
+}
+
+// Manual PartialEq for Type: TypeVar compares name only, level ignored
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Type::Int, Type::Int) => true,
+            (Type::IntLiteral(v1), Type::IntLiteral(v2)) => v1 == v2,
+            (Type::Float, Type::Float) => true,
+            (Type::Str, Type::Str) => true,
+            (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1 == s2,
+            (Type::Bool, Type::Bool) => true,
+            (Type::Number, Type::Number) => true,
+            (Type::Record(f1, r1), Type::Record(f2, r2)) => f1 == f2 && r1 == r2,
+            (
+                Type::Function {
+                    params: p1,
+                    ret: r1,
+                },
+                Type::Function {
+                    params: p2,
+                    ret: r2,
+                },
+            ) => p1 == p2 && r1 == r2,
+            (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
+            (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
+            (Type::Any, Type::Any) => true,
+            _ => false,
+        }
+    }
 }
 
 impl Type {
@@ -60,7 +102,7 @@ impl Type {
                 }
                 match sup_rest {
                     RowRest::Closed => sub_fields.keys().all(|k| sup_fields.contains_key(k)),
-                    RowRest::Open | RowRest::RowVar(_) => true,
+                    RowRest::Open | RowRest::RowVar(_, _) => true,
                 }
             }
             (
@@ -86,14 +128,14 @@ impl Type {
 
     pub fn collect_type_vars(&self, vars: &mut BTreeSet<String>) {
         match self {
-            Type::TypeVar(name) => {
+            Type::TypeVar(name, _) => {
                 vars.insert(name.clone());
             }
             Type::Record(fields, rest) => {
                 for ty in fields.values() {
                     ty.collect_type_vars(vars);
                 }
-                if let RowRest::RowVar(name) = rest {
+                if let RowRest::RowVar(name, _) = rest {
                     vars.insert(name.clone());
                 }
             }
@@ -110,9 +152,10 @@ impl Type {
 
     pub fn has_type_vars(&self) -> bool {
         match self {
-            Type::TypeVar(_) => true,
+            Type::TypeVar(_, _) => true,
             Type::Record(fields, rest) => {
-                matches!(rest, RowRest::RowVar(_)) || fields.values().any(|ty| ty.has_type_vars())
+                matches!(rest, RowRest::RowVar(_, _))
+                    || fields.values().any(|ty| ty.has_type_vars())
             }
             Type::Function { params, ret } => {
                 params.iter().any(|p| p.has_type_vars()) || ret.has_type_vars()
@@ -120,6 +163,68 @@ impl Type {
             Type::Seq(elem) => elem.has_type_vars(),
             _ => false,
         }
+    }
+}
+
+/// Type scheme for let-generalization (∀α₁...αₙ. τ)
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeScheme {
+    pub vars: Vec<String>,
+    pub body: Type,
+}
+
+impl TypeScheme {
+    /// Create a monomorphic scheme (no quantified variables)
+    pub fn mono(ty: Type) -> Self {
+        Self {
+            vars: vec![],
+            body: ty,
+        }
+    }
+}
+
+impl fmt::Display for TypeScheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.vars.is_empty() {
+            write!(f, "{}", self.body)
+        } else {
+            write!(f, "∀{}. {}", self.vars.join(" "), self.body)
+        }
+    }
+}
+
+/// Inference state for levels-based let-generalization
+#[derive(Debug, Clone)]
+pub struct InferState {
+    pub name_counter: u32,
+    #[allow(dead_code)]
+    pub level: u32,
+    #[allow(dead_code)]
+    pub levels: HashMap<String, u32>,
+}
+
+impl InferState {
+    pub fn new() -> Self {
+        Self {
+            name_counter: 0,
+            level: 0,
+            levels: HashMap::new(),
+        }
+    }
+
+    /// Create a fresh type variable at the current level
+    #[allow(dead_code)]
+    pub fn fresh_var(&mut self) -> Type {
+        let name = format!("_t{}", self.name_counter);
+        self.name_counter += 1;
+        self.levels.insert(name.clone(), self.level);
+        Type::TypeVar(name, self.level)
+    }
+}
+
+impl Default for InferState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -147,7 +252,7 @@ impl Substitution {
             return ty.clone();
         }
         match ty {
-            Type::TypeVar(name) => {
+            Type::TypeVar(name, level) => {
                 if visited.contains(name) {
                     return ty.clone();
                 }
@@ -158,7 +263,7 @@ impl Substitution {
                         visited.remove(name);
                         result
                     }
-                    None => ty.clone(),
+                    None => Type::TypeVar(name.clone(), *level),
                 }
             }
             Type::Record(fields, rest) => {
@@ -167,7 +272,7 @@ impl Substitution {
                     .map(|(k, v)| (k.clone(), self.apply_inner(v, depth + 1, visited)))
                     .collect();
                 match rest {
-                    RowRest::RowVar(name) => match self.map.get(name) {
+                    RowRest::RowVar(name, level) => match self.map.get(name) {
                         Some(bound) => {
                             let resolved = self.apply_inner(bound, depth + 1, visited);
                             match resolved {
@@ -176,13 +281,13 @@ impl Substitution {
                                     merged.extend(extra_fields);
                                     Type::Record(merged, resolved_rest)
                                 }
-                                Type::TypeVar(new_name) => {
-                                    Type::Record(new_fields, RowRest::RowVar(new_name))
+                                Type::TypeVar(new_name, new_level) => {
+                                    Type::Record(new_fields, RowRest::RowVar(new_name, new_level))
                                 }
                                 _ => Type::Record(new_fields, rest.clone()),
                             }
                         }
-                        None => Type::Record(new_fields, rest.clone()),
+                        None => Type::Record(new_fields, RowRest::RowVar(name.clone(), *level)),
                     },
                     _ => Type::Record(new_fields, rest.clone()),
                 }
@@ -214,10 +319,10 @@ impl Default for Substitution {
 
 fn occurs_in(var_name: &str, ty: &Type) -> bool {
     match ty {
-        Type::TypeVar(name) => name == var_name,
+        Type::TypeVar(name, _) => name == var_name,
         Type::Record(fields, rest) => {
             fields.values().any(|t| occurs_in(var_name, t))
-                || matches!(rest, RowRest::RowVar(r) if r == var_name)
+                || matches!(rest, RowRest::RowVar(r, _) if r == var_name)
         }
         Type::Function { params, ret } => {
             params.iter().any(|p| occurs_in(var_name, p)) || occurs_in(var_name, ret)
@@ -238,7 +343,7 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
     match (&a, &b) {
         (Type::Any, _) | (_, Type::Any) => Ok(()),
 
-        (Type::TypeVar(name), _) => {
+        (Type::TypeVar(name, _), _) => {
             if occurs_in(name, &b) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {b}"),
@@ -248,7 +353,7 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
             subst.map.insert(name.clone(), b);
             Ok(())
         }
-        (_, Type::TypeVar(name)) => {
+        (_, Type::TypeVar(name, _)) => {
             if occurs_in(name, &a) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {a}"),
@@ -351,7 +456,7 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
     for var in vars {
         let fresh = format!("_t{counter}");
         *counter += 1;
-        renaming.map.insert(var, Type::TypeVar(fresh));
+        renaming.map.insert(var, Type::TypeVar(fresh, 0));
     }
 
     (renaming.apply(ty), renaming)
@@ -368,7 +473,7 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "Bool"),
             Type::Number => write!(f, "Number"),
             Type::Any => write!(f, "Any"),
-            Type::TypeVar(name) => write!(f, "{name}"),
+            Type::TypeVar(name, _level) => write!(f, "{name}"),
             Type::Record(fields, rest) => {
                 write!(f, "[")?;
                 for (i, (key, ty)) in fields.iter().enumerate() {
@@ -385,7 +490,7 @@ impl fmt::Display for Type {
                         }
                         write!(f, "...")?;
                     }
-                    RowRest::RowVar(name) => {
+                    RowRest::RowVar(name, _level) => {
                         if !fields.is_empty() {
                             write!(f, "  ")?;
                         }
@@ -411,7 +516,7 @@ impl fmt::Display for Type {
 
 #[derive(Debug, Clone)]
 pub struct TypeEnv {
-    bindings: IndexMap<String, Type>,
+    bindings: IndexMap<String, TypeScheme>,
     type_aliases: IndexMap<String, Type>,
     parent: Option<Rc<TypeEnv>>,
 }
@@ -433,15 +538,29 @@ impl TypeEnv {
         }
     }
 
-    pub fn get(&self, name: &str) -> Option<&Type> {
+    pub fn get(&self, name: &str) -> Option<&TypeScheme> {
         self.lookup(|env| env.bindings.get(name))
     }
 
     pub fn get_type_alias(&self, name: &str) -> Option<&Type> {
-        self.lookup(|env| env.type_aliases.get(name))
+        self.lookup_type_alias(|env| env.type_aliases.get(name))
     }
 
-    fn lookup(&self, field: impl Fn(&TypeEnv) -> Option<&Type>) -> Option<&Type> {
+    fn lookup(&self, field: impl Fn(&TypeEnv) -> Option<&TypeScheme>) -> Option<&TypeScheme> {
+        if let Some(scheme) = field(self) {
+            return Some(scheme);
+        }
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            if let Some(scheme) = field(env) {
+                return Some(scheme);
+            }
+            current = env.parent.as_deref();
+        }
+        None
+    }
+
+    fn lookup_type_alias(&self, field: impl Fn(&TypeEnv) -> Option<&Type>) -> Option<&Type> {
         if let Some(ty) = field(self) {
             return Some(ty);
         }
@@ -456,7 +575,12 @@ impl TypeEnv {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
-        self.bindings.insert(name, ty);
+        self.bindings.insert(name, TypeScheme::mono(ty));
+    }
+
+    #[allow(dead_code)]
+    pub fn insert_scheme(&mut self, name: String, scheme: TypeScheme) {
+        self.bindings.insert(name, scheme);
     }
 
     pub fn insert_type_alias(&mut self, name: String, ty: Type) {
@@ -550,7 +674,7 @@ mod tests {
 
     #[test]
     fn test_display_type_var() {
-        assert_eq!(format!("{}", Type::TypeVar("a".into())), "a");
+        assert_eq!(format!("{}", Type::TypeVar("a".into(), 0)), "a");
     }
 
     #[test]
@@ -595,7 +719,10 @@ mod tests {
         let mut fields = IndexMap::new();
         fields.insert("name".into(), Type::Str);
         assert_eq!(
-            format!("{}", Type::Record(fields, RowRest::RowVar("rest".into()))),
+            format!(
+                "{}",
+                Type::Record(fields, RowRest::RowVar("rest".into(), 0))
+            ),
             "[name: String  ...rest]"
         );
     }
@@ -748,7 +875,7 @@ mod tests {
 
         let mut sup_fields = IndexMap::new();
         sup_fields.insert("a".into(), Type::Int);
-        let sup = Type::Record(sup_fields, RowRest::RowVar("r".into()));
+        let sup = Type::Record(sup_fields, RowRest::RowVar("r".into(), 0));
 
         assert!(
             Type::is_subtype(&sub, &sup),
@@ -761,7 +888,7 @@ mod tests {
         let mut sub_fields = IndexMap::new();
         sub_fields.insert("a".into(), Type::Int);
         sub_fields.insert("b".into(), Type::Int);
-        let sub = Type::Record(sub_fields, RowRest::RowVar("r".into()));
+        let sub = Type::Record(sub_fields, RowRest::RowVar("r".into(), 0));
 
         let mut sup_fields = IndexMap::new();
         sup_fields.insert("a".into(), Type::Int);
@@ -825,12 +952,12 @@ mod tests {
     #[test]
     fn test_subtype_type_var() {
         assert!(Type::is_subtype(
-            &Type::TypeVar("a".into()),
-            &Type::TypeVar("a".into())
+            &Type::TypeVar("a".into(), 0),
+            &Type::TypeVar("a".into(), 0)
         ));
         assert!(!Type::is_subtype(
-            &Type::TypeVar("a".into()),
-            &Type::TypeVar("b".into())
+            &Type::TypeVar("a".into(), 0),
+            &Type::TypeVar("b".into(), 0)
         ));
     }
 
@@ -928,7 +1055,7 @@ mod tests {
 
         assert!(Type::is_subtype(
             &Type::Record(sub, RowRest::Closed),
-            &Type::Record(sup, RowRest::RowVar("r".into())),
+            &Type::Record(sup, RowRest::RowVar("r".into(), 0)),
         ));
     }
 
@@ -941,13 +1068,13 @@ mod tests {
 
     #[test]
     fn test_has_type_vars_type_var() {
-        assert!(Type::TypeVar("a".into()).has_type_vars());
+        assert!(Type::TypeVar("a".into(), 0).has_type_vars());
     }
 
     #[test]
     fn test_has_type_vars_function() {
         let with = Type::Function {
-            params: vec![Type::TypeVar("a".into())],
+            params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::Int),
         };
         let without = Type::Function {
@@ -961,15 +1088,15 @@ mod tests {
     #[test]
     fn test_has_type_vars_record() {
         let mut fields = IndexMap::new();
-        fields.insert("x".into(), Type::TypeVar("a".into()));
+        fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         assert!(Type::Record(fields, RowRest::Closed).has_type_vars());
     }
 
     #[test]
     fn test_collect_type_vars() {
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into()), Type::TypeVar("b".into())],
-            ret: Box::new(Type::TypeVar("a".into())),
+            params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+            ret: Box::new(Type::TypeVar("a".into(), 0)),
         };
         let mut vars = BTreeSet::new();
         ty.collect_type_vars(&mut vars);
@@ -982,7 +1109,7 @@ mod tests {
     fn test_env_get_current() {
         let mut env = TypeEnv::new();
         env.insert("x".into(), Type::Int);
-        assert_eq!(env.get("x"), Some(&Type::Int));
+        assert_eq!(env.get("x").map(|s| &s.body), Some(&Type::Int));
     }
 
     #[test]
@@ -990,7 +1117,7 @@ mod tests {
         let mut parent = TypeEnv::new();
         parent.insert("x".into(), Type::Int);
         let child = TypeEnv::with_parent(Rc::new(parent));
-        assert_eq!(child.get("x"), Some(&Type::Int));
+        assert_eq!(child.get("x").map(|s| &s.body), Some(&Type::Int));
     }
 
     #[test]
@@ -999,7 +1126,7 @@ mod tests {
         parent.insert("x".into(), Type::Int);
         let mut child = TypeEnv::with_parent(Rc::new(parent));
         child.insert("x".into(), Type::Str);
-        assert_eq!(child.get("x"), Some(&Type::Str));
+        assert_eq!(child.get("x").map(|s| &s.body), Some(&Type::Str));
     }
 
     #[test]
@@ -1096,8 +1223,8 @@ mod tests {
         let subst = Substitution::new();
         assert_eq!(subst.apply(&Type::Int), Type::Int);
         assert_eq!(
-            subst.apply(&Type::TypeVar("a".into())),
-            Type::TypeVar("a".into())
+            subst.apply(&Type::TypeVar("a".into(), 0)),
+            Type::TypeVar("a".into(), 0)
         );
     }
 
@@ -1105,15 +1232,15 @@ mod tests {
     fn test_substitution_apply_bound() {
         let mut subst = Substitution::new();
         subst.map.insert("a".into(), Type::Int);
-        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
     #[test]
     fn test_substitution_apply_chain() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::TypeVar("b".into()));
+        subst.map.insert("a".into(), Type::TypeVar("b".into(), 0));
         subst.map.insert("b".into(), Type::Int);
-        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
     #[test]
@@ -1122,8 +1249,8 @@ mod tests {
         subst.map.insert("a".into(), Type::Int);
         subst.map.insert("b".into(), Type::Str);
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into())],
-            ret: Box::new(Type::TypeVar("b".into())),
+            params: vec![Type::TypeVar("a".into(), 0)],
+            ret: Box::new(Type::TypeVar("b".into(), 0)),
         };
         assert_eq!(
             subst.apply(&ty),
@@ -1139,7 +1266,7 @@ mod tests {
         let mut subst = Substitution::new();
         subst.map.insert("a".into(), Type::Int);
         let mut fields = IndexMap::new();
-        fields.insert("x".into(), Type::TypeVar("a".into()));
+        fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         fields.insert("y".into(), Type::Str);
         let ty = Type::Record(fields, RowRest::Closed);
 
@@ -1154,31 +1281,31 @@ mod tests {
         let mut subst = Substitution::new();
         subst.map.insert("a".into(), Type::Int);
         assert_eq!(
-            subst.apply(&Type::TypeVar("b".into())),
-            Type::TypeVar("b".into())
+            subst.apply(&Type::TypeVar("b".into(), 0)),
+            Type::TypeVar("b".into(), 0)
         );
     }
 
     #[test]
     fn test_substitution_apply_self_reference_cycle() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::TypeVar("a".into()));
+        subst.map.insert("a".into(), Type::TypeVar("a".into(), 0));
         assert_eq!(
-            subst.apply(&Type::TypeVar("a".into())),
-            Type::TypeVar("a".into())
+            subst.apply(&Type::TypeVar("a".into(), 0)),
+            Type::TypeVar("a".into(), 0)
         );
     }
 
     #[test]
     fn test_substitution_apply_indirect_cycle() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::TypeVar("b".into()));
-        subst.map.insert("b".into(), Type::TypeVar("a".into()));
+        subst.map.insert("a".into(), Type::TypeVar("b".into(), 0));
+        subst.map.insert("b".into(), Type::TypeVar("a".into(), 0));
         // When we apply starting from "a", we get "a" back because:
         // a -> b (with a visited) -> a (already visited, return TypeVar("a"))
         assert_eq!(
-            subst.apply(&Type::TypeVar("a".into())),
-            Type::TypeVar("a".into())
+            subst.apply(&Type::TypeVar("a".into(), 0)),
+            Type::TypeVar("a".into(), 0)
         );
     }
 
@@ -1195,7 +1322,7 @@ mod tests {
     fn test_unify_typevar_with_concrete() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        unify(&Type::TypeVar("a".into()), &Type::Int, &mut subst, span).unwrap();
+        unify(&Type::TypeVar("a".into(), 0), &Type::Int, &mut subst, span).unwrap();
         assert_eq!(subst.get("a"), Some(&Type::Int));
     }
 
@@ -1203,7 +1330,7 @@ mod tests {
     fn test_unify_concrete_with_typevar() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        unify(&Type::Int, &Type::TypeVar("a".into()), &mut subst, span).unwrap();
+        unify(&Type::Int, &Type::TypeVar("a".into(), 0), &mut subst, span).unwrap();
         assert_eq!(subst.get("a"), Some(&Type::Int));
     }
 
@@ -1212,30 +1339,30 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         unify(
-            &Type::TypeVar("a".into()),
-            &Type::TypeVar("b".into()),
+            &Type::TypeVar("a".into(), 0),
+            &Type::TypeVar("b".into(), 0),
             &mut subst,
             span,
         )
         .unwrap();
-        let resolved = subst.apply(&Type::TypeVar("a".into()));
-        assert_eq!(resolved, subst.apply(&Type::TypeVar("b".into())));
+        let resolved = subst.apply(&Type::TypeVar("a".into(), 0));
+        assert_eq!(resolved, subst.apply(&Type::TypeVar("b".into(), 0)));
     }
 
     #[test]
     fn test_unify_typevar_already_bound_compatible() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        unify(&Type::TypeVar("a".into()), &Type::Int, &mut subst, span).unwrap();
-        unify(&Type::TypeVar("a".into()), &Type::Int, &mut subst, span).unwrap();
+        unify(&Type::TypeVar("a".into(), 0), &Type::Int, &mut subst, span).unwrap();
+        unify(&Type::TypeVar("a".into(), 0), &Type::Int, &mut subst, span).unwrap();
     }
 
     #[test]
     fn test_unify_typevar_already_bound_incompatible() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        unify(&Type::TypeVar("a".into()), &Type::Int, &mut subst, span).unwrap();
-        let result = unify(&Type::TypeVar("a".into()), &Type::Str, &mut subst, span);
+        unify(&Type::TypeVar("a".into(), 0), &Type::Int, &mut subst, span).unwrap();
+        let result = unify(&Type::TypeVar("a".into(), 0), &Type::Str, &mut subst, span);
         assert!(result.is_err());
     }
 
@@ -1244,16 +1371,16 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let f1 = Type::Function {
-            params: vec![Type::TypeVar("a".into())],
-            ret: Box::new(Type::TypeVar("b".into())),
+            params: vec![Type::TypeVar("a".into(), 0)],
+            ret: Box::new(Type::TypeVar("b".into(), 0)),
         };
         let f2 = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Str),
         };
         unify(&f1, &f2, &mut subst, span).unwrap();
-        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
-        assert_eq!(subst.apply(&Type::TypeVar("b".into())), Type::Str);
+        assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("b".into(), 0)), Type::Str);
     }
 
     #[test]
@@ -1281,7 +1408,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut f1 = IndexMap::new();
-        f1.insert("x".into(), Type::TypeVar("a".into()));
+        f1.insert("x".into(), Type::TypeVar("a".into(), 0));
         let mut f2 = IndexMap::new();
         f2.insert("x".into(), Type::Int);
         unify(
@@ -1291,7 +1418,7 @@ mod tests {
             span,
         )
         .unwrap();
-        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
     #[test]
@@ -1456,14 +1583,14 @@ mod tests {
     #[test]
     fn test_instantiate_with_vars() {
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into())],
-            ret: Box::new(Type::TypeVar("a".into())),
+            params: vec![Type::TypeVar("a".into(), 0)],
+            ret: Box::new(Type::TypeVar("a".into(), 0)),
         };
         let mut counter = 0;
         let (result, _) = instantiate(&ty, &mut counter);
         assert_eq!(counter, 1);
         assert!(!matches!(&result, Type::Function { params, .. }
-            if params[0] == Type::TypeVar("a".into())));
+            if params[0] == Type::TypeVar("a".into(), 0)));
         match &result {
             Type::Function { params, ret } => assert_eq!(params[0], **ret),
             _ => panic!("expected Function"),
@@ -1473,8 +1600,8 @@ mod tests {
     #[test]
     fn test_instantiate_multiple_vars() {
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into()), Type::TypeVar("b".into())],
-            ret: Box::new(Type::TypeVar("a".into())),
+            params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+            ret: Box::new(Type::TypeVar("a".into(), 0)),
         };
         let mut counter = 0;
         let (result, _) = instantiate(&ty, &mut counter);
@@ -1490,10 +1617,10 @@ mod tests {
 
     #[test]
     fn test_instantiate_counter_increments() {
-        let ty = Type::TypeVar("x".into());
+        let ty = Type::TypeVar("x".into(), 0);
         let mut counter = 5;
         let (result, _) = instantiate(&ty, &mut counter);
-        assert_eq!(result, Type::TypeVar("_t5".into()));
+        assert_eq!(result, Type::TypeVar("_t5".into(), 0));
         assert_eq!(counter, 6);
     }
 
@@ -1502,10 +1629,10 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let f1 = Type::Function {
-            params: vec![Type::TypeVar("a".into())],
+            params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::Function {
-                params: vec![Type::TypeVar("a".into())],
-                ret: Box::new(Type::TypeVar("b".into())),
+                params: vec![Type::TypeVar("a".into(), 0)],
+                ret: Box::new(Type::TypeVar("b".into(), 0)),
             }),
         };
         let f2 = Type::Function {
@@ -1516,8 +1643,8 @@ mod tests {
             }),
         };
         unify(&f1, &f2, &mut subst, span).unwrap();
-        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
-        assert_eq!(subst.apply(&Type::TypeVar("b".into())), Type::Str);
+        assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("b".into(), 0)), Type::Str);
     }
 
     #[test]
@@ -1525,9 +1652,9 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let result = unify(
-            &Type::TypeVar("a".into()),
+            &Type::TypeVar("a".into(), 0),
             &Type::Function {
-                params: vec![Type::TypeVar("a".into())],
+                params: vec![Type::TypeVar("a".into(), 0)],
                 ret: Box::new(Type::Int),
             },
             &mut subst,
@@ -1542,9 +1669,9 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut fields = IndexMap::new();
-        fields.insert("x".into(), Type::TypeVar("a".into()));
+        fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         let result = unify(
-            &Type::TypeVar("a".into()),
+            &Type::TypeVar("a".into(), 0),
             &Type::Record(fields, RowRest::Closed),
             &mut subst,
             span,
@@ -1559,10 +1686,10 @@ mod tests {
         let mut subst = Substitution::new();
         let result = unify(
             &Type::Function {
-                params: vec![Type::TypeVar("a".into())],
+                params: vec![Type::TypeVar("a".into(), 0)],
                 ret: Box::new(Type::Int),
             },
-            &Type::TypeVar("a".into()),
+            &Type::TypeVar("a".into(), 0),
             &mut subst,
             span,
         );
@@ -1581,7 +1708,7 @@ mod tests {
 
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields, RowRest::RowVar("r".into()));
+        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 0));
         let result = subst.apply(&ty);
 
         let mut expected = IndexMap::new();
@@ -1593,16 +1720,19 @@ mod tests {
     #[test]
     fn test_substitution_apply_row_var_to_type_var() {
         let mut subst = Substitution::new();
-        subst.map.insert("r".into(), Type::TypeVar("s".into()));
+        subst.map.insert("r".into(), Type::TypeVar("s".into(), 0));
 
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields, RowRest::RowVar("r".into()));
+        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 0));
         let result = subst.apply(&ty);
 
         let mut expected = IndexMap::new();
         expected.insert("x".into(), Type::Int);
-        assert_eq!(result, Type::Record(expected, RowRest::RowVar("s".into())));
+        assert_eq!(
+            result,
+            Type::Record(expected, RowRest::RowVar("s".into(), 0))
+        );
     }
 
     #[test]
@@ -1610,9 +1740,9 @@ mod tests {
         let subst = Substitution::new();
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields.clone(), RowRest::RowVar("r".into()));
+        let ty = Type::Record(fields.clone(), RowRest::RowVar("r".into(), 0));
         let result = subst.apply(&ty);
-        assert_eq!(result, Type::Record(fields, RowRest::RowVar("r".into())));
+        assert_eq!(result, Type::Record(fields, RowRest::RowVar("r".into(), 0)));
     }
 
     #[test]
@@ -1659,7 +1789,7 @@ mod tests {
     fn test_display_seq() {
         assert_eq!(format!("{}", Type::Seq(Box::new(Type::Int))), "Seq[Int]");
         assert_eq!(
-            format!("{}", Type::Seq(Box::new(Type::TypeVar("a".into())))),
+            format!("{}", Type::Seq(Box::new(Type::TypeVar("a".into(), 0)))),
             "Seq[a]"
         );
     }
@@ -1698,13 +1828,13 @@ mod tests {
 
     #[test]
     fn test_has_type_vars_seq() {
-        assert!(Type::Seq(Box::new(Type::TypeVar("a".into()))).has_type_vars());
+        assert!(Type::Seq(Box::new(Type::TypeVar("a".into(), 0))).has_type_vars());
         assert!(!Type::Seq(Box::new(Type::Int)).has_type_vars());
     }
 
     #[test]
     fn test_collect_type_vars_seq() {
-        let ty = Type::Seq(Box::new(Type::TypeVar("a".into())));
+        let ty = Type::Seq(Box::new(Type::TypeVar("a".into(), 0)));
         let mut vars = BTreeSet::new();
         ty.collect_type_vars(&mut vars);
         assert!(vars.contains("a"));
@@ -1715,7 +1845,7 @@ mod tests {
     fn test_substitution_apply_seq() {
         let mut subst = Substitution::new();
         subst.map.insert("a".into(), Type::Int);
-        let ty = Type::Seq(Box::new(Type::TypeVar("a".into())));
+        let ty = Type::Seq(Box::new(Type::TypeVar("a".into(), 0)));
         assert_eq!(subst.apply(&ty), Type::Seq(Box::new(Type::Int)));
     }
 
@@ -1724,13 +1854,13 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         unify(
-            &Type::Seq(Box::new(Type::TypeVar("a".into()))),
+            &Type::Seq(Box::new(Type::TypeVar("a".into(), 0))),
             &Type::Seq(Box::new(Type::Int)),
             &mut subst,
             span,
         )
         .unwrap();
-        assert_eq!(subst.apply(&Type::TypeVar("a".into())), Type::Int);
+        assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
     #[test]
@@ -1764,8 +1894,8 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let result = unify(
-            &Type::TypeVar("a".into()),
-            &Type::Seq(Box::new(Type::TypeVar("a".into()))),
+            &Type::TypeVar("a".into(), 0),
+            &Type::Seq(Box::new(Type::TypeVar("a".into(), 0))),
             &mut subst,
             span,
         );
@@ -1775,13 +1905,244 @@ mod tests {
 
     #[test]
     fn test_instantiate_seq() {
-        let ty = Type::Seq(Box::new(Type::TypeVar("a".into())));
+        let ty = Type::Seq(Box::new(Type::TypeVar("a".into(), 0)));
         let mut counter = 0;
         let (result, _) = instantiate(&ty, &mut counter);
         assert_eq!(counter, 1);
         match &result {
-            Type::Seq(elem) => assert_eq!(**elem, Type::TypeVar("_t0".into())),
+            Type::Seq(elem) => assert_eq!(**elem, Type::TypeVar("_t0".into(), 0)),
             _ => panic!("expected Seq"),
         }
+    }
+
+    // --- TypeVar/RowVar level semantics ---
+
+    #[test]
+    fn test_typevar_eq_ignores_level() {
+        // [U-REFL]: same name = equal regardless of level
+        assert_eq!(
+            Type::TypeVar("a".into(), 0),
+            Type::TypeVar("a".into(), 5)
+        );
+    }
+
+    #[test]
+    fn test_typevar_neq_different_name() {
+        assert_ne!(
+            Type::TypeVar("a".into(), 0),
+            Type::TypeVar("b".into(), 0)
+        );
+    }
+
+    #[test]
+    fn test_typevar_display_hides_level() {
+        assert_eq!(format!("{}", Type::TypeVar("a".into(), 5)), "a");
+    }
+
+    #[test]
+    fn test_rowvar_eq_ignores_level() {
+        assert_eq!(
+            RowRest::RowVar("r".into(), 0),
+            RowRest::RowVar("r".into(), 7)
+        );
+    }
+
+    #[test]
+    fn test_rowvar_neq_different_name() {
+        assert_ne!(
+            RowRest::RowVar("r".into(), 0),
+            RowRest::RowVar("s".into(), 0)
+        );
+    }
+
+    #[test]
+    fn test_rowvar_display_hides_level() {
+        // RowVar appears in record display as "...name"
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::Int);
+        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 99));
+        assert_eq!(format!("{ty}"), "[x: Int  ...r]");
+    }
+
+    // --- TypeScheme ---
+
+    #[test]
+    fn test_type_scheme_mono_empty_vars() {
+        let scheme = TypeScheme::mono(Type::Int);
+        assert!(scheme.vars.is_empty());
+        assert_eq!(scheme.body, Type::Int);
+    }
+
+    #[test]
+    fn test_type_scheme_mono_wraps_body() {
+        let body = Type::Function {
+            params: vec![Type::Str],
+            ret: Box::new(Type::Bool),
+        };
+        let scheme = TypeScheme::mono(body.clone());
+        assert!(scheme.vars.is_empty());
+        assert_eq!(scheme.body, body);
+    }
+
+    #[test]
+    fn test_type_scheme_display_monomorphic() {
+        let scheme = TypeScheme::mono(Type::Int);
+        assert_eq!(format!("{scheme}"), "Int");
+    }
+
+    #[test]
+    fn test_type_scheme_display_polymorphic() {
+        let scheme = TypeScheme {
+            vars: vec!["a".into(), "b".into()],
+            body: Type::Function {
+                params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+                ret: Box::new(Type::TypeVar("a".into(), 0)),
+            },
+        };
+        assert_eq!(format!("{scheme}"), "∀a b. Fn@a [a b]");
+    }
+
+    #[test]
+    fn test_type_scheme_display_single_var() {
+        let scheme = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::TypeVar("a".into(), 0),
+        };
+        assert_eq!(format!("{scheme}"), "∀a. a");
+    }
+
+    #[test]
+    fn test_type_scheme_partial_eq_same() {
+        let s1 = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::TypeVar("a".into(), 0),
+        };
+        let s2 = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::TypeVar("a".into(), 0),
+        };
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn test_type_scheme_partial_eq_different_vars() {
+        let s1 = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::Int,
+        };
+        let s2 = TypeScheme {
+            vars: vec!["b".into()],
+            body: Type::Int,
+        };
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn test_type_scheme_partial_eq_different_body() {
+        let s1 = TypeScheme::mono(Type::Int);
+        let s2 = TypeScheme::mono(Type::Str);
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn test_type_scheme_partial_eq_mono_vs_poly() {
+        let s1 = TypeScheme::mono(Type::TypeVar("a".into(), 0));
+        let s2 = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::TypeVar("a".into(), 0),
+        };
+        assert_ne!(s1, s2);
+    }
+
+    // --- InferState ---
+
+    #[test]
+    fn test_infer_state_new_defaults() {
+        let state = InferState::new();
+        assert_eq!(state.name_counter, 0);
+        assert_eq!(state.level, 0);
+        assert!(state.levels.is_empty());
+    }
+
+    #[test]
+    fn test_infer_state_fresh_var_increments_counter() {
+        let mut state = InferState::new();
+        state.fresh_var();
+        assert_eq!(state.name_counter, 1);
+        state.fresh_var();
+        assert_eq!(state.name_counter, 2);
+    }
+
+    #[test]
+    fn test_infer_state_fresh_var_registers_in_levels() {
+        let mut state = InferState::new();
+        let tv = state.fresh_var();
+        // The var name should appear in the levels map at the current level
+        match &tv {
+            Type::TypeVar(name, level) => {
+                assert_eq!(*level, 0);
+                assert_eq!(state.levels.get(name.as_str()), Some(&0));
+            }
+            _ => panic!("expected TypeVar"),
+        }
+    }
+
+    #[test]
+    fn test_infer_state_fresh_var_returns_type_var_at_current_level() {
+        let mut state = InferState::new();
+        state.level = 3;
+        let tv = state.fresh_var();
+        match tv {
+            Type::TypeVar(name, level) => {
+                assert_eq!(level, 3);
+                assert_eq!(name, "_t0");
+                assert_eq!(state.levels.get("_t0"), Some(&3));
+            }
+            _ => panic!("expected TypeVar"),
+        }
+    }
+
+    #[test]
+    fn test_infer_state_fresh_var_sequential_names() {
+        let mut state = InferState::new();
+        let tv0 = state.fresh_var();
+        let tv1 = state.fresh_var();
+        match (&tv0, &tv1) {
+            (Type::TypeVar(n0, _), Type::TypeVar(n1, _)) => {
+                assert_eq!(n0, "_t0");
+                assert_eq!(n1, "_t1");
+            }
+            _ => panic!("expected TypeVars"),
+        }
+    }
+
+    // --- TypeEnv::insert_scheme ---
+
+    #[test]
+    fn test_env_insert_scheme_stores_and_retrieves() {
+        let mut env = TypeEnv::new();
+        let scheme = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::TypeVar("a".into(), 0),
+        };
+        env.insert_scheme("f".into(), scheme.clone());
+        assert_eq!(env.get("f"), Some(&scheme));
+    }
+
+    #[test]
+    fn test_env_insert_scheme_shadows_parent() {
+        let mut parent = TypeEnv::new();
+        let parent_scheme = TypeScheme::mono(Type::Int);
+        parent.insert_scheme("x".into(), parent_scheme);
+
+        let mut child = TypeEnv::with_parent(Rc::new(parent));
+        let child_scheme = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::TypeVar("a".into(), 0),
+        };
+        child.insert_scheme("x".into(), child_scheme.clone());
+
+        // Child shadows parent: child scheme should be returned
+        assert_eq!(child.get("x"), Some(&child_scheme));
     }
 }

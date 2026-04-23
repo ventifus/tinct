@@ -165,7 +165,7 @@ Positional (auto-indexed) and keyed (named) entries may appear in any order with
 
 Rest entries (`...` and `...name`) may also appear at any position.
 
-**Call argument binding.** While the parser allows any ordering, the evaluator binds arguments to parameters using a priority chain: positional arguments bind by index first, then named arguments fill remaining parameters, then defaults apply. See DESIGN.md §Call Convention for the formal C-PRIORITY binding rules.
+**Call argument binding.** While the parser allows any ordering, the evaluator binds arguments to parameters using a priority chain: positional arguments bind by index first, then named arguments fill remaining parameters, then defaults apply. See doc/04-functions.md §Call Convention for the formal C-PRIORITY binding rules.
 
 ### Special Form Arity
 

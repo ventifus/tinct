@@ -3,7 +3,7 @@
 What would it take to replace tinct's `Rc<Thunk>` / `Rc<RefCell<Environment>>`
 allocation model with arena-based allocation for the Phase 2 iterative evaluator?
 
-DESIGN.md §Allocation Strategy commits to index-based arenas (`Vec<Thunk>` +
+doc/08-evaluation.md §Allocation Strategy commits to index-based arenas (`Vec<Thunk>` +
 `ThunkId`) with flat environments and selective migration at `---` boundaries.
 This document evaluates the concrete Rust crate and pattern choices for
 implementing that design.
@@ -152,7 +152,7 @@ Two separate arenas (`ThunkArena` + `EnvArena`) with cross-references via
 their respective ID types.
 
 **Migration identity preservation** requires two translation tables
-(DESIGN.md §Allocation Strategy): `HashMap<ThunkId, Rc<Thunk>>` and
+(doc/08-evaluation.md §Allocation Strategy): `HashMap<ThunkId, Rc<Thunk>>` and
 `HashMap<EnvId, Rc<RefCell<Environment>>>`. Without the env table, two
 closures sharing an environment in the arena would become independent copies
 after migration, breaking the sharing invariant.
@@ -247,7 +247,7 @@ The `Cont` enum's variants use `ThunkId`/`EnvId` instead of
 
 ### Phase 4: Selective Migration at `---`
 
-Implement the migration algorithm from DESIGN.md §Allocation Strategy. Two
+Implement the migration algorithm from doc/08-evaluation.md §Allocation Strategy. Two
 translation tables (`HashMap<ThunkId, Rc<Thunk>>` +
 `HashMap<EnvId, Rc<RefCell<Environment>>>`) preserve identity across the
 boundary.

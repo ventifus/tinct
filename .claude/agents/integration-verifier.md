@@ -100,7 +100,9 @@ When dispatched for a full codebase review, review the entire project through yo
 
 ### Phase 1: doc/*.md Review
 
-1. Is the pipeline architecture (parser → typecheck → eval → serialize) accurately described in `doc/16-architecture.md`?
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc._
+
+1. Does the code implement the pipeline architecture described in `doc/16-architecture.md`? (If not, that's a code gap, not a doc inaccuracy.)
 2. Are cross-layer contracts and assumptions documented?
 3. Should any pipeline design decisions be revisited? (e.g., thread-local IncludeContext, optional type checking)
 4. Are there cross-layer dependencies not captured in doc/*.md?

@@ -81,6 +81,8 @@ When dispatched for a full codebase review, review the entire project through yo
 
 ### Phase 1: doc/*.md Review
 
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc._
+
 1. Is the Rust-native vs LLT-implemented boundary still optimal? Should any builtins move to LLT or vice versa?
 2. Are stdlib naming conventions and composition patterns well-documented?
 3. Are there missing stdlib design decisions that should be recorded?

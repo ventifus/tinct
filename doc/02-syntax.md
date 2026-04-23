@@ -1,6 +1,6 @@
 # Syntax
 
-This document describes the tinct language syntax: its design rationale, formal grammar, tokenization rules, and quick reference. For the full language specification see [SPEC.md](../SPEC.md). For design context see [DESIGN.md](../DESIGN.md).
+This document describes the tinct language syntax: its design rationale, formal grammar, tokenization rules, and quick reference. For the complete language documentation see [doc/index.md](index.md).
 
 ---
 
@@ -462,7 +462,7 @@ named_arg = { named_arg_key ~ ":" ~ value }
 named_arg_key = @{ "$" ~ var_ident | bare_word }
 ```
 
-Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See DESIGN.md for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
+Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See doc/04-functions.md for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
 
 Examples:
 ```tinct
@@ -656,7 +656,7 @@ The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annot
 - Lowercase first letter = type variable (`a`, `b`, `k`, `v`)
 - `Any` = dynamic escape hatch
 
-**Type inference context.** The type system uses type schemes (`forall a1...an. t`) for polymorphic bindings via levels-based let-generalization (Kiselyov 2013). Type variables carry an integer level for scope tracking (`TypeVar(String, u32)`). These are type checker internals — the parser produces bare type names as strings. See DESIGN.md for details.
+**Type inference context.** The type system uses type schemes (`forall a1...an. t`) for polymorphic bindings via levels-based let-generalization (Kiselyov 2013). Type variables carry an integer level for scope tracking (`TypeVar(String, u32)`). These are type checker internals — the parser produces bare type names as strings. See doc/06-type-inference.md for details.
 
 ---
 

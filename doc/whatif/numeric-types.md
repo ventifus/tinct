@@ -15,7 +15,7 @@ With a supertype:
 
 Arithmetic promotion: `Int + Float → Float` (Int promotes to Float).
 Cross-type comparison allowed with precision loss warning for integers
-> 2^53 (DESIGN.md §Equality P3).
+> 2^53 (doc/11-stdlib.md §Equality P3).
 
 ### What's Missing
 
@@ -185,7 +185,7 @@ are advisory for the type checker and enforced at runtime.
 ### Interaction with Lazy Evaluation
 
 Range validation occurs at TypeAssert boundaries, which use proxy
-contracts for lazy record fields (DESIGN.md §TypeAssert). A
+contracts for lazy record fields (doc/07-type-extensions.md §TypeAssert Runtime Validation). A
 range-constrained field in a lazy record is validated when accessed,
 not when the record is constructed. This is consistent with tinct's
 existing lazy validation behavior.
@@ -437,7 +437,7 @@ Phase 4 (BigInt): adopt when:
   them into HM inference.
 
 **Language-specific:**
-- DESIGN.md §Numeric Types. — Current Int (i64), Float (f64), Number
+- doc/03-data-model.md §Numeric Types. — Current Int (i64), Float (f64), Number
   supertype, promotion table.
 - `doc/whatif/structural-contracts.md` — `$validate` schema validation,
   `@` annotation system.

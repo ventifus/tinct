@@ -6,7 +6,7 @@ in tinct — including inside function bodies?
 ## Current State
 
 tinct has two scoping mechanisms, both using the same parent-chain
-lookup (DESIGN.md §Scope Chains):
+lookup (doc/09-documents.md §Scope Chains):
 
 1. **Within a dict (letrec):** All entries in a single `[...]` share one
    environment. Entries can reference each other regardless of order,

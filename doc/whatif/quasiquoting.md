@@ -243,14 +243,14 @@ data back to code and runs it.
 
 **Impact:** Moderate. `$eval-ast` is a powerful primitive that enables
 runtime code generation. Security implications: `$eval-ast` can execute
-arbitrary code, which interacts with sandboxing (DESIGN.md Sandboxing).
+arbitrary code, which interacts with sandboxing (doc/12-tooling.md Sandboxing).
 
 ## Phased Adoption
 
 ### Phase 1: AST Dict Schema
 
 Define the dict representation for every `Expr` variant. Document in
-DESIGN.md. No syntax changes --- this is a specification.
+doc/15-ast.md. No syntax changes --- this is a specification.
 
 Implement `ast_to_dict(expr: &Expr) -> Value` and
 `dict_to_ast(value: &Value) -> Result<Expr, Error>` in Rust. These are

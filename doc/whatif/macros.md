@@ -27,7 +27,7 @@ Not everything called "sugar" is the same kind of transformation. A useful taxon
 
 Only the first category --- syntactic desugaring --- is a candidate for macros. Functional sugar already works fine as lazy functions. Lexical sugar and semantic scoping are below the level macros operate.
 
-Today, `$_` is the only syntactic desugaring. String interpolation (DESIGN.md line 193, "if added") would be the second. The question is whether a general macro system is worth building for these, or whether hardcoded AST passes are sufficient.
+Today, `$_` is the only syntactic desugaring. String interpolation (doc/02-syntax.md, "if added") would be the second. The question is whether a general macro system is worth building for these, or whether hardcoded AST passes are sufficient.
 
 ### What's Missing
 
@@ -94,7 +94,7 @@ The overlap means many stdlib functions (`when`, `>=`, `compose`) would NOT bene
 
 The acid test for the macro system: can `$_` desugaring be expressed as a user-definable macro rather than a hardcoded Rust pass?
 
-The `$_` transformation requires (per DESIGN.md $_  Desugaring):
+The `$_` transformation requires (per doc/04-functions.md $_  Desugaring):
 
 1. **DIRECT predicate** --- identify `VarRef("_")` or access chains rooted at `$_` (e.g., `$_.name`, `$_[0]`)
 2. **Top-down WRAP check** --- examine raw children of Call, Dict, DotAccess, BracketAccess, RangeAccess before recursing

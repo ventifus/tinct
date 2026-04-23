@@ -115,7 +115,7 @@ Fn {
     $sort]
 ```
 
-Note: `$_` desugaring is a **pre-typecheck AST transformation**, not a parser or evaluator concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. A desugaring pass (`desugar_file()` and `desugar_expr()`) then rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation. See DESIGN.md §`$_` Desugaring for the formal rewrite rules and scope boundary definition.
+Note: `$_` desugaring is a **pre-typecheck AST transformation**, not a parser or evaluator concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. A desugaring pass (`desugar_file()` and `desugar_expr()`) then rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation. See doc/04-functions.md §`$_` Desugaring for the formal rewrite rules and scope boundary definition.
 
 **AST:**
 ```json

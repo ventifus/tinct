@@ -9,12 +9,12 @@ Bool, Null, Dict/Record, Seq, Function) with hardcoded promotion and
 comparison tables:
 
 ```
-# Arithmetic: hardcoded promotion table (DESIGN.md §Numeric Types)
+# Arithmetic: hardcoded promotion table (doc/03-data-model.md §Numeric Types)
 Int + Int     → Int
 Int + Float   → Float  (Int promotes to Float)
 Float + Float → Float
 
-# Comparison: hardcoded (DESIGN.md §Equality and Comparison)
+# Comparison: hardcoded (doc/11-stdlib.md §Equality and Comparison)
 $= works on Int, Float, String, Bool
 $< works on Int, Float, String
 Cross-type Int/Float comparison allowed
@@ -22,7 +22,7 @@ Dict, Function, Builtin return false for $=
 ```
 
 Dual-dispatch builtins (`$map`, `$filter`, etc.) are typed as `Any` because
-the precise type `Dict | Seq` cannot be expressed (DESIGN.md §Dual-Dispatch
+the precise type `Dict | Seq` cannot be expressed (doc/07-type-extensions.md §Dual-Dispatch
 Builtins).
 
 ### What's Missing
@@ -94,12 +94,12 @@ an exception to the law.
 ### Current Behavior
 
 `$=` returns `false` for all Dict and Seq comparisons (EQ-INCOMP rule in
-DESIGN.md §Equality and Comparison). This is intentional: structural dict
+doc/11-stdlib.md §Equality and Comparison). This is intentional: structural dict
 equality would force all field thunks, violating lazy evaluation. Comparing
 `[x: [call $/ 1 0]]` with itself would trigger the division-by-zero in an
 unreferenced field.
 
-DESIGN.md §Equality P1 flags a **future breaking change**: if `$=` gained
+doc/11-stdlib.md §Equality P1 flags a **future breaking change**: if `$=` gained
 structural comparison, `[call $= [x: 1] [x: 1]]` would change from `false`
 to `true`, breaking code that relies on dicts always being unequal.
 

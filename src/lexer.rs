@@ -3,7 +3,7 @@
 //! Produces a flat token stream with accurate source spans. Used by the formatter
 //! and eventually by an iterative parser.
 //!
-//! See DESIGN.md §Tokenization Rules for the full specification.
+//! See doc/02-syntax.md §Tokenization Rules for the full specification.
 
 use std::fmt;
 

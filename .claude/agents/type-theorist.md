@@ -52,7 +52,7 @@ Current row polymorphism is simpler: open records are lenient, closed records ar
 
 ## When Working on Type System Changes
 
-1. Read the relevant `doc/*.md` chapters for confirmed type system decisions (see `doc/06-type-inference.md`, `doc/07-type-extensions.md`)
+1. Read the relevant `doc/*.md` chapters for confirmed type system decisions (see `doc/06-type-inference.md`, `doc/07-type-extensions.md`) (docs are aspirational; if code diverges from the spec, fix the code)
 2. Read `src/types.rs` for the type representation
 3. Read `src/typecheck.rs` for inference and checking logic
 4. Consider unification implications — does this change affect how type variables bind?
@@ -66,6 +66,8 @@ Current row polymorphism is simpler: open records are lenient, closed records ar
 When dispatched for a full codebase review, review the entire project through your **type system specialist** lens. Be thorough and bold — recommend breaking changes, extensive refactoring, and API redesigns if they improve the type system. Follow the three-phase review order and output format exactly.
 
 ### Phase 1: doc/*.md Review
+
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc._
 
 1. Are type system decisions (HM inference, row polymorphism, `Any` escape hatch) well-justified?
 2. Should any type system design choices be revisited? (e.g., literal types, subtyping rules, type alias semantics)

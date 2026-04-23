@@ -45,7 +45,7 @@ You are a lazy evaluation expert specializing in the LLT language runtime. You u
 
 ## When Working on Eval Changes
 
-1. Read the relevant chapter of `doc/*.md` — `doc/08-evaluation.md` documents the evaluation model and confirmed decisions
+1. Read the relevant chapter of `doc/*.md` — `doc/08-evaluation.md` documents the evaluation model and confirmed decisions (docs are aspirational; if code diverges from the spec, fix the code)
 2. Read `src/eval.rs` and `src/value.rs` for the current implementation
 3. Consider laziness implications — does this change force evaluation where it shouldn't?
 4. Consider cycle detection — does this change create new paths through `InProgress` state?
@@ -59,7 +59,9 @@ When dispatched for a full codebase review, review the entire project through yo
 
 ### Phase 1: doc/*.md Review
 
-1. Does the evaluation model description in `doc/08-evaluation.md` accurately reflect the implementation?
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc._
+
+1. Does the code implement the evaluation model described in `doc/08-evaluation.md`? (If not, that's a code gap, not a doc inaccuracy.)
 2. Are laziness decisions well-justified? Should any be revisited?
 3. Are document pipeline semantics (`$$`, scope chains, `---` boundaries) fully specified?
 4. Are there evaluation design choices that conflict with maintainability or future phases?

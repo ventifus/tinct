@@ -4,7 +4,7 @@ What would it take to allow floating-point numbers as dict keys?
 
 ## Current State
 
-tinct dict keys are either integers or strings (DESIGN.md
+tinct dict keys are either integers or strings (doc/03-data-model.md
 §Heterogeneous Keys). The `Key` enum:
 
 ```rust
@@ -298,9 +298,9 @@ without it.
   — Design rationale for IEEE 754 decimal floating-point. Explains
   the quantum exponent and normalization considerations relevant to
   `Key::Decimal` equality.
-- DESIGN.md §Heterogeneous Keys — "Integer and string keys can
+- doc/03-data-model.md §Heterogeneous Keys — "Integer and string keys can
   coexist in the same dict."
-- DESIGN.md §Equality P3 — WARNING about transitivity violation at
+- doc/11-stdlib.md §Equality P3 — WARNING about transitivity violation at
   2^53 for cross-type Int/Float comparison. Decimal keys avoid this
   class of problem entirely.
 - doc/whatif/numeric-types.md — Decimal type proposal that this
