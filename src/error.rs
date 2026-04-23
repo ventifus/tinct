@@ -300,7 +300,7 @@ impl EvalError {
         }
     }
 
-    /// Returns the error message string (for compatibility with code that accesses `.message`).
+    /// Compatibility shim — new code should match on `.kind` directly.
     pub fn message(&self) -> String {
         self.kind.to_string()
     }
@@ -399,6 +399,63 @@ impl EvalError {
             kind: ErrorKind::NamedArgRejected {
                 builtin: builtin.into(),
             },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn integer_overflow(op: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::IntegerOverflow { op: op.into() },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn type_mismatch_ctx(
+        context: impl Into<String>,
+        expected: &str,
+        got: &str,
+        definition_span: Span,
+    ) -> Self {
+        Self {
+            kind: ErrorKind::TypeMismatch {
+                context: Some(context.into()),
+                expected: expected.to_string(),
+                got: got.to_string(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn division_by_zero(op: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::DivisionByZero { op: op.into() },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn float_not_finite(builtin: impl Into<String>, value: f64, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::FloatNotFinite {
+                builtin: builtin.into(),
+                value,
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn empty_collection(op: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::EmptyCollection { op: op.into() },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),

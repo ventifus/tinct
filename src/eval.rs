@@ -16,8 +16,6 @@ use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 
 /// Maximum evaluation depth (256). Limits nesting of eval/materialize calls to prevent stack overflow.
 pub const MAX_EVAL_DEPTH: usize = 256;
-/// Shared error message for range access with mixed key types (used in `key_in_range`).
-const RANGE_KEY_TYPE_ERROR: &str = "range access requires comparable key types";
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
 /// Check whether `k` falls in the half-open range `[start, end)`.
@@ -26,18 +24,18 @@ const DEFAULT_ANNOTATION_KEY: &str = "default";
 fn key_in_range(k: &Key, start: Option<&Key>, end: Option<&Key>, span: Span) -> EvalResult<bool> {
     let after_start = match start {
         Some(s) => {
-            let ord = k
-                .partial_cmp(s)
-                .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, span))?;
+            let ord = k.partial_cmp(s).ok_or_else(|| {
+                EvalError::internal("range access requires comparable key types", span)
+            })?;
             ord != std::cmp::Ordering::Less
         }
         None => true,
     };
     let before_end = match end {
         Some(e) => {
-            let ord = k
-                .partial_cmp(e)
-                .ok_or_else(|| EvalError::new(RANGE_KEY_TYPE_ERROR, span))?;
+            let ord = k.partial_cmp(e).ok_or_else(|| {
+                EvalError::internal("range access requires comparable key types", span)
+            })?;
             ord == std::cmp::Ordering::Less
         }
         None => true,
@@ -84,9 +82,12 @@ pub fn eval(
             let found = env.borrow().get(name);
             match found {
                 Some(thunk) => Ok(thunk),
-                None => {
-                    Err(EvalError::new(format!("undefined variable: ${name}"), expr.span).into())
-                }
+                None => Err(Box::new(EvalError {
+                    kind: crate::error::ErrorKind::UndefinedVariable { name: name.clone() },
+                    definition_span: expr.span,
+                    materialization_span: None,
+                    stack: Vec::new(),
+                })),
             }
         }
         Expr::Dict(entries) => eval_dict(entries, &env, &expr.span, depth + 1),
@@ -141,11 +142,15 @@ pub fn eval(
                     {
                         return eval(default_expr, env, depth + 1);
                     }
-                    return Err(EvalError::new(
-                        format!("type assertion failed: expected {expected}, got {actual}"),
-                        expr.span,
-                    )
-                    .into());
+                    return Err(Box::new(EvalError {
+                        kind: crate::error::ErrorKind::TypeAssertFailed {
+                            expected: expected.to_string(),
+                            got: actual.to_string(),
+                        },
+                        definition_span: expr.span,
+                        materialization_span: None,
+                        stack: Vec::new(),
+                    }));
                 }
             }
 
@@ -178,11 +183,14 @@ pub fn eval(
             Value::Dict(IndexMap::new()),
             expr.span,
         ))),
-        Expr::Rest(_) => Err(EvalError::new(
-            "rest marker (...) is only valid inside type expressions",
-            expr.span,
-        )
-        .into()),
+        Expr::Rest(_) => Err(Box::new(EvalError {
+            kind: crate::error::ErrorKind::Internal {
+                message: "rest marker (...) is only valid inside type expressions".to_string(),
+            },
+            definition_span: expr.span,
+            materialization_span: None,
+            stack: Vec::new(),
+        })),
     }
 }
 
@@ -330,7 +338,14 @@ fn eval_dict(
         };
 
         if dict_map.contains_key(&key) {
-            return Err(EvalError::new(format!("duplicate key: {key}"), entry.span).into());
+            return Err(Box::new(EvalError {
+                kind: crate::error::ErrorKind::DuplicateKey {
+                    key: key.to_string(),
+                },
+                definition_span: entry.span,
+                materialization_span: None,
+                stack: Vec::new(),
+            }));
         }
 
         let thunk = Rc::new(Thunk::new_unevaluated(
@@ -572,14 +587,14 @@ fn bind_args_thunks(
     for (name, _) in named {
         if let Some(idx) = regular_params.iter().position(|p| &p.name == name) {
             if idx < positional.len() {
-                return Err(EvalError::new(
-                    format!(
-                        "parameter '{}' received both positional and named argument",
-                        name
-                    ),
-                    *call_span,
-                )
-                .into());
+                return Err(Box::new(EvalError {
+                    kind: crate::error::ErrorKind::NamedArgConflict {
+                        param: name.clone(),
+                    },
+                    definition_span: *call_span,
+                    materialization_span: None,
+                    stack: Vec::new(),
+                }));
             }
         }
     }
@@ -593,11 +608,12 @@ fn bind_args_thunks(
                 .iter()
                 .any(|p| &p.name == name && get_default(p).is_some());
             if !is_valid_param {
-                return Err(EvalError::new(
-                    format!("unexpected named argument: {}", name),
-                    *call_span,
-                )
-                .into());
+                return Err(Box::new(EvalError {
+                    kind: crate::error::ErrorKind::UnknownNamedArg { name: name.clone() },
+                    definition_span: *call_span,
+                    materialization_span: None,
+                    stack: Vec::new(),
+                }));
             }
             call_env.borrow_mut().insert(name.clone(), Rc::clone(thunk));
         }
@@ -890,6 +906,10 @@ pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> Eval
                 return Err(Box::new(cloned));
             }
             ThunkState::InProgress => {
+                // PROP-CYCLE: circular dependency detected during InProgress state check.
+                // Error is constructed and decorated manually via with_materialization_span(),
+                // rather than using the decorate closure (defined below), because we need to
+                // immediately cache the error in the Failed state before returning.
                 let label = if origin.is_empty() { "thunk" } else { &origin };
                 let mut err = EvalError::circular_dependency(label, thunk.span);
                 if let Some(span) = mat_span {

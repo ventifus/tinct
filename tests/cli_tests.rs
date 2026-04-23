@@ -812,8 +812,8 @@ fn include_file_not_found_error() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("cannot open"),
-        "expected 'cannot open' in stderr, got: {stderr}"
+        stderr.contains("cannot access"),
+        "expected 'cannot access' in stderr, got: {stderr}"
     );
 }
 

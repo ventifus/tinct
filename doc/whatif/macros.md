@@ -1,8 +1,7 @@
 # What If: Desugaring as Macros
 
-## Status
-
-Proposal — not approved for implementation.
+What would it take to unify tinct's syntactic sugar under a macro
+system?
 
 ## Problem
 
@@ -65,61 +64,6 @@ Macros provide things lazy functions cannot:
 5. **Zero-cost abstraction** — Every function call in tinct creates a thunk. A macro that expands to inline code avoids thunk creation.
 
 ## Approaches
-
-### Approach A: Declarative Rewrite Rules
-
-Define macros as pattern → template rewrite rules in tinct syntax, similar to Scheme's `syntax-rules`. Rules are declared in source files and expanded after parsing, before type checking.
-
-**Syntax:**
-```lisp
-# Pattern → template rules
-[rule when [when $pred $body]
-  [call $if $pred $body []]]
-
-[rule unless [unless $pred $body]
-  [call $if $pred [] $body]]
-
-# $_ as a rule (simplified — real version needs DIRECT predicate)
-[rule implicit-lambda [call $f $_ $args...]
-  [fn [_] [call $f $_ $args...]]]
-```
-
-**Pipeline:**
-```
-source → parse → expand_rules (until fixpoint) → typecheck → eval
-```
-
-**How it works:**
-- Rules are `[pattern] → [template]` pairs where `$name` in the pattern binds a metavariable and `$name` in the template substitutes it
-- `$args...` binds a variadic sequence (like Scheme's `...` pattern)
-- Expansion is bottom-up: innermost forms expand first (unlike Racket's top-down)
-- Rules are hygienic by construction: pattern variables are the only binding mechanism, and templates can only reference pattern-bound variables or globally-scoped names
-- Expansion terminates when no rules match (fixpoint). A depth limit prevents infinite expansion
-
-**Hygiene model:**
-- **Automatic**: pattern variables bind at the macro call site; template references resolve at the macro definition site (following Kohlbecker et al. 1986)
-- **No escape hatch**: unlike Racket's `datum->syntax` or Elixir's `var!`, there is no way to break hygiene. This limits power but eliminates an entire class of bugs
-- Since tinct has no module system yet, "definition site" means "file scope where the rule appears"
-
-**Pros:**
-- Declarative — rules are data, easy to read and reason about
-- Hygienic by construction — no variable capture bugs
-- User-extensible — users can define new sugar in tinct files
-- Formally specifiable — rewrite rules have clear semantics (term rewriting systems, Baader & Nipkow 1998)
-- Fits tinct's data-first philosophy — rules are just pattern matching on structure
-
-**Cons:**
-- Limited power — cannot do conditional expansion based on values, recursive decomposition, or computed templates
-- Pattern language needs its own grammar — `$args...` variadic, nested patterns, literal matching vs variable binding
-- Confluence is hard — multiple rules may match the same form, and the order of expansion matters. Proving confluence requires checking all rule pairs (Knuth-Bendix completion)
-- `$_` desugaring doesn't fit cleanly — the DIRECT predicate and depth-based shadowing are more complex than a simple pattern → template rule
-- No compile-time computation — rules are purely structural, cannot evaluate expressions during expansion
-
-**Precedent:**
-- Scheme `syntax-rules` (R5RS) — the direct inspiration. Declarative, hygienic, but limited in power (no procedural macros). Languages that adopted `syntax-rules` eventually added `syntax-case` for the cases where declarative rules weren't enough.
-- Rust `macro_rules!` — pattern-based, partially hygienic. More powerful than `syntax-rules` (repetition, multiple arms, fragment specifiers) but still limited enough that procedural macros were added later.
-
-**Implementation complexity:** Medium. Requires: pattern matching engine, template substitution, fixpoint expansion loop, hygiene scope tracking, grammar extensions for `[rule ...]`.
 
 ### Approach B: Procedural AST Macros — Data Transforms on Code
 
@@ -184,54 +128,6 @@ source → parse → quote_macros → expand (call macro fns on quoted AST) → 
 - Common Lisp `defmacro` — unhygienic, full power, decades of production use
 
 **Implementation complexity:** High. Requires: AST-to-dict representation, `quote`/`unquote` forms, macro registration, compile-time evaluation environment, expansion loop, gensym, and either resugaring or span-threading for error reporting.
-
-### Approach C: Hybrid — Declarative Rules + Escape to Procedural
-
-Offer simple declarative rules (Approach A) as the default, with an escape hatch to procedural macros (Approach B) when rules aren't sufficient.
-
-**Syntax:**
-```lisp
-# Simple sugar — declarative rule
-[rule when [when $pred $body]
-  [call $if $pred $body []]]
-
-# Complex sugar — procedural macro
-[defmacro cond [pairs-ast]
-  # Recursively build nested if-else from pairs
-  [call $cond-expand $pairs-ast]]
-```
-
-**Pros:**
-- Right tool for each job — simple sugar is simple, complex sugar has full power
-- Gradual adoption — start with rules, add procedural when needed
-- Declarative rules are hygienic; procedural macros have explicit gensym
-
-**Cons:**
-- Two systems to learn, implement, and maintain
-- Interaction between the two (rule vs. procedural expansion order, which wins on conflict) adds complexity
-- Design surface area doubles
-
-**Precedent:**
-- Rust (`macro_rules!` + proc macros) — exactly this split. Works well in practice but the community acknowledges it's complex.
-- Scheme (evolved from `syntax-rules` to `syntax-case`) — started declarative, added procedural later. The evolution suggests declarative alone isn't enough.
-
-**Implementation complexity:** Very high — sum of A and B plus interaction rules.
-
-## Analysis: What Would Each Approach Do For Current Sugar?
-
-| Sugar | A (Rules) | B (Procedural) | C (Hybrid) |
-|-------|-----------|-----------------|------------|
-| `$_` implicit lambda | Doesn't fit well — DIRECT predicate + depth shadowing too complex for simple rules | Fits — write DIRECT/WRAP as tinct function | Rule attempt, fall back to procedural |
-| `->` threading | Rule: `[-> $x $f $rest...] → [call $f [-> $x $rest...]]` | Procedural: recursive expansion | Rule |
-| `when`/`unless` | Rule: `[when $p $b] → [call $if $p $b []]` | Procedural: trivial | Rule |
-| `>=`/`<=`/`>` | Rule: `[>= $a $b] → [call $not [call $< $a $b]]` | Procedural: trivial | Rule |
-| String interpolation | Fits if pattern language supports string literals | Fits | Rule |
-| User-defined DSL | Simple DSLs only | Full DSLs | Both |
-
-**Key observations:**
-- Approach A can't handle `$_` — the DIRECT predicate, depth shadowing, and func-position exclusion require recursive AST traversal with contextual state, not flat pattern matching
-- Approach B handles everything including `$_`, and fits tinct's data-transformation philosophy
-- Approach C adds complexity for marginal benefit — Scheme's evolution from `syntax-rules` to `syntax-case` shows declarative alone isn't enough, so starting with procedural avoids the two-system tax
 
 ## Interaction with Lazy Evaluation
 
@@ -344,9 +240,6 @@ Conditions that would make this the right next step:
 **Lazy evaluation and macro need:**
 - Launchbury, J. (1993). A natural semantics for lazy evaluation. In *POPL '93*, pp. 144–154. ACM. — Formal semantics showing call-by-need provides deferred evaluation without macros.
 - Mitchell, N. (2007). Haskell and macros. Blog post. — Argues laziness makes macros "probably minimal" in Haskell.
-
-**Term rewriting (for Approach A):**
-- Baader, F. & Nipkow, T. (1998). *Term Rewriting and All That*. Cambridge University Press. — Confluence, termination, and completion for rewrite systems.
 
 **Already cited in DESIGN.md:**
 - Pombrio & Krishnamurthi (2014) — resugaring through macro expansion
