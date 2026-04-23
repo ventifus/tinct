@@ -163,16 +163,9 @@ fn stringify(value: &Value) -> String {
 fn require_dict(name: &str, value: Value, call_span: Span) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
-        other => Err(Box::new(EvalError {
-            kind: ErrorKind::TypeMismatch {
-                context: Some(name.to_string()),
-                expected: "Dict".to_string(),
-                got: other.type_name().to_string(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        })),
+        other => {
+            Err(EvalError::type_mismatch_ctx(name, "Dict", other.type_name(), call_span).into())
+        }
     }
 }
 
@@ -180,16 +173,9 @@ fn require_dict(name: &str, value: Value, call_span: Span) -> EvalResult<IndexMa
 fn require_string(name: &str, value: Value, call_span: Span) -> EvalResult<String> {
     match value {
         Value::String(s) => Ok(s),
-        other => Err(Box::new(EvalError {
-            kind: ErrorKind::TypeMismatch {
-                context: Some(name.to_string()),
-                expected: "String".to_string(),
-                got: other.type_name().to_string(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        })),
+        other => {
+            Err(EvalError::type_mismatch_ctx(name, "String", other.type_name(), call_span).into())
+        }
     }
 }
 
@@ -720,16 +706,7 @@ fn builtin_to_int(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let s = require_string("to-int", val, call_span)?;
     match s.parse::<i64>() {
         Ok(n) => ok_val(Value::Int(n)),
-        Err(_) => Err(Box::new(EvalError {
-            kind: ErrorKind::ParseConversion {
-                builtin: "to-int".to_string(),
-                input: s.clone(),
-                target: "Int".to_string(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        })),
+        Err(_) => Err(EvalError::parse_conversion("to-int", s.clone(), "Int", call_span).into()),
     }
 }
 
@@ -750,16 +727,9 @@ fn builtin_to_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match s.parse::<f64>() {
         Ok(f) if f.is_finite() => ok_val(Value::Float(f)),
         Ok(f) => Err(EvalError::float_not_finite("to-float", f, call_span).into()),
-        Err(_) => Err(Box::new(EvalError {
-            kind: ErrorKind::ParseConversion {
-                builtin: "to-float".to_string(),
-                input: s.clone(),
-                target: "Float".to_string(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        })),
+        Err(_) => {
+            Err(EvalError::parse_conversion("to-float", s.clone(), "Float", call_span).into())
+        }
     }
 }
 
@@ -818,15 +788,7 @@ fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ..
         } => {
             if !params.is_empty() {
-                return Err(Box::new(EvalError {
-                    kind: ErrorKind::ArityMismatch {
-                        expected: ArityBound::Exact(0),
-                        got: params.len(),
-                    },
-                    definition_span: call_span,
-                    materialization_span: None,
-                    stack: Vec::new(),
-                }));
+                return Err(EvalError::arity_mismatch(0, params.len(), call_span).into());
             }
             // Evaluate the body in the closure's environment
             let body_thunk = Rc::new(Thunk::new_unevaluated(
@@ -969,14 +931,7 @@ fn builtin_type_of(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// when they fit in i64, otherwise `Float`.
 pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> EvalResult<Rc<Thunk>> {
     if depth > MAX_EVAL_DEPTH {
-        return Err(Box::new(EvalError {
-            kind: ErrorKind::JsonDepthExceeded {
-                limit: MAX_EVAL_DEPTH,
-            },
-            definition_span: span,
-            materialization_span: None,
-            stack: Vec::new(),
-        }));
+        return Err(EvalError::json_depth_exceeded(MAX_EVAL_DEPTH, span).into());
     }
     match json {
         serde_json::Value::Null => ok_val(Value::Dict(IndexMap::new())),
@@ -989,12 +944,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
             } else {
                 // Unreachable with default serde_json: as_f64() covers all
                 // non-i64 numbers. Return error instead of panicking.
-                Err(Box::new(EvalError {
-                    kind: ErrorKind::JsonRange,
-                    definition_span: span,
-                    materialization_span: None,
-                    stack: Vec::new(),
-                }))
+                Err(EvalError::json_range(span).into())
             }
         }
         serde_json::Value::String(s) => ok_val(Value::String(s.clone())),
@@ -1031,16 +981,8 @@ fn builtin_from_json(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx;
     let val = expect_one_arg("from-json", args, named, depth, call_span)?;
     let json_str = require_string("from-json", val, call_span)?;
-    let parsed: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
-        Box::new(EvalError {
-            kind: ErrorKind::JsonParse {
-                detail: e.to_string(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        })
-    })?;
+    let parsed: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| EvalError::json_parse(e.to_string(), call_span))?;
     json_to_value(&parsed, depth, call_span)
 }
 
@@ -1063,14 +1005,9 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Read the include context from the thread-local.
     INCLUDE_CTX.with(|cell| {
         let mut ctx_ref = cell.borrow_mut();
-        let ctx = ctx_ref.as_mut().ok_or_else(|| {
-            Box::new(EvalError {
-                kind: ErrorKind::IncludeNotAvailable,
-                definition_span: call_span,
-                materialization_span: None,
-                stack: Vec::new(),
-            })
-        })?;
+        let ctx = ctx_ref
+            .as_mut()
+            .ok_or_else(|| EvalError::include_not_available(call_span))?;
 
         // Resolve the path: relative to base_dir, or absolute as-is.
         let raw_path = std::path::Path::new(&file_path_str);
@@ -1082,15 +1019,7 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         // Canonicalize to detect cycles and normalize the path.
         let canonical = resolved.canonicalize().map_err(|e| {
-            Box::new(EvalError {
-                kind: ErrorKind::IncludeIoError {
-                    path: resolved.display().to_string(),
-                    detail: e.to_string(),
-                },
-                definition_span: call_span,
-                materialization_span: None,
-                stack: Vec::new(),
-            })
+            EvalError::include_io_error(resolved.display().to_string(), e.to_string(), call_span)
         })?;
 
         // Check cache first: if we've already evaluated this file, return the cached thunk.
@@ -1100,65 +1029,37 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         // Cycle detection.
         if ctx.include_guard.borrow().contains(&canonical) {
-            return Err(Box::new(EvalError {
-                kind: ErrorKind::IncludeCycle {
-                    path: canonical.display().to_string(),
-                },
-                definition_span: call_span,
-                materialization_span: None,
-                stack: Vec::new(),
-            }));
+            return Err(
+                EvalError::include_cycle(canonical.display().to_string(), call_span).into(),
+            );
         }
 
         // Check file size.
         let metadata = std::fs::metadata(&canonical).map_err(|e| {
-            Box::new(EvalError {
-                kind: ErrorKind::IncludeIoError {
-                    path: canonical.display().to_string(),
-                    detail: e.to_string(),
-                },
-                definition_span: call_span,
-                materialization_span: None,
-                stack: Vec::new(),
-            })
+            EvalError::include_io_error(canonical.display().to_string(), e.to_string(), call_span)
         })?;
         if metadata.len() > MAX_FILE_SIZE {
-            return Err(Box::new(EvalError {
-                kind: ErrorKind::IncludeFileTooLarge {
-                    path: canonical.display().to_string(),
-                    size: metadata.len(),
-                    limit: MAX_FILE_SIZE,
-                },
-                definition_span: call_span,
-                materialization_span: None,
-                stack: Vec::new(),
-            }));
+            return Err(EvalError::include_file_too_large(
+                canonical.display().to_string(),
+                metadata.len(),
+                MAX_FILE_SIZE,
+                call_span,
+            )
+            .into());
         }
 
         // Read the file.
         let source = std::fs::read_to_string(&canonical).map_err(|e| {
-            Box::new(EvalError {
-                kind: ErrorKind::IncludeIoError {
-                    path: canonical.display().to_string(),
-                    detail: e.to_string(),
-                },
-                definition_span: call_span,
-                materialization_span: None,
-                stack: Vec::new(),
-            })
+            EvalError::include_io_error(canonical.display().to_string(), e.to_string(), call_span)
         })?;
 
         // Parse.
         let file = crate::parser::parse(&source).map_err(|e| {
-            Box::new(EvalError {
-                kind: ErrorKind::IncludeParseFailed {
-                    path: canonical.display().to_string(),
-                    detail: e.to_string(),
-                },
-                definition_span: call_span,
-                materialization_span: None,
-                stack: Vec::new(),
-            })
+            EvalError::include_parse_failed(
+                canonical.display().to_string(),
+                e.to_string(),
+                call_span,
+            )
         })?;
 
         // Add to include guard before recursing.
@@ -1258,16 +1159,9 @@ fn builtin_head(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref map) if map.is_empty() => {
             Err(EvalError::empty_collection("head", call_span).into())
         }
-        other => Err(Box::new(EvalError {
-            kind: ErrorKind::TypeMismatch {
-                context: Some("head".to_string()),
-                expected: "Seq".to_string(),
-                got: other.type_name().to_string(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        })),
+        other => {
+            Err(EvalError::type_mismatch_ctx("head", "Seq", other.type_name(), call_span).into())
+        }
     }
 }
 
@@ -1289,16 +1183,9 @@ fn builtin_tail(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref map) if map.is_empty() => {
             Err(EvalError::empty_collection("tail", call_span).into())
         }
-        other => Err(Box::new(EvalError {
-            kind: ErrorKind::TypeMismatch {
-                context: Some("tail".to_string()),
-                expected: "Seq".to_string(),
-                got: other.type_name().to_string(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        })),
+        other => {
+            Err(EvalError::type_mismatch_ctx("tail", "Seq", other.type_name(), call_span).into())
+        }
     }
 }
 
@@ -1326,16 +1213,9 @@ fn builtin_collect(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     if !matches!(val, Value::Seq { .. }) {
-        return Err(Box::new(EvalError {
-            kind: ErrorKind::TypeMismatch {
-                context: Some("collect".to_string()),
-                expected: "Seq".to_string(),
-                got: val.type_name().to_string(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        }));
+        return Err(
+            EvalError::type_mismatch_ctx("collect", "Seq", val.type_name(), call_span).into(),
+        );
     }
 
     let mut map = IndexMap::new();
@@ -1368,16 +1248,13 @@ fn builtin_collect(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 break;
             }
             other => {
-                return Err(Box::new(EvalError {
-                    kind: ErrorKind::TypeMismatch {
-                        context: Some("collect".to_string()),
-                        expected: "Seq or empty dict".to_string(),
-                        got: other.type_name().to_string(),
-                    },
-                    definition_span: call_span,
-                    materialization_span: None,
-                    stack: Vec::new(),
-                }));
+                return Err(EvalError::type_mismatch_ctx(
+                    "collect",
+                    "Seq or empty dict",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
             }
         }
     }
@@ -1415,7 +1292,7 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx;
     reject_named("range", named, call_span)?;
     if args.len() != 1 && args.len() != 2 {
-        return Err(Box::new(EvalError {
+        return Err(EvalError {
             kind: ErrorKind::ArityMismatch {
                 expected: ArityBound::Range(1, 2),
                 got: args.len(),
@@ -1423,7 +1300,8 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             definition_span: call_span,
             materialization_span: None,
             stack: Vec::new(),
-        }));
+        }
+        .into());
     }
 
     let start = materialize(&args[0], None, depth)?;

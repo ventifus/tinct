@@ -342,3 +342,78 @@ fn test_eval_error_corpus() {
         panic!("Eval error corpus tests failed");
     }
 }
+
+#[test]
+fn test_eval_error_corpus_has_error_codes() {
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval/errors");
+
+    let test_files = find_test_files(&corpus_dir);
+    assert!(
+        !test_files.is_empty(),
+        "No test files found in {}",
+        corpus_dir.display()
+    );
+
+    let mut failed = Vec::new();
+
+    for test_file in &test_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+        let relative_path = test_file
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(test_file);
+
+        let (input, _expected) = split_test_file(&content);
+
+        // Evaluate and check if error contains an error code
+        match eval_source(input) {
+            Ok(actual) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!(
+                        "Expected eval to fail with error code, but got success: {}",
+                        actual.trim()
+                    ),
+                ));
+            }
+            Err(e) => {
+                let error_msg = format!("{}", e);
+                // Check for error code pattern: [E0XX] where XX are digits
+                if !has_error_code_prefix(&error_msg) {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "Error message missing [E0XX] error code prefix\n--- actual error ---\n{}",
+                            error_msg
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!(
+            "\n{} eval error test(s) missing error code prefix:",
+            failed.len()
+        );
+        for (path, error) in &failed {
+            eprintln!("  - {}: {}", path.display(), error);
+        }
+        panic!("Eval error corpus tests missing error codes");
+    }
+}
+
+/// Check if error message contains an error code pattern like [E001], [E099], etc.
+fn has_error_code_prefix(error_msg: &str) -> bool {
+    // Look for pattern [EXXX] where XXX are three digits
+    error_msg.chars().collect::<Vec<_>>().windows(6).any(|w| {
+        w[0] == '['
+            && w[1] == 'E'
+            && w[2].is_ascii_digit()
+            && w[3].is_ascii_digit()
+            && w[4].is_ascii_digit()
+            && w[5] == ']'
+    })
+}
