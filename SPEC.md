@@ -725,7 +725,7 @@ Edge cases:
 
 ### 6.5 `$_` Implicit Lambda Desugaring
 
-`$_` desugaring is a **post-parse, pre-typecheck source-to-source AST transformation**. The parser produces `$_` as `VarRef("_")` with no special treatment. A separate pass (`desugar_underscores`) rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation.
+`$_` desugaring is a **post-parse, pre-typecheck source-to-source AST transformation**. The parser produces `$_` as `VarRef("_")` with no special treatment. A separate pass (`desugar_file()` and `desugar_expr()`) rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation.
 
 **Pipeline placement:**
 
@@ -756,7 +756,7 @@ DIRECT(e) = match e with:
 
 **Exclusions.** The following positions do NOT trigger desugaring:
 
-- **Func position in Call:** `[call $_ ...]` — `$_` as the function is an ordinary variable lookup
+- **Func position in Call:** The function position is excluded from the DIRECT check (not from the wrapping). WRAP-CALL fires when any arg or named value is DIRECT, regardless of whether the function itself is also DIRECT. When both func and an arg are DIRECT (e.g., `[call $_ $_]`), wrapping produces `[fn [_] [call $_ $_]]` where both references bind to the same `_` parameter. A bare `[call $_ $x]` (func is DIRECT, no args are DIRECT) does not trigger WRAP-CALL; the func `$_` falls through to PASS and is recursed normally.
 - **Bracket access keys:** `$data[$_]` — `$_` in key position
 - **Range bounds:** `$data[$_..5]`
 - **Dict entry keys:** `[$_: value]`
@@ -1061,7 +1061,7 @@ Fn {
     $sort]
 ```
 
-Note: `$_` desugaring is a **pre-typecheck AST transformation**, not a parser or evaluator concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. A desugaring pass (`desugar_underscores`) then rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation. See DESIGN.md §`$_` Desugaring for the formal rewrite rules and scope boundary definition.
+Note: `$_` desugaring is a **pre-typecheck AST transformation**, not a parser or evaluator concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. A desugaring pass (`desugar_file()` and `desugar_expr()`) then rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation. See DESIGN.md §`$_` Desugaring for the formal rewrite rules and scope boundary definition.
 
 **AST:**
 ```

@@ -98,20 +98,29 @@ Wire desugar pass into pipeline and remove old eval-time desugaring.
 - [x] Add tests: shadowing, exclusions (func position, bracket access keys, range bounds, dict entry keys), nested `$_`
 - [x] Reconcile WRAP-CALL `not DIRECT(f)` guard — DESIGN.md spec includes guard but implementation omits it; implementation's behavior for `[call $_ $_]` is arguably more useful (wraps both). Update spec to match implementation or add guard. (`src/desugar.rs:70-86`, `DESIGN.md:2029-2030`) [Minor, computer-scientist]
 
-### underscore-desugar-c: Polish & Edge Cases
+### underscore-desugar-c: Doc Fixes & Spec Updates
 
-Origin tags, doc fixes, and edge case tests for the desugar pass.
+Update DESIGN.md and SPEC.md to reflect completed desugaring migration.
+
+- [x] Update DESIGN.md desugar sketch signatures to match `&mut` implementation — sketch shows value-returning API but code uses in-place mutation (`DESIGN.md:2110-2122`) [Nit, computer-scientist]
+- [x] Update DESIGN.md WRAP-CALL pseudocode to show unconditional recursion — spec shows selective `if DIRECT(a) then a else DESUGAR(a)` but impl recurses all children; proven equivalent but spec should match impl (`DESIGN.md:2034-2038`) [Nit, panel consensus]
+- [x] Update DESIGN.md line 2096 tense — still says "This replaces the current eval-time..." but migration is complete; update to past tense (`DESIGN.md:2096`) [Nit, computer-scientist]
+- [x] Update DESIGN.md line 2124 migration paragraph tense — entire paragraph uses future tense ("is removed once", "move to", "must call") for completed work; update to past tense (`DESIGN.md:2124`) [Nit, computer-scientist]
+- [x] Update SPEC.md `desugar_underscores` function name — SPEC.md §6.5 (line 728) and §8.6 (line 1064) reference a function `desugar_underscores` that doesn't exist; actual functions are `desugar_file()` and `desugar_expr()` in `src/desugar.rs` (`SPEC.md:728,1064`) [Minor, computer-scientist]
+- [x] Update SPEC.md §6.5 exclusion text for reconciled WRAP-CALL — line 759 says "`[call $_ ...]` — `$_` as the function is an ordinary variable lookup" which is incomplete after WRAP-CALL reconciliation; when both func and arg are DIRECT (e.g., `[call $_ $_]`), wrapping DOES fire and both references bind to the `_` parameter. Update to match DESIGN.md line 2071 explanation. (`SPEC.md:759`) [Minor, computer-scientist]
+- [x] Add precondition doc comment to `desugar()` noting parser-bounded AST depth — depends on MAX_PARSE_DEPTH but doesn't assert it; future programmatic AST construction (macros, quasiquoting) must respect bound (`src/desugar.rs:47`) [Nit, computer-scientist]
+- [x] Add desugar step to `eval_to_json_with_input` test helper — `lib.rs` test helper parses then evals without calling `desugar_file()`, skipping the desugaring step that all three production entry points (eval_source, main.rs, repl.rs) perform. Currently latent. (`src/lib.rs:520-535`) [Minor, computer-scientist]
+
+### underscore-desugar-d: Edge Case Tests
+
+Additional corpus and unit tests for desugaring edge cases.
 
 - [ ] Add explicit origin tags to synthetic `$_` desugared AST nodes — distinguish user-written lambdas from sugar-generated ones for future tooling. Pombrio & Krishnamurthi (2014). [Minor, computer-scientist]
 - [ ] Add test for `[call $_ $_]` (func and arg both DIRECT) — documents chosen behavior for edge case (`src/desugar.rs`) [Nit, computer-scientist]
 - [ ] Add test for `$_` in annotations inside shadowing functions — `[fn [_] [fn [x: [@Number $_]] $x]]` edge case; implementation correct but untested (`src/desugar.rs`) [Nit, test-crafter + sprint-reviewer]
-- [ ] Update DESIGN.md desugar sketch signatures to match `&mut` implementation — sketch shows value-returning API but code uses in-place mutation (`DESIGN.md:2110-2122`) [Nit, computer-scientist]
-- [ ] Add precondition doc comment to `desugar()` noting parser-bounded AST depth — depends on MAX_PARSE_DEPTH but doesn't assert it; future programmatic AST construction (macros, quasiquoting) must respect bound (`src/desugar.rs:47`) [Nit, computer-scientist]
-- [ ] Update DESIGN.md WRAP-CALL pseudocode to show unconditional recursion — spec shows selective `if DIRECT(a) then a else DESUGAR(a)` but impl recurses all children; proven equivalent but spec should match impl (`DESIGN.md:2034-2038`) [Nit, panel consensus]
 - [ ] Add corpus tests for exclusion positions — bracket key `$data[$_]`, range bounds `$data[$_..5]`, dict key `[$_: value]`; unit tests exist but corpus tests validate full pipeline (`tests/corpus/eval/`) [Minor, test-crafter + grammar-architect]
 - [ ] Add corpus test for func-only DIRECT case — `[call $_ $x]` should NOT wrap; documents asymmetry with arg-only case (`tests/corpus/eval/`) [Nit, test-crafter + integration-verifier]
 - [ ] Add corpus error tests for `$_` — undefined `$_`, key-not-found on desugared access chain, type mismatch inside desugared lambda; validates error span quality (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
-- [ ] Update DESIGN.md line 2096 tense — still says "This replaces the current eval-time..." but migration is complete; update to past tense (`DESIGN.md:2096`) [Nit, computer-scientist]
 
 ## evalcontext-refactor: EvalContext Parameter Threading
 
@@ -522,6 +531,12 @@ Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall
 - [ ] `map-indexed` / `map-keys` — indexed mapping and key transformation (Jsonnet)
 - [ ] `sort-on` — sort by key-extraction function instead of comparator (Jsonnet + Nix)
 - [ ] `flip`, `abs`, `sign`, `clamp` — small composable primitives (Nix + Jsonnet; `const` moved to stdlib-pre-seq)
+- [ ] `unzip` — inverse of zip, split list of pairs into pair of lists [Nit, stdlib-author C31]
+- [ ] `transpose` — flip rows/columns of 2D structure [Nit, stdlib-author C31]
+- [ ] `flatten-all` or depth parameter for `flatten` — current `flatten` only goes one level deep; add recursive variant or optional depth param [Nit, stdlib-author C31]
+- [ ] `range-step` — range with step parameter; `$range` only supports `[start]` and `[start end]` with step=1 [Minor, stdlib-author C31]
+- [ ] `take-while`, `drop-while` — take/drop elements while predicate holds; implementable via Seq constructor pattern like `filter` [Minor, stdlib-author C31]
+- [ ] Variadic `all-of`/`any-of` — current `and`/`or` take exactly 2 args; add list-based variants `[fn [preds] [call $all? $identity $preds]]` [Nit, stdlib-author C31]
 
 ### stdlib-type-predicates: Type Predicates & Guards
 
@@ -601,6 +616,7 @@ Nit-level error infrastructure cleanup.
 - [ ] Standardize error category names (`src/error.rs:56+`) [Nit, span-integrity-checker]
 - [ ] Fix `from_json` inconsistent `.into()` usage — some error paths use `.into()` for boxing while adjacent paths use explicit `Box::new()`; standardize for consistency (`src/builtins.rs:984`) [Nit, computer-scientist]
 - [ ] Review PendingBuiltin error path span handling — may overwrite operand span (`src/eval.rs:886`) [Nit, span-integrity-checker]
+- [ ] Fix `checked_f64_to_i64` out-of-range branch still using `EvalError::new` — FloatNotFinite migration covered NaN/Inf but the integer range overflow path at line 110 still uses freeform `EvalError::new(format!(...))` instead of a typed ErrorKind variant (`src/builtins.rs:110`) [Nit, span-integrity-checker C31]
 
 ## stdlib-docs: Stdlib Documentation
 
@@ -609,6 +625,8 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Add type annotations to all `stdlib/prelude.llt` function definitions
 - [ ] Add inline assertion examples to each function (Dhall pattern: `assert` examples serve as tests AND docs)
 - [ ] Generate stdlib reference documentation from annotated source
+- [ ] Document `get-or`/`get-in-or` data-first argument order inconsistency — most collection functions are data-last for `->` threading but these are data-first; document rationale or provide data-last variants [Minor, stdlib-author C31]
+- [ ] Document argument order convention in DESIGN.md — no clear documentation of when data-first vs data-last is appropriate (`DESIGN.md:3049-3063`) [Minor, stdlib-author C31]
 - [ ] Stdlib wholeness test: single test validating entire stdlib loads and contains all expected bindings (Nickel pattern)
 - [ ] Add docstrings to `$quot` and `$mod` explaining Clojure truncate-toward-zero semantics (`stdlib/prelude.llt:71-73`) [Major, stdlib-author]
 - [ ] Document `map-entries` return value structure — clarify whether function receives entries and returns new values or new entries (`stdlib/prelude.llt:314`, `DESIGN.md:1513`) [Major, stdlib-author]
@@ -643,6 +661,8 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add `test_type_of_seq()` unit test verifying `builtin_type_of` returns `"Seq"` for `Value::Seq` — all other Value variants have type-of tests but Seq is missing (`src/builtins.rs`) [Major, integration-verifier]
 - [ ] Add sequence constructor error path corpus tests — `range_start_overflow.txt`, `iterate_non_function.txt`, `unfold_invalid_return.txt`, `cycle_empty.txt` (`tests/corpus/eval/errors/`) [Critical, test-crafter]
 - [ ] Add laziness proof tests for map/filter — `map_preserves_thunks.txt`, `filter_selective_materialization.txt` proving unused values stay unevaluated (`tests/corpus/eval/laziness/`) [Critical, test-crafter]
+- [ ] Add laziness materialization ORDER tests — verify left-to-right argument evaluation in builtins, predicate-before-body ordering in conditionals, dict entry insertion order preservation; current tests prove "unused = not evaluated" but not evaluation order (`tests/corpus/eval/laziness/`) [Major, test-crafter C31]
+- [ ] Add parser-level unit tests for `$_` exclusion positions — verify parsed AST shows `$_` as VarRef (not desugared) in bracket key `$data[$_]`, range bounds `$data[$_..5]`, dict key `[$_: value]` positions (`src/parser.rs`) [Minor, test-crafter C31]
 - [ ] Add Failed state same-span deduplication test — access Failed thunk twice with same span, verify no duplicate stack frames (`src/eval.rs`) [Minor, test-crafter]
 - [ ] Add Failed state None→Some→Some edge case test — first access with None, then Some(span1), then Some(span2); verifies is_none() path (`src/eval.rs`) [Minor, test-crafter]
 - [ ] Add doc comment to Failed state handler explaining dual-span model conditional update strategy (`src/eval.rs:873-894`) [Nit, span-integrity-checker + eval-engine]
@@ -669,7 +689,8 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add stack frame correctness unit tests — verify chain with correct labels and spans (`src/eval.rs:825+`) [Minor, span-integrity-checker]
 - [ ] Add type system literal widening tests — widening chain, nested computed keys, polymorphic call with literals (`src/typecheck.rs:83`) [Minor, test-crafter]
 - [ ] Add SPEC.md grammar coverage tests — parser_mechanisms tests for 100% grammar rule coverage (`SPEC.md`, `tests/corpus/valid/`) [Minor, test-crafter]
-- [ ] Add `$_` implicit lambda edge case tests — nested `$_`, shadowing when `_` already bound, desugaring in dict entries vs call args (`src/eval.rs:669-686`) [Minor, test-crafter]
+- [ ] Add `$_` desugared lambda type inference tests — verify inferred types of desugared expressions (e.g., `$_.name` → `Fn(Any → Any)`); current tests only validate runtime behavior, not type inference (`src/typecheck.rs`) [Minor, test-crafter C31]
+- [ ] Add `$_` implicit lambda edge case tests — nested `$_`, shadowing when `_` already bound, desugaring in dict entries vs call args (`src/desugar.rs`) [Minor, test-crafter]
 - [ ] Add row polymorphism tests for Closed-specific behavior — closed record with extra fields (`src/types.rs:679-837`) [Nit, type-theorist]
 - [ ] Add === delimiter edge case tests — `delimiter_in_string.txt`, `delimiter_partial.txt`, `delimiter_triple_docs.txt` (`tests/corpus/valid/edge_cases/`) [Major, test-crafter]
 - [ ] Add CRLF line ending corpus test — create `.txt` with actual `\r\n` bytes (`tests/corpus/valid/edge_cases/crlf_line_endings.txt`) [Minor, test-crafter]
@@ -699,6 +720,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add benchmarking via criterion crate — parser, evaluator, type checker baselines (performance-expert review)
 - [ ] Add stack-size canary test (~200 nested brackets)
 - [ ] Add pretty-print round-trip idempotence test (parse → Display → re-parse → Display → compare)
+- [ ] Add `$_` formatter round-trip tests — parse code containing `$_`, format, re-parse, assert AST equality; test patterns: `$_` in call args, nested `$_`, `$_.field[0]` (`src/formatter.rs`) [Minor, test-crafter C31]
 - [ ] Add function variance transitivity test or property test — transitivity assumed but not proven for subtyping (`src/types.rs:74-80`) [Major, type-theorist]
 
 ### test-tooling: Tooling Integration Tests & Documentation
@@ -800,6 +822,9 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Rename error corpus test `quot_div_by_zero.llt-eval` to `division_by_zero.llt-eval` — inconsistent with `ErrorKind::DivisionByZero` and other test naming (`tests/corpus/eval/errors/`) [Nit, test-crafter]
 - [ ] Clarify SPEC.md §3.5 semicolons — says `;` is "equivalent to whitespace" but it's actually an optional entry separator; reword to "optional entry separator for multiple entries on one line" (`SPEC.md:368-372`) [Nit, grammar-architect]
 - [ ] Clarify SPEC.md §6.2 auto-indexing — titled as "desugaring" but is actually eval-time key assignment, not AST rewrite. Only §6.5 (`$_` desugaring) is true AST transformation. (`SPEC.md:669-697`) [Nit, grammar-architect]
+- [ ] Fix stale line range in `src/desugar.rs:7` docstring — references DESIGN.md lines 1993-2126 which shifted after recent edits [Nit, grammar-architect C31]
+- [ ] Fix `grammar.pest:8` comment capitalization inconsistency — uses different convention than other comments [Nit, grammar-architect C31]
+- [ ] Standardize "Inherently materializing" comment annotations in `stdlib/prelude.llt` — some materializing functions have this comment, others don't; either add to all or remove and document in DESIGN.md [Nit, stdlib-author C31]
 
 ## Future Features
 

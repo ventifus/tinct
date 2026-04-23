@@ -521,7 +521,8 @@ mod tests {
         source: &str,
         stdin_json: Option<serde_json::Value>,
     ) -> serde_json::Value {
-        let file = parse(source).expect("parse failed");
+        let mut file = parse(source).expect("parse failed");
+        desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
 
         let initial_input = stdin_json.map(|json| {
@@ -593,7 +594,8 @@ mod tests {
     #[test]
     fn test_pipeline_deep_materialize() {
         let source = "[a: [b: [c: 42]]]";
-        let file = parse(source).expect("parse failed");
+        let mut file = parse(source).expect("parse failed");
+        desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let thunk = eval::eval_file(&file.node, env, 0).expect("eval failed");
         let val = eval::materialize(&thunk, None, 0).expect("materialize failed");
@@ -605,7 +607,8 @@ mod tests {
     #[test]
     fn test_pipeline_display_format() {
         let source = "[x: 42]";
-        let file = parse(source).expect("parse failed");
+        let mut file = parse(source).expect("parse failed");
+        desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let thunk = eval::eval_file(&file.node, env, 0).expect("eval failed");
         let val = eval::materialize(&thunk, None, 0).expect("materialize failed");
