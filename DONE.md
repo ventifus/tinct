@@ -625,3 +625,14 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
 - [x] Add error code prefix verification to corpus error tests — new test verifies `[E0XX]` prefix in all error corpus outputs. (`tests/corpus/eval/errors/`) [Minor, test-crafter panel]
 - [x] Add `ErrorKind::code()` exhaustiveness unit test — asserts all variants return "E" + digits, all codes unique. (`src/error.rs`) [Minor, test-crafter]
 - [x] Add stack frame propagation integration tests — unit tests for frame accumulation/dedup/display + 4 corpus error tests. (`src/error.rs`, `tests/corpus/eval/errors/`) [Major, test-crafter]
+
+### underscore-desugar-a: Core Desugar Implementation
+
+Build the desugar.rs module with all transformation logic.
+
+- [x] Create `src/desugar.rs` module with `desugar_file()` and `desugar_expr()` public functions
+- [x] Implement `is_direct_underscore(expr) -> bool` — DIRECT predicate (bare `$_` VarRef, not nested in sub-expression)
+- [x] Implement DESUGAR rewrite: top-down WRAP check on raw children, wrapping in `[fn [_] original_expr]` when any child is DIRECT
+- [x] Handle all WRAP cases: WRAP-CALL (args only, not func), WRAP-DICT (values only, not keys), WRAP-DOT, WRAP-BRACKET, WRAP-RANGE
+- [x] Implement depth-based lexical shadowing — depth counter incremented inside `Fn` with `_` parameter, suppresses desugaring at depth > 0
+- [x] Preserve spans: generated `Fn` nodes reuse span of original expression

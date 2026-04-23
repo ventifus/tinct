@@ -28,6 +28,8 @@ pub(crate) mod types;
 pub(crate) mod value;
 // Phase 3a: Rust-native builtin functions.
 pub(crate) mod builtins;
+// Phase 3b: $_ desugaring (pre-typecheck AST transformation).
+pub mod desugar;
 // Phase 6a: REPL (Read-Eval-Print Loop).
 pub mod repl;
 // Phase 6b: LSP (Language Server Protocol).
