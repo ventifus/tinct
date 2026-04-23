@@ -80,7 +80,9 @@ pub use value::{Environment, Key, Thunk, Value};
 /// **Note:** If your LLT code uses `$include`, you must call [`set_include_context`] before
 /// calling this function and [`clear_include_context`] after it returns.
 pub fn eval_source(input: &str) -> Result<String, String> {
-    let file = parse(input).map_err(|e| format!("{e}"))?;
+    let mut file = parse(input).map_err(|e| format!("{e}"))?;
+    // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
+    desugar::desugar_file(&mut file.node);
     // Type errors are advisory; evaluation proceeds regardless.
     let _ = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;

@@ -88,18 +88,30 @@ ErrorKind test coverage to validate migration and prevent regressions.
 
 Replace eval-time `$_` desugaring with a pre-typecheck AST rewrite pass. See DESIGN.md §`$_` Desugaring — Formal Specification.
 
-### underscore-desugar-b: Pipeline Integration & Tests
+### underscore-desugar-b: Pipeline Integration & Cleanup
 
-Wire desugar pass into pipeline, remove old eval-time desugaring, add tests.
+Wire desugar pass into pipeline and remove old eval-time desugaring.
 
-- [ ] Integrate into pipeline: `eval_source()` calls `desugar_file()` after parsing, before typecheck (`src/lib.rs`)
+- [x] Integrate into pipeline: `eval_source()` calls `desugar_file()` after parsing, before typecheck (`src/lib.rs`)
+- [x] Remove eval-time desugaring: `should_desugar_underscore`, `contains_direct_underscore`, runtime env check (`src/eval.rs:66-74`)
+- [x] Migrate existing `test_underscore_*` tests to call `desugar_expr()` before eval
+- [x] Add tests: shadowing, exclusions (func position, bracket access keys, range bounds, dict entry keys), nested `$_`
+- [x] Reconcile WRAP-CALL `not DIRECT(f)` guard — DESIGN.md spec includes guard but implementation omits it; implementation's behavior for `[call $_ $_]` is arguably more useful (wraps both). Update spec to match implementation or add guard. (`src/desugar.rs:70-86`, `DESIGN.md:2029-2030`) [Minor, computer-scientist]
+
+### underscore-desugar-c: Polish & Edge Cases
+
+Origin tags, doc fixes, and edge case tests for the desugar pass.
+
 - [ ] Add explicit origin tags to synthetic `$_` desugared AST nodes — distinguish user-written lambdas from sugar-generated ones for future tooling. Pombrio & Krishnamurthi (2014). [Minor, computer-scientist]
-- [ ] Remove eval-time desugaring: `should_desugar_underscore`, `contains_direct_underscore`, runtime env check (`src/eval.rs:66-74`)
-- [ ] Migrate existing `test_underscore_*` tests to call `desugar_expr()` before eval
-- [ ] Add tests: shadowing, exclusions (func position, bracket access keys, range bounds, dict entry keys), nested `$_`
-- [ ] Reconcile WRAP-CALL `not DIRECT(f)` guard — DESIGN.md spec includes guard but implementation omits it; implementation's behavior for `[call $_ $_]` is arguably more useful (wraps both). Update spec to match implementation or add guard. (`src/desugar.rs:70-86`, `DESIGN.md:2029-2030`) [Minor, computer-scientist]
 - [ ] Add test for `[call $_ $_]` (func and arg both DIRECT) — documents chosen behavior for edge case (`src/desugar.rs`) [Nit, computer-scientist]
 - [ ] Add test for `$_` in annotations inside shadowing functions — `[fn [_] [fn [x: [@Number $_]] $x]]` edge case; implementation correct but untested (`src/desugar.rs`) [Nit, test-crafter + sprint-reviewer]
+- [ ] Update DESIGN.md desugar sketch signatures to match `&mut` implementation — sketch shows value-returning API but code uses in-place mutation (`DESIGN.md:2110-2122`) [Nit, computer-scientist]
+- [ ] Add precondition doc comment to `desugar()` noting parser-bounded AST depth — depends on MAX_PARSE_DEPTH but doesn't assert it; future programmatic AST construction (macros, quasiquoting) must respect bound (`src/desugar.rs:47`) [Nit, computer-scientist]
+- [ ] Update DESIGN.md WRAP-CALL pseudocode to show unconditional recursion — spec shows selective `if DIRECT(a) then a else DESUGAR(a)` but impl recurses all children; proven equivalent but spec should match impl (`DESIGN.md:2034-2038`) [Nit, panel consensus]
+- [ ] Add corpus tests for exclusion positions — bracket key `$data[$_]`, range bounds `$data[$_..5]`, dict key `[$_: value]`; unit tests exist but corpus tests validate full pipeline (`tests/corpus/eval/`) [Minor, test-crafter + grammar-architect]
+- [ ] Add corpus test for func-only DIRECT case — `[call $_ $x]` should NOT wrap; documents asymmetry with arg-only case (`tests/corpus/eval/`) [Nit, test-crafter + integration-verifier]
+- [ ] Add corpus error tests for `$_` — undefined `$_`, key-not-found on desugared access chain, type mismatch inside desugared lambda; validates error span quality (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
+- [ ] Update DESIGN.md line 2096 tense — still says "This replaces the current eval-time..." but migration is complete; update to past tense (`DESIGN.md:2096`) [Nit, computer-scientist]
 
 ## evalcontext-refactor: EvalContext Parameter Threading
 
@@ -809,3 +821,5 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [x] Research macros — see doc/whatif/macros.md. Recommends procedural AST macros (Approach B). Laziness reduces need; gated on second syntactic desugaring or user-requested domain-specific syntax
 - [x] Research templating — see doc/whatif/templating.md. Three-part design: (1) data-first formatters (`$emit`, multi-file pipeline, stdlib/fmt/), (2) literate tinct (code blocks in Markdown, tangle/weave/eval), (3) template-polarity embedding (Jinja-style, deferred Phase 5). tinct's bracket syntax creates friction in template delimiters; `i"..."` + formatters + literate mode cover the design space without template embedding
 - [x] Research structural contracts — see doc/whatif/structural-contracts.md. Hybrid: `$$@Type` for static pipeline boundary checking + `$validate` schema-as-dict for runtime constraints. 4-phase: $$@Type → $validate → tinct describe → pipeline blame
+- [x] Research implied `call` — see doc/whatif/implied-call.md. Head-position `$` heuristic: if first unkeyed element is a `$`-reference, treat `[]` as a call. `call` remains valid (backwards compatible). Requires `seq` keyword for list-of-references. Critically depends on `$` sigil — incompatible with bare-word references in simplest form
+- [x] Research bare-word references — see doc/whatif/bare-word-references.md. Nix/Jsonnet model: bare words in value position are references, keys stay as strings, strings must be quoted. Removes `$` sigil. Significant config ergonomic regression (must quote all strings). 4-phase adoption with dual-mode parser. Must be coordinated with implied call

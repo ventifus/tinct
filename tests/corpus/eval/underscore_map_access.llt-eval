@@ -1,0 +1,4 @@
+# $_ with map - dot access wraps to function, map calls it for each element
+[call $map [call $identity $_.name] [0: [name: "Alice"] 1: [name: "Bob"]]]
+===
+Dict({0: String("Alice"), 1: String("Bob")})
