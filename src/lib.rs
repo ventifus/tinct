@@ -8,7 +8,7 @@
 //! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
-//! - [`set_include_context`] / [`clear_include_context`] / [`IncludeContext`] -- configure `$include` for file-based evaluation
+//! - [`EvalContext`] -- evaluation context with base directory and stdlib environment for `$include`
 //! - [`json_to_value`] -- convert `serde_json::Value` to LLT `Value`
 //! - [`value_to_json`] -- convert LLT `Value` to `serde_json::Value`
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
@@ -48,15 +48,8 @@ pub use eval::{
     deep_materialize, eval_file, eval_file_with_input, materialize, EvalContext, MAX_EVAL_DEPTH,
 };
 
-/// Builtin infrastructure: stdlib creation, JSON conversion, and include context.
-///
-/// **Note:** If your LLT code uses `$include`, you must call [`set_include_context`] before
-/// evaluation and [`clear_include_context`] after evaluation to provide the base directory
-/// for resolving relative file paths.
-pub use builtins::{
-    clear_include_context, create_stdlib_env, json_to_value, set_include_context, IncludeContext,
-    MAX_FILE_SIZE,
-};
+/// Builtin infrastructure: stdlib creation, JSON conversion.
+pub use builtins::{create_stdlib_env, json_to_value, MAX_FILE_SIZE};
 
 /// Error types with source spans and stack traces.
 pub use error::{EvalError, StackFrame};
@@ -80,9 +73,6 @@ pub use value::{Environment, Key, Thunk, Value};
 /// The output format recursively materializes all values (including dict entries)
 /// into a readable representation. Primarily used for testing and corpus validation.
 /// For JSON output, use [`value_to_json`] after evaluation instead.
-///
-/// **Note:** If your LLT code uses `$include`, you must call [`set_include_context`] before
-/// calling this function and [`clear_include_context`] after it returns.
 pub fn eval_source(input: &str) -> Result<String, String> {
     let mut file = parse(input).map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).

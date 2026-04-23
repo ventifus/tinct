@@ -15,15 +15,12 @@
 //!   feature flag).
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::builtins::{
-    clear_include_context, create_stdlib_env, set_include_context, IncludeContext, MAX_FILE_SIZE,
-};
+use crate::builtins::{create_stdlib_env, MAX_FILE_SIZE};
 use crate::eval::{deep_materialize, eval_file_with_input, materialize};
 use crate::parser::parse;
 use crate::value::{Environment, Key, Thunk, Value};
@@ -223,19 +220,9 @@ pub fn run_repl() -> Result<(), String> {
     let stdlib_env = create_stdlib_env().map_err(|e| format!("{e}"))?;
     let mut session = ReplSession::with_env(Rc::clone(&stdlib_env));
 
-    // Set up $include context so that $include works in the REPL.
-    // Use CWD as the base directory for relative path resolution.
-    let base_dir =
-        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?;
-    set_include_context(IncludeContext {
-        base_dir,
-        include_guard: Rc::new(RefCell::new(HashSet::new())),
-        stdlib_env,
-        cache: Rc::new(RefCell::new(HashMap::new())),
-    });
-
-    // Wrap the main loop so that clear_include_context() runs on all exit paths.
-    let result = (|| -> Result<(), String> {
+    // The ReplSession already has an EvalContext set up with CWD as base_dir,
+    // so $include will work correctly using the context threading.
+    (|| -> Result<(), String> {
         let mut editor =
             DefaultEditor::new().map_err(|e| format!("failed to initialize editor: {e}"))?;
 
@@ -334,10 +321,7 @@ pub fn run_repl() -> Result<(), String> {
         }
 
         Ok(())
-    })(); // end of closure wrapping the main loop
-
-    clear_include_context();
-    result
+    })()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

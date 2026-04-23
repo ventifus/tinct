@@ -912,4 +912,164 @@ mod tests {
         };
         assert_eq!(format!("{builtin:?}"), "Builtin(test_builtin)");
     }
+
+    #[test]
+    fn test_thunk_unevaluated_preserves_ctx_across_materialization() {
+        use crate::ast::Expr;
+
+        // Create ctx1 with a distinct base_dir
+        let ctx1 = crate::eval::EvalContext::new(
+            std::path::PathBuf::from("/test/path/1"),
+            Rc::new(RefCell::new(Environment::new())),
+        );
+
+        // Create a thunk that captures ctx1
+        let span = test_span(1, 1, 1, 5);
+        let expr = Rc::new(Spanned::new(Expr::Int(42), span));
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let thunk =
+            Thunk::new_unevaluated(Rc::clone(&expr), Rc::clone(&env), Rc::clone(&ctx1), span);
+
+        // Verify the thunk captured ctx1 (before materialization)
+        {
+            let state = thunk.state();
+            match &*state {
+                ThunkState::Unevaluated {
+                    expr: _,
+                    env: _,
+                    ctx,
+                } => {
+                    // Use Rc::ptr_eq to verify it's the SAME Rc, not just equal content
+                    assert!(
+                        Rc::ptr_eq(ctx, &ctx1),
+                        "thunk should capture ctx1 before materialization"
+                    );
+                }
+                other => panic!("expected Unevaluated state, got {other:?}"),
+            }
+        } // state guard dropped here
+
+        // Materialize the thunk using ctx1 (simulating normal evaluation)
+        // Note: materialize() is in eval.rs, but we can test the state transition
+        // by calling take_unevaluated and verifying it returns the captured ctx
+        let taken = thunk.take_unevaluated();
+        assert!(
+            taken.is_some(),
+            "take_unevaluated should succeed on Unevaluated thunk"
+        );
+
+        let (_taken_expr, _taken_env, taken_ctx) = taken.unwrap();
+
+        // Verify the taken ctx is the same Rc as ctx1
+        assert!(
+            Rc::ptr_eq(&taken_ctx, &ctx1),
+            "thunk should evaluate using the ctx it captured at creation (ctx1)"
+        );
+
+        // Verify that the thunk is now InProgress (after take_unevaluated)
+        {
+            let state = thunk.state();
+            match &*state {
+                ThunkState::InProgress => {
+                    // Expected: take_unevaluated sets state to InProgress
+                }
+                other => panic!("expected InProgress after take_unevaluated, got {other:?}"),
+            }
+        } // state guard dropped here
+    }
+
+    #[test]
+    fn test_thunk_pending_builtin_preserves_ctx() {
+        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(0),
+                ctx.call_span,
+            )))
+        }
+
+        // Create ctx1
+        let ctx1 = crate::eval::EvalContext::new(
+            std::path::PathBuf::from("/test/path/builtin"),
+            Rc::new(RefCell::new(Environment::new())),
+        );
+
+        let span = test_span(1, 1, 1, 5);
+        let thunk = Thunk::new_pending_builtin(
+            dummy_builtin,
+            vec![],
+            IndexMap::new(),
+            0,
+            span,
+            Cow::Borrowed("test builtin call"),
+            Rc::clone(&ctx1),
+        );
+
+        // Verify the thunk captured ctx1
+        match &*thunk.state() {
+            ThunkState::PendingBuiltin { ctx, .. } => {
+                assert!(Rc::ptr_eq(ctx, &ctx1), "PendingBuiltin should capture ctx1");
+            }
+            other => panic!("expected PendingBuiltin state, got {other:?}"),
+        }
+
+        // Take the pending builtin and verify ctx is preserved
+        let taken = thunk.take_pending_builtin();
+        assert!(taken.is_some(), "take_pending_builtin should succeed");
+
+        let (_func, _args, _named, _depth, _call_span, taken_ctx) = taken.unwrap();
+        assert!(
+            Rc::ptr_eq(&taken_ctx, &ctx1),
+            "PendingBuiltin should evaluate using captured ctx1"
+        );
+    }
+
+    #[test]
+    fn test_thunk_pending_call_preserves_ctx() {
+        // Create ctx1
+        let ctx1 = crate::eval::EvalContext::new(
+            std::path::PathBuf::from("/test/path/call"),
+            Rc::new(RefCell::new(Environment::new())),
+        );
+
+        let span = test_span(1, 1, 1, 5);
+        let func_thunk = Rc::new(Thunk::new_materialized(
+            Value::Function {
+                params: Rc::new(vec![]),
+                body: Rc::new(Spanned::new(
+                    crate::ast::Expr::Int(0),
+                    test_span(1, 1, 1, 1),
+                )),
+                env: Rc::new(RefCell::new(Environment::new())),
+            },
+            span,
+        ));
+
+        let thunk = Thunk::new_pending_call(
+            Rc::clone(&func_thunk),
+            vec![],
+            IndexMap::new(),
+            span,
+            span,
+            Cow::Borrowed("test call"),
+            Rc::clone(&ctx1),
+        );
+
+        // Verify the thunk captured ctx1
+        match &*thunk.state() {
+            ThunkState::PendingCall { ctx, .. } => {
+                assert!(Rc::ptr_eq(ctx, &ctx1), "PendingCall should capture ctx1");
+            }
+            other => panic!("expected PendingCall state, got {other:?}"),
+        }
+
+        // Take the pending call and verify ctx is preserved
+        let taken = thunk.take_pending_call();
+        assert!(taken.is_some(), "take_pending_call should succeed");
+
+        let (_func, _args, _named, _call_span, taken_ctx) = taken.unwrap();
+        assert!(
+            Rc::ptr_eq(&taken_ctx, &ctx1),
+            "PendingCall should evaluate using captured ctx1"
+        );
+    }
 }
