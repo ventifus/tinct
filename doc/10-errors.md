@@ -788,7 +788,7 @@ All 26 `ErrorKind` variants map to stable error codes and human-readable message
 | **UserError** | E080 | `"{message}"` (user-provided) | `$error` call expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
-The 26 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E023) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from DESIGN.md §Call Convention. Error codes are stable across releases; message wording may vary.
+The 26 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E023) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. Error codes are stable across releases; message wording may vary.
 
 ## Span Assignment Corrections
 

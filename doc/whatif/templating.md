@@ -243,7 +243,7 @@ allows separate files to be composed at the CLI level. No new
 program is in the pipeline.
 
 **Interaction with `$include` caching.** Multi-file pipeline stages
-share the include cache (DESIGN.md §Document Pipeline). If
+share the include cache (doc/09-documents.md §Document Pipeline). If
 `config.llt` includes `stdlib/lib.llt`, and `fmt/yaml.llt` also
 includes `stdlib/lib.llt`, the second include hits the cache. This is
 correct and intentional — include caching is deterministic for fixed

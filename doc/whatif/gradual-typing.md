@@ -14,7 +14,7 @@ Any <: τ    [S-ANY-BOT]
 
 This violates antisymmetry (τ <: Any ∧ Any <: τ does not imply τ = Any) and
 makes the subtype relation unsound as a partial order. It is documented as
-intentional for tinct's gradual type system (DESIGN.md §Subtyping, Limitation
+intentional for tinct's gradual type system (doc/06-type-inference.md §Subtyping, Limitation
 #5).
 
 `Any` currently serves multiple roles:
@@ -354,7 +354,7 @@ establishes the rules before any code changes and validates the design
 against Garcia et al.'s systematic derivation.
 
 Deliverables:
-- Formal consistency relation for tinct's types (document in DESIGN.md)
+- Formal consistency relation for tinct's types (document in doc/06-type-inference.md)
 - Catalog of all `Any` uses with their reclassification (Unknown vs Top)
 - Identification of all blame boundaries in the current codebase
 

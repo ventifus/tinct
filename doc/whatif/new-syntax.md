@@ -9,15 +9,15 @@ reform?
 tinct's syntax rests on three pillars:
 
 1. **`$` sigil for every reference.** Bare words are string literals;
-   `$word` is a variable reference (DESIGN.md §Variable References).
+   `$word` is a variable reference (doc/02-syntax.md §Variable References).
    Every reference costs one `$` character.
 
 2. **Explicit `call` keyword.** `[call $f $x]` for every function
-   application (DESIGN.md §Principle 3). Every call costs one `call`
+   application (doc/01-introduction.md §Principle 3). Every call costs one `call`
    keyword.
 
 3. **Anonymous `$$` pipeline.** Documents separated by `---` pass
-   data through `$$` (DESIGN.md §Document Structure, DOC-PIPELINE).
+   data through `$$` (doc/09-documents.md §Document Structure, DOC-PIPELINE).
    Sections cannot be named or referenced individually.
 
 ```lisp
@@ -301,7 +301,7 @@ pragmas), or include one:
 [deploy %config]
 ```
 
-**Formal semantics** — extends DOC-PIPELINE (DESIGN.md §Document
+**Formal semantics** — extends DOC-PIPELINE (doc/09-documents.md §Document
 Structure):
 
 ```
@@ -910,18 +910,18 @@ Drop `$`-sigil mode. All files use the reformed syntax.
 
 ## References
 
-- DESIGN.md §Variable References — "Bare words are always string
+- doc/02-syntax.md §Variable References — "Bare words are always string
   literals. `$word` is always a variable reference." This proposal
   trades that uniformity for conventional syntax, using `$` as a
   rare disambiguator rather than a universal sigil.
-- DESIGN.md §Principle 3: Explicit Function Application — "Without
+- doc/01-introduction.md §Principle 3: Explicit Function Application — "Without
   `call`, the evaluator must eagerly materialize the head." This
   rationale is superseded by the parser-level head-position rule,
   which resolves ambiguity before evaluation.
-- DESIGN.md §Principle 2: One Bracket, One Structure — `[]` remains
+- doc/01-introduction.md §Principle 2: One Bracket, One Structure — `[]` remains
   the only bracket type. Its interpretation depends on the head
   element, approaching Lisp semantics while preserving dict syntax.
-- DESIGN.md §Document Structure, DOC-PIPELINE — Current `$$`
+- doc/09-documents.md §Document Structure, DOC-PIPELINE — Current `$$`
   pipeline semantics. This proposal extends it with `%`, named
   sections, and section pragmas.
 - doc/whatif/string-interpolation.md — String interpolation

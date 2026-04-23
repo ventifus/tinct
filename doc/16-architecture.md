@@ -63,11 +63,11 @@ struct EvalContext {
 
 **Key invariant:** EvalContext is evaluation-session infrastructure; Environment is lexical scoping; depth is call-stack tracking. A single EvalContext is shared across the entire evaluation of a file, while Environments are created per scope and depth increments per recursive call.
 
-**Threading pattern:** `Rc<RefCell<EvalContext>>` — same pattern as `Environment`. Thunks capture `Rc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. `&mut EvalContext` would cause borrow conflicts with lazy evaluation.
+**Threading pattern:** `Rc<EvalContext>` — thunks capture `Rc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. Unlike `Environment` (which uses `Rc<RefCell<...>>`), EvalContext does not need an outer RefCell because it achieves interior mutability through its `state: Rc<RefCell<EvalState>>` field — the config is immutable by construction and only the state needs mutation.
 
-**ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Rc<RefCell<EvalContext>>` alongside their existing `env: Rc<RefCell<Environment>>`. When a thunk is forced, it uses the captured context for include resolution, sandboxing, etc.
+**ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Rc<EvalContext>` alongside their existing `env: Rc<RefCell<Environment>>`. When a thunk is forced, it uses the captured context for include resolution, sandboxing, etc.
 
-**BuiltinArgs:** Gains a `ctx: Rc<RefCell<EvalContext>>` field. The existing `depth: usize` field remains (call-site depth, captured at PendingBuiltin creation time). Most builtins ignore ctx; only `$include` and future I/O builtins use it.
+**BuiltinArgs:** Gains a `ctx: Rc<EvalContext>` field. The existing `depth: usize` field remains (call-site depth, captured at PendingBuiltin creation time). Most builtins ignore ctx; only `$include` and future I/O builtins use it.
 
 **Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. The `set_include_context()` / `clear_include_context()` functions are removed — the fragile set/clear ceremony is replaced by straightforward parameter passing.
 
@@ -88,7 +88,7 @@ enum Value {
     Float(f64),
     String(String),
     Bool(bool),
-    Dict(LinkedHashMap<Key, Rc<Thunk>>),
+    Dict(IndexMap<Key, Rc<Thunk>>),
     Seq(Rc<Thunk>, Rc<Thunk>),    // head, tail (tail evaluates to Seq or [] for end)
     Function {
         params: Vec<String>,

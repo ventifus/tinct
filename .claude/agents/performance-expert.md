@@ -86,6 +86,8 @@ When dispatched for a full codebase review, review the entire project through yo
 
 ### Phase 1: doc/*.md Review
 
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc. For this review, also flag doc/*.md design decisions whose performance implications are unsound or undocumented._
+
 1. Are there design decisions that inherently limit performance? (e.g., triple-boxing thunks, O(n) env lookup)
 2. Are performance trade-offs documented in `doc/16-architecture.md`? (IndexMap vs HashMap, Rc<RefCell> vs alternatives)
 3. Should any design decisions be revisited for performance? (e.g., flat environments, arena allocation)

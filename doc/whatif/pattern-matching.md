@@ -206,7 +206,7 @@ interaction. The match scrutinee can also be `$_`, creating a function:
 Pattern matching on the scrutinee is inherently materializing (like
 `$type-of`). This means `[match $thunk ...]` forces `$thunk`. Within
 dict patterns, only matched keys are forced. This is documented in
-DESIGN.md Builtin Materialization Behavior as the standard pattern for
+doc/08-evaluation.md Builtin Materialization Behavior as the standard pattern for
 builtins that need to inspect value structure.
 
 ### Why a Special Form
@@ -357,7 +357,7 @@ and binds the tail thunk without forcing it, consistent with `$head` and
 other arms' bodies are never entered.
 
 **Impact:** Minor. Follows existing materialization conventions from
-DESIGN.md. No new forcing semantics, just application of established
+doc/08-evaluation.md. No new forcing semantics, just application of established
 patterns to a new construct.
 
 ### Type Checker

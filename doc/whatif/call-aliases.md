@@ -7,7 +7,7 @@ What would it take to let users define aliases or alternatives for the
 
 tinct uses explicit `[call $f $x]` for all function application. The
 `call` keyword is mandatory — there is no implicit head evaluation.
-This is a core design principle (DESIGN.md §Principle 3: Explicit
+This is a core design principle (doc/01-introduction.md §Principle 3: Explicit
 Function Application):
 
 ```lisp
@@ -225,7 +225,7 @@ own call forms.
 
 ## References
 
-- DESIGN.md §Principle 3: Explicit Function Application — "`call` is
+- doc/01-introduction.md §Principle 3: Explicit Function Application — "`call` is
   not syntactic overhead — it's what makes tinct's bracket syntax
   unambiguous."
 - doc/whatif/macros.md — Procedural AST macros proposal.

@@ -71,7 +71,9 @@ When dispatched for a full codebase review, review the entire project through yo
 
 ### Phase 1: doc/*.md Review
 
-1. Is the dual-span error model (definition-site + materialization-site) accurately described in `doc/10-errors.md`?
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc._
+
+1. Does the code implement the dual-span error model described in `doc/10-errors.md`? (definition-site + materialization-site — if the implementation falls short, fix the code)
 2. Are error reporting goals and quality standards documented?
 3. Should any error reporting design decisions be revisited? (e.g., stack frame format, error categories)
 4. Are there error scenarios not covered by doc/*.md?

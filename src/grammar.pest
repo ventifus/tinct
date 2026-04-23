@@ -1,5 +1,5 @@
 // LLT Grammar -- pest PEG
-// See SPEC.md for the formal specification.
+// See doc/02-syntax.md for the formal specification.
 
 // === Implicit whitespace and comments ===
 // Skipped automatically between tokens in non-atomic rules.
@@ -134,7 +134,7 @@ bare_token = { float_lit | int_lit | bool_lit | bare_word }
 // Compound-atomic ($) rules: prevent implicit whitespace matching between tokens.
 // WHY: Whitespace sensitivity for access chains. $a.b is access, $a .b is not.
 // The $ prefix tells pest not to insert WHITESPACE/COMMENT matching between rule elements.
-// This implements the tokenization rule from DESIGN.md §Tokenization Rules: dot
+// This implements the tokenization rule from doc/02-syntax.md §Tokenization Rules: dot
 // immediately after $ref (no whitespace) triggers dot-access parsing; whitespace
 // before dot makes it part of a bare word.
 

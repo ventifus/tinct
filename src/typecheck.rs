@@ -2,14 +2,15 @@
 //! validates type assertions, and performs Hindley-Milner style type variable
 //! unification for polymorphic function calls.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
-use crate::types::{instantiate, unify, RowRest, Substitution, Type, TypeEnv, TypeError};
+use crate::types::{
+    instantiate, unify, InferState, RowRest, Substitution, Type, TypeEnv, TypeError,
+};
 
 /// A map from expression span (start_offset, end_offset) to the inferred type.
 /// Populated during type checking so hover can look up types without re-inference.
@@ -18,10 +19,10 @@ pub type TypeMap = HashMap<(usize, usize), Type>;
 pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     let mut errors = Vec::new();
     let mut env = Rc::new(TypeEnv::new());
-    let counter = Cell::new(0u32);
+    let mut state = InferState::new();
 
     for doc in &file.documents {
-        match typecheck_document(doc, &env, &counter, &mut None) {
+        match typecheck_document(doc, &env, &mut state, &mut None) {
             Ok(new_env) => env = new_env,
             Err(mut doc_errors) => errors.append(&mut doc_errors),
         }
@@ -40,11 +41,11 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
 pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
     let mut errors = Vec::new();
     let mut env = Rc::new(TypeEnv::new());
-    let counter = Cell::new(0u32);
+    let mut state = InferState::new();
     let mut type_map = TypeMap::new();
 
     for doc in &file.documents {
-        match typecheck_document(doc, &env, &counter, &mut Some(&mut type_map)) {
+        match typecheck_document(doc, &env, &mut state, &mut Some(&mut type_map)) {
             Ok(new_env) => env = new_env,
             Err(mut doc_errors) => errors.append(&mut doc_errors),
         }
@@ -56,7 +57,7 @@ pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
 fn typecheck_document(
     doc: &Spanned<Document>,
     parent_env: &Rc<TypeEnv>,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Rc<TypeEnv>, Vec<TypeError>> {
     let mut errors = Vec::new();
@@ -75,7 +76,7 @@ fn typecheck_document(
 
     for (i, expr) in exprs.iter().enumerate() {
         let is_last = i == exprs.len() - 1;
-        match infer_expr(expr, &env, counter, type_map) {
+        match infer_expr(expr, &env, state, type_map) {
             Ok(ty) => {
                 if is_last {
                     result_type = ty;
@@ -137,7 +138,7 @@ fn register_type_aliases(
 fn infer_expr(
     expr: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let result = match &expr.node {
@@ -148,45 +149,45 @@ fn infer_expr(
 
         Expr::VarRef(name) => env
             .get(name)
-            .cloned()
+            .map(|scheme| scheme.body.clone())
             .ok_or_else(|| vec![TypeError::undefined_variable(name, expr.span)]),
 
-        Expr::Dict(entries) => infer_dict(entries, env, counter, type_map),
+        Expr::Dict(entries) => infer_dict(entries, env, state, type_map),
 
         Expr::DotAccess {
             expr: target,
             field,
-        } => check_dot_access(target, field, env, expr.span, counter, type_map),
+        } => check_dot_access(target, field, env, expr.span, state, type_map),
 
         Expr::BracketAccess { expr: target, key } => {
-            check_bracket_access(target, key, env, expr.span, counter, type_map)
+            check_bracket_access(target, key, env, expr.span, state, type_map)
         }
 
         Expr::RangeAccess {
             expr: target,
             start,
             end,
-        } => check_range_access(target, start, end, env, expr.span, counter, type_map),
+        } => check_range_access(target, start, end, env, expr.span, state, type_map),
 
         Expr::Call {
             func,
             args,
             named_args,
-        } => check_call(func, args, named_args, env, expr.span, counter, type_map),
+        } => check_call(func, args, named_args, env, expr.span, state, type_map),
 
         Expr::Fn {
             return_ann,
             params,
             body,
             ..
-        } => infer_fn(return_ann, params, body, env, expr.span, counter, type_map),
+        } => infer_fn(return_ann, params, body, env, expr.span, state, type_map),
 
         Expr::TypeAlias(inner) => expand_type_alias(inner, env).map_err(|e| vec![e]),
 
         Expr::TypeAssert {
             annotation,
             expr: inner,
-        } => resolve_type_assert(annotation, inner, env, expr.span, counter, type_map),
+        } => resolve_type_assert(annotation, inner, env, expr.span, state, type_map),
 
         Expr::Annotated { name, annotation } => {
             resolve_annotated(name, annotation, env, expr.span).map_err(|e| vec![e])
@@ -212,7 +213,7 @@ fn infer_expr(
 fn infer_dict(
     entries: &[Spanned<Entry>],
     env: &Rc<TypeEnv>,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let mut dict_env = TypeEnv::with_parent(Rc::clone(env));
@@ -220,7 +221,7 @@ fn infer_dict(
     let mut auto_index: i64 = 0;
 
     for entry in entries {
-        let key_name = entry_key_name(&entry.node, &mut auto_index, env, counter, type_map);
+        let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map);
         let is_alias = matches!(&entry.node.value.node, Expr::TypeAlias(_));
         if let Some(ref name) = key_name {
             dict_env.insert(name.clone(), Type::Any);
@@ -248,7 +249,7 @@ fn infer_dict(
         if *is_alias || matches!(&entry.node.value.node, Expr::Rest(_)) {
             continue;
         }
-        match infer_expr(&entry.node.value, &dict_env, counter, type_map) {
+        match infer_expr(&entry.node.value, &dict_env, state, type_map) {
             Ok(value_ty) => {
                 if let Some(name) = key_name {
                     fields.insert(name.clone(), value_ty);
@@ -274,14 +275,14 @@ fn entry_key_name(
     entry: &Entry,
     auto_index: &mut i64,
     env: &Rc<TypeEnv>,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<String> {
     match &entry.key {
         Some(key_expr) => match &key_expr.node {
             Expr::Str(s) => Some(s.clone()),
             Expr::Int(n) => Some(n.to_string()),
-            _ => match infer_expr(key_expr, env, counter, type_map) {
+            _ => match infer_expr(key_expr, env, state, type_map) {
                 Ok(Type::StringLiteral(s)) => Some(s),
                 Ok(Type::IntLiteral(n)) => Some(n.to_string()),
                 _ => None,
@@ -300,14 +301,14 @@ fn check_dot_access(
     field: &str,
     env: &Rc<TypeEnv>,
     span: Span,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, counter, type_map)?;
+    let target_ty = infer_expr(target, env, state, type_map)?;
     match &target_ty {
         Type::Record(fields, rest) => match fields.get(field) {
             Some(ty) => Ok(ty.clone()),
-            None if matches!(rest, RowRest::Open | RowRest::RowVar(_)) => Ok(Type::Any),
+            None if matches!(rest, RowRest::Open | RowRest::RowVar(_, _)) => Ok(Type::Any),
             None => Err(vec![TypeError::field_not_found(field, &target_ty, span)]),
         },
         Type::Any => Ok(Type::Any),
@@ -320,15 +321,15 @@ fn check_bracket_access(
     key: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
     span: Span,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, counter, type_map)?;
-    let key_ty = infer_expr(key, env, counter, type_map)?;
+    let target_ty = infer_expr(target, env, state, type_map)?;
+    let key_ty = infer_expr(key, env, state, type_map)?;
 
     match &target_ty {
         Type::Record(fields, rest) => {
-            let is_open = matches!(rest, RowRest::Open | RowRest::RowVar(_));
+            let is_open = matches!(rest, RowRest::Open | RowRest::RowVar(_, _));
             let lookup = |field_name: &str| -> Result<Type, Vec<TypeError>> {
                 match fields.get(field_name) {
                     Some(ty) => Ok(ty.clone()),
@@ -363,13 +364,13 @@ fn check_range_access(
     end: &Option<Box<Spanned<Expr>>>,
     env: &Rc<TypeEnv>,
     span: Span,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, counter, type_map)?;
+    let target_ty = infer_expr(target, env, state, type_map)?;
 
     for bound in [start, end].into_iter().flatten() {
-        let bound_ty = infer_expr(bound, env, counter, type_map)?;
+        let bound_ty = infer_expr(bound, env, state, type_map)?;
         if !matches!(
             bound_ty,
             Type::Int | Type::IntLiteral(_) | Type::Str | Type::StringLiteral(_) | Type::Any
@@ -393,17 +394,17 @@ fn check_call(
     named_args: &[Spanned<NamedArg>],
     env: &Rc<TypeEnv>,
     span: Span,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let func_ty = infer_expr(func, env, counter, type_map)?;
+    let func_ty = infer_expr(func, env, state, type_map)?;
 
     let mut arg_types = Vec::with_capacity(args.len());
     for a in args {
-        arg_types.push(infer_expr(a, env, counter, type_map)?);
+        arg_types.push(infer_expr(a, env, state, type_map)?);
     }
     for na in named_args {
-        let _ = infer_expr(&na.node.value, env, counter, type_map)?;
+        let _ = infer_expr(&na.node.value, env, state, type_map)?;
     }
 
     match &func_ty {
@@ -423,9 +424,7 @@ fn check_call(
                 return Ok(*ret.clone());
             }
 
-            let mut cnt = counter.get();
-            let (inst_ty, _) = instantiate(&func_ty, &mut cnt);
-            counter.set(cnt);
+            let (inst_ty, _) = instantiate(&func_ty, &mut state.name_counter);
 
             let (inst_params, inst_ret) = match &inst_ty {
                 Type::Function { params, ret } => (params, ret),
@@ -453,7 +452,7 @@ fn infer_fn(
     body: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
     span: Span,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let param_types: Vec<Type> = params
@@ -481,13 +480,13 @@ fn infer_fn(
     let ret_type = match return_ann {
         Some(ann) => {
             let declared = resolve_annotation(&ann.node, env, ann.span).map_err(|e| vec![e])?;
-            let inferred = infer_expr(body, &fn_env, counter, type_map)?;
+            let inferred = infer_expr(body, &fn_env, state, type_map)?;
             if !Type::is_subtype(&inferred, &declared) {
                 return Err(vec![TypeError::type_mismatch(&declared, &inferred, span)]);
             }
             declared
         }
-        None => infer_expr(body, &fn_env, counter, type_map)?,
+        None => infer_expr(body, &fn_env, state, type_map)?,
     };
 
     Ok(Type::Function {
@@ -506,12 +505,12 @@ fn resolve_type_assert(
     inner: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
     span: Span,
-    counter: &Cell<u32>,
+    state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let expected =
         resolve_annotation(&annotation.node, env, annotation.span).map_err(|e| vec![e])?;
-    let actual = infer_expr(inner, env, counter, type_map)?;
+    let actual = infer_expr(inner, env, state, type_map)?;
 
     if !Type::is_subtype(&actual, &expected) {
         let has_default = annotation.node.get_property("default").is_some();
@@ -636,7 +635,7 @@ fn resolve_type_name(name: &str, env: &TypeEnv, span: Span) -> Result<Type, Type
         "Any" => Ok(Type::Any),
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
-                Ok(Type::TypeVar(name.to_string()))
+                Ok(Type::TypeVar(name.to_string(), 0))
             } else {
                 env.get_type_alias(name)
                     .cloned()
@@ -689,7 +688,7 @@ fn resolve_type_dict(
         if let Expr::Rest(name) = &entry.node.value.node {
             rest = match name {
                 None => RowRest::Open,
-                Some(n) => RowRest::RowVar(n.clone()),
+                Some(n) => RowRest::RowVar(n.clone(), 0),
             };
             continue;
         }
@@ -797,21 +796,21 @@ mod tests {
     fn infer(input: &str) -> Type {
         let file = crate::parse(input).unwrap();
         let env = Rc::new(TypeEnv::new());
-        let counter = Cell::new(0u32);
+        let mut state = InferState::new();
         let expr = &file.node.documents[0].node.expressions[0];
-        infer_expr(expr, &env, &counter, &mut None).unwrap()
+        infer_expr(expr, &env, &mut state, &mut None).unwrap()
     }
 
     fn doc_env(input: &str) -> Rc<TypeEnv> {
         let file = crate::parse(input).unwrap();
         let env = Rc::new(TypeEnv::new());
-        let counter = Cell::new(0u32);
-        typecheck_document(&file.node.documents[0], &env, &counter, &mut None).unwrap()
+        let mut state = InferState::new();
+        typecheck_document(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
     }
 
     fn result_type(input: &str) -> Type {
         let env = doc_env(input);
-        env.get("$").cloned().unwrap()
+        env.get("$").unwrap().body.clone()
     }
 
     fn result_field(input: &str, field: &str) -> Type {
@@ -824,9 +823,9 @@ mod tests {
     fn file_env(input: &str) -> Rc<TypeEnv> {
         let file = crate::parse(input).unwrap();
         let mut env = Rc::new(TypeEnv::new());
-        let counter = Cell::new(0u32);
+        let mut state = InferState::new();
         for doc in &file.node.documents {
-            env = typecheck_document(doc, &env, &counter, &mut None).unwrap();
+            env = typecheck_document(doc, &env, &mut state, &mut None).unwrap();
         }
         env
     }
@@ -944,9 +943,9 @@ mod tests {
         // Also verify via direct infer_expr call
         let file = crate::parse("[a: $undefined1  b: 42  c: $undefined2]").unwrap();
         let env = Rc::new(TypeEnv::new());
-        let counter = Cell::new(0u32);
+        let mut state = InferState::new();
         let expr = &file.node.documents[0].node.expressions[0];
-        let errs = infer_expr(expr, &env, &counter, &mut None).unwrap_err();
+        let errs = infer_expr(expr, &env, &mut state, &mut None).unwrap_err();
         assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
         assert!(errs[0].message.contains("$undefined1"));
         assert!(errs[1].message.contains("$undefined2"));
@@ -1191,7 +1190,7 @@ mod tests {
     #[test]
     fn test_pipeline_dollar_dollar() {
         let env = file_env("[x: 42]\n---\n[y: $$]");
-        let result = env.get("$").cloned().unwrap();
+        let result = env.get("$").unwrap().body.clone();
         match result {
             Type::Record(fields, _) => {
                 let y = fields.get("y").expect("field 'y' should exist");
@@ -1207,7 +1206,7 @@ mod tests {
     #[test]
     fn test_pipeline_dollar_dollar_type() {
         let env = file_env("[x: 1]\n---\n[y: $$.x]");
-        let result = env.get("$").cloned().unwrap();
+        let result = env.get("$").unwrap().body.clone();
         match result {
             Type::Record(fields, _) => {
                 let y = fields.get("y").expect("field 'y' should exist");
@@ -1239,7 +1238,7 @@ mod tests {
         let span = crate::test_util::test_span(1, 1, 1, 5);
         assert_eq!(
             resolve_annotation(&Annotation::Simple("a".into()), &env, span).unwrap(),
-            Type::TypeVar("a".into()),
+            Type::TypeVar("a".into(), 0),
         );
     }
 
@@ -1409,8 +1408,8 @@ mod tests {
         );
         match ty {
             Type::Function { params, ret } => {
-                assert_eq!(params, vec![Type::TypeVar("a".into())]);
-                assert_eq!(*ret, Type::TypeVar("b".into()));
+                assert_eq!(params, vec![Type::TypeVar("a".into(), 0)]);
+                assert_eq!(*ret, Type::TypeVar("b".into(), 0));
             }
             other => panic!("expected Function, got {other}"),
         }
@@ -1426,9 +1425,9 @@ mod tests {
             Type::Function { params, ret } => {
                 assert_eq!(
                     params,
-                    vec![Type::TypeVar("a".into()), Type::TypeVar("b".into())]
+                    vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)]
                 );
-                assert_eq!(*ret, Type::TypeVar("c".into()));
+                assert_eq!(*ret, Type::TypeVar("c".into(), 0));
             }
             other => panic!("expected Function, got {other}"),
         }
@@ -1457,7 +1456,7 @@ mod tests {
         );
         match ty {
             Type::Function { params, ret } => {
-                assert_eq!(params, vec![Type::TypeVar("a".into())]);
+                assert_eq!(params, vec![Type::TypeVar("a".into(), 0)]);
                 assert_eq!(*ret, Type::Bool);
             }
             other => panic!("expected Function, got {other}"),
@@ -1472,14 +1471,14 @@ mod tests {
         );
         match ty {
             Type::Function { params, ret } => {
-                assert_eq!(params, vec![Type::TypeVar("a".into())]);
+                assert_eq!(params, vec![Type::TypeVar("a".into(), 0)]);
                 match *ret {
                     Type::Function {
                         params: inner_params,
                         ret: inner_ret,
                     } => {
-                        assert_eq!(inner_params, vec![Type::TypeVar("b".into())]);
-                        assert_eq!(*inner_ret, Type::TypeVar("c".into()));
+                        assert_eq!(inner_params, vec![Type::TypeVar("b".into(), 0)]);
+                        assert_eq!(*inner_ret, Type::TypeVar("c".into(), 0));
                     }
                     other => panic!("expected inner Function, got {other}"),
                 }
@@ -1542,8 +1541,8 @@ mod tests {
     #[test]
     fn test_fn_type_display_round_trip() {
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into()), Type::TypeVar("b".into())],
-            ret: Box::new(Type::TypeVar("c".into())),
+            params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+            ret: Box::new(Type::TypeVar("c".into(), 0)),
         };
         assert_eq!(format!("{ty}"), "Fn@c [a b]");
     }
@@ -1679,8 +1678,8 @@ mod tests {
         assert!(alias.is_some(), "Identity alias should be registered");
         match alias.unwrap() {
             Type::Function { params, ret } => {
-                assert_eq!(params, &vec![Type::TypeVar("a".into())]);
-                assert_eq!(**ret, Type::TypeVar("a".into()));
+                assert_eq!(params, &vec![Type::TypeVar("a".into(), 0)]);
+                assert_eq!(**ret, Type::TypeVar("a".into(), 0));
             }
             other => panic!("expected Function type alias, got {other}"),
         }
@@ -1694,9 +1693,9 @@ mod tests {
             Type::Function { params, ret } => {
                 assert_eq!(
                     params,
-                    &vec![Type::TypeVar("a".into()), Type::TypeVar("b".into())]
+                    &vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)]
                 );
-                assert_eq!(**ret, Type::TypeVar("b".into()));
+                assert_eq!(**ret, Type::TypeVar("b".into(), 0));
             }
             other => panic!("expected Function type alias, got {other}"),
         }
@@ -1721,7 +1720,7 @@ mod tests {
         let alias = env.get_type_alias("Pred").unwrap();
         match alias {
             Type::Function { params, ret } => {
-                assert_eq!(params, &vec![Type::TypeVar("a".into())]);
+                assert_eq!(params, &vec![Type::TypeVar("a".into(), 0)]);
                 assert_eq!(**ret, Type::Bool);
             }
             other => panic!("expected Function type alias, got {other}"),
@@ -1751,7 +1750,7 @@ mod tests {
             "p",
         );
         match ty {
-            Type::Record(fields, RowRest::RowVar(name)) => {
+            Type::Record(fields, RowRest::RowVar(name, _)) => {
                 assert_eq!(fields.get("name"), Some(&Type::Str));
                 assert_eq!(name, "rest");
             }

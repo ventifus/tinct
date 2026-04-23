@@ -110,6 +110,8 @@ When dispatched for a full codebase review, review the entire project through yo
 
 ### Phase 1: doc/*.md Review
 
+_doc/*.md is aspirational — it describes intended behavior. When code diverges from the spec, fix the code, not the doc. Behaviors in doc/*.md without test coverage AND without implementation are code gaps, not doc errors._
+
 1. Are testing requirements and strategies documented for each language feature?
 2. Are there design decisions that lack testable acceptance criteria?
 3. Should testing best practices be explicitly documented?

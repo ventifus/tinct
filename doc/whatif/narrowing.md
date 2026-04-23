@@ -184,7 +184,7 @@ the narrower type wins (intersection of the two refinements).
 
 Narrowing assumes the condition is evaluated before the branches. This
 is semantically true for `$if` (strict in condition, selective in
-branches — DESIGN.md §Selective Materialization), so the narrowing is
+branches — doc/08-evaluation.md §Selective Materialization), so the narrowing is
 sound: the condition has been forced, establishing the type fact, before
 either branch is entered.
 

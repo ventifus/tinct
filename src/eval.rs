@@ -873,8 +873,10 @@ fn attach_materialization_context(
 pub fn materialize(
     thunk: &Thunk,
     mat_span: Option<&Span>,
-    // Thunks use their captured ctx during materialization, not this parameter.
-    // This exists for API consistency and future use (e.g., trace hooks).
+    // Intentionally unused. Thunks evaluate in their creation-time context (captured in
+    // `ThunkState::{Unevaluated,PendingBuiltin,PendingCall}::ctx`), not the caller's context,
+    // per Launchbury (1993) natural semantics. Maintains API consistency with `eval()`;
+    // will be removed during CEK machine migration (iterative-eval milestone).
     _ctx: &Rc<EvalContext>,
     depth: usize,
 ) -> EvalResult<Value> {

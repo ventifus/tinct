@@ -41,7 +41,7 @@ Work through each topic below sequentially. For each topic:
 
 **Architecture**: For each changed function, identify its layer (parser → AST → evaluator → type checker → builtins → stdlib → CLI). Check layer boundaries, abstraction leaks, coupling.
 
-**Design**: Read relevant `doc/*.md` chapters. Does implementation match? Are decisions being made implicitly without being recorded?
+**Design**: Read relevant `doc/*.md` chapters (docs are aspirational — if code diverges from the spec, the fix is to the code, not the doc). Does implementation match? Are decisions being made implicitly without being recorded?
 
 **Maintainability**: Any surprising behavior? Non-obvious side effects? Bad names? Dead code? High cyclomatic complexity? Simplification opportunities?
 

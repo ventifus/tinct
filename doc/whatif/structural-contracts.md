@@ -40,7 +40,7 @@ unified contract system:
 
 3. **No constraint validation beyond types.** Types express structure
    (`port: Int`) but not constraints (`port > 0 && port < 65536`).
-   DESIGN.md §Structural Contracts lists this as an open question.
+   doc/14-patterns.md §Structural Contracts lists this as an open question.
 
 4. **No schema inspection.** Tooling (LSP, CLI, documentation
    generators) cannot discover what a program expects without

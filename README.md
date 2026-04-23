@@ -216,8 +216,6 @@ Add a test by creating a `.llt-eval` file in the appropriate directory, then run
 
 - **[doc/](doc/index.md)** -- Language specification (17 chapters): syntax, data model, functions, type system, evaluation, stdlib, tooling, examples, internals
 - **[TODO.md](TODO.md)** -- Implementation roadmap with current sprint status
-- **[DESIGN.md](DESIGN.md)** -- Legacy design doc (source material for `doc/`)
-- **[SPEC.md](SPEC.md)** -- Legacy parser spec (source material for `doc/`)
 
 ## Development Workflow
 

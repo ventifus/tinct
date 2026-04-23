@@ -5,7 +5,7 @@ What would it take to [add/adopt/implement feature] in tinct?
 ## Current State
 
 How tinct handles this area today. What exists, what works, what's
-missing. Reference DESIGN.md sections, source files, and existing
+missing. Reference doc/*.md chapters, source files, and existing
 builtins/stdlib functions.
 
 Include code examples showing the current behavior or workaround:
