@@ -939,7 +939,13 @@ pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> Eval
                 Ok(value)
             }
             Err(e) => {
-                thunk.cache_failure(&e);
+                if e.kind.is_cacheable() {
+                    thunk.cache_failure(&e);
+                } else {
+                    // Non-cacheable error (e.g., DepthExceeded): restore original state
+                    // so the thunk can be re-evaluated at a shallower depth.
+                    thunk.set_state(ThunkState::Unevaluated { expr, env });
+                }
                 Err(e)
             }
         }
@@ -964,24 +970,58 @@ pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> Eval
                             Ok(value)
                         }
                         Err(e) => {
-                            thunk.cache_failure(&e);
+                            if e.kind.is_cacheable() {
+                                thunk.cache_failure(&e);
+                            } else {
+                                thunk.set_state(ThunkState::PendingBuiltin {
+                                    func,
+                                    args,
+                                    named,
+                                    depth: pending_depth,
+                                    call_span,
+                                });
+                            }
                             Err(e)
                         }
                     }
                 }
             }
             Err(e) => {
-                thunk.cache_failure(&e);
+                if e.kind.is_cacheable() {
+                    thunk.cache_failure(&e);
+                } else {
+                    thunk.set_state(ThunkState::PendingBuiltin {
+                        func,
+                        args,
+                        named,
+                        depth: pending_depth,
+                        call_span,
+                    });
+                }
                 Err(e)
             }
         }
     } else if let Some((func_thunk, args, named, call_span)) = thunk.take_pending_call() {
+        // Save clones for potential state restoration on non-cacheable errors
+        let func_thunk_clone = func_thunk.clone();
+        let args_clone = args.clone();
+        let named_clone = named.clone();
+
         // Materialize the function thunk to determine if it's a Function or Builtin
         let func_value =
             match materialize(&func_thunk, Some(&call_span), depth + 1).map_err(&decorate) {
                 Ok(v) => v,
                 Err(e) => {
-                    thunk.cache_failure(&e);
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        thunk.set_state(ThunkState::PendingCall {
+                            func: func_thunk,
+                            args,
+                            named,
+                            call_span,
+                        });
+                    }
                     return Err(e);
                 }
             };
@@ -1010,13 +1050,31 @@ pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> Eval
                                 Ok(value)
                             }
                             Err(e) => {
-                                thunk.cache_failure(&e);
+                                if e.kind.is_cacheable() {
+                                    thunk.cache_failure(&e);
+                                } else {
+                                    thunk.set_state(ThunkState::PendingCall {
+                                        func: Rc::clone(&func_thunk_clone),
+                                        args: args_clone.clone(),
+                                        named: named_clone.clone(),
+                                        call_span,
+                                    });
+                                }
                                 Err(e)
                             }
                         }
                     }
                     Err(e) => {
-                        thunk.cache_failure(&e);
+                        if e.kind.is_cacheable() {
+                            thunk.cache_failure(&e);
+                        } else {
+                            thunk.set_state(ThunkState::PendingCall {
+                                func: Rc::clone(&func_thunk_clone),
+                                args: args_clone.clone(),
+                                named: named_clone.clone(),
+                                call_span,
+                            });
+                        }
                         Err(e)
                     }
                 }
@@ -1041,14 +1099,32 @@ pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> Eval
                                     Ok(value)
                                 }
                                 Err(e) => {
-                                    thunk.cache_failure(&e);
+                                    if e.kind.is_cacheable() {
+                                        thunk.cache_failure(&e);
+                                    } else {
+                                        thunk.set_state(ThunkState::PendingCall {
+                                            func: Rc::clone(&func_thunk_clone),
+                                            args: args_clone.clone(),
+                                            named: named_clone.clone(),
+                                            call_span,
+                                        });
+                                    }
                                     Err(e)
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        thunk.cache_failure(&e);
+                        if e.kind.is_cacheable() {
+                            thunk.cache_failure(&e);
+                        } else {
+                            thunk.set_state(ThunkState::PendingCall {
+                                func: Rc::clone(&func_thunk_clone),
+                                args: args_clone.clone(),
+                                named: named_clone.clone(),
+                                call_span,
+                            });
+                        }
                         Err(e)
                     }
                 }
@@ -1057,7 +1133,16 @@ pub fn materialize(thunk: &Thunk, mat_span: Option<&Span>, depth: usize) -> Eval
                 let err =
                     EvalError::type_mismatch("Function or Builtin", other.type_name(), call_span);
                 let decorated = decorate(Box::new(err));
-                thunk.cache_failure(&decorated);
+                if decorated.kind.is_cacheable() {
+                    thunk.cache_failure(&decorated);
+                } else {
+                    thunk.set_state(ThunkState::PendingCall {
+                        func: func_thunk_clone,
+                        args: args_clone,
+                        named: named_clone,
+                        call_span,
+                    });
+                }
                 Err(decorated)
             }
         }
@@ -5355,5 +5440,167 @@ mod tests {
             "got: {}",
             result.message()
         );
+    }
+
+    // ── Non-cacheable error tests (is_cacheable) ───────────────────────
+
+    #[test]
+    fn test_depth_exceeded_does_not_cache() {
+        // DepthExceeded errors should NOT transition the thunk to Failed state
+        // because the same thunk may succeed at a lower depth
+        let env = empty_env();
+
+        // Create a recursive function
+        let recursive_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::VarRef("f".into()))),
+                args: vec![sp(Expr::VarRef("x".into()))],
+                named_args: vec![],
+            })),
+            env: Rc::clone(&env),
+        };
+
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(
+                recursive_fn,
+                test_span(1, 1, 1, 20),
+            )),
+        );
+
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+
+        let thunk = eval(&call_expr, env, 0).unwrap();
+
+        // Try to materialize at depth 256 (MAX_EVAL_DEPTH)
+        let err = materialize(&thunk, None, 256).unwrap_err();
+        assert!(
+            err.message().contains("maximum evaluation depth exceeded"),
+            "expected depth exceeded error, got: {}",
+            err.message()
+        );
+
+        // The thunk should NOT be in Failed state
+        match &*thunk.state() {
+            ThunkState::Failed(_) => {
+                panic!("DepthExceeded should not cache - thunk is in Failed state")
+            }
+            ThunkState::Unevaluated { .. } => {
+                // Expected: state was restored to Unevaluated
+            }
+            other => panic!("expected Unevaluated state, got: {:?}", other),
+        };
+    }
+
+    #[test]
+    fn test_regular_error_does_cache() {
+        // Regular errors (not DepthExceeded) should transition to Failed state
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("x".into()))),
+            value: sp(Expr::VarRef("undefined".into())),
+        })];
+        let dict = sp(Expr::Dict(entries));
+        let env = empty_env();
+        let dict_thunk = eval(&dict, Rc::clone(&env), 0).unwrap();
+        let dict_val = materialize(&dict_thunk, None, 0).unwrap();
+
+        let x_thunk = match &dict_val {
+            Value::Dict(map) => Rc::clone(map.get(&Key::String("x".into())).unwrap()),
+            other => panic!("expected Dict, got {other:?}"),
+        };
+
+        // First materialization: should fail and cache the error
+        let err1 = materialize(&x_thunk, None, 0).unwrap_err();
+        assert!(
+            err1.message().contains("undefined variable: $undefined"),
+            "expected undefined variable error, got: {}",
+            err1.message()
+        );
+
+        // The thunk SHOULD be in Failed state because UndefinedVariable is cacheable
+        match &*x_thunk.state() {
+            ThunkState::Failed(cached_err) => {
+                assert!(
+                    cached_err
+                        .message()
+                        .contains("undefined variable: $undefined"),
+                    "cached error mismatch: got: {}",
+                    cached_err.message()
+                );
+            }
+            other => panic!("expected Failed state, got: {:?}", other),
+        };
+    }
+
+    #[test]
+    fn test_depth_exceeded_can_retry_at_lower_depth() {
+        // After a non-cached DepthExceeded error, the thunk should be re-evaluable
+        // at a shallower depth (this test is conceptual - hard to test with actual
+        // recursion depth limits, so we test the state preservation)
+        let env = empty_env();
+
+        let recursive_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::VarRef("f".into()))),
+                args: vec![sp(Expr::VarRef("x".into()))],
+                named_args: vec![],
+            })),
+            env: Rc::clone(&env),
+        };
+
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(
+                recursive_fn,
+                test_span(1, 1, 1, 20),
+            )),
+        );
+
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+
+        let thunk = eval(&call_expr, env, 0).unwrap();
+
+        // First attempt at max depth - should fail
+        let err1 = materialize(&thunk, None, 256).unwrap_err();
+        assert!(
+            err1.message().contains("maximum evaluation depth exceeded"),
+            "expected depth exceeded, got: {}",
+            err1.message()
+        );
+
+        // Second attempt at max depth - should fail again (not cached)
+        let err2 = materialize(&thunk, None, 256).unwrap_err();
+        assert!(
+            err2.message().contains("maximum evaluation depth exceeded"),
+            "expected depth exceeded on retry, got: {}",
+            err2.message()
+        );
+
+        // The thunk should still be in Unevaluated state, not Failed
+        match &*thunk.state() {
+            ThunkState::Failed(_) => panic!("DepthExceeded should not cache"),
+            ThunkState::Unevaluated { .. } => {
+                // Expected: state was preserved
+            }
+            other => panic!("expected Unevaluated state, got: {:?}", other),
+        };
     }
 }

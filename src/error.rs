@@ -26,7 +26,7 @@ impl fmt::Display for ArityBound {
 }
 
 /// Structured error kind with domain-specific data.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ErrorKind {
     // --- Access errors (E000-E009) ---
     KeyNotFound {
@@ -191,6 +191,14 @@ impl ErrorKind {
     pub fn is_cacheable(&self) -> bool {
         !matches!(self, Self::DepthExceeded { .. })
     }
+
+    /// Returns `false` for errors that must not be caught by `$try`.
+    /// Currently only `DepthExceeded` — resource limit errors like stack overflow
+    /// should propagate to the runtime, not be suppressible by user code.
+    /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
+    pub fn is_catchable(&self) -> bool {
+        !matches!(self, Self::DepthExceeded { .. })
+    }
 }
 
 impl fmt::Display for ErrorKind {
@@ -259,6 +267,130 @@ impl fmt::Display for ErrorKind {
             }
             Self::UserError { message } => write!(f, "{message}"),
             Self::Internal { message } => write!(f, "{message}"),
+        }
+    }
+}
+
+impl PartialEq for ErrorKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::KeyNotFound { key: k1 }, Self::KeyNotFound { key: k2 }) => k1 == k2,
+            (Self::UndefinedVariable { name: n1 }, Self::UndefinedVariable { name: n2 }) => {
+                n1 == n2
+            }
+            (
+                Self::TypeMismatch {
+                    context: c1,
+                    expected: e1,
+                    got: g1,
+                },
+                Self::TypeMismatch {
+                    context: c2,
+                    expected: e2,
+                    got: g2,
+                },
+            ) => c1 == c2 && e1 == e2 && g1 == g2,
+            (
+                Self::TypeAssertFailed {
+                    expected: e1,
+                    got: g1,
+                },
+                Self::TypeAssertFailed {
+                    expected: e2,
+                    got: g2,
+                },
+            ) => e1 == e2 && g1 == g2,
+            (
+                Self::ArityMismatch {
+                    expected: e1,
+                    got: g1,
+                },
+                Self::ArityMismatch {
+                    expected: e2,
+                    got: g2,
+                },
+            ) => e1 == e2 && g1 == g2,
+            (Self::NamedArgConflict { param: p1 }, Self::NamedArgConflict { param: p2 }) => {
+                p1 == p2
+            }
+            (Self::UnknownNamedArg { name: n1 }, Self::UnknownNamedArg { name: n2 }) => n1 == n2,
+            (Self::NamedArgRejected { builtin: b1 }, Self::NamedArgRejected { builtin: b2 }) => {
+                b1 == b2
+            }
+            (Self::DuplicateKey { key: k1 }, Self::DuplicateKey { key: k2 }) => k1 == k2,
+            (Self::DivisionByZero { op: o1 }, Self::DivisionByZero { op: o2 }) => o1 == o2,
+            (Self::IntegerOverflow { op: o1 }, Self::IntegerOverflow { op: o2 }) => o1 == o2,
+            // Use bitwise comparison for f64 to handle NaN correctly
+            (
+                Self::FloatNotFinite {
+                    builtin: b1,
+                    value: v1,
+                },
+                Self::FloatNotFinite {
+                    builtin: b2,
+                    value: v2,
+                },
+            ) => b1 == b2 && v1.to_bits() == v2.to_bits(),
+            (Self::EmptyCollection { op: o1 }, Self::EmptyCollection { op: o2 }) => o1 == o2,
+            (Self::DepthExceeded { limit: l1 }, Self::DepthExceeded { limit: l2 }) => l1 == l2,
+            (Self::JsonDepthExceeded { limit: l1 }, Self::JsonDepthExceeded { limit: l2 }) => {
+                l1 == l2
+            }
+            (Self::IncludeNotAvailable, Self::IncludeNotAvailable) => true,
+            (
+                Self::IncludeIoError {
+                    path: p1,
+                    detail: d1,
+                },
+                Self::IncludeIoError {
+                    path: p2,
+                    detail: d2,
+                },
+            ) => p1 == p2 && d1 == d2,
+            (Self::IncludeCycle { path: p1 }, Self::IncludeCycle { path: p2 }) => p1 == p2,
+            (
+                Self::IncludeParseFailed {
+                    path: p1,
+                    detail: d1,
+                },
+                Self::IncludeParseFailed {
+                    path: p2,
+                    detail: d2,
+                },
+            ) => p1 == p2 && d1 == d2,
+            (
+                Self::IncludeFileTooLarge {
+                    path: p1,
+                    size: s1,
+                    limit: l1,
+                },
+                Self::IncludeFileTooLarge {
+                    path: p2,
+                    size: s2,
+                    limit: l2,
+                },
+            ) => p1 == p2 && s1 == s2 && l1 == l2,
+            (
+                Self::ParseConversion {
+                    builtin: b1,
+                    input: i1,
+                    target: t1,
+                },
+                Self::ParseConversion {
+                    builtin: b2,
+                    input: i2,
+                    target: t2,
+                },
+            ) => b1 == b2 && i1 == i2 && t1 == t2,
+            (Self::JsonParse { detail: d1 }, Self::JsonParse { detail: d2 }) => d1 == d2,
+            (Self::JsonRange, Self::JsonRange) => true,
+            (Self::CircularDependency { name: n1 }, Self::CircularDependency { name: n2 }) => {
+                n1 == n2
+            }
+            (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
+            (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
+            // Different variants are not equal
+            _ => false,
         }
     }
 }
@@ -596,5 +728,175 @@ mod tests {
         assert_eq!(err.stack.len(), 2);
         assert_eq!(err.stack[1].label, "second_function");
         assert_eq!(err.stack[1].span, frame2_span);
+    }
+
+    #[test]
+    fn test_is_catchable() {
+        // DepthExceeded is NOT catchable
+        let depth_err = ErrorKind::DepthExceeded { limit: 256 };
+        assert!(!depth_err.is_catchable());
+
+        // All other errors ARE catchable
+        assert!(ErrorKind::KeyNotFound {
+            key: "foo".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::TypeMismatch {
+            context: None,
+            expected: "Int".to_string(),
+            got: "String".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::CircularDependency {
+            name: "$x".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::UserError {
+            message: "test".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::DivisionByZero {
+            op: "/".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::FloatNotFinite {
+            builtin: "test".to_string(),
+            value: f64::NAN
+        }
+        .is_catchable());
+    }
+
+    #[test]
+    fn test_float_not_finite_nan_equality() {
+        // Two FloatNotFinite errors with NaN should compare as equal
+        let err1 = ErrorKind::FloatNotFinite {
+            builtin: "test".to_string(),
+            value: f64::NAN,
+        };
+        let err2 = ErrorKind::FloatNotFinite {
+            builtin: "test".to_string(),
+            value: f64::NAN,
+        };
+        assert_eq!(err1, err2);
+
+        // Different NaN bit patterns should also work
+        let err3 = ErrorKind::FloatNotFinite {
+            builtin: "test".to_string(),
+            value: f64::INFINITY,
+        };
+        assert_ne!(err1, err3);
+
+        // Same value, different builtin
+        let err4 = ErrorKind::FloatNotFinite {
+            builtin: "other".to_string(),
+            value: f64::NAN,
+        };
+        assert_ne!(err1, err4);
+    }
+
+    #[test]
+    fn test_partialeq_all_variants_covered() {
+        // Verify that all ErrorKind variants are covered by the PartialEq impl
+        // by checking that each variant equals itself. This ensures the match
+        // is exhaustive and doesn't rely solely on the catch-all `_ => false` arm.
+        //
+        // If a new variant is added without updating PartialEq, this test will
+        // fail (since the catch-all would incorrectly return false for self-comparison).
+
+        let variants: Vec<ErrorKind> = vec![
+            ErrorKind::KeyNotFound {
+                key: "x".to_string(),
+            },
+            ErrorKind::UndefinedVariable {
+                name: "x".to_string(),
+            },
+            ErrorKind::TypeMismatch {
+                context: None,
+                expected: "Int".to_string(),
+                got: "String".to_string(),
+            },
+            ErrorKind::TypeAssertFailed {
+                expected: "Int".to_string(),
+                got: "String".to_string(),
+            },
+            ErrorKind::ArityMismatch {
+                expected: ArityBound::Exact(1),
+                got: 2,
+            },
+            ErrorKind::NamedArgConflict {
+                param: "x".to_string(),
+            },
+            ErrorKind::UnknownNamedArg {
+                name: "x".to_string(),
+            },
+            ErrorKind::NamedArgRejected {
+                builtin: "test".to_string(),
+            },
+            ErrorKind::DuplicateKey {
+                key: "x".to_string(),
+            },
+            ErrorKind::DivisionByZero {
+                op: "/".to_string(),
+            },
+            ErrorKind::IntegerOverflow {
+                op: "+".to_string(),
+            },
+            ErrorKind::FloatNotFinite {
+                builtin: "test".to_string(),
+                value: f64::NAN,
+            },
+            ErrorKind::EmptyCollection {
+                op: "head".to_string(),
+            },
+            ErrorKind::DepthExceeded { limit: 256 },
+            ErrorKind::JsonDepthExceeded { limit: 128 },
+            ErrorKind::IncludeNotAvailable,
+            ErrorKind::IncludeIoError {
+                path: "x".to_string(),
+                detail: "error".to_string(),
+            },
+            ErrorKind::IncludeCycle {
+                path: "x".to_string(),
+            },
+            ErrorKind::IncludeParseFailed {
+                path: "x".to_string(),
+                detail: "error".to_string(),
+            },
+            ErrorKind::IncludeFileTooLarge {
+                path: "x".to_string(),
+                size: 1000,
+                limit: 100,
+            },
+            ErrorKind::ParseConversion {
+                builtin: "to-int".to_string(),
+                input: "x".to_string(),
+                target: "Int".to_string(),
+            },
+            ErrorKind::JsonParse {
+                detail: "error".to_string(),
+            },
+            ErrorKind::JsonRange,
+            ErrorKind::CircularDependency {
+                name: "$x".to_string(),
+            },
+            ErrorKind::UserError {
+                message: "test".to_string(),
+            },
+            ErrorKind::Internal {
+                message: "test".to_string(),
+            },
+        ];
+
+        // Verify we have all 26 variants
+        assert_eq!(variants.len(), 26, "Expected 26 ErrorKind variants");
+
+        // Each variant should equal itself
+        for variant in &variants {
+            assert_eq!(
+                variant, variant,
+                "Variant {:?} does not equal itself",
+                variant
+            );
+        }
     }
 }

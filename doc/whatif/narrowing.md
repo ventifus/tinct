@@ -1,42 +1,55 @@
-# What If: Path-Sensitive Type Narrowing
+# What If: Path-Sensitive Type Narrowing for tinct
 
 What would it take to narrow types in conditional branches based on
 equality checks and type guards?
 
-## Status
-Proposal — not approved for implementation.
+## Current State
 
-**Assumes:** `typeassert-structural` sprint is complete (TypeAssert
-elaboration, `ThunkState::Guarded`, proxy contracts, structural contract
-validation).
-
-## Problem
-
-Tinct has singleton literal types (`IntLiteral(42)`,
-`StringLiteral("hello")`) that are subtypes of their base types. After
-an equality check, the type checker could narrow the variable's type in
-the true branch:
+tinct has singleton literal types (`IntLiteral(42)`,
+`StringLiteral("hello")`) that are subtypes of their base types, but the
+type checker has no path sensitivity — a variable has the same type in
+both branches of an `$if`.
 
 ```lisp
 [if [= $x "hello"]
-  $x       ;; narrowed: StringLiteral("hello") instead of Str
-  $x]      ;; stays Str
+  $x       ;; still typed as Str, not StringLiteral("hello")
+  $x]      ;; still typed as Str
 ```
-
-Currently the type checker has no path sensitivity — `$x` has the same
-type in both branches. `$if` is a builtin call (`Sc × Sc → Θ` in the
-strictness table), not a type-level special form.
-
-## Current State
 
 - `$if` is typed via `check_call` like any other builtin — no
   branch-specific type environments
 - `IntLiteral`/`StringLiteral` exist as types but only arise from literal
   expressions, never from narrowing
-- `$=` is typed `Any → Any → Bool` — no narrowing information
-- TypeAssert (post `typeassert-structural`) provides explicit narrowing:
-  `[@String $x]` narrows `$x` to `String` via `ThunkState::Guarded`
-  proxy contracts. This is user-driven, not automatic.
+- `$=` is typed `Any → Any → Bool` — no narrowing information flows from
+  equality checks to the type environment
+- TypeAssert (`[@Type expr]`) provides explicit narrowing via
+  `ThunkState::Guarded` proxy contracts, but this is user-driven, not
+  automatic
+
+### What's Missing
+
+1. **No branch-specific type environments.** The type checker uses a single
+   environment for both branches of `$if`.
+2. **No condition analysis.** The type checker does not inspect the condition
+   expression to extract type information.
+3. **No automatic narrowing.** Users must write explicit `[@Type expr]`
+   assertions to narrow types, even when the condition already establishes
+   the type fact.
+4. **`$if` is not a type-level special form.** It is dispatched through
+   the generic builtin call path, which cannot fork the type environment.
+
+## What Path-Sensitive Narrowing Would Provide
+
+1. **More precise types in conditional branches.** After `[= $x "hello"]`,
+   the true branch knows `$x` is exactly `"hello"`, enabling better type
+   checking for subsequent operations.
+2. **Better LSP hover information.** Hovering over `$x` in a narrowed
+   branch shows the refined type, not the original broad type.
+3. **Foundation for pattern matching.** If tinct gains sum types or tagged
+   unions, narrowing is the mechanism for discriminated union checking.
+4. **Reduced annotation burden.** Guards that the user currently writes
+   explicitly (`[@String $x]`) can be inferred automatically from
+   conditional context.
 
 ## Design
 
@@ -60,7 +73,7 @@ with refined bindings for variables mentioned in `cond`.
 
 Without union types, the result type uses the LUB (least upper bound) of
 `τ₁` and `τ₂`. With the current type lattice, this is often `Any` or the
-shared base type. With union types (see `doc/whatif/algebraic.md`), the
+shared base type. With union types (see `doc/whatif/union-types.md`), the
 result is `τ₁ | τ₂`.
 
 ### Narrowing Patterns
@@ -98,6 +111,10 @@ is a string literal matching a known type name. Maps `"Int"` → `Type::Int`,
 `Type::Bool`, `"Dict"` → `Type::Record([], Open)`, `"Seq"` →
 `Type::Seq(Any)`, `"Function"` → `Type::Any` (can't narrow further).
 
+When type predicates are available (see `doc/whatif/type-predicates.md`),
+this pattern extends to recognize `[$int? $x]` directly, without the
+`$type-of` indirection.
+
 #### Pattern 3: Key Presence
 
 ```lisp
@@ -122,37 +139,59 @@ Conjunction (`$and`) applies both narrowings to the true-branch
 environment. Disjunction (`$or`) applies the intersection of narrowings
 (only narrow if both branches agree — rare, usually no narrowing).
 
-### Implementation
+### Narrowing Extraction
 
-#### Type Checker Changes (`src/typecheck.rs`)
+The type checker extracts narrowing constraints by pattern matching on
+the condition AST:
 
-1. **Detect `$if` calls.** In `check_call` or `infer_expr`, when the
-   callee resolves to the `$if` builtin, dispatch to a dedicated
-   `infer_if(cond, then_expr, else_expr, env, state, type_map)` function
-   instead of the generic call inference path.
+```rust
+enum Narrowing {
+    EqLiteral { var: String, ty: Type },
+    TypeOf { var: String, ty: Type },
+    HasKey { var: String, key: String },
+}
 
-2. **Extract narrowing constraints.** `extract_narrowings(cond_expr, env)`
-   → `Vec<Narrowing>` where:
-   ```rust
-   enum Narrowing {
-       EqLiteral { var: String, ty: Type },
-       TypeOf { var: String, ty: Type },
-       HasKey { var: String, key: String },
-   }
-   ```
-   Pattern matching on the condition AST to detect the recognized shapes.
+fn extract_narrowings(cond: &Expr, env: &TypeEnv) -> Vec<Narrowing> {
+    // Pattern match on cond AST shape
+    // Return empty vec for unrecognized patterns
+}
+```
 
-3. **Fork the type environment.** Create `env_true` by cloning `env` and
-   applying narrowings. Create `env_false` as a clone of `env` (no
-   false-branch narrowing initially).
+### Environment Forking
 
-4. **Infer branches independently.** `infer_expr(then, &env_true, ...)`
-   and `infer_expr(else, &env_false, ...)`.
+The type checker creates forked environments for each branch:
 
-5. **Join result types.** Compute LUB of the two branch types. Without
-   union types, this is the nearest common supertype in the lattice.
+1. `env_true` = clone `env`, apply narrowings
+2. `env_false` = clone `env` (no false-branch narrowing initially)
 
-#### Stdlib Narrowing (`$cond`, `$when`, `$unless`)
+Per-`$if` cost: one environment clone per branch (two clones total). In
+programs with nested conditionals, this multiplies — a chain of 10 nested
+`$if`s creates 20 environment clones. For tinct's target domain (config
+files with few conditionals), this is acceptable.
+
+### Interaction with TypeAssert
+
+TypeAssert (`[@Type expr]`) already narrows via elaboration + proxy
+contracts. Path-sensitive narrowing complements it:
+
+- **TypeAssert:** explicit, user-written, works anywhere, runtime-checked
+- **Path narrowing:** implicit, automatic in `$if` branches, static only
+
+Both can coexist. If `$x` is narrowed by a condition AND has a TypeAssert,
+the narrower type wins (intersection of the two refinements).
+
+### Interaction with Lazy Evaluation
+
+Narrowing assumes the condition is evaluated before the branches. This
+is semantically true for `$if` (strict in condition, selective in
+branches — DESIGN.md §Selective Materialization), so the narrowing is
+sound: the condition has been forced, establishing the type fact, before
+either branch is entered.
+
+For `$cond`, the same applies to each condition-value pair (conditions
+are forced sequentially).
+
+### Stdlib Narrowing (`$cond`, `$when`, `$unless`)
 
 These are stdlib functions defined in terms of `$if`. Two options:
 
@@ -164,44 +203,11 @@ These are stdlib functions defined in terms of `$if`. Two options:
 
 Recommended: start with `$if` only.
 
-#### Interaction with TypeAssert
-
-TypeAssert (`[@Type expr]`) already narrows via elaboration + proxy
-contracts. Path-sensitive narrowing complements it:
-
-- **TypeAssert:** explicit, user-written, works anywhere, runtime-checked
-- **Path narrowing:** implicit, automatic in `$if` branches, static only
-
-Both can coexist. If `$x` is narrowed by a condition AND has a TypeAssert,
-the narrower type wins (intersection of the two refinements).
-
-#### Interaction with Lazy Evaluation
-
-Narrowing assumes the condition is evaluated before the branches. This
-is semantically true for `$if` (strict in condition, selective in
-branches — DESIGN.md §Selective Materialization), so the narrowing is
-sound: the condition has been forced, establishing the type fact, before
-either branch is entered.
-
-For `$cond`, the same applies to each condition-value pair (conditions
-are forced sequentially).
-
-### Cost Model
-
-- **Per-`$if` cost:** One environment clone per branch (two clones total).
-  In programs with nested conditionals, this multiplies. A chain of 10
-  nested `$if`s creates 20 environment clones.
-- **Pattern matching cost:** `extract_narrowings` walks the condition AST
-  once per `$if`. Negligible for simple conditions, linear in condition
-  complexity for conjunctions.
-- **No runtime cost.** Narrowing is purely static — no additional guards
-  or checks at runtime beyond what TypeAssert already provides.
-
 ### Limitations
 
 1. **No false-branch narrowing.** Requires negation types (`Str \ {"hello"}`)
    which tinct does not have. The false branch gets the unrefined type.
-   Revisit if algebraic subtyping is adopted (`doc/whatif/algebraic.md`).
+   Revisit if algebraic subtyping is adopted (`doc/whatif/algebraic-subtypes.md`).
 
 2. **Only `$if` initially.** `$cond`, `$when`, `$unless`, and user-defined
    conditional patterns are not narrowed. Explicit TypeAssert is the
@@ -221,70 +227,118 @@ are forced sequentially).
    condition expression. Narrowing only works when the condition is inline
    in `$if`.
 
-## What We'd Gain
+## What Would Change
 
-1. **More precise types in conditional branches.** After `[= $x "hello"]`,
-   the true branch knows `$x` is exactly `"hello"`, enabling better type
-   checking for subsequent operations.
+### Type Checker (`src/typecheck.rs`)
 
-2. **Better LSP hover information.** Hovering over `$x` in a narrowed
-   branch shows the refined type, not the original broad type.
+**Current:** `$if` is dispatched through `check_call` like any other
+builtin. The type checker uses a single environment for both branches.
+**Proposed:** Detect `$if` calls and dispatch to a dedicated
+`infer_if(cond, then_expr, else_expr, env, state, type_map)` function.
+Extract narrowing constraints from the condition AST. Fork the type
+environment into `env_true` and `env_false`. Infer branches independently.
+Join result types via LUB.
+**Impact:** Major — `$if` becomes a special form. New AST pattern matching
+infrastructure for condition analysis. Environment forking doubles
+allocation in conditional code.
 
-3. **Foundation for pattern matching.** If tinct gains sum types or tagged
-   unions, narrowing is the mechanism for discriminated union checking.
+### Type Representation (`src/types.rs`)
 
-4. **Interplay with TypeAssert.** Guards that the user currently writes
-   explicitly (`[@String $x]`) can be inferred automatically from
-   conditional context, reducing annotation burden.
+**Current:** No narrowing-related types.
+**Proposed:** No changes to `Type` enum — narrowing uses existing types
+(`IntLiteral`, `StringLiteral`, `Record`). The `Narrowing` enum is local
+to the type checker.
+**Impact:** None.
 
-## What We'd Lose / Risk
+### Evaluator (`src/eval.rs`)
 
-1. **Type checker complexity.** `$if` becomes a special form instead of a
-   regular builtin call. The type checker gains AST pattern matching for
-   conditions. Environment forking doubles allocation in conditional code.
+**Current:** No runtime narrowing.
+**Proposed:** No changes. Narrowing is purely static — no additional
+guards or checks at runtime beyond what TypeAssert already provides.
+**Impact:** None.
 
-2. **Maintenance burden.** Each narrowing pattern is hardcoded — new
-   builtins or patterns require type checker changes.
+### Parser / Grammar
 
-3. **Surprise narrowing.** Users may not expect the type to change between
-   branches. Error messages must explain narrowing clearly ("type narrowed
-   to StringLiteral("hello") because of equality check at line 5").
+**Current:** No changes needed.
+**Proposed:** No changes — narrowing is a type checker feature, not a
+syntax feature.
+**Impact:** None.
 
-4. **Low ROI for config.** Typical config files have few conditionals.
-   The feature primarily benefits programs with significant branching
-   logic, which is uncommon in tinct's target domain.
+### Type Map (LSP integration)
 
-## Recommendation
+**Current:** Each expression has one type in the type map.
+**Proposed:** Variables in narrowed branches get their refined type in
+the type map. LSP hover shows the narrowed type.
+**Impact:** Minor — type map entries are updated with narrowed types, no
+structural changes to the type map itself.
 
-Implement path-sensitive narrowing for `$if` with the four patterns above.
-The implementation cost is moderate (one special form, AST pattern matching,
-environment forking) and the infrastructure pays forward: if tinct gains
-sum types, narrowing becomes essential for discriminated union pattern
-matching.
+## Phased Adoption
 
-Start with `$if` only, equality-with-literal and type-of-guard patterns.
-Add has-key and conjunction as follow-ups. Defer false-branch narrowing
-and cross-function narrowing.
+### Phase 1: Equality and Type-of Narrowing
 
-## Trigger
+Add `$if` as a type-level special form. Implement Pattern 1
+(equality with literal) and Pattern 2 (type-of guard). These two
+patterns cover the most common narrowing scenarios and validate the
+environment-forking infrastructure.
 
-Implement after:
-- `let-generalization` (narrowing refines type schemes)
-- `bidirectional-typing` (narrowing feeds into checking mode)
-- `typeassert-structural` (narrowing complements explicit contracts)
+### Phase 2: Key Presence and Conjunction
 
-Revisit false-branch narrowing if algebraic subtyping is adopted (negation
-types become available).
+Add Pattern 3 (key presence via `$has?`) and Pattern 4 (boolean
+conjunction via `$and`). Key presence narrowing is particularly valuable
+for config validation — checking whether a dict has a required field
+before accessing it.
+
+### Phase 3: Type Predicate Integration
+
+When type predicates are available (see `doc/whatif/type-predicates.md`),
+extend Pattern 2 to recognize `[$int? $x]`, `[$str? $x]`, etc. as
+direct narrowing triggers without the `$type-of` indirection.
+
+### Phase 4: False-Branch Narrowing (deferred)
+
+If algebraic subtyping is adopted (see `doc/whatif/algebraic-subtypes.md`),
+negation types become available, enabling false-branch narrowing:
+after `[= $x "hello"]`, the false branch knows
+`$x : Str \ StringLiteral("hello")`.
+
+### Prerequisites
+
+- Phase 1 requires `let-generalization` (narrowing refines type schemes),
+  `bidirectional-typing` (narrowing feeds into checking mode), and
+  `typeassert-structural` (narrowing complements explicit contracts)
+- Phase 2 has no additional prerequisites beyond Phase 1
+- Phase 3 requires `type-predicates` Phase 1 (see
+  `doc/whatif/type-predicates.md`)
+- Phase 4 requires `algebraic-subtypes` adoption (see
+  `doc/whatif/algebraic-subtypes.md`)
+
+### Trigger
+
+- Begin Phase 1 when `bidirectional-typing` and `typeassert-structural`
+  sprints are complete — narrowing builds directly on both.
+- Begin Phase 1 when user code contains repeated `[@Type expr]` assertions
+  in `$if` branches that could be inferred from the condition — narrowing
+  eliminates this boilerplate.
+- Revisit Phase 4 (false-branch narrowing) if algebraic subtyping is
+  adopted and negation types become available.
 
 ## References
 
 - Dunfield, J. & Pfenning, F. (2004). "Tridirectional typechecking."
   In *POPL '04*, pp. 281–292. ACM.
   — Datasort refinements, singleton types as refinements of base types.
-- TypeScript Handbook. "Narrowing."
-  — Practical narrowing patterns: typeof guards, equality narrowing,
-  truthiness narrowing, discriminated unions.
+  The formal model for narrowing literal types in branches.
 - Tobin-Hochstadt, S. & Felleisen, M. (2010). "Logical types for untyped
   languages." In *ICFP '10*, pp. 117–128. ACM.
   — Occurrence typing in Typed Racket: type narrowing via predicates in
-  conditionals, foundational for flow-sensitive typing.
+  conditionals. The foundational work on path-sensitive type narrowing,
+  directly applicable to tinct's `$if`-based narrowing.
+- TypeScript Handbook. "Narrowing."
+  — Practical narrowing patterns: typeof guards, equality narrowing,
+  truthiness narrowing, discriminated unions. Production reference for
+  the pattern catalog approach.
+- Wright, A.K. & Cartwright, R. (1997). "A practical soft type system
+  for Scheme." *ACM TOPLAS*, 19(1), pp. 87–152. ACM.
+  — Soft typing: inferring type information from predicates in untyped
+  programs. Early work on condition-driven type refinement that informs
+  the narrowing-from-guards approach.

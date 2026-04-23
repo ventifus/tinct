@@ -107,12 +107,14 @@ would enforce arity.
    prerequisite for higher-kinded types and type classes (`Functor f`
    requires `f` to be a type constructor)
 
-## Approaches
+## Design
 
-### Approach C: Hybrid — Implicit Default, Explicit Opt-In
+Hybrid approach: keep current behavior for non-parameterized aliases,
+add explicit parameter lists for aliases that need fresh instantiation.
+This is fully backward compatible — all existing `[type ...]` aliases
+continue to work identically.
 
-Default to current behavior (shared free variables). Add optional
-explicit parameters for aliases that need fresh instantiation:
+### Syntax
 
 ```lisp
 # No parameters — current behavior (shared variables)
@@ -120,25 +122,87 @@ Mapper: [type [Fn@b [a]]]
 
 # Explicit parameters — fresh instantiation per use
 Pair: [type [a] [first: a  second: a]]
+
+# Application in annotations
+pair-of-ints: [fn@[Pair Int] [] [first: 1  second: 2]]
+compose: [fn [f@[Mapper b c]  g@[Mapper a b]] [Mapper a c]]
 ```
 
-Non-parameterized aliases behave exactly as today. Parameterized aliases
-get fresh instantiation.
+Non-parameterized aliases behave exactly as today. Parameterized
+aliases get fresh instantiation at each use site.
 
-**Pros:**
-- Fully backward compatible
-- Users opt into parameterization only when needed
-- Covers both use cases (shared vars and fresh instantiation)
+### Semantics
 
-**Cons:**
-- Two mental models for type aliases
-- Users must know when to use parameters vs. not
+Parameterized type aliases are **syntactic abbreviations**, not
+polymorphic type schemes. The distinction:
+
+- **Type alias:** `Pair: [type [a] [first: a  second: a]]` — textual
+  expansion with substitution, no quantification
+- **Let-generalization:** `id: [fn [x] $x]` gets type `forall a. a -> a`
+  — the type scheme quantifies `a` and each use instantiates fresh
+  variables via the inference algorithm
+
+When `[Pair Int]` appears in a type annotation position, the type
+checker:
+1. Looks up `Pair` in the alias environment
+2. Checks arity: `Pair` declares 1 parameter, 1 argument provided
+3. Builds substitution `{a |-> Int}`
+4. Applies substitution to the body: `[first: Int  second: Int]`
+5. Returns the resulting type for unification with the context
+
+This is the same model as Haskell's `type` synonyms (as opposed to
+`newtype` or `data` declarations). Aliases are always fully expanded
+before unification — no alias names appear in inferred types.
+
+### Interaction with Row Polymorphism
+
+Parameterized aliases can produce record types with row variables:
+
+```lisp
+Extensible: [type [a] [name: String  ..a]]
+```
+
+When `[Extensible r]` is used, the substitution `{a |-> r}` splices
+`r` into the row variable position. This is sound because row variable
+substitution is already implemented in `types.rs` — the alias expansion
+happens before unification, so the row variable enters the type system
+through the same path as a hand-written record type with a row variable.
+
+The key constraint: alias parameters that appear in row variable
+position must be substituted with row-kinded types. If `[Extensible Int]`
+is written, the resulting `[name: String  ..Int]` is ill-formed. The
+type checker should detect this during unification (Int cannot unify
+with a row variable), producing an error at the alias application site
+rather than deep inside the unifier.
+
+### Interaction with Type Inference
+
+Alias expansion happens during type annotation resolution, before
+inference begins. This means:
+
+1. **No impact on principal types.** Alias expansion is a preprocessing
+   step — it does not change the inference algorithm or its guarantees.
+2. **No impact on unification.** The unifier never sees alias names,
+   only their expanded forms.
+3. **No impact on let-generalization.** Aliases are expanded in
+   annotation positions; the inference algorithm's generalization
+   step operates on the expanded types.
+
+The one subtlety: when a parameterized alias is used without full
+application (e.g., `Pair` appears bare in an annotation without
+arguments), it should be treated as the current non-parameterized
+behavior (free variables connect by name). This preserves backward
+compatibility for aliases that are used both with and without
+parameters during a migration period.
 
 ## What Would Change
 
-### AST
+### AST (`parser.rs`)
 
-`Expr::TypeAlias` gains an optional parameter list:
+**Current:** `Expr::TypeAlias(Box<Spanned<Expr>>)` — the inner
+expression is the body. No parameter tracking.
+
+**Proposed:** `Expr::TypeAlias` gains an optional parameter list:
 
 ```rust
 /// Type alias: [type body] or [type [params] body]
@@ -148,14 +212,14 @@ TypeAlias {
 }
 ```
 
-Currently `TypeAlias(Box<Spanned<Expr>>)` — the inner expression is the
-body. With parameters, the parser must distinguish `[type [a b] [Fn@b [a]]]`
-(parameterized) from `[type [Fn@b [a]]]` (non-parameterized).
+**Impact:** Minor — structural change to one AST variant.
 
-### Parser
+### Parser (`parser.rs`)
 
-The parser must detect whether the first `[]` inside `[type ...]` is a
-parameter list or the body:
+**Current:** `[type body]` parses the inner expression as the alias body.
+
+**Proposed:** The parser must detect whether the first `[]` inside
+`[type ...]` is a parameter list or the body:
 
 - If the first `[]` contains only lowercase bare words (no `:`, no `@`,
   no uppercase words, no literals): it's a parameter list, and the next
@@ -165,77 +229,50 @@ parameter list or the body:
 This is unambiguous because type bodies always contain either uppercase
 type names, `:` for record fields, or `@` for function types.
 
-### Type Checker
+**Impact:** Minor — localized change to `type` form parsing.
 
-1. **Registration:** `register_type_aliases()` stores `TypeAlias { params, body }`
-   instead of plain `Type`.
+### Type Checker (`typecheck.rs`)
 
+**Current:** `register_type_aliases()` resolves the inner type expression
+and stores the result in `TypeEnv::type_aliases` as a plain `Type`.
+`get_type_alias()` looks up through the parent chain. No parameter
+tracking, no instantiation.
+
+**Proposed:**
+1. **Registration:** `register_type_aliases()` stores
+   `TypeAlias { params, body }` instead of plain `Type`.
 2. **Resolution:** When resolving a type expression that references a
    parameterized alias (e.g., `[Pair Int]`), build a substitution from
    parameter names to provided type arguments, then apply to the body.
-
 3. **Arity check:** If an alias has `n` parameters and is applied to `m`
-   arguments where `m ≠ n`, report a type error.
-
+   arguments where `m != n`, report a type error.
 4. **Zero-parameter aliases:** Unchanged from current behavior — stored
    with empty `params`, expanded by name, free variables connect by name.
 
-### Interaction with Let-Generalization
+**Impact:** Moderate — new resolution logic and arity checking in
+`register_type_aliases()` and type annotation resolution.
 
-Parameterized type aliases are **not** polymorphic let-bindings. They are
-syntactic abbreviations expanded before inference. The distinction:
+### Unification (`types.rs`)
 
-- **Type alias:** `Pair: [type [a] [first: a second: a]]` — textual
-  expansion, no quantification, no instantiation machinery
-- **Let-generalization:** `id: [fn [x] $x]` gets type `∀a. a → a` —
-  the type scheme quantifies `a` and each use instantiates fresh variables
+**Current:** Unification never sees alias names — aliases are expanded
+to their body types before unification.
 
-Parameterized aliases use simple substitution at the alias usage site.
-This is the same model as Haskell's `type` aliases (as opposed to
-`newtype` or `data` declarations).
+**Proposed:** No change. Parameterized alias expansion still happens
+before unification. The unifier continues to operate on expanded types.
 
-## Recommendation
+**Impact:** None.
 
-**Approach C: Hybrid — keep current behavior for non-parameterized
-aliases, add explicit parameter lists for aliases that need them.**
+## Phased Adoption
 
-### Rationale
-
-1. **Backward compatible.** All existing `[type ...]` aliases continue
-   to work identically. No migration needed.
-
-2. **Approach B breaks existing patterns.** Implicit freshening would
-   disconnect type variables that currently unify by name across function
-   signatures. The `apply-mapper` example above shows this is a real
-   problem, not a theoretical one.
-
-3. **Explicit parameters are standard.** Haskell, TypeScript, OCaml, F#,
-   Scala all use explicit parameter lists for parameterized type aliases.
-   The syntax `[type [a b] body]` is natural in tinct's bracket syntax.
-
-4. **Arity checking catches real errors.** Without parameters, there's
-   no way to detect that `Pair` was used with the wrong number of type
-   arguments. With explicit parameters, `[Pair Int String Bool]` is an
-   immediate type error.
-
-5. **Foundation for type classes.** If type classes are adopted (see
-   `doc/whatif/typeclasses.md`), type constructors like `Functor f`
-   require `f` to be a parameterized type. Explicit parameters establish
-   that `Pair` takes one argument, `Mapper` takes two, etc.
-
-### Phased Adoption
-
-#### Phase 1: Parameterized Alias Registration
+### Phase 1: Parameterized Alias Registration
 
 Add the `params` field to `TypeAlias`. Parser recognizes
 `[type [lowercase-words] body]` as parameterized. Type checker stores
-the parameter names. Zero-parameter aliases unchanged.
+the parameter names. Zero-parameter aliases unchanged. This phase is
+independently useful for documentation — explicit parameters declare
+what's generic, even before application syntax is supported.
 
-**Trigger:** The first time a user encounters the name collision problem
-(two aliases sharing a variable name that shouldn't unify), or when the
-type checker is mature enough that alias arity checking has value.
-
-#### Phase 2: Alias Application in Annotations
+### Phase 2: Alias Application in Annotations
 
 Support `[AliasName Arg1 Arg2]` in type annotation positions. The type
 checker resolves the alias, checks arity, builds the substitution, and
@@ -248,45 +285,67 @@ returns the instantiated type.
 ]
 ```
 
-#### Phase 3: Partial Application (Deferred)
+### Phase 3: Partial Application (Deferred)
 
 Allow applying fewer arguments than parameters:
 `[Mapper Int]` with `Mapper: [type [a b] [Fn@b [a]]]` produces a
 one-parameter alias equivalent to `[type [b] [Fn@b [Int]]]`.
 
 This is a convenience, not a necessity. Defer until partial application
-patterns emerge in user code.
+patterns emerge in user code. Partial application of type aliases
+corresponds to type-level currying and is a prerequisite for
+higher-kinded type variables (`Functor f` requires `f` to accept one
+type argument).
 
 ### Prerequisites
 
-- Type alias shadowing policy implemented (already decided — allow lexical
-  shadowing, `TODO.md` type-extensions sprint)
-- Let-generalization complete (parameter instantiation reuses substitution
-  machinery)
+- Type alias shadowing policy implemented (already decided — allow
+  lexical shadowing, `TODO.md` type-extensions sprint).
+- Let-generalization complete (parameter instantiation reuses the
+  substitution machinery from `types.rs`).
+- Phase 2 requires Phase 1.
+- Phase 3 requires Phase 2 and is only motivated by type class adoption
+  (`doc/whatif/typeclasses.md`).
 
 ### Trigger
 
-Adopt when:
-- Variable name collision causes a real type error that confuses a user
-- The type system needs arity-checked type constructors (prerequisite for
-  type classes)
-- Users request generic record type definitions for reusable config schemas
+- When variable name collision causes a real type error that confuses
+  a user
+- When the type system needs arity-checked type constructors
+  (prerequisite for type classes)
+- When users request generic record type definitions for reusable
+  config schemas
 
-The TODO.md item correctly notes: "Deferred until variable name collision
-becomes a real problem. Textual expansion is sufficient for now." This
-remains the right call — parameterized aliases add value only when the
-collision problem actually manifests.
+The TODO.md item correctly notes: "Deferred until variable name
+collision becomes a real problem. Textual expansion is sufficient for
+now." This remains the right call — parameterized aliases add value
+only when the collision problem actually manifests.
 
 ## References
 
-- Haskell Report §4.2.2: Type synonym declarations.
-  `type Pair a b = (a, b)` — textual expansion with explicit parameters.
-  Not recursive. Fully applied at every use site.
-- TypeScript Handbook: Generic type aliases.
-  `type Pair<A, B> = { first: A; second: B }` — explicit type parameters,
-  instantiated at use.
-- OCaml Manual §1.8: Type definitions.
-  `type ('a, 'b) pair = { first: 'a; second: 'b }` — explicit parameters,
-  always fully applied.
 - Pierce, B.C. (2002). *Types and Programming Languages.* MIT Press.
-  Chapter 11 (simple extensions, type abbreviations).
+  Chapter 11 (simple extensions, type abbreviations). — Formalizes
+  type abbreviations as syntactic sugar expanded before type checking.
+  Establishes that alias expansion preserves principal types when
+  aliases are non-recursive.
+- Damas, L. & Milner, R. (1982). "Principal type-schemes for functional
+  programs." In *POPL '82*, pp. 207--212. ACM. — Principal type
+  guarantee that parameterized alias expansion must preserve. Since
+  aliases expand before inference, the guarantee holds trivially.
+- Remy, D. (1994). "Type inference for records in a natural extension
+  of ML." In *Theoretical Aspects of Object-Oriented Programming*,
+  pp. 67--95. MIT Press. — Row polymorphism that parameterized aliases
+  must interact with correctly when alias bodies contain row variables.
+- Haskell Report §4.2.2. Type synonym declarations. —
+  `type Pair a b = (a, b)` — textual expansion with explicit parameters.
+  Not recursive. Fully applied at every use site. Direct precedent for
+  tinct's design.
+- TypeScript Handbook. Generic type aliases. —
+  `type Pair<A, B> = { first: A; second: B }` — explicit type
+  parameters, instantiated at use. Shows the pattern in a structural
+  type system.
+- OCaml Manual §1.8. Type definitions. —
+  `type ('a, 'b) pair = { first: 'a; second: 'b }` — explicit
+  parameters, always fully applied. OCaml enforces full application
+  of type synonyms, which is the same constraint tinct would enforce
+  in Phases 1--2.

@@ -4519,8 +4519,8 @@ This section formalizes how errors are represented, propagated, decorated, memoi
 An evaluation error `ε` is a record with four fields:
 
 ```
-ε = ⟨message, def_span, mat_span?, stack⟩  where
-  message   : String          — human-readable description
+ε = ⟨kind, def_span, mat_span?, stack⟩  where
+  kind      : ErrorKind       — structured error variant with domain-specific data
   def_span  : Span            — where the problematic value was defined
   mat_span  : Option<Span>    — where the value was first forced (if different)
   stack     : [StackFrame]    — chain of materialization contexts, outermost last
@@ -4532,20 +4532,31 @@ An evaluation error `ε` is a record with four fields:
 
 ##### Part 2: Error Sources
 
-Six error constructors cover all runtime error categories:
+All errors are constructed via `EvalError` methods that create an error with a specific `ErrorKind` variant. The main named constructors are:
 
-| Constructor | Message pattern | `def_span` source |
-|------------|----------------|-------------------|
-| `key_not_found(key, span)` | `"key not found: {key}"` | Access expression |
-| `type_mismatch(expected, got, span)` | `"type mismatch: expected {expected}, got {got}"` | Expression producing wrong type |
-| `arity_mismatch(expected, got, span)` | `"arity mismatch: expected {expected} arguments, got {got}"` | Call expression |
-| `circular_dependency(name, span)` | `"circular dependency detected while evaluating {name}"` | Thunk definition |
-| `new(message, span)` | `"{message}"` (free-form) | Context-dependent |
-| `$error(message)` | User-provided string | `$error` call site |
+| Constructor | ErrorKind Variant | Message Pattern | `def_span` Source |
+|------------|-------------------|----------------|-------------------|
+| `key_not_found(key, span)` | `KeyNotFound { key }` | `"key not found: {key}"` | Access expression |
+| `type_mismatch(expected, got, span)` | `TypeMismatch { context: None, expected, got }` | `"type mismatch: expected {expected}, got {got}"` | Expression producing wrong type |
+| `type_mismatch_ctx(context, expected, got, span)` | `TypeMismatch { context: Some(context), expected, got }` | `"{context}: expected {expected}, got {got}"` | Expression producing wrong type |
+| `arity_mismatch(expected, got, span)` | `ArityMismatch { expected, got }` | `"arity mismatch: expected {expected} arguments, got {got}"` | Call expression |
+| `circular_dependency(name, span)` | `CircularDependency { name }` | `"circular dependency detected while evaluating {name}"` | Thunk definition |
+| `depth_exceeded(limit, span)` | `DepthExceeded { limit }` | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
+| `user_error(message, span)` | `UserError { message }` | `"{message}"` (user-provided) | `$error` call site |
+| `integer_overflow(op, span)` | `IntegerOverflow { op }` | `"{op}: integer overflow"` | Arithmetic expression |
+| `division_by_zero(op, span)` | `DivisionByZero { op }` | `"{op}: division by zero"` | Division expression |
+| `float_not_finite(builtin, value, span)` | `FloatNotFinite { builtin, value }` | `"{builtin}: {value} is not a finite number"` | Builtin call expression |
+| `empty_collection(op, span)` | `EmptyCollection { op }` | `"{op} on empty collection"` | Builtin call expression |
+| `named_arg_rejected(builtin, span)` | `NamedArgRejected { builtin }` | `"{builtin} does not accept named arguments"` | Call expression |
+| `internal(message, span)` | `Internal { message }` | `"{message}"` (implementation-defined) | Context-dependent |
 
-Additionally, `MAX_EVAL_DEPTH` errors use `new` with message `"maximum evaluation depth exceeded ({limit})"` and `def_span` from the thunk being forced.
+See `src/error.rs` for the full set of 26 `ErrorKind` variants and their constructors. Additional variants not listed above include: `UndefinedVariable`, `TypeAssertFailed`, `NamedArgConflict`, `UnknownNamedArg`, `DuplicateKey`, `JsonDepthExceeded`, `IncludeNotAvailable`, `IncludeIoError`, `IncludeCycle`, `IncludeParseFailed`, `IncludeFileTooLarge`, `ParseConversion`, `JsonParse`, and `JsonRange`.
 
-Free-form `new` covers: undefined variable, duplicate key, depth exceeded, range key type errors, named arg conflicts, variadic errors, `$try` parameter count, and builtin-specific messages (e.g., `"merge: expected Dict, got {type}"`).
+**Special error properties:**
+
+- **`DepthExceeded` is not catchable:** `$try` does not catch `DepthExceeded` errors — they propagate to the runtime. Resource limit errors like stack overflow should not be suppressible by user code (follows GHC's `StackOverflow` and Racket's `exn:fail:resource` semantics). The `is_catchable()` method returns `false` for `DepthExceeded`, `true` for all other variants.
+
+- **`DepthExceeded` is not cacheable:** Failed thunk state does not cache `DepthExceeded` errors — a thunk that fails at one depth may succeed at a shallower depth. The `is_cacheable()` method returns `false` for `DepthExceeded`, `true` for all other variants. This implements the PROP-DEPTH non-memoization rule from Part 5.
 
 ##### Part 3: Error Decoration
 
@@ -4684,7 +4695,7 @@ materialize(θ_func, _, d) ⇒ Function([], body, env)
 θ_body = Thunk::new_unevaluated(body, env, body.span)
 materialize(θ_body, _, d) ⇒ Err(ε)
 ──────────────────────────
-try(θ_func, d, s) ⇒ ok_val(Dict({err ↦ θ(ε.message)}))
+try(θ_func, d, s) ⇒ ok_val(Dict({err ↦ θ(ε.kind.to_string())}))
 ```
 
 **[TRY-BUILTIN]** — Builtin zero-arg function:
@@ -4697,11 +4708,11 @@ materialize(θ_result, _, d) ⇒ Ok(v)
 try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 ```
 
-(Error variant: same structure, `Err(ε) ⇒ Dict({err ↦ θ(ε.message)})`)
+(Error variant: same structure, `Err(ε) ⇒ Dict({err ↦ θ(ε.kind.to_string())})`)
 
 **Catching boundary:** `$try` catches errors at the zero-argument function body boundary. The function is materialized *outside* the catch — if the function thunk itself fails to materialize, that error propagates to `$try`'s caller (not caught). Only errors from *calling* the function (evaluating its body) are caught.
 
-**Error-to-value conversion:** `$try` extracts only `ε.message` (a String). The spans and stack frames are discarded — `$try` is for program-level error handling, not diagnostic reporting. The result is an ordinary dict with key `ok` or `err`, not a special type.
+**Error-to-value conversion:** `$try` extracts only the message string (`ε.kind.to_string()`). The spans and stack frames are discarded — `$try` is for program-level error handling, not diagnostic reporting. The result is an ordinary dict with key `ok` or `err`, not a special type.
 
 **Arity constraint:** The function must take zero parameters. If `params.len() > 0`, `$try` raises an error (not caught): `"try: expected a zero-argument function, got {n} parameters"`.
 

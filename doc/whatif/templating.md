@@ -7,11 +7,9 @@ files, documents, serialized formats — beyond its current JSON output?
 
 tinct produces structured data. The CLI outputs JSON (`--format json`,
 default) or LLT display format (`--format llt`). There is no mechanism
-for:
-
-- Producing text output (YAML, TOML, plain text) from structured data
-- Embedding tinct code blocks in prose documents (Markdown, READMEs)
-- Rendering templates where tinct computes dynamic values
+for producing text output (YAML, TOML, plain text) from structured
+data, embedding tinct code blocks in prose documents, or rendering
+templates where tinct computes dynamic values.
 
 The pipeline model (`---` separators, `$$` threading) processes tinct
 files end-to-end. The output is always a single materialized value
@@ -26,46 +24,51 @@ serialized as JSON.
 - **String interpolation** (`doc/whatif/string-interpolation.md`) —
   proposed `i"Hello $name"` syntax for ergonomic string building
 
-## Two Polarities
+### What's Missing
 
-The research surfaces a fundamental axis: **which language is the host?**
+1. **No text output path.** tinct always outputs JSON. There is no
+   mechanism for a program to emit raw text (YAML, TOML, INI,
+   plaintext) to stdout.
 
-### Template Polarity: Code in Prose
+2. **No multi-file pipeline.** `tinct eval` accepts a single file.
+   Composing data programs with formatter programs requires manual
+   `---` concatenation, not CLI-level composition.
 
-The host document is the target format (HTML, YAML, conf). Code
-snippets are embedded via delimiters (`{{ }}`, `<%= %>`). The template
-engine splices evaluated code into the text.
+3. **No standard formatters.** Users who need YAML or TOML output
+   must write their own serializers or use external tools.
 
-**Examples:** Jinja2, Mustache/Handlebars, ERB, Go `text/template`.
+4. **No literate mode.** tinct code cannot be embedded in Markdown
+   documents for executable documentation or reports.
 
-**Characteristic:** Output format is visible in the template. Authors
-work in the target format's idiom. But: stringly typed, no format
-awareness, injection-prone.
+## What Templating Would Provide
 
-### Data-First Polarity: Structured Data → Serializer
+1. **Text output from structured data.** `tinct eval config.llt
+   fmt/yaml.llt` produces YAML. The formatter is a tinct program,
+   not a CLI flag.
 
-The host is the programming language. Output is structured data
-serialized at the boundary.
+2. **Composable pipelines.** Multi-file pipeline at the CLI level:
+   data flows through transformation stages, each independently
+   testable.
 
-**Examples:** Jsonnet, Nix, Dhall, CUE — and **tinct today**.
+3. **User-extensible formatters.** Anyone can write a formatter —
+   `fmt/nginx.llt`, `fmt/mylog.llt` — no Rust code, no
+   recompilation.
 
-**Characteristic:** Type-safe, format-aware serialization. The
-serializer handles quoting and escaping. But: text-heavy output
-requires verbose string building.
+4. **Executable documentation.** Markdown files with embedded tinct
+   code blocks that can be extracted and evaluated.
 
-### Literate Polarity: Prose in Code
+5. **Dogfooding.** Implementing YAML/TOML serialization in tinct
+   tests the language's expressiveness and surfaces gaps.
 
-The host is human-readable prose. Complete code is embedded in named
-chunks. `tangle` extracts code; `weave` produces documentation.
+## Design
 
-**Examples:** Knuth (1984), noweb, Jupyter notebooks.
+The design has two coordinated parts: data-first formatters (Part 1)
+and literate evaluation (Part 2). Both extend tinct along different
+axes of the templating design space. Template-polarity embedding
+(Jinja-style code-in-prose) is deferred — if formatters plus `$str`
+(and eventually `i"..."`) cover the need, it may never be needed.
 
-**Characteristic:** Code follows explanation order, not execution
-order. tinct's `---` pipeline already creates a quasi-literate
-structure — computation stages are visually separated, each
-independently understandable.
-
-### Comparison
+### Design Space: Three Polarities
 
 | Dimension | Template | Data-First | Literate |
 |-----------|----------|-----------|----------|
@@ -75,9 +78,7 @@ independently understandable.
 | Best for | Sparse computed values | Complex transformations | Documentation |
 
 tinct extends along **two** of these axes: data-first serialization
-(Part 1) and literate evaluation (Part 2). Template-polarity embedding
-is deferred — if tinct formatters plus `$str` (and eventually `i"..."`)
-cover the need, Jinja-style templates may never be needed.
+(Part 1) and literate evaluation (Part 2).
 
 ---
 
@@ -89,7 +90,7 @@ stdout. The CLI accepts multiple files and pipelines them — each file's
 output becomes `$$` for the next.
 
 ```bash
-# Pipeline: data program → formatter program
+# Pipeline: data program -> formatter program
 tinct eval config.llt stdlib/fmt/yaml.llt
 
 # Inline
@@ -99,20 +100,55 @@ tinct eval -e '[call $emit [call $to-yaml [port: 8080  host: "localhost"]]]'
 ### `$emit` Builtin
 
 A Rust builtin that writes a value directly to stdout, bypassing JSON
-serialization. Output encoding is determined by value type:
+serialization.
 
-- `$emit` on `String` → writes UTF-8 text
-- `$emit` on `Bytes` (future) → writes raw binary
+**Syntax:**
+
+```lisp
+[call $emit $value]         # write string to stdout
+[call $emit $value1]        # multiple calls append
+[call $emit $value2]
+```
+
+**Semantics:**
+
+- `$emit` on `String` writes UTF-8 text to stdout
+- `$emit` on `Bytes` (future) writes raw binary to stdout
 - Returns `Null`
 - Multiple `$emit` calls append to stdout sequentially
+- If `$emit` is never called during evaluation, the final pipeline
+  value is JSON-serialized to stdout as today (backwards compatible)
 
-If `$emit` is never called during evaluation, the final pipeline value
-is JSON-serialized to stdout as today (backwards compatible).
+**Interaction with lazy evaluation.** `$emit` is a side-effecting
+operation — it writes to stdout. In tinct's call-by-need model
+(Launchbury, 1993), side effects are observable only when a thunk is
+forced. `$emit` must be called at the top level of a pipeline stage
+(not inside a lazy binding) to ensure deterministic output ordering.
+If `$emit` appears in a lazy binding, the output timing depends on
+when that binding is forced — which may be never. The evaluator should
+force `$emit` calls eagerly within the document's top-level
+expression, treating them as strict positions.
+
+**Internal representation:**
+
+```rust
+// New builtin
+fn builtin_emit(args: &[Value], ctx: &mut EvalContext) -> Result<Value> {
+    let val = force(&args[0], ctx)?;
+    match val {
+        Value::String(s) => ctx.emit_sink.write_all(s.as_bytes())?,
+        _ => return Err(EvalError::type_mismatch("String", &val)),
+    }
+    ctx.emitted = true;  // suppress default JSON output
+    Ok(Value::Null)
+}
+```
 
 ### Multi-File Pipeline
 
 `tinct eval` accepts a list of `.llt` files. Each file is a pipeline
-stage: file₁ evaluates, its output becomes `$$` for file₂, and so on.
+stage: file_1 evaluates, its output becomes `$$` for file_2, and so
+on.
 
 ```bash
 # Single file (existing behavior, unchanged)
@@ -129,6 +165,13 @@ This is equivalent to concatenating files with `---` separators but
 allows separate files to be composed at the CLI level. No new
 `--format` flags — output format is determined by which formatter
 program is in the pipeline.
+
+**Interaction with `$include` caching.** Multi-file pipeline stages
+share the include cache (DESIGN.md §Document Pipeline). If
+`config.llt` includes `stdlib/lib.llt`, and `fmt/yaml.llt` also
+includes `stdlib/lib.llt`, the second include hits the cache. This is
+correct and intentional — include caching is deterministic for fixed
+filesystem state.
 
 ### Standard Formatters
 
@@ -181,15 +224,6 @@ Formatters compose with tinct's existing mechanisms:
 # Custom wrapper
 [call $emit [call $str "---\n" [call $to-yaml $$] "\n---\n"]]
 ```
-
-### Prerequisites
-
-- **Type predicates** (`$int?`, `$str?`, `$dict?`, etc.) — formatters
-  must inspect value types to dispatch during serialization. See
-  `doc/whatif/type-predicates.md`.
-- **`$str`** — already implemented, sufficient for text building.
-- **Structural contracts** (`doc/whatif/structural-contracts.md`) —
-  formatters can declare expected input shape via `$$@Type`.
 
 ### Why Formatters in tinct
 
@@ -269,6 +303,28 @@ pool-size: [call $* $$.workers 2]
    tinct literate eval config.md
    ```
 
+### Semantics
+
+**Block extraction.** The `tangle` and `eval` modes extract code
+blocks tagged with `tinct` (or `llt`) from the Markdown source.
+Each block becomes a pipeline document, separated by implicit `---`
+boundaries. `$$` threads between blocks in document order.
+
+**Weave rendering.** The `weave` mode requires a convention for
+marking result positions. Two options:
+
+```markdown
+The port is: <!-- tinct: $$.port -->
+The port is: `{= $$.port}`
+```
+
+The weave processor evaluates the expression and replaces the marker
+with the rendered result.
+
+**Scope.** All code blocks within a single Markdown file share a
+pipeline scope — earlier blocks' bindings are visible to later blocks
+(via `$$` threading). This matches tinct's `---` pipeline semantics.
+
 ### Pipeline Mapping
 
 tinct's `---` pipeline model maps directly to multiple code blocks.
@@ -276,7 +332,7 @@ Each code block is a pipeline stage — its output becomes `$$` for the
 next block. Prose between blocks serves as documentation for the
 transformation steps.
 
-This mirrors Knuth's literate programming insight: code follows
+This mirrors Knuth's (1984) literate programming insight: code follows
 explanation order, not execution order. With tinct, the explanation
 order IS the execution order (pipeline stages run sequentially), so
 `tangle` and `eval` produce the same result.
@@ -319,7 +375,71 @@ tinct literate eval config.md
 4. **Executable examples.** Documentation that can be run and
    verified, not just read.
 
----
+## What Would Change
+
+### CLI
+
+**Current:** `tinct eval` accepts a single `.llt` file and outputs
+JSON to stdout. No `tinct literate` subcommand exists.
+
+**Proposed:** (1) `tinct eval` accepts multiple `.llt` files as
+pipeline stages. (2) New `tinct literate` subcommand with `tangle`,
+`weave`, and `eval` modes for Markdown files. (3) When `$emit` is
+called, suppress default JSON output.
+
+**Impact:** Moderate. Multi-file pipeline extends the existing
+argument parser. The `$emit`-suppresses-JSON behavior requires a
+flag in the evaluation context.
+
+### Evaluator
+
+**Current:** The evaluator returns a final `Value` from each
+document. Output serialization is handled by the CLI layer after
+evaluation completes.
+
+**Proposed:** (1) Add `$emit` as a Rust builtin with access to a
+write sink on `EvalContext`. (2) Thread `$$` across file boundaries
+(currently only within `---` boundaries in a single file). (3) Track
+whether `$emit` was called to determine output mode.
+
+**Impact:** Moderate. `$emit` introduces a side-effecting builtin
+into an otherwise pure evaluator. The `EvalContext` needs a write
+sink (e.g., `Box<dyn Write>`) and an `emitted: bool` flag.
+
+### Parser
+
+**Current:** The parser handles `.llt` files only.
+
+**Proposed:** Add a Markdown extraction pass that identifies
+```` ```tinct ```` code blocks and extracts their content as
+sequential pipeline documents.
+
+**Impact:** Minor. The Markdown extraction is a preprocessing step
+before the existing parser — it produces concatenated tinct source
+with `---` separators, which the existing parser already handles.
+
+### Type Checker
+
+**Current:** Type inference operates within a single file's documents.
+
+**Proposed:** Extend cross-document type checking to multi-file
+pipelines. Document N's inferred output type must be compatible with
+document N+1's expected `$$` type (or `$$@Type` annotation from
+`doc/whatif/structural-contracts.md`).
+
+**Impact:** Minor to Moderate. Within a single file, cross-document
+checking already exists for `---` boundaries. Extending to multi-file
+requires threading type information across file boundaries.
+
+### Standard Library
+
+**Current:** `stdlib/prelude.llt` provides core functions. No
+`stdlib/fmt/` directory.
+
+**Proposed:** Add `stdlib/fmt/` with standard formatters (yaml.llt,
+toml.llt, json-pretty.llt, env.llt, ini.llt, csv.llt).
+
+**Impact:** Minor. New files, no changes to existing code.
 
 ## Phased Adoption
 
@@ -328,7 +448,7 @@ tinct literate eval config.md
 Three prerequisites that enable Part 1:
 
 - **`$emit` builtin** — Rust builtin that writes to stdout. Takes a
-  `String` → writes UTF-8. Returns `Null`. When `$emit` is called,
+  `String`, writes UTF-8. Returns `Null`. When `$emit` is called,
   the CLI suppresses default JSON output.
 
 - **Multi-file pipeline** — `tinct eval` accepts multiple `.llt` files.
@@ -360,7 +480,7 @@ Not required for correctness — `$str` is sufficient.
 ### Phase 4: Literate Mode
 
 Add `tinct literate` with `tangle`, `weave`, and `eval` subcommands.
-Independent of Phases 1–3.
+Independent of Phases 1-3.
 
 ### Prerequisites
 
@@ -375,6 +495,8 @@ Phase 1: any use case requires non-JSON text output from tinct, or
 pattern matching work begins (type predicates are shared).
 
 Phase 2: users need YAML/TOML output from tinct data.
+
+Phase 3: formatter code becomes verbose with nested `$str` calls.
 
 Phase 4: documentation-driven development becomes a tinct workflow,
 or users want executable examples in docs.
@@ -400,11 +522,20 @@ or users want executable examples in docs.
 
 **Literate programming:**
 - Knuth, D.E. (1984). "Literate programming." *The Computer Journal*,
-  27(2), 97–111. — Code in explanation order, extracted by `tangle`.
+  27(2), 97-111. — Code in explanation order, extracted by `tangle`.
+  tinct's pipeline stages map to Knuth's code chunks.
 - Ramsey, N. (1994). "Literate programming simplified." *IEEE Software*,
-  11(5), 97–105. — noweb: language-independent literate programming.
+  11(5), 97-105. — noweb: language-independent literate programming.
+  tinct's literate mode follows this philosophy — Markdown is the
+  host, tinct code blocks are the chunks.
 - Jupyter/IPython notebooks — modern literate programming with
   interleaved code cells and prose.
+
+**Evaluation semantics:**
+- Launchbury, J. (1993). "A natural semantics for lazy evaluation."
+  *POPL*, pp. 144-154. — Call-by-need semantics. Relevant to `$emit`'s
+  interaction with lazy evaluation: side effects are only observable
+  when thunks are forced.
 
 **Anti-patterns:**
 - HashiCorp. "Terraform and Jinja2." — Quoting fragility when
