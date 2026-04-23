@@ -217,42 +217,7 @@ Write a proposal to the target `doc/whatif/[name].md`. If the file already exist
 
 **Framing principle:** whatif docs are *advocates* for their feature. They open with "What would it take to...?" and then make the best case for adoption — concrete approaches backed by research and formal methods, with a recommended phased implementation path. They are NOT "here's why you shouldn't" documents. Present the feature as a genuine proposal: how to do it well, what the best approach is, and when to adopt it.
 
-Structure:
-
-```markdown
-# What If: [Feature] for tinct
-
-What would it take to [add/adopt/implement feature] in tinct?
-
-## Current State
-How tinct handles this today and what's missing.
-
-## What [Feature] Would Provide
-The concrete value — what becomes possible that isn't today.
-
-## Approaches
-
-### Approach A: [Name]
-Description, pros, cons, precedent, implementation cost.
-
-### Approach B: [Name]
-...
-
-## What Would Change
-Concrete impact on tinct subsystems (type system, evaluator, parser, etc.).
-
-## Recommendation
-Lead with the recommended adoption path — phased, with concrete steps.
-Structure as phases (Phase 1, Phase 2, etc.) with clear scope for each.
-Include prerequisites and dependencies on other features.
-
-### Trigger
-What conditions should prompt adoption — concrete scenarios, not vague
-"when needed." These are starting conditions, not reasons to delay.
-
-## References
-Cited papers and language implementations.
-```
+**Structure:** Read `doc/whatif/TEMPLATE.md` and use it as the skeleton for the new proposal. Follow its section headings, guidance comments, and formatting conventions. Do not copy the template's placeholder text verbatim — replace every section with real content.
 
 **Anti-patterns to avoid:**
 - "Don't adopt now" as the lead recommendation

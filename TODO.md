@@ -35,12 +35,12 @@ Fix error classification bugs where the wrong ErrorKind variant is produced.
 
 Migrate remaining EvalError::new call sites across eval.rs and builtins.rs.
 
-- [ ] Migrate eval.rs remaining `EvalError::new` call sites (~13) to typed `ErrorKind` variants (`src/eval.rs`)
-- [ ] Migrate builtins.rs remaining `EvalError::new` call sites (~72) to typed `ErrorKind` variants (`src/builtins.rs`)
-- [ ] Update `builtin_try` to extract `e.kind.to_string()` instead of `e.message` (`src/builtins.rs:864`)
-- [ ] Update all `err.message` references in unit tests to `err.kind.to_string()` or pattern matching (`src/error.rs`, `src/eval.rs`)
-- [ ] Add PROP-CYCLE bypass comment to circular dependency error construction — explain why it skips DECORATE closure. (`src/eval.rs:899-908`) [Nit, eval-engine panel]
-- [ ] Document `.message()` as compatibility shim — clarify that `.kind` field is canonical API, `.message()` is for test migration. New code should match on `.kind`. (`src/error.rs`) [Minor, integration-verifier]
+- [x] Migrate eval.rs remaining `EvalError::new` call sites (~13) to typed `ErrorKind` variants (`src/eval.rs`)
+- [x] Migrate builtins.rs remaining `EvalError::new` call sites (~72) to typed `ErrorKind` variants (`src/builtins.rs`)
+- [x] Update `builtin_try` to extract `e.kind.to_string()` instead of `e.message` (`src/builtins.rs:864`)
+- [x] Update all `err.message` references in unit tests to `err.kind.to_string()` or pattern matching (`src/error.rs`, `src/eval.rs`)
+- [x] Add PROP-CYCLE bypass comment to circular dependency error construction — explain why it skips DECORATE closure. (`src/eval.rs:899-908`) [Nit, eval-engine panel]
+- [x] Document `.message()` as compatibility shim — clarify that `.kind` field is canonical API, `.message()` is for test migration. New code should match on `.kind`. (`src/error.rs`) [Minor, integration-verifier]
 
 ### error-structured-migrate-c: Safety Integration + Spec
 
@@ -300,6 +300,7 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Extract `MAX_APPLY_DEPTH` constant to shared location — duplicated in `src/types.rs:127` and `src/eval.rs:42` [Nit, performance-expert]
 - [ ] Avoid AST clone in eval_call argument thunk creation — change `CallExpr` args to `Rc<Spanned<Expr>>` so eval_call does `Rc::clone` instead of deep-cloning AST subtrees per argument. Internal refactor to ast.rs/parser.rs, backward-compatible at public API. ~20-40% call overhead reduction. (`src/eval.rs:416-435`) [Major, performance-expert, design-review promoted]
 - [ ] Avoid AST clone in `Expr::Fn` body — `body.as_ref().clone()` deep-clones entire body AST subtree on every function creation. For closures in loops (lambda args to `$map`/`$filter`), repeated allocation cost. Change `Expr::Fn.body` from `Box<Spanned<Expr>>` to `Rc<Spanned<Expr>>` in AST definition, then `Rc::clone(body)` instead of deep-cloning. Consolidate with call-arg Rc migration above. (`src/eval.rs:170-171`, `src/ast.rs:106`) [Major, computer-scientist]
+- [ ] Reduce materialize() return-path cloning — `value.clone()` on every return stores into `Materialized(value.clone())` then returns the original; could instead store `Materialized(value)` then clone from cached state via `try_get_materialized()`. For Dict, eliminates O(n) Rc::clone of entries on the return path. (`src/eval.rs:918,939,944,990,1014,1020`) [Major, performance-expert]
 - [ ] Optimize `cache_failure` to skip clone when already Failed — `cache_failure()` always creates fresh Failed state with `Box::new(err.clone())`, even if thunk is already Failed with identical error. Common in deep call chains where same error propagates through multiple layers. Check current state and skip clone if already `Failed`. (`src/value.rs:384-386`) [Major, eval-engine]
 - [ ] Avoid intermediate Vec in value_to_display_string — collects all formatted entries into Vec<String> then joins; write directly to String with_capacity instead (`src/lib.rs:194-204`) [Minor, performance-expert]
 - [ ] Avoid intermediate Vec in builtin_split — `input.split(sep).collect::<Vec<&str>>()` then maps to thunks; use iterator directly (`src/builtins.rs:525-535`) [Nit, performance-expert]
@@ -757,16 +758,17 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 
 - [x] Research pattern matching — see doc/whatif/pattern-matching.md. Recommends [match] special form (Approach A) with 5-phase adoption: type predicates → basic match → dict/seq destructuring → guards/or-patterns → exhaustiveness checking. Nickel is the only lazy config lang with full PM; Nix/Jsonnet skip it
 - [x] Research parameterized type aliases — see doc/whatif/parameterized-type-aliases.md. Recommends hybrid approach (C): keep current non-parameterized behavior, add explicit `[type [a b] body]` syntax for aliases that need fresh instantiation. Deferred until variable name collision becomes a real problem
-- [x] Research `let` binding form — see doc/whatif/let-binding.md. Recommends status quo (Approach D): sequential expressions + letrec dicts cover all needs. Non-recursive `let` would duplicate existing sequential scoping with higher cognitive load
+- [x] Research `let` binding form — see doc/whatif/let-binding.md. Recommends sequential expressions in function bodies (Approach B): extend existing document-level sequential scoping to work inside `[fn ...]` bodies. No new keywords, consistent mental model, enables pattern matching arm bodies
 - [x] Research quasiquoting — see doc/whatif/quasiquoting.md. Recommends quote/unquote/unquote-splice as special form keywords (Approach A), phased with macro system. AST-as-dict schema mirrors Expr enum. Gated on macro system adoption
-- [x] Research custom call aliases — see doc/whatif/call-aliases.md. Recommends status quo: `call` is a core principle (Principle 3), not syntactic overhead. Users have `$->`, `$_`, and wrapper functions
+- [x] Research custom call aliases — see doc/whatif/call-aliases.md. Recommends custom call forms via procedural macros (Approach C): `call` remains the only built-in form (Principle 3), but macros can define `[timed $f ...]`, `[traced $f ...]`, etc. that expand to `call` at compile time. Gated on macro system
 - [x] Research gradual typing — see doc/whatif/gradual-typing.md. Three-phase adoption (formalize → split Any → blame tracking). Gated on Any-as-top-and-bottom causing a real soundness bug or union types/type classes forcing the split
 - [x] Research `list?` vs `dict?` predicates — see doc/whatif/type-predicates.md. Recommends type predicates for Value variants ($int?, $dict?, etc.) WITHOUT $list? (lists are dicts, Principle 1). Part of pattern matching Phase 1
-- [x] Research string interpolation — see doc/whatif/string-interpolation.md. Recommends separate syntax (i"...") to avoid breaking existing "$" in strings. Deferred: $str covers the need
-- [x] Research float dict keys — see doc/whatif/float-dict-keys.md. Recommends status quo: IEEE 754 precision (0.1+0.2≠0.3) and NaN make float keys unreliable. Int+String keys cover all needs
-- [x] Research width-specific numeric types — see doc/whatif/numeric-types.md. Recommends status quo: i64/f64 cover all config needs. Decimal as targeted extension if financial data needed. Range contracts via @ annotations as future path
+- [x] Research string interpolation — see doc/whatif/string-interpolation.md. Recommends `i"..."` prefix syntax (Approach B): `i"Hello $name"` desugars to `[call $str ...]`. 3-phase: simple `$identifier` → dot access → expression interpolation `${...}`. Key enabler for formatter ergonomics
+- [x] Research float dict keys — see doc/whatif/float-dict-keys.md. Recommends Decimal keys alongside Decimal type (Approach B): IEEE 754 floats remain unsound as keys, but Decimal provides exact base-10 arithmetic where `0.1+0.2==0.3`. 2-phase: Decimal type → Decimal keys. Gated on Decimal type adoption
+- [x] Research width-specific numeric types — see doc/whatif/numeric-types.md. Recommends range contracts with automatic internal representation sizing (Approach B): `@[min: 0 max: 65535]` → runtime chooses u16 internally. 4-phase: range annotations (validation only) → Decimal type → auto representation sizing → BigInt. Ada range types as precedent
 - [x] Research typeclasses — see doc/whatif/typeclasses.md. Two-phase adoption (constrained type vars → full Haskell-style classes). Gated on Any typing for dual-dispatch causing false positives or user-defined types needing protocols
 - [x] Research union types — see doc/whatif/union-types.md. Three-phase path: type classes → annotation-only unions → inferred unions via Simple-sub. Gated on nullable types or tagged union patterns becoming common
 - [x] Research algebraic subtyping — see doc/whatif/algebraic-subtypes.md. Simple-sub (Parreaux 2020) replacement for [U-SUBSUME] + Robinson. 4-step migration path. Gated on union types being insufficient without inferred unions or Any-as-top-and-bottom causing soundness problems
 - [x] Research macros — see doc/whatif/macros.md. Recommends procedural AST macros (Approach B). Laziness reduces need; gated on second syntactic desugaring or user-requested domain-specific syntax
 - [x] Research templating — see doc/whatif/templating.md. Formatters as tinct pipeline programs: `$emit` builtin for stdout, multi-file pipeline CLI, stdlib/fmt/ formatters written in tinct. Template mode deferred; literate mode independent
+- [x] Research structural contracts — see doc/whatif/structural-contracts.md. Hybrid: `$$@Type` for static pipeline boundary checking + `$validate` schema-as-dict for runtime constraints. 4-phase: $$@Type → $validate → tinct describe → pipeline blame

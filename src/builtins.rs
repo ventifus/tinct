@@ -26,7 +26,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::error::{ErrorKind, EvalError, EvalResult};
+use crate::error::{ArityBound, ErrorKind, EvalError, EvalResult};
 // Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -95,9 +95,7 @@ fn expect_one_arg(
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     if !named.is_empty() {
-        return Err(
-            EvalError::new(format!("{name} does not accept named arguments"), call_span).into(),
-        );
+        return Err(EvalError::named_arg_rejected(name, call_span).into());
     }
     materialize(&args[0], None, depth)
 }
@@ -106,15 +104,7 @@ fn expect_one_arg(
 /// before casting. Returns an error if the value is non-finite or would saturate.
 fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> EvalResult<i64> {
     if !f.is_finite() {
-        return Err(Box::new(EvalError {
-            kind: ErrorKind::FloatNotFinite {
-                builtin: name.to_string(),
-                value: f,
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        }));
+        return Err(EvalError::float_not_finite(name, f, call_span).into());
     }
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
         return Err(EvalError::new(format!("{name}: {f} is out of Int range"), call_span).into());
@@ -229,7 +219,7 @@ fn builtin_add(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_add(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::new("+: integer overflow", call_span).into())),
+            .unwrap_or_else(|| Err(EvalError::integer_overflow("+", call_span).into())),
         NumPair::Floats(a, b) => ok_val(Value::Float(a + b)),
     }
 }
@@ -248,7 +238,7 @@ fn builtin_sub(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::new("-: integer overflow", call_span).into())),
+            .unwrap_or_else(|| Err(EvalError::integer_overflow("-", call_span).into())),
         NumPair::Floats(a, b) => ok_val(Value::Float(a - b)),
     }
 }
@@ -267,7 +257,7 @@ fn builtin_mul(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::new("*: integer overflow", call_span).into())),
+            .unwrap_or_else(|| Err(EvalError::integer_overflow("*", call_span).into())),
         NumPair::Floats(a, b) => ok_val(Value::Float(a * b)),
     }
 }
@@ -285,14 +275,14 @@ fn builtin_div_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match extract_num_pair(args, depth, call_span)? {
         NumPair::Ints(a, b) => {
             if b == 0 {
-                Err(EvalError::new("/: division by zero", call_span).into())
+                Err(EvalError::division_by_zero("/", call_span).into())
             } else {
                 ok_val(Value::Float(a as f64 / b as f64))
             }
         }
         NumPair::Floats(a, b) => {
             if b == 0.0 {
-                Err(EvalError::new("/: division by zero", call_span).into())
+                Err(EvalError::division_by_zero("/", call_span).into())
             } else {
                 ok_val(Value::Float(a / b))
             }
@@ -516,7 +506,7 @@ fn builtin_append(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .max()
         .map(|max| {
             max.checked_add(1)
-                .ok_or_else(|| EvalError::new("append: integer key overflow", call_span))
+                .ok_or_else(|| EvalError::integer_overflow("append", call_span))
         })
         .transpose()?
         .unwrap_or(0);
@@ -671,19 +661,8 @@ fn float_to_int_builtin(
     match val {
         Value::Int(n) => ok_val(Value::Int(n)),
         Value::Float(f) => {
-            if f.is_nan() {
-                return Err(EvalError::new(
-                    format!("{name}: NaN cannot be converted to Int"),
-                    call_span,
-                )
-                .into());
-            }
-            if f.is_infinite() {
-                return Err(EvalError::new(
-                    format!("{name}: Infinity cannot be converted to Int"),
-                    call_span,
-                )
-                .into());
+            if !f.is_finite() {
+                return Err(EvalError::float_not_finite(name, f, call_span).into());
             }
             ok_val(Value::Int(checked_f64_to_i64(name, op(f), call_span)?))
         }
@@ -741,9 +720,16 @@ fn builtin_to_int(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let s = require_string("to-int", val, call_span)?;
     match s.parse::<i64>() {
         Ok(n) => ok_val(Value::Int(n)),
-        Err(_) => {
-            Err(EvalError::new(format!("to-int: cannot parse {:?} as Int", s), call_span).into())
-        }
+        Err(_) => Err(Box::new(EvalError {
+            kind: ErrorKind::ParseConversion {
+                builtin: "to-int".to_string(),
+                input: s.clone(),
+                target: "Int".to_string(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        })),
     }
 }
 
@@ -763,19 +749,17 @@ fn builtin_to_float(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let s = require_string("to-float", val, call_span)?;
     match s.parse::<f64>() {
         Ok(f) if f.is_finite() => ok_val(Value::Float(f)),
-        Ok(_) => Err(EvalError::new(
-            format!(
-                "to-float: cannot parse {:?} as Float (non-finite values not allowed)",
-                s
-            ),
-            call_span,
-        )
-        .into()),
-        Err(_) => Err(EvalError::new(
-            format!("to-float: cannot parse {:?} as Float", s),
-            call_span,
-        )
-        .into()),
+        Ok(f) => Err(EvalError::float_not_finite("to-float", f, call_span).into()),
+        Err(_) => Err(Box::new(EvalError {
+            kind: ErrorKind::ParseConversion {
+                builtin: "to-float".to_string(),
+                input: s.clone(),
+                target: "Float".to_string(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        })),
     }
 }
 
@@ -834,14 +818,15 @@ fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ..
         } => {
             if !params.is_empty() {
-                return Err(EvalError::new(
-                    format!(
-                        "try: expected a zero-argument function, got {} parameters",
-                        params.len()
-                    ),
-                    call_span,
-                )
-                .into());
+                return Err(Box::new(EvalError {
+                    kind: ErrorKind::ArityMismatch {
+                        expected: ArityBound::Exact(0),
+                        got: params.len(),
+                    },
+                    definition_span: call_span,
+                    materialization_span: None,
+                    stack: Vec::new(),
+                }));
             }
             // Evaluate the body in the closure's environment
             let body_thunk = Rc::new(Thunk::new_unevaluated(
@@ -979,11 +964,14 @@ fn builtin_type_of(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// when they fit in i64, otherwise `Float`.
 pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> EvalResult<Rc<Thunk>> {
     if depth > MAX_EVAL_DEPTH {
-        return Err(EvalError::new(
-            format!("maximum JSON nesting depth exceeded ({MAX_EVAL_DEPTH})"),
-            span,
-        )
-        .into());
+        return Err(Box::new(EvalError {
+            kind: ErrorKind::JsonDepthExceeded {
+                limit: MAX_EVAL_DEPTH,
+            },
+            definition_span: span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }));
     }
     match json {
         serde_json::Value::Null => ok_val(Value::Dict(IndexMap::new())),
@@ -996,7 +984,12 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
             } else {
                 // Unreachable with default serde_json: as_f64() covers all
                 // non-i64 numbers. Return error instead of panicking.
-                Err(EvalError::new("JSON number outside representable range", span).into())
+                Err(Box::new(EvalError {
+                    kind: ErrorKind::JsonRange,
+                    definition_span: span,
+                    materialization_span: None,
+                    stack: Vec::new(),
+                }))
             }
         }
         serde_json::Value::String(s) => ok_val(Value::String(s.clone())),
@@ -1033,8 +1026,16 @@ fn builtin_from_json(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx;
     let val = expect_one_arg("from-json", args, named, depth, call_span)?;
     let json_str = require_string("from-json", val, call_span)?;
-    let parsed: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| EvalError::new(format!("from-json: invalid JSON: {e}"), call_span))?;
+    let parsed: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+        Box::new(EvalError {
+            kind: ErrorKind::JsonParse {
+                detail: e.to_string(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        })
+    })?;
     json_to_value(&parsed, depth, call_span)
 }
 
@@ -1058,10 +1059,12 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     INCLUDE_CTX.with(|cell| {
         let mut ctx_ref = cell.borrow_mut();
         let ctx = ctx_ref.as_mut().ok_or_else(|| {
-            EvalError::new(
-                "include: not available in this context (no file path set)".to_string(),
-                call_span,
-            )
+            Box::new(EvalError {
+                kind: ErrorKind::IncludeNotAvailable,
+                definition_span: call_span,
+                materialization_span: None,
+                stack: Vec::new(),
+            })
         })?;
 
         // Resolve the path: relative to base_dir, or absolute as-is.
@@ -1074,10 +1077,15 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         // Canonicalize to detect cycles and normalize the path.
         let canonical = resolved.canonicalize().map_err(|e| {
-            EvalError::new(
-                format!("include: cannot open \"{}\": {e}", resolved.display()),
-                call_span,
-            )
+            Box::new(EvalError {
+                kind: ErrorKind::IncludeIoError {
+                    path: resolved.display().to_string(),
+                    detail: e.to_string(),
+                },
+                definition_span: call_span,
+                materialization_span: None,
+                stack: Vec::new(),
+            })
         })?;
 
         // Check cache first: if we've already evaluated this file, return the cached thunk.
@@ -1087,46 +1095,65 @@ fn builtin_include(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         // Cycle detection.
         if ctx.include_guard.borrow().contains(&canonical) {
-            return Err(EvalError::new(
-                format!("circular include detected: \"{}\"", canonical.display()),
-                call_span,
-            )
-            .into());
+            return Err(Box::new(EvalError {
+                kind: ErrorKind::IncludeCycle {
+                    path: canonical.display().to_string(),
+                },
+                definition_span: call_span,
+                materialization_span: None,
+                stack: Vec::new(),
+            }));
         }
 
         // Check file size.
         let metadata = std::fs::metadata(&canonical).map_err(|e| {
-            EvalError::new(
-                format!("include: cannot read \"{}\": {e}", canonical.display()),
-                call_span,
-            )
+            Box::new(EvalError {
+                kind: ErrorKind::IncludeIoError {
+                    path: canonical.display().to_string(),
+                    detail: e.to_string(),
+                },
+                definition_span: call_span,
+                materialization_span: None,
+                stack: Vec::new(),
+            })
         })?;
         if metadata.len() > MAX_FILE_SIZE {
-            return Err(EvalError::new(
-                format!(
-                    "include: file \"{}\" is {} bytes, exceeds 10 MB limit",
-                    canonical.display(),
-                    metadata.len()
-                ),
-                call_span,
-            )
-            .into());
+            return Err(Box::new(EvalError {
+                kind: ErrorKind::IncludeFileTooLarge {
+                    path: canonical.display().to_string(),
+                    size: metadata.len(),
+                    limit: MAX_FILE_SIZE,
+                },
+                definition_span: call_span,
+                materialization_span: None,
+                stack: Vec::new(),
+            }));
         }
 
         // Read the file.
         let source = std::fs::read_to_string(&canonical).map_err(|e| {
-            EvalError::new(
-                format!("include: cannot read \"{}\": {e}", canonical.display()),
-                call_span,
-            )
+            Box::new(EvalError {
+                kind: ErrorKind::IncludeIoError {
+                    path: canonical.display().to_string(),
+                    detail: e.to_string(),
+                },
+                definition_span: call_span,
+                materialization_span: None,
+                stack: Vec::new(),
+            })
         })?;
 
         // Parse.
         let file = crate::parser::parse(&source).map_err(|e| {
-            EvalError::new(
-                format!("include: parse error in \"{}\": {e}", canonical.display()),
-                call_span,
-            )
+            Box::new(EvalError {
+                kind: ErrorKind::IncludeParseFailed {
+                    path: canonical.display().to_string(),
+                    detail: e.to_string(),
+                },
+                definition_span: call_span,
+                materialization_span: None,
+                stack: Vec::new(),
+            })
         })?;
 
         // Add to include guard before recursing.
@@ -1224,13 +1251,18 @@ fn builtin_head(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match val {
         Value::Seq { head, .. } => Ok(Rc::clone(&head)),
         Value::Dict(ref map) if map.is_empty() => {
-            Err(EvalError::new("head on empty sequence", call_span).into())
+            Err(EvalError::empty_collection("head", call_span).into())
         }
-        other => Err(EvalError::new(
-            format!("head: expected Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => Err(Box::new(EvalError {
+            kind: ErrorKind::TypeMismatch {
+                context: Some("head".to_string()),
+                expected: "Seq".to_string(),
+                got: other.type_name().to_string(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        })),
     }
 }
 
@@ -1250,13 +1282,18 @@ fn builtin_tail(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match val {
         Value::Seq { tail, .. } => Ok(Rc::clone(&tail)),
         Value::Dict(ref map) if map.is_empty() => {
-            Err(EvalError::new("tail on empty sequence", call_span).into())
+            Err(EvalError::empty_collection("tail", call_span).into())
         }
-        other => Err(EvalError::new(
-            format!("tail: expected Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => Err(Box::new(EvalError {
+            kind: ErrorKind::TypeMismatch {
+                context: Some("tail".to_string()),
+                expected: "Seq".to_string(),
+                got: other.type_name().to_string(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        })),
     }
 }
 
@@ -1284,11 +1321,16 @@ fn builtin_collect(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     if !matches!(val, Value::Seq { .. }) {
-        return Err(EvalError::new(
-            format!("collect: expected Seq, got {}", val.type_name()),
-            call_span,
-        )
-        .into());
+        return Err(Box::new(EvalError {
+            kind: ErrorKind::TypeMismatch {
+                context: Some("collect".to_string()),
+                expected: "Seq".to_string(),
+                got: val.type_name().to_string(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }));
     }
 
     let mut map = IndexMap::new();
@@ -1302,11 +1344,11 @@ fn builtin_collect(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 map.insert(Key::Int(index), Rc::clone(&head));
                 index = index
                     .checked_add(1)
-                    .ok_or_else(|| EvalError::new("collect: integer key overflow", call_span))?;
+                    .ok_or_else(|| EvalError::integer_overflow("collect", call_span))?;
 
                 // Check collection size limit
                 if index as usize >= MAX_COLLECT_SIZE {
-                    return Err(EvalError::new(
+                    return Err(EvalError::internal(
                         "collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting.",
                         call_span,
                     )
@@ -1321,14 +1363,16 @@ fn builtin_collect(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 break;
             }
             other => {
-                return Err(EvalError::new(
-                    format!(
-                        "collect: expected Seq or empty dict as tail, got {}",
-                        other.type_name()
-                    ),
-                    call_span,
-                )
-                .into());
+                return Err(Box::new(EvalError {
+                    kind: ErrorKind::TypeMismatch {
+                        context: Some("collect".to_string()),
+                        expected: "Seq or empty dict".to_string(),
+                        got: other.type_name().to_string(),
+                    },
+                    definition_span: call_span,
+                    materialization_span: None,
+                    stack: Vec::new(),
+                }));
             }
         }
     }
@@ -1366,30 +1410,32 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx;
     reject_named("range", named, call_span)?;
     if args.len() != 1 && args.len() != 2 {
-        return Err(EvalError::new(
-            format!("range: expected 1 or 2 arguments, got {}", args.len()),
-            call_span,
-        )
-        .into());
+        return Err(Box::new(EvalError {
+            kind: ErrorKind::ArityMismatch {
+                expected: ArityBound::Range(1, 2),
+                got: args.len(),
+            },
+            definition_span: call_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }));
     }
 
     let start = materialize(&args[0], None, depth)?;
     let start_int = match start {
         Value::Int(n) => n,
         other => {
-            return Err(EvalError::new(
-                format!("range: start must be Int, got {}", other.type_name()),
-                call_span,
+            return Err(
+                EvalError::type_mismatch_ctx("range", "Int", other.type_name(), call_span).into(),
             )
-            .into())
         }
     };
 
     if args.len() == 1 {
         // Infinite range: [start, start+1, start+2, ...]
-        let next_start = start_int.checked_add(1).ok_or_else(|| {
-            EvalError::new("range: integer overflow in infinite range", call_span)
-        })?;
+        let next_start = start_int
+            .checked_add(1)
+            .ok_or_else(|| EvalError::integer_overflow("range", call_span))?;
         let head = ok_val(Value::Int(start_int))?;
         let tail_args = vec![ok_val(Value::Int(next_start))?];
         let tail = Rc::new(Thunk::new_pending_builtin(
@@ -1407,8 +1453,10 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let end_int = match end {
             Value::Int(n) => n,
             other => {
-                return Err(EvalError::new(
-                    format!("range: end must be Int, got {}", other.type_name()),
+                return Err(EvalError::type_mismatch_ctx(
+                    "range",
+                    "Int",
+                    other.type_name(),
                     call_span,
                 )
                 .into())
@@ -1419,9 +1467,9 @@ fn builtin_range(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // Empty range
             ok_val(Value::Dict(IndexMap::new()))
         } else {
-            let next_start = start_int.checked_add(1).ok_or_else(|| {
-                EvalError::new("range: integer overflow in finite range", call_span)
-            })?;
+            let next_start = start_int
+                .checked_add(1)
+                .ok_or_else(|| EvalError::integer_overflow("range", call_span))?;
             let head = ok_val(Value::Int(start_int))?;
             let tail_args = vec![
                 ok_val(Value::Int(next_start))?,
@@ -1491,8 +1539,10 @@ fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let map = match &dict {
         Value::Dict(m) => m,
         other => {
-            return Err(EvalError::new(
-                format!("cycle_step: dict must be Dict, got {}", other.type_name()),
+            return Err(EvalError::type_mismatch_ctx(
+                "cycle_step",
+                "Dict",
+                other.type_name(),
                 call_span,
             )
             .into())
@@ -1503,8 +1553,10 @@ fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let idx_int = match idx {
         Value::Int(i) => i,
         other => {
-            return Err(EvalError::new(
-                format!("cycle_step: index must be Int, got {}", other.type_name()),
+            return Err(EvalError::type_mismatch_ctx(
+                "cycle_step",
+                "Int",
+                other.type_name(),
                 call_span,
             )
             .into())
@@ -1512,7 +1564,7 @@ fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     if map.is_empty() {
-        return Err(EvalError::new("cycle: cannot cycle empty dict", call_span).into());
+        return Err(EvalError::empty_collection("cycle", call_span).into());
     }
 
     let len = map.len() as i64;
@@ -1523,7 +1575,7 @@ fn builtin_cycle_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let head = map
         .get_index(current_idx as usize)
         .map(|(_, v)| Rc::clone(v))
-        .ok_or_else(|| EvalError::new("cycle_step: index out of bounds", call_span))?;
+        .ok_or_else(|| EvalError::internal("cycle_step: index out of bounds", call_span))?;
 
     // Create tail as PendingBuiltin for next step
     let tail_args = vec![Rc::clone(&args[0]), ok_val(Value::Int(next_idx))?];
@@ -1561,7 +1613,7 @@ fn builtin_cycle(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match val {
         Value::Dict(ref map) => {
             if map.is_empty() {
-                return Err(EvalError::new("cycle: cannot cycle empty dict", call_span).into());
+                return Err(EvalError::empty_collection("cycle", call_span).into());
             }
             // Start cycling from index 0
             builtin_cycle_step(BuiltinArgs {
@@ -1571,11 +1623,9 @@ fn builtin_cycle(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 call_span,
             })
         }
-        other => Err(EvalError::new(
-            format!("cycle: expected Dict, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => {
+            Err(EvalError::type_mismatch_ctx("cycle", "Dict", other.type_name(), call_span).into())
+        }
     }
 }
 
@@ -1686,7 +1736,7 @@ fn builtin_unfold_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             ok_val(Value::Seq { head, tail })
         }
-        Value::Dict(ref map) => Err(EvalError::new(
+        Value::Dict(ref map) => Err(EvalError::internal(
             format!(
                 "unfold: step function must return dict with 2+ entries or empty dict, got {} entries",
                 map.len()
@@ -1694,14 +1744,9 @@ fn builtin_unfold_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             call_span,
         )
         .into()),
-        other => Err(EvalError::new(
-            format!(
-                "unfold: step function must return Dict, got {}",
-                other.type_name()
-            ),
-            call_span,
-        )
-        .into()),
+        other => Err(
+            EvalError::type_mismatch_ctx("unfold", "Dict", other.type_name(), call_span).into(),
+        ),
     }
 }
 
@@ -1798,11 +1843,12 @@ fn builtin_map(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 tail: new_tail,
             })
         }
-        other => Err(EvalError::new(
-            format!("map: expected Dict or Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => {
+            Err(
+                EvalError::type_mismatch_ctx("map", "Dict or Seq", other.type_name(), call_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -1879,11 +1925,12 @@ fn builtin_filter(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ));
             Ok(result_thunk)
         }
-        other => Err(EvalError::new(
-            format!("filter: expected Dict or Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => {
+            Err(
+                EvalError::type_mismatch_ctx("filter", "Dict or Seq", other.type_name(), call_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -1905,11 +1952,10 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let idx_int = match idx {
         Value::Int(i) => i,
         other => {
-            return Err(EvalError::new(
-                format!(
-                    "filter-dict-step: idx must be Int, got {}",
-                    other.type_name()
-                ),
+            return Err(EvalError::type_mismatch_ctx(
+                "filter-dict-step",
+                "Int",
+                other.type_name(),
                 call_span,
             )
             .into())
@@ -1920,11 +1966,10 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let keys_map = match keys {
         Value::Dict(ref m) => m,
         other => {
-            return Err(EvalError::new(
-                format!(
-                    "filter-dict-step: keys must be Dict, got {}",
-                    other.type_name()
-                ),
+            return Err(EvalError::type_mismatch_ctx(
+                "filter-dict-step",
+                "Dict",
+                other.type_name(),
                 call_span,
             )
             .into())
@@ -1940,7 +1985,7 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let key_value = match keys_map.get(&Key::Int(idx_int)) {
         Some(thunk) => materialize(thunk, None, depth)?,
         None => {
-            return Err(EvalError::new(
+            return Err(EvalError::internal(
                 format!("filter-dict-step: key at index {} not found", idx_int),
                 call_span,
             )
@@ -1952,11 +1997,10 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Int(n) => Key::Int(n),
         Value::String(s) => Key::String(s),
         other => {
-            return Err(EvalError::new(
-                format!(
-                    "filter-dict-step: expected Int or String key, got {}",
-                    other.type_name()
-                ),
+            return Err(EvalError::type_mismatch_ctx(
+                "filter-dict-step",
+                "Int or String",
+                other.type_name(),
                 call_span,
             )
             .into())
@@ -1968,11 +2012,10 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dict_map = match dict {
         Value::Dict(ref m) => m,
         other => {
-            return Err(EvalError::new(
-                format!(
-                    "filter-dict-step: dict must be Dict, got {}",
-                    other.type_name()
-                ),
+            return Err(EvalError::type_mismatch_ctx(
+                "filter-dict-step",
+                "Dict",
+                other.type_name(),
                 call_span,
             )
             .into())
@@ -1982,7 +2025,7 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let value_thunk = match dict_map.get(&current_key) {
         Some(v) => Rc::clone(v),
         None => {
-            return Err(EvalError::new(
+            return Err(EvalError::internal(
                 format!("filter-dict-step: key {} not found in dict", current_key),
                 call_span,
             )
@@ -2004,11 +2047,10 @@ fn builtin_filter_dict_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let passes = match pred_result {
         Value::Bool(b) => b,
         other => {
-            return Err(EvalError::new(
-                format!(
-                    "filter: predicate must return Bool, got {}",
-                    other.type_name()
-                ),
+            return Err(EvalError::type_mismatch_ctx(
+                "filter",
+                "Bool",
+                other.type_name(),
                 call_span,
             )
             .into())
@@ -2118,11 +2160,10 @@ fn builtin_filter_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Ok(next_thunk)
             }
         }
-        other => Err(EvalError::new(
-            format!(
-                "filter-seq-step: expected Dict or Seq, got {}",
-                other.type_name()
-            ),
+        other => Err(EvalError::type_mismatch_ctx(
+            "filter-seq-step",
+            "Dict or Seq",
+            other.type_name(),
             call_span,
         )
         .into()),
@@ -2150,11 +2191,9 @@ fn builtin_take(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let n_int = match n {
         Value::Int(i) => i,
         other => {
-            return Err(EvalError::new(
-                format!("take: n must be Int, got {}", other.type_name()),
-                call_span,
+            return Err(
+                EvalError::type_mismatch_ctx("take", "Int", other.type_name(), call_span).into(),
             )
-            .into())
         }
     };
 
@@ -2191,11 +2230,12 @@ fn builtin_take(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 tail: new_tail,
             })
         }
-        other => Err(EvalError::new(
-            format!("take: expected Dict or Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => {
+            Err(
+                EvalError::type_mismatch_ctx("take", "Dict or Seq", other.type_name(), call_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -2221,11 +2261,9 @@ fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let n_int = match n {
         Value::Int(i) => i,
         other => {
-            return Err(EvalError::new(
-                format!("drop: n must be Int, got {}", other.type_name()),
-                call_span,
+            return Err(
+                EvalError::type_mismatch_ctx("drop", "Int", other.type_name(), call_span).into(),
             )
-            .into())
         }
     };
 
@@ -2258,11 +2296,12 @@ fn builtin_drop(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $drop"),
             )))
         }
-        other => Err(EvalError::new(
-            format!("drop: expected Dict or Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => {
+            Err(
+                EvalError::type_mismatch_ctx("drop", "Dict or Seq", other.type_name(), call_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -2307,7 +2346,7 @@ fn builtin_drop_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $drop"),
             )))
         }
-        other => Err(EvalError::new(
+        other => Err(EvalError::internal(
             format!("drop: invalid Seq tail, got {}", other.type_name()),
             call_span,
         )
@@ -2371,11 +2410,12 @@ fn builtin_reduce(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $reduce"),
             )))
         }
-        other => Err(EvalError::new(
-            format!("reduce: expected Dict or Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => {
+            Err(
+                EvalError::type_mismatch_ctx("reduce", "Dict or Seq", other.type_name(), call_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -2433,7 +2473,7 @@ fn builtin_reduce_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $reduce"),
             )))
         }
-        other => Err(EvalError::new(
+        other => Err(EvalError::internal(
             format!("reduce: invalid Seq tail, got {}", other.type_name()),
             call_span,
         )
@@ -2497,7 +2537,7 @@ fn builtin_join(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         current_tail = Rc::clone(&tail);
                     }
                     other => {
-                        return Err(EvalError::new(
+                        return Err(EvalError::internal(
                             format!("join: invalid Seq tail, got {}", other.type_name()),
                             call_span,
                         )
@@ -2508,11 +2548,12 @@ fn builtin_join(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             ok_val(Value::String(parts.join(&sep_str)))
         }
-        other => Err(EvalError::new(
-            format!("join: expected Dict or Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => {
+            Err(
+                EvalError::type_mismatch_ctx("join", "Dict or Seq", other.type_name(), call_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -2581,7 +2622,7 @@ fn builtin_concat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                     ok_val(Value::Dict(result))
                 }
-                other => Err(EvalError::new(
+                other => Err(EvalError::internal(
                     format!(
                         "concat: both arguments must be the same collection type, got Dict and {}",
                         other.type_name()
@@ -2591,11 +2632,12 @@ fn builtin_concat(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into()),
             }
         }
-        other => Err(EvalError::new(
-            format!("concat: expected Dict or Seq, got {}", other.type_name()),
-            call_span,
-        )
-        .into()),
+        other => {
+            Err(
+                EvalError::type_mismatch_ctx("concat", "Dict or Seq", other.type_name(), call_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -2634,11 +2676,10 @@ fn builtin_concat_seq_step(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 tail: new_tail,
             })
         }
-        other => Err(EvalError::new(
-            format!(
-                "concat-seq-step: expected Dict or Seq, got {}",
-                other.type_name()
-            ),
+        other => Err(EvalError::type_mismatch_ctx(
+            "concat-seq-step",
+            "Dict or Seq",
+            other.type_name(),
             call_span,
         )
         .into()),
@@ -2734,7 +2775,7 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 
     let prelude_source = include_str!("../stdlib/prelude.llt");
     let file = crate::parser::parse(prelude_source).map_err(|e| {
-        crate::error::EvalError::new(format!("prelude parse error: {e}"), Span::origin())
+        crate::error::EvalError::internal(format!("prelude parse error: {e}"), Span::origin())
     })?;
 
     let thunk = crate::eval::eval_file(&file.node, Rc::clone(&root_env), 0)?;
@@ -2744,7 +2785,7 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     let dict = match val {
         Value::Dict(map) => map,
         other => {
-            return Err(crate::error::EvalError::new(
+            return Err(crate::error::EvalError::internal(
                 format!("prelude must evaluate to a Dict, got {}", other.type_name()),
                 Span::origin(),
             )
@@ -2921,7 +2962,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message().contains("Infinity"), "got: {}", err.message());
+        assert!(
+            err.message().contains("is not a finite number"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -2933,7 +2978,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message().contains("Infinity"), "got: {}", err.message());
+        assert!(
+            err.message().contains("is not a finite number"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3212,7 +3261,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message().contains("Infinity"), "got: {}", err.message());
+        assert!(
+            err.message().contains("is not a finite number"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3224,7 +3277,11 @@ mod tests {
             call_span: call_span(),
         })
         .unwrap_err();
-        assert!(err.message().contains("Infinity"), "got: {}", err.message());
+        assert!(
+            err.message().contains("is not a finite number"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -3656,7 +3713,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("non-finite"),
+            err.message().contains("is not a finite number"),
             "got: {}",
             err.message()
         );
@@ -3672,7 +3729,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("non-finite"),
+            err.message().contains("is not a finite number"),
             "got: {}",
             err.message()
         );
@@ -3688,7 +3745,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("non-finite"),
+            err.message().contains("is not a finite number"),
             "got: {}",
             err.message()
         );
@@ -3704,7 +3761,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("non-finite"),
+            err.message().contains("is not a finite number"),
             "got: {}",
             err.message()
         );
@@ -4136,7 +4193,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("zero-argument"),
+            err.message().contains("expected 0 arguments"),
             "got: {}",
             err.message()
         );
@@ -5475,7 +5532,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("key overflow"),
+            err.message().contains("integer overflow"),
             "got: {}",
             err.message()
         );
@@ -8039,7 +8096,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot open"),
+            err.message().contains("cannot access"),
             "got: {}",
             err.message()
         );
@@ -8650,7 +8707,7 @@ mod tests {
         });
         let err = result.unwrap_err();
         assert!(
-            err.message().contains("empty sequence"),
+            err.message().contains("on empty collection"),
             "got: {}",
             err.message()
         );
@@ -8666,7 +8723,7 @@ mod tests {
         });
         let err = result.unwrap_err();
         assert!(
-            err.message().contains("empty sequence"),
+            err.message().contains("on empty collection"),
             "got: {}",
             err.message()
         );

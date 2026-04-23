@@ -1,4 +1,4 @@
 # cycle: error when called with empty collection
 [call $cycle []]
 ===
-cannot cycle empty dict
+cycle on empty collection

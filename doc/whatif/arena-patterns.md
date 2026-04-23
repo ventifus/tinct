@@ -20,33 +20,35 @@ Letrec creates cyclic Rc graphs: dict environments hold thunks that close over
 the same environment. These cycles are semantically correct but prevent Rc
 deallocation — leaked until the process exits.
 
-The arena migration eliminates per-thunk Rc overhead, eliminates Rc cycle
-leaks, and enables O(1) variable lookup via flat environments with slot
-indices.
+### What's Missing
 
-## Requirements
+1. **Per-thunk allocation overhead** — 32 bytes of Rc+RefCell overhead per
+   thunk, multiplied across every thunk in every document section.
+2. **Cycle reclamation** — letrec Rc cycles are never freed. Long-running
+   processes or multi-document pipelines accumulate leaked memory.
+3. **O(1) variable lookup** — parent-chain environments require O(depth)
+   lookup per variable reference. Flat environments with slot indices
+   eliminate this.
+4. **Bulk deallocation** — no mechanism to drop all thunks from a document
+   section at once. Individual Rc drops are scattered and cycle-blocked.
 
-The arena must support four operations:
+## What Arena Allocation Would Provide
 
-1. **Mutable thunks** — thunks transition through states (Unevaluated →
-   InProgress → Materialized/Failed). Interior mutability is required.
+1. **Zero per-thunk Rc overhead** — thunks are plain struct entries in a
+   `Vec`, accessed by `u32` index. No reference counting, no borrow flags.
+2. **Cycle-free memory model** — letrec self-references become integer
+   indices into the same arena. When the arena drops, everything drops.
+3. **O(1) variable lookup** — flat environments with `(level, slot)` de
+   Bruijn addressing replace parent-chain traversal.
+4. **Section-scoped bulk deallocation** — dropping the arena frees all
+   thunks and environments for a document section in one operation.
+5. **Copy handles** — `ThunkId(u32)` is `Copy`, eliminating `Rc::clone`
+   overhead in environment slots, thunk states, and value constructors.
 
-2. **Self-referencing graphs** — letrec creates environments where thunks
-   reference the environment that contains them. The arena handle type must
-   be storable inside arena-allocated items.
+## Design
 
-3. **Bulk deallocation** — all thunks from one document section dropped at
-   once when the arena is dropped.
-
-4. **Stable handles** — handles must remain valid for the arena's lifetime,
-   and must be `Copy` for cheap storage in environment slots and thunk states.
-
-## Approaches
-
-### Approach A: `Vec<Thunk>` + `ThunkId(usize)` (Hand-Rolled Index Arena)
-
-The simplest approach: a `Vec` as the backing store, a newtype `usize` as the
-handle.
+A hand-rolled index arena: `Vec<Thunk>` as the backing store, `ThunkId(u32)`
+as the handle.
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -85,20 +87,19 @@ Safe because `ThunkId` is a plain integer (Copy, no lifetime), and
 The placeholder → real state transition is monotonic, matching the existing
 Unevaluated → InProgress → Materialized lifecycle.
 
-**Pros:**
-- Zero dependencies, zero per-item overhead beyond the Thunk itself
-- `ThunkId` is `Copy` — cheap to store in environments, thunk states, values
-- Pre-allocate slots trivially (push placeholder, fill later)
-- Bounds-checked indexing (0.5–3% overhead, often optimized away by LLVM)
-- Bulk deallocation by dropping the `Vec`
-- No `unsafe` required
-- Identical mutation model to current code (RefCell)
+This is the simplest correct solution: zero dependencies, zero per-item
+overhead beyond the `Thunk` itself, and no `unsafe` required. `ThunkId` is
+`Copy` — cheap to store in environments, thunk states, and values.
+Pre-allocate slots trivially (push placeholder, fill later). Bounds-checked
+indexing adds 0.5--3% overhead, often optimized away by LLVM. Bulk
+deallocation is achieved by dropping the `Vec`.
 
-**Cons:**
-- No deletion of individual thunks (append-only) — not needed for tinct
-- No generation counter (use-after-free detectable only by bounds check, not
-  by stale-handle detection) — not needed when arena lifetime = section scope
-- Must pass `&ThunkArena` to every function that accesses thunks
+The append-only model means no individual thunk deletion and no generation
+counters for stale-handle detection. Neither is needed: deletion is
+unnecessary for tinct's section-scoped evaluation, and stale handles are
+prevented structurally because `ThunkId`s are only valid within the arena's
+section lifetime. The migration algorithm translates all reachable IDs
+before the arena drops.
 
 **Precedent:** cranelift's `PrimaryMap<K, V>` is exactly this pattern — a
 `Vec<V>` with typed `K` index handles (`Inst`, `Block`, `Value` are all u32
@@ -106,144 +107,25 @@ newtypes). cranelift chose indices over pointers explicitly because Rust
 ownership makes pointer-based graphs hard, and u32 saves space vs 64-bit
 pointers. No deletion support, no generation counters.
 
-### Approach B: `id-arena` Crate
+### Why RefCell Is Correct
 
-The `id-arena` crate wraps the Vec + index pattern with a typed `Id<T>` handle
-and arena-level generation counter (prevents cross-arena ID confusion).
+GhostCell (Yanovski et al., 2021) and qcell offer zero-cost interior
+mutability via branded lifetimes, but they solve a problem tinct doesn't
+have. `RefCell` panics are prevented by the thunk lifecycle's monotonic
+state machine: a thunk transitions Unevaluated -> InProgress ->
+Materialized/Failed, and the `InProgress` sentinel prevents re-entrant
+borrows (blackholing). The ergonomic cost of threading branded lifetime
+parameters through every evaluator function is prohibitive for no
+correctness benefit.
 
-```rust
-use id_arena::{Arena, Id};
+### Why u32 Is Sufficient
 
-let mut arena = Arena::new();
-let id: Id<Thunk> = arena.alloc(thunk);
-let thunk_ref: &Thunk = &arena[id];
-```
+2^32 = ~4 billion thunks per section. A single document section producing
+4 billion thunks would exhaust memory long before the index overflows. Use
+`u32` (4 bytes) instead of `usize` (8 bytes) to match cranelift and halve
+handle size.
 
-**Pros:**
-- Arena-level generation prevents using an ID from arena A in arena B
-- Typed `Id<T>` prevents mixing ThunkId with EnvId
-- Well-tested, simple implementation
-
-**Cons:**
-- No pre-allocate support (`alloc` returns ID only after inserting the value)
-  — letrec requires a workaround (allocate with dummy value, fill later)
-- No meaningful advantage over hand-rolled Vec for tinct's use case
-- Additional dependency for ~50 lines of equivalent hand-rolled code
-- Arena-level generation adds 8 bytes to every `Id` (vs 4 bytes for plain u32)
-
-**Assessment:** Functionally equivalent to Approach A with minor ergonomic
-differences. The generation counter prevents cross-arena confusion but adds
-overhead that's unnecessary when arena lifetime is structurally scoped to
-document sections.
-
-### Approach C: `slotmap` / `thunderdome` (Generational Arenas)
-
-Generational arenas add a per-slot generation counter to detect use-after-free.
-
-```rust
-use thunderdome::{Arena, Index};
-
-let mut arena = Arena::new();
-let idx: Index = arena.insert(thunk);
-let thunk_ref: &Thunk = &arena[idx];
-arena.remove(idx);  // invalidates idx's generation
-```
-
-**Pros:**
-- Per-slot generation counters detect stale handles at runtime
-- Support individual deletion + reuse of slots
-- `thunderdome` supports non-Copy types on stable Rust
-
-**Cons:**
-- 4 bytes overhead per slot (generation counter) — wasted for append-only use
-- 8-byte handles (index + generation) vs 4-byte u32
-- Deletion support adds complexity not needed for tinct
-- `slotmap` requires `Copy` on stable Rust for its default map
-- Pre-allocate pattern is awkward (insert dummy, get key, modify via `&mut`)
-
-**Assessment:** Designed for entity-component systems where entities are
-created and destroyed dynamically. tinct thunks are never individually deleted
-— they live until the arena drops. The generation counter and deletion
-machinery are pure overhead.
-
-### Approach D: `typed-arena` / `bumpalo` (Reference-Based Arenas)
-
-These arenas return `&'arena T` references instead of integer handles.
-
-```rust
-use typed_arena::Arena;
-
-let arena = Arena::new();
-let thunk: &Thunk = arena.alloc(Thunk::new(/* ... */));
-```
-
-**Pros:**
-- Zero per-item overhead
-- Ergonomic — returns `&T` directly, no handle lookup
-
-**Cons:**
-- **Cannot create self-referencing structures.** The borrow checker prevents
-  storing `&'arena Thunk` inside another `&'arena Thunk` because allocation
-  requires `&mut self` on the arena, which conflicts with outstanding `&T`
-  borrows. This is the fundamental limitation for interpreter runtimes.
-- Letrec is impossible without `unsafe` — you can't get a reference to a
-  thunk and then modify it (allocation invalidates existing references).
-- Would require `unsafe` pointer manipulation for all cyclic structures.
-- `bumpalo` skips destructors by default (fine for tinct's `Thunk` but
-  surprising).
-
-**Assessment:** Reference-based arenas don't work for tinct. The
-self-referencing requirement (letrec environments ↔ thunks) is fundamental,
-and these crates can't express it without `unsafe`. rustc uses `typed-arena`
-because types are immutable after allocation — tinct's thunks are mutable.
-
-### Approach E: GhostCell / qcell (Zero-Cost Interior Mutability)
-
-Replace `RefCell<ThunkState>` with compile-time-checked interior mutability.
-
-**GhostCell** uses a branded lifetime `'id` to prove at compile time that only
-one `GhostToken<'id>` exists, enabling safe mutation without runtime borrow
-checks:
-
-```rust
-use ghost_cell::{GhostToken, GhostCell};
-
-GhostToken::new(|token| {
-    let cell = GhostCell::new(ThunkState::Unevaluated { .. });
-    let state: &ThunkState = cell.borrow(&token);
-    let state_mut: &mut ThunkState = cell.borrow_mut(&mut token);
-});
-```
-
-**qcell** variants:
-- `QCell`: runtime ID check (like RefCell but owner-based)
-- `TCell`/`LCell`: zero-cost like GhostCell, type-level or lifetime-level
-  branding
-
-**Pros:**
-- Zero runtime overhead (no borrow flag, no runtime checks)
-- Eliminates RefCell panic risk (borrow violations caught at compile time)
-- GhostCell is formally verified (RustBelt project)
-
-**Cons:**
-- **Severe ergonomic burden.** The `'id` lifetime parameter propagates through
-  every type and function that touches thunks — `ThunkArena<'id>`,
-  `ThunkState<'id>`, `Environment<'id>`, `eval<'id>()`, `materialize<'id>()`,
-  every builtin signature. This is a pervasive change to the entire evaluator.
-- Cannot return GhostCell values from closures (lifetime captured)
-- The token must be threaded through all evaluation functions as a parameter
-- Ecosystem-incompatible (IndexMap, Vec, etc. don't know about GhostCell)
-- RefCell's runtime overhead is negligible — a single `usize` flag checked on
-  borrow, branch-predicted to success. In profiling of interpreter runtimes,
-  RefCell overhead is unmeasurable.
-
-**Assessment:** GhostCell solves a problem tinct doesn't have. RefCell panics
-are a theoretical risk eliminated by the thunk lifecycle's monotonic state
-transitions (DESIGN.md §Thunk Lifecycle proves no double-borrow occurs). The
-ergonomic cost of propagating `'id` through the entire evaluator far outweighs
-the zero-cost benefit. RefCell is the right choice.
-
-## Environment Representation
+### Environment Representation
 
 Alongside the thunk arena, environments transition from chain-based to flat:
 
@@ -277,9 +159,13 @@ after migration, breaking the sharing invariant.
 
 ## What Would Change
 
-### ThunkState References
+### Thunk References (`value.rs`, `eval.rs`)
 
-Every `Rc<Thunk>` in the codebase becomes `ThunkId`:
+**Current:** Every thunk is `Rc<Thunk>`. Sharing is via `Rc::clone`.
+State access is `thunk.state()`.
+
+**Proposed:** Every `Rc<Thunk>` becomes `ThunkId(u32)`. Sharing is via
+copying the `u32`. State access is `arena.get(id).state()`.
 
 | Current | Arena |
 |---------|-------|
@@ -288,10 +174,14 @@ Every `Rc<Thunk>` in the codebase becomes `ThunkId`:
 | `Rc::clone(&thunk)` | `id` (Copy, free) |
 | `thunk.state()` | `arena.get(id).state()` |
 
-### Value Type
+**Impact:** Major — touches every file that creates or accesses thunks.
 
-`Value::Dict`, `Value::Seq`, `Value::Function` change from holding `Rc<Thunk>`
-to `ThunkId`:
+### Value Type (`value.rs`)
+
+**Current:** `Value::Dict`, `Value::Seq`, `Value::Function` hold
+`Rc<Thunk>` and `Rc<RefCell<Environment>>`.
+
+**Proposed:** These variants hold `ThunkId` and `EnvId`:
 
 ```rust
 pub enum Value {
@@ -302,158 +192,120 @@ pub enum Value {
 }
 ```
 
-### BuiltinFn Signature
+**Impact:** Major — all pattern matches on `Value` variants change.
 
-Builtins need arena access:
+### BuiltinFn Signature (`builtins.rs`)
+
+**Current:** Builtins receive and return `Rc<Thunk>`.
+
+**Proposed:** Builtins need arena access:
 
 ```rust
 pub type BuiltinFn = fn(BuiltinArgs, &mut ThunkArena) -> EvalResult<ThunkId>;
 ```
 
-Or via EvalContext if arena is stored there.
+Or via `EvalContext` if the arena is stored there.
 
-### Evaluator Functions
+**Impact:** Major — every builtin function signature changes.
 
-`eval()` and `materialize()` receive `&mut ThunkArena` (or `&EvalContext`
-containing the arena). In the CEK machine design, the arena is a field of the
-machine state, accessed throughout the main loop.
+### Evaluator Functions (`eval.rs`)
 
-## Recommendation
+**Current:** `eval()` and `materialize()` work with `Rc<Thunk>` directly.
 
-**Approach A: hand-rolled `Vec<Thunk>` + `ThunkId(u32)`, keep `RefCell` for
-thunk mutation.**
+**Proposed:** These functions receive `&mut ThunkArena` (or `&EvalContext`
+containing the arena). In the CEK machine design, the arena is a field of
+the machine state, accessed throughout the main loop.
 
-### Rationale
+**Impact:** Fundamental — the evaluator's core data flow changes from
+reference-counted pointers to arena-indexed handles.
 
-1. **Simplest correct solution.** Zero dependencies, zero overhead, handles
-   all four requirements. No crate offers a meaningful advantage for tinct's
-   append-only, section-scoped, mutable-thunk use case.
+## Phased Adoption
 
-2. **cranelift precedent.** cranelift's `entity` module (`PrimaryMap<K,V>`) is
-   the same pattern deployed at production scale. They chose it for the same
-   reasons: Rust ownership makes pointer graphs hard, indices are cheap and
-   Copy, deletion isn't needed.
+This arena work is part of the `iterative-eval` sprint. Each phase is
+independently useful.
 
-3. **RefCell is correct.** GhostCell/qcell solve a problem tinct doesn't have
-   (RefCell panics are prevented by the thunk lifecycle's monotonic state
-   machine). The ergonomic cost of branded lifetimes is prohibitive.
+### Phase 1: Variable Resolution Pass
 
-4. **No deletion needed.** slotmap/thunderdome's generation counters are
-   overhead for an append-only arena. Stale handle bugs are prevented
-   structurally: ThunkIds are only valid within the arena's section lifetime,
-   and the migration algorithm translates all reachable IDs before the arena
-   drops.
+Pre-eval pass assigns `(level, slot)` pairs to every `VarRef` in the AST.
+This is a prerequisite for flat environments — without slot indices,
+`FlatEnv` can't do O(1) lookup. This pass also enables TCO detection
+(identifying tail-position calls). Useful independently as a semantic
+analysis pass even before arenas land.
 
-5. **`u32` is sufficient.** 2³² = ~4 billion thunks per section. A single
-   document section producing 4 billion thunks would exhaust memory long
-   before the index overflows. Use `u32` (4 bytes) instead of `usize` (8
-   bytes) to match cranelift and halve handle size.
+### Phase 2: ThunkArena + EnvArena
 
-### Implementation Sketch
+Introduce the arena types. Initially, the evaluator creates one arena per
+`eval_file()` call. Thunks and environments are allocated in the arena.
+`Value`, `ThunkState`, `BuiltinFn` signatures change to use
+`ThunkId`/`EnvId`.
 
-```rust
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ThunkId(u32);
+### Phase 3: CEK Machine
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EnvId(u32);
+The iterative evaluator loop holds the arena as part of its machine state.
+The `Cont` enum's variants use `ThunkId`/`EnvId` instead of
+`Rc<Thunk>`/`Rc<RefCell<Environment>>`.
 
-pub struct ThunkArena {
-    thunks: Vec<Thunk>,
-}
+### Phase 4: Selective Migration at `---`
 
-impl ThunkArena {
-    pub fn with_capacity(cap: usize) -> Self {
-        Self { thunks: Vec::with_capacity(cap) }
-    }
-
-    pub fn alloc(&mut self, thunk: Thunk) -> ThunkId {
-        let id = ThunkId(self.thunks.len() as u32);
-        self.thunks.push(thunk);
-        id
-    }
-
-    pub fn get(&self, id: ThunkId) -> &Thunk {
-        &self.thunks[id.0 as usize]
-    }
-}
-
-pub struct EnvArena {
-    envs: Vec<FlatEnv>,
-}
-
-pub struct FlatEnv {
-    slots: Vec<ThunkId>,
-    parent: Option<EnvId>,
-}
-```
-
-### Phased Adoption
-
-This arena work is part of the `iterative-eval` sprint. The adoption order:
-
-**Step 1: Variable resolution pass.** Pre-eval pass assigns `(level, slot)`
-pairs to every `VarRef` in the AST. This is a prerequisite for flat
-environments — without slot indices, `FlatEnv` can't do O(1) lookup. This
-pass also enables TCO detection (identifying tail-position calls).
-
-**Step 2: ThunkArena + EnvArena.** Introduce the arena types. Initially, the
-evaluator creates one arena per `eval_file()` call. Thunks and environments
-are allocated in the arena. `Value`, `ThunkState`, `BuiltinFn` signatures
-change to use `ThunkId`/`EnvId`.
-
-**Step 3: CEK machine.** The iterative evaluator loop holds the arena as part
-of its machine state. The `Cont` enum's variants use `ThunkId`/`EnvId`
-instead of `Rc<Thunk>`/`Rc<RefCell<Environment>>`.
-
-**Step 4: Selective migration at `---`.** Implement the migration algorithm
-from DESIGN.md §Allocation Strategy. Two translation tables
-(`HashMap<ThunkId, Rc<Thunk>>` + `HashMap<EnvId, Rc<RefCell<Environment>>>`)
-preserve identity across the boundary.
+Implement the migration algorithm from DESIGN.md §Allocation Strategy. Two
+translation tables (`HashMap<ThunkId, Rc<Thunk>>` +
+`HashMap<EnvId, Rc<RefCell<Environment>>>`) preserve identity across the
+boundary.
 
 ### Deferred: If Deletion Is Ever Needed
 
 If a future feature requires individual thunk deletion (e.g., garbage
 collection within long-running REPL sessions), migrate from `Vec<Thunk>` to
 `thunderdome::Arena<Thunk>`. thunderdome's generation counters detect stale
-handles, supports non-Copy types, and the API is compatible. This is a
-localized change to `ThunkArena`'s internals — `ThunkId` would become
-`thunderdome::Index`, and the rest of the codebase would not change.
+handles, and the API is compatible. This is a localized change to
+`ThunkArena`'s internals — `ThunkId` would become `thunderdome::Index`,
+and the rest of the codebase would not change.
+
+### Prerequisites
+
+- **Phase 1** has no prerequisites — it is a standalone analysis pass.
+- **Phase 2** requires Phase 1 (flat environments need slot indices).
+- **Phase 3** requires Phase 2 (CEK machine operates on arena-allocated
+  thunks) and the `iterative-eval` sprint's continuation design.
+- **Phase 4** requires Phase 2 (migration translates arena IDs to Rc
+  pointers for cross-section persistence).
+
+### Trigger
+
+- When the `iterative-eval` sprint begins (the arena is a core dependency
+  of the CEK machine design)
+- When Rc cycle leaks cause measurable memory growth in multi-document
+  pipelines
+- When parent-chain O(depth) lookup becomes a measurable bottleneck in
+  deeply nested configurations
 
 ## References
 
-**Arena patterns in Rust:**
-- Manish Goregaokar (2021). "Arenas in Rust." Blog post. — Survey of
-  typed-arena, bumpalo, and index-based patterns.
-- matklad (2018). "Newtype Index Pattern." Blog post. — The pattern used by
-  cranelift and rust-analyzer.
-- cranelift `entity` module — `PrimaryMap<K,V>`, `SecondaryMap<K,V>`, typed
-  index handles.
-
-**Production arena implementations:**
-- rustc `rustc_arena` — DroplessArena for Copy types, TypedArena for Drop
-  types. `'tcx` lifetime model. Immutable after allocation.
-- salsa — `salsa::Id` (u32) for incremental computation. Stable identity
-  across revisions.
-- cranelift — `PrimaryMap<K,V>` (Vec-based) with u32 index handles. No
-  deletion. Chosen explicitly because Rust ownership makes pointer graphs hard.
-
-**Interior mutability:**
+- Tofte, M. & Talpin, J.-P. (1997). "Region-based memory management."
+  *Information and Computation*, 132(2), 109--176. — Arena allocation is a
+  simplified instance of region-based memory: each document section is a
+  region, bulk deallocation corresponds to region exit.
+- de Bruijn, N.G. (1972). "Lambda calculus notation with nameless dummies."
+  *Indagationes Mathematicae*, 34, 381--392. — Flat environments use de Bruijn
+  levels (not indices) for O(1) variable lookup without shifting under
+  substitution.
 - Yanovski, J. et al. (2021). "GhostCell: Separating Permissions from Data
   in Rust." *ICFP '21.* — Zero-cost interior mutability via branded lifetimes.
-  Formally verified. Ergonomic cost prohibitive for whole-evaluator adoption.
-- `qcell` crate — QCell (runtime), TCell/LCell (zero-cost). Similar tradeoffs
-  to GhostCell.
-
-**Interpreter runtimes:**
-- Nix — Boehm GC, flat Value arrays with de Bruijn levels. In-place thunk
-  update. C++.
-- Nickel — `Rc<RefCell<Closure>>`, same model as tinct's current approach.
-  No arenas. Rust.
-
-**Theory:**
-- Tofte, M. & Talpin, J.-P. (1997). "Region-based memory management."
-  *Information and Computation*, 132(2), 109–176. — Arena ≈ simplified region.
-- de Bruijn, N.G. (1972). "Lambda calculus notation with nameless dummies."
-  *Indagationes Mathematicae*, 34, 381–392. — Flat environments use de Bruijn
-  levels (not indices).
+  Formally verified. Evaluated and rejected: ergonomic cost prohibitive for
+  whole-evaluator adoption when RefCell is already correct.
+- Launchbury, J. (1993). "A natural semantics for lazy evaluation." In
+  *POPL '93*, pp. 144--154. ACM. — The thunk lifecycle (Unevaluated ->
+  InProgress -> Materialized) that arena allocation must preserve. Sharing
+  preservation is the key invariant: two references to the same ThunkId
+  must observe the same materialized value.
+- Manish Goregaokar (2021). "Arenas in Rust." Blog post. — Survey of
+  typed-arena, bumpalo, and index-based patterns in the Rust ecosystem.
+- matklad (2018). "Newtype Index Pattern." Blog post. — The `Vec<T>` +
+  newtype `usize` pattern used by cranelift and rust-analyzer.
+- cranelift `entity` module. — `PrimaryMap<K,V>`, `SecondaryMap<K,V>`,
+  typed u32 index handles. Production-scale precedent for this exact pattern.
+- Nix evaluator. — Boehm GC, flat Value arrays with de Bruijn levels,
+  in-place thunk update. C++ reference implementation for lazy configuration
+  language evaluation.
+- Nickel evaluator. — `Rc<RefCell<Closure>>`, same model as tinct's current
+  approach. No arenas. Rust reference point for the status quo.
