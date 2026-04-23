@@ -865,6 +865,11 @@ fn builtin_try(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Dict(result))
         }
         Err(e) => {
+            // Resource limit errors (DepthExceeded) must not be catchable by user code.
+            // Re-raise instead of converting to err dict.
+            if !e.kind.is_catchable() {
+                return Err(e);
+            }
             let mut result = IndexMap::new();
             result.insert(
                 Key::String("err".to_string()),
@@ -4262,6 +4267,33 @@ mod tests {
             }
             _ => panic!("expected Dict"),
         }
+    }
+
+    #[test]
+    fn try_depth_exceeded_not_catchable() {
+        // DepthExceeded errors should NOT be caught by $try - they should propagate
+        fn depth_exceeded_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            let BuiltinArgs { call_span, .. } = ctx;
+            Err(EvalError::depth_exceeded(256, call_span).into())
+        }
+        let b = Value::Builtin {
+            name: "depth_fail",
+            func: depth_exceeded_builtin,
+        };
+        let err = builtin_try(BuiltinArgs {
+            args: &[thunk(b)],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+        })
+        .unwrap_err();
+        // Should propagate as error, not return err dict
+        assert!(
+            err.message().contains("maximum evaluation depth exceeded"),
+            "expected depth error to propagate, got: {}",
+            err.message()
+        );
+        assert_eq!(err.kind.code(), "E040");
     }
 
     #[test]

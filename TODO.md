@@ -46,17 +46,18 @@ Migrate remaining EvalError::new call sites across eval.rs and builtins.rs.
 
 Error safety mechanisms and specification updates.
 
-- [ ] Add `ErrorKind::is_catchable()` method returning `false` for `DepthExceeded` — `$try` currently catches ALL errors including depth-exceeded, defeating the safety net. Users can circumvent depth limits via `$until` + `$try` wrapping deeply recursive code. GHC makes `StackOverflow` uncatchable; Racket separates `exn:fail:resource`. Have `builtin_try` check `is_catchable()` and re-raise uncatchable errors directly. (`src/builtins.rs:793-871`, `src/error.rs`) [Critical, computer-scientist]
-- [ ] Integrate `is_cacheable()` into `cache_failure` — currently `Thunk::cache_failure()` unconditionally caches all errors including DepthExceeded. Requires state-restore mechanism: save pre-InProgress thunk state so non-cacheable errors can restore it instead of transitioning to Failed. (`src/value.rs:384-386`) [Major, eval-engine + computer-scientist panel]
-- [ ] Fix `FloatNotFinite` containing `f64` with `PartialEq` derive — `f64::NAN != f64::NAN` so two FloatNotFinite errors with NaN values compare as not-equal. Will affect Failed thunk cache identity when variant is constructed. (`src/error.rs`) [Minor, computer-scientist panel]
-- [ ] Update SPEC.md §9 with `ErrorKind` variants, error codes in display format (§9.2), and revised exhaustiveness claim in §9.3
-- [ ] Update DESIGN.md §Error Semantics field name: `message` → `kind` — spec still references old field name (`DESIGN.md`) [Minor, eval-engine]
-- [ ] Update DESIGN.md error constructors table to reflect ErrorKind variants — either expand or add "representative" note (`DESIGN.md`) [Minor, eval-engine]
+- [x] Add `ErrorKind::is_catchable()` method returning `false` for `DepthExceeded` — `$try` currently catches ALL errors including depth-exceeded, defeating the safety net. Users can circumvent depth limits via `$until` + `$try` wrapping deeply recursive code. GHC makes `StackOverflow` uncatchable; Racket separates `exn:fail:resource`. Have `builtin_try` check `is_catchable()` and re-raise uncatchable errors directly. (`src/builtins.rs:793-871`, `src/error.rs`) [Critical, computer-scientist]
+- [x] Integrate `is_cacheable()` into `cache_failure` — currently `Thunk::cache_failure()` unconditionally caches all errors including DepthExceeded. Requires state-restore mechanism: save pre-InProgress thunk state so non-cacheable errors can restore it instead of transitioning to Failed. (`src/value.rs:384-386`) [Major, eval-engine + computer-scientist panel]
+- [x] Fix `FloatNotFinite` containing `f64` with `PartialEq` derive — `f64::NAN != f64::NAN` so two FloatNotFinite errors with NaN values compare as not-equal. Will affect Failed thunk cache identity when variant is constructed. (`src/error.rs`) [Minor, computer-scientist panel]
+- [x] Update SPEC.md §9 with `ErrorKind` variants, error codes in display format (§9.2), and revised exhaustiveness claim in §9.3
+- [x] Update DESIGN.md §Error Semantics field name: `message` → `kind` — spec still references old field name (`DESIGN.md`) [Minor, eval-engine]
+- [x] Update DESIGN.md error constructors table to reflect ErrorKind variants — either expand or add "representative" note (`DESIGN.md`) [Minor, eval-engine]
 
 ### error-structured-migrate-d: Test Coverage
 
 ErrorKind test coverage to validate migration and prevent regressions.
 
+- [ ] Add missing ErrorKind constructor methods for remaining ~13 variants — DuplicateKey, NamedArgConflict, UnknownNamedArg, ParseConversion, TypeAssertFailed, UndefinedVariable, all JSON/Include variants still use verbose `Box::new(EvalError { kind: ..., ... })` instead of named constructors. Add constructors and migrate call sites. (`src/error.rs`, `src/eval.rs`, `src/builtins.rs`) [Minor, computer-scientist + eval-engine]
 - [ ] Add ErrorKind Display unit tests for all 25 variants — only 4 of 25 tested (KeyNotFound, TypeMismatch, ArityMismatch, CircularDependency). (`src/error.rs`) [Major, test-crafter panel]
 - [ ] Add ArityBound Display unit tests — no isolated tests for Exact/AtMost/Range Display impls. (`src/error.rs`) [Minor, test-crafter panel]
 - [ ] Add is_cacheable() unit tests — verify DepthExceeded returns false, all others true. (`src/error.rs`) [Minor, test-crafter panel]
@@ -621,6 +622,7 @@ Improvements to test infrastructure identified by cross-language analysis and te
 
 ### test-additional: Additional Test Coverage
 
+- [ ] Add stdlib corpus tests for `from-entries`, `any?`, `all?` — functions added in Phase 4b½ lack dedicated corpus verification; short-circuit semantics for `any?`/`all?` are critical for correctness (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
 - [ ] Add error corpus tests for arithmetic overflow ($+/$-/$* with i64 bounds), NaN/Infinity rejection ($floor/$round), string parse failure ($to-int/$to-float), TypeAssert failure, range mixed keys [Critical, test-crafter]
 - [ ] Add depth limit corpus tests (256 levels succeeds, 257 errors)
 - [ ] Add keyword-in-context corpus tests (`[call: 42]`, `[fn: hello]` testing colon-lookahead)

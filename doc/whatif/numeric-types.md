@@ -54,23 +54,72 @@ Cross-type comparison allowed with precision loss warning for integers
    function parameter annotated `@[min: 1  max: 100]` tells the reader
    exactly what values are valid.
 
-## Approaches
-
-### Approach B: Range Contracts with Automatic Sizing
+## Design
 
 Keep the user-facing type system simple — `Int`, `Float`, `Number` —
 but add range annotations via the `@` system that both validate and
-drive internal representation:
+drive internal representation. Users declare intent; the runtime
+optimizes.
+
+### Syntax
+
+Range constraints use the existing `@` annotation system, connecting
+to structural contracts (`doc/whatif/structural-contracts.md`):
 
 ```lisp
 Port: [type Int @[min: 0  max: 65535]]
 Byte: [type Int @[min: 0  max: 255]]
 Percentage: [type Float @[min: 0.0  max: 100.0]]
-BigCounter: [type Int @[min: 0]]  # no upper bound → BigInt
+BigCounter: [type Int @[min: 0]]  # no upper bound -> BigInt
 Price: [type Decimal @[precision: 2]]
 ```
 
-The runtime inspects the range annotation and selects the smallest
+No new type constructors are needed. `Int`, `Float`, and `Number`
+remain the user-facing types. Range annotations refine them.
+
+### Semantics
+
+**Range validation.** At TypeAssert boundaries (`@` annotations),
+the runtime checks that a value falls within the declared range.
+Out-of-range values produce a type error:
+
+```lisp
+port: [@Port 70000]  # Error: 70000 exceeds max 65535 for Port
+```
+
+**Arithmetic semantics.** Range annotations do not change arithmetic
+behavior. `$+ $port 1` works regardless of internal representation.
+The result of arithmetic on range-constrained values is an
+unconstrained `Int` (or `Float`) — the range applies to the
+annotated binding, not to derived values:
+
+```lisp
+Port: [type Int @[min: 0  max: 65535]]
+port: [@Port 8080]
+next: [call $+ $port 1]  # next is Int, not Port — no range constraint
+```
+
+This avoids the complexity of range arithmetic (computing the output
+range of `Port + Port` as `0..131070`). Range inference is an
+optimization for a future phase, not a semantic requirement.
+
+**Promotion rules.** Existing promotion rules extend naturally:
+
+| Left | Right | Result |
+|------|-------|--------|
+| `Int` | `Float` | `Float` (existing) |
+| `Int` | `Decimal` | `Decimal` (Int promotes) |
+| `Float` | `Decimal` | Error (explicit conversion required) |
+| `Int` | `BigInt` | `BigInt` (Int promotes) |
+| `BigInt` | `Float` | `Float` (BigInt promotes) |
+
+`Float + Decimal` is an error because implicit conversion between
+IEEE 754 and exact decimal loses the precision guarantee that
+`Decimal` provides.
+
+### Internal Representation
+
+The runtime inspects range annotations and selects the smallest
 internal representation:
 
 | Range | Internal representation |
@@ -84,10 +133,6 @@ internal representation:
 | Any range exceeding i64 | `BigInt` |
 | No range specified | `i64` |
 | `type: Decimal` | `d128` |
-
-The representation is transparent to the user — arithmetic works
-uniformly regardless of internal size. Promotion follows the existing
-rules plus BigInt promotion when either operand exceeds i64 range.
 
 ```rust
 // Internal representation (hidden from user)
@@ -115,30 +160,59 @@ pub enum Value {
 }
 ```
 
-**Pros:**
-- Users think in constraints, not widths
-- Representation optimization is automatic
-- BigInt falls out naturally (no upper bound → BigInt)
-- Decimal is a first-class type, not an afterthought
-- No combinatorial arithmetic explosion — promotion table works on
-  the abstract `Int`/`Float`/`Decimal` level, internal representation
-  is handled transparently
-- Range annotations serve as documentation and runtime validation
-- JSON interop unchanged — JSON numbers map to the appropriate
-  internal size on parse
+The representation is transparent to the user — all arithmetic
+dispatches through `NumericRepr` internally but behaves as `Int`,
+`Float`, or `Decimal` at the user level.
 
-**Cons:**
-- `NumericRepr` dispatch adds complexity to arithmetic operations
-  (though this is internal, not user-facing)
-- Memory layout changes — `Value::Int` grows from 8 bytes (i64)
-  to a tagged union
-- Benchmark needed to verify the representation dispatch overhead
-  is acceptable
+### Interaction with Type Inference
 
-## Recommendation
+Range annotations are refinements, not distinct types. In the type
+system, `Port` (defined as `Int @[min: 0  max: 65535]`) unifies with
+`Int`. The range constraint is a runtime contract, not a type-level
+constraint. This keeps HM inference sound — adding subranges as
+distinct types would require subtype constraints that complicate
+unification (Mitchell, 1991).
 
-**Approach B: Range contracts with automatic internal representation
-sizing.**
+For the type checker:
+- `Int @[min: 0  max: 65535]` has type `Int`
+- `Decimal @[precision: 2]` has type `Decimal`
+- Unification treats them as their base types
+- Range constraints are checked at runtime boundaries only
+
+This matches tinct's existing TypeAssert semantics: `@` annotations
+are advisory for the type checker and enforced at runtime.
+
+### Interaction with Lazy Evaluation
+
+Range validation occurs at TypeAssert boundaries, which use proxy
+contracts for lazy record fields (DESIGN.md §TypeAssert). A
+range-constrained field in a lazy record is validated when accessed,
+not when the record is constructed. This is consistent with tinct's
+existing lazy validation behavior.
+
+BigInt values participate in lazy evaluation normally — they are
+just a different internal representation of `Int`.
+
+### Interaction with Row Polymorphism
+
+Range annotations do not affect row polymorphism. A record type
+`[port: Int  host: String ...r]` accepts a dict with
+`port: [@Port 8080]` because `Port` has type `Int`. The row
+variable `r` is unaffected by range constraints on specific fields.
+
+### Interaction with JSON Interop
+
+JSON numbers (RFC 8259 §6) have no integer/float distinction and no
+width specification. On parsing:
+- Integer-valued JSON numbers map to `Int` (i64)
+- Decimal-valued JSON numbers map to `Float` (f64)
+- Numbers exceeding i64 range could map to `BigInt` (Phase 4)
+
+On serialization:
+- `BigInt` values serialize as JSON numbers (may exceed recipient's
+  parsing range — a known JSON interop issue)
+- `Decimal` values serialize as JSON numbers or JSON strings
+  depending on configuration
 
 ### Rationale
 
@@ -159,21 +233,83 @@ sizing.**
 
 4. **Transparent arithmetic.** Users never interact with `NumericRepr`
    directly. `$+ $port 1` works whether `$port` is internally `u16`
-   or `i64`. Promotion handles cross-size arithmetic: the result uses
-   the smallest representation that can hold both operands' ranges.
+   or `i64`. Promotion handles cross-size arithmetic.
 
 5. **Aligns with structural contracts.** Range annotations use the
    same `@` system as structural contracts
    (`doc/whatif/structural-contracts.md`). The `$validate` builtin
    can check range constraints alongside structural shape.
 
-6. **Enables float dict keys.** `doc/whatif/float-dict-keys.md`
-   recommends adopting fractional keys alongside the Decimal type.
-   Range-constrained Decimals provide sound fractional keys.
+## What Would Change
 
-### Phased Adoption
+### Value Representation (`src/value.rs`)
 
-#### Phase 1: Range Annotations (Validation Only)
+**Current:** `Value::Int(i64)` and `Value::Float(f64)` — fixed-width
+numeric variants.
+
+**Proposed:** `Value::Int(NumericRepr)` and `Value::Float(NumericRepr)`
+where `NumericRepr` is a tagged union of width-specific
+representations. New `Value::Decimal(NumericRepr)` variant.
+
+**Impact:** Major. Every pattern match on `Value::Int` or
+`Value::Float` must handle `NumericRepr` dispatch. The `Value` enum
+grows in size (from 8 bytes per numeric to a tagged union). This
+affects every builtin that handles numbers.
+
+### Builtins (`src/builtins.rs`)
+
+**Current:** Arithmetic builtins (`$+`, `$-`, `$*`, `$/`) match on
+`Value::Int(i64)` and `Value::Float(f64)` directly.
+
+**Proposed:** Arithmetic dispatch through `NumericRepr`, handling
+promotion between widths. A promotion table determines the output
+representation for each operand pair.
+
+**Impact:** Moderate. The arithmetic logic itself is unchanged —
+addition is still addition. The dispatch layer adds indirection but
+no new semantics. This can be implemented as a `NumericRepr::promote`
+method that both operands call before the operation.
+
+### Type Checker (`src/typecheck.rs`)
+
+**Current:** `Int`, `Float`, and `Number` are atomic types.
+Unification is straightforward.
+
+**Proposed:** `Decimal` becomes a new atomic type. Range annotations
+are parsed but not represented in the type — they remain runtime
+contracts. The type checker treats `Port` as `Int` for inference
+purposes.
+
+**Impact:** Minor. One new base type (`Decimal`). No change to
+unification or generalization.
+
+### Parser (`src/parser.rs`, `src/grammar.pest`)
+
+**Current:** Numeric literals parse as `Int` or `Float` based on
+decimal point presence.
+
+**Proposed:** (1) Parse `Decimal` literals (syntax TBD — possibly
+`9.99d` suffix or explicit `[call $decimal 9.99]`). (2) Parse
+`@[min: N  max: M]` annotations on type definitions.
+
+**Impact:** Minor. Range annotations already use existing `@` syntax.
+Decimal literal syntax is a small parser addition.
+
+### Serialization
+
+**Current:** `Int` serializes as JSON integer, `Float` as JSON number.
+
+**Proposed:** `BigInt` serializes as JSON number (may exceed
+recipient's parsing range). `Decimal` serializes as JSON number or
+string. `NumericRepr` dispatch ensures correct serialization
+regardless of internal width.
+
+**Impact:** Minor. Serialization is a thin layer over the internal
+representation.
+
+## Phased Adoption
+
+### Phase 1: Range Annotations (Validation Only)
 
 Add `@[min: N  max: M]` as a contract on `Int` and `Float`:
 
@@ -186,7 +322,7 @@ No internal representation change — still `i64`/`f64` under the hood.
 Range validation happens at TypeAssert boundaries via the `@`
 annotation system.
 
-#### Phase 2: Decimal Type
+### Phase 2: Decimal Type
 
 Add `Decimal` as a new `Value` variant with explicit conversion:
 
@@ -200,7 +336,7 @@ total: [call $+ $price [call $decimal 1.00]]  # exact: 10.99
 - Decimal + Decimal → Decimal (no cross-type promotion with Float)
 - Decimal + Int → Decimal (Int promotes to Decimal)
 
-#### Phase 3: Automatic Representation Sizing
+### Phase 3: Automatic Representation Sizing
 
 The runtime inspects range annotations and selects internal
 representation:
@@ -212,13 +348,13 @@ representation:
 This is a performance optimization — semantics are unchanged from
 Phase 1. Programs that worked before continue to work identically.
 
-#### Phase 4: BigInt
+### Phase 4: BigInt
 
 For ranges exceeding i64 (or with no upper bound), the runtime
 automatically uses `BigInt`:
 
 ```lisp
-BigId: [type Int @[min: 0]]  # no upper bound → BigInt
+BigId: [type Int @[min: 0]]  # no upper bound -> BigInt
 factorial: [fn [n]
     [call $if [call $= $n 0]
         1
@@ -259,15 +395,51 @@ Phase 4 (BigInt): adopt when:
 
 ## References
 
-- IEEE 754-2019: Binary64 (f64) and binary32 (f32) floating-point
-  formats. Decimal128 (d128) format.
-- JSON RFC 8259 §6: Numbers — no distinction between integer and
-  floating point, no width specification.
-- DESIGN.md §Numeric Types: Int (i64), Float (f64), Number supertype,
-  promotion table.
-- Ada range types: `type Port is range 0 .. 65535;` — declarative
-  range constraints with compiler-chosen representation.
-- Pascal subrange types: `type Byte = 0..255;` — range constraints
-  on ordinal types.
-- doc/whatif/structural-contracts.md — `$validate` schema validation,
+**Standards:**
+- IEEE 754-2019. "IEEE Standard for Floating-Point Arithmetic." —
+  Binary64 (f64), binary32 (f32), and decimal128 (d128) formats.
+  Governs tinct's current Float and proposed Decimal representation.
+- JSON RFC 8259 §6. "Numbers." — No distinction between integer and
+  floating point, no width specification. Constrains tinct's
+  serialization choices for BigInt and Decimal.
+
+**Range types and refinement types:**
+- Ada Reference Manual §3.5.4. "Integer Types." — Declarative range
+  constraints (`type Port is range 0 .. 65535`) with compiler-chosen
+  representation. Direct precedent for tinct's approach.
+- Freeman, T. & Pfenning, F. (1991). "Refinement types for ML."
+  *PLDI*, pp. 268-277. — Refinement types that refine base types
+  with predicates. Range constraints are a simple instance of
+  refinement types. Tinct's approach (runtime contracts, not
+  type-level refinements) avoids the inference complexity.
+- Rondon, P., Kawaguchi, M. & Jhala, R. (2008). "Liquid types."
+  *PLDI*, pp. 159-169. — Logically-qualified types combining HM
+  inference with SMT-checked refinements. A more powerful system
+  than tinct needs — cited to document the design space.
+
+**Arbitrary precision:**
+- GMP (GNU Multiple Precision Arithmetic Library). — Standard
+  BigInt implementation. Rust's `num-bigint` crate wraps this.
+- Python PEP 237. "Unifying Long Integers and Integers." — Seamless
+  promotion from fixed-width to arbitrary precision. Precedent for
+  tinct's transparent BigInt promotion.
+
+**Decimal arithmetic:**
+- Cowlishaw, M. (2003). "Decimal floating-point: algorism for
+  computers." *IEEE ARITH*, pp. 104-111. — Decimal arithmetic
+  specification underlying IEEE 754 decimal formats.
+
+**Type system interaction:**
+- Mitchell, J.C. (1991). "Type inference with simple subtypes."
+  *Journal of Functional Programming*, 1(3), 245-285. — Decidability
+  of type inference with subtype constraints. Explains why tinct
+  keeps range constraints at the runtime level rather than integrating
+  them into HM inference.
+
+**Language-specific:**
+- DESIGN.md §Numeric Types. — Current Int (i64), Float (f64), Number
+  supertype, promotion table.
+- `doc/whatif/structural-contracts.md` — `$validate` schema validation,
   `@` annotation system.
+- `doc/whatif/float-dict-keys.md` — Decimal type enables sound
+  fractional dict keys.

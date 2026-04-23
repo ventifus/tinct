@@ -48,6 +48,17 @@ process: [fn [data]
 The wrapper-dict pattern works but is verbose and unintuitive for
 multi-step computations.
 
+### What's Missing
+
+1. **Multi-expression function bodies** — functions are limited to a
+   single body expression, forcing wrapper dicts for intermediate
+   bindings.
+2. **Consistent scoping model** — sequential expressions work at
+   document level but not inside function bodies, creating an
+   asymmetry in the language.
+3. **Match arm bodies** — when pattern matching is adopted, match
+   arms will need the same intermediate binding capability.
+
 ## What `let` Binding Would Provide
 
 1. **Intermediate bindings in functions.** Multi-step function bodies
@@ -67,38 +78,14 @@ multi-step computations.
    will need intermediate bindings. Sequential expressions in
    function bodies enable this naturally.
 
-## Approaches
-
-### Approach B: Sequential Expressions in Function Bodies
+## Design
 
 Extend function bodies to accept expression sequences, reusing the
-existing sequential scoping mechanism:
+existing sequential scoping mechanism. No new keyword or special form
+is introduced — this is the same mechanism that already exists at
+document level, applied to function body position.
 
-```lisp
-process: [fn [data]
-    [cleaned: [call $clean $data]]     # first expression
-    [validated: [call $validate $cleaned]]  # second expression
-    [call $transform $validated]]      # final expression (return value)
-```
-
-Each expression in the body is a sequential scope step — same as
-document-level sequential expressions. The last expression's value
-is the function's return value.
-
-**Semantics:** A function body `[fn [params] e₁ e₂ ... eₙ]` evaluates
-as if the expressions were sequential document expressions: each `eᵢ`'s
-result dict becomes the parent scope for `eᵢ₊₁`. The value of the
-function is the value of `eₙ`.
-
-**Interaction with `[fn [params] body]` parsing:** The parser currently
-treats everything after the params list as a single body expression.
-Sequential bodies require the parser to recognize multiple expressions
-in function position.
-
-**Delimiter:** Function body expressions are separated by the same
-mechanism as document-level expressions — either newlines or explicit
-separation. Since `[fn [x] ...]` is a bracket-delimited form, the
-closing `]` unambiguously terminates the sequence.
+### Syntax
 
 ```lisp
 # Single-expression body (unchanged)
@@ -106,34 +93,81 @@ closing `]` unambiguously terminates the sequence.
 
 # Multi-expression body
 [fn [data]
-    [cleaned: [call $clean $data]]
-    [call $transform $cleaned]]
+    [cleaned: [call $clean $data]]     # first expression
+    [validated: [call $validate $cleaned]]  # second expression
+    [call $transform $validated]]      # final expression (return value)
 ```
 
-**Pros:**
-- No new keyword or special form
-- Reuses existing sequential scoping mechanism
-- Consistent with document-level behavior
-- More general than `let` — any number of intermediate steps
-- Works naturally inside match arms and other compound forms
+Each expression in the body is a sequential scope step. The last
+expression's value is the function's return value.
 
-**Cons:**
-- Grammar change: function body becomes an expression sequence
-- Parser must determine where body expressions are separated
-  (whitespace-sensitive or explicit delimiter)
+### Semantics
 
-## Recommendation
+A function body `[fn [params] e1 e2 ... en]` evaluates as if the
+expressions were sequential document expressions: each `ei`'s result
+dict becomes the parent scope for `ei+1`. The value of the function
+is the value of `en`.
 
-**Approach B: Sequential expressions in function bodies.**
+This is `let*` semantics (sequential, non-recursive bindings), as
+opposed to the `letrec` semantics of entries within a single `[...]`
+dict. The distinction matters for lazy evaluation: in a letrec dict,
+all bindings share one environment and can reference each other; in
+a sequential body, each step's bindings are only visible to
+subsequent steps.
+
+Formally, the desugaring is:
+
+```
+[fn [params] e1 e2 ... en]
+  ==>
+[fn [params] (let* e1 (let* e2 (... en)))]
+```
+
+where `let* ei body` evaluates `ei`, extends the environment with
+any bindings `ei` produces (if `ei` is a dict), and evaluates `body`
+in the extended environment. This corresponds to the existing
+`eval_sequential_expressions` mechanism in the evaluator.
+
+### Interaction with Lazy Evaluation
+
+Each intermediate binding expression is a thunk: `[cleaned: [call
+$clean $data]]` creates a thunk for `cleaned` that is forced only
+when `$cleaned` is referenced in a subsequent expression. This
+preserves tinct's call-by-need semantics — intermediate bindings
+that are never used are never evaluated.
+
+The key invariant: the sequential scope chain must not break sharing.
+If two subsequent expressions reference the same intermediate binding,
+they must share the same thunk (not create independent copies). The
+existing document-level sequential mechanism already maintains this
+invariant.
+
+### Interaction with Parsing
+
+The parser currently treats everything after the params list as a
+single body expression. Sequential bodies require the parser to
+recognize multiple expressions in function position. Function body
+expressions are separated by the same mechanism as document-level
+expressions — either newlines or explicit separation. Since
+`[fn [x] ...]` is a bracket-delimited form, the closing `]`
+unambiguously terminates the sequence.
+
+### Interaction with Type Inference
+
+Each expression in the sequence is inferred independently, with the
+environment threaded forward. The function's return type is the type
+of the final expression `en`. Intermediate dict expressions contribute
+their field types to the environment for subsequent expressions,
+matching the existing sequential inference in `infer_sequential`.
 
 ### Rationale
 
 1. **Consistency over novelty.** Sequential expression scoping already
-   exists at the document level and works well. Extending it to function
-   bodies is the same mechanism applied to a new position — no new
-   concept for users to learn.
+   exists at the document level and works well. Extending it to
+   function bodies is the same mechanism applied to a new position —
+   no new concept for users to learn.
 
-2. **No new keywords.** Unlike `let`/`let*`, Approach B adds no new
+2. **No new keywords.** Unlike `let`/`let*`, this design adds no new
    grammar keywords. The parser change is localized to function body
    parsing.
 
@@ -160,9 +194,63 @@ closing `]` unambiguously terminates the sequence.
    this role at the document level. Extending to function bodies
    completes the coverage without adding Nix-style `let`.
 
-### Phased Adoption
+## What Would Change
 
-#### Phase 1: Multi-Expression Function Bodies
+### Parser (`parser.rs`)
+
+**Current:** The `fn` form parser treats everything after the params
+list as a single body expression. `[fn [x] e]` produces
+`Expr::Fn { params, body: e }`.
+
+**Proposed:** The `fn` form parser collects multiple expressions after
+the params list until the closing `]`. `[fn [x] e1 e2]` produces
+`Expr::Fn { params, body: vec![e1, e2] }`, or desugars to nested
+sequential evaluation at parse time.
+
+**Impact:** Moderate — localized grammar change to `fn_body` rule.
+Backward compatible: single-expression bodies are a sequence of
+length 1.
+
+### AST (`parser.rs`)
+
+**Current:** `Expr::Fn { params, body: Box<Spanned<Expr>> }` — a
+single body expression.
+
+**Proposed:** Either `body: Vec<Spanned<Expr>>` (direct
+representation) or desugar to nested `Expr::Sequential` nodes at
+parse time. Desugaring is simpler — it reuses existing evaluator
+and type checker paths without changes.
+
+**Impact:** Minor if desugared at parse time; Moderate if the AST
+representation changes.
+
+### Evaluator (`eval.rs`)
+
+**Current:** Function application evaluates a single body expression
+in the closure's environment extended with parameter bindings.
+
+**Proposed:** If desugared at parse time, no evaluator change is
+needed — the existing `eval_sequential_expressions` handles the
+nested structure. If the AST uses `Vec<Expr>`, the function
+application path must call `eval_sequential_expressions` on the
+body list.
+
+**Impact:** Minor (desugaring) to Moderate (direct representation).
+
+### Type Checker (`typecheck.rs`)
+
+**Current:** `infer_fn` infers the body as a single expression.
+
+**Proposed:** If desugared, no change — `infer_sequential` handles
+it. If direct, `infer_fn` must thread the environment through
+multiple body expressions and use the final expression's type as
+the return type.
+
+**Impact:** Minor (desugaring) to Moderate (direct representation).
+
+## Phased Adoption
+
+### Phase 1: Multi-Expression Function Bodies
 
 Extend the parser to accept multiple expressions in function body
 position. Each expression's result dict becomes the parent scope for
@@ -170,41 +258,56 @@ the next. The last expression's value is the return value.
 
 Implementation:
 - Grammar change: `fn_body` rule accepts expression sequence
-- Parser produces `Expr::Fn` with `body: Vec<Spanned<Expr>>` instead
-  of `body: Spanned<Expr>` (or desugar to nested sequential evaluation)
-- Evaluator: evaluate body expressions sequentially with chained scopes
-- Type checker: infer each expression in sequence, threading the
-  environment
+- Parser desugars to nested `Expr::Sequential` (preferred) or
+  changes `Expr::Fn` body to `Vec<Spanned<Expr>>`
+- Evaluator: if desugared, no change needed; otherwise evaluate
+  body expressions sequentially with chained scopes
+- Type checker: if desugared, no change needed; otherwise infer
+  each expression in sequence, threading the environment
 
-#### Phase 2: Sequential Bodies in Match Arms
+### Phase 2: Sequential Bodies in Match Arms
 
 When pattern matching is adopted, match arm bodies naturally support
-the same sequential expression mechanism.
+the same sequential expression mechanism. The desugaring approach
+makes this trivial — match arm bodies desugar to the same nested
+`Expr::Sequential` form.
 
 ### Prerequisites
 
-- Parser change to function body parsing.
+- Parser change to function body parsing (Phase 1 only dependency).
 - The evaluator's sequential expression handling (already implemented
-  for documents) must be factored out for reuse in function bodies.
+  for documents) must be factored out for reuse in function bodies if
+  not using the desugaring approach.
+- No dependency on other whatif features or TODO.md sprints.
 
 ### Trigger
 
-Adopt when:
-- Function bodies frequently need intermediate bindings (already a
-  common pattern in formatters and transforms)
-- Pattern matching adoption requires multi-expression match arm bodies
-- The wrapper-dict pattern (`[... result: expr].result`) becomes a
-  frequent ergonomic complaint
+- When function bodies frequently need intermediate bindings (already
+  a common pattern in formatters and transforms)
+- When pattern matching adoption requires multi-expression match arm
+  bodies
+- When the wrapper-dict pattern (`[... result: expr].result`) becomes
+  a frequent ergonomic complaint
 
 ## References
 
-- Haskell Report §3.12: Let expressions and where clauses. Both are
-  letrec — bindings can reference each other.
-- Scheme R7RS §4.2.2: `let`, `let*`, `letrec`, `letrec*`. Four binding
-  forms with different scoping rules.
 - Launchbury, J. (1993). "A natural semantics for lazy evaluation." In
-  *POPL '93*, pp. 144–154. ACM. — Formal semantics for letrec in lazy
-  languages.
+  *POPL '93*, pp. 144--154. ACM. — Formal semantics for `letrec` in lazy
+  languages. Defines the thunk-update model that sequential function
+  bodies must preserve: each intermediate binding is a thunk, forced at
+  most once.
+- Ariola, Z.M. & Felleisen, M. (1997). "The call-by-need lambda
+  calculus." *Journal of Functional Programming*, 7(3), 265--301. —
+  Formal distinction between `let` (non-recursive, sequential) and
+  `letrec` (recursive, shared environment) in call-by-need. Sequential
+  function bodies correspond to nested `let` in this calculus.
 - Nakata, K. & Hasegawa, M. (2009). "Small-step and big-step semantics
-  for call-by-need." *Journal of Functional Programming*, 19(6), 699–722.
-  — Cycle detection semantics for letrec.
+  for call-by-need." *Journal of Functional Programming*, 19(6),
+  699--722. — Cycle detection semantics for letrec, relevant to ensuring
+  sequential bindings don't accidentally introduce cycles.
+- Haskell Report §3.12. Let expressions and where clauses. — Both are
+  `letrec` — bindings can reference each other. tinct's sequential
+  bodies provide `let*` semantics instead.
+- Scheme R7RS §4.2.2. `let`, `let*`, `letrec`, `letrec*`. — Four
+  binding forms with different scoping rules. tinct's sequential bodies
+  correspond to `let*`.
