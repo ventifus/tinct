@@ -102,10 +102,17 @@ pub enum Expr {
         named_args: Vec<Spanned<NamedArg>>,
     },
     /// Function definition via `[fn [params] body]`
+    ///
+    /// When `desugared` is `true`, this node was synthesized by the `$_`
+    /// desugaring pass (see `src/desugar.rs`) rather than written by the user.
+    /// This follows Pombrio & Krishnamurthi (2014) origin tracking: tooling
+    /// (LSP hover, error messages, formatters) can distinguish user-written
+    /// lambdas from sugar-generated ones.
     Fn {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<Param>>,
         body: Box<Spanned<Expr>>,
+        desugared: bool,
     },
     /// Type alias declaration via `[type expr]`
     TypeAlias(Box<Spanned<Expr>>),
@@ -249,6 +256,7 @@ impl fmt::Display for Expr {
                 return_ann,
                 params,
                 body,
+                desugared: _,
             } => {
                 write!(f, "[fn")?;
                 if let Some(ann) = return_ann {
@@ -461,6 +469,7 @@ mod tests {
             return_ann: None,
             params: vec![],
             body: Box::new(sp(Expr::Int(42))),
+            desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [] 42]");
     }
@@ -482,6 +491,7 @@ mod tests {
                 }),
             ],
             body: Box::new(sp(Expr::VarRef("x".into()))),
+            desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [x y] $x]");
     }
@@ -492,6 +502,7 @@ mod tests {
             return_ann: Some(sp(Annotation::Simple("Number".into()))),
             params: vec![],
             body: Box::new(sp(Expr::Int(0))),
+            desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn@Number [] 0]");
     }
@@ -506,6 +517,7 @@ mod tests {
                 variadic: false,
             })],
             body: Box::new(sp(Expr::VarRef("x".into()))),
+            desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [x@Int] $x]");
     }
@@ -520,6 +532,7 @@ mod tests {
                 variadic: true,
             })],
             body: Box::new(sp(Expr::VarRef("args".into()))),
+            desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [...args] $args]");
     }

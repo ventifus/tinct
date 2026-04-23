@@ -2657,9 +2657,11 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     let root_env = create_root_env();
 
     let prelude_source = include_str!("../stdlib/prelude.llt");
-    let file = crate::parser::parse(prelude_source).map_err(|e| {
+    let mut file = crate::parser::parse(prelude_source).map_err(|e| {
         crate::error::EvalError::internal(format!("prelude parse error: {e}"), Span::origin())
     })?;
+
+    crate::desugar::desugar_file(&mut file.node);
 
     let thunk = crate::eval::eval_file(&file.node, Rc::clone(&root_env), 0)?;
 

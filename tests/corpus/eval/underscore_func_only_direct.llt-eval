@@ -1,0 +1,7 @@
+# $_ in func position ONLY (arg is NOT DIRECT) - does NOT wrap
+# WRAP-CALL only checks args, not func position
+# This documents the asymmetry: arg-only wraps, func-only does NOT wrap
+# Wrap in explicit function to provide $_ as bound variable, pass identity fn
+[call [fn [_] [call $_ 42]] [fn [x] $x]]
+===
+Int(42)

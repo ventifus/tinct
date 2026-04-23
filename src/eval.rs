@@ -1601,6 +1601,7 @@ mod tests {
                 variadic: false,
             })],
             body: Box::new(sp(Expr::VarRef("x".into()))),
+            desugared: false,
         });
         let thunk = eval(&expr, empty_env(), 0).unwrap();
         let val = materialize(&thunk, None, 0).unwrap();
@@ -1628,6 +1629,7 @@ mod tests {
             return_ann: None,
             params: vec![],
             body: Box::new(sp(Expr::VarRef("outer".into()))),
+            desugared: false,
         });
         let fn_thunk = eval(&fn_expr, Rc::clone(&env), 0).unwrap();
         let fn_val = materialize(&fn_thunk, None, 0).unwrap();

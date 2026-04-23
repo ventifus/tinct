@@ -482,6 +482,7 @@ fn build_fn(
             return_ann,
             params,
             body: Box::new(body),
+            desugared: false,
         },
         span,
     ))
@@ -1201,6 +1202,7 @@ mod tests {
                 return_ann,
                 params,
                 body,
+                ..
             } => {
                 assert!(return_ann.is_none());
                 assert_eq!(params.len(), 1);
@@ -2011,6 +2013,7 @@ mod tests {
                 return_ann,
                 params,
                 body,
+                ..
             } => {
                 let ann = return_ann.as_ref().unwrap();
                 match &ann.node {
@@ -2067,6 +2070,7 @@ mod tests {
                 return_ann,
                 params,
                 body,
+                ..
             } => {
                 assert!(return_ann.is_none());
                 assert!(params.is_empty());
@@ -2084,6 +2088,7 @@ mod tests {
                 return_ann,
                 params,
                 body,
+                ..
             } => {
                 assert!(
                     matches!(&return_ann.as_ref().unwrap().node, Annotation::Simple(ref s) if s == "Number")

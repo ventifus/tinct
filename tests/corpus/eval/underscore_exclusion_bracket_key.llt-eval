@@ -1,0 +1,8 @@
+# $_ in bracket KEY position (excluded from WRAP-BRACKET)
+# $data[$_] does NOT wrap - only target position triggers WRAP-BRACKET
+# Wrap in explicit function to provide $_ as bound variable
+[data: [name: "Alice" age: 30]]
+
+[call [fn [_] $data[$_]] "name"]
+===
+String("Alice")

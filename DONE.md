@@ -659,3 +659,15 @@ Update DESIGN.md and SPEC.md to reflect completed desugaring migration.
 - [x] Update SPEC.md §6.5 exclusion text for reconciled WRAP-CALL — line 759 says "`[call $_ ...]` — `$_` as the function is an ordinary variable lookup" which is incomplete after WRAP-CALL reconciliation; when both func and arg are DIRECT (e.g., `[call $_ $_]`), wrapping DOES fire and both references bind to the `_` parameter. Update to match DESIGN.md line 2071 explanation. (`SPEC.md:759`) [Minor, computer-scientist]
 - [x] Add precondition doc comment to `desugar()` noting parser-bounded AST depth — depends on MAX_PARSE_DEPTH but doesn't assert it; future programmatic AST construction (macros, quasiquoting) must respect bound (`src/desugar.rs:47`) [Nit, computer-scientist]
 - [x] Add desugar step to `eval_to_json_with_input` test helper — `lib.rs` test helper parses then evals without calling `desugar_file()`, skipping the desugaring step that all three production entry points (eval_source, main.rs, repl.rs) perform. Currently latent. (`src/lib.rs:520-535`) [Minor, computer-scientist]
+
+### underscore-desugar-d: Edge Case Tests
+
+Additional corpus and unit tests for desugaring edge cases.
+
+- [x] Add explicit origin tags to synthetic `$_` desugared AST nodes — distinguish user-written lambdas from sugar-generated ones for future tooling. Pombrio & Krishnamurthi (2014). [Minor, computer-scientist]
+- [x] Add test for `[call $_ $_]` (func and arg both DIRECT) — documents chosen behavior for edge case (`src/desugar.rs`) [Nit, computer-scientist]
+- [x] Add test for `$_` in annotations inside shadowing functions — `[fn [_] [fn [x: [@Number $_]] $x]]` edge case; implementation correct but untested (`src/desugar.rs`) [Nit, test-crafter + sprint-reviewer]
+- [x] Add corpus tests for exclusion positions — bracket key `$data[$_]`, range bounds `$data[$_..5]`, dict key `[$_: value]`; unit tests exist but corpus tests validate full pipeline (`tests/corpus/eval/`) [Minor, test-crafter + grammar-architect]
+- [x] Add corpus test for func-only DIRECT case — `[call $_ $x]` should NOT wrap; documents asymmetry with arg-only case (`tests/corpus/eval/`) [Nit, test-crafter + integration-verifier]
+- [x] Add corpus error tests for `$_` — undefined `$_`, key-not-found on desugared access chain, type mismatch inside desugared lambda; validates error span quality (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
+- [x] Add desugar step to `create_stdlib_env()` — `builtins.rs:2656-2664` parses `prelude.llt` then evaluates without calling `desugar_file()`, skipping desugaring that all production entry points perform. (`src/builtins.rs:2656-2664`) [Minor, integration-verifier C32]
