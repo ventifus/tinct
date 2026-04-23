@@ -2031,10 +2031,8 @@ DESUGAR(e, depth) =
              or ∃ n ∈ named. DIRECT(n.value))
       → Fn([_], Call(                                    -- [WRAP-CALL]
             DESUGAR(f, depth + 1),                       -- recurse func
-            [if DIRECT(a) then a                         -- keep DIRECT args as-is
-             else DESUGAR(a, depth + 1) | a ∈ args],    -- recurse non-DIRECT args
-            [if DIRECT(n.value) then n                   -- keep DIRECT named vals
-             else n{value=DESUGAR(n.value, depth + 1)}   -- recurse non-DIRECT named vals
+            [DESUGAR(a, depth + 1) | a ∈ args],          -- recurse all args
+            [n{value=DESUGAR(n.value, depth + 1)}        -- recurse all named vals
              | n ∈ named]))
 
   -- WRAP-DICT: same pattern — check raw, wrap, recurse non-DIRECT
@@ -2093,7 +2091,7 @@ Traversal (top-down check, selective recursion):
 - `depth = 0`: `$_` is unbound, WRAP rules apply.
 - `depth > 0`: `$_` is bound by an enclosing `Fn([_] ...)`, RECURSE_CHILDREN only.
 
-This replaces the current eval-time `env.borrow().get("_").is_none()` check with a purely syntactic scope analysis. The lexical approach is more precise: desugaring depends only on AST structure, never on the runtime environment.
+This replaced the eval-time `env.borrow().get("_").is_none()` check with a purely syntactic scope analysis. The lexical approach is more precise: desugaring depends only on AST structure, never on the runtime environment.
 
 **Invariants:**
 
@@ -2106,14 +2104,15 @@ This replaces the current eval-time `env.borrow().get("_").is_none()` check with
 **Implementation sketch:**
 
 ```rust
-fn desugar_file(file: Spanned<File>) -> Spanned<File> { /* walk documents/expressions */ }
-fn desugar_expr(expr: Spanned<Expr>) -> Spanned<Expr> { desugar(expr, 0) }
+fn desugar_file(file: &mut Spanned<File>) { /* walk documents/expressions */ }
+fn desugar_expr(expr: &mut Spanned<Expr>) { desugar(expr, 0) }
 
-fn desugar(expr: Spanned<Expr>, depth: usize) -> Spanned<Expr> {
+fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
     // Check WRAP conditions on raw children BEFORE recursing
     if depth == 0 {
-        if let Some(wrapped) = try_wrap(&expr, depth) {
-            return wrapped;
+        if let Some(wrapped) = try_wrap(expr, depth) {
+            *expr = wrapped;
+            return;
         }
     }
     // At depth > 0 or no WRAP match: recurse into children
@@ -2121,7 +2120,7 @@ fn desugar(expr: Spanned<Expr>, depth: usize) -> Spanned<Expr> {
 }
 ```
 
-**Migration from eval-time desugaring.** The current implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) is removed once the AST pass is active. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) move to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) must call `desugar_expr()` before `eval()`. The migration resolves TODO.md:44 ("$_ desugaring AST shape mismatch between type checker and evaluator").
+**Migration from eval-time desugaring.** The implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) was removed when the AST pass was activated. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) moved to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) now call `desugar_expr()` before `eval()`. The migration resolved TODO.md:44 ("$_ desugaring AST shape mismatch between type checker and evaluator").
 
 ### Document Structure
 

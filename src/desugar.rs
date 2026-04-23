@@ -44,6 +44,9 @@ pub fn desugar_expr(expr: &mut Spanned<Expr>, depth: usize) {
 /// Then recurse into children at depth+1 (inside the lambda, `$_` is bound).
 ///
 /// At depth>0, only recurse into children (no wrapping).
+///
+/// Precondition: AST depth must be bounded (currently by parser's MAX_PARSE_DEPTH=256).
+/// Programmatic AST construction (macros, quasiquoting) must respect this bound.
 fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
     // At depth 0, try to wrap based on raw children
     if depth == 0 {

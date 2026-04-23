@@ -646,3 +646,16 @@ Wire desugar pass into pipeline and remove old eval-time desugaring.
 - [x] Migrate existing `test_underscore_*` tests to call `desugar_expr()` before eval
 - [x] Add tests: shadowing, exclusions (func position, bracket access keys, range bounds, dict entry keys), nested `$_`
 - [x] Reconcile WRAP-CALL `not DIRECT(f)` guard — DESIGN.md spec includes guard but implementation omits it; implementation's behavior for `[call $_ $_]` is arguably more useful (wraps both). Update spec to match implementation or add guard. (`src/desugar.rs:70-86`, `DESIGN.md:2029-2030`) [Minor, computer-scientist]
+
+### underscore-desugar-c: Doc Fixes & Spec Updates
+
+Update DESIGN.md and SPEC.md to reflect completed desugaring migration.
+
+- [x] Update DESIGN.md desugar sketch signatures to match `&mut` implementation — sketch shows value-returning API but code uses in-place mutation (`DESIGN.md:2110-2122`) [Nit, computer-scientist]
+- [x] Update DESIGN.md WRAP-CALL pseudocode to show unconditional recursion — spec shows selective `if DIRECT(a) then a else DESUGAR(a)` but impl recurses all children; proven equivalent but spec should match impl (`DESIGN.md:2034-2038`) [Nit, panel consensus]
+- [x] Update DESIGN.md line 2096 tense — still says "This replaces the current eval-time..." but migration is complete; update to past tense (`DESIGN.md:2096`) [Nit, computer-scientist]
+- [x] Update DESIGN.md line 2124 migration paragraph tense — entire paragraph uses future tense ("is removed once", "move to", "must call") for completed work; update to past tense (`DESIGN.md:2124`) [Nit, computer-scientist]
+- [x] Update SPEC.md `desugar_underscores` function name — SPEC.md §6.5 (line 728) and §8.6 (line 1064) reference a function `desugar_underscores` that doesn't exist; actual functions are `desugar_file()` and `desugar_expr()` in `src/desugar.rs` (`SPEC.md:728,1064`) [Minor, computer-scientist]
+- [x] Update SPEC.md §6.5 exclusion text for reconciled WRAP-CALL — line 759 says "`[call $_ ...]` — `$_` as the function is an ordinary variable lookup" which is incomplete after WRAP-CALL reconciliation; when both func and arg are DIRECT (e.g., `[call $_ $_]`), wrapping DOES fire and both references bind to the `_` parameter. Update to match DESIGN.md line 2071 explanation. (`SPEC.md:759`) [Minor, computer-scientist]
+- [x] Add precondition doc comment to `desugar()` noting parser-bounded AST depth — depends on MAX_PARSE_DEPTH but doesn't assert it; future programmatic AST construction (macros, quasiquoting) must respect bound (`src/desugar.rs:47`) [Nit, computer-scientist]
+- [x] Add desugar step to `eval_to_json_with_input` test helper — `lib.rs` test helper parses then evals without calling `desugar_file()`, skipping the desugaring step that all three production entry points (eval_source, main.rs, repl.rs) perform. Currently latent. (`src/lib.rs:520-535`) [Minor, computer-scientist]
