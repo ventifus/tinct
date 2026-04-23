@@ -4644,7 +4644,7 @@ Note: PROP-CYCLE constructs the error inline at the detection site — it does *
 
 ```
 d > MAX_EVAL_DEPTH
-ε = new("maximum evaluation depth exceeded", thunk.span)
+ε = depth_exceeded(MAX_EVAL_DEPTH, thunk.span)
 ε.mat_span ← mat_span
 ──────────────────────────
 materialize(thunk, mat_span, d) ⇒ Err(ε)
@@ -4742,7 +4742,7 @@ materialize(θ_result, _, d) ⇒ Ok(v)
 try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 ```
 
-(Error variant: same structure, `Err(ε) ⇒ Dict({err ↦ θ(ε.kind.to_string())})`)
+(Catchable error variant: same structure, `Err(ε), ε.kind.is_catchable() ⇒ Dict({err ↦ θ(ε.kind.to_string())})`; uncatchable errors re-raised per TRY-UNCATCHABLE)
 
 **Catching boundary:** `$try` catches errors at the zero-argument function body boundary. The function is materialized *outside* the catch — if the function thunk itself fails to materialize, that error propagates to `$try`'s caller (not caught). Only errors from *calling* the function (evaluating its body) are caught.
 
@@ -4791,7 +4791,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 | TRY | `builtin_try` (`builtins.rs:800-884`) |
 | TRY-UNCATCHABLE | `builtins.rs:870-871` (`!e.kind.is_catchable()` re-raise) |
 | TRY catching boundary | `builtins.rs:837` (body materialize inside match) |
-| Error-to-value | `builtins.rs:873-881` (extract `e.kind.to_string()`) |
+| Error-to-value | `builtins.rs:873-881` (extract `e.message()`, delegates to `e.kind.to_string()`) |
 | $error | `builtin_error` (`builtins.rs:785-795`) |
 
 #### Structured Error Model

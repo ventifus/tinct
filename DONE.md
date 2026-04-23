@@ -609,3 +609,9 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
 - [x] Update `EvalError::Display` to include error code prefix `[E001]`
 - [x] Update named constructors to construct `ErrorKind` variants
 - [x] Add `EvalError::internal(message, span)` replacing `EvalError::new` (kept as backward-compatible shim)
+
+### error-structured-migrate-c3: Residual Doc Precision
+
+- [x] Update TRY-BUILTIN error parenthetical with is_catchable() qualifier (`DESIGN.md:4745`) [Minor, computer-scientist]
+- [x] Fix Error-to-value correspondence to match actual code path — table updated to show `e.message()` delegation (`DESIGN.md:4794`) [Minor, computer-scientist]
+- [x] Update PROP-DEPTH constructor notation to typed ErrorKind style — `new()` → `depth_exceeded()` (`DESIGN.md:4647`) [Nit, computer-scientist]
