@@ -122,7 +122,7 @@ Build the end-to-end runtime. Builtins get proper type signatures from the Type 
 
 ### builtins-core: Rust-Native Builtins
 
-Depends on eval-functions + types-polymorphism. The 28 true primitives that MUST be Rust: operations LLT cannot express. Everything else is derived in LLT in `stdlib/prelude.llt`.
+Depends on eval-functions + types-polymorphism. The 28 true primitives that MUST be Rust: operations Tinct cannot express. Everything else is derived in Tinct in `stdlib/prelude.llt`.
 
 - [x] Builtin registration: populate root environment with `Value::Builtin` entries
 - [x] Arithmetic: `+`, `-`, `*`, `/` with auto-promotion (Int+Int=Int, mixed=Float)
@@ -131,12 +131,12 @@ Depends on eval-functions + types-polymorphism. The 28 true primitives that MUST
 - [x] Dict primitives: `keys`, `length`, `merge` (right-biased), `append`
 - [x] String: `str` (concat/toString), `split`, `replace`, `upper`, `lower`, `trim`
 - [x] Numeric: `floor`, `round` (Rust's f64::round, half-away-from-zero)
-- [x] Parsing: `to-int`, `to-float` (string-to-number only; numeric conversion is LLT)
+- [x] Parsing: `to-int`, `to-float` (string-to-number only; numeric conversion is Tinct)
 - [x] Evaluation control: `eval`, `error`, `try`, `apply`
 - [x] Type introspection: `type-of`
 - [x] I/O: `from-json`
 
-### stdlib-loading: LLT Stdlib Loading
+### stdlib-loading: Tinct Stdlib Loading
 
 Depends on builtins-core. Load `stdlib/prelude.llt` to provide the rest of the stdlib.
 
@@ -152,7 +152,7 @@ Depends on builtins-core. After this step, `tinct eval input.llt` produces JSON.
 - [x] JSON serialization of Value (`value_to_json` in `lib.rs`, `serde_json`)
 - [x] `tinct eval input.llt` — evaluate file, serialize final value as JSON to stdout (clap CLI)
 - [x] Stdin input: parse stdin as JSON, inject as `$$` for the first document (`eval_file_with_input`)
-- [x] `--format` flag: output as JSON (default) or LLT (YAML deferred — would require `serde_yaml` dependency)
+- [x] `--format` flag: output as JSON (default) or Tinct (YAML deferred — would require `serde_yaml` dependency)
 - [x] `--eval` flag: deep-force all thunks before serializing (surface errors before partial output)
 
 ### include: `$include`
@@ -178,24 +178,24 @@ Ongoing throughout earlier phases, but final polish here.
 ## Stdlib Boundary Analysis — Complete
 
 - [x] Identify the minimal set of builtins that MUST be implemented in Rust (28 total: arithmetic, comparison, if, keys/length/merge/append, string ops, numeric conversion, eval/error/try/apply, type-of, from-json, include)
-- [x] Identify which stdlib functions CAN be implemented as LLT code (all control flow, collection ops, composition, list ops, sorting, sequences, assertions — implemented in `stdlib/prelude.llt`)
-- [x] Document the boundary in DESIGN.md with rationale for each Rust-native builtin (see "Rust-Native vs LLT-Implemented Boundary" section)
-- [x] Design the stdlib loading mechanism (`include_str!` prelude, Rust builtins → LLT stdlib → user code environment chain)
-- [x] Update task list to reflect the split: Rust-native builtins vs LLT stdlib (builtins-core = Rust builtins, stdlib = LLT already in prelude.llt)
+- [x] Identify which stdlib functions CAN be implemented as Tinct code (all control flow, collection ops, composition, list ops, sorting, sequences, assertions — implemented in `stdlib/prelude.llt`)
+- [x] Document the boundary in DESIGN.md with rationale for each Rust-native builtin (see "Rust-Native vs Tinct-Implemented Boundary" section)
+- [x] Design the stdlib loading mechanism (`include_str!` prelude, Rust builtins → Tinct stdlib → user code environment chain)
+- [x] Update task list to reflect the split: Rust-native builtins vs Tinct stdlib (builtins-core = Rust builtins, stdlib = Tinct already in prelude.llt)
 
 ## Stdlib Validation & Expansion
 
-The LLT stdlib is implemented in `stdlib/prelude.llt` (already working; 79 corpus test files cover stdlib functions). This milestone validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in builtins-core. LLT-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
+The Tinct stdlib is implemented in `stdlib/prelude.llt` (already working; 79 corpus test files cover stdlib functions). This milestone validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in builtins-core. Tinct-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.
 
 ### Validate prelude functions
 
 - [x] Run prelude end-to-end with evaluator and fix any runtime bugs
-- [x] Test each LLT stdlib function against expected behavior (79 corpus tests covering all public stdlib functions)
+- [x] Test each Tinct stdlib function against expected behavior (79 corpus tests covering all public stdlib functions)
 - [x] Performance check: identify any functions that need Rust reimplementation for practical use (see below)
 - [x] Unify `value_to_display_string` and `value_to_json` via shared visitor pattern (analyzed: kept separate — divergent leaf rendering, error handling, and dict assembly means a visitor adds more code than it removes)
 - [x] Clear thread-local `INCLUDE_CTX` after evaluation for library API safety (`clear_include_context()`)
 
-Remaining stdlib functions stay in LLT prelude: logic (`and`, `or`), control flow (`cond`, `when`, `unless`), dict utilities (`get`, `get-or`, `get-in`, `has?`, `values`, `entries`, `empty?`, `set`, `remove`, `update`), list ops (`first`, `nth`, `last`, `reindex`), collection ops (`map-entries`, `fold`, `slice`, `find-deep`), composition (`compose`, `->`), error handling (`try-or`), assertions (`assert`), identity (`identity`).
+Remaining stdlib functions stay in Tinct prelude: logic (`and`, `or`), control flow (`cond`, `when`, `unless`), dict utilities (`get`, `get-or`, `get-in`, `has?`, `values`, `entries`, `empty?`, `set`, `remove`, `update`), list ops (`first`, `nth`, `last`, `reindex`), collection ops (`map-entries`, `fold`, `slice`, `find-deep`), composition (`compose`, `->`), error handling (`try-or`), assertions (`assert`), identity (`identity`).
 
 ## types-correctness: Critical Correctness Fixes
 
@@ -237,7 +237,7 @@ Fix stdlib bugs and add missing test coverage. Identified by stdlib-author revie
 
 ## stdlib-pre-seq: New Stdlib Functions (Pre-Sequences)
 
-New functions implementable in LLT without Seq support. Identified by stdlib-author review (2026-04-19).
+New functions implementable in Tinct without Seq support. Identified by stdlib-author review (2026-04-19).
 
 - [x] `const` — returns first argument, ignores second
 - [x] `from-entries` — inverse of `$entries`; reconstruct dict from `[key value]` pairs
@@ -322,13 +322,13 @@ Sequence builtins, type system integration, and stdlib fixes for Seq.
 
 Rewrite `range`, `repeat`, `cycle` (currently in `stdlib/prelude.llt`) as Rust builtins returning `Seq` instead of eagerly-built dicts. Add new constructors `iterate` and `unfold`.
 
-- [x] Move `range`, `repeat`, `cycle` from LLT prelude to Rust builtins
+- [x] Move `range`, `repeat`, `cycle` from Tinct prelude to Rust builtins
 - [x] `range` returns Seq; 1-arg form `[call $range start]` is infinite, 2-arg form finite
 - [x] `repeat` returns infinite Seq; 1-arg form `[call $repeat val]` only
 - [x] `cycle` returns infinite Seq; 1-arg form `[call $cycle xs]` only
 - [x] `iterate`: `[call $iterate $f $x]` -> x, f(x), f(f(x)), ...
 - [x] `unfold`: `[call $unfold $step $seed]` -> step returns `[value state]` or `[]`
-- [x] Move `take` from LLT prelude to Rust builtin; dual-dispatch Dict (preserve keys) + Seq (return finite Seq)
+- [x] Move `take` from Tinct prelude to Rust builtin; dual-dispatch Dict (preserve keys) + Seq (return finite Seq)
 - [x] Remove old `range`, `repeat`, `cycle`, `take` (and helpers) from prelude.llt
 - [x] Tests: finite/infinite range, repeat, cycle, iterate, unfold, take on Seq
 
@@ -347,7 +347,7 @@ Move `$map` and `$filter` to Rust builtins with dual-dispatch on Dict vs Seq. No
 - [x] `$map` on seq: return lazy seq
 - [x] `$filter` on dict: return seq (must evaluate predicates)
 - [x] `$filter` on seq: return lazy seq
-- [x] Move `map`, `filter` from LLT prelude to Rust builtins
+- [x] Move `map`, `filter` from Tinct prelude to Rust builtins
 - [x] Tests: map/filter on dicts (lazy verification), map/filter on seqs, mixed pipelines
 
 ### drop-reduce: Drop/Reduce + Typing Strategy
@@ -356,14 +356,14 @@ Additional sequence operations and typing decisions for dual-dispatch ops.
 
 - [x] `$drop` on seq: return seq skipping first n elements
 - [x] `$reduce` on seq: accumulate, materializing each step
-- [x] Move `drop`, `reduce` from LLT prelude to Rust builtins
+- [x] Move `drop`, `reduce` from Tinct prelude to Rust builtins
 - [x] Decide typing strategy for dual-dispatch ops (`$map`/`$filter` on Record vs Seq): `Any` escape hatch, union types, or separate functions [Major, type-theorist]
 - [x] Document `join` O(n^2) due to repeated str concatenation; optimize in Rust builtin (`stdlib/prelude.llt:88-97`) [Minor, stdlib-author]
 - [x] Tests: drop on seq, reduce on seq and dict
 
 ### include-cache: Include Caching
 
-Cache `$include` results so re-including the same file returns the cached thunk instead of re-evaluating. Jsonnet caches import thunks; LLT currently re-evaluates every `$include` call.
+Cache `$include` results so re-including the same file returns the cached thunk instead of re-evaluating. Jsonnet caches import thunks; Tinct currently re-evaluates every `$include` call.
 
 - [x] Add `HashMap<PathBuf, Rc<Thunk>>` to `IncludeContext` for result caching
 - [x] Return cached thunk on re-include of the same resolved path
@@ -488,7 +488,7 @@ Uses `lsp-server` (sync), not `tower-lsp` (async), because `Rc<RefCell<Environme
 
 - [x] Add `lsp-server` + `lsp-types` dependencies (optional, under `lsp` feature)
 - [x] Document store (`src/lsp/document.rs`): HashMap<Url, DocumentState>, re-parse/eval/typecheck on change
-- [x] Span conversion (`src/lsp/convert.rs`): LLT Span (offset, 1-indexed) ↔ LSP Position (0-indexed, UTF-16)
+- [x] Span conversion (`src/lsp/convert.rs`): Tinct Span (offset, 1-indexed) ↔ LSP Position (0-indexed, UTF-16)
 - [x] Analysis + hover (`src/lsp/analysis.rs`)
   - Expose `infer_expr` or add `type_at_position()` helper in typecheck.rs
   - Hover on `$var` shows inferred type, hover on `[call ...]` shows signature
@@ -599,6 +599,10 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
 - [x] Increment depth in sequence combinator PendingBuiltin chains — incremented depth in 11 PendingBuiltin creation sites (range, repeat, cycle, iterate, unfold, map, filter, drop, reduce). [Major, computer-scientist]
 - [x] Migrate `concat` Seq path from stdlib to Rust builtin — implemented as PendingBuiltin chain with dual Seq/Dict dispatch. [Major, computer-scientist]
 
+## error-structured: Structured Error Model Implementation
+
+Implement the `ErrorKind` enum and migrate all error construction sites. See DESIGN.md §Structured Error Model.
+
 ### error-structured-types: ErrorKind Type Definitions
 
 - [x] Add `ErrorKind` enum with 25 variants and `ArityBound` enum to `src/error.rs`
@@ -609,6 +613,51 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
 - [x] Update `EvalError::Display` to include error code prefix `[E001]`
 - [x] Update named constructors to construct `ErrorKind` variants
 - [x] Add `EvalError::internal(message, span)` replacing `EvalError::new` (kept as backward-compatible shim)
+
+### error-structured-migrate-a: Priority Semantic Fixes
+
+Fix error classification bugs where the wrong ErrorKind variant is produced.
+
+- [x] Migrate `$error` builtin to use `ErrorKind::UserError` instead of `EvalError::new` (→ Internal E099) — `$error` is the canonical user error source; every user-generated error displays `[E099]` (internal) instead of `[E080]` (user). Add `EvalError::user_error(msg, span)` constructor. (`src/builtins.rs:791`) [Major, computer-scientist]
+- [x] Migrate `eval()` depth check to use `EvalError::depth_exceeded()` — currently `EvalError::new()` → Internal (E099), inconsistent with `materialize()` which correctly uses `depth_exceeded()`. Breaks `is_cacheable()` invariant when integrated. (`src/eval.rs:59-64`) [Major, computer-scientist + eval-engine]
+- [x] Migrate `deep_materialize_impl()` depth check to use `EvalError::depth_exceeded()` — same issue as `eval()` depth check (`src/eval.rs`) [Minor, eval-engine]
+- [x] Generalize `FloatNotFinite` Display message — currently says "cannot be converted to Int" but variant covers all non-finite contexts; change to context-independent message like "{builtin}: result is not finite ({value})" (`src/error.rs:228-230`) [Minor, span-integrity-checker + computer-scientist]
+- [x] Migrate `require_dict` and `require_string` helpers to use `EvalError::type_mismatch()` — currently use `EvalError::new(format!(...))` → Internal, losing structured error classification (`src/builtins.rs:165-169,177-181`) [Minor, span-integrity-checker]
+- [x] Migrate `reject_named` to use `ErrorKind::NamedArgRejected` variant — currently `EvalError::new(format!(...))` → Internal (`src/builtins.rs:192-194`) [Nit, span-integrity-checker + integration-verifier]
+- [x] Migrate `checked_f64_to_i64` to use `ErrorKind::FloatNotFinite` — currently `EvalError::new(format!(...))` → Internal (`src/builtins.rs:108-109`) [Nit, span-integrity-checker]
+
+### error-structured-migrate-b: Bulk Migration
+
+Migrate remaining EvalError::new call sites across eval.rs and builtins.rs.
+
+- [x] Migrate eval.rs remaining `EvalError::new` call sites (~13) to typed `ErrorKind` variants (`src/eval.rs`)
+- [x] Migrate builtins.rs remaining `EvalError::new` call sites (~72) to typed `ErrorKind` variants (`src/builtins.rs`)
+- [x] Update `builtin_try` to extract `e.kind.to_string()` instead of `e.message` (`src/builtins.rs:864`)
+- [x] Update all `err.message` references in unit tests to `err.kind.to_string()` or pattern matching (`src/error.rs`, `src/eval.rs`)
+- [x] Add PROP-CYCLE bypass comment to circular dependency error construction — explain why it skips DECORATE closure. (`src/eval.rs:899-908`) [Nit, eval-engine panel]
+- [x] Document `.message()` as compatibility shim — clarify that `.kind` field is canonical API, `.message()` is for test migration. New code should match on `.kind`. (`src/error.rs`) [Minor, integration-verifier]
+
+### error-structured-migrate-c: Safety Integration + Spec
+
+Error safety mechanisms and specification updates.
+
+- [x] Add `ErrorKind::is_catchable()` method returning `false` for `DepthExceeded` — `$try` currently catches ALL errors including depth-exceeded, defeating the safety net. Users can circumvent depth limits via `$until` + `$try` wrapping deeply recursive code. GHC makes `StackOverflow` uncatchable; Racket separates `exn:fail:resource`. Have `builtin_try` check `is_catchable()` and re-raise uncatchable errors directly. (`src/builtins.rs:793-871`, `src/error.rs`) [Critical, computer-scientist]
+- [x] Integrate `is_cacheable()` into `cache_failure` — currently `Thunk::cache_failure()` unconditionally caches all errors including DepthExceeded. Requires state-restore mechanism: save pre-InProgress thunk state so non-cacheable errors can restore it instead of transitioning to Failed. (`src/value.rs:384-386`) [Major, eval-engine + computer-scientist panel]
+- [x] Fix `FloatNotFinite` containing `f64` with `PartialEq` derive — `f64::NAN != f64::NAN` so two FloatNotFinite errors with NaN values compare as not-equal. Will affect Failed thunk cache identity when variant is constructed. (`src/error.rs`) [Minor, computer-scientist panel]
+- [x] Update SPEC.md §9 with `ErrorKind` variants, error codes in display format (§9.2), and revised exhaustiveness claim in §9.3
+- [x] Update DESIGN.md §Error Semantics field name: `message` → `kind` — spec still references old field name (`DESIGN.md`) [Minor, eval-engine]
+- [x] Update DESIGN.md error constructors table to reflect ErrorKind variants — either expand or add "representative" note (`DESIGN.md`) [Minor, eval-engine]
+
+### error-structured-migrate-c2: Formal Rule Drift Fixes
+
+DESIGN.md inference rules don't reflect is_cacheable()/is_catchable() guards added in migrate-c.
+
+- [x] Update PROP-EVAL/PROP-BUILTIN/PROP-RESULT inference rules to add `is_cacheable()` precondition on Failed transition — rules show unconditional `thunk.state <- Failed(e')` but implementation conditionally restores pre-error state for non-cacheable errors. Add alternative conclusion showing state restoration when `!is_cacheable()`. (`DESIGN.md:4584-4617`) [Critical, computer-scientist]
+- [x] Add TRY-UNCATCHABLE rule and is_catchable() precondition to TRY-ERR — rule unconditionally converts Err(e) to err dict, but builtin_try now re-raises uncatchable errors (DepthExceeded). Add precondition `e.kind.is_catchable()` to TRY-ERR and new TRY-UNCATCHABLE rule showing re-raise. (`DESIGN.md:4690-4699`) [Critical, computer-scientist]
+- [x] Update MEMO-CACHE rule to add `is_cacheable()` precondition — rule and prose say "All error paths cache via cache_failure" unconditionally. Add precondition and MEMO-SKIP rule for non-cacheable errors. (`DESIGN.md:4648-4655`) [Critical, computer-scientist]
+- [x] Update Implementation Correspondence table line numbers after is_cacheable integration shifted eval.rs structure (`DESIGN.md:4745-4759`) [Minor, computer-scientist]
+- [x] Fix E2 property `e.message` to `e.kind` — field was replaced by ErrorKind in error-structured-types (`DESIGN.md:4725`) [Minor, computer-scientist]
+- [x] Add note to SPEC.md §9.4 that DepthExceeded errors are not catchable by $try — users may be surprised when $try doesn't catch resource limit errors (`SPEC.md:1436-1449`) [Minor, computer-scientist]
 
 ### error-structured-migrate-c3: Residual Doc Precision
 
@@ -671,6 +720,12 @@ Additional corpus and unit tests for desugaring edge cases.
 - [x] Add corpus test for func-only DIRECT case — `[call $_ $x]` should NOT wrap; documents asymmetry with arg-only case (`tests/corpus/eval/`) [Nit, test-crafter + integration-verifier]
 - [x] Add corpus error tests for `$_` — undefined `$_`, key-not-found on desugared access chain, type mismatch inside desugared lambda; validates error span quality (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
 - [x] Add desugar step to `create_stdlib_env()` — `builtins.rs:2656-2664` parses `prelude.llt` then evaluates without calling `desugar_file()`, skipping desugaring that all production entry points perform. (`src/builtins.rs:2656-2664`) [Minor, integration-verifier C32]
+
+## evalcontext-refactor: EvalContext Parameter Threading
+
+Replace thread-local `INCLUDE_CTX` with parameter-passed `EvalContext`. Unlocks LSP multi-file support and clean sandboxing. See DESIGN.md §EvalContext.
+
+**Unlocks:** `sandbox` (filesystem allowlist lives in EvalConfig)
 
 ### evalcontext-types: EvalContext Type Definitions
 

@@ -41,7 +41,7 @@ Work through each topic below sequentially. For each topic:
 
 **Architecture**: For each changed function, identify its layer (parser → AST → evaluator → type checker → builtins → stdlib → CLI). Check layer boundaries, abstraction leaks, coupling.
 
-**Design**: Read DESIGN.md and SPEC.md for relevant sections. Does implementation match? Are decisions being made implicitly without being recorded?
+**Design**: Read relevant `doc/*.md` chapters. Does implementation match? Are decisions being made implicitly without being recorded?
 
 **Maintainability**: Any surprising behavior? Non-obvious side effects? Bad names? Dead code? High cyclomatic complexity? Simplification opportunities?
 
@@ -51,7 +51,7 @@ Work through each topic below sequentially. For each topic:
 
 **Style**: Rust naming conventions? Consistent error messages? Comment length (single line max)?
 
-**Documentation**: Public APIs documented? Existing docs still accurate? DESIGN.md updated for new decisions? SPEC.md updated for parser/AST changes? CLAUDE.md still accurate? (Do not add counts or enumerations that will go stale.)
+**Documentation**: Public APIs documented? Existing docs still accurate? doc/*.md updated for new decisions or parser/AST changes? CLAUDE.md still accurate? (Do not add counts or enumerations that will go stale.)
 
 **Rust Best Practices**: `?` propagation, borrowing over cloning, exhaustive matches, iterator chains, `pub(crate)` visibility, `#[cfg(test)]` modules, no allocations in tight loops.
 

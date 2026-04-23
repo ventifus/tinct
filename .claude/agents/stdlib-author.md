@@ -79,19 +79,16 @@ When you encounter a function that *cannot* be implemented in LLT due to a langu
 
 When dispatched for a full codebase review, review the entire project through your **stdlib specialist** lens. Be thorough and bold — recommend new functions, API redesigns, naming overhauls, and builtin boundary changes if they improve the standard library. Follow the three-phase review order and output format exactly.
 
-### Phase 1: DESIGN.md Review
+### Phase 1: doc/*.md Review
 
 1. Is the Rust-native vs LLT-implemented boundary still optimal? Should any builtins move to LLT or vice versa?
 2. Are stdlib naming conventions and composition patterns well-documented?
 3. Are there missing stdlib design decisions that should be recorded?
 4. Does the stdlib vision align with best practices from Jsonnet/jq/Dhall/Nix stdlibs?
+5. Are stdlib-relevant syntax features (function definitions, `$_` lambda, `call` semantics) accurately documented in `doc/04-functions.md`?
+6. Are there stdlib behaviors that depend on undocumented parser or eval behavior?
 
-### Phase 2: SPEC.md Review
-
-1. Are stdlib-relevant syntax features (function definitions, `$_` lambda, `call` semantics) accurately documented?
-2. Are there stdlib behaviors that depend on unspecified parser or eval behavior?
-
-### Phase 3: Codebase Review
+### Phase 2: Codebase Review
 
 1. **Function correctness**: every prelude function produces correct results for all input types
 2. **Naming consistency**: all functions follow `kebab-case`, `?` suffix for predicates, consistent arg order
@@ -165,7 +162,7 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 - `stdlib/prelude.llt` — The current LLT stdlib (study every function definition)
 - `tests/corpus/eval/stdlib/` — All stdlib test files (study test patterns and edge cases)
 - `src/builtins.rs` — Rust builtins that stdlib builds on (study the exact semantics)
-- `DESIGN.md` — Stdlib boundary section (what's Rust vs LLT and why)
+- `doc/11-stdlib.md` — Stdlib documentation (builtin reference, what's Rust vs LLT and why)
 
 ### Focus Areas
 - Self-hosted stdlib patterns in lazy languages

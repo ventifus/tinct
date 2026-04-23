@@ -2,131 +2,6 @@
 
 Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-## error-structured: Structured Error Model Implementation
-
-Implement the `ErrorKind` enum and migrate all error construction sites. See DESIGN.md §Structured Error Model.
-
-### error-structured-types: ErrorKind Type Definitions
-
-Define the structured error types and update EvalError to use them.
-
-- [x] Add `ErrorKind` enum with 25 variants and `ArityBound` enum to `src/error.rs`
-- [x] Add `ErrorKind::code()` method returning stable error code strings (`src/error.rs`)
-- [x] Add `ErrorKind::is_cacheable()` method returning `false` for `DepthExceeded` (`src/error.rs`)
-- [x] Add `Display` impl for `ErrorKind` and `ArityBound` (`src/error.rs`)
-- [x] Replace `message: String` with `kind: ErrorKind` in `EvalError` struct (`src/error.rs:20-25`)
-- [x] Update `EvalError::Display` to include error code prefix `[E001]` (`src/error.rs:85-95`)
-- [x] Update named constructors (`key_not_found`, `type_mismatch`, `arity_mismatch`, `circular_dependency`) to construct `ErrorKind` variants (`src/error.rs:59-82`)
-- [x] Add `EvalError::internal(message, span)` replacing `EvalError::new` — construct `ErrorKind::Internal` (`src/error.rs:28-35`)
-
-### error-structured-migrate-a: Priority Semantic Fixes
-
-Fix error classification bugs where the wrong ErrorKind variant is produced.
-
-- [x] Migrate `$error` builtin to use `ErrorKind::UserError` instead of `EvalError::new` (→ Internal E099) — `$error` is the canonical user error source; every user-generated error displays `[E099]` (internal) instead of `[E080]` (user). Add `EvalError::user_error(msg, span)` constructor. (`src/builtins.rs:791`) [Major, computer-scientist]
-- [x] Migrate `eval()` depth check to use `EvalError::depth_exceeded()` — currently `EvalError::new()` → Internal (E099), inconsistent with `materialize()` which correctly uses `depth_exceeded()`. Breaks `is_cacheable()` invariant when integrated. (`src/eval.rs:59-64`) [Major, computer-scientist + eval-engine]
-- [x] Migrate `deep_materialize_impl()` depth check to use `EvalError::depth_exceeded()` — same issue as `eval()` depth check (`src/eval.rs`) [Minor, eval-engine]
-- [x] Generalize `FloatNotFinite` Display message — currently says "cannot be converted to Int" but variant covers all non-finite contexts; change to context-independent message like "{builtin}: result is not finite ({value})" (`src/error.rs:228-230`) [Minor, span-integrity-checker + computer-scientist]
-- [x] Migrate `require_dict` and `require_string` helpers to use `EvalError::type_mismatch()` — currently use `EvalError::new(format!(...))` → Internal, losing structured error classification (`src/builtins.rs:165-169,177-181`) [Minor, span-integrity-checker]
-- [x] Migrate `reject_named` to use `ErrorKind::NamedArgRejected` variant — currently `EvalError::new(format!(...))` → Internal (`src/builtins.rs:192-194`) [Nit, span-integrity-checker + integration-verifier]
-- [x] Migrate `checked_f64_to_i64` to use `ErrorKind::FloatNotFinite` — currently `EvalError::new(format!(...))` → Internal (`src/builtins.rs:108-109`) [Nit, span-integrity-checker]
-
-### error-structured-migrate-b: Bulk Migration
-
-Migrate remaining EvalError::new call sites across eval.rs and builtins.rs.
-
-- [x] Migrate eval.rs remaining `EvalError::new` call sites (~13) to typed `ErrorKind` variants (`src/eval.rs`)
-- [x] Migrate builtins.rs remaining `EvalError::new` call sites (~72) to typed `ErrorKind` variants (`src/builtins.rs`)
-- [x] Update `builtin_try` to extract `e.kind.to_string()` instead of `e.message` (`src/builtins.rs:864`)
-- [x] Update all `err.message` references in unit tests to `err.kind.to_string()` or pattern matching (`src/error.rs`, `src/eval.rs`)
-- [x] Add PROP-CYCLE bypass comment to circular dependency error construction — explain why it skips DECORATE closure. (`src/eval.rs:899-908`) [Nit, eval-engine panel]
-- [x] Document `.message()` as compatibility shim — clarify that `.kind` field is canonical API, `.message()` is for test migration. New code should match on `.kind`. (`src/error.rs`) [Minor, integration-verifier]
-
-### error-structured-migrate-c: Safety Integration + Spec
-
-Error safety mechanisms and specification updates.
-
-- [x] Add `ErrorKind::is_catchable()` method returning `false` for `DepthExceeded` — `$try` currently catches ALL errors including depth-exceeded, defeating the safety net. Users can circumvent depth limits via `$until` + `$try` wrapping deeply recursive code. GHC makes `StackOverflow` uncatchable; Racket separates `exn:fail:resource`. Have `builtin_try` check `is_catchable()` and re-raise uncatchable errors directly. (`src/builtins.rs:793-871`, `src/error.rs`) [Critical, computer-scientist]
-- [x] Integrate `is_cacheable()` into `cache_failure` — currently `Thunk::cache_failure()` unconditionally caches all errors including DepthExceeded. Requires state-restore mechanism: save pre-InProgress thunk state so non-cacheable errors can restore it instead of transitioning to Failed. (`src/value.rs:384-386`) [Major, eval-engine + computer-scientist panel]
-- [x] Fix `FloatNotFinite` containing `f64` with `PartialEq` derive — `f64::NAN != f64::NAN` so two FloatNotFinite errors with NaN values compare as not-equal. Will affect Failed thunk cache identity when variant is constructed. (`src/error.rs`) [Minor, computer-scientist panel]
-- [x] Update SPEC.md §9 with `ErrorKind` variants, error codes in display format (§9.2), and revised exhaustiveness claim in §9.3
-- [x] Update DESIGN.md §Error Semantics field name: `message` → `kind` — spec still references old field name (`DESIGN.md`) [Minor, eval-engine]
-- [x] Update DESIGN.md error constructors table to reflect ErrorKind variants — either expand or add "representative" note (`DESIGN.md`) [Minor, eval-engine]
-
-### error-structured-migrate-c2: Formal Rule Drift Fixes
-
-DESIGN.md inference rules don't reflect is_cacheable()/is_catchable() guards added in migrate-c.
-
-- [x] Update PROP-EVAL/PROP-BUILTIN/PROP-RESULT inference rules to add `is_cacheable()` precondition on Failed transition — rules show unconditional `thunk.state <- Failed(e')` but implementation conditionally restores pre-error state for non-cacheable errors. Add alternative conclusion showing state restoration when `!is_cacheable()`. (`DESIGN.md:4584-4617`) [Critical, computer-scientist]
-- [x] Add TRY-UNCATCHABLE rule and is_catchable() precondition to TRY-ERR — rule unconditionally converts Err(e) to err dict, but builtin_try now re-raises uncatchable errors (DepthExceeded). Add precondition `e.kind.is_catchable()` to TRY-ERR and new TRY-UNCATCHABLE rule showing re-raise. (`DESIGN.md:4690-4699`) [Critical, computer-scientist]
-- [x] Update MEMO-CACHE rule to add `is_cacheable()` precondition — rule and prose say "All error paths cache via cache_failure" unconditionally. Add precondition and MEMO-SKIP rule for non-cacheable errors. (`DESIGN.md:4648-4655`) [Critical, computer-scientist]
-- [x] Update Implementation Correspondence table line numbers after is_cacheable integration shifted eval.rs structure (`DESIGN.md:4745-4759`) [Minor, computer-scientist]
-- [x] Fix E2 property `e.message` to `e.kind` — field was replaced by ErrorKind in error-structured-types (`DESIGN.md:4725`) [Minor, computer-scientist]
-- [x] Add note to SPEC.md §9.4 that DepthExceeded errors are not catchable by $try — users may be surprised when $try doesn't catch resource limit errors (`SPEC.md:1436-1449`) [Minor, computer-scientist]
-
-### error-structured-migrate-c3: Residual Doc Precision
-
-Residual documentation fixes from c2 review: informal notation, incomplete parentheticals, code/spec alignment.
-
-- [x] Update TRY-BUILTIN error parenthetical with is_catchable() qualifier — after c2 added TRY-UNCATCHABLE, the parenthetical "(Error variant: same structure, `Err(ε) ⇒ Dict({err ↦ ...})`)" doesn't mention catchability guard. Change to "(Catchable error variant: same structure; uncatchable errors re-raised per TRY-UNCATCHABLE)". (`DESIGN.md:4745`) [Minor, computer-scientist]
-- [x] Fix Error-to-value correspondence to match actual code path — table says "extract `e.kind.to_string()`" but code uses `e.message()` which delegates to `e.kind.to_string()`. Either update table to say `e.message()` or change code to call `e.kind.to_string()` directly. (`DESIGN.md:4794`, `src/builtins.rs:877`) [Minor, computer-scientist]
-- [x] Update PROP-DEPTH constructor notation to typed ErrorKind style — rule says `ε = new("maximum evaluation depth exceeded", thunk.span)` but implementation uses `EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk.span)`. Change to `ε = depth_exceeded(MAX_EVAL_DEPTH, thunk.span)`. (`DESIGN.md:4647`) [Nit, computer-scientist]
-
-### error-structured-migrate-d: Test Coverage
-
-ErrorKind test coverage to validate migration and prevent regressions.
-
-- [x] Add missing ErrorKind constructor methods for remaining ~13 variants — DuplicateKey, NamedArgConflict, UnknownNamedArg, ParseConversion, TypeAssertFailed, UndefinedVariable, all JSON/Include variants still use verbose `Box::new(EvalError { kind: ..., ... })` instead of named constructors. Add constructors and migrate call sites. (`src/error.rs`, `src/eval.rs`, `src/builtins.rs`) [Minor, computer-scientist + eval-engine]
-- [x] Add ErrorKind Display unit tests for all 25 variants — only 4 of 25 tested (KeyNotFound, TypeMismatch, ArityMismatch, CircularDependency). (`src/error.rs`) [Major, test-crafter panel]
-- [x] Add ArityBound Display unit tests — no isolated tests for Exact/AtMost/Range Display impls. (`src/error.rs`) [Minor, test-crafter panel]
-- [x] Add is_cacheable() unit tests — verify DepthExceeded returns false, all others true. (`src/error.rs`) [Minor, test-crafter panel]
-- [x] Add error code prefix verification to corpus error tests — substring matching doesn't check for `[E0XX]` prefix. (`tests/corpus/eval/errors/`) [Minor, test-crafter panel]
-- [x] Add `ErrorKind::code()` exhaustiveness unit test — assert all variants return "E" + digits, prevents silent breakage when new variants added (`src/error.rs`) [Minor, test-crafter]
-- [x] Add stack frame propagation integration tests — test multi-level error propagation through nested materialization chains (dict → thunk → builtin → error), verify frames accumulate correctly (`src/error.rs`) [Major, test-crafter]
-
-## evalcontext-refactor: EvalContext Parameter Threading
-
-Replace thread-local `INCLUDE_CTX` with parameter-passed `EvalContext`. Unlocks LSP multi-file support and clean sandboxing. See DESIGN.md §EvalContext.
-
-**Unlocks:** `sandbox` (filesystem allowlist lives in EvalConfig)
-
-### evalcontext-types: EvalContext Type Definitions
-
-Define the EvalContext types and add ctx fields to existing structs.
-
-- [x] Create `EvalConfig` struct — `base_dir: PathBuf`, `stdlib_env: Rc<RefCell<Environment>>`, `allowed_paths: Vec<PathBuf>` (`src/eval.rs`)
-- [x] Create `EvalState` struct — `include_guard: HashSet<PathBuf>`, `include_cache: HashMap<PathBuf, Rc<Thunk>>` (`src/eval.rs`)
-- [x] Create `EvalContext` struct — `config: Rc<EvalConfig>`, `state: Rc<RefCell<EvalState>>` (`src/eval.rs`)
-- [x] Add `ctx: Rc<EvalContext>` field to `ThunkState::Unevaluated`, `PendingBuiltin`, `PendingCall` (`src/value.rs:176-190`)
-- [x] Add `ctx: Rc<EvalContext>` field to `BuiltinArgs` (`src/builtins.rs`)
-
-### evalcontext-thread: EvalContext Threading and Migration
-
-Thread EvalContext through eval pipeline, migrate include, update API.
-
-**Depends on:** `evalcontext-types`
-
-- [x] Thread `EvalContext` through `eval()`, `materialize()`, and builtin dispatch (`src/eval.rs`)
-- [x] Migrate `builtin_include` to use `ctx.state` instead of thread-local `INCLUDE_CTX` (`src/builtins.rs:1024-1170`)
-- [x] Remove thread-local `INCLUDE_CTX` and `set_include_context`/`clear_include_context` (`src/builtins.rs:58-70`, `src/lib.rs`)
-- [x] Update CLI (`main.rs`): construct `EvalContext` from file path
-- [x] Update public API: `EvalContext`, `EvalConfig`, `EvalState` are public; remove `set_include_context`/`clear_include_context`
-- [x] Update all include-related tests
-- [x] Add EvalContext isolation tests — two contexts with different base_dirs resolve includes independently, include cache persists across calls, include guard detects cycles via ctx.state [Critical, test-crafter C34]
-- [x] Add thunk memoization ctx preservation test — verify Unevaluated→Materialized transition preserves correct ctx (Rc::ptr_eq) [Critical, test-crafter C34]
-- [x] Suppress unused `ctx` parameter warning in `materialize()` — rename to `_ctx` with TODO comment (`src/eval.rs:863`) [Major, eval-engine C34]
-
-### evalcontext-polish: EvalContext Polish and Documentation
-
-Fix-later findings from evalcontext-thread panel review (C34).
-
-- [x] Add `EvalContext::with_base_dir()` helper to share config via `Rc::clone` instead of allocating new EvalConfig per include (`src/builtins.rs:1065-1072`) [Minor, eval-engine + performance-expert + computer-scientist C34]
-- [x] Add cross-context state-sharing test — two contexts sharing `state: Rc::clone(&ctx1.state)` but different `config` should share include_cache and include_guard (`src/eval.rs`) [Minor, eval-engine + test-crafter + integration-verifier C34]
-- [x] Add documenting comment on `materialize()` `_ctx` parameter explaining thunks use captured ctx, parameter exists for future use (`src/eval.rs:863`) [Minor, eval-engine + test-crafter + span-integrity-checker + computer-scientist C34]
-- [x] Fix stale docstring in repl.rs:106 referencing `IncludeContext` (removed) — should say `EvalContext` (`src/repl.rs:106`) [Nit, computer-scientist C34]
-- [x] Fix include guard leak on materialize failure — `?` operator in builtin_include skips cleanup() on Err path; match on result like eval_result (`src/builtins.rs:1091`) [Major, computer-scientist C34]
-- [x] Update DESIGN.md evaluation judgment forms to include Sigma (EvalContext) parameter — `<e, rho, Sigma, d> => v` (`DESIGN.md:2247-2329`) [Minor, computer-scientist C34]
-
 ## let-generalization: Levels-Based Let-Generalization
 
 Implement proper Hindley-Milner let-polymorphism with levels-based generalization (Kiselyov 2013). Without this, polymorphism requires explicit annotations. See DESIGN.md §Let-Generalization (Levels-Based).
@@ -344,10 +219,15 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Use static empty dict thunk for default `$$` — eliminates allocation on every file eval without stdin (`src/eval.rs:287-291`) [Nit, performance-expert]
 - [ ] Builtin strictness annotations — classify each builtin's argument strictness (strict/lazy per position); arithmetic, comparison, and string builtins are strict in all args, `$if` strict in condition only, `$seq` lazy in both. Strict args can skip thunk allocation in eval_call. Level 1 optimization per Mycroft (1981). (`src/eval.rs:414-438`, `src/builtins.rs`) [Major, computer-scientist]
 - [x] Research Rc cycle leak mitigation strategy — resolved by arena allocation design in DESIGN.md §Allocation Strategy. Section-scoped arenas eliminate Rc cycles within evaluation; selective migration at `---` boundaries handles cross-section values. No separate proposal needed.
+- [ ] Fix `EvalContext::with_base_dir()` allocating fresh `Rc<EvalConfig>` on every `$include` — creates new EvalConfig wrapper even though only base_dir changes; store `base_dir` as `Rc<PathBuf>` or check if base_dir differs before allocating. Hot path for include-heavy configurations. (`src/eval.rs:66-74`) [Critical, performance-expert]
+- [ ] Fix `builtin_map` Dict path allocating `format!()` string per entry — `Cow::Owned(format!("map {}", key))` creates string allocation + format call for every mapped element. Change to `Cow::Borrowed("map")` static label. (`src/builtins.rs:1710`) [Critical, performance-expert]
+- [ ] Fix `func_path` allocating recursively-built String on every DotAccess call — builds label like `$foo.bar.baz` via string concatenation on every function call, even successful ones. Defer label construction to error path only. (`src/eval.rs:456-462`) [Major, performance-expert]
+- [ ] Fix `Type::clone()` on non-substituted branches in `Substitution::apply_inner` — three sites clone entire type tree when no substitution applies: TypeVar not in map, Record rest fallback, primitive types. Return `Cow<Type>` or `Rc<Type>` for structural sharing. Expensive for large record types (K8s manifests with 500+ fields). (`src/types.rs:161,182,198`) [Major, performance-expert]
+- [ ] Fix `builtin_keys` allocating intermediate Vec for filtering — `let keys: Vec<Key> = map.keys().cloned().collect()` then immediately iterates. Use iterator directly without collecting. (`src/builtins.rs:1778`) [Major, performance-expert]
 
 ## iterative-eval: Iterative Evaluator
 
-Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. LLT's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
+Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. Tinct's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
 
 - [x] Design `Frame` enum for explicit continuation stack — see DESIGN.md §Iterative Evaluator — Defunctionalized CPS (CEK Machine). Uses `Action` enum (Eval/Materialize/Continue) + `Cont` enum (~18-20 defunctionalized continuation variants, boxed large fields for ≤96B frames) in an iterative two-register loop. Agent-reviewed: eval-engine, laziness-auditor, performance-expert.
 - [x] Research safe Rust arena patterns for thunks/environments — see doc/whatif/arena-patterns.md. Recommends hand-rolled `Vec<Thunk>` + `ThunkId(u32)` with RefCell (cranelift entity pattern). typed-arena/bumpalo can't handle cyclic graphs; GhostCell ergonomic cost prohibitive; slotmap/thunderdome add unnecessary deletion overhead. 4-step adoption: variable resolution → arena types → CEK machine → selective migration
@@ -363,6 +243,7 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [ ] Remove 64MB worker thread stack workaround once iterative eval eliminates deep recursion
 - [ ] Verify thunk lifecycle invariants after CEK migration — sharing preservation (thunk identity via `Rc<Thunk>` must be maintained through continuation dispatch), ThunkState simplification (PendingBuiltin/PendingCall subsumed by Cont variants), MAX_EVAL_DEPTH removal (replace with configurable `--max-depth`), monotonicity proof carries over. See DESIGN.md §Thunk Lifecycle — Relationship to CEK Machine Migration. [Major, computer-scientist]
 - [ ] Fix eval_call eagerly materializing function value — `eval_call` at `src/eval.rs:462-463` calls `materialize(&func_thunk, ...)` before creating argument thunks, forcing the function-position expression immediately even when the entire call result is never used. Launchbury (1993) call-by-need requires the application itself to be lazy. PendingCall exists for exactly this deferral but is only used by builtins ($map, $filter), not by eval_call. CEK machine migration naturally resolves this: the CALL continuation defers function forcing until the call result is demanded. (`src/eval.rs:462-463`) [Major, computer-scientist C35]
+- [ ] Fix `$apply` eagerly materializing function and args dict — `builtin_apply` at `src/builtins.rs:858-859` calls `materialize` on both the function thunk and the args dict thunk before spreading and invoking; if the result of `[call $apply $f $args]` is never accessed, both operands are still forced. Spec: return invoke_function thunk directly (no extra materialization). CEK machine migration resolves this via the CALL continuation deferral, same as eval_call. (`src/builtins.rs:858-859`) [Major, eval-engine]
 
 ## row-unification: Full Row-Variable Unification (Remy-Style)
 
@@ -457,7 +338,7 @@ Future type system work identified by type-theorist review (2026-04-19). Updated
 - [ ] Consider `HashMap` instead of `IndexMap` for type alias registry — order doesn't matter (`src/types.rs:386`) [Nit, type-theorist]
 - [ ] Clarify `Fn@T` with zero params — document whether it means thunk or nullary function (`src/typecheck.rs:536-541`) [Nit, type-theorist]
 - [x] Research Type::Any consistency vs subtyping separation — see doc/whatif/gradual-typing.md. Covers consistency relation (Siek & Taha 2006), AGT framework (Garcia et al. 2016), is_consistent() vs is_subtype() separation, Any→Unknown+Top split. Recommendation: don't adopt now; revisit when Any causes a real false positive or algebraic subtyping is adopted.
-- [ ] Document principal type property violations — LLT does not satisfy Damas-Milner principal type theorem: (1) no let-generalization, (2) non-MGU literal coercions, (3) subtyping + parametric polymorphism interaction, (4) Type::Any as universal unifier. Document as known limitation in DESIGN.md §Type Inference. [Minor, computer-scientist]
+- [ ] Document principal type property violations — Tinct does not satisfy Damas-Milner principal type theorem: (1) no let-generalization, (2) non-MGU literal coercions, (3) subtyping + parametric polymorphism interaction, (4) Type::Any as universal unifier. Document as known limitation in DESIGN.md §Type Inference. [Minor, computer-scientist]
 - [ ] Document literal promotion symmetry in unification — `IntLiteral↔Int` unification is bidirectional; in a subtyping-aware system `IntLiteral <: Int` but not vice versa; reduces diagnostic value (`src/types.rs:263-264`) [Minor, computer-scientist]
 - [x] Research path-sensitive type narrowing — see doc/whatif/narrowing.md. Make `$if` a type-level special form, fork type environments per branch. Four narrowing patterns: equality-with-literal, type-of guard, key presence, boolean conjunction. No false-branch narrowing (needs negation types). Assumes typeassert-structural complete. Trigger: after let-generalization + bidirectional-typing.
 
@@ -497,7 +378,7 @@ Findings from formal audit of DESIGN.md theoretical claims (2026-04-21). Covers 
 
 ## Stdlib Expansion
 
-Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall). All implementable in LLT unless noted.
+Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall). All implementable in Tinct unless noted.
 
 ### stdlib-missing-core: Core Missing Functions
 
@@ -514,7 +395,7 @@ Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall
 - [ ] `sum`, `min`, `max`, `count` — aggregate functions (one-liners over fold)
 - [ ] `contains?` / `elem?` — membership test
 - [ ] `uniq` / `unique` — deduplicate collection
-- [ ] `foldr` — right fold (LLT only has left fold currently)
+- [ ] `foldr` — right fold (Tinct only has left fold currently)
 - [ ] `zip-with` — generalized zip with combining function; define `zip` as special case (Nix)
 - [ ] `map-indexed` / `map-keys` — indexed mapping and key transformation (Jsonnet)
 - [ ] `sort-on` — sort by key-extraction function instead of comparator (Jsonnet + Nix)
@@ -595,6 +476,7 @@ Minor wording and span improvements.
 - [ ] Enhance "materialized at" error message to distinguish access vs call sites (`src/error.rs:85-86`) [Minor, span-integrity-checker]
 - [ ] Change unification error wording from "type mismatch" to "cannot unify X with Y" (`src/types.rs:314`) [Minor, type-theorist]
 - [ ] Improve Fn type expression error message for keyed params — currently generic (`src/typecheck.rs:764-772`) [Minor, type-theorist]
+- [ ] Thread `call_site_span` through `deep_materialize()` — all 3 nested `materialize()` calls at lines 1231, 1251, 1264 pass `None` for mat_span, losing materialization context. Add `call_site_span: Span` parameter and pass `Some(&call_site_span)` to nested calls. Update callers in `src/builtins.rs:738`, `src/repl.rs:171`, `src/main.rs:149,168`, `src/lib.rs:88` to pass appropriate span or `Span::origin()`. (`src/eval.rs:1204,1231,1251,1264`) [Minor, span-integrity-checker]
 
 ### error-infra-nits: Error Nits
 
@@ -633,6 +515,8 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Delete stale concat comment block in stdlib/prelude.llt — function definition correctly removed (migrated to Rust builtin) but 3-line comment block remains as confusing dead documentation (`stdlib/prelude.llt:301-303`) [Major, stdlib-author]
 - [ ] Sync DESIGN.md concat documentation after builtin migration — concat still listed as stdlib function at line 3075, non-existent `concat-seq` listed at line 3185, Sequences builtin row at line 2940 missing concat, concat Seq path marked as future work at line 5439 but already implemented. Move to builtin docs, remove stale entries, update status markers. (`DESIGN.md:2940, 3075, 3185, 5439`) [Major, integration-verifier]
 - [ ] Update DESIGN.md builtin count after concat migration — line 2927 says "44 total" but `standard_builtins()` now registers 45 builtins after concat addition. Previous "verified correct" resolution (TODO.md:651) is now stale. (`DESIGN.md:2927`) [Minor, stdlib-author + integration-verifier]
+- [ ] Remove false `$deep-eq` claim from doc/11-stdlib.md — line 106 states "Structural equality is available via `$deep-eq`" but this function does not exist in prelude.llt, src/builtins.rs, or anywhere in the codebase. Either implement (add to stdlib-missing-core) or remove the claim. (`doc/11-stdlib.md:106`) [Major, stdlib-author]
+- [ ] Update doc/11-stdlib.md builtin count from "44 total" to "47 total" — `standard_builtins()` at `src/builtins.rs:2619-2676` registers 47 builtins; doc says 44. (`doc/11-stdlib.md:165`) [Minor, stdlib-author]
 
 ## Test Infrastructure
 
@@ -702,6 +586,12 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Consider `assert_ast_eq!` macro for critical parser tests instead of Display comparison (`src/parser.rs:131`) [Minor, test-crafter]
 - [ ] Rename builtin tests to `test_*` convention or document current convention (`src/builtins.rs:2298-4700`) [Nit, test-crafter]
 - [ ] Standardize error corpus test format and document in README (`tests/corpus/`) [Nit, test-crafter]
+- [ ] Create `tests/corpus/README.md` documenting test format — specify `===` delimiter usage (separates input from expected output, must be on its own line), expected output format for success tests (JSON result) vs error tests (error message substring), multi-expression behavior, clarify that `===` is not language-reserved. (`tests/corpus/`) [Minor, test-crafter]
+- [ ] Add testing requirements section to doc/02-syntax.md — static constraints section (lines 154-221) describes 6 parser-enforced rules but lacks test mandate; add "Testing Requirements" subsection requiring each constraint has at least one `tests/corpus/invalid/syntax_errors/` test showing parser rejection. (`doc/02-syntax.md:154-221`) [Major, test-crafter]
+- [ ] Add testing strategy section to doc/08-evaluation.md — Productivity Obligations section lacks test requirements; add subsection requiring corpus tests for each built-in constructor ($range, $repeat, $cycle, $iterate, $unfold), malformed tails, and depth limit behavior on diverging sequences. (`doc/08-evaluation.md:123-169`) [Major, test-crafter]
+- [ ] Add test mandate to doc/08-evaluation.md dual-dispatch builtins — no test pattern guidance for 6 dual-dispatch builtins (map, filter, take, drop, reduce, join); add "Testing Dual-Dispatch" subsection requiring both Dict and Seq corpus tests per builtin. (`doc/08-evaluation.md:689-703`) [Major, test-crafter]
+- [ ] Add test mandate to doc/10-errors.md Error Categories table — table lists all 26 ErrorKind variants but doesn't require corpus test coverage per variant; add note that every error code needs at least one corpus test in `tests/corpus/eval/errors/`. (`doc/10-errors.md:762-790`) [Major, test-crafter]
+- [ ] Add testing requirements to doc/04-functions.md $_ desugaring section — formal spec with DIRECT predicate and exclusion positions lacks test mandate; add subsection requiring tests for each WRAP rule and each exclusion position proving $_ does NOT desugar there. (`doc/04-functions.md:179-297`) [Minor, test-crafter]
 
 ### test-advanced: Advanced Testing (Fuzzing, Property-Based, Benchmarks)
 
@@ -725,6 +615,16 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference — add test for display_string with NaN/Inf (`src/lib.rs:112-125, 176-211`) [Minor, integration-verifier]
 - [ ] Add lib.rs EvalContext doc comment mentioning include cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs`) [Minor, integration-verifier]
 - [ ] Add DESIGN.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
+
+## docs-restructuring-refs: Documentation Cross-Reference Update
+
+Found by grammar-architect and computer-scientist review (2026-04-23). Commit 7b06e98 moved DESIGN.md (6643 lines) and SPEC.md (1509 lines) to `.tmp/`, splitting content into `doc/01-17` chapters. Cross-references across TODO.md, doc/whatif/, doc/, and source code were not updated.
+
+- [ ] Update systemic DESIGN.md/SPEC.md cross-references — 127 TODO.md references to "See DESIGN.md §X", 48+ references across 21 doc/*.md and doc/whatif/*.md files, and 4 source code comments (`src/grammar.pest:2,137`, `src/lexer.rs:6`, `src/desugar.rs:8`) all point to deleted files. Create mapping table: DESIGN.md section name → doc/ chapter, then bulk-update all references. [Major, grammar-architect + computer-scientist]
+- [ ] Fix doc/02-syntax.md:3 broken links — opens with "For the full language specification see [SPEC.md](../SPEC.md). For design context see [DESIGN.md](../DESIGN.md)." Both targets deleted in commit 7b06e98. Replace with reference to `doc/index.md` or remove. (`doc/02-syntax.md:3`) [Minor, computer-scientist]
+- [ ] Fix doc/16-architecture.md EvalContext threading description — three statements incorrectly use `Rc<RefCell<EvalContext>>`: line 66 "Threading pattern", line 68 "ThunkState captures", line 70 "BuiltinArgs gains". Actual implementation uses `Rc<EvalContext>` (interior mutability via `state: Rc<RefCell<EvalState>>` inside EvalContext). (`doc/16-architecture.md:66-70`) [Major, computer-scientist + integration-verifier]
+- [ ] Fix doc/16-architecture.md Value sketch using `LinkedHashMap` instead of `IndexMap` — sketch shows `Dict(LinkedHashMap<Key, Rc<Thunk>>)` but `src/value.rs:75` uses `Dict(IndexMap<Key, Rc<Thunk>>)`. (`doc/16-architecture.md:90`) [Nit, computer-scientist]
+- [ ] Fix `materialize()` dead `_ctx` parameter — accepts `_ctx: &Rc<EvalContext>` but never uses it; thunks use their captured ctx instead (Launchbury 1993 — thunks carry creation-time context). Either remove parameter and update all call sites, or add doc comment explaining invariant. Naturally resolved by CEK machine migration. (`src/eval.rs:876-879`) [Minor, computer-scientist]
 
 ## Documentation Divergences (DESIGN.md / SPEC.md / Code)
 
@@ -776,7 +676,7 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **DESIGN.md stdlib reference missing `any?` and `all?`** — predicates implemented in prelude.llt:60-78; add under Logic section (`DESIGN.md:3004-3010`) [Minor, stdlib-author]
 - [ ] **DESIGN.md stdlib reference missing `until`** — iterate-until-predicate, implemented in prelude.llt:154; add under Control Flow (`DESIGN.md:3042-3048`) [Minor, stdlib-author]
 - [ ] **DESIGN.md `join` argument order inconsistency** — reference says `[fn [sep xs] ...]` but Rust builtin takes `(xs, sep)`; verify and fix doc or code (`DESIGN.md:3038`) [Nit, stdlib-author]
-- [ ] **DESIGN.md `concat` listed in both Rust builtins and LLT List Operations** — now a Rust builtin; remove from LLT table or add migration note (`DESIGN.md:3075,2940`) [Nit, stdlib-author]
+- [ ] **DESIGN.md `concat` listed in both Rust builtins and Tinct List Operations** — now a Rust builtin; remove from Tinct table or add migration note (`DESIGN.md:3075,2940`) [Nit, stdlib-author]
 - [ ] **Include cache code comments** — add skip-guard rationale at cache hit, clarify "Check cache" comment placement, add doc comment to cache field (`src/builtins.rs:1036-1039,52`) [Nit, eval-engine]
 - [ ] **IncludeContext::new() constructor** — add constructor to reduce breaking changes when fields are added; low priority pre-1.0 (`src/builtins.rs:54`) [Nit, integration-verifier]
 - [ ] **DESIGN.md §Literal Recognition references "tokenizer" but should reference "lexer"** — both pest grammar (`grammar.pest`) and hand-written lexer (`src/lexer.rs`) exist; cross-reference both for precedence rules (`DESIGN.md:198-220`, `src/lexer.rs`) [Major, grammar-architect]
@@ -820,7 +720,7 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Consider `unreachable!()` in `unescape` unknown escape fallback — currently silently preserves `\q` as `\q`; grammar enforces valid escapes, so branch is dead code. `unreachable!()` would catch grammar-parser inconsistencies during development. (`src/parser.rs:903-906`) [Nit, computer-scientist]
 - [ ] Add `checked_add` to `auto_index` in `eval_dict` for consistency — `builtin_append` uses `checked_add` for same kind of integer key computation; `auto_index += 1` is unchecked. Overflow is unreachable (memory exhaustion first) but inconsistent. (`src/eval.rs:331`) [Nit, computer-scientist]
 - [ ] Rename `zip-seq`/`zip-dict` to `zip-seq-impl`/`zip-dict-impl` — inconsistent with other internal helpers which use `-impl` suffix (`has?-impl`, `cond-impl`, `nth-impl`, etc.) (`stdlib/prelude.llt:410,417`) [Nit, stdlib-author]
-- [ ] Move `join` from Rust builtin to LLT stdlib — implementable as one-line reduce: `[fn [sep xs] [call $reduce [fn [acc x] [call $if [call $= $acc ""] [call $str $x] [call $str $acc $sep $x]]] "" $xs]]`. LLT-First Principle violation; 71 lines of Rust for what 1 line of LLT handles. Defer to Phase 10 (after dual-dispatch reduce complete). (`src/builtins.rs:1823-1894`, `stdlib/prelude.llt`) [Major, stdlib-author]
+- [ ] Move `join` from Rust builtin to Tinct stdlib — implementable as one-line reduce: `[fn [sep xs] [call $reduce [fn [acc x] [call $if [call $= $acc ""] [call $str $x] [call $str $acc $sep $x]]] "" $xs]]`. Tinct-First Principle violation; 71 lines of Rust for what 1 line of Tinct handles. Defer to Phase 10 (after dual-dispatch reduce complete). (`src/builtins.rs:1823-1894`, `stdlib/prelude.llt`) [Major, stdlib-author]
 - [ ] Remove redundant `debug_assert!(depth <= MAX_PARSE_DEPTH)` — line 182 is compiled out in release builds; the `if depth >= MAX_PARSE_DEPTH` on line 183 is the actual runtime check. (`src/parser.rs:182-183`) [Nit, grammar-architect]
 - [ ] Rename error corpus test `quot_div_by_zero.llt-eval` to `division_by_zero.llt-eval` — inconsistent with `ErrorKind::DivisionByZero` and other test naming (`tests/corpus/eval/errors/`) [Nit, test-crafter]
 - [ ] Clarify SPEC.md §3.5 semicolons — says `;` is "equivalent to whitespace" but it's actually an optional entry separator; reword to "optional entry separator for multiple entries on one line" (`SPEC.md:368-372`) [Nit, grammar-architect]
@@ -838,6 +738,7 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] **DESIGN.md Limitation #7 "monomorphic call arguments now checked" claim is false** — line 998 says "resolved" but CALL-MONO is not implemented (part of bidirectional-typing milestone). Revert claim. (`DESIGN.md:998`) [Major, type-theorist C34]
 - [ ] **Row-unification milestone missing from TODO.md** — DESIGN.md references row-unification in multiple places, implementation 80% complete (only missing: row variable binding in unify Record case), but no formal TODO.md milestone. Add with tasks: partition-fields-and-bind, tests, DESIGN.md section. (`src/types.rs:319-339`) [Major, type-theorist C34]
 - [ ] **SPEC.md line 444 let-generalization reads as current** — says "type system uses type schemes" but let-generalization is not implemented. Change to "type system will use type schemes (planned)". (`SPEC.md:444`) [Minor, type-theorist C34]
+- [ ] Add testing strategy section to doc/16-architecture.md — architecture chapter describes pipeline layers and EvalContext but provides no cross-layer testing guidance (unit tests per layer, corpus tests for end-to-end, integration tests for REPL/LSP, how cross-layer contracts are tested). (`doc/16-architecture.md`) [Nit, test-crafter]
 
 ## Future Features
 

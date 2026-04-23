@@ -72,7 +72,7 @@ You don't just cite papers — you understand the theorems, invariants, and proo
 
 | File | Role | Formal Model |
 |------|------|-------------|
-| `DESIGN.md` | Design decisions | Should map decisions to formal foundations |
+| `doc/*.md` | Design decisions | Should map decisions to formal foundations (see `doc/16-architecture.md`, `doc/08-evaluation.md`, `doc/06-type-inference.md`) |
 | `src/types.rs` | Type representation, unification, substitution | Algorithm W, union-find, Remy row types |
 | `src/typecheck.rs` | HM inference, four-pass dict inference | Algorithm W/J, let-generalization |
 | `src/eval.rs` | Thunk evaluator, letrec, cycle detection | Launchbury 1993, CEK machine, blackholing |
@@ -118,20 +118,17 @@ LLT combines several well-studied formal systems. Your job is to verify these co
 
 When dispatched for review, verify theoretical soundness of the implementation. Focus on proving invariants hold, identifying model drift, and grounding the design.
 
-### Phase 1: DESIGN.md Review
+### Phase 1: doc/*.md Review
 
 1. Does each design decision map to a formal model? Are the proof obligations stated?
 2. Are there decisions that contradict known results?
 3. Are trade-offs framed in terms of what formal guarantees are preserved or sacrificed?
 4. Are there open questions where theory provides clear answers?
+5. Does the grammar documentation in `doc/02-syntax.md` satisfy PEG properties (determinism, no left recursion, ordered choice correctness)?
+6. Are type annotation semantics formally grounded (what calculus do they correspond to)?
+7. Are there behaviors documented in doc/*.md that violate the formal model?
 
-### Phase 2: SPEC.md Review
-
-1. Does the grammar satisfy PEG properties (determinism, no left recursion, ordered choice correctness)?
-2. Are type annotation semantics formally grounded (what calculus do they correspond to)?
-3. Are there specified behaviors that violate the formal model?
-
-### Phase 3: Codebase Review
+### Phase 2: Codebase Review
 
 1. **Type inference soundness**: Does unification maintain the substitution invariant? Does instantiation create fresh variables correctly? Does let-generalization respect the value restriction (or equivalent)?
 2. **Evaluation soundness**: Does the thunk lifecycle correspond to Launchbury's semantics? Is sharing preserved? Is cycle detection complete (no infinite loops without InProgress detection)?
@@ -207,7 +204,7 @@ When training, record the retrieval URL for each paper you read in your mempalac
 
 ### Bibliography
 
-This bibliography is an **amendment** to DESIGN.md — it lists additional papers NOT cited anywhere in DESIGN.md. Do not duplicate papers that already appear in DESIGN.md (whether in §Formal References or inline citations elsewhere). During training, download papers from **both** DESIGN.md and this bibliography.
+This bibliography is an **amendment** to `doc/17-references.md` — it lists additional papers NOT cited anywhere in doc/*.md. Do not duplicate papers that already appear in doc/*.md (whether in `doc/17-references.md` or inline citations in other chapters). During training, download papers from **both** doc/*.md and this bibliography.
 
 Each entry includes the formal citation, relevance to LLT, and a known retrieval URL where available. During training, verify URLs still work and update if needed.
 
@@ -248,7 +245,7 @@ Each entry includes the formal citation, relevance to LLT, and a known retrieval
 **Optimization (planned — understand what's possible):**
 
 - Mycroft, A. (1981). Abstract interpretation and optimising transformations for applicative programs. PhD thesis, University of Edinburgh.
-  — Strictness analysis via abstract interpretation. Foundation for demand analysis. (Distinct from the 1984 conference paper cited in DESIGN.md.)
+  — Strictness analysis via abstract interpretation. Foundation for demand analysis. (Distinct from the 1984 conference paper cited in doc/*.md.)
 
 - Cousot, P. & Cousot, R. (1977). Abstract interpretation: a unified lattice model for static analysis of programs by construction or approximation of fixpoints. In *POPL '77*, pp. 238–252. ACM. doi:10.1145/512950.512973
   — The general framework underlying strictness analysis.
@@ -278,14 +275,14 @@ Each entry includes the formal citation, relevance to LLT, and a known retrieval
 **Pretty-printing:**
 
 - Wadler, P. (2003). A prettier printer. In *The Fun of Programming*, pp. 223–243. Palgrave Macmillan. Originally published 1998. https://homepages.inf.ed.ac.uk/wadler/papers/prettier/prettier.pdf
-  — The algebra of pretty-printing combinators. Wadler-Lindig referenced in DESIGN.md formatter section.
+  — The algebra of pretty-printing combinators. Wadler-Lindig referenced in doc/*.md formatter section.
 
 - Lindig, C. (2000). Strictly pretty. Technical Report. https://lindig.github.io/papers/strictly-pretty-2000.pdf
   — Efficient imperative implementation of Wadler's algorithm.
 
 ### Local Documents — Verify Against Formal Models
-- `DESIGN.md` — All papers cited anywhere in DESIGN.md (§Formal References AND inline citations) must be downloaded to `.training/papers/` during training. The Bibliography above is an amendment — it lists additional papers NOT in DESIGN.md. Between the two lists, every paper the project depends on should be cached locally.
-- `DESIGN.md` — For each design decision, identify the formal model it should correspond to. Flag decisions that lack formal grounding.
+- `doc/17-references.md` — All papers cited anywhere in doc/*.md (in `doc/17-references.md` AND inline citations in other chapters) must be downloaded to `.training/papers/` during training. The Bibliography above is an amendment — it lists additional papers NOT in doc/*.md. Between the two lists, every paper the project depends on should be cached locally.
+- `doc/*.md` — For each design decision, identify the formal model it should correspond to. Flag decisions that lack formal grounding.
 - `TODO.md` — For open design questions, determine whether theory provides a definitive answer.
 - `src/types.rs` — Verify unification against Robinson's algorithm, substitution against Algorithm W, row types against Rémy 1994.
 - `src/typecheck.rs` — Verify inference produces principal types, generalization is sound, instantiation creates fresh variables correctly.

@@ -2,7 +2,7 @@
 
 ## Formatter (`llt fmt`)
 
-**Zero-configuration** code formatter for LLT files. Operates on the hand-written lexer's token stream (not the AST), so comments and whitespace are preserved and reformatted.
+**Zero-configuration** code formatter for Tinct files. Operates on the hand-written lexer's token stream (not the AST), so comments and whitespace are preserved and reformatted.
 
 **Architecture:** The formatter lexes source into a token stream (including comment tokens), groups tokens into bracket-delimited blocks, applies formatting rules, and emits reformatted source. It does not parse to AST — this avoids losing comments (pest silently drops them) and avoids a dependency on the iterative parser.
 
@@ -18,7 +18,7 @@ If either condition fails, the expression is expanded to one entry per line, ind
 
 **Entry counting:** The element count applies to the immediate bracket level, not recursively. A nested bracket like `[@[type: Number default: 0] $expr]` counts as 2 entries at the outer level (the annotation dict and `$expr`), regardless of how many entries the inner `[type: Number default: 0]` contains. Each `...` or `...name` rest entry counts as one entry.
 
-**Rationale:** Width-only (gofmt-style) produces unreadable dense lines for dicts with many short entries. Optimal-layout algorithms (Wadler-Lindig) are overkill for LLT's relatively flat structure. The element count cap of 4 matches the existing stdlib conventions.
+**Rationale:** Width-only (gofmt-style) produces unreadable dense lines for dicts with many short entries. Optimal-layout algorithms (Wadler-Lindig) are overkill for Tinct's relatively flat structure. The element count cap of 4 matches the existing stdlib conventions.
 
 ### Comment Attachment: Line-Affinity
 
@@ -34,7 +34,7 @@ Semicolons are normalized away. They are syntactic sugar for newlines, and the f
 
 ### Configurability: Zero-Config
 
-No formatting options. The formatter defines the canonical LLT style. The only CLI flags control I/O behavior:
+No formatting options. The formatter defines the canonical Tinct style. The only CLI flags control I/O behavior:
 - `--check` — exit 1 if any file is not formatted (CI mode)
 - `--in-place` — overwrite files in place
 - `--stdin` — read from stdin, write to stdout
@@ -58,7 +58,7 @@ No formatting options. The formatter defines the canonical LLT style. The only C
 
 ## Sandboxing & Security
 
-LLT uses four unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are global (before the subcommand), since a single `tinct` invocation runs exactly one subcommand.
+Tinct uses four unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are global (before the subcommand), since a single `tinct` invocation runs exactly one subcommand.
 
 ### Filesystem Sandbox (Application-Level + Landlock)
 
@@ -113,11 +113,11 @@ Prevents evaluation from consuming unbounded resources (DoS protection, runaway 
 
 ### Process Sandbox (seccomp-bpf)
 
-LLT is a pure configuration language — it should never spawn child processes.
+Tinct is a pure configuration language — it should never spawn child processes.
 
-- Always on. Blocks `fork`, `execve`, `execveat` via seccomp. `clone` is allowed because LLT uses worker threads (64MB stack for pest deep nesting workaround).
+- Always on. Blocks `fork`, `execve`, `execveat` via seccomp. `clone` is allowed because Tinct uses worker threads (64MB stack for pest deep nesting workaround).
 - No CLI flag to disable — there is no legitimate reason for a config evaluator to fork or exec.
-- Linux-only; on other platforms, LLT simply never calls process-creation APIs. Logs a warning on non-Linux.
+- Linux-only; on other platforms, Tinct simply never calls process-creation APIs. Logs a warning on non-Linux.
 
 ### Initialization Order
 

@@ -80,7 +80,7 @@ CLI Output (main.rs)
 ## What You Check
 
 1. **New AST nodes**: is there a corresponding eval handler? Type checker handler?
-2. **New builtins**: registered in `standard_builtins()`? Documented in DESIGN.md? Tested?
+2. **New builtins**: registered in `standard_builtins()`? Documented in doc/*.md? Tested?
 3. **New eval semantics**: does the type checker understand the new pattern? Does serialization handle the new value type?
 4. **Signature changes**: if `BuiltinFn` signature changes, are all builtins updated? Is `PendingBuiltin` handling updated?
 5. **Environment chain**: is the scoping order correct (builtins → stdlib → user)?
@@ -98,20 +98,17 @@ CLI Output (main.rs)
 
 When dispatched for a full codebase review, review the entire project through your **cross-layer integration specialist** lens. Be thorough and bold — recommend pipeline restructuring, module boundary changes, and API redesigns if they improve cross-layer consistency. Follow the three-phase review order and output format exactly.
 
-### Phase 1: DESIGN.md Review
+### Phase 1: doc/*.md Review
 
-1. Is the pipeline architecture (parser → typecheck → eval → serialize) accurately described?
+1. Is the pipeline architecture (parser → typecheck → eval → serialize) accurately described in `doc/16-architecture.md`?
 2. Are cross-layer contracts and assumptions documented?
 3. Should any pipeline design decisions be revisited? (e.g., thread-local IncludeContext, optional type checking)
-4. Are there cross-layer dependencies not captured in the design?
+4. Are there cross-layer dependencies not captured in doc/*.md?
+5. Does doc/*.md describe behaviors that span multiple pipeline layers?
+6. Are AST → eval → output semantics consistently documented?
+7. Are there doc descriptions that assume a specific pipeline structure?
 
-### Phase 2: SPEC.md Review
-
-1. Does the spec describe behaviors that span multiple pipeline layers?
-2. Are AST → eval → output semantics consistently documented?
-3. Are there spec descriptions that assume a specific pipeline structure?
-
-### Phase 3: Codebase Review
+### Phase 2: Codebase Review
 
 1. **Pipeline consistency**: each layer's assumptions match its neighbors (parser→eval, eval→serialize, etc.)
 2. **AST coverage**: every `Expr` variant has eval handlers AND type checker handlers

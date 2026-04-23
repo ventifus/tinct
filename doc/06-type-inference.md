@@ -2,7 +2,7 @@
 
 This chapter formally specifies tinct's type inference algorithm. The notation uses standard PL conventions: Γ for type environments, ⊢ for typing judgments, S for substitutions, and τ, σ for types.
 
-For the user-facing annotation syntax (`@`, type assertions, type expressions), see [Type Annotations](05-type-annotations.md). For planned extensions (TypeAssert runtime validation, row-variable unification, roadmap), see [Type System Extensions](07-type-extensions.md).
+For the user-facing annotation syntax (`@`, type assertions, type expressions), see [Type Annotations](05-type-annotations.md). For TypeAssert runtime validation, row-variable unification, and the type system extension roadmap, see [Type System Extensions](07-type-extensions.md).
 
 ## Type Grammar
 
@@ -26,8 +26,6 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
 ```
 
 ## Bidirectional Typing
-
-**Not yet implemented — proposed design.**
 
 Tinct uses bidirectional type checking (Pierce & Turner 2000; Dunfield & Krishnaswami 2021) to cleanly separate type inference from subtyping. Two modes:
 
@@ -69,11 +67,11 @@ fn check_expr(
 
 **Checking positions** (expected type fully concrete, uses `check_expr` with [SUB]):
 
-| Position | Expected type | Currently uses |
-|----------|--------------|----------------|
-| Function arguments (CALL-MONO) | Parameter type | Skipped (Limitation #7) → now `check_expr` |
-| Function body with return annotation | Declared return type | `is_subtype` → now `check_expr` |
-| TypeAssert inner expression | Annotated type | `is_subtype` → now `check_expr` |
+| Position | Expected type | Mechanism |
+|----------|--------------|-----------|
+| Function arguments (CALL-MONO) | Parameter type | `check_expr` |
+| Function body with return annotation | Declared return type | `check_expr` |
+| TypeAssert inner expression | Annotated type | `check_expr` |
 
 **Unification positions** (type variables present, uses `unify` with [U-SUBSUME]):
 
@@ -114,42 +112,23 @@ fn check_expr(
 **Variable reference:**
 
 ```
-Γ(x) = τ
-────────────────────────────────── [VAR]
-Γ ⊢ $x : τ
+Γ(x) = ∀α₁...αₙ. τ
+τ' = instantiate_scheme(∀α₁...αₙ. τ, ℓ_current)
+────────────────────────────────── [VAR-POLY]
+Γ ⊢ $x : τ'
 ```
 
-**Dict (letrec, four-pass):**
+Each variable reference instantiates its type scheme with fresh variables at ℓ_current. When n = 0, this returns the body directly (monomorphic binding — no allocation).
 
-Dicts are inferred in four sequential passes over entries e₁...eₙ:
+**Dict (letrec with generalization):**
 
-```
-Pass 0 — Key resolution: For each entry, determine the string
-         key name. Literal string keys extracted directly. Literal
-         integer keys converted to string (n.to_string()). Computed
-         keys ($k) resolved via Γ: if Γ ⊢ $k : StringLiteral(s),
-         key is s; if Γ ⊢ $k : IntLiteral(n), key is n.to_string().
-         If non-literal type, entry excluded from Record type.
-         Unkeyed positional entries get auto-index keys "0", "1", ...
-
-Pass 1 — Bind all: Γ' = Γ, k₁:Any, k₂:Any, ..., kₙ:Any
-
-Pass 2 — Type aliases: For each [type ...] entry, register the
-         alias in Γ'. Each alias sees previously registered siblings.
-
-Pass 3 — Infer values: For each non-alias entry with key kᵢ,
-         infer Γ' ⊢ eᵢ : τᵢ. Build Record(k₁:τ₁...kₙ:τₙ, Closed).
-
-Forward references resolve to Any (from Pass 1 bindings).
-────────────────────────────────── [DICT]
-Γ ⊢ [k₁:e₁ ... kₙ:eₙ] : Record(k₁:τ₁...kₙ:τₙ, Closed)
-```
+Dicts are inferred in five sequential passes using the [DICT-GEN] rule — see §Let-Generalization (Levels-Based) for the full specification. The rule uses fresh type variables (not `Any`) for forward references and generalizes entry types after inference.
 
 **Function definition:**
 
 ```
 For each param pᵢ:
-    if variadic (...pᵢ): σᵢ = Record([], Closed)   (see Limitation #8)
+    if variadic (...pᵢ): σᵢ = Record([], Closed)   (see Limitation #5)
     else if annotated pᵢ@σᵢ: use σᵢ
     else: σᵢ = Any
 Γ' = Γ, p₁:σ₁, ..., pₙ:σₙ
@@ -178,7 +157,7 @@ Three rules depending on the function type. Arity is always checked.
 Γ ⊢ [call f a₁...aₙ] ⇒ σᵣ
 ```
 
-Monomorphic path with checking: each argument is **checked** against its parameter type using subsumption. This catches type errors that the previous implementation missed (former Limitation #7): `[call $add "hello"]` where `$add : Fn(Int Int → Int)` now produces a type error because `String ≮: Int`. The `check_expr` call synthesizes the argument type and applies `[SUB]`.
+Monomorphic path with checking: each argument is **checked** against its parameter type using subsumption. `[call $add "hello"]` where `$add : Fn(Int Int → Int)` produces a type error because `String ≮: Int`. The `check_expr` call synthesizes the argument type and applies `[SUB]`.
 
 ```
 Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_type_vars(Fn(...)) = true
@@ -202,7 +181,7 @@ Note: CALL-POLY does NOT use `check_expr` because type variables require binding
 
 Calling a value typed as Any returns Any. Arguments are still synthesized (for type map population and nested error detection) but not checked against parameter types.
 
-Named arguments are type-checked (their values synthesized) but not checked against parameters. Named arg checking requires extending `Type::Function` to carry param names (planned).
+Named arguments are checked against parameter types; `Type::Function` carries parameter names for this purpose — see [Type System Extensions](07-type-extensions.md) §Completeness.
 
 **Access chains:**
 
@@ -264,7 +243,7 @@ resolve(ann) = τ
 
 When name = "Fn": interpret as function type constructor.
 
-**Seq types:** `Seq(τ)` exists in the type grammar and is handled by unification and subtyping, but no user-facing expression directly produces a Seq type. Sequences are created by built-in functions (`$seq`, `$range`, `$map` on seqs, etc.) which are currently typed as Any. Seq type inference for builtins is planned (see TODO.md type-extensions).
+**Seq types:** `Seq(τ)` exists in the type grammar and is handled by unification and subtyping. Sequence constructors (`$seq`, `$range`, etc.) infer as `Seq(τ)` — see [Type System Extensions](07-type-extensions.md) §Precision.
 
 ## Unification: unify(τ₁, τ₂, S) → S'
 
@@ -302,16 +281,10 @@ unify(Fn(p₁...pₙ → r₁), Fn(q₁...qₙ → r₂), S) =
 
 unify(Seq(τ₁), Seq(τ₂), S) = unify(τ₁, τ₂, S)  [U-SEQ]
 
-unify(Record(F₁,ρ₁), Record(F₂,ρ₂), S) =
-    If both Closed: require keys(F₁) = keys(F₂)
-        (exact key set match — neither side may have extra fields)
-    If either is Open or RowVar: no key-set check performed
-        (non-shared fields accepted without type checking)
-    For each key k ∈ keys(F₁) ∩ keys(F₂):
-        unify(F₁(k), F₂(k), S)
-    Row variables are NOT bound to remainder fields
-                                                 [U-REC]
+unify(Record(r₁), Record(r₂), S) = unify_rows(r₁, r₂, S)     [U-REC]
 ```
+
+Record unification delegates entirely to row unification — see [Type System Extensions](07-type-extensions.md) §Row-Variable Unification for the full `unify_rows` algorithm.
 
 Subsumptive fallback for concrete types (no type variables on either side):
 
@@ -359,7 +332,7 @@ Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
                                                  [S-FN]
 ```
 
-**Note on [S-ANY-TOP] and [S-ANY-BOT]:** Having Any as both the top and bottom of the type lattice violates antisymmetry (τ <: σ ∧ σ <: τ ⇒ τ = σ) and makes the subtype relation unsound as a partial order. This is intentional for tinct's gradual type system — Any marks the boundary between typed and untyped code (see Limitation #5).
+**Note on [S-ANY-TOP] and [S-ANY-BOT]:** Having Any as both the top and bottom of the type lattice violates antisymmetry (τ <: σ ∧ σ <: τ ⇒ τ = σ) and makes the subtype relation unsound as a partial order. This is intentional for tinct's gradual type system — Any marks the boundary between typed and untyped code (see Limitation #3).
 
 ## Instantiation
 
@@ -412,7 +385,7 @@ impl TypeScheme {
 - Fresh type variables are created at ℓ_current
 - `Type::TypeVar(String)` becomes `Type::TypeVar(String, u32)` (name + level)
 - `PartialEq` for `Type` is implemented manually: `TypeVar(a, _) == TypeVar(b, _)` compares names only, ignoring levels. This preserves the [U-REFL] fast path in `unify()`.
-- `RowRest::RowVar(String)` becomes `RowRest::RowVar(String, u32)` — row variables carry levels and participate in generalization identically to type variables. (After the [Row-Variable Unification](07-type-extensions.md) migration, `RowRest` becomes `RowTail`; levels carry over.)
+- `RowTail::RowVar(String)` becomes `RowTail::RowVar(String, u32)` — row variables carry levels and participate in generalization identically to type variables.
 - `Display` for `TypeVar` and `RowVar` hides the level (internal inference state, not user-facing).
 
 **Level storage and mutation.** Levels must be mutable during unification (Kiselyov's level lowering). Since `Type` is a value type, levels are stored in a separate mutable map alongside the substitution:
@@ -468,16 +441,7 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme
 
 Collects FTV(ty) via a level-aware traversal returning `Vec<(String, u32)>` pairs, filters by `current_level > level`, returns `TypeScheme { vars, body: ty.clone() }`.
 
-**Modified VAR rule:**
-
-```
-Γ(x) = ∀α₁...αₙ. τ
-τ' = instantiate_scheme(∀α₁...αₙ. τ, ℓ_current)
-────────────────────────────────── [VAR-POLY]
-Γ ⊢ $x : τ'
-```
-
-Each variable reference instantiates its type scheme with fresh variables at ℓ_current. When n = 0, this returns the body directly (monomorphic binding — no allocation).
+**[VAR-POLY] rule:** See §Inference Judgments: Γ ⊢ e ⇒ τ above. Variable references instantiate the type scheme stored in Γ at ℓ_current.
 
 Implementation signature:
 
@@ -544,31 +508,30 @@ Mutually recursive entries constrain each other through unification during Pass 
 6. **Letrec monomorphism during inference:** Within a letrec group, entries see each other as monomorphic during Pass 3 (fresh type variables, not schemes). Polymorphism only becomes visible after Pass 4 generalization.
 7. **PartialEq level-blindness:** `TypeVar` equality ignores levels, preserving [U-REFL] semantics. Levels are consulted only during generalization (via `InferState.levels`).
 
-**Implementation changes summary:**
+**Key implementation types:**
 
-| Component | Current | After |
-|-----------|---------|-------|
-| `Type::TypeVar` | `TypeVar(String)` | `TypeVar(String, u32)` — manual `PartialEq` (name only) |
-| `RowRest::RowVar` | `RowVar(String)` | `RowVar(String, u32)` — levels for row generalization (becomes `RowTail::RowVar` after [Row-Variable Unification](07-type-extensions.md)) |
-| `TypeEnv.bindings` | `IndexMap<String, Type>` | `IndexMap<String, TypeScheme>` |
-| `TypeEnv.type_aliases` | `IndexMap<String, Type>` | Unchanged — aliases stay monomorphic |
-| `TypeEnv::get()` | Returns `&Type` | Returns `&TypeScheme` |
-| `TypeEnv` | No `insert_scheme` | Add `insert_scheme(name, TypeScheme)` |
-| `infer_expr` VAR case | `env.get(name).cloned()` | `instantiate_scheme(env.get(name)?, ...)` |
-| `infer_dict` | 3 passes, bind to `Any` | 4 passes, bind to fresh αᵢ, generalize |
-| `infer_dict` return | `Type` | `(Type, IndexMap<String, TypeScheme>)` |
-| `typecheck_document` | Splats `Record` fields as `Type` | Splats `TypeScheme`s into parent env |
-| `instantiate()` | `fn(Type, &mut u32) → (Type, Subst)` | Kept for CALL-POLY call-site freshening |
-| New: `instantiate_scheme()` | — | `fn(TypeScheme, u32, &mut InferState) → Type` |
-| New: `generalize()` | — | `fn(u32, Type, &InferState) → TypeScheme` |
-| `unify()` U-VAR | Bind without level check | Bind + symmetric level lowering |
-| `unify()` U-ANY + TypeVar | No binding, no level change | Set ℓ(α) = 0 to prevent generalization |
-| `counter: Cell<u32>` | Name counter only | Replaced by `InferState` (name counter + level + level map) |
-| `collect_type_vars()` | Returns `BTreeSet<String>` | Returns `BTreeSet<(String, u32)>` (name + level) |
-| `Type::Display` | Shows `TypeVar` name | Shows name only (level hidden) |
-| Tests: `TypeVar("a".into())` | — | All become `TypeVar("a".into(), 0)` |
+| Component | Specification |
+|-----------|--------------|
+| `Type::TypeVar` | `TypeVar(String, u32)` — manual `PartialEq` (name only, level ignored for equality) |
+| `RowTail::RowVar` | `RowVar(String, u32)` — levels for row generalization |
+| `TypeEnv.bindings` | `IndexMap<String, TypeScheme>` |
+| `TypeEnv.type_aliases` | `IndexMap<String, Type>` — aliases stay monomorphic |
+| `TypeEnv::get()` | Returns `&TypeScheme` |
+| `TypeEnv::insert_scheme()` | `fn(name, TypeScheme)` |
+| `infer_expr` VAR case | `instantiate_scheme(env.get(name)?, ...)` |
+| `infer_dict` | 5 passes (0-4), bind to fresh αᵢ, generalize in Pass 4 |
+| `infer_dict` return | `(Type, IndexMap<String, TypeScheme>)` |
+| `typecheck_document` | Splats `TypeScheme`s into parent env across `---` boundaries |
+| `instantiate()` | `fn(Type, &mut u32) → (Type, Subst)` — for CALL-POLY call-site freshening |
+| `instantiate_scheme()` | `fn(TypeScheme, u32, &mut InferState) → Type` |
+| `generalize()` | `fn(u32, Type, &InferState) → TypeScheme` |
+| `unify()` U-VAR | Bind + symmetric level lowering |
+| `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
+| `InferState` | `{ name_counter: u32, level: u32, levels: HashMap<String, u32> }` |
+| `collect_type_vars()` | Returns `BTreeSet<(String, u32)>` (name + level) |
+| `Type::Display` | Shows `TypeVar` name only (level hidden) |
 
-**Future work:** Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) become possible with type schemes. Currently all builtins are typed `Any`. Tracked as a type-extensions milestone.
+Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).
 
 **Principal types.** Tinct infers principal types for fully-annotated polymorphic functions where no type variable unifies with `Any`. For partially-typed code, the inferred type depends on the checking context — subsumption introduces multiple valid types for the same expression (e.g., `42` can check against `IntLiteral(42)`, `Int`, `Number`, or `Any`). Full Damas-Milner principality is not achieved because: (a) unannotated parameters receive `Any` rather than fresh type variables, (b) singleton literal types introduce subtyping which bidirectional checking mediates but which prevents a unique most-general type, and (c) [U-SUBSUME] in CALL-POLY means the type variable binding may be more or less precise depending on argument order (both bindings are sound, but they differ).
 
@@ -576,18 +539,12 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 ## Limitations and Non-Guarantees
 
-1. **Let-generalization not yet implemented.** The levels-based generalization design (see §Let-Generalization above) is specified but not yet implemented. Currently, functions without type variable annotations are monomorphic: `[fn [x] $x]` infers as `Fn(Any → Any)`, not `∀α. Fn(α → α)`. The principal type property of Damas-Milner (1982) does not hold until the design is implemented. Polymorphism currently requires explicit annotation: `[fn [x@a] $x]` gives `Fn(a → a)`, which is instantiated per call site.
+1. **Literal promotion handled by bidirectional checking (not unification).** Literal-to-parent type compatibility (e.g., `IntLiteral(42) <: Int`) is handled exclusively by `is_subtype` in checking mode via the [SUB] rule — see §Bidirectional Typing. Unification is pure Robinson: `unify(IntLiteral(42), Int)` fails because these are distinct types. The previous bidirectional silent coercion rules have been removed. This preserves type precision and properly separates subtyping from unification (Pierce & Turner 2000).
 
-2. **Literal promotion handled by bidirectional checking (not unification).** Literal-to-parent type compatibility (e.g., `IntLiteral(42) <: Int`) is handled exclusively by `is_subtype` in checking mode via the [SUB] rule — see §Bidirectional Typing. Unification is pure Robinson: `unify(IntLiteral(42), Int)` fails because these are distinct types. The previous bidirectional silent coercion rules have been removed. This preserves type precision and properly separates subtyping from unification (Pierce & Turner 2000).
+2. **Named args not unified.** Named arguments in `[call ...]` are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
 
-3. **Row variables not bound in unification.** `unify(Record)` does not bind row variables to remainder fields. Row variable annotations parse and display but are not propagated through inference. Planned for the row-unification milestone — see [Type System Extensions](07-type-extensions.md) §Row-Variable Unification.
+3. **Any is both top and bottom.** `Any <: τ` and `τ <: Any` for all τ. In subtyping theory, this makes `Any` simultaneously the top and bottom element of the type lattice, which is unsound in general. In tinct's advisory type system this is intentional — `Any` marks the boundary between typed and untyped code, and `[@Type expr]` is the explicit narrowing mechanism.
 
-4. **Named args not unified.** Named arguments in `[call ...]` are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
+4. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
 
-5. **Any is both top and bottom.** `Any <: τ` and `τ <: Any` for all τ. In subtyping theory, this makes `Any` simultaneously the top and bottom element of the type lattice, which is unsound in general. In tinct's advisory type system this is intentional — `Any` marks the boundary between typed and untyped code, and `[@Type expr]` is the explicit narrowing mechanism.
-
-6. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported. (Note: prior to let-generalization, forward references resolved to `Any`.)
-
-7. **Monomorphic call arguments now checked (resolved).** With bidirectional typing, CALL-MONO uses `check_expr(arg, param_type)` for each argument, catching type mismatches via subsumption. `[call $add "hello"]` where `$add : Fn(Int Int → Int)` now produces a type error because `String ≮: Int`. This resolves the former limitation where monomorphic calls skipped argument type checking.
-
-8. **Variadic params typed as closed empty record.** Variadic parameters (`...args`) are assigned type `Record([], Closed)` but should be `Any`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. This decision may be revisited when `Seq` types land, as variadic params could collect into a typed `Seq<T>` instead. Tracked in TODO.md.
+5. **Variadic params typed as closed empty record.** Variadic parameters (`...args`) are assigned type `Record([], Closed)` but should be `Any`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.

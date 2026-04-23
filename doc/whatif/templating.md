@@ -6,7 +6,7 @@ files, documents, serialized formats — beyond its current JSON output?
 ## Current State
 
 tinct produces structured data. The CLI outputs JSON (`--format json`,
-default) or LLT display format (`--format llt`). There is no mechanism
+default) or Tinct display format (`--format llt`). There is no mechanism
 for producing text output (YAML, TOML, plain text) from structured
 data, embedding tinct code blocks in prose documents, or rendering
 templates where tinct computes dynamic values.

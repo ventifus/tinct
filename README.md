@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phases 0-4 and 6a complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, LLT standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, comprehensive test suite (975 tests: 921 unit + 49 CLI integration + 5 corpus). Phase 6b (LSP) is next.
+**Status:** Phases 0-4 and 6a complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, Tinct standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, comprehensive test suite (975 tests: 921 unit + 49 CLI integration + 5 corpus). Phase 6b (LSP) is next.
 
 ## Syntax at a Glance
 
@@ -54,7 +54,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Type checker** -- `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion (Phase 2a)
 - **Polymorphism** -- Hindley-Milner unification, `Fn@Return [Params]` function type expressions, row polymorphism (open/closed/row-var records), type variable instantiation per call site (Phase 2b)
 - **Rust-native builtins** -- 28 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O) with `standard_builtins()` registry (Phase 3a + 3c)
-- **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in LLT itself, loaded via `create_stdlib_env()` (Phase 3a-llt)
+- **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in Tinct itself, loaded via `create_stdlib_env()` (Phase 3a-llt)
 - **Error reporting** -- `EvalError` with definition-site span, materialization-site span, and `StackFrame` traces
 - **Interactive REPL** -- `tinct repl` with line editing, history, bracket matching, scope chains, and error recovery (Phase 6a)
 - **Corpus testing** -- file-based test suite in `tests/corpus/` with `===` delimiter for expected output
@@ -126,9 +126,9 @@ If you have Rust installed:
 cargo build --release
 cargo test
 cargo run -- eval test_input.llt
-cargo run -- eval --format llt test_input.llt  # LLT display format
+cargo run -- eval --format llt test_input.llt  # Tinct display format
 cargo run -- eval --eval test_input.llt         # Deep-force all thunks
-echo '{"x": 1}' | cargo run -- eval -           # Read LLT from stdin
+echo '{"x": 1}' | cargo run -- eval -           # Read Tinct from stdin
 echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as $$
 cargo run --features repl -- repl               # Start interactive REPL
 ```
@@ -149,8 +149,8 @@ cargo run --features repl -- repl               # Start interactive REPL
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
 | `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `set_include_context()`, `clear_include_context()`, `IncludeContext`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
 | `src/repl.rs` | REPL session: scope chains, bracket matching, error recovery |
-| `src/main.rs` | CLI (`tinct` binary): `tinct eval [OPTIONS] <FILE>` -- evaluate LLT files, output JSON or LLT format, stdin JSON injection, `--eval` deep-forcing, `$include` context setup |
-| `stdlib/prelude.llt` | LLT standard library: stdlib functions written in LLT itself |
+| `src/main.rs` | CLI (`tinct` binary): `tinct eval [OPTIONS] <FILE>` -- evaluate Tinct files, output JSON or Tinct format, stdin JSON injection, `--eval` deep-forcing, `$include` context setup |
+| `stdlib/prelude.llt` | Tinct standard library: stdlib functions written in Tinct itself |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
 | `tests/cli_tests.rs` | CLI integration tests: file eval, format flags, stdin JSON, error handling |

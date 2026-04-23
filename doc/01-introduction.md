@@ -2,11 +2,11 @@
 
 ## Vision
 
-**One language for data AND logic.** LLT is a unified data representation and transformation language. It combines the simplicity of JSON with the power of functional transformation languages like JSONnet and jq, with lazy evaluation throughout.
+**One language for data AND logic.** Tinct is a unified data representation and transformation language. It combines the simplicity of JSON with the power of functional transformation languages like JSONnet and jq, with lazy evaluation throughout.
 
 ```
 Traditional:  JSON (data) + jq (transformation) = Two languages
-LLT:          LLT (data + transformation)       = One language
+Tinct:          Tinct (data + transformation)       = One language
 ```
 
 ### Dual Purpose

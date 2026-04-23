@@ -28,7 +28,7 @@
 └─────────────┘
 ```
 
-> **Note:** The type checker (TODO.md Phase 2a/2b: `theoretical-foundations` / `type-extensions`) runs after parsing but type errors are advisory — evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
+> **Note:** The type checker runs after parsing but type errors are advisory — evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
 
 ### EvalContext — Evaluation Infrastructure Context
 
@@ -77,10 +77,6 @@ struct EvalContext {
 - **REPL:** Fresh EvalContext per eval_input() call. Session env persists (accumulates bindings), but include state resets per input. Config (stdlib_env, base_dir) is shared via Rc across commands.
 
 **Precedent:** Nix's `EvalState`, Nickel's `VirtualMachine`, Dhall's normalization context. Standard pattern in mature language implementations for separating evaluation infrastructure from variable bindings.
-
-### Implementation Roadmap
-
-See [TODO.md](TODO.md) for the full checklist with current status.
 
 ### Sketch: Value Enum
 
@@ -155,4 +151,4 @@ struct Environment {
 - LSP inlay hints: `[materialized]` / `[lazy]` next to arguments
 - Auto-generated docs: annotate stdlib reference with materialization behavior
 
-**Deferred: explicit materialize annotation (`!`).** An expression-level `[! expr]` to materialize eagerly at binding time. Useful for performance tuning but not needed until lazy eval is implemented and profiled.
+**Explicit materialization:** Use `$eval` to materialize a value eagerly at binding time. A syntax-level `[! expr]` force annotation is not part of the language — `$eval` serves this purpose.

@@ -16,7 +16,7 @@ Sprint slugs are kebab-case mnemonic IDs on `###` headings in TODO.md (e.g., `##
 
 ## Docs-Only Sprints
 
-Some sprints only touch documentation: DESIGN.md, SPEC.md, TODO.md, CLAUDE.md, comments, agent definitions, skill definitions, or mempalace content. These don't need build gates or agent review.
+Some sprints only touch documentation: doc/*.md, TODO.md, CLAUDE.md, comments, agent definitions, skill definitions, or mempalace content. These don't need build gates or agent review.
 
 **Detection**: a sprint is docs-only if every task in the sprint only modifies `.md` files, comments, mempalace drawers, or non-code project metadata. If any task touches `.rs`, `.pest`, `.llt`, `.js`, `.c`, `.scm`, or test corpus files, it's a code sprint — use the full workflow.
 
@@ -28,7 +28,7 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 
 | Agent Definition | Role | Primary Files |
 |-----------------|------|---------------|
-| `.claude/agents/grammar-architect.md` | Parser/grammar + spec consistency | grammar.pest, parser.rs, ast.rs, DESIGN.md, SPEC.md |
+| `.claude/agents/grammar-architect.md` | Parser/grammar + spec consistency | grammar.pest, parser.rs, ast.rs, doc/*.md |
 | `.claude/agents/eval-engine.md` | Evaluation semantics | eval.rs, value.rs |
 | `.claude/agents/type-theorist.md` | Type system | types.rs, typecheck.rs |
 | `.claude/agents/stdlib-author.md` | LLT stdlib | stdlib/prelude.llt, corpus tests |
@@ -37,18 +37,18 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 | `.claude/agents/span-integrity-checker.md` | Error quality | Error paths, spans |
 | `.claude/agents/integration-verifier.md` | Cross-layer | Multi-layer changes |
 | `.claude/agents/performance-expert.md` | Performance | eval.rs, value.rs, builtins.rs, typecheck.rs |
-| `.claude/agents/computer-scientist.md` | Theoretical soundness | types.rs, typecheck.rs, eval.rs, value.rs, DESIGN.md |
+| `.claude/agents/computer-scientist.md` | Theoretical soundness | types.rs, typecheck.rs, eval.rs, value.rs, doc/*.md |
 
 ## Sprint Workflow
 
 ### Step 1: Sprint Planning
 
 1. Read `TODO.md` to find the target sprint (first unchecked sprint, or the specified sprint-slug)
-2. Read relevant sections of `DESIGN.md` and `SPEC.md` for design context
-3. **Design readiness check**: scan the sprint's tasks for unchecked design items — lines matching `- [ ] Design ...`, `- [ ] Decide ...`, or `- [ ] Document ... design`. Also check whether the sprint introduces new language constructs, runtime concepts, or user-facing semantics that lack a corresponding section in DESIGN.md. If any unresolved design work exists, **stop immediately** and report: `"NEEDS_DESIGN: [slug] — [list of unresolved design items]"`. Do not proceed to implementation.
+2. Read relevant chapters of `doc/*.md` for design context
+3. **Design readiness check**: scan the sprint's tasks for unchecked design items — lines matching `- [ ] Design ...`, `- [ ] Decide ...`, or `- [ ] Document ... design`. Also check whether the sprint introduces new language constructs, runtime concepts, or user-facing semantics that lack corresponding coverage in doc/*.md. If any unresolved design work exists, **stop immediately** and report: `"NEEDS_DESIGN: [slug] — [list of unresolved design items]"`. Do not proceed to implementation.
 4. **Validate sprint scope**: is this sprint appropriately sized? If > 8 tasks, consider splitting by updating TODO.md with new sprints and proceeding with the first one
 5. **Check dependencies**: are all prerequisites for this sprint actually complete? Are inter-sprint dependencies accurate?
-6. **Scan for scope gaps**: does the TODO.md sprint capture all work needed? Look for missing tasks implied by DESIGN.md decisions or SPEC.md features that aren't tracked
+6. **Scan for scope gaps**: does the TODO.md sprint capture all work needed? Look for missing tasks implied by doc/*.md that aren't tracked
 7. Break the sprint's tasks into work items
 8. Identify which agents are needed for each task and which files they'll touch
 9. **Clean up and create SPRINT.md**. Delete any existing SPRINT.md from a previous sprint, then create fresh:
@@ -87,7 +87,7 @@ For each task (or batch of parallel tasks):
 2. Dispatch the agent using the `subagent_type` parameter (e.g., `eval-engine`, `grammar-architect`) — this loads the agent's expertise automatically. Do NOT read agent definition files into your own context.
 3. Brief the agent with a self-contained prompt:
    - The specific task to implement (ONE task per agent)
-   - Which files to read for context (e.g., "read DESIGN.md §Lazy Evaluation for design intent")
+   - Which files to read for context (e.g., "read doc/08-evaluation.md §Lazy Evaluation for design intent")
    - Permission to refactor anything needed — always favor correctness. Pre-1.0, no users.
    - Instruction to run `just test` after making changes and fix any failures
 4. Tasks touching different files can be dispatched in parallel (single message, multiple Agent calls)
@@ -202,7 +202,7 @@ Valid finding statuses: `TODO`, `FIXED`, `KNOWN ISSUE`
 - **All specialists review every sprint**: once past the sprint-reviewer gate, every specialist reviews the full sprint diff. No shortcuts with targeted agents.
 - **Two-bucket triage**: findings either get fixed now (sprint-scope) or go to TODO.md (future work). Nothing gets lost.
 - **Never halt**: stuck detection records KNOWN ISSUE and continues. The sprint always completes.
-- **Design decisions come from DESIGN.md**: don't invent new decisions without documenting them
+- **Design decisions come from doc/*.md**: don't invent new decisions without documenting them
 - **No commits**: this skill never commits. The caller (/cycle or the user) handles the commit
 - **Never frame changes as "breaking"**: the language is pre-1.0
 - **Container-only builds**: use `just` recipes, never raw `cargo` commands

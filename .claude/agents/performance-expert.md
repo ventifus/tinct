@@ -84,20 +84,17 @@ You are a performance expert for the tinct language runtime. You understand Rust
 
 When dispatched for a full codebase review, review the entire project through your **performance specialist** lens. Be thorough and bold — recommend data structure changes, algorithm redesigns, and API modifications if they improve performance. Follow the three-phase review order and output format exactly.
 
-### Phase 1: DESIGN.md Review
+### Phase 1: doc/*.md Review
 
 1. Are there design decisions that inherently limit performance? (e.g., triple-boxing thunks, O(n) env lookup)
-2. Are performance trade-offs documented? (IndexMap vs HashMap, Rc<RefCell> vs alternatives)
+2. Are performance trade-offs documented in `doc/16-architecture.md`? (IndexMap vs HashMap, Rc<RefCell> vs alternatives)
 3. Should any design decisions be revisited for performance? (e.g., flat environments, arena allocation)
 4. Are performance implications of planned work considered? (check TODO.md for upcoming phases)
+5. Does doc/*.md imply operations with non-obvious performance costs?
+6. Are there documented features that will be expensive to implement efficiently?
+7. Are desugaring rules creating unnecessary intermediate allocations?
 
-### Phase 2: SPEC.md Review
-
-1. Does the spec imply operations with non-obvious performance costs?
-2. Are there spec features that will be expensive to implement efficiently?
-3. Are desugaring rules creating unnecessary intermediate allocations?
-
-### Phase 3: Codebase Review
+### Phase 2: Codebase Review
 
 1. **Hot path allocation**: unnecessary Rc::new(), Vec::new(), String::from() in eval/materialize loop
 2. **Environment lookup**: O(n) chain traversal frequency, opportunities for caching or flattening
