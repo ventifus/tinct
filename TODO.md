@@ -76,13 +76,13 @@ Residual documentation fixes from c2 review: informal notation, incomplete paren
 
 ErrorKind test coverage to validate migration and prevent regressions.
 
-- [ ] Add missing ErrorKind constructor methods for remaining ~13 variants — DuplicateKey, NamedArgConflict, UnknownNamedArg, ParseConversion, TypeAssertFailed, UndefinedVariable, all JSON/Include variants still use verbose `Box::new(EvalError { kind: ..., ... })` instead of named constructors. Add constructors and migrate call sites. (`src/error.rs`, `src/eval.rs`, `src/builtins.rs`) [Minor, computer-scientist + eval-engine]
-- [ ] Add ErrorKind Display unit tests for all 25 variants — only 4 of 25 tested (KeyNotFound, TypeMismatch, ArityMismatch, CircularDependency). (`src/error.rs`) [Major, test-crafter panel]
-- [ ] Add ArityBound Display unit tests — no isolated tests for Exact/AtMost/Range Display impls. (`src/error.rs`) [Minor, test-crafter panel]
-- [ ] Add is_cacheable() unit tests — verify DepthExceeded returns false, all others true. (`src/error.rs`) [Minor, test-crafter panel]
-- [ ] Add error code prefix verification to corpus error tests — substring matching doesn't check for `[E0XX]` prefix. (`tests/corpus/eval/errors/`) [Minor, test-crafter panel]
-- [ ] Add `ErrorKind::code()` exhaustiveness unit test — assert all variants return "E" + digits, prevents silent breakage when new variants added (`src/error.rs`) [Minor, test-crafter]
-- [ ] Add stack frame propagation integration tests — test multi-level error propagation through nested materialization chains (dict → thunk → builtin → error), verify frames accumulate correctly (`src/error.rs`) [Major, test-crafter]
+- [x] Add missing ErrorKind constructor methods for remaining ~13 variants — DuplicateKey, NamedArgConflict, UnknownNamedArg, ParseConversion, TypeAssertFailed, UndefinedVariable, all JSON/Include variants still use verbose `Box::new(EvalError { kind: ..., ... })` instead of named constructors. Add constructors and migrate call sites. (`src/error.rs`, `src/eval.rs`, `src/builtins.rs`) [Minor, computer-scientist + eval-engine]
+- [x] Add ErrorKind Display unit tests for all 25 variants — only 4 of 25 tested (KeyNotFound, TypeMismatch, ArityMismatch, CircularDependency). (`src/error.rs`) [Major, test-crafter panel]
+- [x] Add ArityBound Display unit tests — no isolated tests for Exact/AtMost/Range Display impls. (`src/error.rs`) [Minor, test-crafter panel]
+- [x] Add is_cacheable() unit tests — verify DepthExceeded returns false, all others true. (`src/error.rs`) [Minor, test-crafter panel]
+- [x] Add error code prefix verification to corpus error tests — substring matching doesn't check for `[E0XX]` prefix. (`tests/corpus/eval/errors/`) [Minor, test-crafter panel]
+- [x] Add `ErrorKind::code()` exhaustiveness unit test — assert all variants return "E" + digits, prevents silent breakage when new variants added (`src/error.rs`) [Minor, test-crafter]
+- [x] Add stack frame propagation integration tests — test multi-level error propagation through nested materialization chains (dict → thunk → builtin → error), verify frames accumulate correctly (`src/error.rs`) [Major, test-crafter]
 
 ## underscore-desugar: $_ Pre-Typecheck Desugaring Pass
 
@@ -638,6 +638,9 @@ Improvements to test infrastructure identified by cross-language analysis and te
 - [ ] Add concat error corpus tests — invalid input types, type mismatches (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
 - [ ] Add 4 missing concat unit tests — concat_seq (basic Seq chaining), concat_seq_empty_xs, concat_seq_empty_ys, concat_dict (Dict path eager merge). Other dual-dispatch builtins (map, filter, drop, reduce, join) have comprehensive unit test coverage for both paths. (`src/builtins.rs`) [Critical, test-crafter]
 - [ ] Fix concat_large_seq corpus test label — comment claims it verifies "lazy evaluation" but actually tests collect's depth behavior (300 elements << 1M limit). Relabel to clarify it tests depth, not MAX_COLLECT_SIZE boundary. (`tests/corpus/eval/builtins/concat_large_seq.llt-eval:2-4`) [Minor, test-crafter]
+- [ ] Migrate eval.rs:140-148 TypeAssertFailed to use `EvalError::type_assert_failed()` constructor — missed during migrate-d Task 1 migration sweep. Still uses verbose `Box::new(EvalError { kind: ErrorKind::TypeAssertFailed {...}, ... })`. (`src/eval.rs:140-148`) [Nit, computer-scientist panel]
+- [ ] Migrate builtin_range ArityBound::Range to named constructor — uses direct struct literal for `ArityBound::Range(1, 2)` instead of named constructor. Add `arity_mismatch_range()` and `arity_mismatch_at_most()` constructors to EvalError. (`src/builtins.rs:1295-1304`, `src/error.rs`) [Nit, sprint-reviewer + computer-scientist panel]
+- [ ] Expand is_cacheable/is_catchable tests to cover all 26 ErrorKind variants — currently test 7/26 and 6/26 respectively. Sufficient logically but inconsistent with the all-variants pattern used by Display and PartialEq tests. (`src/error.rs`) [Nit, computer-scientist panel]
 
 ### test-additional: Additional Test Coverage
 
@@ -799,5 +802,5 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [x] Research union types — see doc/whatif/union-types.md. Three-phase path: type classes → annotation-only unions → inferred unions via Simple-sub. Gated on nullable types or tagged union patterns becoming common
 - [x] Research algebraic subtyping — see doc/whatif/algebraic-subtypes.md. Simple-sub (Parreaux 2020) replacement for [U-SUBSUME] + Robinson. 4-step migration path. Gated on union types being insufficient without inferred unions or Any-as-top-and-bottom causing soundness problems
 - [x] Research macros — see doc/whatif/macros.md. Recommends procedural AST macros (Approach B). Laziness reduces need; gated on second syntactic desugaring or user-requested domain-specific syntax
-- [x] Research templating — see doc/whatif/templating.md. Formatters as tinct pipeline programs: `$emit` builtin for stdout, multi-file pipeline CLI, stdlib/fmt/ formatters written in tinct. Template mode deferred; literate mode independent
+- [x] Research templating — see doc/whatif/templating.md. Three-part design: (1) data-first formatters (`$emit`, multi-file pipeline, stdlib/fmt/), (2) literate tinct (code blocks in Markdown, tangle/weave/eval), (3) template-polarity embedding (Jinja-style, deferred Phase 5). tinct's bracket syntax creates friction in template delimiters; `i"..."` + formatters + literate mode cover the design space without template embedding
 - [x] Research structural contracts — see doc/whatif/structural-contracts.md. Hybrid: `$$@Type` for static pipeline boundary checking + `$validate` schema-as-dict for runtime constraints. 4-phase: $$@Type → $validate → tinct describe → pipeline blame

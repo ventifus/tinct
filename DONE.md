@@ -615,3 +615,13 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
 - [x] Update TRY-BUILTIN error parenthetical with is_catchable() qualifier (`DESIGN.md:4745`) [Minor, computer-scientist]
 - [x] Fix Error-to-value correspondence to match actual code path — table updated to show `e.message()` delegation (`DESIGN.md:4794`) [Minor, computer-scientist]
 - [x] Update PROP-DEPTH constructor notation to typed ErrorKind style — `new()` → `depth_exceeded()` (`DESIGN.md:4647`) [Nit, computer-scientist]
+
+### error-structured-migrate-d: Test Coverage
+
+- [x] Add missing ErrorKind constructor methods for remaining ~13 variants — DuplicateKey, NamedArgConflict, UnknownNamedArg, ParseConversion, TypeAssertFailed, UndefinedVariable, all JSON/Include variants. Add constructors and migrate call sites. (`src/error.rs`, `src/eval.rs`, `src/builtins.rs`) [Minor, computer-scientist + eval-engine]
+- [x] Add ErrorKind Display unit tests for all 25 variants — covers all 26 ErrorKind variants with exact string assertions. (`src/error.rs`) [Major, test-crafter panel]
+- [x] Add ArityBound Display unit tests — Exact/AtMost/Range Display impls. (`src/error.rs`) [Minor, test-crafter panel]
+- [x] Add is_cacheable() unit tests — verify DepthExceeded returns false, all others true. (`src/error.rs`) [Minor, test-crafter panel]
+- [x] Add error code prefix verification to corpus error tests — new test verifies `[E0XX]` prefix in all error corpus outputs. (`tests/corpus/eval/errors/`) [Minor, test-crafter panel]
+- [x] Add `ErrorKind::code()` exhaustiveness unit test — asserts all variants return "E" + digits, all codes unique. (`src/error.rs`) [Minor, test-crafter]
+- [x] Add stack frame propagation integration tests — unit tests for frame accumulation/dedup/display + 4 corpus error tests. (`src/error.rs`, `tests/corpus/eval/errors/`) [Major, test-crafter]

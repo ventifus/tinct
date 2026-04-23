@@ -18,7 +18,7 @@ Include code examples showing the current behavior or workaround:
 
 Numbered list of concrete gaps the feature would fill.
 
-## What [Feature] Would Provide
+## Why [Feature] Matters for tinct
 
 The concrete value — what becomes possible that isn't today. Focus on
 user-facing benefits, not implementation details. Each item should be

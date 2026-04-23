@@ -83,12 +83,10 @@ Only edit TODO.md — do not create other files. If no changes are needed, move 
 After every cycle, check if we're done:
 
 1. Read `TODO.md` and count unchecked items (`- [ ]`)
-2. Check the review from Phase 1: were there zero new findings at any severity?
-3. **If all items checked AND zero new findings**: log completion to mempalace and exit
-4. **If all items checked AND only Nit-level findings remain, AND the previous cycle also produced only Nit-level findings**: log completion to mempalace, add the nits to TODO.md, and exit. Two consecutive nit-only cycles means we've converged.
-5. **Otherwise**: log cycle summary to mempalace and loop back to Phase 1
+2. **If zero unchecked items remain**: log completion to mempalace and exit
+3. **Otherwise**: log cycle summary to mempalace and loop back to Phase 1
 
-The cycle churns until the codebase converges — all TODO items complete and reviewers find nothing new. Minor/Nit items are real work that gets sprinted and fixed, not deferred — but two consecutive nit-only review cycles signal convergence.
+The cycle churns until TODO.md is empty — every unchecked item gets sprinted and completed. Review findings that add new items extend the backlog, keeping the loop running.
 
 ## Cycle Logging
 

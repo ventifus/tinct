@@ -82,12 +82,7 @@ pub fn eval(
             let found = env.borrow().get(name);
             match found {
                 Some(thunk) => Ok(thunk),
-                None => Err(Box::new(EvalError {
-                    kind: crate::error::ErrorKind::UndefinedVariable { name: name.clone() },
-                    definition_span: expr.span,
-                    materialization_span: None,
-                    stack: Vec::new(),
-                })),
+                None => Err(EvalError::undefined_variable(name.clone(), expr.span).into()),
             }
         }
         Expr::Dict(entries) => eval_dict(entries, &env, &expr.span, depth + 1),

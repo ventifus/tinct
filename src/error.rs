@@ -593,6 +593,173 @@ impl EvalError {
             stack: Vec::new(),
         }
     }
+
+    pub fn undefined_variable(name: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::UndefinedVariable { name: name.into() },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn type_assert_failed(expected: &str, got: &str, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::TypeAssertFailed {
+                expected: expected.to_string(),
+                got: got.to_string(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn named_arg_conflict(param: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::NamedArgConflict {
+                param: param.into(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn unknown_named_arg(name: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::UnknownNamedArg { name: name.into() },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn duplicate_key(key: &str, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::DuplicateKey {
+                key: key.to_string(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn json_depth_exceeded(limit: usize, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::JsonDepthExceeded { limit },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn include_not_available(definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::IncludeNotAvailable,
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn include_io_error(
+        path: impl Into<String>,
+        detail: impl Into<String>,
+        definition_span: Span,
+    ) -> Self {
+        Self {
+            kind: ErrorKind::IncludeIoError {
+                path: path.into(),
+                detail: detail.into(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn include_cycle(path: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::IncludeCycle { path: path.into() },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn include_parse_failed(
+        path: impl Into<String>,
+        detail: impl Into<String>,
+        definition_span: Span,
+    ) -> Self {
+        Self {
+            kind: ErrorKind::IncludeParseFailed {
+                path: path.into(),
+                detail: detail.into(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn include_file_too_large(
+        path: impl Into<String>,
+        size: u64,
+        limit: u64,
+        definition_span: Span,
+    ) -> Self {
+        Self {
+            kind: ErrorKind::IncludeFileTooLarge {
+                path: path.into(),
+                size,
+                limit,
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn parse_conversion(
+        builtin: impl Into<String>,
+        input: impl Into<String>,
+        target: &str,
+        definition_span: Span,
+    ) -> Self {
+        Self {
+            kind: ErrorKind::ParseConversion {
+                builtin: builtin.into(),
+                input: input.into(),
+                target: target.to_string(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn json_parse(detail: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::JsonParse {
+                detail: detail.into(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn json_range(definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::JsonRange,
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
 }
 
 impl fmt::Display for EvalError {
@@ -896,6 +1063,633 @@ mod tests {
                 variant, variant,
                 "Variant {:?} does not equal itself",
                 variant
+            );
+        }
+    }
+
+    #[test]
+    fn test_arity_bound_display() {
+        // Test Display output for all ArityBound variants
+        assert_eq!(format!("{}", ArityBound::Exact(1)), "1 arguments");
+        assert_eq!(format!("{}", ArityBound::Exact(2)), "2 arguments");
+        assert_eq!(format!("{}", ArityBound::AtMost(3)), "at most 3 arguments");
+        assert_eq!(format!("{}", ArityBound::Range(1, 3)), "1 to 3 arguments");
+        assert_eq!(format!("{}", ArityBound::Range(0, 5)), "0 to 5 arguments");
+    }
+
+    #[test]
+    fn test_is_cacheable() {
+        // DepthExceeded is NOT cacheable (must retry at different depth)
+        let depth_err = ErrorKind::DepthExceeded { limit: 256 };
+        assert!(!depth_err.is_cacheable());
+
+        // All other errors ARE cacheable (can be stored in Failed thunk state)
+        assert!(ErrorKind::KeyNotFound {
+            key: "foo".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::TypeMismatch {
+            context: None,
+            expected: "Int".to_string(),
+            got: "String".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::CircularDependency {
+            name: "$x".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::UserError {
+            message: "test".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::DivisionByZero {
+            op: "/".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::FloatNotFinite {
+            builtin: "test".to_string(),
+            value: f64::NAN
+        }
+        .is_cacheable());
+        assert!(ErrorKind::JsonDepthExceeded { limit: 128 }.is_cacheable());
+    }
+
+    #[test]
+    fn test_error_kind_display_all_variants() {
+        // Verify Display output for ALL ErrorKind variants to prevent
+        // message quality regressions and ensure error messages are helpful.
+
+        // Access errors (E000-E009)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::KeyNotFound {
+                    key: "name".to_string()
+                }
+            ),
+            "key not found: name"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::UndefinedVariable {
+                    name: "x".to_string()
+                }
+            ),
+            "undefined variable: $x"
+        );
+
+        // Type errors (E010-E019)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::TypeMismatch {
+                    context: None,
+                    expected: "Int".to_string(),
+                    got: "String".to_string()
+                }
+            ),
+            "type mismatch: expected Int, got String"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::TypeMismatch {
+                    context: Some("merge".to_string()),
+                    expected: "Dict".to_string(),
+                    got: "Int".to_string()
+                }
+            ),
+            "merge: expected Dict, got Int"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::TypeAssertFailed {
+                    expected: "Int".to_string(),
+                    got: "String".to_string()
+                }
+            ),
+            "type assertion failed: expected Int, got String"
+        );
+
+        // Call errors (E020-E029)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::ArityMismatch {
+                    expected: ArityBound::Exact(2),
+                    got: 3
+                }
+            ),
+            "arity mismatch: expected 2 arguments, got 3"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::ArityMismatch {
+                    expected: ArityBound::AtMost(2),
+                    got: 3
+                }
+            ),
+            "arity mismatch: expected at most 2 arguments, got 3"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::ArityMismatch {
+                    expected: ArityBound::Range(1, 3),
+                    got: 5
+                }
+            ),
+            "arity mismatch: expected 1 to 3 arguments, got 5"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::NamedArgConflict {
+                    param: "x".to_string()
+                }
+            ),
+            "parameter 'x' received both positional and named argument"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::UnknownNamedArg {
+                    name: "foo".to_string()
+                }
+            ),
+            "unexpected named argument: foo"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::NamedArgRejected {
+                    builtin: "map".to_string()
+                }
+            ),
+            "map does not accept named arguments"
+        );
+
+        // Value errors (E030-E039)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::DuplicateKey {
+                    key: "name".to_string()
+                }
+            ),
+            "duplicate key: name"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::DivisionByZero {
+                    op: "/".to_string()
+                }
+            ),
+            "/: division by zero"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::IntegerOverflow {
+                    op: "+".to_string()
+                }
+            ),
+            "+: integer overflow"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::FloatNotFinite {
+                    builtin: "floor".to_string(),
+                    value: f64::NAN
+                }
+            ),
+            "floor: NaN is not a finite number"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::FloatNotFinite {
+                    builtin: "round".to_string(),
+                    value: f64::INFINITY
+                }
+            ),
+            "round: inf is not a finite number"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::EmptyCollection {
+                    op: "head".to_string()
+                }
+            ),
+            "head on empty collection"
+        );
+
+        // Limit errors (E040-E049)
+        assert_eq!(
+            format!("{}", ErrorKind::DepthExceeded { limit: 256 }),
+            "maximum evaluation depth exceeded (256)"
+        );
+        assert_eq!(
+            format!("{}", ErrorKind::JsonDepthExceeded { limit: 128 }),
+            "maximum JSON nesting depth exceeded (128)"
+        );
+
+        // Include errors (E050-E059)
+        assert_eq!(
+            format!("{}", ErrorKind::IncludeNotAvailable),
+            "include: not available in this context"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::IncludeIoError {
+                    path: "config.llt".to_string(),
+                    detail: "No such file or directory".to_string()
+                }
+            ),
+            "include: cannot access \"config.llt\": No such file or directory"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::IncludeCycle {
+                    path: "a.llt".to_string()
+                }
+            ),
+            "circular include detected: \"a.llt\""
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::IncludeParseFailed {
+                    path: "bad.llt".to_string(),
+                    detail: "unexpected token".to_string()
+                }
+            ),
+            "include: parse error in \"bad.llt\": unexpected token"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::IncludeFileTooLarge {
+                    path: "huge.llt".to_string(),
+                    size: 2_000_000,
+                    limit: 1_000_000
+                }
+            ),
+            "include: file \"huge.llt\" is 2000000 bytes, exceeds 1000000 byte limit"
+        );
+
+        // Conversion errors (E060-E069)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::ParseConversion {
+                    builtin: "to-int".to_string(),
+                    input: "abc".to_string(),
+                    target: "Int".to_string()
+                }
+            ),
+            "to-int: cannot parse \"abc\" as Int"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::JsonParse {
+                    detail: "unexpected EOF".to_string()
+                }
+            ),
+            "from-json: invalid JSON: unexpected EOF"
+        );
+        assert_eq!(
+            format!("{}", ErrorKind::JsonRange),
+            "JSON number outside representable range"
+        );
+
+        // Evaluation structure (E070-E079)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::CircularDependency {
+                    name: "$x".to_string()
+                }
+            ),
+            "circular dependency detected while evaluating $x"
+        );
+
+        // User-generated (E080-E089)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::UserError {
+                    message: "invalid config".to_string()
+                }
+            ),
+            "invalid config"
+        );
+
+        // Escape hatch (E090-E099)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::Internal {
+                    message: "unexpected state".to_string()
+                }
+            ),
+            "unexpected state"
+        );
+    }
+
+    #[test]
+    fn test_error_kind_code_exhaustiveness() {
+        // Verify that ALL ErrorKind variants have error codes and that
+        // all codes are unique. This catches silent breakage when new
+        // variants are added without updating code().
+
+        let variants: Vec<ErrorKind> = vec![
+            ErrorKind::KeyNotFound {
+                key: "x".to_string(),
+            },
+            ErrorKind::UndefinedVariable {
+                name: "x".to_string(),
+            },
+            ErrorKind::TypeMismatch {
+                context: None,
+                expected: "Int".to_string(),
+                got: "String".to_string(),
+            },
+            ErrorKind::TypeAssertFailed {
+                expected: "Int".to_string(),
+                got: "String".to_string(),
+            },
+            ErrorKind::ArityMismatch {
+                expected: ArityBound::Exact(1),
+                got: 2,
+            },
+            ErrorKind::NamedArgConflict {
+                param: "x".to_string(),
+            },
+            ErrorKind::UnknownNamedArg {
+                name: "x".to_string(),
+            },
+            ErrorKind::NamedArgRejected {
+                builtin: "test".to_string(),
+            },
+            ErrorKind::DuplicateKey {
+                key: "x".to_string(),
+            },
+            ErrorKind::DivisionByZero {
+                op: "/".to_string(),
+            },
+            ErrorKind::IntegerOverflow {
+                op: "+".to_string(),
+            },
+            ErrorKind::FloatNotFinite {
+                builtin: "test".to_string(),
+                value: f64::NAN,
+            },
+            ErrorKind::EmptyCollection {
+                op: "head".to_string(),
+            },
+            ErrorKind::DepthExceeded { limit: 256 },
+            ErrorKind::JsonDepthExceeded { limit: 128 },
+            ErrorKind::IncludeNotAvailable,
+            ErrorKind::IncludeIoError {
+                path: "x".to_string(),
+                detail: "error".to_string(),
+            },
+            ErrorKind::IncludeCycle {
+                path: "x".to_string(),
+            },
+            ErrorKind::IncludeParseFailed {
+                path: "x".to_string(),
+                detail: "error".to_string(),
+            },
+            ErrorKind::IncludeFileTooLarge {
+                path: "x".to_string(),
+                size: 1000,
+                limit: 100,
+            },
+            ErrorKind::ParseConversion {
+                builtin: "to-int".to_string(),
+                input: "x".to_string(),
+                target: "Int".to_string(),
+            },
+            ErrorKind::JsonParse {
+                detail: "error".to_string(),
+            },
+            ErrorKind::JsonRange,
+            ErrorKind::CircularDependency {
+                name: "$x".to_string(),
+            },
+            ErrorKind::UserError {
+                message: "test".to_string(),
+            },
+            ErrorKind::Internal {
+                message: "test".to_string(),
+            },
+        ];
+
+        // Verify we have all 26 variants
+        assert_eq!(variants.len(), 26, "Expected 26 ErrorKind variants");
+
+        let mut codes = std::collections::HashSet::new();
+
+        for variant in &variants {
+            let code = variant.code();
+
+            // Each code should start with "E" followed by digits
+            assert!(
+                code.starts_with('E'),
+                "Error code {:?} for variant {:?} does not start with 'E'",
+                code,
+                variant
+            );
+            assert!(
+                code.len() > 1,
+                "Error code {:?} for variant {:?} has no digits",
+                code,
+                variant
+            );
+            let digits = &code[1..];
+            assert!(
+                digits.chars().all(|c| c.is_ascii_digit()),
+                "Error code {:?} for variant {:?} contains non-digit characters after 'E'",
+                code,
+                variant
+            );
+
+            // Each code should be unique
+            assert!(
+                codes.insert(code),
+                "Duplicate error code {:?} found for variant {:?}",
+                code,
+                variant
+            );
+        }
+
+        // Verify we collected 26 unique codes
+        assert_eq!(codes.len(), 26, "Expected 26 unique error codes");
+    }
+
+    #[test]
+    fn test_stack_frame_accumulation_chain() {
+        // Test that stack frames accumulate correctly through nested materialization
+        let def_span = test_span(1, 1, 1, 10);
+        let mat_span = test_span(5, 1, 5, 10);
+        let frame1_span = test_span(10, 1, 10, 15);
+        let frame2_span = test_span(15, 1, 15, 20);
+        let frame3_span = test_span(20, 1, 20, 25);
+
+        // Simulate error propagating through dict -> thunk -> builtin chain
+        let err = EvalError::type_mismatch("Int", "String", def_span)
+            .with_materialization_span(mat_span)
+            .with_frame("dict entry 'inner'", frame1_span)
+            .with_frame("dict entry 'outer'", frame2_span)
+            .with_frame("materialized", frame3_span);
+
+        assert_eq!(err.definition_span, def_span);
+        assert_eq!(err.materialization_span, Some(mat_span));
+        assert_eq!(err.stack.len(), 3);
+        assert_eq!(err.stack[0].label, "dict entry 'inner'");
+        assert_eq!(err.stack[0].span, frame1_span);
+        assert_eq!(err.stack[1].label, "dict entry 'outer'");
+        assert_eq!(err.stack[1].span, frame2_span);
+        assert_eq!(err.stack[2].label, "materialized");
+        assert_eq!(err.stack[2].span, frame3_span);
+    }
+
+    #[test]
+    fn test_stack_frame_display_multi_level() {
+        // Test that display output includes all stack frames
+        let def_span = test_span(1, 1, 1, 10);
+        let mat_span = test_span(5, 1, 5, 10);
+        let frame1_span = test_span(10, 1, 10, 15);
+        let frame2_span = test_span(15, 1, 15, 20);
+
+        let err = EvalError::key_not_found("missing_key", def_span)
+            .with_materialization_span(mat_span)
+            .with_frame("dict entry 'a'", frame1_span)
+            .with_frame("dict entry 'b'", frame2_span);
+
+        let display = format!("{err}");
+
+        // Should contain error code
+        assert!(display.contains("[E001]"));
+        // Should contain error message
+        assert!(display.contains("key not found: missing_key"));
+        // Should contain definition span
+        assert!(display.contains("defined at 1:1-1:10"));
+        // Should contain materialization span
+        assert!(display.contains("materialized at 5:1-5:10"));
+        // Should contain all stack frames
+        assert!(display.contains("in dict entry 'a' at 10:1-10:15"));
+        assert!(display.contains("in dict entry 'b' at 15:1-15:20"));
+    }
+
+    #[test]
+    fn test_stack_frame_preserves_original_materialization_span() {
+        // Test that when multiple access sites trigger the same error,
+        // the original materialization span is preserved
+        let def_span = test_span(1, 1, 1, 10);
+        let first_mat_span = test_span(5, 1, 5, 10);
+        let second_access_span = test_span(8, 1, 8, 10);
+
+        let mut err =
+            EvalError::key_not_found("key", def_span).with_materialization_span(first_mat_span);
+
+        // Simulate a second access from a different location
+        // Should preserve original mat_span and add second access as stack frame
+        assert_eq!(err.materialization_span, Some(first_mat_span));
+
+        // Manually simulate what attach_materialization_context does
+        if !err.stack.iter().any(|f| f.span == second_access_span) {
+            err.push_frame("materialized", second_access_span);
+        }
+
+        assert_eq!(err.materialization_span, Some(first_mat_span));
+        assert_eq!(err.stack.len(), 1);
+        assert_eq!(err.stack[0].span, second_access_span);
+    }
+
+    #[test]
+    fn test_stack_frame_avoids_duplicates() {
+        // Test that duplicate stack frames (same span) are not added
+        let def_span = test_span(1, 1, 1, 10);
+        let frame_span = test_span(5, 1, 5, 10);
+
+        let mut err = EvalError::key_not_found("key", def_span);
+
+        err.push_frame("first", frame_span);
+        assert_eq!(err.stack.len(), 1);
+
+        // Manually check for duplicate before adding (this is what attach_materialization_context does)
+        if !err.stack.iter().any(|f| f.span == frame_span) {
+            err.push_frame("second", frame_span);
+        }
+
+        // Should still be 1 frame (duplicate was avoided)
+        assert_eq!(err.stack.len(), 1);
+        assert_eq!(err.stack[0].label, "first");
+    }
+
+    #[test]
+    fn test_error_code_prefix_format() {
+        // Verify that error codes follow the [EXXX] format exactly
+        let err = EvalError::key_not_found("test", test_span(1, 1, 1, 5));
+        let display = format!("{err}");
+
+        // Should start with [E001]
+        assert!(display.starts_with("[E001]"));
+
+        // Verify all error codes follow the pattern
+        let test_cases = vec![
+            (
+                EvalError::key_not_found("x", test_span(1, 1, 1, 5)),
+                "[E001]",
+            ),
+            (
+                EvalError {
+                    kind: ErrorKind::UndefinedVariable {
+                        name: "x".to_string(),
+                    },
+                    definition_span: test_span(1, 1, 1, 5),
+                    materialization_span: None,
+                    stack: Vec::new(),
+                },
+                "[E002]",
+            ),
+            (
+                EvalError::type_mismatch("Int", "String", test_span(1, 1, 1, 5)),
+                "[E010]",
+            ),
+            (
+                EvalError::arity_mismatch(1, 2, test_span(1, 1, 1, 5)),
+                "[E020]",
+            ),
+            (
+                EvalError::circular_dependency("$x", test_span(1, 1, 1, 5)),
+                "[E070]",
+            ),
+            (
+                EvalError::user_error("test", test_span(1, 1, 1, 5)),
+                "[E080]",
+            ),
+        ];
+
+        for (err, expected_prefix) in test_cases {
+            let display = format!("{err}");
+            assert!(
+                display.starts_with(expected_prefix),
+                "Expected {}, got: {}",
+                expected_prefix,
+                display
             );
         }
     }

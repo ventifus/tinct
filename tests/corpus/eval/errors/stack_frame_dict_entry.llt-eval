@@ -1,0 +1,8 @@
+[
+  outer: [
+    inner: [call $+ 1 "not a number"]
+  ]
+  result: $outer.inner
+]
+===
+expected Int or Float, got Int and String

@@ -1,0 +1,7 @@
+[
+  f1: [fn [x] [call $head $x]]
+  f2: [fn [y] [call $f1 $y]]
+]
+[call $f2 []]
+===
+on empty collection
