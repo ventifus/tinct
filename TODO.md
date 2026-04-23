@@ -64,6 +64,14 @@ DESIGN.md inference rules don't reflect is_cacheable()/is_catchable() guards add
 - [x] Fix E2 property `e.message` to `e.kind` — field was replaced by ErrorKind in error-structured-types (`DESIGN.md:4725`) [Minor, computer-scientist]
 - [x] Add note to SPEC.md §9.4 that DepthExceeded errors are not catchable by $try — users may be surprised when $try doesn't catch resource limit errors (`SPEC.md:1436-1449`) [Minor, computer-scientist]
 
+### error-structured-migrate-c3: Residual Doc Precision
+
+Residual documentation fixes from c2 review: informal notation, incomplete parentheticals, code/spec alignment.
+
+- [x] Update TRY-BUILTIN error parenthetical with is_catchable() qualifier — after c2 added TRY-UNCATCHABLE, the parenthetical "(Error variant: same structure, `Err(ε) ⇒ Dict({err ↦ ...})`)" doesn't mention catchability guard. Change to "(Catchable error variant: same structure; uncatchable errors re-raised per TRY-UNCATCHABLE)". (`DESIGN.md:4745`) [Minor, computer-scientist]
+- [x] Fix Error-to-value correspondence to match actual code path — table says "extract `e.kind.to_string()`" but code uses `e.message()` which delegates to `e.kind.to_string()`. Either update table to say `e.message()` or change code to call `e.kind.to_string()` directly. (`DESIGN.md:4794`, `src/builtins.rs:877`) [Minor, computer-scientist]
+- [x] Update PROP-DEPTH constructor notation to typed ErrorKind style — rule says `ε = new("maximum evaluation depth exceeded", thunk.span)` but implementation uses `EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk.span)`. Change to `ε = depth_exceeded(MAX_EVAL_DEPTH, thunk.span)`. (`DESIGN.md:4647`) [Nit, computer-scientist]
+
 ### error-structured-migrate-d: Test Coverage
 
 ErrorKind test coverage to validate migration and prevent regressions.
@@ -726,7 +734,14 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **DESIGN.md BuiltinFn signature section omits BuiltinArgs struct** — update to mention builtin-thunk-return parameter bundling (`DESIGN.md:1732-1744`) [Minor, integration-verifier]
 - [ ] **DESIGN.md include caching description sparse** — expand line 1835 to document cache key (canonical PathBuf), cache scope (thread-local), error non-caching rationale, cache lifetime (`DESIGN.md:1835`) [Minor, eval-engine]
 - [ ] **CLAUDE.md IncludeContext description missing cache field** — update builtins.rs row to mention include result cache for memoization (`CLAUDE.md:30`) [Minor, integration-verifier]
-- [x] ~~**DESIGN.md stale builtin count "44 total"**~~ — was verified correct at 44, now stale again after concat builtin added (now 45). New tracking item in stdlib-docs section. [Resolved then re-staled, 2026-04-22]
+- [x] ~~**DESIGN.md stale builtin count "44 total"**~~ — was verified correct at 44, now stale again after concat builtin added (now 45). New tracking item below. [Resolved then re-staled, 2026-04-22]
+- [ ] **DESIGN.md builtin count "44 total" → "45 total"** — concat was moved to Rust builtin (test asserts 45); update `DESIGN.md:2927` or remove hard count and point to `standard_builtins()` test as authoritative source [Major, stdlib-author]
+- [ ] **DESIGN.md stdlib reference missing `const`** — K combinator `[fn [x] [fn [y] $x]]` defined in prelude.llt:44 but not in reference table; add under Identity/Utility (`DESIGN.md:2986-3136`) [Minor, stdlib-author]
+- [ ] **DESIGN.md stdlib reference missing `from-entries`** — inverse of `entries`, implemented in prelude.llt:248; add under Dict Utilities (`DESIGN.md:3050-3063`) [Minor, stdlib-author]
+- [ ] **DESIGN.md stdlib reference missing `any?` and `all?`** — predicates implemented in prelude.llt:60-78; add under Logic section (`DESIGN.md:3004-3010`) [Minor, stdlib-author]
+- [ ] **DESIGN.md stdlib reference missing `until`** — iterate-until-predicate, implemented in prelude.llt:154; add under Control Flow (`DESIGN.md:3042-3048`) [Minor, stdlib-author]
+- [ ] **DESIGN.md `join` argument order inconsistency** — reference says `[fn [sep xs] ...]` but Rust builtin takes `(xs, sep)`; verify and fix doc or code (`DESIGN.md:3038`) [Nit, stdlib-author]
+- [ ] **DESIGN.md `concat` listed in both Rust builtins and LLT List Operations** — now a Rust builtin; remove from LLT table or add migration note (`DESIGN.md:3075,2940`) [Nit, stdlib-author]
 - [ ] **Include cache code comments** — add skip-guard rationale at cache hit, clarify "Check cache" comment placement, add doc comment to cache field (`src/builtins.rs:1036-1039,52`) [Nit, eval-engine]
 - [ ] **IncludeContext::new() constructor** — add constructor to reduce breaking changes when fields are added; low priority pre-1.0 (`src/builtins.rs:54`) [Nit, integration-verifier]
 - [ ] **DESIGN.md §Literal Recognition references "tokenizer" but should reference "lexer"** — both pest grammar (`grammar.pest`) and hand-written lexer (`src/lexer.rs`) exist; cross-reference both for precedence rules (`DESIGN.md:198-220`, `src/lexer.rs`) [Major, grammar-architect]
