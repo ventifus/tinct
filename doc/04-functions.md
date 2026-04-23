@@ -560,7 +560,7 @@ $apply:        default_env = closure environment  (env_c)
 
 **Correctness is preserved:** The correctness proof (Part 3) is parametric in `env_d`. Changing `env_d` affects which values defaults evaluate to, but not the structure of the binding (which params get positional vs named vs default). Soundness, completeness, and uniqueness hold for any `env_d`.
 
-**Variadic typing precision:** The type checker assigns variadic parameters type `Record([], Closed)` regardless of actual arguments (§Type Inference Algorithm, Limitation #8). The runtime Dict has integer-keyed entries with the excess args' types. A precise type would require dependent types (the length depends on `|pos| - |P|`). The current typing is a sound over-approximation — accessing variadic fields produces type errors that succeed at runtime. See Limitation #8 for the planned fix (`Record([], Open)` or `Any`).
+**Variadic typing precision:** The type checker assigns variadic parameters type `Record([], Closed)` regardless of actual arguments (§Type Inference Algorithm, Limitation #8). The runtime Dict has integer-keyed entries with the excess args' types. A precise type would require dependent types (the length depends on `|pos| - |P|`). The current typing is a sound over-approximation — accessing variadic fields produces type errors that succeed at runtime. See Limitation #8 for the correct type (`Record([], Open)` or `Any`).
 
 **PendingCall interaction:** When a `PendingCall` thunk is forced, it invokes `invoke_function`, which calls `bind_args_thunks` — the same binding algorithm specified above. The forcing semantics (state transitions, memoization, error handling) are specified in §Thunk Lifecycle — Formal Specification, rules FORCE-CALL and FORCE-CALL-BUILTIN.
 
@@ -615,7 +615,7 @@ This is different from `PendingBuiltin` in a key way:
 - **PendingBuiltin** stores a Rust function pointer (`BuiltinFn`) and its arguments — the builtin runs when materialized
 - **PendingCall** stores a user-defined function thunk, its argument thunks, and a `call_span: Span` (for error reporting) — invokes `invoke_function()` when materialized
 
-Both support lazy evaluation, but `PendingCall` works at the LLT function level (no AST needed), while `PendingBuiltin` works at the Rust builtin level.
+Both support lazy evaluation, but `PendingCall` works at the Tinct function level (no AST needed), while `PendingBuiltin` works at the Rust builtin level.
 
 **Type transparency:** `PendingCall` is invisible to the type system — a `PendingCall(f, [x])` has the same inferred type as `f(x)`. No new `Type` variant is needed; HM type inference is unchanged.
 

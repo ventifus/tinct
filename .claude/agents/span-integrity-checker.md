@@ -69,20 +69,17 @@ You are an error reporting specialist for the LLT language. You ensure that ever
 
 When dispatched for a full codebase review, review the entire project through your **error reporting specialist** lens. Be thorough and bold — recommend error model redesigns, new error categories, and span infrastructure changes if they improve error quality. Follow the three-phase review order and output format exactly.
 
-### Phase 1: DESIGN.md Review
+### Phase 1: doc/*.md Review
 
-1. Is the dual-span error model (definition-site + materialization-site) accurately described?
+1. Is the dual-span error model (definition-site + materialization-site) accurately described in `doc/10-errors.md`?
 2. Are error reporting goals and quality standards documented?
 3. Should any error reporting design decisions be revisited? (e.g., stack frame format, error categories)
-4. Are there error scenarios not covered by the design?
+4. Are there error scenarios not covered by doc/*.md?
+5. Are error conditions documented for each language feature?
+6. Does doc/*.md describe what errors users should expect for invalid inputs?
+7. Are span requirements for each construct specified?
 
-### Phase 2: SPEC.md Review
-
-1. Are error conditions documented for each language feature?
-2. Does the spec describe what errors users should expect for invalid inputs?
-3. Are span requirements for each construct specified?
-
-### Phase 3: Codebase Review
+### Phase 2: Codebase Review
 
 1. **Span propagation**: every materialization path attaches call-site spans correctly
 2. **Dual-span completeness**: every error path includes both definition-site and materialization-site spans

@@ -88,11 +88,11 @@ z@Number                        # accepts either
 
 **Integer arithmetic uses checked semantics.** `Int` operations (`$+`, `$-`, `$*`) use Rust's `checked_add`/`checked_sub`/`checked_mul`, so overflow returns an error rather than wrapping or panicking. This prevents silent data corruption on large values. Width-specific types like `Int32` could enforce narrower range constraints via the contracts system.
 
-**Dict key integration:** `Int` values are directly usable as dict keys. `Float` values cannot be used as keys (deferred — precision issues).
+**Dict key integration:** `Int` values are directly usable as dict keys. `Float` values cannot be used as keys — floating-point equality semantics make them unreliable as hash keys.
 
-**Width-specific types** (`Int32`, `Int64`, `Int128`, `Decimal`, etc.) are deferred to the contracts system. These are range constraints on `Int`/`Float`, not new runtime representations. `Decimal` (if ever needed) would require a new Value variant.
+**Width-specific types** (`Int32`, `Int64`, `Int128`, `Decimal`, etc.) are range constraints expressed through the contracts system, not new runtime representations. `Decimal` (if ever needed) would require a new Value variant.
 
-**Typeclasses deferred.** The promotion table is hardcoded in the compiler. If extensibility is needed later (e.g., user-defined numeric types), typeclasses can generalize the mechanism without breaking existing code.
+The promotion table is built into the evaluator. User-defined numeric types participating in arithmetic would require type classes — see `doc/whatif/typeclasses.md` for the accepted design.
 
 ## No Null — Missing Keys Are Errors
 
@@ -115,7 +115,7 @@ z@Number                        # accepts either
 - **No null confusion.** Can't confuse "key exists with null" vs "key is missing." Every key that exists has a real value.
 - **Clean data representation.** Config files have no `null` noise — every key is meaningful.
 
-**JSON null mapping:** Since LLT has no null value, `$from-json` (and CLI stdin JSON injection) maps JSON `null` to `[]` (empty dict). This means it is impossible to distinguish "was null" from "was empty object" after conversion. This is an intentional trade-off -- LLT's "no null" design prioritizes simplicity over round-trip fidelity with JSON.
+**JSON null mapping:** Since Tinct has no null value, `$from-json` (and CLI stdin JSON injection) maps JSON `null` to `[]` (empty dict). This means it is impossible to distinguish "was null" from "was empty object" after conversion. This is an intentional trade-off -- Tinct's "no null" design prioritizes simplicity over round-trip fidelity with JSON.
 
 ## Data Access — Two Modes
 
@@ -354,7 +354,7 @@ Five properties that hold for all access chains.
 
 *Statement:* A chain of length `n` consumes `n` depth levels — each FORCE-DICT invocation increments depth by 1 (via `eval(target, ρ, d+1)` and `force(θ, d+1)` in `eval_as_dict`).
 
-*Proof sketch:* By inspection of FORCE-DICT, which passes `d+1` to both `eval` and `force`. Each chain step invokes FORCE-DICT once (Property 1), so `n` steps consume `n` depth levels. For `MAX_EVAL_DEPTH = 256` and typical chain lengths (1–5), this is negligible. After the CEK migration removes MAX_EVAL_DEPTH, this property becomes moot. ∎
+*Proof sketch:* By inspection of FORCE-DICT, which passes `d+1` to both `eval` and `force`. Each chain step invokes FORCE-DICT once (Property 1), so `n` steps consume `n` depth levels. For `MAX_EVAL_DEPTH = 256` and typical chain lengths (1–5), this is negligible. The CEK machine removes MAX_EVAL_DEPTH, making this property moot. ∎
 
 **Property 5: Sharing Preservation**
 
@@ -364,7 +364,7 @@ Five properties that hold for all access chains.
 
 #### Part 5: Type System Correspondence
 
-**Current limitation:** Access chain type checking is direct structural lookup, not constraint generation. This is a consequence of the incomplete row-variable unification implementation, not a design choice. The target type is inferred first, then the result type is determined by structural matching on the inferred target type. No type variables are introduced or bound by access operations, and access type checking is read-only with respect to the unification substitution — the target type is normalized via `apply_subst` before field lookup, but no new bindings are added. This differs from constraint-based systems (e.g., Elm, OCaml) where `$x.field` would generate a constraint `unify(typeof(x), Record([field: α], ρ))` and bind `α` and `ρ`. When full Rémy-style row-variable unification is implemented (§row-unification), access chains should generate such constraints, enabling the type checker to infer field requirements from usage without annotations.
+Access chain type checking generates row constraints via Remy-style row-variable unification (see §Row-Variable Unification in [Type System Extensions](07-type-extensions.md) Part 5). The target type is inferred first, then field access generates constraints of the form `unify(typeof(x), Record([field: α], ρ))`, binding `α` and `ρ` via row unification — enabling the type checker to infer field requirements from usage without annotations.
 
 The type checker mirrors the access algebra with type-level projections:
 
@@ -374,9 +374,9 @@ The type checker mirrors the access algebra with type-level projections:
 | ACCESS-BRACKET | `check_bracket_access` | Literal key → exact field lookup; variable key → `Any`; open record → `Any` |
 | ACCESS-RANGE | `check_range_access` | Bounds must be `Int` or `Str`; result type = target type (preserves record type) |
 
-**Type variable access:** Accessing a field on a type variable (`TypeVar(α)`) is a type error in the current implementation (`typecheck.rs:313` falls through to `not_a_record`). LLT does not perform constraint-based row unification that would bind `α` to `Record([field: β], ρ)`. When full row-variable unification is implemented (§Row Polymorphism, planned), this behavior may change. Row variables (`RowVar(r)`) appearing in record types are treated as markers for openness during access type checking; they are not bound to remainder types during access operations (consistent with U-REC in §Type Inference Algorithm).
+**Type variable access:** Accessing a field on a type variable (`TypeVar(α)`) is a type error (`typecheck.rs:313` falls through to `not_a_record`). Constraint-based row unification would bind `α` to `Record([field: β], ρ)` — see §Row-Variable Unification in [Type System Extensions](07-type-extensions.md). Row variables (`RowVar(r)`) appearing in record types are treated as markers for openness during access type checking; they are not bound to remainder types during access operations (consistent with U-REC in §Type Inference Algorithm).
 
-**Open records and Any:** When a dot or bracket access targets an open record (`Record(fields, Open)` or `Record(fields, RowVar(_))`) and the field is not in `fields`, the type checker returns `Any` rather than an error. This reflects LLT's gradual typing design: open records may contain fields not visible to the type checker. Rather than reject valid programs, the type checker admits the access but types the result as `Any`, deferring validation to runtime. This is sound because `Any` serves as both top and bottom type (S-ANY-TOP, S-ANY-BOT in §Type Inference Algorithm) — values of any type flow through `Any` positions. For closed records, a missing field is a static error.
+**Open records and Any:** When a dot or bracket access targets an open record (`Record(fields, Open)` or `Record(fields, RowVar(_))`) and the field is not in `fields`, the type checker returns `Any` rather than an error. This reflects Tinct's gradual typing design: open records may contain fields not visible to the type checker. Rather than reject valid programs, the type checker admits the access but types the result as `Any`, deferring validation to runtime. This is sound because `Any` serves as both top and bottom type (S-ANY-TOP, S-ANY-BOT in §Type Inference Algorithm) — values of any type flow through `Any` positions. For closed records, a missing field is a static error.
 
 **Bracket key precision:** When the bracket key is a literal (`Expr::Str` or `Expr::Int`) or has a singleton type (`StringLiteral(s)` or `IntLiteral(n)`), the type checker performs exact field lookup. When the key is a variable with type `Str`, `Int`, or `Any`, the result type is `Any` — since the key value is not known until runtime, the type checker cannot determine which field will be accessed, so it conservatively returns `Any`. This is the trade-off between expressiveness (allow computed keys) and precision (lose static type information).
 

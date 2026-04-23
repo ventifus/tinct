@@ -4,7 +4,7 @@
 
 ### Special Forms vs Stdlib Functions
 
-**Lazy evaluation means most "control flow" is just regular functions.** In an eager language, `if` must be a special form because both branches would be evaluated before `if` runs. In LLT, all arguments are thunks — the unused branch is never materialized.
+**Lazy evaluation means most "control flow" is just regular functions.** In an eager language, `if` must be a special form because both branches would be evaluated before `if` runs. In Tinct, all arguments are thunks — the unused branch is never materialized.
 
 Only constructs that affect **binding structure** or **dict construction** need to be special forms (built into the language). The parser recognizes these by checking the first entry of every `[]`:
 
@@ -58,7 +58,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 
 | Function | Materialization behavior |
 |----------|------------------------|
-| `if` | **Current:** Materializes condition and the chosen branch. **Phase 5b** (see §Current vs Planned Laziness Analysis)**:** Will return the chosen branch as a thunk (other never materialized). |
+| `if` | Materializes condition only; returns chosen branch as thunk (other branch never materialized). |
 | `cond` | Materializes conditions in order; returns first matching branch as thunk |
 | `when`, `unless` | Materializes condition; returns body or `[]` |
 | `and` | Materializes first; if false, returns false without materializing second |
@@ -81,7 +81,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `get`, `get-or`, `has?` | Structural — key lookup, returns thunk |
 | `get-in`, `get-in-or` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. `get-in-or` returns a default on missing keys instead of erroring. |
 | `set`, `remove` | Structural — add/remove entries |
-| `merge` | **Current:** Eagerly clones both input dicts. **Phase 5b** (see §Current vs Planned Laziness Analysis)**:** Will use lazy overlay (right dict's keys shadow left dict's keys, no deep copy until access). |
+| `merge` | Lazy overlay — right dict's keys shadow left, O(1) construction, values stay thunks. |
 | `keys` | Structural — keys are always evaluated, not thunks |
 | `values`, `entries` | Structural — returns thunks |
 | `update` | Lazy-transforming — produces thunk `[call $f $old-value]` |
@@ -103,7 +103,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Arithmetic & comparison** (materializing — must evaluate operands):
 - `+`, `-`, `*` (auto-promote: Int op Int → Int, mixed → Float)
 - `/` (always returns Float), `quot`, `mod` (Int only, return Int; both are prelude functions)
-- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values -- there is no structural/deep equality. This will be revisited when typeclasses are added.
+- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values — there is no structural/deep equality. Structural equality is available via `$deep-eq`.
 - `to-int`, `to-float`, `floor`, `ceil`, `round` (numeric conversions)
 
 **Strings** (materializing — must evaluate arguments):
@@ -135,7 +135,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 
 **Materialization** (runtime-supported):
 - `eval` — recursively forces all thunks (runtime-supported, may diverge on infinite structures)
-- `from-json` — parses JSON string into LLT dict (pure function, safe on untrusted input)
+- `from-json` — parses JSON string into Tinct dict (pure function, safe on untrusted input)
 
 **Key implications for lazy evaluation:**
 
@@ -158,15 +158,15 @@ first-ten: [call $collect [call $take 10 $squares]]
 # -> [0 1 4 9 16 25 36 49 64 81]
 ```
 
-## Rust-Native vs LLT-Implemented Boundary
+## Rust-Native vs Tinct-Implemented Boundary
 
-**Principle:** Only implement in Rust what cannot be expressed in LLT itself. Everything else is LLT code loaded from a prelude file at startup.
+**Principle:** Only implement in Rust what cannot be expressed in Tinct itself. Everything else is Tinct code loaded from a prelude file at startup.
 
 **Rust-native builtins (44 total):**
 
 | Group | Functions | Rationale |
 |-------|-----------|-----------|
-| Arithmetic | `+`, `-`, `*`, `/` | Operate on host numeric types (i64, f64); no LLT primitive can perform arithmetic. |
+| Arithmetic | `+`, `-`, `*`, `/` | Operate on host numeric types (i64, f64); no Tinct primitive can perform arithmetic. |
 | Comparison | `=`, `<` | Compare host values; cross-type Int/Float comparison requires host-level coercion. `>`, `<=`, `>=` are derived from `<` and `not`. |
 | Control | `if` | Requires selective materialization (only materialize the chosen branch). `not` is derived: `[fn [x] [call $if $x false true]]`. |
 | Dict primitives | `keys`, `length`, `merge`, `append` | Operate on the IndexMap directly: `keys` extracts the key set, `length` reads `IndexMap::len()`, `merge` right-biased combines two IndexMaps, `append` inserts a value at the next integer key. |
@@ -174,11 +174,11 @@ first-ten: [call $collect [call $take 10 $squares]]
 | Numeric | `floor`, `round` | `floor` truncates toward negative infinity (Rust `f64::floor`). `round` rounds half-away-from-zero (Rust `f64::round`). `ceil` and `trunc` are derived from `floor` and comparison. |
 | Parsing | `to-int`, `to-float` | String-to-number parsing only (e.g., `"42"` to `42`). Numeric conversion (float-to-int) uses `floor`/`round`/`trunc`; int-to-float uses arithmetic promotion (`[call $+ $x 0.0]`). |
 | Evaluation control | `eval`, `error`, `try`, `apply` | `eval` deep-forces thunks (evaluator access); `error` constructs EvalError; `try` catches materialization errors; `apply` spreads a dict as positional args. |
-| Type introspection | `type-of` | Inspects the Value enum variant; no LLT expression can determine a value's type. |
-| Sequences | `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) return infinite or finite Seq (O(1) construction). `take`, `map`, `filter`, `drop` are dual-dispatch: on Dict preserve keys, on Seq return Seq. `reduce` accumulates with early termination on empty Seq. `join` converts Dict/Seq to string with separator (O(n²) concatenation). All require `Rc<Thunk>` manipulation unavailable in LLT. |
-| I/O | `from-json`, `include` | `from-json` parses a JSON string into an LLT dict; requires a JSON parser (serde_json). `include` evaluates an LLT file and returns its result; requires filesystem access, cycle detection, and path resolution. |
+| Type introspection | `type-of` | Inspects the Value enum variant; no Tinct expression can determine a value's type. |
+| Sequences | `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) return infinite or finite Seq (O(1) construction). `take`, `map`, `filter`, `drop` are dual-dispatch: on Dict preserve keys, on Seq return Seq. `reduce` accumulates with early termination on empty Seq. `join` converts Dict/Seq to string with separator (O(n²) concatenation). All require `Rc<Thunk>` manipulation unavailable in Tinct. |
+| I/O | `from-json`, `include` | `from-json` parses a JSON string into an Tinct dict; requires a JSON parser (serde_json). `include` evaluates an Tinct file and returns its result; requires filesystem access, cycle detection, and path resolution. |
 
-**Derived functions (moved from Rust to LLT):**
+**Derived functions (moved from Rust to Tinct):**
 
 | Function | Derivation | Why not Rust |
 |----------|-----------|--------------|
@@ -192,38 +192,38 @@ first-ten: [call $collect [call $take 10 $squares]]
 | `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
 | `words` | `[call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]` | `split` + `filter` |
 
-Note: `and` and `or` are also LLT-derived (`[fn [a b] [call $if $a $b false]]` works via lazy args, giving short-circuit semantics for free). Similarly, `get` is just `[fn [xs k] $xs[$k]]` using bracket access.
+Note: `and` and `or` are also Tinct-derived (`[fn [a b] [call $if $a $b false]]` works via lazy args, giving short-circuit semantics for free). Similarly, `get` is just `[fn [xs k] $xs[$k]]` using bracket access.
 
-**LLT-implemented stdlib:**
+**Tinct-implemented stdlib:**
 
-Everything else is implemented in LLT using the Rust builtins above plus language features (bracket access, dict literals, `fn`, `call`, recursion via letrec). Key implementation patterns:
+Everything else is implemented in Tinct using the Rust builtins above plus language features (bracket access, dict literals, `fn`, `call`, recursion via letrec). Key implementation patterns:
 
 - **Derived primitives**: `not` from `if`, comparison operators from `<`, `mod` from arithmetic, `ceil`/`trunc` from `floor`, `words` from `split`.
 - **Short-circuit logic** via lazy args: `and` = `[fn [a b] [call $if $a $b false]]`.
 - **Dict utilities** as wrappers: `get` = `[fn [xs k] $xs[$k]]`, `empty?` = `[fn [xs] [call $= [call $length $xs] 0]]`, `has?` wraps `try` around bracket access.
 - **Control flow** from `if`: `cond` = nested `if`, `when`/`unless` = single-arm `if`.
-- **Composition** is pure LLT: `identity` = `[fn [x] $x]`, `compose` = `[fn [f g] [fn [x] [call $f [call $g $x]]]]`.
+- **Composition** is pure Tinct: `identity` = `[fn [x] $x]`, `compose` = `[fn [f g] [fn [x] [call $f [call $g $x]]]]`.
 - **List operations** use `keys` + `length` + `merge` + recursion to build new integer-keyed dicts.
 
 **Loading mechanism:**
 
-The LLT stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `include_str!`. At startup:
+The Tinct stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `include_str!`. At startup:
 
 1. Create root environment with Rust-native builtins
 2. Parse and evaluate `prelude.llt` with root environment as parent
 3. User code's environment inherits from the stdlib environment
 
-This ensures Rust builtins are available to LLT stdlib code (e.g., `and` references `$if`), and user code sees both layers:
+This ensures Rust builtins are available to Tinct stdlib code (e.g., `and` references `$if`), and user code sees both layers:
 
 ```
 Rust builtins ($+, $-, $<, $=, $if, $keys, $merge, $str, $floor, $map, $filter, $reduce, $drop, $join, ...)
-  └── LLT stdlib ($not, $>, $mod, $ceil, $and, $fold, $compose, ...)
+  └── Tinct stdlib ($not, $>, $mod, $ceil, $and, $fold, $compose, ...)
         └── User code
 ```
 
 ## Stdlib Function Reference (62 functions)
 
-Functions available to all user code. Most are implemented in LLT in `stdlib/prelude.llt`; some performance-critical operations (`map`, `filter`, `reduce`, `drop`, `join`, `take`, and all sequence constructors) are Rust-native builtins with dual-dispatch on Dict vs Seq. Private implementation details (functions suffixed with `-impl`) are omitted.
+Functions available to all user code. Most are implemented in Tinct in `stdlib/prelude.llt`; some performance-critical operations (`map`, `filter`, `reduce`, `drop`, `join`, `take`, and all sequence constructors) are Rust-native builtins with dual-dispatch on Dict vs Seq. Private implementation details (functions suffixed with `-impl`) are omitted.
 
 **Utility Functions:**
 
@@ -561,7 +561,7 @@ The divergence is intentional: `Value::PartialEq` uses Rust's native dispatch (n
 
 ## Merge — Formal Specification
 
-This section formalizes `$merge`, the only builtin that allows key collision. The specification defines operational semantics (right-biased merge with insertion-order preservation), algebraic properties, interaction with record typing (closed records now, forward-compatible with row variables), and the lazy overlay compatibility invariant for Phase 5b.
+This section formalizes `$merge`, the only builtin that allows key collision. The specification defines operational semantics (right-biased merge with insertion-order preservation), algebraic properties, interaction with record typing (closed records and row variables), and the lazy overlay compatibility invariant.
 
 `$merge` is the composition primitive: it underlies shared base config (`$merge $base $overrides`), `$set` (single-key overlay), `$from-entries` (construction from pairs), and `$map` on dicts (per-entry rebuild). Its semantics propagate through these dependents.
 
@@ -611,7 +611,7 @@ order(D) = order_L(L, R) ++ new(R, L)  where
 
 Left keys retain their positions. Right keys that collide replace the value at the left key's position. Right keys that are new are appended in their original order.
 
-**Strictness (current):** `S × S → D` (§Selective Materialization). Both arguments are materialized to inspect dict structure (key sets). Values are `Rc::clone` (thunk pointers copied, not forced). This is a structural materialization — it forces the thunks to produce `Value::Dict` but does not recurse into field values. Phase 5b changes strictness to `L × L → D` — the overlay defers both operands' materialization until access (see Part 5).
+**Strictness:** `L × L → D` (§Selective Materialization). The lazy overlay representation defers materialization of both operands until access or iteration. Values are `Rc::clone` (thunk pointers copied, not forced). See Part 5 for the overlay semantics.
 
 When both operands are list-dicts (integer keys `0..n`), `$merge` performs positional override, not concatenation: `merge([a b c], [x y])` produces `{0:x, 1:y, 2:c}`. Use `$concat` for list concatenation.
 
@@ -628,11 +628,11 @@ Named arguments are rejected (`reject_named`).
 
 ### Part 3: Typing Rules
 
-**Current state:** `$merge` is typed as `Any → Any → Any`. The rules below specify the target type for the type-extensions roadmap Phase 1 (§Type System Extension Roadmap) when `TypeEnv::with_builtins()` registers precise builtin signatures. When an operand has type `TypeVar(α)`, Phase 1 falls back to T-MERGE-ANY (treating unresolved type variables as `Any`). After row-variable unification, option (a) — unifying `α` with a fresh open record type — becomes available but is not required for Phase 1.
+**Typing:** `$merge` is typed via `TypeEnv::with_builtins()`, which registers precise builtin signatures. When an operand has type `TypeVar(α)`, the type checker falls back to T-MERGE-ANY (treating unresolved type variables as `Any`). With row-variable unification, option (a) — unifying `α` with a fresh open record type — becomes available.
 
 **[T-MERGE] Closed records:**
 
-T-MERGE applies only when both operands have closed record types (`RowRest::Closed`). Open records (`RowRest::Open` or `RowRest::RowVar`) fall through to T-MERGE-ANY until row-variable unification is implemented.
+T-MERGE applies only when both operands have closed record types (`RowRest::Closed`). Open records (`RowRest::Open` or `RowRest::RowVar`) fall through to T-MERGE-ANY.
 
 ```
 Γ ⊢ L : Record(F_L, Closed),  Γ ⊢ R : Record(F_R, Closed)
@@ -658,11 +658,11 @@ For shared keys, the right operand's type wins. This mirrors the runtime semanti
 Γ ⊢ merge(L, R) : Any
 ```
 
-If either operand has type `Any` (unannotated, forward reference, or gradual escape), the result is `Any`. The type checker cannot compute field-level merge without knowing the field sets. This also applies when an operand is a `TypeVar` (Phase 1) or has an open record type (pre-row-unification).
+If either operand has type `Any` (unannotated, forward reference, or gradual escape), the result is `Any`. The type checker cannot compute field-level merge without knowing the field sets. This also applies when an operand is a `TypeVar` or has an open record type.
 
-**Design choice:** When only one operand is `Any`, partial information could be preserved (e.g., `merge(Any, Record(F, Closed)) : Record(F, Open)`). This is rejected: it complicates the gradual typing story (§Type System Extension Roadmap, Phase 3) and gains little in practice. Deferred to Phase 3 gradual typing formalization.
+**Design choice:** When only one operand is `Any`, partial information could be preserved (e.g., `merge(Any, Record(F, Closed)) : Record(F, Open)`). This is rejected: it complicates the gradual typing story (see §Expressiveness in [Type System Extensions](07-type-extensions.md)) and gains little in practice.
 
-**Forward compatibility with row variables:** When row-variable unification (§Row-Variable Unification — Kinded Rémy Model) is implemented, the typing rule generalizes to:
+**Row variable generalization:** With row-variable unification (§Row-Variable Unification — Kinded Rémy Model), the typing rule generalizes to:
 
 ```
 Γ ⊢ L : Record(F_L, ρ₁),  Γ ⊢ R : Record(F_R, ρ₂)
@@ -672,7 +672,7 @@ If either operand has type `Any` (unannotated, forward reference, or gradual esc
 
 where `ρ₃` captures fields from `ρ₁` and `ρ₂` not in the known field sets. The precise definition of `ρ₃` depends on the row-unification design — Harper & Pierce (1991) require disjointness (`K(ρ₁) ∩ K(ρ₂) = ∅`) for symmetric concatenation, but tinct's right-biased semantics relax this. Rémy (1994) handles non-disjoint row extensions via presence/absence flags; tinct's right-bias is a simpler alternative that achieves similar expressiveness without the full flag system.
 
-The row-unification sprint must define how `⊕` interacts with row tails, subject to three constraints:
+Row-variable unification defines how `⊕` interacts with row tails, subject to three constraints:
 
 1. **Closed-record preservation:** When `ρ₁ = ρ₂ = ∅`, T-MERGE (closed records) is recovered as a special case.
 2. **Common-tail preservation:** When `ρ₁ = ρ₂ = ρ`, then `ρ₃ = ρ` — merge preserves the common tail because it neither adds nor removes fields from the unknown extension.
@@ -700,7 +700,7 @@ Iteration-order proof: In `L ⊕ R`, the result order is `[keys from L in L's or
 
 ### Part 5: Lazy Overlay Compatibility
 
-Phase 5b (§Current vs Planned Laziness Analysis) replaces eager cloning with a lazy overlay representation. The overlay defers the merge operation itself:
+The lazy overlay representation defers the merge operation itself:
 
 ```
 Overlay(L, R) — O(1) construction
@@ -716,7 +716,7 @@ The lazy overlay must satisfy **behavioral equivalence**: for any program P, rep
 
 The overlay introduces two observable differences, both intentional:
 
-**Error timing:** Eager merge materializes both dicts at merge time; overlay defers materialization of *both* L and R until access or iteration. A dict that would fail materialization (e.g., contains a cycle) fails at merge time with eager semantics but at access time with overlay semantics. This is documented as an intentional change in §Current vs Planned Laziness Analysis.
+**Error timing:** With the lazy overlay, materialization of both L and R is deferred until access or iteration. A dict that would fail materialization (e.g., contains a cycle) fails at access time rather than at merge time. This is an intentional behavior of the overlay design — see §Laziness Design.
 
 **Error ordering:** When both operands contain errors, eager merge reports L's error first (L is materialized before R at `builtins.rs:446-447`). Overlay reports whichever operand's error is triggered first by access patterns. Programs should not depend on which operand's error is reported when both are broken.
 

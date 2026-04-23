@@ -28,7 +28,7 @@ Use the `Agent` tool to spawn the specialist with a training brief containing:
 
 1. **The agent's full definition** (everything after the frontmatter `---`) so it has its expert frame of reference
 2. **The agent's `## Training Resources` section verbatim** — the agent owns its resources and knows how to retrieve them (cloning repos, fetching papers, reading local files, etc.)
-3. **Local LLT documents** to read (src/*.rs, DESIGN.md, etc.)
+3. **Local LLT documents** to read (src/*.rs, doc/*.md, etc.)
 4. **Storage instructions**: use `mcp__mempalace-tinct__mempalace_add_drawer` with:
    - wing: `agent_<agent-name>` (e.g., `agent_grammar-architect`, `agent_eval-engine`)
    - room: `training`

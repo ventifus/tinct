@@ -36,7 +36,7 @@ Dispatch all specialist agents in parallel to review the full codebase. Use `sub
 
 Brief each agent with:
 - Review scope: full codebase (or focus area if specified)
-- Three-phase review order: DESIGN.md first, then SPEC.md, then codebase
+- Review order: doc/*.md first, then codebase
 - Permission for bold recommendations: refactoring, API changes welcome. Pre-1.0.
 - Instruction to use the **Codebase Review Protocol** output format (NOT the Sprint Panel Review format — no APPROVE/REQUEST_CHANGES verdict needed here, all findings go to TODO.md)
 

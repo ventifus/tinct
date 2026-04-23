@@ -77,7 +77,7 @@
 
 ## Comparison with Other Languages
 
-See the comparison table below for how LLT relates to JSONnet, Dhall, Nix, CUE, and jq.
+See the comparison table below for how Tinct relates to JSONnet, Dhall, Nix, CUE, and jq.
 
 | Need | Use |
 |------|-----|
@@ -88,11 +88,11 @@ See the comparison table below for how LLT relates to JSONnet, Dhall, Nix, CUE, 
 | Package management | Nix |
 | Schema validation | CUE |
 | Shell JSON transforms | jq |
-| **Unified data + transformation** | **LLT** |
+| **Unified data + transformation** | **Tinct** |
 
-### Data Selection: jq / JSONPath / JMESPath / LLT
+### Data Selection: jq / JSONPath / JMESPath / Tinct
 
-| Operation | jq | JSONPath | JMESPath | LLT |
+| Operation | jq | JSONPath | JMESPath | Tinct |
 |-----------|-----|---------|----------|-----|
 | Field access | `.name` | `$.name` | `name` | `$data.name` |
 | Nested access | `.a.b.c` | `$.a.b.c` | `a.b.c` | `$data.a.b.c` |

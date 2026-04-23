@@ -203,7 +203,7 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 
 ### Bracket Nesting Depth Limit
 
-Pest recurses on Rust's call stack for nested bracket expressions, so deeply nested inputs (~500+ levels) may overflow the default 8MB stack before reaching any application-level check. `MAX_PARSE_DEPTH` (256) is the policy limit enforced during AST construction to fail fast with a clear parse error. Inputs exceeding this policy limit produce a parse error. See Phase 7 (hand-written parser) for a planned resolution.
+The iterative parser enforces `MAX_PARSE_DEPTH` at the stack frame level, avoiding native stack overflow. `MAX_PARSE_DEPTH` (256) is the policy limit; inputs exceeding this limit produce a clear parse error.
 
 ### Annotation Bracket Restriction
 

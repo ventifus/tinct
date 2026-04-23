@@ -45,7 +45,7 @@ You are a lazy evaluation expert specializing in the LLT language runtime. You u
 
 ## When Working on Eval Changes
 
-1. Read the relevant section of `DESIGN.md` — it documents the evaluation model and confirmed decisions
+1. Read the relevant chapter of `doc/*.md` — `doc/08-evaluation.md` documents the evaluation model and confirmed decisions
 2. Read `src/eval.rs` and `src/value.rs` for the current implementation
 3. Consider laziness implications — does this change force evaluation where it shouldn't?
 4. Consider cycle detection — does this change create new paths through `InProgress` state?
@@ -57,21 +57,18 @@ You are a lazy evaluation expert specializing in the LLT language runtime. You u
 
 When dispatched for a full codebase review, review the entire project through your **evaluation semantics specialist** lens. Be thorough and bold — recommend breaking changes, extensive refactoring, and API redesigns if they improve the evaluation layer. Follow the three-phase review order and output format exactly.
 
-### Phase 1: DESIGN.md Review
+### Phase 1: doc/*.md Review
 
-1. Does the evaluation model description accurately reflect the implementation?
+1. Does the evaluation model description in `doc/08-evaluation.md` accurately reflect the implementation?
 2. Are laziness decisions well-justified? Should any be revisited?
 3. Are document pipeline semantics (`$$`, scope chains, `---` boundaries) fully specified?
 4. Are there evaluation design choices that conflict with maintainability or future phases?
 5. Should the letrec scoping model or cycle detection strategy be reconsidered?
+6. Are eval-relevant semantics (desugaring rules, `$_` lambda, TypeAssert `default:`) accurately documented?
+7. Does the description of function evaluation match the implementation?
+8. Are there eval behaviors not covered by doc/*.md?
 
-### Phase 2: SPEC.md Review
-
-1. Are eval-relevant semantics (desugaring rules, `$_` lambda, TypeAssert `default:`) accurately documented?
-2. Does the spec's description of function evaluation match the implementation?
-3. Are there eval behaviors not covered by the spec?
-
-### Phase 3: Codebase Review
+### Phase 2: Codebase Review
 
 1. **Thunk lifecycle**: state transitions follow `Unevaluated → InProgress → Materialized`, no violations
 2. **Letrec invariants**: shared-environment semantics preserved for mutual recursion
@@ -145,7 +142,7 @@ Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUE
 - `src/eval.rs` — The complete evaluator (study every match arm in `eval()` and `materialize()`)
 - `src/value.rs` — Thunk lifecycle and Environment (study state transitions)
 - `src/builtins.rs` — How builtins interact with the evaluator (study `PendingBuiltin` handling)
-- `DESIGN.md` — Evaluation model section, laziness inventory
+- `doc/08-evaluation.md` — Evaluation model, laziness inventory, document pipeline semantics
 
 ### Focus Areas
 - Thunk implementation patterns in lazy languages

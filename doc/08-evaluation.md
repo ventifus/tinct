@@ -123,7 +123,7 @@ first-ten: [call $collect [call $take 10 $evens]]
 
 **Sequences are coinductive** — they are defined by observations (head/tail), not by construction (Coquand 1994). A sequence is **productive** if every observation step terminates: taking the head yields a value, and forcing the tail yields another sequence (or `[]`).
 
-**tinct makes no static productivity guarantee.** This is a deliberate choice, shared by every practical lazy language with general recursion (Haskell, Nix, Nickel, Jsonnet). Static productivity checking requires either totality (Turner 2004, Dhall's approach — Turing-incomplete) or sized types (Abel & Pientka 2013, Abel 2012 — require constraint solving beyond HM unification, incompatible with tinct's type inference). Guardedness alone is insufficient: Coquand's proof that guardedness implies productivity assumes all sub-computations terminate, which general recursion does not guarantee. Sequence constructors (`$seq`, `$range`, `$repeat`, etc.) currently infer as `Type::Any` — `Type::Seq` inference in `typecheck.rs` is tracked as future work in the type-extensions sprint.
+**tinct makes no static productivity guarantee.** This is a deliberate choice, shared by every practical lazy language with general recursion (Haskell, Nix, Nickel, Jsonnet). Static productivity checking requires either totality (Turner 2004, Dhall's approach — Turing-incomplete) or sized types (Abel & Pientka 2013, Abel 2012 — require constraint solving beyond HM unification, incompatible with tinct's type inference). Guardedness alone is insufficient: Coquand's proof that guardedness implies productivity assumes all sub-computations terminate, which general recursion does not guarantee. Sequence constructors (`$seq`, `$range`, `$repeat`, etc.) infer as `Type::Seq` — see [Type System Extensions](07-type-extensions.md) §Precision.
 
 **Three layers of runtime protection:**
 
@@ -243,7 +243,7 @@ force(θ, d) ⇒ error("maximum evaluation depth exceeded")
 θ.state unchanged             (depth is a stack property, not a thunk property; see Commitment 3)
 ```
 
-FORCE-DEPTH does not update θ.state because the depth limit is context-dependent. The same thunk may succeed when forced at a lower depth. This is the only forcing rule that does not transition the thunk state — it is also the only rule that breaks determinism in the pure subset (the same thunk can produce different results depending on the call-site depth). After the CEK migration removes MAX_EVAL_DEPTH, this rule becomes moot.
+FORCE-DEPTH does not update θ.state because the depth limit is context-dependent. The same thunk may succeed when forced at a lower depth. This is the only forcing rule that does not transition the thunk state — it is also the only rule that breaks determinism in the pure subset (the same thunk can produce different results depending on the call-site depth). The CEK machine replaces MAX_EVAL_DEPTH with configurable resource limits, making this rule moot.
 
 **[FORCE-CACHED]**
 ```
@@ -304,7 +304,7 @@ force(θ, d) ⇒ v
 
 The builtin receives `pd` (the pending depth captured at PendingBuiltin construction time) for its own recursion budget, but the subsequent `force(θ', d+1)` uses the current depth `d`. A PendingBuiltin created at depth 10 but forced at depth 200 runs the builtin with depth-context 10 but recurses at depth 201.
 
-**Depth semantics rationale.** The two-depth design is intentional. `pd` (pending depth) governs the builtin's *internal* materialization budget — how deep the builtin itself may recurse when examining its arguments (e.g., `$merge` materializing both operands). The current depth `d` governs the *continuation* — how deep the result may be forced after the builtin returns. Using `pd` for the builtin preserves the depth budget the caller intended when constructing the PendingBuiltin; using `d` for the continuation reflects the actual call-stack depth at forcing time. This prevents a deeply-deferred PendingBuiltin from circumventing depth limits: the builtin runs with its original budget, but the result is forced at the current (possibly deeper) stack position. After CEK migration, depth tracking is replaced by explicit fuel/stack-size limits, and this two-depth distinction is eliminated.
+**Depth semantics rationale.** The two-depth design is intentional. `pd` (pending depth) governs the builtin's *internal* materialization budget — how deep the builtin itself may recurse when examining its arguments (e.g., `$merge` materializing both operands). The current depth `d` governs the *continuation* — how deep the result may be forced after the builtin returns. Using `pd` for the builtin preserves the depth budget the caller intended when constructing the PendingBuiltin; using `d` for the continuation reflects the actual call-stack depth at forcing time. This prevents a deeply-deferred PendingBuiltin from circumventing depth limits: the builtin runs with its original budget, but the result is forced at the current (possibly deeper) stack position. The iterative evaluator replaces depth tracking with explicit fuel/stack-size limits, eliminating this two-depth distinction.
 
 **[FORCE-CALL]**
 ```
@@ -349,7 +349,7 @@ Six properties essential for call-by-need soundness (Launchbury 1993, Ariola & F
 | **Monotonicity** | Satisfied | DAG has no backward edges; Failed self-edge refines diagnostics only (proven above) |
 | **Adequacy** | Holds for extensions | PendingBuiltin/PendingCall are observationally equivalent to Unevaluated (defunctionalization preserves semantics). Failed extends the codomain from Value⊥ to Value + Error⊥ (absorbing, deterministic) |
 | **Confluence** | Pure subset only | `$include` makes evaluation order observable; in the pure subset, forcing order does not affect final values |
-| **Sharing preservation** | Satisfied | `Rc<Thunk>` ensures identity-based sharing; CEK migration must preserve thunk identity through continuation dispatch |
+| **Sharing preservation** | Satisfied | `Rc<Thunk>` ensures identity-based sharing; the CEK machine preserves thunk identity through continuation dispatch |
 
 ### Semantic Commitments
 
@@ -372,17 +372,17 @@ These states are defunctionalized continuations (Reynolds 1972). Each is observa
 
 The equivalence for PendingCall holds because `eval` of `[call ...]` already performs dynamic dispatch on the callee — if `f_θ` materializes to a Builtin rather than a Function, both the PendingCall path (FORCE-CALL-BUILTIN) and the hypothetical Unevaluated path would dispatch to the same builtin.
 
-The difference is operational: PendingBuiltin/PendingCall avoid constructing AST nodes for deferred computations. A formal adequacy proof would show bisimulation: every forcing sequence starting with `PendingBuiltin(f, args, ...)` produces the same value as forcing `Unevaluated([call $f ...args], env)`. This is conjectured based on the defunctionalization correspondence (Reynolds 1972; Danvy & Nielsen 2003) but not mechanically verified — see TODO.md for mechanized proof obligations.
+The difference is operational: PendingBuiltin/PendingCall avoid constructing AST nodes for deferred computations. A formal adequacy proof would show bisimulation: every forcing sequence starting with `PendingBuiltin(f, args, ...)` produces the same value as forcing `Unevaluated([call $f ...args], env)`. This is conjectured based on the defunctionalization correspondence (Reynolds 1972; Danvy & Nielsen 2003) but not mechanically verified.
 
 ### Relationship to CEK Machine Migration
 
-The planned iterative evaluator (§Iterative Evaluator) subsumes PendingBuiltin and PendingCall into explicit `Cont` variants on the continuation stack. After migration:
+The iterative evaluator (§Iterative Evaluator) subsumes PendingBuiltin and PendingCall into explicit `Cont` variants on the continuation stack. After migration:
 
 - The ThunkState enum simplifies to `{Unevaluated, InProgress, Materialized, Failed}`
 - PendingBuiltin and PendingCall become `Cont::BuiltinDispatch` and `Cont::CallForceFunc` on the explicit stack; both must handle Function and Builtin dispatch after forcing
 - The monotonicity proof and semantic properties carry over unchanged — the state DAG loses two source nodes but gains no new transitions
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Rc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
-- MAX_EVAL_DEPTH should be removed; resource limits become configurable policy (`--max-depth`, `--max-memory`) rather than hardcoded safety bounds
+- MAX_EVAL_DEPTH is replaced by configurable resource limits (`--max-depth`, `--max-memory`) rather than hardcoded safety bounds
 
 ## Selective Materialization — Formal Specification
 
@@ -701,7 +701,7 @@ This dispatch materializes the collection argument to determine its type, then a
 
 **Result type asymmetry:** The Dict and Seq paths of a dual-dispatch builtin may produce different result types. For example, `$filter` on a Dict returns a Seq (not a Dict), because filtered keys are unpredictable. The signature table (Part 2) captures the Seq-path result; see §Type System and Dual-Dispatch Builtins for the full Dict-vs-Seq result matrix.
 
-**CEK migration note:** Dual dispatch becomes a `Cont::CollectionDispatch` continuation that forces the collection, inspects its type, and pushes the appropriate next continuation. The function argument must be preserved on the continuation stack without forcing.
+**In the iterative evaluator,** dual dispatch is a `Cont::CollectionDispatch` continuation that forces the collection, inspects its type, and pushes the appropriate next continuation. The function argument must be preserved on the continuation stack without forcing.
 
 ### Part 5: Derived Selectivity
 
@@ -726,7 +726,7 @@ and(θ_a, θ_b)
   DELTA-IF-FALSE: force(θ_a) ⇒ false → false   (b is never touched)
 ```
 
-This compositional guarantee means that making `$if` lazier (e.g., returning the branch as a thunk in Phase 5b — see §Current vs Planned Laziness Analysis) automatically improves all derived control flow functions without code changes.
+This compositional guarantee means that making `$if` lazier (see §Laziness Design) automatically improves all derived control flow functions without code changes.
 
 ### Part 6: Properties and Guarantees
 
@@ -750,112 +750,104 @@ The signature table is monotonic with respect to the implementation: a builtin m
 
 For dual-dispatch builtins, the Dict and Seq paths must agree on which non-collection arguments are forced. For example, `$map`'s Dict path and Seq path both leave `θ_f` unforced — if one path started materializing `θ_f`, it would break laziness for programs that pass expensive computations as the function argument.
 
-## Current vs Planned Laziness Analysis
+## Laziness Design
 
-This table documents every operation's current materialization behavior and the planned improvement in Phase 5 (TODO.md sprint `sequences-and-laziness`). Phase 5 subphases (5a through 5f) are defined at the end of this section.
+This table documents the laziness behavior of every operation and the rationale for each decision.
 
-| Operation | Current Behavior | Planned Behavior | Phase | Rationale |
-|-----------|------------------|------------------|-------|-----------|
-| **Control Flow** | | | | |
-| `$if` | Materializes condition + chosen branch | Return branch thunk directly (no materialization) | 5b | The chosen branch should stay lazy until accessed by caller |
-| `$and` | Materializes first arg; second materialized only if first is true (short-circuit via `$if`) | No change (already optimal via lazy `$if`) | — | Short-circuit via `[fn [a b] [call $if $a $b false]]` |
-| `$or` | Materializes first arg; second materialized only if first is false (short-circuit via `$if`) | No change (already optimal via lazy `$if`) | — | Short-circuit via `[fn [a b] [call $if $a true $b]]` |
-| `$not` | Materializes argument | No change (must inspect value) | — | Inherently materializing |
-| `$when`, `$unless` | Materializes condition + chosen body via `$if` | Body returned as thunk (implicit benefit from Phase 5b `$if` change) | 5b (implicit) | Delegates to `$if`; no code change needed |
-| `$cond` | Materializes conditions in order + chosen branch via `$if` | Branches returned as thunks (implicit benefit from Phase 5b `$if` change) | 5b (implicit) | Delegates to `$if`; no code change needed |
-| **Dict Operations** | | | | |
-| `$merge` | Eagerly materializes dict structure to access keys; values remain as thunks (Rc clones) | Lazy overlay: right shadows left, O(1) construction, O(k) access per key for k chained merges. Flattens on iteration. Type is still eagerly inferred. | 5b | Lazy overlay is O(1) construction vs O(n) clone; values stay thunks |
-| `$get`, `$get-or` | Structural: returns value thunk | No change (already optimal) | — | Already lazy |
-| `$keys` | Structural: keys always evaluated | No change (keys are never thunks) | — | Keys must be known to construct dict |
-| `$values` | Structural: returns list of thunks | No change (already optimal) | — | Already lazy |
-| `$entries` | Structural: returns list of entry dicts | No change (values stay as thunks) | — | Already lazy |
-| `$set`, `$remove` | Structural: add/remove entries (`$set` delegates to `$merge`, inherits its eager cloning) | No change (values stay as thunks; `$set` benefits implicitly from Phase 5b `$merge` improvement) | — | Already lazy on values |
-| `$update` | Eagerly applies function to old value | Return dict with PendingCall thunk on updated value | 5e | Defers function application until value accessed |
-| `$has?` | Wraps `$try` around access | No change (access is structural) | — | Already optimal |
-| `$get-in`, `$get-in-or` | Materializes each step of path | No change (must traverse nested dicts) | — | Inherently materializing to walk path |
-| `$length` | Materializes dict to count entries | No change (must count entries) | — | Inherently materializing |
-| `$empty?` | Calls `$length` then compares to 0 | No change (inherently materializing) | — | Depends on `$length` |
-| **Universal Collection Ops** | | | | |
-| `$map` on dict | Eager: builds full result dict via repeated merge (O(n²)), values are call thunks (lazy) | Lazy: return dict with PendingCall thunks, O(n) construct / O(1) per access | 5e | Enables lazy dict transforms |
-| `$map` on seq | N/A (Seq not yet implemented) | Lazy: return seq applying function to each element | 5e | Enables infinite sequence transforms |
-| `$filter` on dict | Eager: builds full result dict, O(n²) | Return Seq (must evaluate predicates) | 5e | Predicates must run to know which keys to keep |
-| `$filter` on seq | N/A (Seq not yet implemented) | Lazy: return seq filtering elements | 5e | Lazy sequence filtering |
-| `$reduce`, `$fold` | Materializes accumulator at each step | No change (inherently materializing) | — | Accumulator pattern requires sequential forcing |
-| `$map-entries` | Eager: builds full result dict with accumulator pattern, O(n²) | Return dict with PendingCall thunks on transformed entries | 5e | Same as `$map` on dicts |
-| `$from-entries` | Eagerly reduces entry pairs into dict via `$merge` | No change (must construct concrete dict) | — | Inherently materializing |
-| `$any?`, `$all?` | Short-circuit: materializes elements until condition met/failed | No change (inherently materializing) | — | Predicates must run |
-| `$until` | Eagerly iterates until predicate holds | No change (inherently materializing) | — | Must evaluate predicate each step |
-| `$find-deep` | Materializes while searching | No change (inherently materializing) | — | Must traverse structure |
-| `$flatten` | Eagerly traverses and rebuilds | No change (must inspect values to check if list) | — | Inherently materializing |
-| `$zip` | Eagerly builds paired dict | Return lazy Seq for sequences; eager for dicts | 5e | Seq zip is lazy, dict zip is materializing |
-| **List Operations** | | | | |
-| `$first` | Structural: returns first value thunk | No change (already optimal) | — | Already lazy |
-| `$nth`, `$last` | Structural: returns value thunk by position | No change (already optimal) | — | Already lazy |
-| `$rest` | Eagerly clones dict minus first entry | Return Seq tail for sequences; O(1) | 5e | Seq `rest` is O(1) vs O(n) dict clone |
-| `$cons` | Eagerly clones and shifts all entries | Return Seq cons for sequences; O(1) | 5e | Seq `cons` is O(1) vs O(n) dict clone |
-| `$conj` | Materializes + clones dict O(n), inserts new entry O(1) (delegates to `$append` builtin) | No change (acceptable for dicts) | — | O(n) clone + O(1) insert |
-| `$concat` | Eagerly clones and merges both lists | Return Seq concat for sequences | 5e | Seq concat is lazy, dict concat is eager |
-| `$reverse` | Eagerly builds reversed dict | No change (must know all entries to reverse) | — | Inherently materializing |
-| `$reindex` | Eagerly rebuilds with dense 0..n keys | No change (must traverse all entries) | — | Inherently materializing |
-| `$sort`, `$sort-by` | Eagerly materializes all values to compare | No change (inherently materializing) | — | Must compare all values to sort |
-| `$take` | Positional slice: preserves thunks | Dual-dispatch: Dict preserves keys, Seq returns finite Seq | ✓ 5d | Seq `take` is O(1), dict `take` is structural |
-| `$drop` | Positional slice: preserves thunks | Return lazy Seq for sequences | 5e | Seq `drop` is O(1), dict `drop` is structural |
-| `$slice` | Positional slice: preserves thunks | No change (already optimal for dicts) | — | Already lazy on values |
-| **Sequences** | | | | |
-| `$range` | Eager: builds full dict O(n²) | Return lazy Seq, O(1) construction; 1-arg infinite, 2-arg finite | ✓ 5d | Enables infinite ranges |
-| `$repeat` | Eager: builds full dict | Return lazy infinite Seq, O(1) construction; 1-arg only | ✓ 5d | Enables infinite repetition |
-| `$cycle` | Eager: builds full dict | Return lazy infinite Seq, O(1) construction; 1-arg only | ✓ 5d | Enables infinite cycling |
-| `$iterate` | Not yet implemented | Return lazy infinite Seq: `x, f(x), f(f(x)), ...` | ✓ 5d | New lazy sequence constructor |
-| `$unfold` | Not yet implemented | Return lazy Seq from step function | ✓ 5d | New lazy sequence constructor |
-| `$seq` | Implemented (5c½) | Low-level Seq constructor (cons cell) | 5c½ | Rust builtin for Seq construction |
-| `$collect` | Implemented (5c½) | Materialize Seq into dict with integer keys 0..n | 5c½ | Seq → Dict boundary |
-| `$head` | Implemented (5c½) | Extract head of Seq (returns thunk, lazy) | 5c½ | Structural Seq operation |
-| `$tail` | Implemented (5c½) | Return tail Seq (lazy, does not materialize) | 5c½ | Structural Seq operation |
-| `$seq?` | Implemented (5c½) | Type check: returns Bool | 5c½ | Type introspection |
-| **Arithmetic & Comparison** | | | | |
-| `$+`, `$-`, `$*`, `$/` | Materialize both operands | No change (inherently materializing) | — | Must inspect numeric values |
-| `$quot`, `$mod` | Materialize both operands | No change (inherently materializing) | — | Depends on arithmetic |
-| `$=`, `$<`, `$>`, `$<=`, `$>=` | Materialize both operands | No change (inherently materializing) | — | Must compare values |
-| `$to-int`, `$to-float` | Materialize argument | No change (inherently materializing) | — | Must parse/convert value |
-| `$floor`, `$ceil`, `$round`, `$trunc` | Materialize argument | No change (inherently materializing) | — | Must inspect numeric value |
-| **Strings** | | | | |
-| `$str` | Materialize all arguments | No change (inherently materializing) | — | Must concatenate string content |
-| `$split`, `$replace`, `$upper`, `$lower`, `$trim` | Materialize argument | No change (inherently materializing) | — | Must inspect string content |
-| `$join` | Materializes separator + all list elements | No change (inherently materializing) | — | Must concatenate all strings |
-| `$words` | Materializes string, filters empty | No change (inherently materializing) | — | Depends on `$split` |
-| **Composition** | | | | |
-| `$apply` | Double-forces: materializes invoke_function result thunk | Return thunk directly | 5b | Current impl materialize+rewrap; should return invoke_function thunk as-is |
-| `$identity` | Structural: returns argument thunk | No change (already optimal) | — | Already lazy |
-| `$compose` | Structural: returns function thunk | No change (functions are always thunks) | — | Already lazy |
-| `$->` (threading) | Structural: threads thunk through functions | No change (already optimal) | — | Already lazy |
-| **Runtime & Introspection** | | | | |
-| `$eval` | Deep-forces all thunks recursively | No change (inherently materializing by definition) | — | Explicit materialization primitive |
-| `$type-of` | Materializes argument to inspect type | No change (inherently materializing) | — | Must know runtime type |
-| `$error` | Structural: constructs error value | No change (error is a value) | — | Structural |
-| `$try`, `$try-or` | Materializes body, catches exceptions | No change (must run body to catch errors) | — | Inherently materializing |
-| `$assert` | Materializes condition | No change (inherently materializing) | — | Must check condition |
-| `$from-json` | Materializes JSON string, parses | No change (inherently materializing) | — | Must parse entire JSON |
-| `$include` | Evaluates file, returns thunk | Add caching: return cached thunk on re-include | 5f | Jsonnet-style include memoization |
-| **Internal (eval.rs)** | | | | |
-| `eval_key` (dict construction) | Materializes all dict keys | No change (IndexMap requires concrete keys) | — | Keys must be known for dict insertion |
-| `eval_as_dict` (access chains) | Materializes target for access | No change (must know dict structure to access) | — | Inherently materializing to perform access |
-| `builtin_keys` | Materializes dict | No change (keys are always evaluated) | — | Keys are never thunks |
+| Operation | Behavior | Rationale |
+|-----------|----------|-----------|
+| **Control Flow** | | |
+| `$if` | Returns branch thunk directly (no materialization of branch) | The chosen branch stays lazy until accessed by caller |
+| `$and` | Materializes first arg; second only if first is true (short-circuit via `$if`) | Short-circuit via `[fn [a b] [call $if $a $b false]]` |
+| `$or` | Materializes first arg; second only if first is false (short-circuit via `$if`) | Short-circuit via `[fn [a b] [call $if $a true $b]]` |
+| `$not` | Materializes argument | Must inspect value |
+| `$when`, `$unless` | Materializes condition; body returned as thunk | Body returned lazy via `$if` |
+| `$cond` | Materializes conditions left-to-right; first matching branch returned as thunk | Delegates to `$if`; no code change needed |
+| **Dict Operations** | | |
+| `$merge` | Lazy overlay: right shadows left, O(1) construction, O(k) per key for k chained merges | Lazy overlay is O(1) construction vs O(n) clone; values stay thunks |
+| `$get`, `$get-or` | Returns value thunk (structural) | Already lazy |
+| `$keys` | Keys always evaluated | Keys are never thunks |
+| `$values` | Returns list of thunks | Already lazy |
+| `$entries` | Returns list of entry dicts (values stay as thunks) | Already lazy |
+| `$set`, `$remove` | Values stay as thunks | Already lazy on values |
+| `$update` | Returns dict with PendingCall thunk on updated value | Defers function application until value accessed |
+| `$has?` | Wraps `$try` around access (structural) | Already optimal |
+| `$get-in`, `$get-in-or` | Materializes each step of path | Must traverse nested dicts |
+| `$length` | Materializes dict to count entries | Must count entries |
+| `$empty?` | Calls `$length` then compares to 0 | Depends on `$length` |
+| **Universal Collection Ops** | | |
+| `$map` on dict | Returns dict with PendingCall thunks, O(n) construct / O(1) per access | Enables lazy dict transforms |
+| `$map` on seq | Returns seq applying function to each element (lazy) | Enables infinite sequence transforms |
+| `$filter` on dict | Returns Seq (must evaluate predicates) | Predicates must run to know which keys to keep |
+| `$filter` on seq | Returns seq filtering elements (lazy) | Lazy sequence filtering |
+| `$reduce`, `$fold` | Materializes accumulator at each step | Accumulator pattern requires sequential forcing |
+| `$map-entries` | Returns dict with PendingCall thunks on transformed entries | Same as `$map` on dicts |
+| `$from-entries` | Eagerly reduces entry pairs into dict | Must construct concrete dict |
+| `$any?`, `$all?` | Short-circuit: materializes elements until condition met/failed | Predicates must run |
+| `$until` | Iterates until predicate holds | Must evaluate predicate each step |
+| `$find-deep` | Materializes while searching | Must traverse structure |
+| `$flatten` | Traverses and rebuilds | Must inspect values to check if list |
+| `$zip` | Lazy Seq for sequences; eager for dicts | Seq zip is lazy, dict zip is materializing |
+| **List Operations** | | |
+| `$first` | Returns first value thunk (structural) | Already lazy |
+| `$nth`, `$last` | Returns value thunk by position (structural) | Already lazy |
+| `$rest` | Returns Seq tail for sequences; O(1) | Seq `rest` is O(1) vs O(n) dict clone |
+| `$cons` | Returns Seq cons for sequences; O(1) | Seq `cons` is O(1) vs O(n) dict clone |
+| `$conj` | Materializes + clones dict O(n), inserts new entry O(1) | O(n) clone + O(1) insert |
+| `$concat` | Returns Seq concat for sequences | Seq concat is lazy, dict concat is eager |
+| `$reverse` | Builds reversed dict | Must know all entries to reverse |
+| `$reindex` | Rebuilds with dense 0..n keys | Must traverse all entries |
+| `$sort`, `$sort-by` | Materializes all values to compare | Must compare all values to sort |
+| `$take` | Dual-dispatch: Dict preserves keys, Seq returns finite Seq (O(1)) | Seq `take` is O(1), dict `take` is structural |
+| `$drop` | Returns lazy Seq for sequences | Seq `drop` is O(1), dict `drop` is structural |
+| `$slice` | Positional slice; preserves thunks | Already lazy on values |
+| **Sequences** | | |
+| `$range` | Lazy Seq, O(1) construction; 1-arg infinite, 2-arg finite | Enables infinite ranges |
+| `$repeat` | Lazy infinite Seq, O(1) construction | Enables infinite repetition |
+| `$cycle` | Lazy infinite Seq, O(1) construction | Enables infinite cycling |
+| `$iterate` | Lazy infinite Seq: `x, f(x), f(f(x)), ...` | New lazy sequence constructor |
+| `$unfold` | Lazy Seq from step function | New lazy sequence constructor |
+| `$seq` | Low-level Seq constructor (cons cell); both args pass through as thunks | Rust builtin for Seq construction |
+| `$collect` | Materializes Seq spine; head thunks pass through into dict | Seq → Dict boundary |
+| `$head` | Materializes container to verify Seq; returns head thunk (not forced) | Structural Seq operation |
+| `$tail` | Materializes container to verify Seq; returns tail thunk (not forced) | Structural Seq operation |
+| `$seq?` | Materializes argument; returns Bool | Type introspection |
+| **Arithmetic & Comparison** | | |
+| `$+`, `$-`, `$*`, `$/` | Materializes both operands | Must inspect numeric values |
+| `$quot`, `$mod` | Materializes both operands | Depends on arithmetic |
+| `$=`, `$<`, `$>`, `$<=`, `$>=` | Materializes both operands | Must compare values |
+| `$to-int`, `$to-float` | Materializes argument | Must parse/convert value |
+| `$floor`, `$ceil`, `$round`, `$trunc` | Materializes argument | Must inspect numeric value |
+| **Strings** | | |
+| `$str` | Materializes all arguments | Must concatenate string content |
+| `$split`, `$replace`, `$upper`, `$lower`, `$trim` | Materializes argument | Must inspect string content |
+| `$join` | Materializes separator + all list elements | Must concatenate all strings |
+| `$words` | Materializes string, filters empty | Depends on `$split` |
+| **Composition** | | |
+| `$apply` | Returns invoke_function thunk directly (no extra materialization) | Avoids unnecessary materialize+rewrap |
+| `$identity` | Returns argument thunk (structural) | Already lazy |
+| `$compose` | Returns function thunk | Functions are always thunks |
+| `$->` (threading) | Threads thunk through functions (structural) | Already lazy |
+| **Runtime & Introspection** | | |
+| `$eval` | Deep-forces all thunks recursively | Explicit materialization primitive |
+| `$type-of` | Materializes argument to inspect type | Must know runtime type |
+| `$error` | Constructs error value (structural) | Structural |
+| `$try`, `$try-or` | Materializes body, catches exceptions | Must run body to catch errors |
+| `$assert` | Materializes condition | Must check condition |
+| `$from-json` | Materializes JSON string, parses | Must parse entire JSON |
+| `$include` | Evaluates file; returns cached thunk on re-include | Include memoization |
+| **Internal (eval.rs)** | | |
+| `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
+| `eval_as_dict` (access chains) | Materializes target for access | Must know dict structure to access |
+| `builtin_keys` | Materializes dict | Keys are never thunks |
 
 **Error reporting impact:** Operations that shift from eager to lazy (e.g., `$if`, `$merge`, `$map`) will report errors at access time rather than construction time. This provides more accurate source locations (pointing to where materialization failed) but changes error timing. Inherently materializing operations continue to produce errors at call time.
-
-**Summary of Phase 5 changes:**
-- **5a**: Add `PendingCall` and `Failed` thunk states
-- **5b**: Change `BuiltinFn` return type to `Rc<Thunk>`; make `$if`, `$merge`, `$apply` lazier
-- **5c**: Add `Value::Seq` and basic Seq builtins (`seq`, `head`, `tail`, `collect`, `seq?`)
-- **5d**: Convert `$range`, `$repeat`, `$cycle` to Seq constructors; add `$iterate`, `$unfold`
-- **5e**: Make `$map`/`$filter` dual-dispatch (dict vs Seq); make `$update` use PendingCall
-- **5f**: Add include caching
 
 ---
 
 ## Allocation Strategy
 
-**Decision:** Two-phase strategy. "Phase 1" and "Phase 2" here refer to this section's allocation-specific phases (mapped to TODO.md sprints `perf-foundations` and `iterative-eval`), not the Phase 5/8/9 sprint numbering used elsewhere in this document. Phase 1 applies backward-compatible optimizations to the current `Rc<Thunk>` + `IndexMap<String, Rc<Thunk>>` runtime. Phase 2 introduces arena allocation and flat environments bundled with the iterative evaluator (`iterative-eval`).
+**Decision:** Two-phase strategy. Phase 1 applies backward-compatible optimizations to the current `Rc<Thunk>` + `IndexMap<String, Rc<Thunk>>` runtime. Phase 2 introduces arena allocation and flat environments bundled with the iterative evaluator.
 
 **Current allocation profile:**
 
@@ -866,7 +858,7 @@ This table documents every operation's current materialization behavior and the 
 | Dict keys | `Key::String(String)` | Cloned 2× per dict entry (env bindings + dict_map) |
 | Thunk origin | `origin: String` | Allocated per thunk, usually empty |
 
-**Phase 1 (perf-foundations):** Backward-compatible optimizations. Baseline: ~113 `Rc::new(Thunk)` calls in eval.rs, ~142 `IndexMap::new()` calls in builtins.rs. Expected impact: 75-85% of addressable allocation cost.
+**Phase 1:** Backward-compatible optimizations. Baseline: ~113 `Rc::new(Thunk)` calls in eval.rs, ~142 `IndexMap::new()` calls in builtins.rs. Expected impact: 75-85% of addressable allocation cost.
 
 - **Dict literal fast-path** (Nix `maybeThunk`): In `eval_dict`, when `entry.value.node` is `Int|Float|Bool|Str`, create `Materialized` thunks directly instead of wrapping in `Unevaluated`. Eliminates ~40-60% of thunk allocations for config-heavy files. Safe because literals are side-effect-free, deterministic, and don't participate in letrec cycles.
 - **String interning**: `HashSet<Rc<str>>` with `Borrow<str>` lookup (avoids key duplication of `HashMap<String, Rc<str>>`). Interns *structural identifiers only* — `Key::String`, variable names, builtin names, and thunk origins. Does NOT intern user data strings (may be large and unique). Reduces key cloning to `Rc::clone` and enables O(1) pointer-equality comparison. Scoped to evaluation session lifetime (lives in `EvalContext`, cleared per `eval_file()`). Production alternative: `lasso::Rodeo` for zero-copy Spur handles.
@@ -877,9 +869,9 @@ This table documents every operation's current materialization behavior and the 
 - **SmallVec**: `SmallVec<[Rc<Thunk>; 4]>` for call args (most calls have ≤4 args), `SmallVec<[StackFrame; 8]>` for error stacks.
 - **Origin optimization**: `origin: String` → `Rc<str>` via string interner, with static empty sentinel for the common case.
 
-**Phase 2 (iterative-eval):** Arena allocation + flat environments, bundled with the recursive-to-iterative evaluator conversion.
+**Phase 2:** Arena allocation + flat environments, bundled with the recursive-to-iterative evaluator conversion.
 
-- **Arena allocator**: Replace `Rc<Thunk>` with arena-allocated thunks. Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB). Alternatives (typed-arena, bumpalo) require unsafe and don't offer clear wins for LLT's use case.
+- **Arena allocator**: Replace `Rc<Thunk>` with arena-allocated thunks. Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB). Alternatives (typed-arena, bumpalo) require unsafe and don't offer clear wins for Tinct's use case.
 - **Flat environments with slot indices**: Replace `IndexMap<String, Rc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe (each call writes to its own activation frame).
 - **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection.
 
@@ -945,21 +937,21 @@ Per execution context:
 
 **`$include` interaction:** Included files are evaluated in their own arena. The include cache stores migrated results — the cache outlives any single section's arena. An `$include` call returns an already-migrated `Rc`-backed value, which is arena-independent and can be used freely across sections. This creates a controlled one-way dependency within sections: arena-allocated thunks may reference `Rc`-backed `$include` results, but never the reverse. This is structurally determined (section-local = arena, imported = Rc) and does not require per-thunk escape analysis — the "hybrid arena+Rc" alternative (rejected above) fails because it requires per-thunk decisions, not because mixing storage backends is inherently unsound.
 
-**Rationale:** The iterative evaluator is already planned and shares prerequisites with arena allocation — both require explicit frame management and compile-time analysis. Bundling avoids two separate invasive refactors. Phase 1 captures 75-85% of addressable allocation wins with near-zero risk. Profiling data from Phase 1 guides whether Phase 2's arena is necessary.
+**Rationale:** The iterative evaluator shares prerequisites with arena allocation — both require explicit frame management and compile-time analysis. Bundling avoids two separate invasive refactors. Phase 1 captures 75-85% of addressable allocation wins with near-zero risk. Profiling data from Phase 1 guides whether Phase 2's arena is necessary.
 
 **Measurement plan:** Phase 1 must establish baseline metrics before and after optimization: total allocations per eval (count `Rc::new`, `IndexMap::new`, `Vec::new`), peak memory usage (heaptrack RSS on dict-heavy and deeply-nested workloads), and allocation hotspots (which paths account for >10% of allocations). Decision threshold for Phase 2: if Phase 1 achieves >80% allocation reduction, defer Phase 2 indefinitely; if <50%, proceed.
 
 **Key tradeoff:** Environment lookup stays O(depth) until Phase 2, but string interning makes each lookup step cheaper (pointer comparison vs byte comparison), and the literal fast-path reduces total thunk allocations significantly.
 
-**Precedent:** Nix uses flat `Value*[]` arrays with de Bruijn levels and Boehm GC. Jsonnet uses GC heap with flat bindings. Nickel uses `Rc<RefCell<Closure>>` (same as LLT's current approach). Phase 1 keeps LLT at Nickel's level; Phase 2 moves toward Nix's level.
+**Precedent:** Nix uses flat `Value*[]` arrays with de Bruijn levels and Boehm GC. Jsonnet uses GC heap with flat bindings. Nickel uses `Rc<RefCell<Closure>>` (same as Tinct's current approach). Phase 1 keeps Tinct at Nickel's level; Phase 2 moves toward Nix's level.
 
-**Constraint:** Phase 2's arena model must handle letrec self-reference safely in Rust (thunk slots allocated before fill, no dangling pointers). Research into safe Rust arena patterns (typed-arena, bumpalo, or index-based arenas with `Vec<Thunk>` + `ThunkId` handles) is required before Phase 2 implementation. Study how Rust projects (salsa, rustc's `ty::TyCtxt`, cranelift) solve arena + interior references.
+**Constraint:** Phase 2's arena model must handle letrec self-reference safely in Rust (thunk slots allocated before fill, no dangling pointers). The safe Rust arena patterns are analyzed in `doc/whatif/arena-patterns.md` — the recommended approach is an index-based arena (`Vec<Thunk>` + `ThunkId` handles), following the cranelift entity pattern.
 
 ## Iterative Evaluator (CEK Machine)
 
 **Decision:** Replace the recursive `eval()` / `materialize()` call stack with an iterative CEK machine (Control-Environment-Kontinuation). Continuations are defunctionalized — each closure that CPS would create becomes a variant in a `Cont` enum, stored in a `Vec<Cont>` stack.
 
-**Problem:** `eval()` and `materialize()` are mutually recursive across 8+ call patterns. Deeply-nested lazy chains exhaust the Rust call stack before `MAX_EVAL_DEPTH` fires. LLT works around this with a 64MB worker thread stack.
+**Problem:** `eval()` and `materialize()` are mutually recursive across 8+ call patterns. Deeply-nested lazy chains exhaust the Rust call stack before `MAX_EVAL_DEPTH` fires. Tinct works around this with a 64MB worker thread stack.
 
 **Architecture:** Two enums, one loop.
 
@@ -1072,7 +1064,7 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Cont variant count:** ~18-20 variants, one per continuation point in the current recursive evaluator. Each variant stores only its specific continuation data (Rc pointers + Span + small fields). Target frame size: ≤96 bytes per Cont (achieved by boxing large fields in the biggest variants).
 
-**Relationship to perf-foundations:** This design is Phase 2 of the allocation strategy. Arena allocation and flat environments integrate naturally: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
+**Relationship to allocation strategy:** This design is Phase 2 of the allocation strategy. Arena allocation and flat environments integrate naturally: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
 **Precedent:** Jsonnet's VM uses 22 `FrameKind` variants with a value register (production-tested at Google). Nickel uses an iterative stack machine with `OpFirst`/`OpSecond` continuations (production Rust). Both are defunctionalized CPS machines. The theoretical foundation is Felleisen & Friedman's CEK machine.
 

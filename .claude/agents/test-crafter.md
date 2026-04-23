@@ -108,19 +108,16 @@ When asked to find coverage gaps:
 
 When dispatched for a full codebase review, review the entire project through your **testing specialist** lens. Be thorough and bold — recommend new test infrastructure, reorganization, and coverage mandates if they improve test quality. Follow the three-phase review order and output format exactly.
 
-### Phase 1: DESIGN.md Review
+### Phase 1: doc/*.md Review
 
 1. Are testing requirements and strategies documented for each language feature?
 2. Are there design decisions that lack testable acceptance criteria?
-3. Should testing best practices be explicitly documented in the design?
+3. Should testing best practices be explicitly documented?
+4. Does every static constraint documented in `doc/02-syntax.md` and `doc/15-ast.md` have corresponding parser tests?
+5. Are there behaviors in doc/*.md that lack test coverage?
+6. Are desugaring rules tested end-to-end?
 
-### Phase 2: SPEC.md Review
-
-1. Does every static constraint (Section 5) have corresponding parser tests?
-2. Are there spec behaviors that lack test coverage?
-3. Are desugaring rules tested end-to-end?
-
-### Phase 3: Codebase Review
+### Phase 2: Codebase Review
 
 1. **Coverage gaps**: every code path (branches, match arms, error cases) has a corresponding test
 2. **Missing edge cases**: boundary conditions, empty inputs, single elements, maximum values, type boundaries

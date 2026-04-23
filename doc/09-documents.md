@@ -17,7 +17,7 @@ Within a document, sequential expressions form a scope chain — each expression
 
 ## Document Structure
 
-An LLT **file** contains one or more **documents** separated by `---`. Each document contains one or more **expressions**. This three-level hierarchy governs scoping, isolation, and data flow.
+An Tinct **file** contains one or more **documents** separated by `---`. Each document contains one or more **expressions**. This three-level hierarchy governs scoping, isolation, and data flow.
 
 ```
 file
@@ -33,7 +33,7 @@ file
 
 ## Within a Document: Scope Chains
 
-LLT has one scoping mechanism -- lexical scope with parent chains -- applied at two levels:
+Tinct has one scoping mechanism -- lexical scope with parent chains -- applied at two levels:
 
 1. **Within a dict (letrec):** All entries in a single `[...]` share one environment. Entries can reference each other regardless of order, including mutual recursion. This is the same as Haskell's `let`/`where` or OCaml's `let rec`.
 
@@ -107,16 +107,16 @@ The builtin scope (stdlib functions like `$+`, `$map`, `$eval`, etc.) is the roo
 
 ### Comparison with Other Languages
 
-| Language | Within-block scoping | Sequential scoping | LLT equivalent |
+| Language | Within-block scoping | Sequential scoping | Tinct equivalent |
 |----------|---------------------|-------------------|----------------|
 | Haskell | `where` / `let` (letrec, mutual recursion) | top-level defs (single letrec) | Dict entries |
 | OCaml | `let rec ... and ...` (explicit letrec) | `let x = ... in let y = ...` (sequential) | Expr 1 then Expr 2 |
 | Scheme | `letrec` (mutual visibility) | `let*` (sequential, each sees prior) | Both available |
 | JavaScript | Block scope (`const`/`let`, no mutual ref) | Sequential statements | Different: JS has no letrec |
-| Nix | Attribute set (`rec { }`, mutual ref) | `let ... in` (sequential) | Similar to LLT |
+| Nix | Attribute set (`rec { }`, mutual ref) | `let ... in` (sequential) | Similar to Tinct |
 | Jsonnet | Object (self/super, late binding) | No sequential model | Similar within-block |
 
-LLT is closest to **Nix**: `rec { }` attribute sets are letrec (mutual visibility), and `let x = ...; in` introduces sequential bindings. The key difference is that LLT uses the same `[...]` syntax for both -- a single dict is letrec, and sequential expressions in a document form a chain. There is no separate `let` keyword.
+Tinct is closest to **Nix**: `rec { }` attribute sets are letrec (mutual visibility), and `let x = ...; in` introduces sequential bindings. The key difference is that Tinct uses the same `[...]` syntax for both -- a single dict is letrec, and sequential expressions in a document form a chain. There is no separate `let` keyword.
 
 ### Scope Chain Semantics — Formal Specification
 
@@ -273,7 +273,7 @@ Five properties that hold for all well-formed tinct programs. Each property foll
 
 *Proof sketch:* By induction on environment construction. Base case: `ρ_builtins` has `parent = None` — no cycle. Inductive step: both DICT-SCOPE and SEQ-SCOPE create fresh environments via `Environment::with_parent(ρ_existing)`. The new environment's parent is an already-constructed environment. Since environments are allocated with `Rc::new(RefCell::new(...))` and the parent pointer is set once at construction to an existing environment, no environment can have itself as an ancestor. Formally: define depth `d(ρ)` as the number of parent links from `ρ` to `ρ_builtins` (so `d(ρ_builtins) = 0`). DICT-SCOPE and SEQ-SCOPE both satisfy `d(ρ_new) = d(ρ_parent) + 1`, so depth strictly increases. A cycle would require `d(ρ) > d(ρ)`, a contradiction. ∎
 
-**Parent chain vs capture graph:** This property concerns the *parent chain* (`env.parent` links), which is the graph walked by LOOKUP. The *capture graph* (`thunk.env` links) does contain cycles in letrec scopes: `ρ_dict` holds thunks that close over `ρ_dict` itself (via `Rc::clone(&dict_env)` at `eval.rs:342`). These capture cycles do not affect LOOKUP termination (LOOKUP walks only parent links) or semantic correctness. They do prevent `Rc` deallocation of letrec environments (since `Rc` cannot collect cycles), which is a known memory management limitation addressed by the planned arena migration (§Allocation Strategy — Phased Approach).
+**Parent chain vs capture graph:** This property concerns the *parent chain* (`env.parent` links), which is the graph walked by LOOKUP. The *capture graph* (`thunk.env` links) does contain cycles in letrec scopes: `ρ_dict` holds thunks that close over `ρ_dict` itself (via `Rc::clone(&dict_env)` at `eval.rs:342`). These capture cycles do not affect LOOKUP termination (LOOKUP walks only parent links) or semantic correctness. They do prevent `Rc` deallocation of letrec environments (since `Rc` cannot collect cycles), which is a known memory management limitation addressed by the arena migration (§Allocation Strategy — Phased Approach in [Evaluation](08-evaluation.md)).
 
 **Property 5: Determinism**
 
@@ -281,7 +281,7 @@ Five properties that hold for all well-formed tinct programs. Each property foll
 
 *Proof sketch:* LOOKUP is deterministic by construction — it is a linear scan of a fixed chain with a deterministic stopping condition (first match or `None`). DICT-SCOPE processes entries in source order; key evaluation in `ρ_parent` is deterministic by induction (keys are expressions evaluated in an already-determined environment); duplicate detection is deterministic (insertion-order `IndexMap`). SEQ-SCOPE processes expressions in source order, materializing each intermediate result deterministically. The only potential source of non-determinism — letrec evaluation order — is resolved by lazy evaluation: thunks are created in source order but forced on demand, and Ariola & Felleisen's (1997) confluence theorem (for the storeless calculus, transferred to tinct's heap model via Launchbury's (1993) adequacy result) guarantees that the order of forcing does not affect the final value in the pure call-by-need calculus. Non-determinism enters only through `$include` (file system I/O), which is outside the pure subset. ∎
 
-**Depth and FORCE-DEPTH:** Determinism holds for the full input tuple `(exprs, ρ, d)` — depth `d` is part of the input, not ambient context. The same thunk may produce different results when forced at different depths (FORCE-DEPTH is the only forcing rule that does not transition thunk state — see Semantic Commitment 3 in §Thunk Lifecycle). This is not non-determinism but context-sensitivity: `eval_document` with a fixed `d` is a deterministic function. After the CEK migration removes MAX_EVAL_DEPTH, this caveat becomes moot.
+**Depth and FORCE-DEPTH:** Determinism holds for the full input tuple `(exprs, ρ, d)` — depth `d` is part of the input, not ambient context. The same thunk may produce different results when forced at different depths (FORCE-DEPTH is the only forcing rule that does not transition thunk state — see Semantic Commitment 3 in §Thunk Lifecycle). This is not non-determinism but context-sensitivity: `eval_document` with a fixed `d` is a deterministic function. The CEK machine removes MAX_EVAL_DEPTH, making this caveat moot.
 
 #### Part 5: Implementation Correspondence
 
@@ -472,7 +472,7 @@ The include system maintains mutable state `Σ` shared across nested include cal
 
 `Σ` is stored in a thread-local (`INCLUDE_CTX`). All mutations are scoped: `guard` entries are pushed before recursion and popped after (even on error); `base_dir` is saved and restored around each include. `cache` entries are append-only — once a file is cached, its result is never replaced.
 
-**Thread-local model:** `Σ` uses thread-local storage rather than parameter threading. This is an implementation choice (builtins receive `BuiltinArgs`, not `Σ`), not a semantic requirement. The planned EvalContext migration (§EvalContext) will replace the thread-local with an explicit `Rc<RefCell<EvalContext>>` parameter, but the formal semantics are unchanged — `Σ` transitions are the same regardless of how `Σ` is threaded.
+**Threading model:** `Σ` is threaded via `Rc<RefCell<EvalContext>>` — the `EvalContext` parameter passed through all evaluation functions. The formal semantics are independent of the threading mechanism — `Σ` transitions are the same regardless of how `Σ` is carried.
 
 ### Part 2: Path Resolution
 
@@ -490,11 +490,11 @@ resolve(path_str, Σ.base_dir):
 
 Canonicalization serves two purposes: (1) cycle detection requires path identity — `./lib/../lib/utils.llt` and `lib/utils.llt` must resolve to the same key; (2) caching requires the same identity guarantee. Canonicalization fails with an I/O error if the path does not exist on the filesystem.
 
-**Allowlist check (planned):** When the filesystem allowlist (§Sandboxing & Security) is implemented, an INCLUDE-DENY rule will be inserted between RESOLVE and INCLUDE-HIT, rejecting paths outside allowed directories before consulting the cache. The check ordering specified in §Sandboxing is: canonicalize → allowlist → cache → cycle → read.
+**Allowlist check:** An INCLUDE-DENY rule is inserted between RESOLVE and INCLUDE-HIT, rejecting paths outside allowed directories before consulting the cache. The check ordering is: canonicalize → allowlist → cache → cycle → read.
 
 ### Part 3: Include Rules
 
-Three rules cover the three possible outcomes of an include call. They are checked in priority order: cache → cycle → evaluate. (When the allowlist is implemented, a fourth outcome — INCLUDE-DENY — will precede all three.)
+Three rules cover the three possible outcomes of an include call. They are checked in priority order: cache → cycle → evaluate. A fourth outcome — INCLUDE-DENY — precedes all three when the path falls outside the allowed directories.
 
 In all rules below, `d` is the evaluation depth and `s` is the call-site span (used for error reporting but not for rule selection).
 
@@ -628,13 +628,12 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 
 ## Pure Language, CLI Handles I/O
 
-LLT is a pure data transformation language with no in-language side effects, modulo `$include`, which performs filesystem I/O as a controlled side effect with sandboxing (similar to Nix's `import` and Dhall's `import`). The program evaluates to a value; the CLI serializes it:
+Tinct is a pure data transformation language with no in-language side effects, modulo `$include`, which performs filesystem I/O as a controlled side effect with sandboxing (similar to Nix's `import` and Dhall's `import`). The program evaluates to a value; the CLI serializes it:
 
 ```
 tinct eval file.llt              # evaluate, output result as JSON
-tinct eval -f yaml file.llt      # output as YAML (not yet implemented -- deferred)
 tinct eval --eval file.llt       # deep-force all thunks before serializing (surfaces errors before partial output)
-tinct eval -                     # read LLT source from stdin
+tinct eval -                     # read Tinct source from stdin
 cat data.json | tinct eval file.llt  # stdin JSON parsed and injected as $$ for first document
 ```
 
