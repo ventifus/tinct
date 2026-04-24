@@ -160,7 +160,7 @@ fn register_type_aliases(
             if let Some(ref key) = entry.node.key {
                 if let Expr::Str(name) = &key.node {
                     if let Expr::TypeAlias(inner) = &entry.node.value.node {
-                        match resolve_type_expr(inner, resolve_env, state) {
+                        match resolve_type_expr(inner, resolve_env, state, &mut None) {
                             Ok(alias_ty) => {
                                 target_env.insert_type_alias(name.clone(), alias_ty);
                             }
@@ -212,7 +212,28 @@ fn infer_expr(
             func,
             args,
             named_args,
-        } => check_call(func, args, named_args, env, expr.span, state, type_map),
+        } => {
+            // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
+            // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
+            // For monomorphic schemes, use the normal path which handles TypeVar correctly.
+            if let Expr::VarRef(name) = &func.node {
+                match env.get(name) {
+                    Some(scheme) if !scheme.type_vars.is_empty() || !scheme.row_vars.is_empty() => {
+                        // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
+                        check_call_with_scheme(
+                            scheme, args, named_args, env, expr.span, state, type_map,
+                        )
+                    }
+                    Some(_) => {
+                        // Monomorphic scheme: use normal path which handles TypeVar during letrec
+                        check_call(func, args, named_args, env, expr.span, state, type_map)
+                    }
+                    None => Err(vec![TypeError::undefined_variable(name, func.span)]),
+                }
+            } else {
+                check_call(func, args, named_args, env, expr.span, state, type_map)
+            }
+        }
 
         Expr::Fn {
             return_ann,
@@ -229,7 +250,8 @@ fn infer_expr(
         } => resolve_type_assert(annotation, inner, env, expr.span, state, type_map),
 
         Expr::Annotated { name, annotation } => {
-            resolve_annotated(name, annotation, env, expr.span, state).map_err(|e| vec![e])
+            resolve_annotated(name, annotation, env, expr.span, state, &mut None)
+                .map_err(|e| vec![e])
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(
@@ -286,6 +308,11 @@ fn check_expr(
         {
             // Only use lambda checking mode if expected type is fully concrete
             if !expected.has_type_vars() {
+                // Create a fresh annotation mapping for this lambda to prevent
+                // cross-contamination of type variables
+                let mut ann_mapping = HashMap::new();
+                let mut ann_mapping_opt = Some(&mut ann_mapping);
+
                 // Arity check
                 if params.len() != expected_params.len() {
                     return Err(vec![TypeError::new(
@@ -308,7 +335,13 @@ fn check_expr(
                     .zip(expected_params.iter())
                     .map(|(p, expected_ty)| match &p.node.annotation {
                         Some(ann) => {
-                            let resolved = resolve_annotation(&ann.node, env, ann.span, state)?;
+                            let resolved = resolve_annotation(
+                                &ann.node,
+                                env,
+                                ann.span,
+                                state,
+                                &mut ann_mapping_opt,
+                            )?;
                             // Contravariant check: expected param type must be subtype of annotation
                             if !Type::is_subtype(expected_ty, &resolved) {
                                 return Err(TypeError::type_mismatch(
@@ -341,8 +374,14 @@ fn check_expr(
                 // Check body against expected return type (or infer if no return annotation)
                 match return_ann {
                     Some(ann) => {
-                        let declared = resolve_annotation(&ann.node, env, ann.span, state)
-                            .map_err(|e| vec![e])?;
+                        let declared = resolve_annotation(
+                            &ann.node,
+                            env,
+                            ann.span,
+                            state,
+                            &mut ann_mapping_opt,
+                        )
+                        .map_err(|e| vec![e])?;
                         // Check that declared return type is compatible with expected
                         if !Type::is_subtype(&declared, expected_ret) {
                             return Err(vec![TypeError::type_mismatch(
@@ -420,7 +459,7 @@ fn infer_dict(
         if *is_alias {
             if let Some(name) = key_name {
                 if let Expr::TypeAlias(inner) = &entry.node.value.node {
-                    if let Ok(alias_ty) = resolve_type_expr(inner, &dict_env, state) {
+                    if let Ok(alias_ty) = resolve_type_expr(inner, &dict_env, state, &mut None) {
                         dict_env.insert_type_alias(name.clone(), alias_ty);
                     }
                 }
@@ -617,6 +656,79 @@ fn check_range_access(
     }
 }
 
+/// Check a call where the function is a TypeScheme (from a VarRef lookup).
+/// This avoids double instantiation: instead of VAR-POLY instantiating the scheme
+/// and then CALL-POLY instantiating the result, we instantiate once here.
+fn check_call_with_scheme(
+    scheme: &TypeScheme,
+    args: &[Spanned<Expr>],
+    named_args: &[Spanned<NamedArg>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Instantiate the scheme once at the current level
+    let func_ty = instantiate_scheme(scheme, state.level, state);
+
+    // Infer named args for type map population and error detection
+    for na in named_args {
+        let _ = infer_expr(&na.node.value, env, state, type_map)?;
+    }
+
+    match &func_ty {
+        Type::Function { params, ret } => {
+            if params.len() != args.len() {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "arity mismatch: expected {} arguments, got {}",
+                        params.len(),
+                        args.len()
+                    ),
+                    span,
+                )]);
+            }
+
+            // After instantiation, the function type may be monomorphic or still polymorphic
+            // CALL-MONO: function type is fully concrete (no type variables)
+            // Use bidirectional checking for arguments via [SUB] rule (doc/06 line 152-157)
+            if !func_ty.has_type_vars() {
+                let mut errors = Vec::new();
+                for (arg, param_ty) in args.iter().zip(params.iter()) {
+                    if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
+                        errors.append(&mut errs);
+                    }
+                }
+                if !errors.is_empty() {
+                    return Err(errors);
+                }
+                return Ok(*ret.clone());
+            }
+
+            // CALL-POLY: function type still has type variables after instantiation
+            // (This can happen with nested polymorphism or type annotations)
+            // Synthesize arguments and unify (doc/06 line 162-170)
+            let mut arg_types = Vec::with_capacity(args.len());
+            for a in args {
+                arg_types.push(infer_expr(a, env, state, type_map)?);
+            }
+
+            if !params.is_empty() {
+                let mut subst = Substitution::new();
+                for (param_ty, arg_ty) in params.iter().zip(arg_types.iter()) {
+                    unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
+                }
+                Ok(subst.apply(ret))
+            } else {
+                // Zero-param function: return the return type
+                Ok(*ret.clone())
+            }
+        }
+        Type::Any => Ok(Type::Any),
+        _ => Err(vec![TypeError::not_a_function(&func_ty, span)]),
+    }
+}
+
 fn check_call(
     func: &Spanned<Expr>,
     args: &[Spanned<Expr>],
@@ -748,10 +860,15 @@ fn infer_fn(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
+    // Create a fresh annotation mapping for this function to prevent
+    // cross-contamination of type variables between sibling functions
+    let mut ann_mapping = HashMap::new();
+    let mut ann_mapping_opt = Some(&mut ann_mapping);
+
     let param_types: Vec<Type> = params
         .iter()
         .map(|p| match &p.node.annotation {
-            Some(ann) => resolve_annotation(&ann.node, env, ann.span, state),
+            Some(ann) => resolve_annotation(&ann.node, env, ann.span, state, &mut ann_mapping_opt),
             None => Ok(Type::Any),
         })
         .collect::<Result<_, _>>()
@@ -773,7 +890,8 @@ fn infer_fn(
     let ret_type = match return_ann {
         Some(ann) => {
             let declared =
-                resolve_annotation(&ann.node, env, ann.span, state).map_err(|e| vec![e])?;
+                resolve_annotation(&ann.node, env, ann.span, state, &mut ann_mapping_opt)
+                    .map_err(|e| vec![e])?;
             // Use checking mode for function body with return annotation (doc/06 line 136-146)
             check_expr(body, &declared, &fn_env, state, type_map)?;
             declared
@@ -792,7 +910,7 @@ fn expand_type_alias(
     env: &Rc<TypeEnv>,
     state: &mut InferState,
 ) -> Result<Type, TypeError> {
-    let _ = resolve_type_expr(inner, env, state)?;
+    let _ = resolve_type_expr(inner, env, state, &mut None)?;
     Ok(Type::Any)
 }
 
@@ -804,8 +922,8 @@ fn resolve_type_assert(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let expected =
-        resolve_annotation(&annotation.node, env, annotation.span, state).map_err(|e| vec![e])?;
+    let expected = resolve_annotation(&annotation.node, env, annotation.span, state, &mut None)
+        .map_err(|e| vec![e])?;
 
     // Use checking mode for TypeAssert inner expression (doc/06 line 214-226)
     let check_result = check_expr(inner, &expected, env, state, type_map);
@@ -827,11 +945,12 @@ fn resolve_annotated(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     if name == "Fn" {
-        resolve_fn_type(&annotation.node, env, annotation.span, state)
+        resolve_fn_type(&annotation.node, env, annotation.span, state, ann_mapping)
     } else {
-        resolve_annotation(&annotation.node, env, span, state)
+        resolve_annotation(&annotation.node, env, span, state, ann_mapping)
     }
 }
 
@@ -840,8 +959,9 @@ fn resolve_fn_type(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    let ret = resolve_annotation_as_type(ann, env, span, state)?;
+    let ret = resolve_annotation_as_type(ann, env, span, state, ann_mapping)?;
     Ok(Type::Function {
         params: vec![],
         ret: Box::new(ret),
@@ -856,10 +976,13 @@ fn resolve_annotation_as_type(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match ann {
-        Annotation::Simple(name) => resolve_type_name(name, env, span, state),
-        Annotation::PropertyDict(entries) => resolve_type_dict(entries, env, span, state),
+        Annotation::Simple(name) => resolve_type_name(name, env, span, state, ann_mapping),
+        Annotation::PropertyDict(entries) => {
+            resolve_type_dict(entries, env, span, state, ann_mapping)
+        }
     }
 }
 
@@ -868,14 +991,15 @@ fn resolve_annotation(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match ann {
-        Annotation::Simple(name) => resolve_type_name(name, env, span, state),
+        Annotation::Simple(name) => resolve_type_name(name, env, span, state, ann_mapping),
         Annotation::PropertyDict(entries) => {
             if let Some(type_val) = ann.get_property("type") {
-                resolve_type_expr_value(type_val, env, state)
+                resolve_type_expr_value(type_val, env, state, ann_mapping)
             } else {
-                resolve_property_dict_as_record(entries, env, span, state)
+                resolve_property_dict_as_record(entries, env, span, state, ann_mapping)
             }
         }
     }
@@ -886,8 +1010,9 @@ fn resolve_property_dict_as_record(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    resolve_type_dict(entries, env, span, state).or_else(|e| {
+    resolve_type_dict(entries, env, span, state, ann_mapping).or_else(|e| {
         if entries_look_like_type_dict(entries) {
             Err(e)
         } else {
@@ -942,6 +1067,7 @@ fn resolve_type_name(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match name {
         "Int" => Ok(Type::Int),
@@ -952,8 +1078,21 @@ fn resolve_type_name(
         "Any" => Ok(Type::Any),
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
-                state.levels.insert(name.to_string(), state.level);
-                Ok(Type::TypeVar(name.to_string(), state.level))
+                // If we have an annotation mapping (within a function), check if this
+                // annotation name has already been mapped to a fresh variable
+                if let Some(ref mut mapping) = ann_mapping {
+                    let fresh_name = mapping.entry(name.to_string()).or_insert_with(|| {
+                        let fresh = format!("_t{}", state.name_counter);
+                        state.name_counter += 1;
+                        fresh
+                    });
+                    state.levels.insert(fresh_name.clone(), state.level);
+                    Ok(Type::TypeVar(fresh_name.clone(), state.level))
+                } else {
+                    // Outside of function scope, use the annotation name directly
+                    state.levels.insert(name.to_string(), state.level);
+                    Ok(Type::TypeVar(name.to_string(), state.level))
+                }
             } else {
                 env.get_type_alias(name)
                     .cloned()
@@ -967,9 +1106,12 @@ fn resolve_type_expr_value(
     expr: &Spanned<Expr>,
     env: &TypeEnv,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match &expr.node {
-        Expr::Str(name) | Expr::VarRef(name) => resolve_type_name(name, env, expr.span, state),
+        Expr::Str(name) | Expr::VarRef(name) => {
+            resolve_type_name(name, env, expr.span, state, ann_mapping)
+        }
         _ => Err(TypeError::new(
             format!("invalid type in annotation: {}", expr.node),
             expr.span,
@@ -981,15 +1123,18 @@ fn resolve_type_expr(
     expr: &Spanned<Expr>,
     env: &TypeEnv,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match &expr.node {
-        Expr::Str(name) | Expr::VarRef(name) => resolve_type_name(name, env, expr.span, state),
-        Expr::Dict(entries) => resolve_type_dict(entries, env, expr.span, state),
+        Expr::Str(name) | Expr::VarRef(name) => {
+            resolve_type_name(name, env, expr.span, state, ann_mapping)
+        }
+        Expr::Dict(entries) => resolve_type_dict(entries, env, expr.span, state, ann_mapping),
         Expr::Annotated { name, annotation } => {
             if name == "Fn" {
-                resolve_fn_type(&annotation.node, env, annotation.span, state)
+                resolve_fn_type(&annotation.node, env, annotation.span, state, ann_mapping)
             } else {
-                resolve_annotation(&annotation.node, env, expr.span, state)
+                resolve_annotation(&annotation.node, env, expr.span, state, ann_mapping)
             }
         }
         _ => Err(TypeError::new(
@@ -1004,8 +1149,9 @@ fn resolve_type_dict(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    if let Some(fn_type) = try_resolve_fn_type_expr(entries, env, span, state)? {
+    if let Some(fn_type) = try_resolve_fn_type_expr(entries, env, span, state, ann_mapping)? {
         return Ok(fn_type);
     }
 
@@ -1016,8 +1162,19 @@ fn resolve_type_dict(
             rest = match name {
                 None => RowRest::Open,
                 Some(n) => {
-                    state.levels.insert(n.clone(), state.level);
-                    RowRest::RowVar(n.clone(), state.level)
+                    // Row variables in type expressions also need fresh names per function
+                    if let Some(ref mut mapping) = ann_mapping {
+                        let fresh_name = mapping.entry(n.clone()).or_insert_with(|| {
+                            let fresh = format!("_t{}", state.name_counter);
+                            state.name_counter += 1;
+                            fresh
+                        });
+                        state.levels.insert(fresh_name.clone(), state.level);
+                        RowRest::RowVar(fresh_name.clone(), state.level)
+                    } else {
+                        state.levels.insert(n.clone(), state.level);
+                        RowRest::RowVar(n.clone(), state.level)
+                    }
                 }
             };
             continue;
@@ -1039,7 +1196,7 @@ fn resolve_type_dict(
                 ))
             }
         };
-        let ty = resolve_type_expr(&entry.node.value, env, state)?;
+        let ty = resolve_type_expr(&entry.node.value, env, state, ann_mapping)?;
         fields.insert(key, ty);
     }
     Ok(Type::Record(fields, rest))
@@ -1053,6 +1210,7 @@ fn try_resolve_fn_type_expr(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Option<Type>, TypeError> {
     let first = match entries.first() {
         Some(e) if e.node.key.is_none() => e,
@@ -1082,7 +1240,7 @@ fn try_resolve_fn_type_expr(
         ));
     }
 
-    let ret = resolve_annotation_as_type(ann_node, env, ann_span, state)?;
+    let ret = resolve_annotation_as_type(ann_node, env, ann_span, state, ann_mapping)?;
 
     let param_entries = match &second.node.value.node {
         Expr::Dict(entries) => entries,
@@ -1102,7 +1260,12 @@ fn try_resolve_fn_type_expr(
                 entry.span,
             ));
         }
-        params.push(resolve_type_expr(&entry.node.value, env, state)?);
+        params.push(resolve_type_expr(
+            &entry.node.value,
+            env,
+            state,
+            ann_mapping,
+        )?);
     }
 
     Ok(Some(Type::Function {
@@ -1564,7 +1727,8 @@ mod tests {
                 &Annotation::Simple("Int".into()),
                 &env,
                 span,
-                &mut InferState::new()
+                &mut InferState::new(),
+                &mut None
             )
             .unwrap(),
             Type::Int,
@@ -1576,12 +1740,14 @@ mod tests {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 5);
         // InferState::new() has level=0, so annotation-derived TypeVars start at level 0
+        // When no mapping is provided, the annotation name is used directly
         assert_eq!(
             resolve_annotation(
                 &Annotation::Simple("a".into()),
                 &env,
                 span,
-                &mut InferState::new()
+                &mut InferState::new(),
+                &mut None
             )
             .unwrap(),
             Type::TypeVar("a".into(), 0),
@@ -1612,7 +1778,7 @@ mod tests {
             span,
         )]);
         assert_eq!(
-            resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(),
+            resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None).unwrap(),
             Type::Any
         );
     }
@@ -1630,7 +1796,7 @@ mod tests {
             span,
         )]);
         assert_eq!(
-            resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(),
+            resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None).unwrap(),
             Type::Any
         );
     }
@@ -1647,7 +1813,7 @@ mod tests {
             },
             span,
         )]);
-        let result = resolve_annotation(&ann, &env, span, &mut InferState::new());
+        let result = resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1668,7 +1834,7 @@ mod tests {
             span,
         )]);
         assert_eq!(
-            resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(),
+            resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None).unwrap(),
             Type::Any
         );
     }
@@ -1690,7 +1856,7 @@ mod tests {
             },
             span,
         )]);
-        let result = resolve_annotation(&ann, &env, span, &mut InferState::new());
+        let result = resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None);
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("function type"));
     }
@@ -2566,27 +2732,21 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_param_polymorphic_function_known_bug() {
-        // Pre-existing bug (tracked in TODO.md): in CALL-POLY with zero params,
-        // the code at typecheck.rs line ~671 returns `*ret.clone()` (the pre-instantiation
-        // return type from the original scheme) instead of `*inst_ret.clone()` (the
-        // post-substitution return type from the instantiated scheme).
+    fn test_zero_param_monomorphic_function_type() {
+        // Zero-param monomorphic functions work correctly with CALL-MONO.
+        // The function type is inferred from the return type annotation.
         //
-        // The CALL-POLY zero-param branch (params.is_empty()) skips unification entirely
-        // because there are no param/arg pairs to unify on. Without unification, the return
-        // type variable is never bound to anything concrete, so `inst_ret` is just a fresh
-        // TypeVar. But `ret` (the pre-instantiation value) is returned instead, which in
-        // practice is the same fresh TypeVar — just a different object. The real fix is to
-        // handle zero-arity polymorphic calls as monomorphic or require explicit instantiation.
+        // Historical note: Previously there was a bug in CALL-POLY with zero params,
+        // where the code returned `*ret.clone()` (the pre-instantiation return type)
+        // instead of `*inst_ret.clone()` (the post-substitution return type).
+        // This was fixed in the bidirectional-typing-b sprint.
         //
         // Practically, zero-arity polymorphic functions in LLT are rare:
         //   - Unannotated params get Type::Any (monomorphic path, no type vars).
         //   - Annotated type-var params require at least one param (by definition).
         //   - [fn@a [] body] fails to type-check because body type ≮ TypeVar a.
         //
-        // This test verifies the zero-param CALL-MONO path (no type vars) works correctly,
-        // and documents the known limitation in CALL-POLY for zero-arity.
-        // Bug fix location: typecheck.rs CALL-POLY branch, `Ok(*ret.clone())` line.
+        // This test verifies the zero-param CALL-MONO path (no type vars) works correctly.
 
         // Zero-param monomorphic function (CALL-MONO): the function type is correct.
         let ty = result_field("[f: [fn@Int [] 42]]", "f");
@@ -2666,7 +2826,8 @@ mod tests {
     #[test]
     fn test_lambda_param_inference_from_context() {
         // When checking lambda against Fn(Int → Int), unannotated param gets Int
-        assert!(check("[result: [@[Fn [Int] [Int]] [fn [x] $x]]]").is_ok());
+        // Uses Fn@ReturnType [params] syntax to get a real function type, not Type::Any
+        assert!(check("[result: [@[Fn@Int [Int]] [fn [x] $x]]]").is_ok());
     }
 
     #[test]
@@ -2695,6 +2856,105 @@ mod tests {
         // Without the fix, ret == inst_ret for concrete return types, but the instantiated copy
         // is the one whose type variables (if any) are fresh per-call-site.
         let ty = result_field("[f: [fn@Int [] 42]]\n[result: [call $f]]", "result");
-        assert_eq!(ty, Type::Int, "zero-param fn@Int should return Int, got {ty}");
+        assert_eq!(
+            ty,
+            Type::Int,
+            "zero-param fn@Int should return Int, got {ty}"
+        );
+    }
+
+    // -- Annotation fresh variable mapping per function --
+
+    #[test]
+    fn test_sibling_functions_with_shared_annotation_names() {
+        // Bug: sibling functions in the same letrec dict that use the same annotation
+        // name (e.g., @a) should NOT share type variables. Each function should get
+        // its own fresh type variable for @a.
+        //
+        // [f: [fn [x@a] $x]  g: [fn [y@a] 42]]
+        //
+        // Before fix: both functions share TypeVar("a", level) in state.levels, so
+        // unification in f's inference can affect g's type variable.
+        //
+        // After fix: f gets TypeVar("_t0", level) and g gets TypeVar("_t1", level).
+        // Within each function, repeated uses of @a map to the same fresh var.
+        let result = check("[f: [fn [x@a] $x]  g: [fn [y@a] 42]]");
+        assert!(
+            result.is_ok(),
+            "sibling functions with same annotation name should type check: {:?}",
+            result.err()
+        );
+
+        // Verify that within a single function, repeated uses of @a map to the same variable
+        let result = check("[f: [fn [x@a  y@a] $x]]");
+        assert!(
+            result.is_ok(),
+            "repeated annotation @a within single function should use same type variable: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_annotation_fresh_vars_are_independent_across_siblings() {
+        // Each sibling function should have independent type variables for its annotations.
+        // This test ensures that type constraints in one function don't leak to another.
+        //
+        // [id: [fn [x@a] $x]  const42: [fn [y@a] 42]]
+        //
+        // id should be polymorphic: ∀a. Fn(a → a)
+        // const42 should be polymorphic: ∀a. Fn(a → Int)
+        //
+        // The @a in id and the @a in const42 must not interfere with each other.
+        let ty = infer("[id: [fn [x@a] $x]  const42: [fn [y@a] 42]]");
+        match ty {
+            Type::Record(fields, _) => {
+                // Verify both functions exist
+                assert!(fields.contains_key("id"), "should have 'id' field");
+                assert!(
+                    fields.contains_key("const42"),
+                    "should have 'const42' field"
+                );
+
+                // Both should be function types
+                match fields.get("id") {
+                    Some(Type::Function { .. }) => {}
+                    other => panic!("expected id to be Function type, got {:?}", other),
+                }
+                match fields.get("const42") {
+                    Some(Type::Function { .. }) => {}
+                    other => panic!("expected const42 to be Function type, got {:?}", other),
+                }
+            }
+            other => panic!("expected Record type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_polymorphic_function_call_no_double_instantiation() {
+        // This test verifies that calling a polymorphic function from the environment
+        // only instantiates once (not VAR-POLY + CALL-POLY double instantiation).
+        // The optimization special-cases VarRef in Call expressions for polymorphic schemes.
+
+        // Test with multiple calls to the same polymorphic function across documents
+        let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id hello]]");
+
+        match ty {
+            Type::Record(fields, _) => {
+                // r1 should be IntLiteral(42) due to polymorphic instantiation
+                assert_eq!(
+                    fields.get("r1"),
+                    Some(&Type::IntLiteral(42)),
+                    "r1 should be IntLiteral(42)"
+                );
+
+                // r2 should be StringLiteral("hello") due to polymorphic instantiation
+                assert_eq!(
+                    fields.get("r2"),
+                    Some(&Type::StringLiteral("hello".to_string())),
+                    "r2 should be StringLiteral(\"hello\")"
+                );
+            }
+            other => panic!("expected Record type, got {:?}", other),
+        }
     }
 }

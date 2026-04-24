@@ -1,5 +1,5 @@
 # Bidirectional typing: literal promotion via subsumption
-# Test that [@Number 42] evaluates correctly via IntLiteral(42) <: Number
-[@Number 42]
+# Test that [@String "hello"] evaluates correctly via StringLiteral("hello") <: String
+[@String "hello"]
 ===
-Int(42)
+String("hello")
