@@ -863,8 +863,19 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         _ => return Err(EvalError::type_mismatch("Dict", args_val.type_name(), call_span).into()),
     };
 
-    // Collect the dict values in insertion order as positional args
-    let positional: Vec<Rc<Thunk>> = arg_dict.values().cloned().collect();
+    // Split dict entries: integer-keyed → positional, string-keyed → named
+    let mut int_entries: Vec<(i64, Rc<Thunk>)> = Vec::with_capacity(arg_dict.len());
+    let mut named_args: IndexMap<String, Rc<Thunk>> = IndexMap::with_capacity(arg_dict.len());
+    for (key, thunk) in &arg_dict {
+        match key {
+            Key::Int(n) => int_entries.push((*n, Rc::clone(thunk))),
+            Key::String(s) => {
+                named_args.insert(s.clone(), Rc::clone(thunk));
+            }
+        }
+    }
+    int_entries.sort_by_key(|(k, _)| *k);
+    let positional: Vec<Rc<Thunk>> = int_entries.into_iter().map(|(_, v)| v).collect();
 
     match func_val {
         Value::Function {
@@ -872,26 +883,22 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             body,
             env: closure_env,
             ..
-        } => {
-            // Delegate to the shared invoke path. Defaults are evaluated in
-            // the closure env since apply has no caller-side AST context.
-            invoke_function(&CallContext {
-                params: &params,
-                body: &body,
-                closure_env: &closure_env,
-                positional: &positional,
-                named: &IndexMap::new(),
-                default_env: &closure_env,
-                ctx: &ctx,
-                call_span,
-                depth,
-                origin: Cow::Borrowed("call $apply"),
-            })
-        }
+        } => invoke_function(&CallContext {
+            params: &params,
+            body: &body,
+            closure_env: &closure_env,
+            positional: &positional,
+            named: &named_args,
+            default_env: &closure_env,
+            ctx: &ctx,
+            call_span,
+            depth,
+            origin: Cow::Borrowed("call $apply"),
+        }),
         Value::Builtin { func, .. } => {
             let builtin_args = BuiltinArgs {
                 args: &positional,
-                named: &IndexMap::new(),
+                named: &named_args,
                 depth,
                 call_span,
                 ctx: Rc::clone(&ctx),
@@ -4439,7 +4446,8 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.message()
+                .contains("missing argument for required parameter"),
             "got: {}",
             err.message()
         );

@@ -838,3 +838,13 @@ Nits and stdlib fixes found during bidirectional-typing review. Split from bidir
 - [x] Eliminate double instantiation waste — VAR-POLY at `typecheck.rs:191` via `instantiate_scheme` and CALL-POLY at `typecheck.rs:525` via `instantiate_at_level` both instantiate. Refactored to `check_call_with_scheme()` for single instantiation. (`src/typecheck.rs:191,525`) [Nit, computer-scientist C43 panel]
 - [x] Add `concat` row to strictness signature table — dual-dispatch (lazy Seq chain via PendingBuiltin, eager Dict append); added to "Higher-order collection operations" group. (`doc/08-evaluation.md:425-530`) [Minor, stdlib-author C43]
 - [x] Fix `flatten` Seq input — adds `$seq?` guard with descriptive error "flatten: expected Dict, got Seq — collect the Seq first". (`stdlib/prelude.llt:421`) [Minor, stdlib-author C43]
+
+### call-convention-kotlin: Kotlin-Model Call Convention
+
+- [x] Implement C-COVERAGE: per-parameter coverage check replacing count-based arity — BIND-ARITY loop checks each required param for positional coverage or named arg coverage. (`src/eval.rs:614-632`) [Major, eval-engine]
+- [x] Allow named args for any parameter — removed `get_default(p).is_some()` guard; BIND-POSITIONAL case (ii) fires for ANY param (required or optional). (`src/eval.rs:644-648`) [Major, eval-engine]
+- [x] Implement Garrigue default-env separation — `default_env` (caller env for normal calls, closure env for $apply) and `closure_env` (parent of call env) correctly separated. (`src/eval.rs:596-704`) [Minor, eval-engine]
+- [x] Implement 4 error classes — new E024 MissingRequiredParam (names missing param); E021 NamedArgConflict (C-NO-OVERLAP), E022 UnknownNamedArg (C-NAMED-VALID) pre-existing; ArityMismatch E020 retained for excess args. (`src/error.rs`) [Major, eval-engine]
+- [x] Support named args from dict in `$apply` — split dict by key type: Key::Int sorted by value → positional, Key::String → named. (`src/builtins.rs:866-878`) [Minor, eval-engine]
+- [x] Add tests for each binding constraint and error class — 10 eval success + 3 eval error corpus tests covering C-COVERAGE, C-NO-OVERLAP, C-NAMED-VALID, C-VARIADIC, $apply split. (`tests/corpus/eval/fn_kotlin_*.llt-eval`) [Minor, test-crafter]
+- [x] Add tests for interleaved required/optional parameters — interleaved, two-optionals-before-required, optional-middle, mixed key $apply scenarios. (`tests/corpus/eval/fn_kotlin_*.llt-eval`) [Minor, test-crafter]

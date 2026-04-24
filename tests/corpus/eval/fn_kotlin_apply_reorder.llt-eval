@@ -1,0 +1,8 @@
+# $apply with out-of-order integer keys: sorted by key, not insertion order
+[
+  f: [fn [a b c] [call $str $a $b $c]]
+  args: [2: c 0: a 1: b]
+  result: [call $apply $f $args]
+]
+===
+Dict({"f": Function(a, b, c), "args": Dict({2: String("c"), 0: String("a"), 1: String("b")}), "result": String("abc")})

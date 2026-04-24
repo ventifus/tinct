@@ -1,0 +1,7 @@
+# C-NO-OVERLAP: positional + named for same param
+[
+  f: [fn [a b c] [call $+ $a [call $+ $b $c]]]
+  result: [call $f 1 2 3 b: 99]
+]
+===
+received both positional and named argument

@@ -1,0 +1,6 @@
+[
+  f: [fn [x y] [call $+ $x $y]]
+  result: [call $f x: 5 y: 10]
+]
+===
+Dict({"f": Function(x, y), "result": Int(15)})
