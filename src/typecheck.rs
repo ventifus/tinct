@@ -94,7 +94,8 @@ fn typecheck_document(
                             for (name, scheme) in &schemes {
                                 new_env.insert_scheme(name.clone(), scheme.clone());
                             }
-                            let mut alias_errs = register_type_aliases(expr, &mut new_env, &env, state);
+                            let mut alias_errs =
+                                register_type_aliases(expr, &mut new_env, &env, state);
                             errors.append(&mut alias_errs);
                             env = Rc::new(new_env);
                         }
@@ -576,7 +577,8 @@ fn infer_fn(
 
     let ret_type = match return_ann {
         Some(ann) => {
-            let declared = resolve_annotation(&ann.node, env, ann.span, state).map_err(|e| vec![e])?;
+            let declared =
+                resolve_annotation(&ann.node, env, ann.span, state).map_err(|e| vec![e])?;
             let inferred = infer_expr(body, &fn_env, state, type_map)?;
             if !Type::is_subtype(&inferred, &declared) {
                 return Err(vec![TypeError::type_mismatch(&declared, &inferred, span)]);
@@ -592,7 +594,11 @@ fn infer_fn(
     })
 }
 
-fn expand_type_alias(inner: &Spanned<Expr>, env: &Rc<TypeEnv>, state: &mut InferState) -> Result<Type, TypeError> {
+fn expand_type_alias(
+    inner: &Spanned<Expr>,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+) -> Result<Type, TypeError> {
     let _ = resolve_type_expr(inner, env, state)?;
     Ok(Type::Any)
 }
@@ -633,7 +639,12 @@ fn resolve_annotated(
     }
 }
 
-fn resolve_fn_type(ann: &Annotation, env: &TypeEnv, span: Span, state: &mut InferState) -> Result<Type, TypeError> {
+fn resolve_fn_type(
+    ann: &Annotation,
+    env: &TypeEnv,
+    span: Span,
+    state: &mut InferState,
+) -> Result<Type, TypeError> {
     let ret = resolve_annotation_as_type(ann, env, span, state)?;
     Ok(Type::Function {
         params: vec![],
@@ -656,7 +667,12 @@ fn resolve_annotation_as_type(
     }
 }
 
-fn resolve_annotation(ann: &Annotation, env: &TypeEnv, span: Span, state: &mut InferState) -> Result<Type, TypeError> {
+fn resolve_annotation(
+    ann: &Annotation,
+    env: &TypeEnv,
+    span: Span,
+    state: &mut InferState,
+) -> Result<Type, TypeError> {
     match ann {
         Annotation::Simple(name) => resolve_type_name(name, env, span, state),
         Annotation::PropertyDict(entries) => {
@@ -725,7 +741,12 @@ fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
     })
 }
 
-fn resolve_type_name(name: &str, env: &TypeEnv, span: Span, state: &mut InferState) -> Result<Type, TypeError> {
+fn resolve_type_name(
+    name: &str,
+    env: &TypeEnv,
+    span: Span,
+    state: &mut InferState,
+) -> Result<Type, TypeError> {
     match name {
         "Int" => Ok(Type::Int),
         "Float" => Ok(Type::Float),
@@ -746,7 +767,11 @@ fn resolve_type_name(name: &str, env: &TypeEnv, span: Span, state: &mut InferSta
     }
 }
 
-fn resolve_type_expr_value(expr: &Spanned<Expr>, env: &TypeEnv, state: &mut InferState) -> Result<Type, TypeError> {
+fn resolve_type_expr_value(
+    expr: &Spanned<Expr>,
+    env: &TypeEnv,
+    state: &mut InferState,
+) -> Result<Type, TypeError> {
     match &expr.node {
         Expr::Str(name) | Expr::VarRef(name) => resolve_type_name(name, env, expr.span, state),
         _ => Err(TypeError::new(
@@ -756,7 +781,11 @@ fn resolve_type_expr_value(expr: &Spanned<Expr>, env: &TypeEnv, state: &mut Infe
     }
 }
 
-fn resolve_type_expr(expr: &Spanned<Expr>, env: &TypeEnv, state: &mut InferState) -> Result<Type, TypeError> {
+fn resolve_type_expr(
+    expr: &Spanned<Expr>,
+    env: &TypeEnv,
+    state: &mut InferState,
+) -> Result<Type, TypeError> {
     match &expr.node {
         Expr::Str(name) | Expr::VarRef(name) => resolve_type_name(name, env, expr.span, state),
         Expr::Dict(entries) => resolve_type_dict(entries, env, expr.span, state),
@@ -1335,7 +1364,13 @@ mod tests {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 5);
         assert_eq!(
-            resolve_annotation(&Annotation::Simple("Int".into()), &env, span, &mut InferState::new()).unwrap(),
+            resolve_annotation(
+                &Annotation::Simple("Int".into()),
+                &env,
+                span,
+                &mut InferState::new()
+            )
+            .unwrap(),
             Type::Int,
         );
     }
@@ -1346,7 +1381,13 @@ mod tests {
         let span = crate::test_util::test_span(1, 1, 1, 5);
         // InferState::new() has level=0, so annotation-derived TypeVars start at level 0
         assert_eq!(
-            resolve_annotation(&Annotation::Simple("a".into()), &env, span, &mut InferState::new()).unwrap(),
+            resolve_annotation(
+                &Annotation::Simple("a".into()),
+                &env,
+                span,
+                &mut InferState::new()
+            )
+            .unwrap(),
             Type::TypeVar("a".into(), 0),
         );
     }
@@ -1374,7 +1415,10 @@ mod tests {
             },
             span,
         )]);
-        assert_eq!(resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(), Type::Any);
+        assert_eq!(
+            resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(),
+            Type::Any
+        );
     }
 
     #[test]
@@ -1389,7 +1433,10 @@ mod tests {
             },
             span,
         )]);
-        assert_eq!(resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(), Type::Any);
+        assert_eq!(
+            resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(),
+            Type::Any
+        );
     }
 
     #[test]
@@ -1424,7 +1471,10 @@ mod tests {
             },
             span,
         )]);
-        assert_eq!(resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(), Type::Any);
+        assert_eq!(
+            resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(),
+            Type::Any
+        );
     }
 
     #[test]
@@ -1977,13 +2027,42 @@ mod tests {
 
     #[test]
     fn test_let_gen_nested_dicts_level_increment() {
-        // Nested dicts should increment levels
-        let ty = result_field("[outer: [inner: 42]]\n[result: $outer]", "result");
-        match ty {
-            Type::Record(fields, _) => {
-                assert_eq!(fields.get("inner"), Some(&Type::IntLiteral(42)));
+        // Task 3: Verify state.level increments correctly for nested dict inference
+        // and that inner dict entries generalize independently of outer
+        // For [outer: [inner: 42]], outer dict runs at level 1, inner at level 2
+        // The inner dict should generalize at level 1, producing schemes for its entries
+
+        // Test with a more complex example that shows level scoping:
+        // [outer: [id: [fn [x@a] $x]]]
+        // The `id` function should be polymorphic even when nested
+        let env = doc_env("[outer: [id: [fn [x@a] $x]]]");
+        let outer_scheme = env.get("outer").expect("outer should be in env");
+
+        match &outer_scheme.body {
+            Type::Record(outer_fields, _) => {
+                // The outer dict's `id` field should have a Function type
+                let id_type = outer_fields
+                    .get("id")
+                    .expect("id should be a field in outer");
+
+                match id_type {
+                    Type::Function { params, ret } => {
+                        // Params and return should involve type variables (from annotation @a)
+                        assert!(
+                            matches!(params.get(0), Some(Type::TypeVar(_, _))),
+                            "id param should be TypeVar, got {:?}",
+                            params
+                        );
+                        assert!(
+                            matches!(&**ret, Type::TypeVar(_, _)),
+                            "id return should be TypeVar, got {:?}",
+                            ret
+                        );
+                    }
+                    other => panic!("expected Function type for id, got {:?}", other),
+                }
             }
-            other => panic!("expected Record, got {other}"),
+            other => panic!("expected Record for outer, got {:?}", other),
         }
     }
 
@@ -2006,12 +2085,37 @@ mod tests {
         let ty = infer("[a: $b  b: $a  c: 42]");
         match ty {
             Type::Record(fields, _) => {
-                // a and b should both be TypeVar (they reference each other)
-                // or Any (if error recovery kicks in)
-                // The key is that it doesn't crash
                 assert!(fields.contains_key("a"));
                 assert!(fields.contains_key("b"));
                 assert_eq!(fields.get("c"), Some(&Type::IntLiteral(42)));
+
+                // Task 2: Assert the TYPES of a and b after mutual reference unification
+                let a_type = fields.get("a").expect("a should exist");
+                let b_type = fields.get("b").expect("b should exist");
+
+                // a and b reference each other, so they should unify to the same TypeVar
+                // or both be Any if unification fails during Pass 3
+                match (a_type, b_type) {
+                    (Type::TypeVar(a_name, a_level), Type::TypeVar(b_name, b_level)) => {
+                        // They should be unified to the same variable
+                        assert_eq!(
+                            a_name, b_name,
+                            "mutually recursive a and b should unify to same TypeVar, got a={} b={}",
+                            a_name, b_name
+                        );
+                        assert_eq!(
+                            a_level, b_level,
+                            "mutually recursive a and b should have same level"
+                        );
+                    }
+                    (Type::Any, Type::Any) => {
+                        // Both Any is also valid (error recovery path)
+                    }
+                    _ => panic!(
+                        "expected a and b to both be TypeVar or both be Any, got a={:?} b={:?}",
+                        a_type, b_type
+                    ),
+                }
             }
             other => panic!("expected Record, got {other}"),
         }
@@ -2038,5 +2142,53 @@ mod tests {
             }
             other => panic!("expected Record, got {other}"),
         }
+    }
+
+    // --- Task 1: Core let-generalization unit tests ---
+
+    #[test]
+    fn test_let_gen_polymorphic_identity_generalizes() {
+        // [id: [fn [x@a] $x]] should generalize id to a polymorphic TypeScheme
+        let env = doc_env("[id: [fn [x@a] $x]]");
+        let id_scheme = env.get("id").expect("id should be in env");
+
+        // The scheme should have non-empty vars (it's polymorphic)
+        assert!(
+            !id_scheme.vars.is_empty(),
+            "id should be polymorphic (non-empty vars), got scheme: {:?}",
+            id_scheme
+        );
+    }
+
+    #[test]
+    fn test_let_gen_nested_dicts_level_correct() {
+        // Nested dict [outer: [inner: 42]] should infer correct types
+        let ty = result_field("[outer: [inner: 42]]\n[result: $outer]", "result");
+        match ty {
+            Type::Record(fields, _) => {
+                assert_eq!(
+                    fields.get("inner"),
+                    Some(&Type::IntLiteral(42)),
+                    "inner field should be IntLiteral(42)"
+                );
+            }
+            other => panic!("expected Record for outer, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_let_gen_any_touched_not_generalized() {
+        // When a variable unifies with Any, it should NOT be generalized
+        // [fn [x] $x] has unannotated param, so x has type Any
+        // The identity function should be monomorphic (Any → Any)
+        let env = doc_env("[id: [fn [x] $x]]");
+        let id_scheme = env.get("id").expect("id should be in env");
+
+        // The scheme should have empty vars (monomorphic, Any-touched)
+        assert!(
+            id_scheme.vars.is_empty(),
+            "id with unannotated param should be monomorphic (Any-touched), got scheme: {:?}",
+            id_scheme
+        );
     }
 }

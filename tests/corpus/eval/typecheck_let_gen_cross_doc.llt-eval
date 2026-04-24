@@ -1,0 +1,9 @@
+# Let-generalization across document boundaries
+# First document defines polymorphic identity function
+# Second document uses it at a specific type (Int)
+# The type scheme ∀a. a -> a is threaded from first to second document
+[id: [fn [x@a] $x]]
+---
+[result: [call $$.id 42]]
+===
+Dict({"result": Int(42)})
