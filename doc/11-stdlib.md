@@ -23,7 +23,7 @@ Everything else can be a regular function in the stdlib:
 | `when` | Like one-armed `if`; materializes condition, returns body or `[]` |
 | `unless` | Inverse of `when`; materializes condition, returns body or `[]` |
 | `and` | Materializes first arg; if false, returns false without materializing second |
-| `or` | Materializes first arg; if true, returns true without materializing second |
+| `or` | Materializes first arg; if truthy, returns it without materializing second; otherwise returns second |
 | `not` | Materializes its argument; returns the boolean inverse |
 
 ```tinct

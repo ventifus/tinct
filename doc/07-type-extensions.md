@@ -442,13 +442,12 @@ unify_remainders(U₁, t₁, U₂, t₂, S):
     (true, _, true, _) →
       unify_tails(t₁, t₂, S)
 
-    # Case 4: Both have unique fields — create fresh row variable for shared tail
-    # Precondition: ρ₁ ≠ ρ₂ (same-variable case handled by Case 1 after apply)
+    # Case 4: Both have unique fields and different row vars — create fresh row variable for shared tail
     # Occurs check prevents infinite rows: if ρ₁ appears in U₂'s field types
     # (e.g., ρ₁ = {x: Record({y: Int, ...ρ₁}), ...ρ_fresh}), binding ρ₁ would
     # create an infinite structure. On failure: emit a type error "infinite row
     # type: ρ₁ occurs in its own binding", halt unification.
-    (false, RowVar(ρ₁), false, RowVar(ρ₂)) →
+    (false, RowVar(ρ₁), false, RowVar(ρ₂)) when ρ₁ ≠ ρ₂ →
       let ρ_fresh = fresh row variable
       if row_var_occurs(ρ₁, Row(U₂, RowVar(ρ_fresh))): ERROR infinite row
       if row_var_occurs(ρ₂, Row(U₁, RowVar(ρ_fresh))): ERROR infinite row
@@ -456,18 +455,26 @@ unify_remainders(U₁, t₁, U₂, t₂, S):
         ∪ {ρ₂ → Row { fields: U₁, tail: RowVar(ρ_fresh) }}
 
     # Case 2: Only left has unique fields — right tail must absorb them
-    (false, _, _, RowVar(ρ₂)) →
+    # Guard: U₂ must be empty (when both sides have unique fields, Case 4 applies)
+    (false, _, true, RowVar(ρ₂)) →
       if row_var_occurs(ρ₂, Row(U₁, t₁)): ERROR infinite row
       S ∪ {ρ₂ → Row { fields: U₁, tail: t₁ }}
 
     # Case 3: Only right has unique fields — left tail must absorb them
-    (_, RowVar(ρ₁), false, _) →
+    # Guard: U₁ must be empty (when both sides have unique fields, Case 4 applies)
+    (true, RowVar(ρ₁), false, _) →
       if row_var_occurs(ρ₁, Row(U₂, t₂)): ERROR infinite row
       S ∪ {ρ₁ → Row { fields: U₂, tail: t₂ }}
 
     # Error cases: closed tail cannot absorb unique fields from the other side
     (false, _, _, Empty) → ERROR: extra fields {U₁.keys()} in closed row
     (_, Empty, false, _) → ERROR: extra fields {U₂.keys()} in closed row
+
+    # Case 7: Same row variable but both sides have unique fields — impossible constraint
+    # e.g., {x: Int, ...ρ} ~ {y: Str, ...ρ} would require ρ to simultaneously
+    # provide both x and y, which is impossible since ρ is a single row variable.
+    (false, RowVar(ρ₁), false, RowVar(ρ₂)) when ρ₁ == ρ₂ →
+      ERROR: incompatible fields {U₁.keys() ∪ U₂.keys()} with shared row variable ρ₁
 
 unify_tails(t₁, t₂, S):
   match (t₁, t₂):

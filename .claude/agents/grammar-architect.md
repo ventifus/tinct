@@ -159,17 +159,21 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 APPROVE or REQUEST_CHANGES
 ```
 
-Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUEST_CHANGES** if any fix-now findings exist.
+Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 
 ## Training Resources
 
 ### Git Repos
-- **pest-parser/pest** (github.com/pest-parser/pest) — The PEG parser generator LLT uses. Focus: rule types (atomic, compound-atomic, non-atomic), whitespace handling, error recovery, performance patterns. Review issues tagged "bug" for known pitfalls.
-- **tree-sitter/tree-sitter** (github.com/tree-sitter/tree-sitter) — Incremental parser framework. Focus: grammar design patterns, how tree-sitter handles whitespace sensitivity, error recovery strategies. Relevant for the Parser Rewrite and tree-sitter sprint.
-- **nickel-lang/nickel** (github.com/nickel-lang/nickel) — Configuration language with similar goals. Focus: parser architecture, how they handle bracket-heavy syntax, PEG vs hand-written parser trade-offs.
-- **dhall-lang/dhall-lang** (github.com/dhall-lang/dhall-lang) — Focus: `standard/` directory for how a language maintains a formal specification alongside implementation, spec amendment patterns.
-- **json5/json5-spec** (github.com/json5/json5-spec) — Focus: specification document structure, how they formalize grammar and semantics.
-- **toml-lang/toml** (github.com/toml-lang/toml) — Focus: specification clarity, edge case documentation, changelog discipline.
+
+Clone each repo if not already present at the specified path. Skip the clone step if the directory already exists.
+
+- **pest-parser/pest** — `git clone --depth=1 https://github.com/pest-parser/pest .training/pest` — The PEG parser generator LLT uses. Focus: rule types (atomic, compound-atomic, non-atomic), whitespace handling, error recovery, performance patterns. Review issues tagged "bug" for known pitfalls.
+- **tree-sitter/tree-sitter** — `git clone --depth=1 https://github.com/tree-sitter/tree-sitter .training/tree-sitter` — Incremental parser framework. Focus: grammar design patterns, how tree-sitter handles whitespace sensitivity, error recovery strategies. Relevant for the Parser Rewrite and tree-sitter sprint.
+- **nickel-lang/nickel** — `git clone --depth=1 https://github.com/nickel-lang/nickel .training/nickel` — Configuration language with similar goals. Focus: parser architecture, how they handle bracket-heavy syntax, PEG vs hand-written parser trade-offs.
+- **dhall-lang/dhall-lang** — `git clone --depth=1 https://github.com/dhall-lang/dhall-lang .training/dhall-lang` — Focus: `standard/` directory for how a language maintains a formal specification alongside implementation, spec amendment patterns.
+- **json5/json5-spec** — `git clone --depth=1 https://github.com/json5/json5-spec .training/json5-spec` — Focus: specification document structure, how they formalize grammar and semantics.
+- **toml-lang/toml** — `git clone --depth=1 https://github.com/toml-lang/toml .training/toml` — Focus: specification clarity, edge case documentation, changelog discipline.
+- **rust-lang/reference** — `git clone --depth=1 https://github.com/rust-lang/reference .training/rust-lang-reference` — Focus: procedural macros, derive macro semantics, `include_str!`/`include_bytes!` compile-time file embedding, attribute syntax. Essential for understanding pest's derive-based grammar compilation and parser.rs integration. **Note: this is a separate repo from rust-lang/rust (the compiler). Clone path is `.training/rust-lang-reference`.**
 
 ### Local Documents
 - `src/grammar.pest` — The current PEG grammar (study every rule and its type annotation)

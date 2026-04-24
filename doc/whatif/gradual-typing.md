@@ -185,36 +185,101 @@ the mechanism. The question is whether to insert guards:
 
 ### Blame Provenance
 
+The **blame theorem** (Wadler & Findler 2009): when a runtime type check fails
+in a gradually typed program, blame falls on the boundary that introduced the
+`Unknown` value — not on the typed code that expected something concrete. A
+well-typed component is never blamed.
+
 Each blame boundary records:
-- The source span where the boundary exists
-- The expected concrete type
-- The origin of the `Unknown` value (which unannotated param, which builtin
-  return)
+- *Origin span*: where the `Unknown` value was produced (unannotated param
+  definition, builtin return site, or untyped caller)
+- *Boundary span*: where the `Unknown` value entered typed territory (TypeAssert
+  annotation, typed argument position, or typed field access)
+- *Polarity*: positive (the typed boundary made a promise the `Unknown` value
+  didn't fulfill — the typed side is blamed) or negative (the `Unknown` value's
+  provider violated a contract — the untyped side is blamed)
+
+**Boundary catalog for tinct:**
+
+| Boundary | Positive blame | Negative blame |
+|----------|---------------|----------------|
+| `[@Int $x]` TypeAssert | The TypeAssert annotation | Provider of `$x` |
+| `[call $f x]`, `$f: Int→Int`, `x: Unknown` | The argument position | Provider of `x` |
+| `[call $f x]`, `$f: Unknown` | The call site (expected callable) | Provider of `$f` |
+| Builtin return typed `Unknown` consumed as typed | The consuming expression | The builtin |
+| `---` pipeline boundary crossing | The consuming section | The producing section |
+
+```rust
+struct BlameLabel {
+    origin_span: Span,    // where Unknown value was created
+    boundary_span: Span,  // where Unknown→Concrete boundary was inserted
+    polarity: Polarity,
+}
+
+enum Polarity { Positive, Negative }
+```
+
+`ThunkState::Guarded` gains `blame_label: Option<BlameLabel>`. Existing
+TypeAssert guards use `Some(BlameLabel { polarity: Positive, ... })`. New
+automatic guards at implicit boundaries carry the appropriate label from the
+type checker's elaboration pass.
 
 When a runtime check fails, the error message identifies both the failure
 point and the `Unknown` origin:
 
 ```
-type mismatch at line 5: argument to $add expected Int,
-  but value from line 3 (untyped) was String.
-  The untyped boundary at line 3 is responsible (blame).
+type assertion failed at line 5: expected Int, got String
+  asserted by: [@Int ...] at line 5
+  value originated from: unannotated parameter $x at line 3
 ```
 
-This extends tinct's existing `guard_span` mechanism in TypeAssert to cover
-all `Unknown -> Concrete` boundaries.
+For automatic insertion at implicit boundaries:
+
+```
+type mismatch at line 12: $add expected Int for first argument
+  blame: value from line 7 ($from-json result, Unknown type)
+  untyped boundary at line 7 is responsible
+```
 
 ### Interaction with Lazy Evaluation
 
-Blame boundaries interact with lazy evaluation: a blame check on a thunk
-must be deferred until the thunk is forced. This means blame annotations
-attach to thunks, not values. When a thunk is forced and its value doesn't
-match the expected type, blame falls on the boundary where the thunk was
-created, not where it was forced.
+Blame boundaries interact with lazy evaluation: a blame check on a thunk must
+be deferred until the thunk is forced. Blame labels therefore attach to
+*thunks*, not values — the boundary wraps the thunk, and blame fires when the
+wrapper is forced. When a thunk is forced and its value doesn't match the
+expected type, blame falls on the boundary where the thunk was created, not
+where it was forced.
 
-This is analogous to Findler & Felleisen's (2002) treatment of higher-order
-contracts: the contract wraps the thunk, and blame is assigned when the
-wrapper fires. tinct's existing proxy contract mechanism handles this
-pattern.
+This is the **eager contract wrapping** strategy from Findler & Felleisen
+(2002): `guard(inner, τ, blame_label)` creates a `ThunkState::Guarded` thunk
+that, when forced, materializes `inner` and validates the result against τ. If
+the result is wrong, the blame label identifies the boundary. This is already
+how TypeAssert works via `guard_span` — Phase 3 extends the mechanism to
+implicit boundaries.
+
+The alternative — **deferred blame** (carry a label with the value, check only
+at force sites) — is more complex and unnecessary: tinct's `ThunkState::Guarded`
+already thread blame through the lazy evaluation chain.
+
+**Space-efficient blame.** Naive blame tracking accumulates labels as values
+cross multiple boundaries, consuming O(n) space. Greenman, Felleisen & Dimoulas
+(2019) identify three strategies:
+
+- *Natural*: all labels preserved — full provenance, O(n) space
+- *Co-natural*: only the innermost label — O(1) space, inner boundaries shadow outer
+- *Forgetful*: outermost label only — O(1) space, may assign blame to wrong boundary
+
+**Co-natural** is the right default for tinct: keep the innermost blame label
+(the most specific boundary, e.g., the TypeAssert annotation) and discard outer
+labels when a value crosses a second boundary. This preserves the most
+actionable information while maintaining constant space overhead per thunk.
+
+**`---` pipeline boundary blame.** The pipeline `---` boundary between document
+sections is a natural blame point. With blame tracking, a type failure in
+section 3 can report "value from section 1 (untyped), passed through the `---`
+boundary at line 45, did not match the expected type." Each `---` boundary is
+treated as an implicit TypeAssert — the downstream section's type expectations
+create a blame boundary for the upstream section's output.
 
 ### Interaction with Row Polymorphism
 
@@ -307,16 +372,23 @@ code that doesn't use `Any` is completely unaffected.
 **Current:** Runtime type checks occur at TypeAssert sites and builtin
 argument validation. No blame tracking for implicit `Any` boundaries.
 
-**Proposed (explicit-only):** Unchanged from current behavior. `Unknown`
-values flow through the evaluator like `Any` values do today. Runtime
-failures at materialization produce errors without blame provenance.
+**Proposed (explicit-only, Phase 3a):** Extend `ThunkState::Guarded` with
+`blame_label: Option<BlameLabel>`. Existing TypeAssert guards gain a
+`BlameLabel { polarity: Positive, origin_span, boundary_span }`. `Unknown`
+values that don't cross a TypeAssert boundary still produce point-of-failure
+errors without blame provenance. The evaluator is otherwise unchanged.
 
-**Proposed (automatic insertion):** The type checker inserts runtime guard
-thunks at every `Unknown -> Concrete` boundary. Each guard carries a blame
-label (source span + expected type). The evaluator checks the guard when the
-thunk is forced. This extends the TypeAssert proxy contract mechanism.
+**Proposed (automatic insertion, Phase 3b):** The type checker elaborates every
+`Unknown -> Concrete` boundary into an explicit `ThunkState::Guarded` with a
+blame label. Whenever synthesis produces `Unknown` and the checking context
+expects a concrete type, elaboration inserts a guard thunk. This requires
+the type checker to run in elaboration mode, embedding guards into the AST
+before evaluation. The evaluator unwraps guards at force time (already done
+for TypeAssert guards). The `---` pipeline boundary creates implicit guards at
+the start of each consuming section.
 
-**Impact:** Minor (explicit-only), Major (automatic insertion).
+**Impact:** Minor (Phase 3a — extend existing guard mechanism). Major (Phase
+3b — elaboration pass, guards at all implicit boundaries).
 
 ### TypeAssert (`src/typecheck.rs`, `src/eval.rs`)
 
@@ -368,12 +440,72 @@ sites from `is_subtype(_, Any)` to `is_consistent`.
 
 ### Phase 3: Blame Tracking
 
-Add blame provenance to `Unknown -> Concrete` boundaries. tinct's
-TypeAssert proxy contracts (Findler & Felleisen 2002) already provide the
-structural mechanism via `guard_span`. Extend this to non-TypeAssert
-boundaries — builtin returns and unannotated params. Start with
-explicit-only (TypeAssert sites); automatic insertion of guards at all
-`Unknown -> Concrete` boundaries is the full realization.
+Full blame tracking proceeds in two sub-phases. Phase 3a extends the existing
+TypeAssert mechanism; Phase 3b adds automatic guard insertion at all implicit
+`Unknown -> Concrete` boundaries.
+
+**Phase 3a: Explicit blame (TypeAssert sites).** Add `BlameLabel` to
+`ThunkState::Guarded`. Every TypeAssert-generated guard already has the needed
+information (`guard_span`, expected type, field path). The change:
+
+```rust
+ThunkState::Guarded {
+    inner: Rc<Thunk>,
+    expected: Type,
+    field_path: Vec<String>,
+    guard_span: Span,        // existing
+    blame_label: BlameLabel, // new: polarity + origin_span + boundary_span
+}
+```
+
+Update error reporting to emit the blame provenance chain. Error format:
+
+```
+type assertion failed at line 5: expected Int, got String
+  asserted by: [@Int ...] at line 5
+  value originated from: unannotated parameter $x at line 3
+```
+
+Deliverables: `BlameLabel` struct in `src/eval.rs`, guard construction updated
+in TypeAssert elaboration, error formatting updated in `src/error.rs`.
+
+**Phase 3b: Automatic insertion at implicit boundaries.** The type checker
+elaborates every `Unknown -> Concrete` boundary — not just TypeAssert — into
+a `ThunkState::Guarded`. Boundaries:
+
+- Function argument: `[call $f x]` where `x: Unknown` and `$f` has typed params
+- Builtin argument: `[call $add $x $y]` where `$x: Unknown` and `$add: Int→Int→Int`
+- Field access on Unknown: `$x.name` where `$x: Unknown` (when row constraint
+  is generated, a guard wraps $x's resolution)
+- `---` pipeline crossing: typed expressions consuming values from prior sections
+
+Guard insertion follows the blame calculus rules (Wadler & Findler 2009):
+positive blame on the typed boundary, negative on the Unknown origin. The
+elaboration pass runs after type inference and before evaluation, embedding
+guards into the AST. The evaluator is unchanged — guards are forced as part
+of normal thunk materialization.
+
+**Space-efficient blame.** Use co-natural strategy (Greenman et al. 2019):
+when a value with an existing blame label crosses a second boundary, the outer
+label is discarded and the inner (most recent) label is kept. This ensures
+O(1) space overhead per thunk regardless of how many boundaries a value
+crosses. The innermost label is the most actionable: it identifies the specific
+boundary closest to the consumer that expected a concrete type.
+
+**Blame at `---` boundaries.** The pipeline model gives blame tracking
+particular value. With Phase 3b, each `---` boundary is an implicit
+TypeAssert over the document section interface. A type failure deep in section
+3 can report:
+
+```
+type mismatch: $transform expected [name: Str  age: Int], got Unknown
+  blame: value produced in section 1 (line 12, untyped $from-json result)
+  untyped boundary: --- at line 30
+```
+
+This makes tinct's multi-section pipeline errors actionable — the user knows
+exactly which section produced the untyped value and which boundary failed to
+protect the downstream section from it.
 
 ### Prerequisites
 
@@ -382,10 +514,13 @@ explicit-only (TypeAssert sites); automatic insertion of guards at all
   - `let-generalization` complete (type schemes must carry `Unknown` correctly)
   - `bidirectional-typing` complete (synthesis/checking modes interact with
     consistency relation)
-- Phase 3:
+- Phase 3a:
   - Phase 2 complete
-  - Evaluator support for blame-carrying thunks (extension of TypeAssert
-    proxy contracts)
+  - `ThunkState::Guarded` already in place (TypeAssert proxy contracts)
+- Phase 3b:
+  - Phase 3a complete
+  - Type checker supports elaboration mode (embeds guards into AST)
+  - `---` boundary blame requires pipeline-level elaboration pass
 
 ### Trigger
 
@@ -395,10 +530,16 @@ explicit-only (TypeAssert sites); automatic insertion of guards at all
     with `Any`-as-top-and-bottom — see `doc/whatif/algebraic-subtypes.md`)
   - `Any`-as-top-and-bottom causes a type-checking false positive
   - TypeAssert contracts prove insufficient without blame tracking
-- Phase 3 should begin when:
-  - Phase 2 reveals runtime failures that are difficult to diagnose without
-    blame provenance
-  - Users report confusion about where type mismatches originate
+- Phase 3a should begin when:
+  - Phase 2 is complete and the first real-world type failures are reported
+    without clear blame attribution
+  - TypeAssert errors reference source lines that are far from the actual
+    origin of mismatched values
+- Phase 3b should begin when:
+  - Phase 3a is in place and implicit boundaries (unannotated params, builtin
+    returns) are the dominant source of confusing type errors
+  - The `---` pipeline boundary is a common site of type mismatches that users
+    cannot trace to the originating section
 
 ## References
 
@@ -409,3 +550,6 @@ explicit-only (TypeAssert sites); automatic insertion of guards at all
 - Findler, R. & Felleisen, M. (2002). "Contracts for higher-order functions." In *ICFP '02*, pp. 48-59. ACM. — Higher-order contracts with blame. tinct's TypeAssert proxy contracts are based on this model.
 - Cimini, M. & Siek, J.G. (2016). "The gradualizer: a methodology and algorithm for generating gradual type systems." In *POPL '16*, pp. 443-455. ACM. — Automated derivation of gradual type systems. Complementary to AGT — provides an algorithmic perspective on the same problem.
 - Rastogi, A., Chaudhuri, A. & Hosmer, B. (2012). "The ins and outs of gradual type inference." In *POPL '12*, pp. 481-494. ACM. — Gradual typing with type inference (not just type checking). Directly relevant since tinct uses HM inference, not explicit annotations.
+- Greenman, B., Felleisen, M. & Dimoulas, C. (2019). "Complete monitors for gradual types." In *ICFP '19*, Article 122. ACM. — Defines natural, co-natural, and forgetful blame strategies. Proves that co-natural is sufficient for the blame theorem while maintaining O(1) space overhead. tinct Phase 3 adopts co-natural.
+- Ahmed, A., Findler, R., Siek, J. & Wadler, P. (2011). "Blame for all." In *POPL '11*, pp. 201-214. ACM. — Extends blame to polymorphic languages. Relevant because tinct has parametric polymorphism via annotated type variables; blame for polymorphic function boundaries requires sealing the type variable's instantiation.
+- Vitousek, M., Kent, A., Siek, J. & Baker, J. (2014). "Design and evaluation of gradual typing for Python." In *DLS '14*, pp. 45-56. ACM. — Implementation experience (Reticulated Python). Shows that automatic guard insertion at implicit boundaries is feasible at scale; the key cost is guard creation on hot paths.

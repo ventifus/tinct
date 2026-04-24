@@ -52,8 +52,8 @@ not: [fn [x] [call $if $x false true]]
 # Short-circuit AND: if a is false, b is never evaluated.
 and: [fn [a b] [call $if $a $b false]]
 
-# Short-circuit OR: if a is true, b is never evaluated.
-or: [fn [a b] [call $if $a true $b]]
+# Short-circuit OR: if a is truthy, returns a; otherwise returns b.
+or: [fn [a b] [call $if $a $a $b]]
 
 # Short-circuit predicate test: returns true if any element satisfies pred.
 # Inherently materializing: short-circuits but materializes elements until condition met.

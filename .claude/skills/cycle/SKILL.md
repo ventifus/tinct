@@ -24,14 +24,13 @@ Dispatch all specialist agents in parallel to review the full codebase. Use `sub
 | Agent Type | Specialty |
 |-----------|-----------|
 | grammar-architect | Parser, PEG grammar, AST, spec/doc consistency |
-| eval-engine | Evaluation semantics, thunk lifecycle, laziness |
+| eval-engine | Evaluation semantics, thunk lifecycle, laziness, premature materialization |
 | type-theorist | Type system, HM inference, row polymorphism |
 | stdlib-author | Standard library, function design, composition |
 | test-crafter | Test coverage, test quality, edge cases |
-| laziness-auditor | Laziness correctness, premature materialization |
-| span-integrity-checker | Error quality, span propagation, messages |
-| integration-verifier | Cross-layer consistency, pipeline integrity |
+| integration-verifier | Cross-layer consistency, pipeline integrity, error quality, span propagation |
 | performance-expert | Allocation patterns, hot paths, scaling |
+| security-expert | Security audit: input validation, path traversal, resource exhaustion |
 | computer-scientist | Theoretical soundness, formal models, algorithms |
 
 Brief each agent with:

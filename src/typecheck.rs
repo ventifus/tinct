@@ -2402,6 +2402,68 @@ mod tests {
     }
 
     #[test]
+    fn test_cross_function_anonymous_open_records_get_fresh_vars() {
+        // Two separate functions using anonymous open record annotations
+        // should NOT share the same row variable (the bug that fresh name generation fixed)
+        // Each function gets its own independent open record constraint
+        let code = r#"
+            [f: [fn [x@[a: Int ...]] $x.a]
+             g: [fn [y@[b: String ...]] $y.b]]
+        "#;
+        let result = check(code);
+        assert!(
+            result.is_ok(),
+            "type check should succeed with independent open record constraints: {:?}",
+            result
+        );
+
+        // Verify that f and g have distinct row variables
+        let ty_f = result_field(code, "f");
+        let ty_g = result_field(code, "g");
+
+        let row_var_f = match ty_f {
+            Type::Function { params, .. } => match &params[0] {
+                Type::Record(Row {
+                    tail: RowTail::RowVar(name, _),
+                    ..
+                }) => name.clone(),
+                other => panic!("expected f param to be open record, got {:?}", other),
+            },
+            other => panic!("expected f to be function type, got {other}"),
+        };
+
+        let row_var_g = match ty_g {
+            Type::Function { params, .. } => match &params[0] {
+                Type::Record(Row {
+                    tail: RowTail::RowVar(name, _),
+                    ..
+                }) => name.clone(),
+                other => panic!("expected g param to be open record, got {:?}", other),
+            },
+            other => panic!("expected g to be function type, got {other}"),
+        };
+
+        // The two functions must have distinct row variables
+        // If they incorrectly shared RowVar("_open", 0), this assertion would fail
+        assert_ne!(
+            row_var_f, row_var_g,
+            "cross-function anonymous open records must generate distinct row variables"
+        );
+
+        // Both should be fresh _open names
+        assert!(
+            row_var_f.starts_with("_open"),
+            "expected row var name to start with _open, got {}",
+            row_var_f
+        );
+        assert!(
+            row_var_g.starts_with("_open"),
+            "expected row var name to start with _open, got {}",
+            row_var_g
+        );
+    }
+
+    #[test]
     fn test_type_assert_open_record_accepts_extra_fields() {
         check("[@[name: String ...] [name: Alice  age: 30]]").unwrap();
     }
