@@ -247,14 +247,14 @@ Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if
 
 ### Git Repos
 
-Clone each repo if not already present at the specified path. Skip the clone step if the directory already exists.
+Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip if the directory already exists.
 
-- **nickel-lang/nickel** — `git clone --depth=1 https://github.com/nickel-lang/nickel .training/nickel` — Focus: overall architecture in `core/src/` for parser→typecheck→eval pipeline, module boundaries, error threading between phases, error reporting in a configuration language.
-- **google/jsonnet** — `git clone --depth=1 https://github.com/google/jsonnet .training/jsonnet` — Focus: `core/` for desugarer→static analysis→VM pipeline, how errors propagate across phases.
-- **dhall-lang/dhall-haskell** — `git clone --depth=1 https://github.com/dhall-lang/dhall-haskell .training/dhall-haskell` — Focus: `dhall/src/Dhall/` for Import→TypeCheck→Normalize pipeline structure, how each phase communicates with the next.
-- **rust-lang/rust** — `git clone --depth=1 https://github.com/rust-lang/rust .training/rust` — Focus: `compiler/rustc_errors/` for error reporting architecture, multi-span errors with labels, suggestion machinery. Review issues tagged "diagnostics" for error quality discussions.
-- **elm/compiler** — `git clone --depth=1 https://github.com/elm/compiler .training/elm` — Focus: `compiler/src/Reporting/` for famously good error messages, how they structure error hints and suggestions, their "error message catalog" approach. The gold standard for actionable compiler errors.
-- **rust-lang/reference** — `git clone --depth=1 https://github.com/rust-lang/reference .training/rust-lang-reference` — Focus: module system, visibility rules, `pub`/`pub(crate)` semantics, error handling (`Result`/`?`), string and UTF-8 handling. Essential for module boundary contracts, span byte-offset correctness, and error formatting soundness. **Note: this is a separate repo from rust-lang/rust (the compiler, also listed above). Clone path is `.training/rust-lang-reference`.**
+- **nickel-lang/nickel** — `mcp__toolbox__gh_repo_clone(repo="nickel-lang/nickel", directory=".training/nickel")` — Focus: overall architecture in `core/src/` for parser→typecheck→eval pipeline, module boundaries, error threading between phases, error reporting in a configuration language.
+- **google/jsonnet** — `mcp__toolbox__gh_repo_clone(repo="google/jsonnet", directory=".training/jsonnet")` — Focus: `core/` for desugarer→static analysis→VM pipeline, how errors propagate across phases.
+- **dhall-lang/dhall-haskell** — `mcp__toolbox__gh_repo_clone(repo="dhall-lang/dhall-haskell", directory=".training/dhall-haskell")` — Focus: `dhall/src/Dhall/` for Import→TypeCheck→Normalize pipeline structure, how each phase communicates with the next.
+- **rust-lang/rust** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/rust", directory=".training/rust")` — Focus: `compiler/rustc_errors/` for error reporting architecture, multi-span errors with labels, suggestion machinery. Review issues tagged "diagnostics" for error quality discussions.
+- **elm/compiler** — `mcp__toolbox__gh_repo_clone(repo="elm/compiler", directory=".training/elm")` — Focus: `compiler/src/Reporting/` for famously good error messages, how they structure error hints and suggestions, their "error message catalog" approach. The gold standard for actionable compiler errors.
+- **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. **Note: separate repo from rust-lang/rust above.** Key files: `src/visibility-and-privacy.md` (pub/pub(crate) — module boundary contracts), `src/names.md` (name resolution), `src/tokens.md` (string/char encoding — byte-offset vs char-offset span correctness).
 
 ### Local Documents
 - `src/lib.rs` — Public API and pipeline orchestration (study `eval_source`, `eval_file`, `eval_file_with_input`)

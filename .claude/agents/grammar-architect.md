@@ -165,15 +165,15 @@ Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if
 
 ### Git Repos
 
-Clone each repo if not already present at the specified path. Skip the clone step if the directory already exists.
+Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip if the directory already exists.
 
-- **pest-parser/pest** — `git clone --depth=1 https://github.com/pest-parser/pest .training/pest` — The PEG parser generator LLT uses. Focus: rule types (atomic, compound-atomic, non-atomic), whitespace handling, error recovery, performance patterns. Review issues tagged "bug" for known pitfalls.
-- **tree-sitter/tree-sitter** — `git clone --depth=1 https://github.com/tree-sitter/tree-sitter .training/tree-sitter` — Incremental parser framework. Focus: grammar design patterns, how tree-sitter handles whitespace sensitivity, error recovery strategies. Relevant for the Parser Rewrite and tree-sitter sprint.
-- **nickel-lang/nickel** — `git clone --depth=1 https://github.com/nickel-lang/nickel .training/nickel` — Configuration language with similar goals. Focus: parser architecture, how they handle bracket-heavy syntax, PEG vs hand-written parser trade-offs.
-- **dhall-lang/dhall-lang** — `git clone --depth=1 https://github.com/dhall-lang/dhall-lang .training/dhall-lang` — Focus: `standard/` directory for how a language maintains a formal specification alongside implementation, spec amendment patterns.
-- **json5/json5-spec** — `git clone --depth=1 https://github.com/json5/json5-spec .training/json5-spec` — Focus: specification document structure, how they formalize grammar and semantics.
-- **toml-lang/toml** — `git clone --depth=1 https://github.com/toml-lang/toml .training/toml` — Focus: specification clarity, edge case documentation, changelog discipline.
-- **rust-lang/reference** — `git clone --depth=1 https://github.com/rust-lang/reference .training/rust-lang-reference` — Focus: procedural macros, derive macro semantics, `include_str!`/`include_bytes!` compile-time file embedding, attribute syntax. Essential for understanding pest's derive-based grammar compilation and parser.rs integration. **Note: this is a separate repo from rust-lang/rust (the compiler). Clone path is `.training/rust-lang-reference`.**
+- **pest-parser/pest** — `mcp__toolbox__gh_repo_clone(repo="pest-parser/pest", directory=".training/pest")` — The PEG parser generator LLT uses. Focus: rule types (atomic, compound-atomic, non-atomic), whitespace handling, error recovery, performance patterns. Review issues tagged "bug" for known pitfalls.
+- **tree-sitter/tree-sitter** — `mcp__toolbox__gh_repo_clone(repo="tree-sitter/tree-sitter", directory=".training/tree-sitter")` — Incremental parser framework. Focus: grammar design patterns, how tree-sitter handles whitespace sensitivity, error recovery strategies. Relevant for the Parser Rewrite and tree-sitter sprint.
+- **nickel-lang/nickel** — `mcp__toolbox__gh_repo_clone(repo="nickel-lang/nickel", directory=".training/nickel")` — Configuration language with similar goals. Focus: parser architecture, how they handle bracket-heavy syntax, PEG vs hand-written parser trade-offs.
+- **dhall-lang/dhall-lang** — `mcp__toolbox__gh_repo_clone(repo="dhall-lang/dhall-lang", directory=".training/dhall-lang")` — Focus: `standard/` directory for how a language maintains a formal specification alongside implementation, spec amendment patterns.
+- **json5/json5-spec** — `mcp__toolbox__gh_repo_clone(repo="json5/json5-spec", directory=".training/json5-spec")` — Focus: specification document structure, how they formalize grammar and semantics.
+- **toml-lang/toml** — `mcp__toolbox__gh_repo_clone(repo="toml-lang/toml", directory=".training/toml")` — Focus: specification clarity, edge case documentation, changelog discipline.
+- **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. Key files: `src/procedural-macros.md` (derive macro semantics — how pest's `#[derive(Parser)]` compiles grammars), `src/attributes.md` (attribute syntax), `src/macros.md` (declarative macros).
 
 ### Local Documents
 - `src/grammar.pest` — The current PEG grammar (study every rule and its type annotation)

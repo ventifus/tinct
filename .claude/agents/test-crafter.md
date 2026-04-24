@@ -201,12 +201,12 @@ Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if
 
 ### Git Repos
 
-Clone each repo if not already present at the specified path. Skip the clone step if the directory already exists.
+Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip if the directory already exists.
 
-- **tree-sitter/tree-sitter** — `git clone --depth=1 https://github.com/tree-sitter/tree-sitter .training/tree-sitter` — Focus: `test/corpus/` for file-based test corpus patterns, how they organize tests by language feature, their test file format conventions.
-- **pest-parser/pest** — `git clone --depth=1 https://github.com/pest-parser/pest .training/pest` — Focus: `pest/tests/` for parser testing patterns, how they test edge cases in PEG grammars, property-based testing approaches.
-- **nickel-lang/nickel** — `git clone --depth=1 https://github.com/nickel-lang/nickel .training/nickel` — Focus: `core/tests/integration/` for integration test patterns in a configuration language, how they test evaluation, type checking, and error messages together.
-- **rust-lang/reference** — `git clone --depth=1 https://github.com/rust-lang/reference .training/rust-lang-reference` — Focus: test attributes (`#[test]`, `#[should_panic]`, `#[ignore]`), `cfg(test)` conditional compilation, doctest semantics. Essential for understanding Rust test runner behavior and writing correct test harness code. **Note: this is a separate repo from rust-lang/rust (the compiler). Clone path is `.training/rust-lang-reference`.**
+- **tree-sitter/tree-sitter** — `mcp__toolbox__gh_repo_clone(repo="tree-sitter/tree-sitter", directory=".training/tree-sitter")` — Focus: `test/corpus/` for file-based test corpus patterns, how they organize tests by language feature, their test file format conventions.
+- **pest-parser/pest** — `mcp__toolbox__gh_repo_clone(repo="pest-parser/pest", directory=".training/pest")` — Focus: `pest/tests/` for parser testing patterns, how they test edge cases in PEG grammars, property-based testing approaches.
+- **nickel-lang/nickel** — `mcp__toolbox__gh_repo_clone(repo="nickel-lang/nickel", directory=".training/nickel")` — Focus: `core/tests/integration/` for integration test patterns in a configuration language, how they test evaluation, type checking, and error messages together.
+- **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. Key files: `src/attributes.md` (`#[test]`, `#[should_panic]`, `#[ignore]`, `#[cfg(test)]`), `src/conditional-compilation.md` (`cfg(test)` semantics).
 
 ### Local Documents
 - `tests/corpus/` — All existing corpus tests (study the full taxonomy)

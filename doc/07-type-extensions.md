@@ -287,13 +287,13 @@ Rows are a **separate sort** from types. A row maps labels to types with an opti
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowTail {
     Empty,              // closed row — no more fields
-    RowVar(String),     // ρ — row variable (bindable in substitution)
+    RowVar(String, u32), // ρ — row variable (name, Kiselyov generalization level)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    pub fields: IndexMap<String, Type>,   // known fields {l₁: τ₁, l₂: τ₂, ...}
-    pub tail: RowTail,                    // Empty (closed) or RowVar(ρ) (open)
+    pub fields: HashMap<String, Type>,   // known fields {l₁: τ₁, l₂: τ₂, ...}
+    pub tail: RowTail,                   // Empty (closed) or RowVar(ρ) (open)
 }
 ```
 
@@ -316,7 +316,7 @@ pub enum Type {
 
 Row variables have kind `Row`; type variables have kind `Type`. The substitution enforces this: `type_map: HashMap<String, Type>` and `row_map: HashMap<String, Row>` are separate maps. A type variable can never be bound to a row, and a row variable can never be bound to a type — this invariant is structural (enforced by Rust's type system), not checked at runtime.
 
-**Uniqueness invariant.** The `IndexMap<String, Type>` structurally prevents duplicate labels — each label maps to exactly one type. In Rémy's full system, this property is maintained by the presence/absence discipline (each label appears once, flagged as Present or Absent). The dict+tail representation achieves the same invariant through the map data structure. This eliminates the class of bugs where cons-list extraction leaves duplicate labels in row remainders.
+**Uniqueness invariant.** The `HashMap<String, Type>` structurally prevents duplicate labels — each label maps to exactly one type. In Rémy's full system, this property is maintained by the presence/absence discipline (each label appears once, flagged as Present or Absent). The dict+tail representation achieves the same invariant through the map data structure. This eliminates the class of bugs where cons-list extraction leaves duplicate labels in row remainders.
 
 **Relationship to evaluation.** The `Row` type exists only in the type system (`types.rs`, `typecheck.rs`). The evaluator continues to use `IndexMap<Key, Rc<Thunk>>` for runtime dicts. There is no `Row` at runtime — the type-level row is erased during type checking. This separation is standard: PureScript and OCaml both use different representations for type-level rows and runtime records.
 
@@ -326,7 +326,7 @@ Row variables have kind `Row`; type variables have kind `Type`. The substitution
 pub enum FieldPresence { Present, Absent }
 
 pub struct Row {
-    pub fields: IndexMap<String, (FieldPresence, Type)>,  // l → (pre(τ) | abs)
+    pub fields: HashMap<String, (FieldPresence, Type)>,  // l → (pre(τ) | abs)
     pub tail: RowTail,
 }
 ```
@@ -360,12 +360,12 @@ apply_row(Row { fields, tail }, S):
     Empty       → Row { fields: fields', tail: Empty }
     RowVar(ρ)   → if ρ ∈ S.row_map:
                      let bound = apply_row(S.row_map[ρ], S)
-                     Row { fields: fields' ∪ bound.fields, tail: bound.tail }
+                     Row { fields: merge(fields', bound.fields), tail: bound.tail }
                    else:
                      Row { fields: fields', tail: RowVar(ρ) }
 ```
 
-Note: when splicing a bound row variable, the bound row's fields are merged into the current field map. Since both maps enforce unique keys and the bound row was produced by unification (which partitions fields), there are no duplicate labels to resolve. If a duplicate key were to arise (implementation bug), it would indicate a constraint violation — fail with an internal error rather than silently overwriting.
+The `merge` is **left-biased**: explicit fields (from `fields'`) take precedence over inherited fields (from `bound.fields`). Concretely, a field from the bound row is included only if `fields'` does not already contain that key. Duplicates can legitimately arise when a row variable is bound (by a prior unification step or direct construction) to a row that re-introduces a field already present in the explicit fields; the left-bias ensures the explicit field always wins.
 
 **Occurs check** is per-kind:
 
@@ -497,7 +497,7 @@ UNIFY-RECORD:
 
 All record unification delegates to row unification. The current nine-case `match` in `unify()` for Record (lines 319-340 of types.rs) is replaced by this single delegation.
 
-**Complexity:** Field partitioning is O(n) where n is the total number of fields across both rows (hash-based set operations on IndexMap keys). This improves on the cons-list extract-and-recurse approach which is O(n²) worst case (O(n) scan per field). For tinct's use case (configuration records, typically < 100 fields) both are acceptable, but O(n) is strictly better.
+**Complexity:** Field partitioning is O(n) where n is the total number of fields across both rows (hash-based set operations on HashMap keys). This improves on the cons-list extract-and-recurse approach which is O(n²) worst case (O(n) scan per field). For tinct's use case (configuration records, typically < 100 fields) both are acceptable, but O(n) is strictly better.
 
 ### Part 4: Instantiation and Generalization
 
@@ -642,8 +642,8 @@ The migration replaces `RowRest` with `RowTail`, adds `Row` as a struct, and cha
 
 ```rust
 impl Row {
-    fn closed(fields: IndexMap<String, Type>) -> Row { ... }
-    fn open(fields: IndexMap<String, Type>, var: String) -> Row { ... }
+    fn closed(fields: HashMap<String, Type>) -> Row { ... }
+    fn open(fields: HashMap<String, Type>, var: String) -> Row { ... }
     fn empty() -> Row { ... }
     fn var(name: String) -> Row { ... }  // Row { fields: {}, tail: RowVar(name) }
 }
@@ -655,7 +655,7 @@ impl Row {
 
 **P2 — Kind safety.** Type variables and row variables inhabit separate namespaces enforced by the `Substitution` structure (`type_map` vs `row_map`) and by Rust's type system (`Type` vs `Row` are distinct types). A type variable α can never be bound to a row, and a row variable ρ can never be bound to a type. This prevents the class of bugs exemplified by Elm issue #656.
 
-**P3 — Row commutativity.** `{a: Int, b: Str, ...ρ}` unifies with `{b: Str, a: Int, ...ρ}` — field order in rows is irrelevant. This is enforced structurally by the dict+tail representation: the `IndexMap` is an unordered (by semantics) field collection, so commutativity is automatic rather than computed via extraction.
+**P3 — Row commutativity.** `{a: Int, b: Str, ...ρ}` unifies with `{b: Str, a: Int, ...ρ}` — field order in rows is irrelevant. This is enforced structurally by the dict+tail representation: the `HashMap` is an unordered field collection, so commutativity is automatic rather than computed via extraction.
 
 **P4 — Occurs check termination.** The per-kind occurs check prevents infinite types (`α = Record({x: α})`) and infinite rows (`ρ = {x: Int, ...ρ}`). The row-variable occurs check traverses field types to prevent infinite structures through nesting (`ρ = {x: Record({y: Int, ...ρ})}`). Combined with the finite-depth property of tinct's AST, unification terminates.
 
@@ -663,7 +663,7 @@ impl Row {
 
 **P6 — Forward compatibility with full Rémy.** Adding presence/absence flags changes field map values from `Type` to `(FieldPresence, Type)`. The partitioning algorithm gains a presence-compatibility check (Present must match Present, Absent must match Absent), and field access must skip Absent fields. The overall structure (partition shared/unique, unify shared, bind tails) is preserved. See Part 1: Row Kind for the extension point.
 
-**P7 — Label uniqueness.** The `IndexMap<String, Type>` structurally prevents duplicate labels in any row. This invariant is maintained through all operations: construction (from source), unification (partitioning preserves uniqueness), and substitution application (field merging of disjoint maps). No runtime duplicate-label check is needed.
+**P7 — Label uniqueness.** The `HashMap<String, Type>` structurally prevents duplicate labels in any row. This invariant is maintained through all operations: construction (from source), unification (partitioning preserves uniqueness), and substitution application (field merging of disjoint maps). No runtime duplicate-label check is needed.
 
 **P8 — Tail-field disjointness.** The fields of a row and the fields of its resolved tail are always disjoint, by construction from the partitioning step of unification. When `unify_remainders` binds a tail `ρ` to `Row { fields: U, tail: t }`, the unique fields `U` were computed as the set difference `F_other \ shared` — fields present in the other row but not in the row containing `ρ`. Since `ρ` is the tail of the row that contributed the `shared` fields, and `U` contains only fields *not* in that row, the two sets are disjoint. This guarantees that `apply_row` field merging (which unions a row's explicit fields with its resolved tail's fields) never encounters duplicate keys.
 

@@ -172,12 +172,12 @@ Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if
 
 ### Git Repos
 
-Clone each repo if not already present at the specified path. Skip the clone step if the directory already exists.
+Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip if the directory already exists.
 
-- **google/jsonnet** — `git clone --depth=1 https://github.com/google/jsonnet .training/jsonnet` — Focus: `stdlib/std.jsonnet` for self-hosted stdlib patterns, how they build higher-order functions from primitives, naming conventions.
-- **jqlang/jq** — `git clone --depth=1 https://github.com/jqlang/jq .training/jq` — Focus: `src/builtin.jq` for stdlib design in a data transformation language, function composition patterns, how they handle streaming/lazy operations.
-- **dhall-lang/dhall-lang** — `git clone --depth=1 https://github.com/dhall-lang/dhall-lang .training/dhall-lang` — Focus: `Prelude/` directory for typed stdlib design, how they organize functions by category, documentation patterns.
-- **NixOS/nixpkgs** — `git clone --depth=1 https://github.com/NixOS/nixpkgs .training/nixpkgs` — Focus: `lib/` directory (especially `lib/lists.nix`, `lib/attrsets.nix`, `lib/strings.nix`) for stdlib patterns in a lazy functional language with dict-like structures.
+- **google/jsonnet** — `mcp__toolbox__gh_repo_clone(repo="google/jsonnet", directory=".training/jsonnet")` — Focus: `stdlib/std.jsonnet` for self-hosted stdlib patterns, how they build higher-order functions from primitives, naming conventions.
+- **jqlang/jq** — `mcp__toolbox__gh_repo_clone(repo="jqlang/jq", directory=".training/jq")` — Focus: `src/builtin.jq` for stdlib design in a data transformation language, function composition patterns, how they handle streaming/lazy operations.
+- **dhall-lang/dhall-lang** — `mcp__toolbox__gh_repo_clone(repo="dhall-lang/dhall-lang", directory=".training/dhall-lang")` — Focus: `Prelude/` directory for typed stdlib design, how they organize functions by category, documentation patterns.
+- **NixOS/nixpkgs** — `mcp__toolbox__gh_repo_clone(repo="NixOS/nixpkgs", directory=".training/nixpkgs")` — Focus: `lib/` directory (especially `lib/lists.nix`, `lib/attrsets.nix`, `lib/strings.nix`) for stdlib patterns in a lazy functional language with dict-like structures.
 
 ### Local Documents
 - `stdlib/prelude.llt` — The current LLT stdlib (study every function definition)

@@ -6678,7 +6678,7 @@ mod tests {
         // Structural path: resolved_type = Some(Type::Record(..., Open))
         // Dict has required field "name" -> pass.
         // The record type check is immediate (shape check), field guard wrapping deferred.
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
         let record_type = Type::Record(Row {
             fields,
@@ -6717,7 +6717,7 @@ mod tests {
     #[test]
     fn test_typeassert_structural_record_missing_field() {
         // Structural path: record type requires field "id", dict doesn't have it -> error
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("id".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -6746,7 +6746,7 @@ mod tests {
     #[test]
     fn test_typeassert_structural_closed_record_extra_field() {
         // Structural path: closed record (RowTail::Empty), dict has extra field -> error
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -6782,7 +6782,7 @@ mod tests {
     #[test]
     fn test_typeassert_structural_closed_record_exact_fields_pass() {
         // Structural path: closed record, dict has exactly the required fields -> pass
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -6814,7 +6814,7 @@ mod tests {
     #[test]
     fn test_typeassert_structural_record_non_dict_fails() {
         // Structural path: resolved_type = Some(Type::Record(...)), value is Int -> error
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -6976,7 +6976,7 @@ mod tests {
         // Type::Record always returns true (deferred to proxy contract wrapping).
         // This is intentional per the spec: record field validation happens via
         // validate_and_wrap_record, not value_matches_type.
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,

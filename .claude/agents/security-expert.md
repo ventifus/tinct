@@ -208,7 +208,7 @@ All repos are cloned to `.training/`. Skip the clone step if the directory alrea
 - **dhall-lang/dhall-haskell** (`.training/dhall-haskell`) — Focus: semantic integrity hashes on imports, import sandboxing. Key file: `dhall/src/Dhall/Import.hs:534` (loadImportWithSemanticCache). Dhall's security model is the gold standard for untrusted config.
 - **NixOS/nix** (`.training/nix`) — Focus: AllowListSourceAccessor pattern for path confinement, `--restrict-eval`/`--pure-eval` modes. Key file: `src/libexpr/eval.cc:282` (accessor wrapping). Key file: `src/libexpr/eval-settings.hh:169-224` (restrictEval, pureEval, allowed-uris settings).
 - **pest** (`.training/pest`) — Focus: `set_call_limit` API for parser DoS prevention. Key file: `pest/src/parser_state.rs:91-105`. Pest's own fuzz targets use 5000-8000 call limits.
-- **rust-lang/reference** (`.training/rust-lang-reference`) — Focus: unsafe Rust semantics, UB catalog. Low priority since LLT has zero `unsafe` blocks.
+- **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. Key files: `src/behavior-considered-undefined.md` (UB catalog), `src/interior-mutability.md` (RefCell borrow rules — critical for `Rc<RefCell<ThunkState>>`), `src/panic.md` (catch_unwind is a no-op with `panic = "abort"` in release), `src/destructors.md` (drop order for Rc/RefCell), `src/unsafe-keyword.md` (forward reference).
 
 ### Web Downloads
 
