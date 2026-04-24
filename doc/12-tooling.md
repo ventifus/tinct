@@ -72,6 +72,7 @@ Two layers of defense for `$include` and any future file I/O:
 - `--allow-path <dir>` adds a directory tree to the allowlist. Repeatable. Global flag.
 - Default: `--allow-path .` (current working directory subtree). Project files accessible, nothing else.
 - `--allow-path /` disables filesystem sandboxing entirely.
+- `--no-fs` sets the allowlist to empty — `$include` is fully disabled. Use for adversarial inputs where no filesystem access should be possible.
 - Absolute paths in `$include` are allowed if they resolve within any allowed path.
 - Symlinks: canonicalize to real path, then check. Symlinks pointing outside all allowed paths fail.
 - `--allow-path` values are themselves canonicalized at CLI parse time (once), not on every include check.
@@ -106,10 +107,13 @@ Prevents evaluation from consuming unbounded resources (DoS protection, runaway 
 |-------|---------|-------------|------------|
 | `RLIMIT_AS` | 512MB | `--max-memory 1G` | All subcommands |
 | `RLIMIT_CPU` | 30s | `--max-cpu 60` | `eval` only |
+| Wall-clock | none | `--timeout <duration>` | `eval` only |
 | `RLIMIT_NOFILE` | 64 | `--max-fds 128` | All subcommands |
 | `RLIMIT_FSIZE` | 10MB | — | All subcommands |
 
-`RLIMIT_CPU` applies only to `eval`. The `lsp` and `repl` subcommands are long-lived processes where cumulative CPU time is expected — a 30-second CPU cap would kill them during normal use. Memory and file descriptor limits still apply to all subcommands as safety nets.
+`RLIMIT_CPU` and `--timeout` apply only to `eval`. `RLIMIT_CPU` measures CPU time (time the process spends on-CPU); `--timeout` measures wall-clock time (elapsed real time). For adversarial inputs where the distinction matters (e.g. a program that sleeps or performs many syscalls), use `--timeout`. Both limits coexist — whichever fires first terminates evaluation.
+
+`--timeout` is specified as a duration string: `30s`, `500ms`, `2m`. Implemented via `alarm(2)` + SIGALRM. When the timeout fires, the process exits with code 2. The `lsp` and `repl` subcommands are long-lived processes where cumulative CPU time is expected — a 30-second CPU cap would kill them during normal use. Memory and file descriptor limits still apply to all subcommands as safety nets.
 
 ### Process Sandbox (seccomp-bpf)
 
@@ -158,6 +162,36 @@ struct EvalConfig {
 ```
 
 `$include` checks `config.allowed_paths` before reading. Landlock, seccomp, and rlimit are set up in `main()` before evaluation starts — they are process-level restrictions, not per-eval.
+
+### Adversarial Evaluation
+
+For services that evaluate attacker-controlled tinct programs (playgrounds, API endpoints, CTF infrastructure), `llt eval` is designed to be used as a sandboxed child process. The calling service is the parent — it spawns `llt eval` with the appropriate flags, captures stdout/stderr, and inspects the exit code. `llt eval` is one-shot per request; the caller handles concurrency by spawning multiple child processes.
+
+**Flags for adversarial use:**
+
+```bash
+llt eval --no-fs --timeout 5s --max-memory 64M --max-cpu 10 main.llt
+```
+
+| Flag | Effect |
+|------|--------|
+| `--no-fs` | Disables `$include` entirely (empty filesystem allowlist) |
+| `--timeout <dur>` | Wall-clock limit (e.g. `5s`, `500ms`); exit code 2 on expiry |
+| `--max-memory <size>` | Address space limit (e.g. `64M`, `512M`) |
+| `--max-cpu <secs>` | CPU time limit in seconds |
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success — output on stdout |
+| 1 | Eval/parse/type error — error message on stderr |
+| 2 | Timeout — wall-clock limit exceeded (`--timeout`) |
+| 3 | Resource limit — memory or CPU cap hit (SIGXCPU/SIGXFSZ) |
+
+**Architecture:** `llt eval` is the sandboxed process. The parent service uses the exit code to distinguish timeout (code 2) from hard resource exhaustion (code 3) from user errors (code 1). All four sandboxing layers (filesystem allowlist, network seccomp, rlimit, process seccomp) compose — `--no-fs --timeout 5s --max-memory 64M` enables all simultaneously.
+
+**Comparison with VM-level isolation (e.g. Cloudflare Workers / V8 isolates):** V8 isolates achieve language-level sandboxing with microsecond startup time and planet-scale density, at the cost of tying the sandbox to a specific JavaScript engine. `llt eval` uses OS-level process isolation — a stronger security boundary (separate address space, separate file descriptor table, kernel enforcement via seccomp and Landlock) at the cost of per-process overhead (~10ms fork+exec). For tinct's scale (configuration evaluation, not request-per-millisecond hot path), OS process isolation is the correct tradeoff.
 
 ### Rust Crates
 

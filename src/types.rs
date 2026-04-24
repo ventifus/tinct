@@ -492,6 +492,7 @@ fn row_var_occurs_in_type(var_name: &str, ty: &Type, subst: &Substitution) -> bo
         Type::Seq(elem) => row_var_occurs_in_type(var_name, elem, subst),
         Type::TypeVar(name, _) => {
             // Chase TypeVar binding: if α is bound to τ in subst, check τ for ρ
+            // Chase terminates without visited-set: unify() checks type_var_occurs(name, &b) before binding α→b, so cyclic chains cannot exist
             if let Some(bound) = subst.type_map.get(name) {
                 row_var_occurs_in_type(var_name, bound, subst)
             } else {
@@ -543,6 +544,7 @@ fn unify_tails(
     match (t1, t2) {
         (RowTail::Empty, RowTail::Empty) => Ok(()),
         (RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _)) => {
+            // No occurs check needed: resolve_row guarantees both unbound, so binding ρ₁→{…ρ₁} cannot occur (Robinson vacuous satisfaction)
             if rho1 == rho2 {
                 Ok(())
             } else {
@@ -4497,6 +4499,116 @@ mod tests {
             err_msg.contains("incompatible fields") && err_msg.contains("rho"),
             "error should mention incompatible fields and the row variable name, got: {}",
             err_msg
+        );
+    }
+
+    /// Test that lower_row_var_levels in unify_remainders Case 2 prevents over-generalization.
+    /// This verifies the Kiselyov (2013) level-based let-polymorphism mechanism: inner row vars
+    /// at level 3 should have their level lowered to the outer row var's level when bound,
+    /// preventing them from being generalized at the wrong scope.
+    #[test]
+    fn test_lower_row_var_levels_prevents_generalization() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // Create rho_inner at level 3, rho_outer at level 1
+        state.levels.insert("rho_inner".into(), 3);
+        state.levels.insert("rho_outer".into(), 1);
+
+        // Build left = {x: Int, ...rho_inner}, right = {...rho_outer}
+        // This triggers Case 2: left has unique field {x}, right has no unique fields
+        let mut f1 = IndexMap::new();
+        f1.insert("x".into(), Type::Int);
+        let left = row_var_record(f1, "rho_inner", 3);
+
+        let f2 = IndexMap::new();
+        let right = row_var_record(f2, "rho_outer", 1);
+
+        // Unify them
+        unify(&left, &right, &mut subst, &mut state, span).unwrap();
+
+        // Case 2 binds rho_outer → {x: Int, ...rho_inner}
+        // lower_row_var_levels should lower rho_inner's level from 3 to min(3, 1) = 1
+        let rho_inner_level = state.levels.get("rho_inner").copied().unwrap_or(0);
+        assert_eq!(
+            rho_inner_level, 1,
+            "rho_inner level should be lowered from 3 to 1 (rho_outer's level)"
+        );
+
+        // Now generalize at level 1 — rho_inner should NOT be generalized
+        // because its level is now 1, which is NOT > 1
+        let binding = subst
+            .row_map
+            .get("rho_outer")
+            .expect("rho_outer should be bound");
+        let bound_type = Type::Record(binding.clone());
+        let scheme = generalize(1, &bound_type, &state);
+
+        assert!(
+            !scheme.row_vars.contains(&"rho_inner".to_string()),
+            "rho_inner should NOT be generalized: its level is now 1, not > 1"
+        );
+    }
+
+    /// Test the symmetric direction of unify_tails: (Empty, RowVar) vs the already-tested (RowVar, Empty).
+    /// Both should bind the RowVar to Row { fields: {}, tail: Empty }.
+    #[test]
+    fn test_unify_tails_empty_vs_rowvar() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // No unique fields, left is closed (Empty), right is open (rho)
+        let f1 = IndexMap::new();
+        let f2 = IndexMap::new();
+        unify(
+            &closed_record(f1),
+            &row_var_record(f2, "rho", 0),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // rho should be bound to Row { fields: {}, tail: Empty }
+        let binding = subst.row_map.get("rho").expect("rho should be bound");
+        assert_eq!(binding.tail, RowTail::Empty);
+        assert_eq!(binding.fields.len(), 0);
+    }
+
+    /// Test multi-hop TypeVar chase in row_var_occurs_in_type.
+    /// If α → Record({x: TypeVar(β)}) and β → Record({z: Int, ...ρ}),
+    /// then row_var_occurs_in_type("ρ", TypeVar("α"), &subst) should return true.
+    /// This tests that the recursive chase works through multiple TypeVar bindings.
+    #[test]
+    fn test_multi_hop_typevar_chase_in_row_occurs() {
+        let mut subst = Substitution::new();
+
+        // Bind β → Record({z: Int}, RowVar("rho"))
+        let mut beta_fields = IndexMap::new();
+        beta_fields.insert("z".into(), Type::Int);
+        let beta_bound = Type::Record(Row {
+            fields: beta_fields,
+            tail: RowTail::RowVar("rho".into(), 0),
+        });
+        subst.type_map.insert("beta".into(), beta_bound);
+
+        // Bind α → Record({x: TypeVar("beta")})
+        let mut alpha_fields = IndexMap::new();
+        alpha_fields.insert("x".into(), Type::TypeVar("beta".into(), 0));
+        let alpha_bound = Type::Record(Row {
+            fields: alpha_fields,
+            tail: RowTail::Empty,
+        });
+        subst.type_map.insert("alpha".into(), alpha_bound);
+
+        // row_var_occurs_in_type should chase: α → Record({x: β}) → β → Record({...ρ})
+        // and detect that ρ is transitively reachable through α's binding
+        let tv_alpha = Type::TypeVar("alpha".into(), 0);
+        assert!(
+            row_var_occurs_in_type("rho", &tv_alpha, &subst),
+            "should detect rho through multi-hop TypeVar chase: alpha → beta → rho"
         );
     }
 }

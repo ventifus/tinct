@@ -927,3 +927,16 @@ Bug fixes and verification for Rémy-style row-variable unification. Requires ro
 - [x] Verify consistency between `unify` and `is_subtype` for all RowRest combinations — 12 unit tests added; post-substitution consistency confirmed correct
 - [x] Ensure row variable occurs check before binding — all 3 binding cases (Cases 2, 3, 4) call `row_var_occurs` before `row_map.insert`; verified sound
 - [x] Add debug assertion in `apply_row` field merge — rejected: duplicates in `apply_row` are legitimate (explicit field wins over row-variable-inherited field); explanatory comments added instead
+
+### row-unification-d: Verification Continuation — Tests, Comments, Doc Fixes
+
+Verification follow-on for row-unification-c. Requires row-unification-c.
+
+- [x] Add comment to `unify_tails` RowVar/RowVar binding explaining why no occurs check is needed — Robinson (1965) vacuous satisfaction. (`src/types.rs:547`)
+- [x] Add comment to `row_var_occurs_in_type` TypeVar chase explaining no-cycle invariant. (`src/types.rs:495`)
+- [x] Update `doc/07-type-extensions.md` pseudocode for `unify_remainders` — added Case 7, `u2_empty`/`u1_empty` guards, `when ρ₁ ≠ ρ₂` on Case 4.
+- [x] Corpus error test for same-rho soundness — determined infeasible (annotation mapping isolation prevents shared row vars end-to-end; unit test is sufficient)
+- [x] Add cross-function anonymous open record test — `test_cross_function_anonymous_open_records_get_fresh_vars` (`src/typecheck.rs:2405`)
+- [x] Add `test_lower_row_var_levels_prevents_generalization` (`src/types.rs:4510`)
+- [x] Add `test_unify_tails_empty_vs_rowvar` symmetric direction (`src/types.rs:4557`)
+- [x] Add multi-hop TypeVar chase test (`src/types.rs:4585`)

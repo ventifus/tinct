@@ -269,20 +269,7 @@ unify(StringLiteral(s), StringLiteral(t), S) =
     error       if s ≠ t                         [U-STRLIT-NEQ]
 ```
 
-> **PROPOSED DESIGN — NOT YET IMPLEMENTED.** The text below describes the target state where all promotion rules are removed from `unify()` and handled exclusively by `check_expr` via the [SUB] rule. The current implementation (`src/types.rs` `unify()`) retains bidirectional promotion rules as pragmatic extensions of Robinson unification:
->
-> | Rule | Coercion |
-> |------|----------|
-> | IntLiteral(n) ↔ Int | Literal widens to base type |
-> | IntLiteral(n) ↔ Number | Literal widens to numeric supertype |
-> | Int ↔ Number | Int widens to numeric supertype |
-> | Float ↔ Number | Float widens to numeric supertype |
-> | IntLiteral(n) ↔ Float | Literal widens to Float |
-> | StringLiteral(s) ↔ Str | Literal widens to base type |
->
-> These rules fire bidirectionally within `unify()` and modify the substitution (unlike [U-SUBSUME] which does not). They will be removed when the bidirectional typing migration is complete (all checking positions use `check_expr`).
-
-**Target state (after bidirectional-typing migration):** No explicit literal-to-parent promotion rules in unification. All will be removed. Subtyping relationships between concrete types will be handled by [U-SUBSUME] below.
+No explicit literal-to-parent promotion rules in unification. Subtyping relationships between concrete types are handled by [U-SUBSUME] below.
 
 Structural:
 
@@ -307,15 +294,13 @@ unify(σ, τ, S) where ¬has_type_vars(σ) ∧ ¬has_type_vars(τ):
     else: error                                  [U-FAIL]
 ```
 
-> **PROPOSED DESIGN:** This rule is the target for concrete-type compatibility in `unify()`. Currently, the 6 promotion rules listed above handle most concrete-type cases directly; [U-SUBSUME] would replace them with a single `is_subtype` fallback.
+[U-SUBSUME] is the bridge between unification and subtyping. It fires after all other rules (structural decomposition, type variable binding) have been tried. When two concrete types remain and they are in a subtype relationship in either direction, unification succeeds without modifying the substitution. This is essential for **confluence in CALL-POLY**: when a type variable α is bound to `IntLiteral(42)` by one argument and later compared against `Int` by another (via substitution resolution), [U-SUBSUME] recognizes `IntLiteral(42) <: Int` and succeeds regardless of argument order.
 
-**Target behavior (post-migration):** [U-SUBSUME] will be the bridge between unification and subtyping. It will fire after all other rules (structural decomposition, type variable binding) have been tried. When two concrete types remain and they are in a subtype relationship in either direction, unification will succeed without modifying the substitution. This is essential for **confluence in CALL-POLY**: when a type variable α is bound to `IntLiteral(42)` by one argument and later compared against `Int` by another (via substitution resolution), [U-SUBSUME] will recognize `IntLiteral(42) <: Int` and succeed regardless of argument order.
+**Relationship to Robinson unification.** Robinson (1965) is purely syntactic — it has no notion of subtyping, so `unify(IntLiteral(42), Int)` would simply fail (different constructors). [U-SUBSUME] extends Robinson with a ground-type compatibility check: when both sides are concrete and in a subtype relationship, unification succeeds without modifying the substitution. This is a pragmatic middle ground — Robinson handles structural decomposition and variable binding; [U-SUBSUME] handles the subtype lattice at ground types. The substitution is not modified by [U-SUBSUME], so existing variable bindings (which may carry literal precision) are preserved. This is the same approach Rust's type inference uses: subtyping constraints between concrete types are resolved as compatibility checks rather than LUB computation (Dolan & Mycroft 2017 describe the full alternative — algebraic subtyping — which tinct intentionally does not adopt; see `doc/whatif/algebraic-subtypes.md`).
 
-**Relationship to Robinson unification.** Robinson (1965) is purely syntactic — it has no notion of subtyping, so `unify(IntLiteral(42), Int)` would simply fail (different constructors). [U-SUBSUME] will extend Robinson with a ground-type compatibility check: when both sides are concrete and in a subtype relationship, unification will succeed without modifying the substitution. This is a pragmatic middle ground — Robinson handles structural decomposition and variable binding; [U-SUBSUME] will handle the subtype lattice at ground types. The substitution will not be modified by [U-SUBSUME], so existing variable bindings (which may carry literal precision) are preserved. This is the same approach Rust's type inference uses: subtyping constraints between concrete types are resolved as compatibility checks rather than LUB computation (Dolan & Mycroft 2017 describe the full alternative — algebraic subtyping — which tinct intentionally does not adopt; see `doc/whatif/algebraic-subtypes.md`).
+[U-SUBSUME] checks both directions because unification is symmetric — the two types arrive without a designated "actual" vs "expected" role. The bidirectional check covers both orderings: `unify(IntLiteral(42), Int)` succeeds (IntLiteral(42) <: Int) and `unify(Int, IntLiteral(42))` also succeeds (IntLiteral(42) <: Int, checked as `is_subtype(τ, σ)`). The substitution is unchanged because there are no type variables to bind.
 
-[U-SUBSUME] will check both directions because unification is symmetric — the two types arrive without a designated "actual" vs "expected" role. The bidirectional check will cover both orderings: `unify(IntLiteral(42), Int)` succeeds (IntLiteral(42) <: Int) and `unify(Int, IntLiteral(42))` also succeeds (IntLiteral(42) <: Int, checked as `is_subtype(τ, σ)`). The substitution is unchanged because there are no type variables to bind.
-
-**Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] will be bidirectional because it operates within unification where the original directionality is lost after structural decomposition. This is sound because the substitution is not modified — the bidirectional check only determines compatibility, not binding direction.
+**Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] is bidirectional because it operates within unification where the original directionality is lost after structural decomposition. This is sound because the substitution is not modified — the bidirectional check only determines compatibility, not binding direction.
 
 All other non-structural, non-subsumable combinations: error [U-FAIL]
 
@@ -553,18 +538,16 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).
 
-**Principal types.** Tinct infers principal types for fully-annotated polymorphic functions where no type variable unifies with `Any`. For partially-typed code, the inferred type depends on the checking context — subsumption introduces multiple valid types for the same expression (e.g., `42` can check against `IntLiteral(42)`, `Int`, `Number`, or `Any`). Full Damas-Milner principality is not achieved because: (a) unannotated parameters receive `Any` rather than fresh type variables, (b) singleton literal types introduce subtyping which bidirectional checking mediates but which prevents a unique most-general type, and (c) when [U-SUBSUME] is implemented in CALL-POLY, the type variable binding may be more or less precise depending on argument order (both bindings are sound, but they differ).
+**Principal types.** Tinct infers principal types for fully-annotated polymorphic functions where no type variable unifies with `Any`. For partially-typed code, the inferred type depends on the checking context — subsumption introduces multiple valid types for the same expression (e.g., `42` can check against `IntLiteral(42)`, `Int`, `Number`, or `Any`). Full Damas-Milner principality is not achieved because: (a) unannotated parameters receive `Any` rather than fresh type variables, (b) singleton literal types introduce subtyping which bidirectional checking mediates but which prevents a unique most-general type, and (c) [U-SUBSUME] in CALL-POLY means the type variable binding may be more or less precise depending on argument order (both bindings are sound, but they differ).
 
 **References:** Kiselyov, O. (2013). "How OCaml type checker works — or what polymorphism and garbage collection have in common." Damas, L. & Milner, R. (1982). "Principal type-schemes for functional programs." Mycroft, A. (1984). "Polymorphic type schemes and recursive definitions." Wright, A. (1995). "Simple imperative polymorphism."
 
 ## Limitations and Non-Guarantees
 
-1. **Literal promotion via unification and bidirectional checking.** **Planned state (after bidirectional-typing migration):** Literal promotion will be handled exclusively by `is_subtype` in checking mode via the [SUB] rule. The bidirectional promotion rules in `unify()` will be removed. **Current state:** `unify()` retains 6 bidirectional promotion rules (see the Unification section above) as pragmatic extensions. Both paths coexist during the migration. When the migration is complete, unification will be pure Robinson and `unify(IntLiteral(42), Int)` will fail unless wrapped in a checking context that applies [SUB].
+1. **Named args not unified.** Named arguments in `[call ...]` are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
 
-2. **Named args not unified.** Named arguments in `[call ...]` are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
+2. **Any is both top and bottom.** `Any <: τ` and `τ <: Any` for all τ. In subtyping theory, this makes `Any` simultaneously the top and bottom element of the type lattice, which is unsound in general. In tinct's advisory type system this is intentional — `Any` marks the boundary between typed and untyped code, and `[@Type expr]` is the explicit narrowing mechanism.
 
-3. **Any is both top and bottom.** `Any <: τ` and `τ <: Any` for all τ. In subtyping theory, this makes `Any` simultaneously the top and bottom element of the type lattice, which is unsound in general. In tinct's advisory type system this is intentional — `Any` marks the boundary between typed and untyped code, and `[@Type expr]` is the explicit narrowing mechanism.
+3. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
 
-4. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
-
-5. **Variadic params typed as closed empty record.** Variadic parameters (`...args`) are assigned type `Record([], Closed)` but should be `Any`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
+4. **Variadic params typed as closed empty record.** Variadic parameters (`...args`) are assigned type `Record([], Closed)` but should be `Any`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.

@@ -37,7 +37,17 @@ Use the `Agent` tool to spawn the specialist with a training brief containing:
 5. **Dedup instructions**: search mempalace first with `mcp__mempalace-tinct__mempalace_search` using `wing: "agent_<agent-name>"`
 6. **Quality bar**: 10-20 findings, specific not vague, always include source file paths
 7. **Resource retrieval context**: `.training/` is available for caching cloned repos (gitignored, persists across sessions). Agents that need repos should clone to `.training/<name>` and skip if already present.
-8. **Gap tracking**: when the agent discovers implementation gaps, missing invariants, or unsound behavior during training, it must add them to `TODO.md` under the appropriate sprint/milestone section using the existing format (`- [ ] description`).
+8. **TODO.md gap tracking** — mandatory, not optional:
+   - For every finding (Critical/Major/Minor severity — not Nit/Praise), grep `TODO.md` for 3-5 keywords from the finding to check if it's already tracked.
+   - If NOT already tracked: add it to `TODO.md`. Place it in the most specific matching sprint/milestone section. If no section fits, add to `### misc-nits` (the catch-all section near the end of TODO.md, before `## Integration / Pipeline`). Use the existing format: `- [ ] Description — detail. (\`file:line\`) [Severity, agent-name train-N]`
+   - If already tracked: skip (do not duplicate).
+   - At the end of training, report the list of items added to TODO.md (title + line added) so the coordinator can verify. If zero items were added, explicitly state "No new TODO items — all findings already tracked."
+9. **Self-review**: after storing training findings, the agent must read its own agent definition at `.claude/agents/<agent-name>.md` and improve it in place. Specifically:
+   - **Remove**: directives that are irrelevant to the actual codebase, stale file paths or line numbers in the Expertise section, Focus Areas that turned out to be non-issues
+   - **Add**: patterns discovered during training that future instances should watch for, refined invariants found in the real code, new Focus Areas that proved valuable
+   - **Refine**: the Expertise section if the real implementation differs from what's documented (e.g., wrong state names, wrong file paths, wrong line ranges)
+   - Keep changes surgical — correct what's wrong or missing, don't rewrite what's fine
+   - The agent prompt is a living document; training is the mechanism that keeps it accurate
 
 ### 3. Parallelize When Training All
 
@@ -46,14 +56,19 @@ When training all agents, dispatch them in parallel batches of 3-4 using multipl
 - Batch 1: grammar-architect, eval-engine, type-theorist
 - Batch 2: stdlib-author, test-crafter, laziness-auditor
 - Batch 3: span-integrity-checker, integration-verifier, performance-expert
-- Batch 4: computer-scientist
+- Batch 4: computer-scientist, security-expert
 
-### 4. Report Summary
+### 4. Verify TODO Coverage
+
+After all agents complete, collect the per-agent TODO reports. For any finding an agent flagged as Critical or Major but did NOT add to TODO.md (e.g., because the agent missed the instruction or got it wrong), add it yourself directly. Grep to confirm it's absent before adding.
+
+### 5. Report Summary
 
 After all agents complete, report:
 - Which agents trained
 - Key patterns extracted per agent
 - Total mempalace drawers created
+- TODO.md additions: list every item added (by agent and by coordinator fallback)
 - Any resources unavailable or issues encountered
 
 ## Notes

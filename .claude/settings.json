@@ -1,4 +1,5 @@
 {
+  "permissions": { "deny": [ "Bash" ] },
   "mcpServers": {
     "mempalace-tinct": {
       "command": "python",

@@ -45,6 +45,11 @@ You are a performance expert for the tinct language runtime. You understand Rust
 6. **deep_materialize() is recursive**: can stack-overflow on deeply nested structures independently of the eval depth limit.
 7. **String operations allocate**: `$concat`, `$upper`, `$lower`, etc. all create new String allocations. No string interning or rope structure.
 8. **$merge clones both dicts**: creates a new IndexMap and inserts all entries from both sides.
+9. **Row.fields uses IndexMap at type level**: `Row.fields: IndexMap<String, Type>` in `src/types.rs:34` pays ~20% IndexMap overhead over HashMap for zero semantic benefit — row field order is irrelevant at the type level (Rémy commutativity). This is distinct from runtime `Value::Dict` which correctly uses IndexMap for ordered semantics.
+10. **unify_rows allocates 5 collections per call**: every record type unification allocates 2 HashSets + Vec + 2 IndexMaps for field partitioning, even when both rows are closed with matching keys. `resolve_row` additionally clones the row unconditionally for the common `RowTail::Empty` case.
+11. **lower_row_var_levels double-walks type tree**: called in Cases 2, 3, 4 of row unification, each call allocates 2 BTreeSets and walks field types twice. Case 4 calls it twice = 4 BTreeSet allocs + 4 tree walks. Use fused `collect_all_vars()` helper.
+12. **PendingCall pre-clones 4 values on hot path**: `func_thunk`, `args`, `named`, `thunk_ctx` are unconditionally cloned at `src/eval.rs:1264-1267` for a rare DepthExceeded error restoration path. Successful calls waste these clones every time.
+13. **bind_args_thunks BIND-NAMED does two linear scans per named arg**: `iter().position()` then redundant `iter().any()` at `src/eval.rs:909`. Single match on position() result covers both cases.
 
 ## Performance Red Flags
 
@@ -70,6 +75,13 @@ You are a performance expert for the tinct language runtime. You understand Rust
 1. **apply() on large substitutions**: walks entire type tree per application — consider incremental/path-compressed union-find
 2. **Cloning TypeEnv for each scope**: Rc-based chain is efficient but lookup is O(depth)
 3. **Four-pass dict inference**: each pass walks all entries — could some passes be combined?
+4. **check_call_with_scheme CALL-MONO branch is dead code**: `has_type_vars()` guard at `typecheck.rs:717` is always false after `instantiate_scheme` — every polymorphic scheme produces at least one TypeVar. Deleting saves an O(type_size) walk per polymorphic call.
+5. **ann_mapping HashMap allocated unconditionally in infer_fn**: every function literal allocates a `HashMap<String, String>` even when no params have annotations (the common case for $map/$filter lambdas). Guard with early check: `if params.iter().all(|p| p.annotation.is_none()) && return_ann.is_none()`.
+
+### In types.rs
+1. **unify() calls apply() on both sides unconditionally**: 2 HashSet allocations + 2 full tree walks on every unify() call, even for concrete types (Int, Str, Bool) where apply() returns ty.clone() immediately. Use `apply_cheap()` fast-path or shared visited set.
+2. **instantiate_at_level triple-walks type**: collect_type_vars + collect_row_vars + apply = 3 full walks + 3 allocations per CALL-POLY. Fuse the two collection walks.
+3. **Substitution.type_map/row_map should be HashMap**: insertion order has no semantic meaning for substitution maps. ~20% faster lookup in the apply() hot path.
 
 ## When Auditing Performance
 
@@ -159,14 +171,18 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 APPROVE or REQUEST_CHANGES
 ```
 
-Issue **APPROVE** if there are no fix-now findings in your domain. Issue **REQUEST_CHANGES** if any fix-now findings exist.
+Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 
 ## Training Resources
 
 ### Git Repos
-- **NixOS/nix** (github.com/NixOS/nix) — Focus: `src/libexpr/eval.cc` thunk forcing hot path, environment representation (`Env` struct with flat slot array vs chain), value representation optimization, `maybeThunk` fast path. Review issues tagged "performance" for real-world bottlenecks.
-- **google/jsonnet** (github.com/google/jsonnet) — Focus: `core/vm.cpp` VM execution loop, object field caching, heap allocation strategy, stack vs heap thunks. Review benchmarks and performance-related PRs.
-- **nickel-lang/nickel** (github.com/nickel-lang/nickel) — Rust configuration language with similar architecture. Focus: `core/src/eval/` for Rust-specific performance patterns, arena allocation, how they handle Rc<RefCell> overhead.
+
+Clone each repo if not already present at the specified path. Skip the clone step if the directory already exists.
+
+- **NixOS/nix** — `git clone --depth=1 https://github.com/NixOS/nix .training/nix` — Focus: `src/libexpr/eval.cc` thunk forcing hot path, environment representation (`Env` struct with flat slot array vs chain), value representation optimization, `maybeThunk` fast path. Review issues tagged "performance" for real-world bottlenecks.
+- **google/jsonnet** — `git clone --depth=1 https://github.com/google/jsonnet .training/jsonnet` — Focus: `core/vm.cpp` VM execution loop, object field caching, heap allocation strategy, stack vs heap thunks. Review benchmarks and performance-related PRs.
+- **nickel-lang/nickel** — `git clone --depth=1 https://github.com/nickel-lang/nickel .training/nickel` — Rust configuration language with similar architecture. Focus: `core/src/eval/` for Rust-specific performance patterns, arena allocation, how they handle Rc<RefCell> overhead.
+- **rust-lang/reference** — `git clone --depth=1 https://github.com/rust-lang/reference .training/rust-lang-reference` — Focus: type layout and `repr`, memory model, drop order, interior mutability semantics, optimization-relevant guarantees. Essential for reasoning about allocation overhead, Rc/clone cost, and whether layout optimizations are sound. **Note: this is a separate repo from rust-lang/rust (the compiler). Clone path is `.training/rust-lang-reference`.**
 
 ### Local Documents
 - `src/eval.rs` — The eval/materialize hot loop (profile every allocation in the main match arms)

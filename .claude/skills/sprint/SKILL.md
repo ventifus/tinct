@@ -29,14 +29,13 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 | Agent Definition | Role | Primary Files |
 |-----------------|------|---------------|
 | `.claude/agents/grammar-architect.md` | Parser/grammar + spec consistency | grammar.pest, parser.rs, ast.rs, doc/*.md |
-| `.claude/agents/eval-engine.md` | Evaluation semantics | eval.rs, value.rs |
+| `.claude/agents/eval-engine.md` | Evaluation semantics + laziness | eval.rs, value.rs, builtins.rs |
 | `.claude/agents/type-theorist.md` | Type system | types.rs, typecheck.rs |
 | `.claude/agents/stdlib-author.md` | LLT stdlib | stdlib/prelude.llt, corpus tests |
 | `.claude/agents/test-crafter.md` | Test writing | tests/corpus/, unit tests |
-| `.claude/agents/laziness-auditor.md` | Laziness review | eval/builtin/value changes |
-| `.claude/agents/span-integrity-checker.md` | Error quality | Error paths, spans |
-| `.claude/agents/integration-verifier.md` | Cross-layer | Multi-layer changes |
+| `.claude/agents/integration-verifier.md` | Cross-layer + error quality/spans | Multi-layer changes, error paths |
 | `.claude/agents/performance-expert.md` | Performance | eval.rs, value.rs, builtins.rs, typecheck.rs |
+| `.claude/agents/security-expert.md` | Security audit | builtins.rs, eval.rs, lsp/, Cargo.toml |
 | `.claude/agents/computer-scientist.md` | Theoretical soundness | types.rs, typecheck.rs, eval.rs, value.rs, doc/*.md |
 
 ## Sprint Workflow
@@ -123,7 +122,27 @@ The sprint-reviewer has approved. Now dispatch the full specialist panel for dee
 
 #### 3a: Panel Dispatch
 
-Dispatch all specialist agents in parallel using `subagent_type` for each. Brief each with:
+First, determine which agents to dispatch based on what the sprint touched:
+
+```bash
+git diff HEAD --name-only
+```
+
+Use this routing table to build the agent list:
+
+| Agent | Dispatch when changed files include... |
+|---|---|
+| grammar-architect | `src/grammar.pest`, `src/parser.rs`, `src/ast.rs`, any `doc/*.md` |
+| eval-engine | `src/eval.rs`, `src/value.rs`, `src/builtins.rs`, `src/error.rs` |
+| type-theorist | `src/types.rs`, `src/typecheck.rs` |
+| stdlib-author | `stdlib/prelude.llt`, `src/builtins.rs`, `tests/corpus/eval/stdlib/` |
+| performance-expert | `src/eval.rs`, `src/value.rs`, `src/builtins.rs`, `src/typecheck.rs` |
+| security-expert | `src/builtins.rs`, `src/eval.rs`, `src/lsp/`, `Cargo.toml` |
+| **test-crafter** | _always_ |
+| **integration-verifier** | _always_ |
+| **computer-scientist** | _always_ |
+
+Dispatch all matched agents in parallel using `subagent_type` for each. Brief each with:
 - Instruction to read `.tmp/sprint-review.md` for the generalist review findings
 - Instruction to run `git diff HEAD` to see the full sprint diff
 - Instruction to assess the sprint as a whole: correctness, integration, cross-cutting concerns
@@ -142,7 +161,7 @@ Record each fix-now finding's status in SPRINT.md (`TODO` or `FIXED`):
 ```markdown
 ## Review Findings
 - [finding] | fix-now | file:line | Agent: grammar-architect | Status: TODO
-- [finding] | fix-now | file:line | Agent: laziness-auditor | Status: FIXED
+- [finding] | fix-now | file:line | Agent: eval-engine | Status: FIXED
 ```
 
 ### Step 4: Panel Fix Loop
@@ -153,7 +172,7 @@ If ANY agent issued `REQUEST_CHANGES` (i.e., any fix-now findings exist):
 2. Mark fixed findings as `FIXED` in SPRINT.md
 3. **Build gate**: run `just fmt`, then `just build`, then `just test` — fix any issues
 4. Delete `.tmp/sprint-review.md` so panel agents review fresh code, not stale findings
-5. Re-dispatch all specialist agents (via `subagent_type`). Brief each to: run `git diff HEAD` for the current sprint diff, read SPRINT.md `## Review Findings` for remaining fix-now items, and use their Sprint Panel Review output format
+5. Re-dispatch the same agent set from Step 3a (via `subagent_type`). Brief each to: run `git diff HEAD` for the current sprint diff, read SPRINT.md `## Review Findings` for remaining fix-now items, and use their Sprint Panel Review output format
 6. Repeat until all specialist agents issue `APPROVE` and no in-scope findings remain
 
 **Stuck detection**: if the same finding persists after 3 fix-review cycles, record it as `KNOWN ISSUE` in SPRINT.md and add it to TODO.md so it doesn't get lost when SPRINT.md is recycled. Never halt the sprint — record the issue and move on.
@@ -199,7 +218,7 @@ Valid finding statuses: `TODO`, `FIXED`, `KNOWN ISSUE`
 
 - **Inner loop gates panel**: sprint-reviewer must APPROVE before the specialist panel runs. No point dispatching all specialists if the generalist already sees fix-now problems.
 - **Build gate before every review**: `just fmt` + `just build` + `just test` must all pass before dispatching any reviewer. Don't waste agent time reviewing code that doesn't compile.
-- **All specialists review every sprint**: once past the sprint-reviewer gate, every specialist reviews the full sprint diff. No shortcuts with targeted agents.
+- **Relevant specialists review every sprint**: once past the sprint-reviewer gate, matched specialists plus always-dispatched test-crafter, integration-verifier, and computer-scientist review the full sprint diff. Dispatch is file-based — agents whose domains weren't touched are skipped.
 - **Two-bucket triage**: findings either get fixed now (sprint-scope) or go to TODO.md (future work). Nothing gets lost.
 - **Never halt**: stuck detection records KNOWN ISSUE and continues. The sprint always completes.
 - **Design decisions come from doc/*.md**: don't invent new decisions without documenting them
