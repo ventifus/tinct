@@ -78,6 +78,7 @@ enum Expr {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<Param>>,
         body: Box<Spanned<Expr>>,
+        desugared: bool,
     },
     TypeAlias(Box<Spanned<Expr>>),
 
@@ -85,7 +86,6 @@ enum Expr {
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Box<Spanned<Expr>>,
-        resolved_type: Option<Type>,   // None from parser; filled by type checker
     },
 
     // Generalized annotation in value position
@@ -203,7 +203,7 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 
 ### Bracket Nesting Depth Limit
 
-The iterative parser enforces `MAX_PARSE_DEPTH` at the stack frame level, avoiding native stack overflow. `MAX_PARSE_DEPTH` (256) is the policy limit; inputs exceeding this limit produce a clear parse error.
+The parser enforces `MAX_PARSE_DEPTH` during AST construction (not during pest's parse phase), avoiding native stack overflow. `MAX_PARSE_DEPTH` (256) is the policy limit; inputs exceeding this limit produce a clear parse error.
 
 ### Annotation Bracket Restriction
 

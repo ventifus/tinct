@@ -763,3 +763,25 @@ Fix-later findings from evalcontext-thread panel review (C34).
 - [x] Fix stale docstring in repl.rs:106 referencing `IncludeContext` (removed) — should say `EvalContext` (`src/repl.rs:106`) [Nit, computer-scientist C34]
 - [x] Fix include guard leak on materialize failure — `?` operator in builtin_include skips cleanup() on Err path; match on result like eval_result (`src/builtins.rs:1091`) [Major, computer-scientist C34]
 - [x] Update DESIGN.md evaluation judgment forms to include Sigma (EvalContext) parameter — `<e, rho, Sigma, d> => v` (`DESIGN.md:2247-2329`) [Minor, computer-scientist C34]
+
+### let-gen-verify: Let-Generalization Verification and Testing
+
+Comprehensive tests for HM let-generalization (C40).
+
+- [x] Add test_let_gen_polymorphic_identity — verify identity function generalizes to `∀α. α → α`
+- [x] Add test_let_gen_any_touched_monomorphic — verify Any-contaminated vars stay monomorphic
+- [x] Add test_let_gen_nested_dicts_level_increment — verify level scoping in nested dicts
+- [x] Add test_let_gen_mutual_recursion — verify mutual recursion type assertions
+- [x] Add test_instantiate_scheme_with_row_var_body — verify scheme instantiation with row var bodies
+- [x] Add test_instantiate_scheme_leaves_free_vars_unchanged — verify selective freshening
+- [x] Add corpus test for polymorphic identity at multiple types
+- [x] Add corpus test for cross-document scheme threading
+
+### doc-ast-fixes: doc/15-ast.md Accuracy Fixes
+
+Fix AST documentation discrepancies (C41).
+
+- [x] Fix `doc/15-ast.md` `Fn` node missing `desugared: bool` field [Critical, grammar-architect C39]
+- [x] Fix `doc/15-ast.md` `TypeAssert` fictional `resolved_type: Option<Type>` field [Major, grammar-architect C39]
+- [x] Fix `doc/13-examples.md` §8.9 and §8.10 TypeAssert AST examples showing fictional `resolved_type: None` field [Major, grammar-architect C40]
+- [x] Fix `doc/15-ast.md` nesting depth section describing non-existent iterative parser [Major, grammar-architect C39]
