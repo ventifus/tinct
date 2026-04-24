@@ -201,7 +201,6 @@ RangeAccess {
 TypeAssert {
     annotation: Annotation::Simple("Number"),
     expr: VarRef("expr"),
-    resolved_type: None,
 }
 ```
 
@@ -220,7 +219,6 @@ TypeAssert {
         Entry { key: Some(Str("default")), value: Int(0) },
     ]),
     expr: DotAccess { expr: VarRef("config"), field: "port" },
-    resolved_type: None,
 }
 ```
 
