@@ -10,23 +10,29 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 
+/// Row tail for Rémy-style row polymorphism (kinded row variables)
 #[derive(Debug, Clone, Eq)]
-pub enum RowRest {
-    Closed,
-    Open,
-    RowVar(String, u32),
+pub enum RowTail {
+    Empty,               // closed row — no more fields
+    RowVar(String, u32), // ρ — row variable (bindable in substitution), with level for let-generalization
 }
 
-// Manual PartialEq for RowRest: RowVar compares name only, level ignored
-impl PartialEq for RowRest {
+// Manual PartialEq for RowTail: RowVar compares name only, level ignored
+impl PartialEq for RowTail {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (RowRest::Closed, RowRest::Closed) => true,
-            (RowRest::Open, RowRest::Open) => true,
-            (RowRest::RowVar(n1, _), RowRest::RowVar(n2, _)) => n1 == n2,
+            (RowTail::Empty, RowTail::Empty) => true,
+            (RowTail::RowVar(n1, _), RowTail::RowVar(n2, _)) => n1 == n2,
             _ => false,
         }
     }
+}
+
+/// Row representation for record types (dict+tail representation)
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub fields: IndexMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
+    pub tail: RowTail,                  // Empty (closed) or RowVar(ρ) (open)
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +44,7 @@ pub enum Type {
     StringLiteral(String),
     Bool,
     Number,
-    Record(IndexMap<String, Type>, RowRest),
+    Record(Row),
     Function {
         params: Vec<Type>,
         ret: Box<Type>,
@@ -60,7 +66,7 @@ impl PartialEq for Type {
             (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1 == s2,
             (Type::Bool, Type::Bool) => true,
             (Type::Number, Type::Number) => true,
-            (Type::Record(f1, r1), Type::Record(f2, r2)) => f1 == f2 && r1 == r2,
+            (Type::Record(row1), Type::Record(row2)) => row1 == row2,
             (
                 Type::Function {
                     params: p1,
@@ -91,41 +97,48 @@ impl Type {
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
-            (Type::Record(sub_fields, sub_rest), Type::Record(sup_fields, sup_rest)) => {
-                let fields_ok = sup_fields.iter().all(|(k, sup_ty)| {
-                    sub_fields
+            (Type::Record(sub_row), Type::Record(sup_row)) => {
+                // All fields in sup must be present in sub with subtype field types
+                let fields_ok = sup_row.fields.iter().all(|(k, sup_ty)| {
+                    sub_row
+                        .fields
                         .get(k)
                         .is_some_and(|sub_ty| Type::is_subtype(sub_ty, sup_ty))
                 });
                 if !fields_ok {
                     return false;
                 }
-                // Task 2 fix: check sub_rest when sup_rest is Closed
-                match sup_rest {
-                    RowRest::Closed => {
-                        // If sup is Closed, sub cannot have unknown extra fields via RowVar
-                        // (we can't prove subtyping when sub may have additional fields we don't know about)
-                        match sub_rest {
-                            RowRest::Closed => {
-                                sub_fields.keys().all(|k| sup_fields.contains_key(k))
+
+                // Check tail constraints
+                match &sup_row.tail {
+                    RowTail::Empty => {
+                        // Closed sup requires sub has no extra fields
+                        match &sub_row.tail {
+                            RowTail::Empty => {
+                                // Both closed: sub must have exact same fields as sup
+                                sub_row
+                                    .fields
+                                    .keys()
+                                    .all(|k| sup_row.fields.contains_key(k))
                             }
-                            RowRest::Open => {
-                                // An Open sub-record may have unknown additional fields, so a Closed
-                                // supertype cannot accept it unless the known field sets are exactly equal.
-                                // This matches the conservative treatment of RowVar (bidirectional check).
-                                sub_fields.keys().all(|k| sup_fields.contains_key(k))
-                                    && sup_fields.keys().all(|k| sub_fields.contains_key(k))
-                            }
-                            RowRest::RowVar(_, _) => {
-                                // Conservative: if sub has RowVar and sup is Closed, we can't prove subtyping
-                                // unless sub's known fields are exactly sup's fields
-                                sub_fields.keys().all(|k| sup_fields.contains_key(k))
-                                    && sup_fields.keys().all(|k| sub_fields.contains_key(k))
+                            RowTail::RowVar(_, _) => {
+                                // Conservative: if sub has RowVar and sup is Closed,
+                                // we can't prove subtyping unless known fields match exactly
+                                sub_row
+                                    .fields
+                                    .keys()
+                                    .all(|k| sup_row.fields.contains_key(k))
+                                    && sup_row
+                                        .fields
+                                        .keys()
+                                        .all(|k| sub_row.fields.contains_key(k))
                             }
                         }
                     }
-                    // TODO(row-unification): RowVar should participate in subtyping via row variable binding, not be treated as Open.
-                    RowRest::Open | RowRest::RowVar(_, _) => true,
+                    RowTail::RowVar(_, _) => {
+                        // Open via row var — extra fields allowed
+                        true
+                    }
                 }
             }
             (
@@ -154,13 +167,11 @@ impl Type {
             Type::TypeVar(name, _) => {
                 vars.insert(name.clone());
             }
-            Type::Record(fields, rest) => {
-                for ty in fields.values() {
+            Type::Record(row) => {
+                for ty in row.fields.values() {
                     ty.collect_type_vars(vars);
                 }
-                if let RowRest::RowVar(name, _) = rest {
-                    vars.insert(name.clone());
-                }
+                // Row tail contains no type variables (only RowVar or Empty)
             }
             Type::Function { params, ret } => {
                 for p in params {
@@ -176,9 +187,9 @@ impl Type {
     pub fn has_type_vars(&self) -> bool {
         match self {
             Type::TypeVar(_, _) => true,
-            Type::Record(fields, rest) => {
-                matches!(rest, RowRest::RowVar(_, _))
-                    || fields.values().any(|ty| ty.has_type_vars())
+            Type::Record(row) => {
+                matches!(row.tail, RowTail::RowVar(_, _))
+                    || row.fields.values().any(|ty| ty.has_type_vars())
             }
             Type::Function { params, ret } => {
                 params.iter().any(|p| p.has_type_vars()) || ret.has_type_vars()
@@ -188,16 +199,14 @@ impl Type {
         }
     }
 
-    /// Collect row variables from RowRest positions in the type tree.
-    /// Unlike collect_type_vars which collects both TypeVar and RowVar,
-    /// this method only collects from RowRest::RowVar positions.
+    /// Collect row variables from RowTail positions in the type tree.
     pub fn collect_row_vars(&self, vars: &mut BTreeSet<String>) {
         match self {
-            Type::Record(fields, rest) => {
-                for ty in fields.values() {
+            Type::Record(row) => {
+                for ty in row.fields.values() {
                     ty.collect_row_vars(vars);
                 }
-                if let RowRest::RowVar(name, _) = rest {
+                if let RowTail::RowVar(name, _) = &row.tail {
                     vars.insert(name.clone());
                 }
             }
@@ -265,7 +274,7 @@ impl InferState {
         }
     }
 
-    /// Create a fresh type variable at the current level
+    #[cfg(test)]
     pub fn fresh_var(&mut self) -> Type {
         let name = format!("_t{}", self.name_counter);
         self.name_counter += 1;
@@ -282,7 +291,8 @@ impl Default for InferState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Substitution {
-    map: IndexMap<String, Type>,
+    pub type_map: IndexMap<String, Type>, // α → τ  (kind: Type)
+    pub row_map: IndexMap<String, Row>,   // ρ → r  (kind: Row)
 }
 
 const MAX_APPLY_DEPTH: usize = 256;
@@ -290,85 +300,132 @@ const MAX_APPLY_DEPTH: usize = 256;
 impl Substitution {
     pub fn new() -> Self {
         Self {
-            map: IndexMap::new(),
+            type_map: IndexMap::new(),
+            row_map: IndexMap::new(),
         }
     }
 
     pub fn apply(&self, ty: &Type) -> Type {
-        let mut visited = HashSet::new();
-        self.apply_inner(ty, 0, &mut visited)
+        let mut visited_types = HashSet::new();
+        let mut visited_rows = HashSet::new();
+        self.apply_type(ty, 0, &mut visited_types, &mut visited_rows)
     }
 
-    fn apply_inner(&self, ty: &Type, depth: usize, visited: &mut HashSet<String>) -> Type {
+    fn apply_type(
+        &self,
+        ty: &Type,
+        depth: usize,
+        visited_types: &mut HashSet<String>,
+        visited_rows: &mut HashSet<String>,
+    ) -> Type {
         if depth >= MAX_APPLY_DEPTH {
             return ty.clone();
         }
         match ty {
             Type::TypeVar(name, level) => {
-                if visited.contains(name) {
+                if visited_types.contains(name) {
                     return ty.clone();
                 }
-                match self.map.get(name) {
+                match self.type_map.get(name) {
                     Some(bound) => {
-                        visited.insert(name.clone());
-                        let result = self.apply_inner(bound, depth + 1, visited);
-                        visited.remove(name);
+                        visited_types.insert(name.clone());
+                        let result = self.apply_type(bound, depth + 1, visited_types, visited_rows);
+                        visited_types.remove(name);
                         result
                     }
                     None => Type::TypeVar(name.clone(), *level),
                 }
             }
-            Type::Record(fields, rest) => {
-                let new_fields: IndexMap<String, Type> = fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), self.apply_inner(v, depth + 1, visited)))
-                    .collect();
-                match rest {
-                    RowRest::RowVar(name, level) => match self.map.get(name) {
-                        Some(bound) => {
-                            let resolved = self.apply_inner(bound, depth + 1, visited);
-                            match resolved {
-                                Type::Record(extra_fields, resolved_rest) => {
-                                    let mut merged = new_fields;
-                                    // Task 1 fix: check for duplicate keys before merging
-                                    for (key, value) in extra_fields {
-                                        if merged.contains_key(&key) {
-                                            // Prefer the original record's fields (explicit fields take precedence)
-                                            // This is correct because the original fields were explicit in the source,
-                                            // while extra_fields come from row variable binding.
-                                            continue;
-                                        }
-                                        merged.insert(key, value);
-                                    }
-                                    Type::Record(merged, resolved_rest)
-                                }
-                                Type::TypeVar(new_name, new_level) => {
-                                    Type::Record(new_fields, RowRest::RowVar(new_name, new_level))
-                                }
-                                _ => Type::Record(new_fields, rest.clone()),
-                            }
-                        }
-                        None => Type::Record(new_fields, RowRest::RowVar(name.clone(), *level)),
-                    },
-                    _ => Type::Record(new_fields, rest.clone()),
-                }
+            Type::Record(row) => {
+                let applied_row = self.apply_row(row, depth + 1, visited_types, visited_rows);
+                Type::Record(applied_row)
             }
             Type::Function { params, ret } => Type::Function {
                 params: params
                     .iter()
-                    .map(|p| self.apply_inner(p, depth + 1, visited))
+                    .map(|p| self.apply_type(p, depth + 1, visited_types, visited_rows))
                     .collect(),
-                ret: Box::new(self.apply_inner(ret, depth + 1, visited)),
+                ret: Box::new(self.apply_type(ret, depth + 1, visited_types, visited_rows)),
             },
-            Type::Seq(elem) => Type::Seq(Box::new(self.apply_inner(elem, depth + 1, visited))),
+            Type::Seq(elem) => Type::Seq(Box::new(self.apply_type(
+                elem,
+                depth + 1,
+                visited_types,
+                visited_rows,
+            ))),
             _ => ty.clone(),
+        }
+    }
+
+    fn apply_row(
+        &self,
+        row: &Row,
+        depth: usize,
+        visited_types: &mut HashSet<String>,
+        visited_rows: &mut HashSet<String>,
+    ) -> Row {
+        if depth >= MAX_APPLY_DEPTH {
+            return row.clone();
+        }
+
+        // Apply substitution to field types
+        let new_fields: IndexMap<String, Type> = row
+            .fields
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    self.apply_type(v, depth + 1, visited_types, visited_rows),
+                )
+            })
+            .collect();
+
+        // Resolve tail
+        match &row.tail {
+            RowTail::Empty => Row {
+                fields: new_fields,
+                tail: RowTail::Empty,
+            },
+            RowTail::RowVar(name, level) => {
+                if visited_rows.contains(name) {
+                    // Cycle detected: return unresolved row var
+                    return Row {
+                        fields: new_fields,
+                        tail: RowTail::RowVar(name.clone(), *level),
+                    };
+                }
+                match self.row_map.get(name) {
+                    Some(bound_row) => {
+                        visited_rows.insert(name.clone());
+                        let resolved =
+                            self.apply_row(bound_row, depth + 1, visited_types, visited_rows);
+                        visited_rows.remove(name);
+
+                        // Merge fields: explicit fields (new_fields) take precedence
+                        let mut merged = new_fields;
+                        for (key, value) in resolved.fields {
+                            if !merged.contains_key(&key) {
+                                merged.insert(key, value);
+                            }
+                        }
+                        Row {
+                            fields: merged,
+                            tail: resolved.tail,
+                        }
+                    }
+                    None => Row {
+                        fields: new_fields,
+                        tail: RowTail::RowVar(name.clone(), *level),
+                    },
+                }
+            }
         }
     }
 
     // Used in type checker tests; not yet called from production code.
     #[cfg(test)]
     pub fn get(&self, name: &str) -> Option<&Type> {
-        self.map.get(name)
+        self.type_map.get(name)
     }
 }
 
@@ -378,19 +435,326 @@ impl Default for Substitution {
     }
 }
 
-fn occurs_in(var_name: &str, ty: &Type) -> bool {
+/// Type variable occurs check: does type variable α occur in type τ?
+fn type_var_occurs(var_name: &str, ty: &Type) -> bool {
     match ty {
         Type::TypeVar(name, _) => name == var_name,
-        Type::Record(fields, rest) => {
-            fields.values().any(|t| occurs_in(var_name, t))
-                || matches!(rest, RowRest::RowVar(r, _) if r == var_name)
-        }
+        Type::Record(row) => type_var_occurs_in_row(var_name, row),
         Type::Function { params, ret } => {
-            params.iter().any(|p| occurs_in(var_name, p)) || occurs_in(var_name, ret)
+            params.iter().any(|p| type_var_occurs(var_name, p)) || type_var_occurs(var_name, ret)
         }
-        Type::Seq(elem) => occurs_in(var_name, elem),
+        Type::Seq(elem) => type_var_occurs(var_name, elem),
         _ => false,
     }
+}
+
+/// Type variable occurs check in row: does α occur in row field types?
+fn type_var_occurs_in_row(var_name: &str, row: &Row) -> bool {
+    row.fields.values().any(|t| type_var_occurs(var_name, t))
+    // Note: row tail is a RowVar or Empty, neither contains type variables
+}
+
+/// Row variable occurs check: does row variable ρ occur in row r?
+/// Checks both the tail (direct occurrence like ρ = {..., ...ρ}) and field types
+/// (nested occurrence like ρ = {x: Record({y: Int, ...ρ})})
+fn row_var_occurs(var_name: &str, row: &Row) -> bool {
+    // Check field types for nested row variables
+    let in_fields = row
+        .fields
+        .values()
+        .any(|ty| row_var_occurs_in_type(var_name, ty));
+    // Check tail
+    let in_tail = matches!(&row.tail, RowTail::RowVar(name, _) if name == var_name);
+    in_fields || in_tail
+}
+
+/// Row variable occurs check in type: does ρ occur in type τ through Record nesting?
+fn row_var_occurs_in_type(var_name: &str, ty: &Type) -> bool {
+    match ty {
+        Type::Record(row) => row_var_occurs(var_name, row),
+        Type::Function { params, ret } => {
+            params.iter().any(|p| row_var_occurs_in_type(var_name, p))
+                || row_var_occurs_in_type(var_name, ret)
+        }
+        Type::Seq(elem) => row_var_occurs_in_type(var_name, elem),
+        _ => false,
+    }
+}
+
+/// Resolve a row by following bound row variables in the substitution
+fn resolve_row(row: &Row, subst: &Substitution) -> Row {
+    match &row.tail {
+        RowTail::RowVar(name, _level) => {
+            if let Some(bound) = subst.row_map.get(name) {
+                // Apply the row to chase through the binding
+                let mut visited_types = HashSet::new();
+                let mut visited_rows = HashSet::new();
+                let resolved = subst.apply_row(bound, 0, &mut visited_types, &mut visited_rows);
+                // Merge fields: original fields take precedence
+                let mut merged = row.fields.clone();
+                for (key, value) in resolved.fields {
+                    if !merged.contains_key(&key) {
+                        merged.insert(key, value);
+                    }
+                }
+                Row {
+                    fields: merged,
+                    tail: resolved.tail,
+                }
+            } else {
+                row.clone()
+            }
+        }
+        RowTail::Empty => row.clone(),
+    }
+}
+
+/// Unify two row tails
+fn unify_tails(
+    t1: &RowTail,
+    t2: &RowTail,
+    subst: &mut Substitution,
+    state: &mut InferState,
+) -> Result<(), TypeError> {
+    match (t1, t2) {
+        (RowTail::Empty, RowTail::Empty) => Ok(()),
+        (RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _)) => {
+            if rho1 == rho2 {
+                Ok(())
+            } else {
+                // Bind rho1 to Row { fields: {}, tail: RowVar(rho2) }
+                // Lower levels symmetrically
+                let rho1_level = state.levels.get(rho1).copied().unwrap_or(0);
+                let rho2_level = state.levels.get(rho2).copied().unwrap_or(0);
+                state
+                    .levels
+                    .insert(rho2.clone(), rho2_level.min(rho1_level));
+
+                subst.row_map.insert(
+                    rho1.clone(),
+                    Row {
+                        fields: IndexMap::new(),
+                        tail: RowTail::RowVar(rho2.clone(), rho2_level.min(rho1_level)),
+                    },
+                );
+                Ok(())
+            }
+        }
+        (RowTail::RowVar(rho, _), RowTail::Empty) | (RowTail::Empty, RowTail::RowVar(rho, _)) => {
+            // Bind rho to Row { fields: {}, tail: Empty }
+            subst.row_map.insert(
+                rho.clone(),
+                Row {
+                    fields: IndexMap::new(),
+                    tail: RowTail::Empty,
+                },
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Lower the level of all type vars and row vars appearing in a row to min(their level, max_level).
+/// Called after a row-variable binding to prevent unsound generalization of inner vars.
+fn lower_row_var_levels(row: &Row, max_level: u32, state: &mut InferState) {
+    // Lower type vars in field types
+    let mut type_vars = BTreeSet::new();
+    for ty in row.fields.values() {
+        ty.collect_type_vars(&mut type_vars);
+    }
+    for tv in type_vars {
+        let current = state.levels.get(&tv).copied().unwrap_or(0);
+        state.levels.insert(tv, current.min(max_level));
+    }
+    // Lower row vars in field types and the tail
+    let mut row_vars = BTreeSet::new();
+    // Collect from a temporary Type wrapper to reuse collect_row_vars
+    for ty in row.fields.values() {
+        ty.collect_row_vars(&mut row_vars);
+    }
+    if let RowTail::RowVar(name, _) = &row.tail {
+        row_vars.insert(name.clone());
+    }
+    for rv in row_vars {
+        let current = state.levels.get(&rv).copied().unwrap_or(0);
+        state.levels.insert(rv, current.min(max_level));
+    }
+}
+
+/// Unify remainders (unique fields + tails) — implements Wand (1987) 4-case algorithm
+fn unify_remainders(
+    unique1: IndexMap<String, Type>,
+    tail1: RowTail,
+    unique2: IndexMap<String, Type>,
+    tail2: RowTail,
+    subst: &mut Substitution,
+    state: &mut InferState,
+    span: Span,
+) -> Result<(), TypeError> {
+    let u1_empty = unique1.is_empty();
+    let u2_empty = unique2.is_empty();
+
+    // NOTE: Case 4 must be matched BEFORE Cases 2/3 to prevent shadowing
+    match (&tail1, &tail2) {
+        // Case 1: No unique fields on either side — unify tails directly
+        (_, _) if u1_empty && u2_empty => unify_tails(&tail1, &tail2, subst, state),
+
+        // Case 4: Both have unique fields and both have RowVar tails — create fresh row variable
+        (RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _))
+            if !u1_empty && !u2_empty && rho1 != rho2 =>
+        {
+            let rho_fresh_name = format!("_t{}", state.name_counter);
+            state.name_counter += 1;
+            let rho_fresh_level = state.level;
+            state.levels.insert(rho_fresh_name.clone(), rho_fresh_level);
+
+            // Occurs checks: ρ₁ must not appear in U₂ fields + fresh tail
+            let row2_with_fresh = Row {
+                fields: unique2.clone(),
+                tail: RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level),
+            };
+            if row_var_occurs(rho1, &row2_with_fresh) {
+                return Err(TypeError::new(
+                    format!("infinite row type: {rho1} occurs in its own binding"),
+                    span,
+                ));
+            }
+
+            // ρ₂ must not appear in U₁ fields + fresh tail
+            let row1_with_fresh = Row {
+                fields: unique1.clone(),
+                tail: RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level),
+            };
+            if row_var_occurs(rho2, &row1_with_fresh) {
+                return Err(TypeError::new(
+                    format!("infinite row type: {rho2} occurs in its own binding"),
+                    span,
+                ));
+            }
+
+            // Lower levels of inner vars to rho1's and rho2's levels before binding
+            let rho1_level = state.levels.get(rho1).copied().unwrap_or(0);
+            let rho2_level = state.levels.get(rho2).copied().unwrap_or(0);
+            lower_row_var_levels(&row2_with_fresh, rho1_level, state);
+            lower_row_var_levels(&row1_with_fresh, rho2_level, state);
+
+            // Bind ρ₁ → Row { fields: U₂, tail: ρ_fresh }
+            subst.row_map.insert(rho1.clone(), row2_with_fresh);
+            // Bind ρ₂ → Row { fields: U₁, tail: ρ_fresh }
+            subst.row_map.insert(rho2.clone(), row1_with_fresh);
+
+            Ok(())
+        }
+
+        // Case 2: Only left has unique fields — right tail must absorb them
+        // Guard requires u2_empty to prevent silently dropping unique2 when both sides have unique fields
+        (_, RowTail::RowVar(rho2, _)) if !u1_empty && u2_empty => {
+            let row_to_bind = Row {
+                fields: unique1.clone(),
+                tail: tail1.clone(),
+            };
+            if row_var_occurs(rho2, &row_to_bind) {
+                return Err(TypeError::new(
+                    format!("infinite row type: {rho2} occurs in its own binding"),
+                    span,
+                ));
+            }
+            // Lower levels of inner vars to rho2's level before binding
+            let rho2_level = state.levels.get(rho2).copied().unwrap_or(0);
+            lower_row_var_levels(&row_to_bind, rho2_level, state);
+            subst.row_map.insert(rho2.clone(), row_to_bind);
+            Ok(())
+        }
+
+        // Case 3: Only right has unique fields — left tail must absorb them
+        // Guard requires u1_empty to prevent silently dropping unique1 when both sides have unique fields
+        (RowTail::RowVar(rho1, _), _) if !u2_empty && u1_empty => {
+            let row_to_bind = Row {
+                fields: unique2.clone(),
+                tail: tail2.clone(),
+            };
+            if row_var_occurs(rho1, &row_to_bind) {
+                return Err(TypeError::new(
+                    format!("infinite row type: {rho1} occurs in its own binding"),
+                    span,
+                ));
+            }
+            // Lower levels of inner vars to rho1's level before binding
+            let rho1_level = state.levels.get(rho1).copied().unwrap_or(0);
+            lower_row_var_levels(&row_to_bind, rho1_level, state);
+            subst.row_map.insert(rho1.clone(), row_to_bind);
+            Ok(())
+        }
+
+        // Error case: closed tail cannot absorb unique fields
+        (_, RowTail::Empty) if !u1_empty => Err(TypeError::new(
+            format!(
+                "extra fields [{}] in closed row",
+                unique1.keys().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            span,
+        )),
+        (RowTail::Empty, _) if !u2_empty => Err(TypeError::new(
+            format!(
+                "extra fields [{}] in closed row",
+                unique2.keys().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            span,
+        )),
+
+        // Fallback: should be unreachable given the above cases
+        _ => Ok(()),
+    }
+}
+
+/// Unify two rows using field partitioning
+fn unify_rows(
+    row1: &Row,
+    row2: &Row,
+    subst: &mut Substitution,
+    state: &mut InferState,
+    span: Span,
+) -> Result<(), TypeError> {
+    // Step 1: Resolve bound row variables
+    let resolved1 = resolve_row(row1, subst);
+    let resolved2 = resolve_row(row2, subst);
+
+    // Step 2: Partition fields into shared and unique
+    let keys1: HashSet<&String> = resolved1.fields.keys().collect();
+    let keys2: HashSet<&String> = resolved2.fields.keys().collect();
+    let shared: Vec<&String> = keys1.intersection(&keys2).copied().collect();
+
+    let unique1: IndexMap<String, Type> = resolved1
+        .fields
+        .iter()
+        .filter(|(k, _)| !keys2.contains(k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    let unique2: IndexMap<String, Type> = resolved2
+        .fields
+        .iter()
+        .filter(|(k, _)| !keys1.contains(k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // Step 3: Unify shared field types
+    for key in shared {
+        let ty1 = &resolved1.fields[key];
+        let ty2 = &resolved2.fields[key];
+        unify(ty1, ty2, subst, state, span)?;
+    }
+
+    // Step 4: Unify remainders
+    unify_remainders(
+        unique1,
+        resolved1.tail,
+        unique2,
+        resolved2.tail,
+        subst,
+        state,
+        span,
+    )
 }
 
 pub fn unify(
@@ -419,42 +783,56 @@ pub fn unify(
         }
         (Type::Any, _) | (_, Type::Any) => Ok(()),
 
-        // U-VAR-LEVEL: bind α to τ, lower levels of all β ∈ FTV(τ)
+        // U-VAR-LEVEL: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (Type::TypeVar(name, _), _) => {
-            if occurs_in(name, &b) {
+            if type_var_occurs(name, &b) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {b}"),
                     span,
                 ));
             }
-            // Symmetric level lowering: lower all type vars in b to min(their level, α's level)
             let alpha_level = state.levels.get(name).copied().unwrap_or(0);
+            // Lower all type vars in b to min(their level, α's level)
             let mut vars_in_b = BTreeSet::new();
             b.collect_type_vars(&mut vars_in_b);
             for beta in vars_in_b {
                 let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
                 state.levels.insert(beta, beta_level.min(alpha_level));
             }
-            subst.map.insert(name.clone(), b);
+            // Lower all row vars in b to min(their level, α's level) — prevents unsound generalization
+            let mut row_vars_in_b = BTreeSet::new();
+            b.collect_row_vars(&mut row_vars_in_b);
+            for rho in row_vars_in_b {
+                let rho_level = state.levels.get(&rho).copied().unwrap_or(0);
+                state.levels.insert(rho, rho_level.min(alpha_level));
+            }
+            subst.type_map.insert(name.clone(), b);
             Ok(())
         }
-        // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ)
+        // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (_, Type::TypeVar(name, _)) => {
-            if occurs_in(name, &a) {
+            if type_var_occurs(name, &a) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {a}"),
                     span,
                 ));
             }
-            // Symmetric level lowering: lower all type vars in a to min(their level, α's level)
             let alpha_level = state.levels.get(name).copied().unwrap_or(0);
+            // Lower all type vars in a to min(their level, α's level)
             let mut vars_in_a = BTreeSet::new();
             a.collect_type_vars(&mut vars_in_a);
             for beta in vars_in_a {
                 let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
                 state.levels.insert(beta, beta_level.min(alpha_level));
             }
-            subst.map.insert(name.clone(), a);
+            // Lower all row vars in a to min(their level, α's level) — prevents unsound generalization
+            let mut row_vars_in_a = BTreeSet::new();
+            a.collect_row_vars(&mut row_vars_in_a);
+            for rho in row_vars_in_a {
+                let rho_level = state.levels.get(&rho).copied().unwrap_or(0);
+                state.levels.insert(rho, rho_level.min(alpha_level));
+            }
+            subst.type_map.insert(name.clone(), a);
             Ok(())
         }
 
@@ -515,28 +893,8 @@ pub fn unify(
 
         (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, state, span),
 
-        (Type::Record(f1, r1), Type::Record(f2, r2)) => {
-            if matches!(r1, RowRest::Closed) && matches!(r2, RowRest::Closed) {
-                let keys1: BTreeSet<&String> = f1.keys().collect();
-                let keys2: BTreeSet<&String> = f2.keys().collect();
-                if keys1 != keys2 {
-                    return Err(TypeError::new(
-                        format!(
-                            "closed record field mismatch: expected [{}], got [{}]",
-                            f1.keys().cloned().collect::<Vec<_>>().join(", "),
-                            f2.keys().cloned().collect::<Vec<_>>().join(", ")
-                        ),
-                        span,
-                    ));
-                }
-            }
-            for (key, ty1) in f1 {
-                if let Some(ty2) = f2.get(key) {
-                    unify(ty1, ty2, subst, state, span)?;
-                }
-            }
-            Ok(())
-        }
+        // Record unification: delegate to row unification
+        (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
 
         _ => Err(TypeError::type_mismatch(&a, &b, span)),
     }
@@ -553,14 +911,29 @@ pub fn unify(
 /// This function is test-only; production code uses `instantiate_at_level()`.
 #[cfg(test)]
 pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
-    let mut vars = BTreeSet::new();
-    ty.collect_type_vars(&mut vars);
+    let mut type_vars = BTreeSet::new();
+    ty.collect_type_vars(&mut type_vars);
+
+    let mut row_vars = BTreeSet::new();
+    ty.collect_row_vars(&mut row_vars);
 
     let mut renaming = Substitution::new();
-    for var in vars {
+    for var in type_vars {
         let fresh = format!("_t{counter}");
         *counter += 1;
-        renaming.map.insert(var, Type::TypeVar(fresh, 0));
+        renaming.type_map.insert(var, Type::TypeVar(fresh, 0));
+    }
+
+    for var in row_vars {
+        let fresh = format!("_t{counter}");
+        *counter += 1;
+        renaming.row_map.insert(
+            var,
+            Row {
+                fields: IndexMap::new(),
+                tail: RowTail::RowVar(fresh, 0),
+            },
+        );
     }
 
     (renaming.apply(ty), renaming)
@@ -574,17 +947,33 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
 /// so they participate in level-based generalization. Without this, fresh variables
 /// default to level 0 and are permanently excluded from generalization by [U-VAR-LEVEL].
 pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
-    let mut vars = BTreeSet::new();
-    ty.collect_type_vars(&mut vars);
+    let mut type_vars = BTreeSet::new();
+    ty.collect_type_vars(&mut type_vars);
+
+    let mut row_vars = BTreeSet::new();
+    ty.collect_row_vars(&mut row_vars);
 
     let mut renaming = Substitution::new();
-    for var in vars {
+    for var in type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter += 1;
         state.levels.insert(fresh_name.clone(), state.level);
         renaming
-            .map
+            .type_map
             .insert(var, Type::TypeVar(fresh_name, state.level));
+    }
+
+    for var in row_vars {
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter += 1;
+        state.levels.insert(fresh_name.clone(), state.level);
+        renaming.row_map.insert(
+            var,
+            Row {
+                fields: IndexMap::new(),
+                tail: RowTail::RowVar(fresh_name, state.level),
+            },
+        );
     }
 
     renaming.apply(ty)
@@ -605,23 +994,22 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         state.name_counter += 1;
         state.levels.insert(fresh_name.clone(), level);
         renaming
-            .map
+            .type_map
             .insert(var.clone(), Type::TypeVar(fresh_name, level));
     }
 
-    // Create fresh row variables (as Record with RowVar rest)
-    // Task 4: Row variables and type variables share the same naming counter (`_t{n}`),
-    // so `instantiate_scheme` freshens both correctly by accident. This is intentional:
-    // row variables use the same namespace as type variables for simplicity.
-    // When row-unification adds kinded substitutions (separate type_map and row_map),
-    // this will need separate handling to preserve the invariant that row vars bind to Rows, not Types.
+    // Create fresh row variables — row vars bind to Row, not Type
+    // Row variables and type variables share the same naming counter (`_t{n}`)
     for var in &scheme.row_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter += 1;
         state.levels.insert(fresh_name.clone(), level);
-        renaming.map.insert(
+        renaming.row_map.insert(
             var.clone(),
-            Type::Record(IndexMap::new(), RowRest::RowVar(fresh_name, level)),
+            Row {
+                fields: IndexMap::new(),
+                tail: RowTail::RowVar(fresh_name, level),
+            },
         );
     }
 
@@ -687,27 +1075,26 @@ impl fmt::Display for Type {
             Type::Number => write!(f, "Number"),
             Type::Any => write!(f, "Any"),
             Type::TypeVar(name, _level) => write!(f, "{name}"),
-            Type::Record(fields, rest) => {
+            Type::Record(row) => {
                 write!(f, "[")?;
-                for (i, (key, ty)) in fields.iter().enumerate() {
+                for (i, (key, ty)) in row.fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, "  ")?;
                     }
                     write!(f, "{key}: {ty}")?;
                 }
-                match rest {
-                    RowRest::Closed => {}
-                    RowRest::Open => {
-                        if !fields.is_empty() {
+                match &row.tail {
+                    RowTail::Empty => {}
+                    RowTail::RowVar(name, _level) => {
+                        if !row.fields.is_empty() {
                             write!(f, "  ")?;
                         }
-                        write!(f, "...")?;
-                    }
-                    RowRest::RowVar(name, _level) => {
-                        if !fields.is_empty() {
-                            write!(f, "  ")?;
+                        // Hide generated names (starting with _) — display as bare "..."
+                        if name.starts_with('_') {
+                            write!(f, "...")?;
+                        } else {
+                            write!(f, "...{name}")?;
                         }
-                        write!(f, "...{name}")?;
                     }
                 }
                 write!(f, "]")
@@ -861,6 +1248,22 @@ mod tests {
     use super::*;
     use crate::test_util::test_span;
 
+    // Helper to create closed records in tests
+    fn closed_record(fields: IndexMap<String, Type>) -> Type {
+        Type::Record(Row {
+            fields,
+            tail: RowTail::Empty,
+        })
+    }
+
+    // Helper to create open records with row variable
+    fn row_var_record(fields: IndexMap<String, Type>, var_name: &str, level: u32) -> Type {
+        Type::Record(Row {
+            fields,
+            tail: RowTail::RowVar(var_name.to_string(), level),
+        })
+    }
+
     #[test]
     fn test_display_primitives() {
         assert_eq!(format!("{}", Type::Int), "Int");
@@ -895,17 +1298,14 @@ mod tests {
         fields.insert("name".into(), Type::Str);
         fields.insert("age".into(), Type::Int);
         assert_eq!(
-            format!("{}", Type::Record(fields, RowRest::Closed)),
+            format!("{}", closed_record(fields)),
             "[name: String  age: Int]"
         );
     }
 
     #[test]
     fn test_display_record_empty() {
-        assert_eq!(
-            format!("{}", Type::Record(IndexMap::new(), RowRest::Closed)),
-            "[]"
-        );
+        assert_eq!(format!("{}", closed_record(IndexMap::new())), "[]");
     }
 
     #[test]
@@ -913,7 +1313,7 @@ mod tests {
         let mut fields = IndexMap::new();
         fields.insert("name".into(), Type::Str);
         assert_eq!(
-            format!("{}", Type::Record(fields, RowRest::Open)),
+            format!("{}", row_var_record(fields, "_open", 0)),
             "[name: String  ...]"
         );
     }
@@ -921,7 +1321,7 @@ mod tests {
     #[test]
     fn test_display_record_open_empty() {
         assert_eq!(
-            format!("{}", Type::Record(IndexMap::new(), RowRest::Open)),
+            format!("{}", row_var_record(IndexMap::new(), "_open", 0)),
             "[...]"
         );
     }
@@ -931,10 +1331,7 @@ mod tests {
         let mut fields = IndexMap::new();
         fields.insert("name".into(), Type::Str);
         assert_eq!(
-            format!(
-                "{}",
-                Type::Record(fields, RowRest::RowVar("rest".into(), 0))
-            ),
+            format!("{}", row_var_record(fields, "rest", 0)),
             "[name: String  ...rest]"
         );
     }
@@ -1025,8 +1422,8 @@ mod tests {
         sup.insert("age".into(), Type::Int);
 
         assert!(Type::is_subtype(
-            &Type::Record(sub, RowRest::Closed),
-            &Type::Record(sup, RowRest::Open),
+            &closed_record(sub),
+            &row_var_record(sup, "_open", 0),
         ));
     }
 
@@ -1039,10 +1436,7 @@ mod tests {
         sup.insert("name".into(), Type::Str);
         sup.insert("age".into(), Type::Int);
 
-        assert!(!Type::is_subtype(
-            &Type::Record(sub, RowRest::Closed),
-            &Type::Record(sup, RowRest::Closed),
-        ));
+        assert!(!Type::is_subtype(&closed_record(sub), &closed_record(sup),));
     }
 
     #[test]
@@ -1051,11 +1445,11 @@ mod tests {
         let mut sub_fields = IndexMap::new();
         sub_fields.insert("a".into(), Type::Int);
         sub_fields.insert("b".into(), Type::Int);
-        let sub = Type::Record(sub_fields, RowRest::Closed);
+        let sub = closed_record(sub_fields);
 
         let mut sup_fields = IndexMap::new();
         sup_fields.insert("a".into(), Type::Int);
-        let sup = Type::Record(sup_fields, RowRest::Closed);
+        let sup = closed_record(sup_fields);
 
         assert!(
             !Type::is_subtype(&sub, &sup),
@@ -1067,11 +1461,11 @@ mod tests {
     fn test_subtype_closed_record_same_fields_ok() {
         let mut sub_fields = IndexMap::new();
         sub_fields.insert("a".into(), Type::Int);
-        let sub = Type::Record(sub_fields, RowRest::Closed);
+        let sub = closed_record(sub_fields);
 
         let mut sup_fields = IndexMap::new();
         sup_fields.insert("a".into(), Type::Int);
-        let sup = Type::Record(sup_fields, RowRest::Closed);
+        let sup = closed_record(sup_fields);
 
         assert!(
             Type::is_subtype(&sub, &sup),
@@ -1083,11 +1477,11 @@ mod tests {
     fn test_subtype_closed_to_row_var() {
         let mut sub_fields = IndexMap::new();
         sub_fields.insert("a".into(), Type::Int);
-        let sub = Type::Record(sub_fields, RowRest::Closed);
+        let sub = closed_record(sub_fields);
 
         let mut sup_fields = IndexMap::new();
         sup_fields.insert("a".into(), Type::Int);
-        let sup = Type::Record(sup_fields, RowRest::RowVar("r".into(), 0));
+        let sup = row_var_record(sup_fields, "r", 0);
 
         assert!(
             Type::is_subtype(&sub, &sup),
@@ -1100,11 +1494,11 @@ mod tests {
         let mut sub_fields = IndexMap::new();
         sub_fields.insert("a".into(), Type::Int);
         sub_fields.insert("b".into(), Type::Int);
-        let sub = Type::Record(sub_fields, RowRest::RowVar("r".into(), 0));
+        let sub = row_var_record(sub_fields, "r", 0);
 
         let mut sup_fields = IndexMap::new();
         sup_fields.insert("a".into(), Type::Int);
-        let sup = Type::Record(sup_fields, RowRest::Closed);
+        let sup = closed_record(sup_fields);
 
         assert!(
             !Type::is_subtype(&sub, &sup),
@@ -1157,7 +1551,7 @@ mod tests {
         assert!(!Type::is_subtype(&Type::Bool, &Type::Float));
         assert!(!Type::is_subtype(
             &Type::Int,
-            &Type::Record(IndexMap::new(), RowRest::Closed)
+            &closed_record(IndexMap::new())
         ));
     }
 
@@ -1179,16 +1573,16 @@ mod tests {
         inner_sub.insert("x".into(), Type::Int);
         inner_sub.insert("y".into(), Type::Int);
         let mut outer_sub = IndexMap::new();
-        outer_sub.insert("point".into(), Type::Record(inner_sub, RowRest::Closed));
+        outer_sub.insert("point".into(), closed_record(inner_sub));
 
         let mut inner_sup = IndexMap::new();
         inner_sup.insert("x".into(), Type::Number);
         let mut outer_sup = IndexMap::new();
-        outer_sup.insert("point".into(), Type::Record(inner_sup, RowRest::Open));
+        outer_sup.insert("point".into(), row_var_record(inner_sup, "_open", 0));
 
         assert!(Type::is_subtype(
-            &Type::Record(outer_sub, RowRest::Closed),
-            &Type::Record(outer_sup, RowRest::Open)
+            &closed_record(outer_sub),
+            &row_var_record(outer_sup, "_open", 0)
         ));
     }
 
@@ -1207,8 +1601,8 @@ mod tests {
         sup.insert("name".into(), Type::Str);
 
         assert!(Type::is_subtype(
-            &Type::Record(sub, RowRest::Closed),
-            &Type::Record(sup, RowRest::Open),
+            &closed_record(sub),
+            &row_var_record(sup, "_open", 0),
         ));
     }
 
@@ -1221,10 +1615,7 @@ mod tests {
         let mut sup = IndexMap::new();
         sup.insert("name".into(), Type::Str);
 
-        assert!(!Type::is_subtype(
-            &Type::Record(sub, RowRest::Closed),
-            &Type::Record(sup, RowRest::Closed),
-        ));
+        assert!(!Type::is_subtype(&closed_record(sub), &closed_record(sup),));
     }
 
     #[test]
@@ -1235,10 +1626,7 @@ mod tests {
         let mut sup = IndexMap::new();
         sup.insert("name".into(), Type::Str);
 
-        assert!(Type::is_subtype(
-            &Type::Record(sub, RowRest::Closed),
-            &Type::Record(sup, RowRest::Closed),
-        ));
+        assert!(Type::is_subtype(&closed_record(sub), &closed_record(sup),));
     }
 
     #[test]
@@ -1251,8 +1639,8 @@ mod tests {
         sup.insert("name".into(), Type::Str);
 
         assert!(Type::is_subtype(
-            &Type::Record(sub, RowRest::Open),
-            &Type::Record(sup, RowRest::Open),
+            &row_var_record(sub, "_open", 0),
+            &row_var_record(sup, "_open", 0),
         ));
     }
 
@@ -1266,8 +1654,8 @@ mod tests {
         sup.insert("name".into(), Type::Str);
 
         assert!(Type::is_subtype(
-            &Type::Record(sub, RowRest::Closed),
-            &Type::Record(sup, RowRest::RowVar("r".into(), 0)),
+            &closed_record(sub),
+            &row_var_record(sup, "r", 0),
         ));
     }
 
@@ -1281,12 +1669,12 @@ mod tests {
         // sup: [name: Str, age: Int | Closed]  (must have exactly name + age)
         let mut sub_fields = IndexMap::new();
         sub_fields.insert("name".into(), Type::Str);
-        let sub = Type::Record(sub_fields, RowRest::Open);
+        let sub = row_var_record(sub_fields, "_open", 0);
 
         let mut sup_fields = IndexMap::new();
         sup_fields.insert("name".into(), Type::Str);
         sup_fields.insert("age".into(), Type::Int);
-        let sup = Type::Record(sup_fields, RowRest::Closed);
+        let sup = closed_record(sup_fields);
 
         assert!(
             !Type::is_subtype(&sub, &sup),
@@ -1305,11 +1693,11 @@ mod tests {
         let mut sub_fields = IndexMap::new();
         sub_fields.insert("name".into(), Type::Str);
         sub_fields.insert("age".into(), Type::Int);
-        let sub = Type::Record(sub_fields, RowRest::Open);
+        let sub = row_var_record(sub_fields, "_open", 0);
 
         let mut sup_fields = IndexMap::new();
         sup_fields.insert("name".into(), Type::Str);
-        let sup = Type::Record(sup_fields, RowRest::Closed);
+        let sup = closed_record(sup_fields);
 
         assert!(
             !Type::is_subtype(&sub, &sup),
@@ -1348,7 +1736,7 @@ mod tests {
     fn test_has_type_vars_record() {
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
-        assert!(Type::Record(fields, RowRest::Closed).has_type_vars());
+        assert!(closed_record(fields).has_type_vars());
     }
 
     #[test]
@@ -1399,14 +1787,8 @@ mod tests {
         let mut env = TypeEnv::new();
         let mut fields = IndexMap::new();
         fields.insert("name".into(), Type::Str);
-        env.insert_type_alias(
-            "Person".into(),
-            Type::Record(fields.clone(), RowRest::Closed),
-        );
-        assert_eq!(
-            env.get_type_alias("Person"),
-            Some(&Type::Record(fields, RowRest::Closed))
-        );
+        env.insert_type_alias("Person".into(), closed_record(fields.clone()));
+        assert_eq!(env.get_type_alias("Person"), Some(&closed_record(fields)));
     }
 
     #[test]
@@ -1445,7 +1827,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut fields = IndexMap::new();
         fields.insert("a".into(), Type::Int);
-        let err = TypeError::field_not_found("b", &Type::Record(fields, RowRest::Closed), span);
+        let err = TypeError::field_not_found("b", &closed_record(fields), span);
         assert_eq!(err.message, "field 'b' not found in [a: Int]");
     }
 
@@ -1490,23 +1872,25 @@ mod tests {
     #[test]
     fn test_substitution_apply_bound() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::Int);
+        subst.type_map.insert("a".into(), Type::Int);
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
     #[test]
     fn test_substitution_apply_chain() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::TypeVar("b".into(), 0));
-        subst.map.insert("b".into(), Type::Int);
+        subst
+            .type_map
+            .insert("a".into(), Type::TypeVar("b".into(), 0));
+        subst.type_map.insert("b".into(), Type::Int);
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
     #[test]
     fn test_substitution_apply_in_function() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::Int);
-        subst.map.insert("b".into(), Type::Str);
+        subst.type_map.insert("a".into(), Type::Int);
+        subst.type_map.insert("b".into(), Type::Str);
         let ty = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::TypeVar("b".into(), 0)),
@@ -1523,22 +1907,22 @@ mod tests {
     #[test]
     fn test_substitution_apply_in_record() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::Int);
+        subst.type_map.insert("a".into(), Type::Int);
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         fields.insert("y".into(), Type::Str);
-        let ty = Type::Record(fields, RowRest::Closed);
+        let ty = closed_record(fields);
 
         let mut expected = IndexMap::new();
         expected.insert("x".into(), Type::Int);
         expected.insert("y".into(), Type::Str);
-        assert_eq!(subst.apply(&ty), Type::Record(expected, RowRest::Closed));
+        assert_eq!(subst.apply(&ty), closed_record(expected));
     }
 
     #[test]
     fn test_substitution_leaves_unbound_alone() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::Int);
+        subst.type_map.insert("a".into(), Type::Int);
         assert_eq!(
             subst.apply(&Type::TypeVar("b".into(), 0)),
             Type::TypeVar("b".into(), 0)
@@ -1548,7 +1932,9 @@ mod tests {
     #[test]
     fn test_substitution_apply_self_reference_cycle() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::TypeVar("a".into(), 0));
+        subst
+            .type_map
+            .insert("a".into(), Type::TypeVar("a".into(), 0));
         assert_eq!(
             subst.apply(&Type::TypeVar("a".into(), 0)),
             Type::TypeVar("a".into(), 0)
@@ -1558,8 +1944,12 @@ mod tests {
     #[test]
     fn test_substitution_apply_indirect_cycle() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::TypeVar("b".into(), 0));
-        subst.map.insert("b".into(), Type::TypeVar("a".into(), 0));
+        subst
+            .type_map
+            .insert("a".into(), Type::TypeVar("b".into(), 0));
+        subst
+            .type_map
+            .insert("b".into(), Type::TypeVar("a".into(), 0));
         // When we apply starting from "a", we get "a" back because:
         // a -> b (with a visited) -> a (already visited, return TypeVar("a"))
         assert_eq!(
@@ -1722,8 +2112,8 @@ mod tests {
         let mut f2 = IndexMap::new();
         f2.insert("x".into(), Type::Int);
         unify(
-            &Type::Record(f1, RowRest::Closed),
-            &Type::Record(f2, RowRest::Closed),
+            &closed_record(f1),
+            &closed_record(f2),
             &mut subst,
             &mut state,
             span,
@@ -1743,17 +2133,14 @@ mod tests {
         f2.insert("x".into(), Type::Int);
         f2.insert("y".into(), Type::Str);
         let result = unify(
-            &Type::Record(f1, RowRest::Closed),
-            &Type::Record(f2, RowRest::Closed),
+            &closed_record(f1),
+            &closed_record(f2),
             &mut subst,
             &mut state,
             span,
         );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message
-            .contains("closed record field mismatch"));
+        assert!(result.unwrap_err().message.contains("extra fields"));
     }
 
     #[test]
@@ -1766,14 +2153,19 @@ mod tests {
         let mut f2 = IndexMap::new();
         f2.insert("x".into(), Type::Int);
         f2.insert("y".into(), Type::Str);
-        assert!(unify(
-            &Type::Record(f1, RowRest::Open),
-            &Type::Record(f2, RowRest::Closed),
+        unify(
+            &row_var_record(f1, "_open", 0),
+            &closed_record(f2),
             &mut subst,
             &mut state,
             span,
         )
-        .is_ok());
+        .unwrap();
+        // Verify that _open was bound to {y: Str, Empty} — not just is_ok()
+        let binding = subst.row_map.get("_open").expect("_open should be bound");
+        assert_eq!(binding.tail, RowTail::Empty);
+        assert_eq!(binding.fields.get("y"), Some(&Type::Str));
+        assert_eq!(binding.fields.len(), 1, "only 'y' should be in the binding");
     }
 
     #[test]
@@ -2033,7 +2425,7 @@ mod tests {
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         let result = unify(
             &Type::TypeVar("a".into(), 0),
-            &Type::Record(fields, RowRest::Closed),
+            &closed_record(fields),
             &mut subst,
             &mut state,
             span,
@@ -2066,37 +2458,46 @@ mod tests {
         let mut subst = Substitution::new();
         let mut extra = IndexMap::new();
         extra.insert("y".into(), Type::Str);
-        subst
-            .map
-            .insert("r".into(), Type::Record(extra, RowRest::Closed));
+        subst.row_map.insert(
+            "r".into(),
+            Row {
+                fields: extra,
+                tail: RowTail::Empty,
+            },
+        );
 
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 0));
+        let ty = row_var_record(fields, "r", 0);
         let result = subst.apply(&ty);
 
         let mut expected = IndexMap::new();
         expected.insert("x".into(), Type::Int);
         expected.insert("y".into(), Type::Str);
-        assert_eq!(result, Type::Record(expected, RowRest::Closed));
+        assert_eq!(result, closed_record(expected));
     }
 
     #[test]
-    fn test_substitution_apply_row_var_to_type_var() {
+    fn test_substitution_apply_row_var_to_row_var() {
         let mut subst = Substitution::new();
-        subst.map.insert("r".into(), Type::TypeVar("s".into(), 0));
+        // Bind row variable "r" to a row with just a row variable "s" tail
+        let empty_fields = IndexMap::new();
+        subst.row_map.insert(
+            "r".into(),
+            Row {
+                fields: empty_fields,
+                tail: RowTail::RowVar("s".into(), 0),
+            },
+        );
 
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 0));
+        let ty = row_var_record(fields, "r", 0);
         let result = subst.apply(&ty);
 
         let mut expected = IndexMap::new();
         expected.insert("x".into(), Type::Int);
-        assert_eq!(
-            result,
-            Type::Record(expected, RowRest::RowVar("s".into(), 0))
-        );
+        assert_eq!(result, row_var_record(expected, "s", 0));
     }
 
     #[test]
@@ -2104,9 +2505,9 @@ mod tests {
         let subst = Substitution::new();
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields.clone(), RowRest::RowVar("r".into(), 0));
+        let ty = row_var_record(fields.clone(), "r", 0);
         let result = subst.apply(&ty);
-        assert_eq!(result, Type::Record(fields, RowRest::RowVar("r".into(), 0)));
+        assert_eq!(result, row_var_record(fields, "r", 0));
     }
 
     #[test]
@@ -2118,14 +2519,18 @@ mod tests {
         let mut extra = IndexMap::new();
         extra.insert("x".into(), Type::Str); // collides with original x: Int
         extra.insert("z".into(), Type::Bool);
-        subst
-            .map
-            .insert("r".into(), Type::Record(extra, RowRest::Closed));
+        subst.row_map.insert(
+            "r".into(),
+            Row {
+                fields: extra,
+                tail: RowTail::Empty,
+            },
+        );
 
         // original record: { x: Int ...r }
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 0));
+        let ty = row_var_record(fields, "r", 0);
 
         let result = subst.apply(&ty);
 
@@ -2133,7 +2538,7 @@ mod tests {
         let mut expected = IndexMap::new();
         expected.insert("x".into(), Type::Int);
         expected.insert("z".into(), Type::Bool);
-        assert_eq!(result, Type::Record(expected, RowRest::Closed));
+        assert_eq!(result, closed_record(expected));
     }
 
     #[test]
@@ -2148,8 +2553,8 @@ mod tests {
         f2.insert("a".into(), Type::Int);
         f2.insert("b".into(), Type::Str);
         assert!(unify(
-            &Type::Record(f1, RowRest::Closed),
-            &Type::Record(f2, RowRest::Closed),
+            &closed_record(f1),
+            &closed_record(f2),
             &mut subst,
             &mut state,
             span,
@@ -2167,17 +2572,14 @@ mod tests {
         let mut f2 = IndexMap::new();
         f2.insert("b".into(), Type::Int);
         let result = unify(
-            &Type::Record(f1, RowRest::Closed),
-            &Type::Record(f2, RowRest::Closed),
+            &closed_record(f1),
+            &closed_record(f2),
             &mut subst,
             &mut state,
             span,
         );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message
-            .contains("closed record field mismatch"));
+        assert!(result.unwrap_err().message.contains("extra fields"));
     }
 
     #[test]
@@ -2239,7 +2641,7 @@ mod tests {
     #[test]
     fn test_substitution_apply_seq() {
         let mut subst = Substitution::new();
-        subst.map.insert("a".into(), Type::Int);
+        subst.type_map.insert("a".into(), Type::Int);
         let ty = Type::Seq(Box::new(Type::TypeVar("a".into(), 0)));
         assert_eq!(subst.apply(&ty), Type::Seq(Box::new(Type::Int)));
     }
@@ -2339,16 +2741,16 @@ mod tests {
     #[test]
     fn test_rowvar_eq_ignores_level() {
         assert_eq!(
-            RowRest::RowVar("r".into(), 0),
-            RowRest::RowVar("r".into(), 7)
+            RowTail::RowVar("r".into(), 0),
+            RowTail::RowVar("r".into(), 7)
         );
     }
 
     #[test]
     fn test_rowvar_neq_different_name() {
         assert_ne!(
-            RowRest::RowVar("r".into(), 0),
-            RowRest::RowVar("s".into(), 0)
+            RowTail::RowVar("r".into(), 0),
+            RowTail::RowVar("s".into(), 0)
         );
     }
 
@@ -2357,7 +2759,7 @@ mod tests {
         // RowVar appears in record display as "...name"
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 99));
+        let ty = row_var_record(fields, "r", 99);
         assert_eq!(format!("{ty}"), "[x: Int  ...r]");
     }
 
@@ -2692,7 +3094,7 @@ mod tests {
         state.levels.insert("r".into(), 2);
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
-        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 2));
+        let ty = row_var_record(fields, "r", 2);
         let scheme = generalize(1, &ty, &state);
         assert_eq!(scheme.row_vars, vec!["r"]);
         assert!(scheme.type_vars.is_empty());
@@ -2802,7 +3204,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec![],
             row_vars: vec!["r".into()],
-            body: Type::Record(fields.clone(), RowRest::RowVar("r".into(), 1)),
+            body: row_var_record(fields.clone(), "r", 1),
         };
 
         let mut state = InferState::new();
@@ -2811,10 +3213,13 @@ mod tests {
 
         // Verify the result has a FRESH RowVar (not the original "r")
         match result {
-            Type::Record(result_fields, row_rest) => {
+            Type::Record(Row {
+                fields: result_fields,
+                tail: row_rest,
+            }) => {
                 assert_eq!(result_fields, fields);
                 match row_rest {
-                    RowRest::RowVar(name, level) => {
+                    RowTail::RowVar(name, level) => {
                         // NOTE: This test may EXPOSE a bug where RowVars are instantiated as TypeVars
                         // The correct behavior is: RowVar → fresh RowVar
                         // If this fails, it documents a known issue with the current instantiate_scheme
@@ -2835,8 +3240,7 @@ mod tests {
                             "fresh row var should be registered in levels at level 2"
                         );
                     }
-                    RowRest::Closed => panic!("expected RowVar in result, got Closed"),
-                    RowRest::Open => panic!("expected RowVar in result, got Open"),
+                    RowTail::Empty => panic!("expected RowVar in result, got Closed"),
                 }
             }
             other => panic!("expected Record, got {:?}", other),
@@ -2897,5 +3301,316 @@ mod tests {
             }
             other => panic!("expected Function, got {:?}", other),
         }
+    }
+
+    // --- Row unification algorithm tests (Cases 2/3/4 and occurs checks) ---
+
+    /// Case 4: both sides have unique fields and both tails are RowVar
+    /// Unify {a: Int, ...rho1} with {b: Str, ...rho2} → fresh row var created with dual bindings
+    #[test]
+    fn test_unify_remainders_case4_both_unique_both_rowvar() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = IndexMap::new();
+        f1.insert("a".into(), Type::Int);
+        let mut f2 = IndexMap::new();
+        f2.insert("b".into(), Type::Str);
+
+        unify(
+            &row_var_record(f1, "rho1", 0),
+            &row_var_record(f2, "rho2", 0),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // rho1 should be bound to {b: Str, ..._t0} (unique2 + fresh tail)
+        let rho1_binding = subst.row_map.get("rho1").expect("rho1 should be bound");
+        assert_eq!(rho1_binding.fields.get("b"), Some(&Type::Str));
+        assert_eq!(rho1_binding.fields.len(), 1);
+        let rho1_tail_name = match &rho1_binding.tail {
+            RowTail::RowVar(name, _) => name.clone(),
+            other => panic!("expected RowVar tail for rho1, got {:?}", other),
+        };
+
+        // rho2 should be bound to {a: Int, ..._t0} (unique1 + same fresh tail)
+        let rho2_binding = subst.row_map.get("rho2").expect("rho2 should be bound");
+        assert_eq!(rho2_binding.fields.get("a"), Some(&Type::Int));
+        assert_eq!(rho2_binding.fields.len(), 1);
+        let rho2_tail_name = match &rho2_binding.tail {
+            RowTail::RowVar(name, _) => name.clone(),
+            other => panic!("expected RowVar tail for rho2, got {:?}", other),
+        };
+
+        // Both bindings must share the same fresh row variable
+        assert_eq!(
+            rho1_tail_name, rho2_tail_name,
+            "rho1 and rho2 bindings should share the same fresh row variable"
+        );
+    }
+
+    /// Case 2: left has unique fields, right tail is RowVar, right has no unique fields
+    /// Unify {a: Int, b: Str} (closed) with {a: Int, ...rho} → rho binds to {b: Str, Empty}
+    #[test]
+    fn test_unify_remainders_case2_left_unique_right_rowvar() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = IndexMap::new();
+        f1.insert("a".into(), Type::Int);
+        f1.insert("b".into(), Type::Str);
+        let mut f2 = IndexMap::new();
+        f2.insert("a".into(), Type::Int);
+
+        unify(
+            &closed_record(f1),
+            &row_var_record(f2, "rho", 0),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // rho should be bound to {b: Str, Empty}
+        let binding = subst.row_map.get("rho").expect("rho should be bound");
+        assert_eq!(binding.tail, RowTail::Empty);
+        assert_eq!(binding.fields.get("b"), Some(&Type::Str));
+        assert_eq!(binding.fields.len(), 1);
+    }
+
+    /// Case 3: right has unique fields, left tail is RowVar, left has no unique fields
+    /// Unify {a: Int, ...rho} with {a: Int, b: Str} (closed) → rho binds to {b: Str, Empty}
+    #[test]
+    fn test_unify_remainders_case3_right_unique_left_rowvar() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = IndexMap::new();
+        f1.insert("a".into(), Type::Int);
+        let mut f2 = IndexMap::new();
+        f2.insert("a".into(), Type::Int);
+        f2.insert("b".into(), Type::Str);
+
+        unify(
+            &row_var_record(f1, "rho", 0),
+            &closed_record(f2),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // rho should be bound to {b: Str, Empty}
+        let binding = subst.row_map.get("rho").expect("rho should be bound");
+        assert_eq!(binding.tail, RowTail::Empty);
+        assert_eq!(binding.fields.get("b"), Some(&Type::Str));
+        assert_eq!(binding.fields.len(), 1);
+    }
+
+    /// Soundness test from Finding 1: unifying closed {a: Int, b: Str} with open {a: Int, c: Bool, ...rho}
+    /// must FAIL — unique2 has {c: Bool} but tail1 is Empty, so no way to absorb it.
+    #[test]
+    fn test_unify_closed_vs_open_unique_both_sides_fails() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = IndexMap::new();
+        f1.insert("a".into(), Type::Int);
+        f1.insert("b".into(), Type::Str);
+        let mut f2 = IndexMap::new();
+        f2.insert("a".into(), Type::Int);
+        f2.insert("c".into(), Type::Bool);
+
+        let result = unify(
+            &closed_record(f1),
+            &row_var_record(f2, "rho", 0),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(result.is_err(), "should fail: closed left cannot absorb unique2 {{c: Bool}}");
+        assert!(
+            result.unwrap_err().message.contains("extra fields"),
+            "error should mention extra fields"
+        );
+    }
+
+    /// Row occurs check: direct tail cycle — ρ unified with row whose tail is ρ
+    /// Setup: unify {a: Int, b: Str, ...rho} with {a: Int, b: Str, ...rho} is trivially ok,
+    /// but unify {a: Int, b: Str, ...rho} with {a: Int, ...rho} (unique1={b:Str}, tail2=rho)
+    /// creates binding rho → {b: Str, ...rho} — direct tail cycle, must fail.
+    #[test]
+    fn test_row_occurs_check_direct_tail_cycle() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = IndexMap::new();
+        f1.insert("a".into(), Type::Int);
+        f1.insert("b".into(), Type::Str);
+        let mut f2 = IndexMap::new();
+        f2.insert("a".into(), Type::Int);
+
+        // Left: closed {a: Int, b: Str, ...rho}, right: open {a: Int, ...rho}
+        // After shared field extraction: unique1={b:Str}, tail1=RowVar(rho), unique2={}, tail2=RowVar(rho)
+        // Case 2: u1 non-empty, u2 empty, tail2=RowVar(rho) → bind rho → {b:Str, ...rho} — CYCLE!
+        let result = unify(
+            &row_var_record(f1, "rho", 0),
+            &row_var_record(f2, "rho", 0),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(result.is_err(), "should fail: rho binds to {{b: Str, ...rho}} which is an infinite row");
+        assert!(
+            result.unwrap_err().message.contains("infinite row type"),
+            "error should mention infinite row type"
+        );
+    }
+
+    /// Row occurs check: nested-in-field cycle — ρ unified with row containing a field of type Record(ρ)
+    /// Setup: left = {a: Int, x: Record({...rho})} (closed), right = {a: Int, ...rho} (open)
+    /// After extracting shared field a: unique1={x:Record({...rho})}, tail1=Empty, unique2={}, tail2=RowVar(rho)
+    /// Case 2: bind rho → {x: Record({...rho}), Empty} — rho occurs in a field type, infinite row!
+    #[test]
+    fn test_row_occurs_check_nested_in_field_cycle() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // Build {x: Record({...rho}), a: Int} closed
+        let nested_fields = IndexMap::new(); // empty fields, tail is rho
+        let nested_record = Type::Record(Row {
+            fields: nested_fields,
+            tail: RowTail::RowVar("rho".into(), 0),
+        });
+        let mut f1 = IndexMap::new();
+        f1.insert("a".into(), Type::Int);
+        f1.insert("x".into(), nested_record);
+
+        // Build {a: Int, ...rho}
+        let mut f2 = IndexMap::new();
+        f2.insert("a".into(), Type::Int);
+
+        let result = unify(
+            &closed_record(f1),
+            &row_var_record(f2, "rho", 0),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(result.is_err(), "should fail: rho occurs in field type Record with rho in tail");
+        assert!(
+            result.unwrap_err().message.contains("infinite row type"),
+            "error should mention infinite row type"
+        );
+    }
+
+    // --- unify_tails binding tests (exercised via unify on records with no unique fields) ---
+
+    /// Both tails are RowVar with the same name — must succeed (same variable, trivially ok)
+    #[test]
+    fn test_unify_tails_both_rowvar_same_name() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = IndexMap::new();
+        f1.insert("x".into(), Type::Int);
+        let mut f2 = IndexMap::new();
+        f2.insert("x".into(), Type::Int);
+
+        // Both have the same shared field and same row var — Case 1 → unify_tails(rho, rho) → Ok
+        unify(
+            &row_var_record(f1, "rho", 0),
+            &row_var_record(f2, "rho", 0),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // rho should NOT be bound — same name is handled as reflexivity
+        assert!(
+            !subst.row_map.contains_key("rho"),
+            "same-name RowVar unification should not create a binding"
+        );
+    }
+
+    /// Both tails are RowVar with different names — rho1 must bind to rho2
+    #[test]
+    fn test_unify_tails_both_rowvar_different_names() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // No unique fields on either side, different row vars → Case 1 → unify_tails(rho1, rho2)
+        let f1 = IndexMap::new();
+        let f2 = IndexMap::new();
+        unify(
+            &row_var_record(f1, "rho1", 0),
+            &row_var_record(f2, "rho2", 0),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // rho1 should be bound to Row { fields: {}, tail: RowVar("rho2") }
+        let binding = subst.row_map.get("rho1").expect("rho1 should be bound");
+        assert_eq!(binding.fields.len(), 0);
+        assert_eq!(binding.tail, RowTail::RowVar("rho2".into(), 0));
+    }
+
+    /// RowVar vs Empty — RowVar must bind to Row { fields: {}, tail: Empty }
+    #[test]
+    fn test_unify_tails_rowvar_vs_empty() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // No unique fields, left is open (rho), right is closed → Case 1 → unify_tails(rho, Empty)
+        let f1 = IndexMap::new();
+        let f2 = IndexMap::new();
+        unify(
+            &row_var_record(f1, "rho", 0),
+            &closed_record(f2),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // rho should be bound to Row { fields: {}, tail: Empty }
+        let binding = subst.row_map.get("rho").expect("rho should be bound");
+        assert_eq!(binding.fields.len(), 0);
+        assert_eq!(binding.tail, RowTail::Empty);
+    }
+
+    /// Both tails are Empty — must succeed with no bindings created
+    #[test]
+    fn test_unify_tails_both_empty() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let f1 = IndexMap::new();
+        let f2 = IndexMap::new();
+        unify(
+            &closed_record(f1),
+            &closed_record(f2),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        assert!(subst.row_map.is_empty(), "no row bindings should be created");
     }
 }
