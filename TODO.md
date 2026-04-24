@@ -61,14 +61,21 @@ Implement bidirectional type checking with synthesis and checking modes. See DES
 
 **Benefits from:** `let-generalization` (uses `InferState` parameter)
 
-- [ ] Implement `check_expr(expr, expected, env, state, type_map) -> Result<(), Vec<TypeError>>` (`src/typecheck.rs`)
-- [ ] Apply `check_expr` at CALL-MONO argument positions (expected type fully concrete) (`src/typecheck.rs`)
-- [ ] Apply `check_expr` for function body with return annotation (`src/typecheck.rs`)
-- [ ] Apply `check_expr` for `TypeAssert` inner expression (`src/typecheck.rs`)
-- [ ] Keep `unify` + U-SUBSUME for CALL-POLY argument positions (type variables present) (`src/typecheck.rs`)
-- [ ] Fix function variance inconsistency between `unify` and `is_subtype` — `check_expr` applies [SUB] at leaves, resolving the dual-path divergence (`src/types.rs:291-315, 67-82`) [Major, computer-scientist]
-- [ ] Implement lambda checking mode — `infer_fn` checks against expected function type. Pierce & Turner (2000), Dunfield & Krishnaswami (2021). (`src/typecheck.rs:449`) [Major, computer-scientist]
-- [ ] Implement checking mode propagation to call arguments — Pierce-Turner S-App rule. (`src/typecheck.rs:389-446`) [Major, computer-scientist]
+Core check_expr framework. Split into bidirectional-typing-b/c for remaining items.
+
+- [x] Implement `check_expr(expr, expected, env, state, type_map) -> Result<(), Vec<TypeError>>` (`src/typecheck.rs`)
+- [x] Apply `check_expr` at CALL-MONO argument positions (expected type fully concrete) (`src/typecheck.rs`)
+- [x] Apply `check_expr` for function body with return annotation (`src/typecheck.rs`)
+- [x] Apply `check_expr` for `TypeAssert` inner expression (`src/typecheck.rs`)
+- [x] Keep `unify` + U-SUBSUME for CALL-POLY argument positions (type variables present) (`src/typecheck.rs`)
+- [x] Fix function variance inconsistency between `unify` and `is_subtype` — `check_expr` applies [SUB] at leaves, resolving the dual-path divergence (`src/types.rs:291-315, 67-82`) [Major, computer-scientist]
+- [x] Implement lambda checking mode — `infer_fn` checks against expected function type. Pierce & Turner (2000), Dunfield & Krishnaswami (2021). (`src/typecheck.rs:449`) [Major, computer-scientist]
+- [x] Implement checking mode propagation to call arguments — Pierce-Turner S-App rule. (`src/typecheck.rs:389-446`) [Major, computer-scientist]
+
+## bidirectional-typing-b: Bidirectional Type Checking (Part 2)
+
+Monomorphic fix, constraint synthesis, tests, and doc comments. Split from bidirectional-typing.
+
 - [ ] Fix monomorphic function calls skipping argument type checking — `!func_ty.has_type_vars()` bypasses argument-parameter unification (`src/typecheck.rs:421-422`) [Major, computer-scientist]
 - [ ] Implement constraint-based type argument synthesis for polymorphic calls — Pierce-Turner constraint generation with variance-aware minimal substitution (`src/typecheck.rs:425-439`) [Minor, computer-scientist]
 - [ ] Add tests: literal promotion via subsumption, lambda parameter inference from context
@@ -77,6 +84,11 @@ Implement bidirectional type checking with synthesis and checking modes. See DES
 - [ ] Mark `doc/06-type-inference.md` §Unification `[U-SUBSUME]` as proposed design — current text describes `[U-SUBSUME]` as a "general bidirectional is_subtype fallback" but `src/types.rs:397-424` has 8 specific bidirectional promotion rules and the fallthrough is `Err(type_mismatch)`, not a general subsumption check. The doc is aspirational; mark `[U-SUBSUME]` and the "no promotion rules" claim as PROPOSED DESIGN / NOT YET IMPLEMENTED; document the 8 current promotion rules as deliberate pragmatic extensions of Robinson. (`doc/06-type-inference.md:249-307`) [Major, type-theorist C43]
 - [ ] Add `generalize()` early-exit for monomorphic types — for every Pass 4 entry, `generalize()` calls `collect_type_vars()` which walks the full type tree and builds a BTreeSet even when the type has no type vars (common case: all-concrete config dicts). Add `if !ty.has_type_vars() { return TypeScheme::mono(ty.clone()); }` early exit. (`src/types.rs:520-541`) [Minor, computer-scientist C43]
 - [ ] Fix `check_call` zero-param polymorphic function return bypass — line 539 returns `*ret.clone()` (pre-instantiation return type) for zero-param polymorphic functions, bypassing `inst_ret`. The `else` branch should return `*inst_ret.clone()` to use the instantiated type. (`src/typecheck.rs:539`) [Minor, computer-scientist C43 panel]
+
+## bidirectional-typing-c: Bidirectional Type Checking (Part 3)
+
+Nits and stdlib fixes found during bidirectional-typing review. Split from bidirectional-typing.
+
 - [ ] Eliminate double instantiation waste — VAR-POLY at `typecheck.rs:191` via `instantiate_scheme` and CALL-POLY at `typecheck.rs:525` via `instantiate_at_level` both instantiate. Could be resolved by passing `TypeScheme` into `check_call` and doing a single instantiation. (`src/typecheck.rs:191,525`) [Nit, computer-scientist C43 panel]
 - [ ] Add `concat` row to strictness signature table — `doc/08-evaluation.md:425-530` Part 2 claims "all Rust-native builtins" but `concat` has no row; it is dual-dispatch (lazy Seq chain via PendingBuiltin, eager Dict append) and belongs in the "Higher-order collection operations" group. (`doc/08-evaluation.md:425-530`) [Minor, stdlib-author C43]
 - [ ] Fix `flatten` Seq input — `stdlib/prelude.llt:421` calls `[call $keys $xs]` which requires Dict; passing a Seq produces `"keys: expected Dict, got Seq"` rather than a meaningful error. Either add `$seq?` dispatch (collect first, then flatten) or raise descriptive error "flatten: expected Dict, got Seq — collect the Seq first". (`stdlib/prelude.llt:421`) [Minor, stdlib-author C43]
@@ -99,6 +111,8 @@ Replace nominal type tag checking with structural contract validation. See DESIG
 
 **Depends on:** `bidirectional-typing` for `check_expr` in elaboration flow
 
+Core contract validation and guard wrapping. Split into typeassert-structural-b for remaining items.
+
 - [ ] Add `resolved_type: Option<Type>` field to `Expr::TypeAssert` (`src/ast.rs`)
 - [ ] Update `resolve_type_assert()` to set `resolved_type` on AST node (elaboration) (`src/typecheck.rs:503-523`)
 - [ ] Implement `value_matches_type(value, type, span) -> Result<bool, EvalError>` for immediate validation (`src/eval.rs`)
@@ -107,6 +121,11 @@ Replace nominal type tag checking with structural contract validation. See DESIG
 - [ ] Implement guard memoization: `Guarded` → `Materialized` or `Failed` after first force (`src/eval.rs`)
 - [ ] Handle `--no-typecheck` fallback — degrade to current nominal behavior when `resolved_type` is `None` (`src/eval.rs`)
 - [ ] Implement blame tracking with even-odd polarity for contract positions. Findler & Felleisen (2002). (`src/eval.rs`) [Major, computer-scientist]
+
+## typeassert-structural-b: TypeAssert Structural Contract Checking (Part 2)
+
+Chaperone semantics, elaboration gap, and tests. Split from typeassert-structural.
+
 - [ ] Use chaperone semantics for record proxies. Strickland et al. (2012). (`src/eval.rs`) [Minor, computer-scientist]
 - [ ] Close elaboration gap — evaluator must enforce structural types for eval-only mode soundness. (`src/typecheck.rs:503-523`, `src/eval.rs:117-157`) [Major, computer-scientist]
 - [ ] Add tests for each validation rule and proxy/guard lifecycle
@@ -186,7 +205,6 @@ Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed w
 - [ ] MAX_DEPTH check on `stack.len()` (policy, not safety)
 - [ ] Static constraints: duplicate keys, variadic rules
 - [ ] Error messages with precise context ("expected value after `:`", "unclosed bracket at line 5")
-- [ ] Document type alias entries returning empty dict at runtime — add comment explaining compile-time-only behavior (`src/eval.rs:182-185`) [Minor, integration-verifier]
 
 ### parser-integration: Integration
 
@@ -436,8 +454,8 @@ Findings from formal audit of DESIGN.md theoretical claims (2026-04-21). Covers 
 ### Code fixes
 
 - [ ] Fix variadic parameter typing as closed empty record — `...args` typed as `Record(IndexMap::new(), RowRest::Closed)` (empty closed record); should be `RowRest::Open` or `Type::Any` to indicate arbitrary fields accepted. One-line fix. (`src/typecheck.rs:469-473`) [Major, computer-scientist]
-- [ ] Fix `check_call` CALL-POLY using `instantiate()` with hardcoded level 0 — `instantiate(&func_ty, &mut state.name_counter)` at typecheck.rs:524 creates fresh vars at level 0 and does NOT register them in `state.levels`. When these level-0 vars unify with argument type vars at higher levels, level lowering pulls those vars to 0, preventing generalization. Concrete failure: `[f: [fn [x@a] $x]  g: [fn [y@a] $y]  pair: [call $f $g]]` — instantiated `_t3@0` unifies with `Fn(a@1 -> a@1)`, lowering `state.levels["a"]` to 0, blocking generalization of both `f` and `g`. Fix: replace `instantiate()` call with `instantiate_scheme()`-equivalent that creates vars at `state.level` and registers in `state.levels`. Kiselyov (2013) requires all fresh vars to participate in the levels discipline. (`src/typecheck.rs:524`) [Critical, computer-scientist C40]
-- [ ] Fix Any-complex-type level zeroing gap — `unify(Any, Fn(TypeVar("b", 3) -> Int))` matches the catch-all `(Type::Any, _) => Ok(())` arm without zeroing `b`'s level. Only bare `TypeVar`-to-`Any` triggers level zeroing. Vars inside complex types unified with `Any` retain their original level and may be over-generalized. Fix: add recursive level zeroing in the `(Type::Any, _)` and `(_, Type::Any)` arms — walk the non-Any side and zero all contained type/row vars. (`src/types.rs:356`) [Major, computer-scientist C40]
+- [x] Fix `check_call` CALL-POLY using `instantiate()` with hardcoded level 0 — fixed in let-gen-soundness sprint: `instantiate_at_level()` replaces `instantiate()` at typecheck.rs:525, creating fresh vars at `state.level` and registering in `state.levels`. Kiselyov (2013) sound_eager satisfied. (`src/typecheck.rs:525`, `src/types.rs:503-518`) [Critical, computer-scientist C40, fixed C44]
+- [ ] Fix Any-complex-type level zeroing gap — `unify(Any, Fn(TypeVar("b", 3) -> Int))` matches the catch-all `(Type::Any, _) => Ok(())` arm without zeroing `b`'s level. Only bare `TypeVar`-to-`Any` triggers level zeroing. Vars inside complex types unified with `Any` retain their original level and may be over-generalized. With let-generalization now active, this can produce incorrect type schemes: a function parameter annotated `@a` passed to an Any-typed builtin will not have `a`'s level zeroed, allowing spurious generalization. Fix: add recursive level zeroing in the `(Type::Any, _)` and `(_, Type::Any)` arms — walk the non-Any side and zero all contained type/row vars via `collect_type_vars`. (`src/types.rs:356`) [Major, computer-scientist C40, severity reaffirmed C44]
 - [ ] Fix `Substitution::apply_inner` missing visited-set check for RowVar resolution — TypeVar case (types.rs:258-260) adds the var name to `visited` before recursive resolution for cycle detection; RowVar case (types.rs:272-286) does not. A cyclic substitution `r -> Record({}, RowVar("r"))` would hit `MAX_APPLY_DEPTH` (256 recursive calls) rather than being caught by the visited set. Currently unexploitable because row var binding isn't implemented, but becomes a latent bug when row-unification lands. Fix: add `visited.insert(name.clone())` / `visited.remove(name)` around the RowVar resolution path. (`src/types.rs:272-286`) [Minor, computer-scientist C40]
 - [ ] Fix `check_call` zero-arity CALL-POLY returning original `ret` not `inst_ret` — line 538 returns `*ret.clone()` using the pre-instantiation return type, discarding the instantiated `inst_ret`. For zero-arity functions with type vars in return position, the original type var escapes unresolved. Fix: return `*inst_ret.clone()` at line 538 (or restructure to always apply subst to inst_ret). (`src/typecheck.rs:538`) [Minor, computer-scientist C40]
 - [ ] Fix doc/06-type-inference.md false claim about per-entry freshening in Pass 3 — line 497 states "Within a single letrec group during Pass 3, each entry's annotation-derived variables are instantiated independently, preventing collision." This is false: `resolve_type_name` creates `TypeVar("a", L)` for every `@a` annotation across all entries within the same letrec group, sharing the name in `state.levels`. Per-entry freshening only occurs after Pass 4 generalization + subsequent `instantiate_scheme`. This shared naming interacts with the `instantiate()` level-0 bug above to cause incorrect level lowering. Fix: correct the doc paragraph to describe the actual behavior. (`doc/06-type-inference.md:497`) [Minor, computer-scientist C40]
@@ -458,6 +476,8 @@ Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall
 
 ### stdlib-convenience: Convenience Functions
 
+Aggregate, membership, and collection utilities. Split into stdlib-convenience-b for remaining items.
+
 - [ ] `sum`, `min`, `max`, `count` — aggregate functions (one-liners over fold)
 - [ ] `contains?` / `elem?` — membership test
 - [ ] `uniq` / `unique` — deduplicate collection
@@ -466,6 +486,11 @@ Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall
 - [ ] `map-indexed` / `map-keys` — indexed mapping and key transformation (Jsonnet)
 - [ ] `sort-on` — sort by key-extraction function instead of comparator (Jsonnet + Nix)
 - [ ] `flip`, `abs`, `sign`, `clamp` — small composable primitives (Nix + Jsonnet; `const` moved to stdlib-pre-seq)
+
+### stdlib-convenience-b: Convenience Functions (Part 2)
+
+Collection shape transforms and predicate variants. Split from stdlib-convenience.
+
 - [ ] `unzip` — inverse of zip, split list of pairs into pair of lists [Nit, stdlib-author C31]
 - [ ] `transpose` — flip rows/columns of 2D structure [Nit, stdlib-author C31]
 - [ ] `flatten-all` or depth parameter for `flatten` — current `flatten` only goes one level deep; add recursive variant or optional depth param [Nit, stdlib-author C31]
@@ -663,42 +688,70 @@ New test coverage items from test-crafter C43 review.
 - [ ] Add note to `test_deep_materialize_preserves_seq_sharing` explaining intentionally invalid Seq tail — test uses `Value::Int(99)` as a Seq tail which is semantically invalid; add comment so readers don't conclude `Value::Int` is a valid tail type. (`src/eval.rs:4471-4476`) [Minor, test-crafter C43]
 - [ ] Add `test_instantiate_at_level_registers_vars_in_levels` unit test — `instantiate_at_level()` is production code with no direct unit test; only tested indirectly via `check_call()`. Create state at level 2, instantiate `Fn(TypeVar("a", 0) → TypeVar("a", 0))`, assert fresh var exists in `state.levels` with level 2. (`src/types.rs:503-518`) [Minor, test-crafter C43 panel]
 - [ ] Fix `test_deep_materialize_preserves_cross_structure_sharing` missing value assertion — after `Rc::ptr_eq` check at line 4537, also verify the RC holds the right value: `assert_eq!(materialize(&nested_shared, None, &test_ctx(), 0).unwrap(), Value::String("shared".into()))`. Mirrors the value assertion in the dict sharing test. (`src/eval.rs:4537-4540`) [Nit, test-crafter C43]
+
+### test-corpus-d: Test Coverage Gaps (C44)
+
+New test coverage items from C44 specialist review (test-crafter and integration-verifier).
+
+- [ ] Add ErrorKind/error code validation to corpus error test runner — corpus error tests only validate `ERROR` substring at `tests/corpus_tests.rs:324`, making span regressions and wrong-error-code bugs invisible. Extend runner to support `=== ERROR [E0NN]:` format that validates both error code and substring. (`tests/corpus_tests.rs:324`, `tests/corpus/eval/errors/*.llt-eval`) [Critical, test-crafter C44]
+- [ ] Add unit tests for all 26 `ErrorKind` variants — cover constructor, `Display` output, error code (`E001`-`E099`), `is_cacheable()`, `is_catchable()` for each variant. Currently only 7/26 and 6/26 are tested for the predicates; Display and constructor are untested for many variants. (`src/error.rs:33-443`) [Critical, test-crafter C44]
+- [ ] Enforce `===` delimiter in corpus test parser — README specifies `===` as test delimiter but test runner may silently accept `---` (valid LLT document separator); add validation to reject `---` as a test boundary marker. (`tests/corpus_tests.rs`, `tests/corpus/README.md`) [Critical, test-crafter C44]
+- [ ] Add dual-dispatch test matrix for 6 builtins — `$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join` each need Dict-path and Seq-path corpus tests plus at least one error case; currently have ~6 total instead of 36. (`tests/corpus/eval/builtins/`) [Major, test-crafter C44]
+- [ ] Add integration tests for typecheck→eval interaction — test that type errors remain advisory and eval proceeds; test `TypeAssert` with `default:` fallback behavior end-to-end. (`src/lib.rs` integration tests) [Minor, integration-verifier C44]
 - [ ] Add `typecheck.rs` `infer()` helper note that desugaring is NOT applied — future contributors writing typecheck tests using `$_.something` will silently test the wrong AST without this clarification. (`src/typecheck.rs:931-937`) [Nit, test-crafter C43]
 
-### test-critical: Critical Test Coverage (Backlog)
+### test-critical-a: Critical Test Coverage (Backlog, Part A)
+
+Highest-priority: Critical and Major severity test gaps.
 
 - [x] Pre-write `#[ignore]` unit tests for let-gen-inference algorithms — done: let-gen-inference sprint wrote full tests directly (no #[ignore] stubs needed). `src/types.rs:2340-2490` has 13 new tests covering all algorithm rules. [Critical, test-crafter C39]
-- [ ] Add corpus test for `$_` + let-generalization interaction — desugared `[fn [_] expr]` gets unannotated param → monomorphic `Fn(Any → Any)` under let-gen, never `∀a. Fn(a → a)`. Add `tests/corpus/eval/underscore_typecheck_monomorphic.llt-eval` verifying `[call $map $_.age $users]` evaluates correctly and desugared lambda is not polymorphically generalized. (`tests/corpus/eval/`) [Minor, test-crafter C41]
-- [ ] Add `TypeVar`/`RowVar` PartialEq level-blindness test in unification context — tests added in let-gen-types sprint verify level-ignored equality in isolation but not whether the `[U-REFL]` fast path `if a == b { return Ok(()) }` is safe when same-name vars exist at different levels in a substitution; add test verifying this does not cause incorrect generalization. (`src/types.rs:339`) [Major, test-crafter C39]
 - [ ] PendingBuiltin state transition unit tests — verify Unevaluated→PendingBuiltin→Materialized lifecycle, error recovery, cycle detection in isolation (`src/value.rs`, `src/eval.rs`) [Critical, test-crafter]
 - [ ] Add error corpus tests with span assertions — current tests check message content only, not definition_span, materialization_span, or stack frame accuracy (`tests/corpus/eval/errors/`) [Critical, test-crafter + span-integrity-checker]
 - [ ] Add selective materialization unit tests — use mock/panic functions to prove unused branches stay unevaluated (`src/eval.rs`) [Critical, test-crafter]
+- [ ] Add formatter error path tests — test `format_source()` returning `Err(LexError)` for unterminated strings, invalid escapes, bare `$`. Zero tests exist for error paths; all 48 formatter tests test successful formatting only. (`src/formatter.rs`) [Critical, test-crafter]
+- [ ] Add sequence constructor error path corpus tests — `range_start_overflow.txt`, `iterate_non_function.txt`, `unfold_invalid_return.txt`, `cycle_empty.txt` (`tests/corpus/eval/errors/`) [Critical, test-crafter]
+- [ ] Add laziness proof tests for map/filter — `map_preserves_thunks.txt`, `filter_selective_materialization.txt` proving unused values stay unevaluated (`tests/corpus/eval/laziness/`) [Critical, test-crafter]
 - [ ] Expand `tests/corpus/eval/laziness/` with more negative tests proving unused expressions are NOT evaluated (current: 9 tests, target: 15+)
+
+### test-critical-b: Critical Test Coverage (Backlog, Part B)
+
+Major and lower severity test gaps split from test-critical-a.
+
+- [ ] Add `TypeVar`/`RowVar` PartialEq level-blindness test in unification context — tests added in let-gen-types sprint verify level-ignored equality in isolation but not whether the `[U-REFL]` fast path `if a == b { return Ok(()) }` is safe when same-name vars exist at different levels in a substitution; add test verifying this does not cause incorrect generalization. (`src/types.rs:339`) [Major, test-crafter C39]
 - [ ] Add builtins.rs unit tests for additional edge cases — NaN, overflow, Unicode, cycle detection (337 tests exist, expand for special values) (`src/builtins.rs`) [Major, test-crafter]
 - [ ] Add typecheck corpus tests (currently zero; Nickel has 90+ granular typecheck test files)
 - [ ] Add `deep_materialize` corpus tests through the public API
 - [ ] Materialization behavior corpus tests proving stdlib laziness categories (test-crafter review)
 - [ ] Add `test_type_of_seq()` unit test verifying `builtin_type_of` returns `"Seq"` for `Value::Seq` — all other Value variants have type-of tests but Seq is missing (`src/builtins.rs`) [Major, integration-verifier]
-- [ ] Add sequence constructor error path corpus tests — `range_start_overflow.txt`, `iterate_non_function.txt`, `unfold_invalid_return.txt`, `cycle_empty.txt` (`tests/corpus/eval/errors/`) [Critical, test-crafter]
-- [ ] Add laziness proof tests for map/filter — `map_preserves_thunks.txt`, `filter_selective_materialization.txt` proving unused values stay unevaluated (`tests/corpus/eval/laziness/`) [Critical, test-crafter]
 - [ ] Add laziness materialization ORDER tests — verify left-to-right argument evaluation in builtins, predicate-before-body ordering in conditionals, dict entry insertion order preservation; current tests prove "unused = not evaluated" but not evaluation order (`tests/corpus/eval/laziness/`) [Major, test-crafter C31]
-- [ ] Add parser-level unit tests for `$_` exclusion positions — verify parsed AST shows `$_` as VarRef (not desugared) in bracket key `$data[$_]`, range bounds `$data[$_..5]`, dict key `[$_: value]` positions (`src/parser.rs`) [Minor, test-crafter C31]
-- [ ] Add Failed state same-span deduplication test — access Failed thunk twice with same span, verify no duplicate stack frames (`src/eval.rs`) [Minor, test-crafter]
-- [ ] Add Failed state None→Some→Some edge case test — first access with None, then Some(span1), then Some(span2); verifies is_none() path (`src/eval.rs`) [Minor, test-crafter]
-- [ ] Add doc comment to Failed state handler explaining dual-span model conditional update strategy (`src/eval.rs:873-894`) [Nit, span-integrity-checker + eval-engine]
-- [ ] Add formatter error path tests — test `format_source()` returning `Err(LexError)` for unterminated strings, invalid escapes, bare `$`. Zero tests exist for error paths; all 48 formatter tests test successful formatting only. (`src/formatter.rs`) [Critical, test-crafter]
 - [ ] Add Seq deep_materialize cycle corpus test — end-to-end corpus test for `--eval` forcing cyclic Seq structure (unit test exists at `src/eval.rs`, no corpus test) (`tests/corpus/eval/`) [Major, test-crafter + eval-engine]
+### test-critical-c: Critical Test Coverage (Backlog, Part C)
+
+Error reporting, include caching, and desugar test gaps split from test-critical-b.
+
 - [ ] Add error corpus tests for drop/reduce/join type/arity mismatches — `drop_wrong_type.txt`, `reduce_wrong_type.txt`, `join_wrong_type.txt` (`tests/corpus/eval/errors/`) [Major, test-crafter]
 - [ ] Add unit tests for builtin_drop, builtin_reduce, builtin_join (PendingCall chain construction, thunk state, span propagation) (`src/builtins.rs`) [Major, test-crafter]
 - [ ] Add include caching corpus tests — same file included twice returns identical result, nested includes share cache, verify cache interaction with cycle detection (`tests/corpus/eval/builtins/`) [Major, test-crafter]
+- [ ] Add corpus test for `$_` + let-generalization interaction — desugared `[fn [_] expr]` gets unannotated param → monomorphic `Fn(Any → Any)` under let-gen, never `∀a. Fn(a → a)`. Add `tests/corpus/eval/underscore_typecheck_monomorphic.llt-eval` verifying `[call $map $_.age $users]` evaluates correctly and desugared lambda is not polymorphically generalized. (`tests/corpus/eval/`) [Minor, test-crafter C41]
+- [ ] Add parser-level unit tests for `$_` exclusion positions — verify parsed AST shows `$_` as VarRef (not desugared) in bracket key `$data[$_]`, range bounds `$data[$_..5]`, dict key `[$_: value]` positions (`src/parser.rs`) [Minor, test-crafter C31]
+- [ ] Add Failed state same-span deduplication test — access Failed thunk twice with same span, verify no duplicate stack frames (`src/eval.rs`) [Minor, test-crafter]
+- [ ] Add Failed state None→Some→Some edge case test — first access with None, then Some(span1), then Some(span2); verifies is_none() path (`src/eval.rs`) [Minor, test-crafter]
 - [ ] Add concat error corpus tests — invalid input types, type mismatches (`tests/corpus/eval/errors/`) [Minor, span-integrity-checker]
+
+### test-critical-d: Critical Test Coverage (Backlog, Part D)
+
+Code quality and nit-level test gaps split from test-critical-b.
+
 - [x] Add 4 missing concat unit tests — done: test_builtin_concat_seq, test_builtin_concat_seq_empty_xs, test_builtin_concat_seq_empty_ys, test_builtin_concat_dict at `src/builtins.rs:10117-10295`. [Critical, test-crafter]
 - [ ] Fix concat_large_seq corpus test label — comment claims it verifies "lazy evaluation" but actually tests collect's depth behavior (300 elements << 1M limit). Relabel to clarify it tests depth, not MAX_COLLECT_SIZE boundary. (`tests/corpus/eval/builtins/concat_large_seq.llt-eval:2-4`) [Minor, test-crafter]
+- [ ] Add doc comment to Failed state handler explaining dual-span model conditional update strategy (`src/eval.rs:873-894`) [Nit, span-integrity-checker + eval-engine]
 - [ ] Migrate eval.rs:140-148 TypeAssertFailed to use `EvalError::type_assert_failed()` constructor — missed during migrate-d Task 1 migration sweep. Still uses verbose `Box::new(EvalError { kind: ErrorKind::TypeAssertFailed {...}, ... })`. (`src/eval.rs:140-148`) [Nit, computer-scientist panel]
 - [ ] Migrate builtin_range ArityBound::Range to named constructor — uses direct struct literal for `ArityBound::Range(1, 2)` instead of named constructor. Add `arity_mismatch_range()` and `arity_mismatch_at_most()` constructors to EvalError. (`src/builtins.rs:1295-1304`, `src/error.rs`) [Nit, sprint-reviewer + computer-scientist panel]
 - [ ] Expand is_cacheable/is_catchable tests to cover all 26 ErrorKind variants — currently test 7/26 and 6/26 respectively. Sufficient logically but inconsistent with the all-variants pattern used by Display and PartialEq tests. (`src/error.rs`) [Nit, computer-scientist panel]
 
 ### test-additional: Additional Test Coverage
+
+Coverage gaps: core stdlib correctness, error corpus, depth/keyword/constraint tests. Split from 22-item backlog.
 
 - [ ] Fix `any?`/`all?` using `$length` for empty check — materializes entire collection (O(n)) just to check emptiness; breaks on infinite Seq (hangs). Replace with direct `$head`-based check or `$reduce` without empty guard. Also prevents Seq support since `$length` requires finite collection. (`stdlib/prelude.llt:60-78`) [Major, stdlib-author + computer-scientist]
 - [ ] Add stdlib corpus tests for `from-entries`, `any?`, `all?` — functions added in Phase 4b½ lack dedicated corpus verification; short-circuit semantics for `any?`/`all?` are critical for correctness (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
@@ -708,6 +761,11 @@ New test coverage items from test-crafter C43 review.
 - [ ] Add static constraint negative tests (variadic-not-last, rest-entry position, annotation context)
 - [ ] Add stack frame correctness unit tests — verify chain with correct labels and spans (`src/eval.rs:825+`) [Minor, span-integrity-checker]
 - [ ] Add type system literal widening tests — widening chain, nested computed keys, polymorphic call with literals (`src/typecheck.rs:83`) [Minor, test-crafter]
+
+### test-additional-b: Additional Test Coverage (Part 2)
+
+Grammar, lambda, row polymorphism, and delimiter edge cases. Split from test-additional.
+
 - [ ] Add SPEC.md grammar coverage tests — parser_mechanisms tests for 100% grammar rule coverage (`SPEC.md`, `tests/corpus/valid/`) [Minor, test-crafter]
 - [ ] Add `$_` desugared lambda type inference tests — verify inferred types of desugared expressions (e.g., `$_.name` → `Fn(Any → Any)`); current tests only validate runtime behavior, not type inference (`src/typecheck.rs`) [Minor, test-crafter C31]
 - [ ] Add `$_` implicit lambda edge case tests — nested `$_`, shadowing when `_` already bound, desugaring in dict entries vs call args (`src/desugar.rs`) [Minor, test-crafter]
@@ -716,6 +774,11 @@ New test coverage items from test-crafter C43 review.
 - [ ] Add RowRest/RowTail terminology clarification to doc/07-type-extensions.md — current implementation uses `RowRest` (src/types.rs:14); row-unification sprint will migrate to kinded `RowTail` per Rémy §Row-Variable Unification. Prevents reader confusion between current and target representations. (`doc/07-type-extensions.md:288`) [Minor, type-theorist C38]
 - [ ] Add === delimiter edge case tests — `delimiter_in_string.txt`, `delimiter_partial.txt`, `delimiter_triple_docs.txt` (`tests/corpus/valid/edge_cases/`) [Major, test-crafter]
 - [ ] Add CRLF line ending corpus test — create `.txt` with actual `\r\n` bytes (`tests/corpus/valid/edge_cases/crlf_line_endings.txt`) [Minor, test-crafter]
+
+### test-additional-c: Additional Test Coverage (Part 3)
+
+Identifier, annotation, variadic, and type error corpus tests. Split from test-additional.
+
 - [ ] Add Unicode identifier corpus test — `[$café: espresso]` and other Unicode var names (`tests/corpus/valid/literals/unicode_identifiers.txt`) [Minor, test-crafter]
 - [ ] Add annotated bare word corpus tests — `[x@Number: 42]`, `[fn@Int [] 42]` (`tests/corpus/valid/annotations/`) [Minor, test-crafter]
 - [ ] Add variadic + named args interaction test — positional + variadic + named args together (`tests/corpus/eval/fn_variadic_plus_named.txt`) [Minor, test-crafter]
@@ -725,6 +788,8 @@ New test coverage items from test-crafter C43 review.
 
 ### test-framework: Test Framework Enhancements
 
+Infrastructure tooling and output quality improvements. Split from 15-item backlog.
+
 - [ ] Extend error test framework: support `=== ERROR: substring` for message validation (test-crafter review)
 - [ ] Generate per-file test functions for clearer failure reports (Nickel `test_resources!` pattern)
 - [ ] Add snapshot testing for error messages using `insta` crate — after error format stabilizes (test-crafter review)
@@ -733,6 +798,11 @@ New test coverage items from test-crafter C43 review.
 - [ ] Add cross-feature interaction tests (`tests/corpus/eval/cross_feature/`)
 - [ ] Consider `assert_ast_eq!` macro for critical parser tests instead of Display comparison (`src/parser.rs:131`) [Minor, test-crafter]
 - [ ] Rename builtin tests to `test_*` convention or document current convention (`src/builtins.rs:2298-4700`) [Nit, test-crafter]
+
+### test-framework-b: Test Framework Enhancements (Part 2)
+
+Corpus format documentation and doc-level test mandates. Split from test-framework.
+
 - [ ] Standardize error corpus test format and document in README (`tests/corpus/`) [Nit, test-crafter]
 - [ ] Create `tests/corpus/README.md` documenting test format — specify `===` delimiter usage (separates input from expected output, must be on its own line), expected output format for success tests (JSON result) vs error tests (error message substring), multi-expression behavior, clarify that `===` is not language-reserved. (`tests/corpus/`) [Minor, test-crafter]
 - [ ] Add testing requirements section to doc/02-syntax.md — static constraints section (lines 154-221) describes 6 parser-enforced rules but lacks test mandate; add "Testing Requirements" subsection requiring each constraint has at least one `tests/corpus/invalid/syntax_errors/` test showing parser rejection. (`doc/02-syntax.md:154-221`) [Major, test-crafter]
@@ -753,6 +823,8 @@ New test coverage items from test-crafter C43 review.
 
 ### test-tooling: Tooling Integration Tests & Documentation
 
+Integration tests and public API improvements. Split into test-tooling-b for documentation items.
+
 - [ ] Integration tests for REPL/LSP — multi-line input, hover on nested expressions, multiple errors (test-crafter review)
 - [ ] Add LSP corpus tests (`tests/lsp_corpus/`) with `.llt` + `.expected.json` per position
 - [ ] EvalContext API documentation — add docstrings to `eval_source()`, `eval_file()`, `eval_file_with_input()` documenting EvalContext requirements and `$include` behavior (`src/lib.rs`) [Major, integration-verifier]
@@ -761,6 +833,11 @@ New test coverage items from test-crafter C43 review.
 - [ ] Fix test helpers using `create_root_env()` instead of `create_stdlib_env()` — tests skip stdlib loading, so they can't test stdlib-dependent behavior accurately (`src/eval.rs`, `src/builtins.rs`) [Minor, integration-verifier C35]
 - [ ] Document circular builtins⇄eval dependency — add safety comment at `src/builtins.rs:28` explaining the value-level vs import-level dependency [Minor, integration-verifier]
 - [ ] Cross-layer contracts documentation — add §Implementation Architecture to DESIGN.md documenting pipeline phases (parse→typecheck→eval→serialize), cross-layer contracts (BuiltinFn signature, serializer requirements, thread-local state discipline), Expr→eval exhaustiveness invariant, Value→serializer coverage, type checker advisory role, environment chain construction order [Major, integration-verifier]
+
+### test-tooling-b: Tooling Documentation (Part 2)
+
+Minor documentation additions. Split from test-tooling.
+
 - [ ] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference — add test for display_string with NaN/Inf (`src/lib.rs:112-125, 176-211`) [Minor, integration-verifier]
 - [ ] Add lib.rs EvalContext doc comment mentioning include cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs`) [Minor, integration-verifier]
 - [ ] Add DESIGN.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
@@ -889,6 +966,8 @@ Found by computer-scientist codebase review (2026-04-22).
 
 Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 
+- [ ] Document type alias entries returning empty dict at runtime — add comment explaining compile-time-only behavior (`src/eval.rs:182-185`) [Minor, integration-verifier]
+
 - [ ] Fix `typecheck_document` redundant double match on `Expr::Dict` — outer `if matches!(&expr.node, Expr::Dict(_))` immediately followed by inner `if let Expr::Dict(entries) = &expr.node`. Collapse to single `if let`. (`src/typecheck.rs:84-85`) [Nit, integration-verifier C40]
 - [ ] Fix `eval_source()` using relative `PathBuf::from(".")` as EvalContext base_dir — CLI correctly canonicalizes to absolute path; eval_source resolves `$include` relative to test runner's working directory. Either use `current_dir()` or add code comment noting eval_source doesn't support `$include`. (`src/lib.rs:84`) [Nit, integration-verifier C40]
 - [ ] Fix `EvalError::Display` mat_span suppression not implemented — `doc/10-errors.md:681` says "materialization line is omitted when it equals the definition site or is absent" but `src/error.rs:774` always prints `(materialized at X)` whenever `materialization_span` is `Some` with no equality check. Add guard: `if mat_span != &self.definition_span`. (`src/error.rs:774`, `doc/10-errors.md:681`) [Minor, span-integrity-checker C41]
@@ -939,6 +1018,13 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Fix `doc/06-type-inference.md:525` stale `instantiate()` table entry — table row describes `instantiate()` as "for CALL-POLY call-site freshening" but CALL-POLY now uses `instantiate_at_level()`; old `instantiate()` is `#[cfg(test)]`-only. Update table to show `instantiate_at_level()` with level-registration description. (`doc/06-type-inference.md:525`) [Nit, grammar-architect/type-theorist/integration-verifier/computer-scientist C43 panel]
 - [ ] Fix `deep_materialize_thunk` stale cache entry on error — when `materialize()` at `src/eval.rs:1274` fails, the `?` operator returns early leaving a `None` sentinel in the cache. Subsequent encounters with the same thunk hit the `Some(None)` branch and return `Rc::clone(thunk)` as if it were a cycle, silently masking the original error. Fix: clean up sentinel on error via `cache.remove(&thunk_ptr)` in the error path. (`src/eval.rs:1273-1274`) [Major, eval-engine C43 panel]
 - [ ] Add note to `test_deep_materialize_cycle_sentinel` that pre-materialized thunk is intentional — real cycles are encountered after `materialize()` has already transitioned the thunk; using `Thunk::new_materialized` isolates cache-lookup logic from evaluation. (`src/eval.rs:4552`) [Nit, test-crafter C43 panel]
+- [ ] Document `doc/11-stdlib.md` `$filter` Dict→Seq asymmetry — `$filter` on a Dict returns a Seq (not a Dict), which is asymmetric with `$map` (Dict→Dict). Add note "returns Seq when input is Dict" to the stdlib reference table entry at `doc/11-stdlib.md:96-99` and cross-reference from the `$map` entry. [Minor, integration-verifier C44]
+- [ ] Confirm `INCLUDE_CTX` thread-local fully removed in `doc/16-architecture.md` — lines 33-38 say the EvalContext "replaces thread-local pattern" but do not confirm deletion. Add explicit statement that `INCLUDE_CTX` thread-local was removed in evalcontext-thread sprint. (`doc/16-architecture.md:33-38`) [Minor, integration-verifier C44]
+- [ ] Audit `typecheck.rs` `infer_dict` Pass 4 to confirm type aliases excluded from Record fields — verify the code matches `doc/05-type-annotations.md:206-208` claim that type aliases are excluded from Record field types. [Minor, integration-verifier C44]
+- [ ] Add fail-fast comment to `create_stdlib_env` — add inline comment explaining that stdlib load error propagation is intentional (not a recovery path): stdlib failure is fatal, not something callers should handle. [Nit, integration-verifier C44]
+- [ ] Add doc comment to `impl PartialEq for Value` in `src/value.rs` — reference §Equality and Comparison formal spec and warn about Int/Float divergence from `$=` (Value::PartialEq uses structural equality; `$=` promotes Int→Float for cross-type comparison). (`src/value.rs`) [Nit, integration-verifier C44]
+- [ ] Document which `impl` is normative for error messages — `impl Display for Expr` at `src/ast.rs:182-300` and `src/formatter.rs` both produce tinct source representations; clarify which is authoritative for error messages (Display) vs pretty-printing (formatter), and add cross-reference comment in each. (`src/ast.rs:182`, `src/formatter.rs`) [Nit, integration-verifier C44]
+- [ ] Document BTreeSet allocations in `doc/08-evaluation.md` §Allocation Strategy — note the 3 BTreeSet allocation sites in `instantiate_scheme`, `instantiate_at_level`, and `collect_type_vars` and their planned elimination (Vec accumulator, inline lowering). (`doc/08-evaluation.md`) [Nit, performance-expert C44]
 
 ## Future Features
 

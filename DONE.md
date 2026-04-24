@@ -804,3 +804,16 @@ Fix CALL-POLY level poisoning (Kiselyov 2013 soundness), stale eval_file doc com
 - [x] Fix `doc/06-type-inference.md:184` false claim about Type::Function carrying parameter names [Nit, type-theorist C43]
 - [x] Add `test_deep_materialize_cycle_sentinel` unit test — exercises `Some(None)` blackholing branch via pre-populated cache (`src/eval.rs`) [Critical, test-crafter C43]
 - [x] Add `test_deep_materialize_preserves_sharing_through_eval` — sharing test using `Thunk::new_unevaluated` to exercise production cache-population path (`src/eval.rs`) [Major, test-crafter C43]
+
+### bidirectional-typing: Core check_expr Framework
+
+Implement bidirectional type checking with synthesis (⇒) and checking (⇐) modes. Pierce & Turner (2000), Dunfield & Krishnaswami (2021).
+
+- [x] Implement `check_expr(expr, expected, env, state, type_map) -> Result<(), Vec<TypeError>>` (`src/typecheck.rs`)
+- [x] Apply `check_expr` at CALL-MONO argument positions (expected type fully concrete) (`src/typecheck.rs`)
+- [x] Apply `check_expr` for function body with return annotation (`src/typecheck.rs`)
+- [x] Apply `check_expr` for `TypeAssert` inner expression (`src/typecheck.rs`)
+- [x] Keep `unify` + U-SUBSUME for CALL-POLY argument positions (type variables present) (`src/typecheck.rs`)
+- [x] Fix function variance inconsistency between `unify` and `is_subtype` — `check_expr` applies [SUB] at leaves, resolving the dual-path divergence (`src/types.rs:291-315, 67-82`) [Major, computer-scientist]
+- [x] Implement lambda checking mode — `infer_fn` checks against expected function type. Pierce & Turner (2000), Dunfield & Krishnaswami (2021). (`src/typecheck.rs:449`) [Major, computer-scientist]
+- [x] Implement checking mode propagation to call arguments — Pierce-Turner S-App rule. (`src/typecheck.rs:389-446`) [Major, computer-scientist]
