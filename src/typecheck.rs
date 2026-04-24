@@ -1196,7 +1196,13 @@ fn resolve_type_dict(
     for entry in entries {
         if let Expr::Rest(name) = &entry.node.value.node {
             rest = match name {
-                None => RowTail::RowVar("_open".to_string(), 0),
+                None => {
+                    // Anonymous open record: generate a fresh row variable name
+                    let fresh_name = format!("_open{}", state.name_counter);
+                    state.name_counter += 1;
+                    state.levels.insert(fresh_name.clone(), state.level);
+                    RowTail::RowVar(fresh_name, state.level)
+                }
                 Some(n) => {
                     // Row variables in type expressions also need fresh names per function
                     if let Some(ref mut mapping) = ann_mapping {
@@ -2298,11 +2304,11 @@ mod tests {
         match ty {
             Type::Record(Row {
                 fields,
-                tail: RowTail::RowVar(name, 0),
-            }) if name == "_open" => {
+                tail: RowTail::RowVar(name, _),
+            }) if name.starts_with("_open") => {
                 assert_eq!(fields.get("name"), Some(&Type::Str));
             }
-            other => panic!("expected open Record, got {other}"),
+            other => panic!("expected open Record with fresh row var, got {other}"),
         }
     }
 
@@ -2336,6 +2342,62 @@ mod tests {
                 ..
             }) => {}
             other => panic!("expected closed Record, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_anonymous_open_record_annotations_get_fresh_vars() {
+        // Each anonymous open record annotation should get a distinct row variable
+        // Use inline open record annotations in function parameters
+        let code = r#"
+            [f: [fn [x@[a: Int ...]  y@[b: String ...]]
+                 [x: $x  y: $y]]]
+        "#;
+        let result = check(code);
+        assert!(
+            result.is_ok(),
+            "type check should succeed with distinct row vars: {:?}",
+            result
+        );
+
+        // Verify the inferred type has distinct row variables for x and y
+        let ty = result_field(code, "f");
+        match ty {
+            Type::Function { params, .. } => {
+                // Extract the row variable names from both parameters
+                let (row_var_x, row_var_y) = match (&params[0], &params[1]) {
+                    (
+                        Type::Record(Row {
+                            tail: RowTail::RowVar(name_x, _),
+                            ..
+                        }),
+                        Type::Record(Row {
+                            tail: RowTail::RowVar(name_y, _),
+                            ..
+                        }),
+                    ) => (name_x, name_y),
+                    other => panic!("expected both params to be open records, got {:?}", other),
+                };
+
+                // The row variables should be distinct (different fresh names were generated)
+                assert_ne!(
+                    row_var_x, row_var_y,
+                    "anonymous open record annotations must generate distinct row variables"
+                );
+
+                // Both should start with "_open" prefix
+                assert!(
+                    row_var_x.starts_with("_open"),
+                    "expected row var name to start with _open, got {}",
+                    row_var_x
+                );
+                assert!(
+                    row_var_y.starts_with("_open"),
+                    "expected row var name to start with _open, got {}",
+                    row_var_y
+                );
+            }
+            other => panic!("expected function type, got {other}"),
         }
     }
 
