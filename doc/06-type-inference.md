@@ -181,7 +181,7 @@ Note: CALL-POLY does NOT use `check_expr` because type variables require binding
 
 Calling a value typed as Any returns Any. Arguments are still synthesized (for type map population and nested error detection) but not checked against parameter types.
 
-Named arguments are checked against parameter types; `Type::Function` carries parameter names for this purpose — see [Type System Extensions](07-type-extensions.md) §Completeness.
+Named arguments are synthesized but not checked against parameter types — `Type::Function` has only a `Vec<Type>` for parameters with no name field. Named argument checking against parameter types is unimplemented; see [Type System Extensions](07-type-extensions.md) §Completeness for the planned extension.
 
 **Access chains:**
 
@@ -528,7 +528,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `unify()` U-VAR | Bind + symmetric level lowering |
 | `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
 | `InferState` | `{ name_counter: u32, level: u32, levels: HashMap<String, u32> }` |
-| `collect_type_vars()` | Returns `BTreeSet<(String, u32)>` (name + level) |
+| `collect_type_vars()` | `fn(&self, &mut BTreeSet<String>)` — out-param, no level |
 | `Type::Display` | Shows `TypeVar` name only (level hidden) |
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).

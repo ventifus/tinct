@@ -478,6 +478,7 @@ pub fn unify(
     }
 }
 
+#[cfg(test)]
 pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
     let mut vars = BTreeSet::new();
     ty.collect_type_vars(&mut vars);
@@ -490,6 +491,30 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
     }
 
     (renaming.apply(ty), renaming)
+}
+
+/// Instantiate a type by creating fresh type variables at the current level.
+/// Used for CALL-POLY: when calling a polymorphic function, instantiate its type
+/// at the current level to enable proper generalization (Kiselyov 2013).
+///
+/// Unlike `instantiate()`, this function registers the fresh variables in `state.levels`
+/// so they participate in level-based generalization. Without this, fresh variables
+/// default to level 0 and are permanently excluded from generalization by [U-VAR-LEVEL].
+pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
+    let mut vars = BTreeSet::new();
+    ty.collect_type_vars(&mut vars);
+
+    let mut renaming = Substitution::new();
+    for var in vars {
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter += 1;
+        state.levels.insert(fresh_name.clone(), state.level);
+        renaming
+            .map
+            .insert(var, Type::TypeVar(fresh_name, state.level));
+    }
+
+    renaming.apply(ty)
 }
 
 /// Instantiate a type scheme by creating fresh type variables at the given level.

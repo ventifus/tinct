@@ -792,3 +792,15 @@ Fix deep_materialize Seq→Dict terminal documentation and Launchbury sharing pr
 
 - [x] Document deep_materialize Seq→Dict terminal case — added 2-line comment explaining Seq tail recurses to empty Dict `[]` as terminal value; infinite sequences hit MAX_EVAL_DEPTH (`src/eval.rs:1243-1244`) [Minor, eval-engine]
 - [x] Fix deep_materialize breaking Launchbury sharing — replaced `HashSet<*const Thunk>` with `HashMap<*const Thunk, Option<Rc<Thunk>>>` dual-purpose cache: `None` sentinel = blackholing (cycle detection), `Some(rc)` = sharing cache (return cached result); added `deep_materialize_thunk` helper encapsulating the protocol; three new unit tests validating `Rc::ptr_eq` preservation for dict, seq, and cross-structure sharing (`src/eval.rs:1260-1280`) [Minor, computer-scientist]
+
+### let-gen-soundness: CALL-POLY Level Poisoning Fix
+
+Fix CALL-POLY level poisoning (Kiselyov 2013 soundness), stale eval_file doc comments, type doc accuracy, and deep_materialize test gaps (C43).
+
+- [x] Fix CALL-POLY `instantiate()` level poisoning — added `instantiate_at_level(ty: &Type, state: &mut InferState) -> Type` to `types.rs` creating fresh vars at `state.level` and registering in `state.levels`; replaced `instantiate(&func_ty, &mut state.name_counter)` at `typecheck.rs:525` with `instantiate_at_level(&func_ty, state)`; gated old `instantiate()` with `#[cfg(test)]` (`src/typecheck.rs:525`, `src/types.rs:496-518`) [Major, computer-scientist C43]
+- [x] Fix stale doc comments in `eval_file` and `eval_file_with_input` — replaced Note blocks referencing deleted `set_include_context`/`clear_include_context` with EvalContext::new() guidance (`src/eval.rs:315-316,332-333`) [Major, integration-verifier C43]
+- [x] Fix `doc/05-type-annotations.md:201` "four passes" → "five passes (0–4)" binding to fresh type vars [Minor, type-theorist C43]
+- [x] Fix `doc/06-type-inference.md:531` wrong `collect_type_vars()` signature — corrected to out-param `&mut BTreeSet<String>` [Minor, type-theorist C43]
+- [x] Fix `doc/06-type-inference.md:184` false claim about Type::Function carrying parameter names [Nit, type-theorist C43]
+- [x] Add `test_deep_materialize_cycle_sentinel` unit test — exercises `Some(None)` blackholing branch via pre-populated cache (`src/eval.rs`) [Critical, test-crafter C43]
+- [x] Add `test_deep_materialize_preserves_sharing_through_eval` — sharing test using `Thunk::new_unevaluated` to exercise production cache-population path (`src/eval.rs`) [Major, test-crafter C43]
