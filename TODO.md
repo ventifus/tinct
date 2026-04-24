@@ -59,13 +59,13 @@ CALL-POLY uses level-unaware `instantiate()` at typecheck.rs:525, creating fresh
 
 Replace count-based arity with per-parameter coverage check. Allow named args for any parameter. See DESIGN.md §Call Convention — Formal Specification.
 
-- [ ] Implement C-COVERAGE: per-parameter coverage check replacing `positional.len() < required_count` (`src/eval.rs:520-626`) [Major, eval-engine]
-- [ ] Allow named args for any parameter — remove `get_default(p).is_some()` guard (`src/eval.rs`)
-- [ ] Implement Garrigue default-env separation — `env_d` (definitions) vs `env_c` (call-site) (`src/eval.rs`)
-- [ ] Implement 4 error classes: E-COVERAGE, E-CONFLICT, E-UNKNOWN, E-EXCESS (`src/eval.rs`)
-- [ ] Support named args from dict in `$apply` — integer-keyed → positional, string-keyed → named. Garrigue (1995). (`src/builtins.rs:878-932`) [Minor, eval-engine]
-- [ ] Add tests for each binding constraint and error class
-- [ ] Add tests for interleaved required/optional parameters
+- [x] Implement C-COVERAGE: per-parameter coverage check replacing `positional.len() < required_count` (`src/eval.rs:520-626`) [Major, eval-engine]
+- [x] Allow named args for any parameter — remove `get_default(p).is_some()` guard (`src/eval.rs`)
+- [x] Implement Garrigue default-env separation — `env_d` (definitions) vs `env_c` (call-site) (`src/eval.rs`)
+- [x] Implement 4 error classes: E-COVERAGE, E-CONFLICT, E-UNKNOWN, E-EXCESS (`src/eval.rs`)
+- [x] Support named args from dict in `$apply` — integer-keyed → positional, string-keyed → named. Garrigue (1995). (`src/builtins.rs:878-932`) [Minor, eval-engine]
+- [x] Add tests for each binding constraint and error class
+- [x] Add tests for interleaved required/optional parameters
 
 ## typeassert-structural: TypeAssert Structural Contract Checking
 
@@ -267,6 +267,9 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Fix `deep_materialize` allocating HashMap before checking if value is a primitive — cache `HashMap<*const Thunk, Option<Rc<Thunk>>>` is allocated unconditionally; `deep_materialize_impl` immediately returns for primitive types. Add upfront guard `if !matches!(val, Value::Dict(_) | Value::Seq { .. }) { return Ok(val.clone()); }` before allocation. (`src/eval.rs:1208-1210`) [Minor, performance-expert C46]
 - [ ] Fix `TypeScheme::fmt()` allocating `Vec<String>` for display — `let all_vars: Vec<String> = self.type_vars.iter().chain(self.row_vars.iter()).cloned().collect(); all_vars.join(" ")` allocates and clones all var name strings. Replace with iterative `write!(f, ...)` with separator tracking. (`src/types.rs:217-225`) [Nit, performance-expert C46]
 - [ ] Fix `infer_dict` Pass 3 looking up fresh vars via TypeEnv chain — `dict_env.get(name)` traverses the TypeEnv parent closure on every pass-3 lookup even though all fresh vars were inserted in the same env in Pass 1 (depth 0). Collect `&str → Type` into a local `HashMap` in Pass 1 and look up directly in Pass 3, eliminating chain traversal. (`src/typecheck.rs:446`) [Minor, performance-expert C46]
+- [ ] Remove unreachable `check_call_with_scheme` CALL-MONO branch — `has_type_vars()` guard at `src/typecheck.rs:695` is always true by invariant: the function is only dispatched when `scheme.type_vars` or `scheme.row_vars` is non-empty, and `instantiate_scheme` inserts a fresh TypeVar for every quantified var. Delete the `if !func_ty.has_type_vars()` block; add `debug_assert!(func_ty.has_type_vars())`. Saves one O(type_size) walk per polymorphic call. (`src/typecheck.rs:695`) [Major, performance-expert C47]
+- [ ] Skip `ann_mapping` HashMap allocation for fully unannotated functions — `HashMap` is allocated on every `infer_fn` and `check_expr` lambda entry even for functions with no annotations (the common case); created, threaded through, never written, then dropped. Add early guard: if all params have no annotation and no return annotation, use `&mut None` directly and skip HashMap. Saves ~40 bytes + HashMap init per unannotated function. (`src/typecheck.rs:865,313`) [Minor, performance-expert C47]
+- [ ] Optimize `instantiate_scheme` for single-var schemes — allocates full `Substitution` (IndexMap-backed) even for the most common polymorphic case (one quantified var). For single-var case, perform renaming inline without constructing `Substitution`; or use `SmallVec<[(String, Type); 2]>` inside `Substitution.map`. (`src/types.rs:570`) [Minor, performance-expert C47]
 
 ## iterative-eval: Iterative Evaluator
 
@@ -618,6 +621,17 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Fix doc/11-stdlib.md:173 Strings rationale says "join and words are derived" — `join` is a Rust builtin, not LLT-derived; rationale cell should read "words is derived from str/split + recursion". (`doc/11-stdlib.md:173`) [Minor, stdlib-author C46]
 - [ ] Add `concat` to doc/11-stdlib.md:178 Sequences group cell — lists seq/head/tail/collect/range/... but omits `concat` which is the 45th Rust builtin. (`doc/11-stdlib.md:178`) [Minor, stdlib-author C46]
 
+## eval-lazy-fixes: Evaluation Laziness Correctness Fixes
+
+Evaluation correctness bugs where values are forced prematurely or depth tracking is wrong. Found by eval-engine C47.
+
+- [ ] Fix `TypeAssert` forces materialization inside `eval()` even when result is never used — `Expr::TypeAssert` handler at `src/eval.rs:164-203` is the only `eval()` branch that calls `materialize()` before the result is demanded; `[@Int $expensive-call]` forces `$expensive-call` even if result is discarded. Fix: return `Unevaluated` thunk or `PendingBuiltin`-style deferred check; `default:` annotation path adds complexity. (`src/eval.rs:164-203`) [Major, eval-engine C47]
+- [ ] Fix `filter_dict_step` depth not incremented per recursive step — `builtin_filter_dict_step` stores `depth` not `depth+1` in its `PendingBuiltin` tail; each step re-enters at the same depth. Compare: `filter_seq_step` correctly uses `depth+1`. Fix: change `depth` to `depth+1` at `src/builtins.rs:1974`. (`src/builtins.rs:1974`) [Major, eval-engine C47]
+- [ ] Fix `filter_dict_step` re-materializing `dict_thunk` and `keys_thunk` on every step — both are pre-wrapped as `Materialized` at dispatch time but `materialize()` is called again on each step invocation (lines 1866, 1912). The O(1) fast-path prevents semantic violation but creates a fragile invariant. Consider adding `debug_assert` or passing pre-extracted `IndexMap`. (`src/builtins.rs:1866,1912`) [Minor, eval-engine C47]
+- [ ] Add comment to `eval_call` explaining why function expression is materialized eagerly — line 474 says "Evaluate and materialize" without explaining WHY this is one of the few `materialize()` calls in `eval()`. Fix: add comment "Function resolution is eager by design: $f must be resolvable at dict construction time for letrec scoping to work." (`src/eval.rs:474`) [Minor, eval-engine C47]
+- [ ] Document or fix `deep_materialize_thunk` returning original thunk on cycle instead of `CircularDependency` — `Ok(Rc::clone(thunk))` on `Some(None)` cycle sentinel differs from `materialize()` blackholing which errors. Either document as intentional deviation or propagate error. (`src/eval.rs:1269`) [Minor, eval-engine C47]
+- [ ] Fix `builtin_drop_seq_step` using `unreachable!()` on non-Int `n_remaining` — should use `EvalError::internal()` to surface with span and error code rather than Rust panic. (`src/builtins.rs:2234`) [Nit, eval-engine C47]
+
 ## Test Infrastructure
 
 Improvements to test infrastructure identified by cross-language analysis and test-crafter review (2026-04-19).
@@ -814,6 +828,37 @@ Minor documentation additions. Split from test-tooling.
 - [ ] Add lib.rs EvalContext doc comment mentioning include cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs`) [Minor, integration-verifier]
 - [ ] Add DESIGN.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
 
+## doc-type-polish: Type Inference Documentation Accuracy (C47)
+
+Missing rules, misleading claims, and undocumented behaviors in type inference docs. Found by type-theorist, span-integrity-checker, and computer-scientist C47.
+
+- [ ] Add [CHECK-FN] rule to `doc/06-type-inference.md` — lambda checking mode (check_expr against concrete Fn type) is an undocumented fourth checking position; table at lines 68-74 lists CALL-MONO, return annotations, TypeAssert but omits [CHECK-FN]. Add rule after [FN] rule; add row to checking positions table. (`doc/06-type-inference.md:68-74`) [Major, type-theorist C47]
+- [ ] Document or fix `TypeVar` in TypeAssert expected type always failing `is_subtype` statically — `[@a $x]`: `resolve_annotation` with `&mut None` produces `TypeVar("a", 0)`, `check_expr` calls `is_subtype(actual, TypeVar("a", 0))` which falls through to `_ => false`; always fails unless `default:` present. `doc/07:109` says TypeVar treated as Any at runtime — static/runtime divergence undocumented. Fix option A: add TypeVar to `is_subtype` as universal match. Fix option B: document in Limitations. (`src/types.rs:84-127`, `doc/06-type-inference.md`) [Major, type-theorist C47]
+- [ ] Fix `doc/16-architecture.md:77` REPL EvalContext description contradicts implementation — doc says "Fresh EvalContext per eval_input() call. Session env persists, but include state resets per input." Actual code (`src/repl.rs:122-128`) creates one EvalContext in `ReplSession::with_env()` and reuses it — include guard and cache PERSIST across REPL inputs. Fix: "Single EvalContext per session. Include state (guard, cache) persists across eval_input() calls." (`doc/16-architecture.md:77`) [Major, integration-verifier C47]
+- [ ] Fix `doc/06-type-inference.md:250` "pure Robinson" claim misleading — line 250 states "Unification is pure Robinson" but lines 272-283 show 6 promotion rules in the code. Fix: "Unification follows Robinson (1965) for structural decomposition and variable binding, extended with pragmatic promotion rules (see below)." (`doc/06-type-inference.md:250`) [Minor, computer-scientist C47]
+
+## readme-polish: README and CLAUDE.md Accuracy Fixes (C47)
+
+Stale entries, orphaned phase comments, and missing pipeline stages in orientation documents. Found by grammar-architect and integration-verifier C47.
+
+- [ ] Fix `src/parser.rs:15` comment "See Phase 6 (hand-written parser)" — no "Phase 6" anywhere in current docs; current slug is `iterative-parser`. Fix: "See the Parser Rewrite milestone (`iterative-parser` sprint)." (`src/parser.rs:15`) [Major, grammar-architect C47]
+- [ ] Fix `doc/09-documents.md:20` typo "An Tinct" → "A Tinct". (`doc/09-documents.md:20`) [Minor, grammar-architect C47]
+- [ ] Fix `src/lib.rs:29-35` phase-number comments orphaned — "Phase 3a", "Phase 3b", "Phase 6a", "Phase 6b" labels exist nowhere in current TODO.md (slug-based sprints). Fix: replace with sprint slugs or remove. (`src/lib.rs:29-35`) [Minor, grammar-architect C47]
+- [ ] Add condensed architecture section or redirect to `README.md` in `CLAUDE.md` — currently reduced to only mempalace instruction (4 lines) with no architecture orientation for agents. (`CLAUDE.md`) [Minor, grammar-architect C47]
+- [ ] Add `doc/15-ast.md:204-206` caveat that pest itself recurses on Rust call stack — after the C39 fix, doc now says MAX_PARSE_DEPTH avoids native stack overflow, but pest itself recurses before the check fires (~500+ nested brackets can overflow). Add: "pest itself recurses on Rust's call stack during parse. ~500+ nested brackets may cause native stack overflow before this check fires." (`doc/15-ast.md:204-206`) [Major, grammar-architect C47]
+
+## doc-11-stdlib: doc/11-stdlib.md Accuracy Overhaul (C47)
+
+Stale snippets, misclassifications, and missing documentation in doc/11-stdlib.md. Found by stdlib-author C47.
+
+- [ ] Fix `doc/11-stdlib.md:203` stale `empty?` implementation snippet — shows old `[fn [xs] [call $= [call $length $xs] 0]]`; actual since Phase 5c½: `[fn [xs] [call $if [call $seq? $xs] false [call $= [call $length $xs] 0]]]`. Fix: update snippet. (`doc/11-stdlib.md:203`) [Minor, stdlib-author C47]
+- [ ] Fix `doc/11-stdlib.md:96` `length` and `empty?` misclassified as "Structural" — by the four-category scheme (lines 52-56), both are "Materializing" (materialize the dict). (`doc/11-stdlib.md:96`) [Nit, stdlib-author C47]
+- [ ] Fix `doc/11-stdlib.md:277` `words` description omits that it returns Seq — since `$filter` on Dict now returns Seq, `words` also returns Seq. Add "(returns Seq)". (`doc/11-stdlib.md:277`) [Nit, stdlib-author C47]
+- [ ] Fix `doc/08-evaluation.md:768` `$merge` Laziness Design table describing FUTURE planned behavior — says "Lazy overlay: right shadows left, O(1) construction" but actual `builtin_merge` eagerly materializes both dicts and constructs full IndexMap copy. Restore accurate row: "`$merge` | Eagerly materializes both dicts; values pass through as thunks (Rc::clone) | See merge-lazy-overlay sprint in TODO.md for planned lazy overlay upgrade". (`doc/08-evaluation.md:768`) [Major, laziness-auditor C47]
+- [ ] Add `any?`/`all?` Seq guard at `stdlib/prelude.llt:60,71` — no Seq guard; passing Seq produces opaque "keys: expected Dict, got Seq" error instead of "any?: expected Dict, got Seq". Fix: add `$seq?` guard matching the flatten pattern. Add corpus error tests `tests/corpus/eval/errors/any_seq_error.llt-eval` and `all_seq_error.llt-eval`. (`stdlib/prelude.llt:60,71`) [Minor, stdlib-author C47]
+- [ ] Add `flatten_mixed.llt-eval` corpus test — `flatten.llt-eval` only tests `[[1 2] [3 4]]`; no test for mixed scalar/nested `[1 [2 3] 4]` where `flatten-step` takes both branches. (`tests/corpus/eval/stdlib/`) [Nit, stdlib-author C47]
+- [ ] Document `from-entries` accepting Seq inputs — silently accepts Seq inputs via `$reduce` dual-dispatch; useful property but undocumented. Fix: add "(also accepts Seq of `[key: k value: v]` pairs via `$reduce` dual-dispatch)" to reference table. Add `from_entries_seq.llt-eval` corpus test. (`doc/11-stdlib.md`, `tests/corpus/eval/stdlib/`) [Nit, stdlib-author C47]
+
 ## docs-restructuring-refs: Documentation Cross-Reference Update
 
 Found by grammar-architect and computer-scientist review (2026-04-23). Commit 7b06e98 moved DESIGN.md (6643 lines) and SPEC.md (1509 lines) to `.tmp/`, splitting content into `doc/01-17` chapters. Cross-references across TODO.md, doc/whatif/, doc/, and source code were not updated.
@@ -944,6 +989,19 @@ New corpus tests identified in cycle 46 review.
 - [ ] Add corpus test for let-gen polymorphism — `[f: [fn [x@a] $x]] [r1: [call $f 42]] [r2: [call $f "hello"]]` should type-check without error; r1 has type Int, r2 has type String. (`tests/corpus/eval/typecheck/`) [Major, test-crafter C46]
 - [ ] Add corpus tests for typecheck errors — end-to-end tests that verify type checker emits correct error kind (E050 TypeError, not E099 Internal) for arity mismatch, unknown variable, wrong argument type. (`tests/corpus/eval/errors/`) [Major, test-crafter C46]
 
+### type-error-corpus: Type Error Corpus and Infra Gaps (C47)
+
+Critical test infrastructure and typecheck corpus gaps found by test-crafter and type-theorist C47 reviews.
+
+- [ ] Fix `eval_source` silently discarding all type errors — `lib.rs:81` does `let _ = typecheck::typecheck_file(...)`, so all files in `tests/corpus/eval/typecheck/` only verify eval output, not that the type checker accepts or rejects. Cannot write corpus tests for type errors. Fix: add `test_typecheck_error_corpus` runner in `corpus_tests.rs` calling `typecheck_file` directly; enable `tests/corpus/eval/type_errors/` directory. (`src/lib.rs:81`, `tests/corpus_tests.rs`) [Critical, test-crafter C47]
+- [ ] Fix `doc/06-type-inference.md:50-63` `check_expr` pseudocode materially incomplete — 6-line implementation shown but actual `check_expr` is 130+ lines with lambda checking mode, param arity, annotated param checks, etc. Fix: replace code block with prose + source reference. (`doc/06-type-inference.md:50-63`) [Major, test-crafter C47]
+- [ ] Fix `doc/06-type-inference.md:510` factually wrong after `check_call_with_scheme` added — states "No optimization needed for the common case." but the sprint added `check_call_with_scheme` specifically to avoid double instantiation. Fix: update paragraph to describe the optimization. (`doc/06-type-inference.md:510`) [Major, test-crafter C47]
+- [ ] Add `test_check_call_with_scheme_non_function_scheme` — `typecheck.rs:728` (`_ => Err(not_a_function)`) fires when polymorphic scheme body is not Function type after instantiation. Existing `test_call_non_function` uses monomorphic scheme (routes through `check_call`, not `check_call_with_scheme`). (`src/typecheck.rs:728`) [Major, test-crafter C47]
+- [ ] Add `test_unify_int_literal_with_float` and `test_unify_float_with_int_literal` — `(Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => Ok(())` at `src/types.rs:456` is only incidentally covered by other tests; no dedicated unit test. (`src/types.rs:456`) [Minor, test-crafter C47]
+- [ ] Add `test_check_expr_lambda_arity_mismatch` — `typecheck.rs:317-325` returns arity mismatch when lambda in checking mode has different param count than expected type; no test for this path. (`src/typecheck.rs:317`) [Minor, test-crafter C47]
+- [ ] Add laziness corpus proof tests — `tests/corpus/eval/laziness/` missing: proof `$map` on dict returns thunks not eager values, proof `$filter` is selective, proof `$and`/`$or` short-circuit on error in second arg. (`tests/corpus/eval/laziness/`) [Minor, test-crafter C47]
+- [ ] Fix `flatten_seq_error.llt-eval` matching full error message substring without [E0XX] code — only stdlib-level error test without error code; will fail if message wording changes. Accept and document, or add error code to `$error` path. (`tests/corpus/eval/errors/flatten_seq_error.llt-eval`) [Nit, test-crafter C47]
+
 ### misc-nits: Miscellaneous Nits
 
 Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
@@ -1020,7 +1078,7 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Fix `src/typecheck.rs:2674` "contravariant" comment — says "compatible with expected Number (Int <: Number for contravariant)" but `Int <: Number` is a covariant subtype relation. Change to: "compatible with expected Number (annotation Int <: Number, so Int values satisfy the Number expected type)". (`src/typecheck.rs:2674`) [Nit, type-theorist C46]
 - [ ] Fix `README.md` §Architecture Table stale entries — line 144 mentions `IncludeContext` + thread-local for `$include` (deleted in evalcontext-thread); line 148 says "four-pass dict inference" (now five passes, 0-4); line 150 lists `set_include_context()`, `clear_include_context()`, `IncludeContext` in public API (all deleted). Update to mention `EvalContext`, "five-pass dict inference (Pass 0-4)", remove deleted symbols. (`README.md:144, 148, 150`) [Minor, integration-verifier C46]
 - [ ] Add corpus tests for annotation type variable isolation — end-to-end test: sibling functions using `@a` don't cross-contaminate each other's type inference (fixed in bidirectional-typing-c via `ann_mapping`). (`tests/corpus/eval/typecheck/`) [Minor, test-crafter C46 panel]
-- [ ] Add corpus test for `[@Number 42]` → `Int(42)` — removed when differentiating `literal_promotion_subsumption.llt-eval`; IntLiteral <: Number subsumption needs corpus coverage. (`tests/corpus/eval/typecheck/`) [Minor, test-crafter C46 panel]
+- [x] Add corpus test for `[@Number 42]` → `Int(42)` — covered by `tests/corpus/eval/typecheck/subsumption_number_accepts_int.llt-eval`; IntLiteral <: Number subsumption is tested. [Minor, test-crafter C46 panel, closed test-crafter C47]
 - [ ] Add `check_call_with_scheme` error path tests — arity mismatch for polymorphic schemes, type mismatch in CALL-MONO path, calling a non-function scheme. (`src/typecheck.rs`) [Minor, test-crafter C46 panel]
 - [ ] Document `check_call_with_scheme` local `Substitution` as intentional scoping boundary — fresh type vars from `instantiate_scheme` are call-site-local and should not escape; the local substitution is consumed by `subst.apply(ret)` and does not need to propagate upstream. (`src/typecheck.rs:717`) [Nit, computer-scientist C46 panel]
 - [ ] Move `state.levels.insert` into `or_insert_with` closure in `resolve_type_name` — currently re-inserts `state.levels[fresh_name] = state.level` unconditionally on every lookup; safe only because `infer_fn` doesn't bump levels internally. Move inside `or_insert_with` to make the level assignment atomic with fresh var creation. (`src/typecheck.rs:1089`) [Nit, computer-scientist C46 panel]
@@ -1028,6 +1086,23 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Add comment to zero-param CALL-POLY branch in `check_call_with_scheme`: `*ret.clone()` without substitution is correct — with zero params there are no arguments to unify, so the return type needs no substitution applied. (`src/typecheck.rs:723-724`) [Nit, type-theorist C46 panel]
 - [ ] Add comment to monomorphic VarRef fallback in `check_call_with_scheme` — "handles TypeVar correctly" is terse; add: "handles TypeVar during letrec forward-references where Pass 1 assigns TypeVar placeholders, not yet generalized". (`src/typecheck.rs:227-229`) [Nit, type-theorist C46 panel]
 - [ ] Fix `flatten` error message points to stdlib code not user call site — `[call $error ...]` at `stdlib/prelude.llt:423` reports span of the $error call inside stdlib, not the user's `[call $flatten xs]` site. Add note to `doc/11-stdlib.md` or accept as stdlib-error limitation. (`stdlib/prelude.llt:423`) [Minor, span-integrity-checker C46 panel]
+- [ ] Fix `check_call_with_scheme` not recording func VarRef span in `type_map` — LSP hover over polymorphic function reference in call (`$id` in `[call $id 42]`) returns no type. In `check_call`, `infer_expr(func)` records the VarRef's type; in `check_call_with_scheme`, `infer_expr` is never called for func. Fix: add `func_span: Span` param, insert `(func_span.start.offset, func_span.end.offset) → func_ty` into `type_map` after `instantiate_scheme`. (`src/typecheck.rs:662-730`) [Major, span-integrity C47]
+- [ ] Fix `check_call_with_scheme` `not_a_function` error uses whole Call expression span instead of func span — `span` is `expr.span` at line 728. Fix: pass `func_span: Span` (same as Major fix above) and use it here. (`src/typecheck.rs:728`) [Minor, span-integrity C47]
+- [ ] Fix `check_call_with_scheme` zero-param CALL-POLY returns `*ret.clone()` (pre-instantiation ret) not `*inst_ret.clone()` — same bug fixed in `check_call` but not applied here; for zero-param polymorphic functions may produce wrong return type. (`src/typecheck.rs:723-724`) [Minor, span-integrity C47]
+- [ ] Document or resolve CALL-MONO/CALL-POLY error asymmetry — CALL-MONO collects all argument errors before returning; CALL-POLY stops at first unification failure; inconsistency affects experience for polymorphic calls with multiple bad arguments. Document asymmetry or batch unification errors. (`src/typecheck.rs:696-704, 716-721`) [Minor, span-integrity C47]
+- [ ] Add `doc/06-type-inference.md` implementation note after CALL-POLY rule documenting `check_call_with_scheme` optimization — CALL-POLY rule implies VAR-POLY always fires for VarRef, but code special-cases polymorphic VarRef to skip VAR-POLY and instantiate once. (`doc/06-type-inference.md:162-174`) [Minor, span-integrity C47]
+- [ ] Fix `check_call`/`check_call_with_scheme` doc comments referencing doc/06 by line number — fragile: any doc edit shifts refs. Fix: reference by rule name "(doc/06 §[CALL-MONO])" instead of line numbers. (`src/typecheck.rs:694,761,776`) [Nit, type-theorist C47]
+- [ ] Document `check_expr` type_map recording behavior in lambda checking mode — in lambda checking mode, `type_map` records `expected.clone()` (line 405), not synthesized type. Add sentence: "In lambda checking mode, type_map records the expected function type — correct bidirectional semantics for LSP hover." (`src/typecheck.rs:287-293`) [Nit, type-theorist C47]
+- [ ] Document `check_call` CALL-POLY double-instantiation for inline polymorphic functions — `[call [fn [x@a] $x] 42]` goes through `check_call` not `check_call_with_scheme`; harmless for single-call sites but should be documented. (`src/typecheck.rs:763-778`) [Minor, type-theorist C47]
+- [ ] Fix `CALL-POLY` trigger comment misleading at `src/typecheck.rs:708-709` — comment says "This can happen with nested polymorphism or type annotations" but any polymorphic scheme will have `has_type_vars() = true` after instantiation. Fix: "Polymorphic schemes always have type variables after instantiation. CALL-MONO (above) only fires for degenerate schemes where quantified variables don't appear in the body." (`src/typecheck.rs:708-709`) [Nit, computer-scientist C47]
+- [ ] Fix `README.md:143` eval.rs table row still lists `$_` implicit lambda desugaring — moved to `src/desugar.rs` in underscore-desugar sprints. Fix: remove from eval.rs row; add row for `src/desugar.rs`. (`README.md:143`) [Minor, integration-verifier C47]
+- [ ] Add `src/desugar.rs` row to README.md project structure table — desugar is a real pipeline stage with its own module but absent from the table developers use for orientation. (`README.md`) [Nit, integration-verifier C47]
+- [ ] Remove stale implementation note in `doc/04-functions.md:546` — says "current implementation uses count-based arity check and restricts named args to `default:` params"; both limitations were resolved in call-convention-kotlin sprint. Update to "Implemented as of call-convention-kotlin." (`doc/04-functions.md:546`) [Nit, grammar-architect C47, computer-scientist C47]
+- [ ] Document `$apply` dict-splitting behavior in `doc/04-functions.md` §$apply — spec at lines 548-565 discusses `env_d` separation but does not specify the key-type split: `Key::Int` (sorted by value) → positional args, `Key::String` → named args. Add formal notation: `pos = sort_by_key({(k,v) in D | k in Int}), named = {(k,v) in D | k in String}`. Also document negative integer key semantics (sorted before 0, serve as ordering hints). (`doc/04-functions.md:548-565`) [Minor, grammar-architect C47, computer-scientist C47]
+- [ ] Fix `doc/04-functions.md:459` incorrectly claims defaults are evaluated eagerly — says "Defaults are evaluated eagerly at call time (not wrapped as thunks)". In LLT's lazy model, `eval()` returns a thunk; defaults are forced only when the parameter is accessed, not at call time. Remove or qualify the "eagerly" claim. (`doc/04-functions.md:459`) [Minor, eval-engine C47]
+- [ ] Add test for `$apply` calling a builtin with named args (builtin rejection path) — sprint modified `builtin_apply` to pass `named_args` to both Function and Builtin dispatch paths; no test covers builtin path with named args. Most builtins call `reject_named` which returns E023. (`tests/corpus/eval/errors/`) [Minor, test-crafter C47]
+- [ ] Add test for BIND-ARITY with multiple missing required params — current error test `fn_kotlin_coverage_missing` has one missing required param; no test documents which error fires when multiple required params are uncovered (first one? all?). (`tests/corpus/eval/errors/`) [Minor, test-crafter C47]
+- [ ] Short-circuit redundant scan in BIND-NAMED — when C-NO-OVERLAP check at `src/eval.rs:664` finds `Some(idx)` with `idx >= positional.len()`, the C-NAMED-VALID check at line 679 re-scans `regular_params` and always finds the name. Add `continue` or combine the two `regular_params.iter()` scans into one. (`src/eval.rs:664-687`) [Nit, computer-scientist C47]
 
 ## Future Features
 

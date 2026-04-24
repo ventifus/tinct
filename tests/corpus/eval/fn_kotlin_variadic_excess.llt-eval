@@ -1,0 +1,7 @@
+# C-VARIADIC: excess positional args collected into variadic dict
+[
+  f: [fn [a b ...rest] $rest]
+  result: [call $f 1 2 3 4 5]
+]
+===
+Dict({"f": Function(a, b, rest), "result": Dict({0: Int(3), 1: Int(4), 2: Int(5)})})

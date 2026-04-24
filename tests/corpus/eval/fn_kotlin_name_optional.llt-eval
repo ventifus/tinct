@@ -1,0 +1,7 @@
+# Named arg targeting optional param (not just required): Kotlin model allows naming any param
+[
+  f: [fn [a b@[default: 2] c@[default: 3]] [call $str $a [call $str $b $c]]]
+  result: [call $f a: 5]
+]
+===
+Dict({"f": Function(a, b, c), "result": String("523")})

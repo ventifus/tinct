@@ -396,6 +396,7 @@ pub enum ErrorKind {
 
     // --- Call errors (E020-E029) ---
     ArityMismatch { expected: ArityBound, got: usize },
+    MissingRequiredParam { param: String },
     NamedArgConflict { param: String },
     UnknownNamedArg { name: String },
     NamedArgRejected { builtin: String },
@@ -481,6 +482,7 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E021 | `NamedArgConflict` | Call |
 | E022 | `UnknownNamedArg` | Call |
 | E023 | `NamedArgRejected` | Call |
+| E024 | `MissingRequiredParam` | Call |
 | E030 | `DuplicateKey` | Value |
 | E031 | `DivisionByZero` | Value |
 | E032 | `IntegerOverflow` | Value |
@@ -528,6 +530,7 @@ impl ErrorKind {
             Self::TypeMismatch { .. } => "E010",
             Self::TypeAssertFailed { .. } => "E011",
             Self::ArityMismatch { .. } => "E020",
+            Self::MissingRequiredParam { .. } => "E024",
             Self::NamedArgConflict { .. } => "E021",
             Self::UnknownNamedArg { .. } => "E022",
             Self::NamedArgRejected { .. } => "E023",
@@ -769,6 +772,7 @@ All 26 `ErrorKind` variants map to stable error codes and human-readable message
 | **NamedArgConflict** | E021 | `"parameter '{param}' received both positional and named argument"` | Call expression |
 | **UnknownNamedArg** | E022 | `"unexpected named argument: {name}"` | Call expression |
 | **NamedArgRejected** | E023 | `"{builtin} does not accept named arguments"` | Call expression |
+| **MissingRequiredParam** | E024 | `"missing argument for required parameter '{param}'"` | Call expression |
 | **DuplicateKey** | E030 | `"duplicate key: {key}"` | Second occurrence of the key |
 | **DivisionByZero** | E031 | `"{op}: division by zero"` | Division call expression |
 | **IntegerOverflow** | E032 | `"{op}: integer overflow"` | Arithmetic call expression |
@@ -788,7 +792,7 @@ All 26 `ErrorKind` variants map to stable error codes and human-readable message
 | **UserError** | E080 | `"{message}"` (user-provided) | `$error` call expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
-The 26 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E023) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. Error codes are stable across releases; message wording may vary.
+The 27 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
 
 ## Span Assignment Corrections
 

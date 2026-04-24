@@ -62,6 +62,9 @@ pub enum ErrorKind {
         expected: ArityBound,
         got: usize,
     },
+    MissingRequiredParam {
+        param: String,
+    },
     NamedArgConflict {
         param: String,
     },
@@ -161,6 +164,7 @@ impl ErrorKind {
             Self::TypeMismatch { .. } => "E010",
             Self::TypeAssertFailed { .. } => "E011",
             Self::ArityMismatch { .. } => "E020",
+            Self::MissingRequiredParam { .. } => "E024",
             Self::NamedArgConflict { .. } => "E021",
             Self::UnknownNamedArg { .. } => "E022",
             Self::NamedArgRejected { .. } => "E023",
@@ -221,6 +225,9 @@ impl fmt::Display for ErrorKind {
             }
             Self::ArityMismatch { expected, got } => {
                 write!(f, "arity mismatch: expected {expected}, got {got}")
+            }
+            Self::MissingRequiredParam { param } => {
+                write!(f, "missing argument for required parameter '{param}'")
             }
             Self::NamedArgConflict { param } => write!(
                 f,
@@ -310,6 +317,10 @@ impl PartialEq for ErrorKind {
                     got: g2,
                 },
             ) => e1 == e2 && g1 == g2,
+            (
+                Self::MissingRequiredParam { param: p1 },
+                Self::MissingRequiredParam { param: p2 },
+            ) => p1 == p2,
             (Self::NamedArgConflict { param: p1 }, Self::NamedArgConflict { param: p2 }) => {
                 p1 == p2
             }
@@ -990,6 +1001,9 @@ mod tests {
                 expected: ArityBound::Exact(1),
                 got: 2,
             },
+            ErrorKind::MissingRequiredParam {
+                param: "x".to_string(),
+            },
             ErrorKind::NamedArgConflict {
                 param: "x".to_string(),
             },
@@ -1054,8 +1068,8 @@ mod tests {
             },
         ];
 
-        // Verify we have all 26 variants
-        assert_eq!(variants.len(), 26, "Expected 26 ErrorKind variants");
+        // Verify we have all 27 variants
+        assert_eq!(variants.len(), 27, "Expected 27 ErrorKind variants");
 
         // Each variant should equal itself
         for variant in &variants {
@@ -1432,6 +1446,9 @@ mod tests {
                 expected: ArityBound::Exact(1),
                 got: 2,
             },
+            ErrorKind::MissingRequiredParam {
+                param: "x".to_string(),
+            },
             ErrorKind::NamedArgConflict {
                 param: "x".to_string(),
             },
@@ -1496,8 +1513,8 @@ mod tests {
             },
         ];
 
-        // Verify we have all 26 variants
-        assert_eq!(variants.len(), 26, "Expected 26 ErrorKind variants");
+        // Verify we have all 27 variants
+        assert_eq!(variants.len(), 27, "Expected 27 ErrorKind variants");
 
         let mut codes = std::collections::HashSet::new();
 
@@ -1534,8 +1551,8 @@ mod tests {
             );
         }
 
-        // Verify we collected 26 unique codes
-        assert_eq!(codes.len(), 26, "Expected 26 unique error codes");
+        // Verify we collected 27 unique codes
+        assert_eq!(codes.len(), 27, "Expected 27 unique error codes");
     }
 
     #[test]

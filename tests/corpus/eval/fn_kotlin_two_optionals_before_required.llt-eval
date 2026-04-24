@@ -1,0 +1,7 @@
+# Two optionals before required: optional-optional-required, name c
+[
+  f: [fn [a@[default: 1] b@[default: 2] c] [call $+ $a [call $+ $b $c]]]
+  result: [call $f c: 10]
+]
+===
+Dict({"f": Function(a, b, c), "result": Int(13)})

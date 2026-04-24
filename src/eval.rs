@@ -607,19 +607,28 @@ fn bind_args_thunks(
         closure_env,
     ))));
 
-    // Separate the variadic param (if any) from regular params
+    // BIND-SPLIT: Separate the variadic param (if any) from regular params
     let (regular_params, variadic_param) = split_variadic(params);
-
-    // Count required positional params (those without default: annotation)
-    let required_count = regular_params
-        .iter()
-        .filter(|p| get_default(p).is_none())
-        .count();
     let max_positional = regular_params.len();
 
-    // Both variadic and non-variadic require at least required_count positional args
-    if positional.len() < required_count {
-        return Err(EvalError::arity_mismatch(required_count, positional.len(), *call_span).into());
+    // BIND-ARITY: Per-parameter coverage check (Kotlin model)
+    // Each required parameter must be reachable via positional index OR named argument
+    for (i, param) in regular_params.iter().enumerate() {
+        let is_required = get_default(param).is_none();
+        if is_required {
+            let covered_positionally = i < positional.len();
+            let covered_by_name = named.contains_key(&param.name);
+            if !covered_positionally && !covered_by_name {
+                return Err(Box::new(EvalError {
+                    kind: crate::error::ErrorKind::MissingRequiredParam {
+                        param: param.name.clone(),
+                    },
+                    definition_span: *call_span,
+                    materialization_span: None,
+                    stack: Vec::new(),
+                }));
+            }
+        }
     }
 
     // Without variadic: positional args must not exceed max_positional
@@ -627,30 +636,31 @@ fn bind_args_thunks(
         return Err(EvalError::arity_mismatch(max_positional, positional.len(), *call_span).into());
     }
 
-    // Bind positional args to regular params
+    // BIND-POSITIONAL: Bind args to params following C-PRIORITY chain
     for (i, param) in regular_params.iter().enumerate() {
         let thunk = if i < positional.len() {
-            // Positional arg provided
+            // Case (i): positional arg at index i
             Rc::clone(&positional[i])
+        } else if let Some(named_thunk) = named.get(&param.name) {
+            // Case (ii): named arg fills gap beyond positional args
+            // (Kotlin model: ANY param can be named, not just optional)
+            Rc::clone(named_thunk)
         } else if let Some(default_val) = get_default(param) {
-            // Check if a named arg was provided for this param
-            if let Some(named_thunk) = named.get(&param.name) {
-                Rc::clone(named_thunk)
-            } else {
-                // Use default (wrapped as thunk)
-                eval(&default_val, Rc::clone(default_env), ctx, depth + 1)?
-            }
+            // Case (iii): use default value
+            eval(&default_val, Rc::clone(default_env), ctx, depth + 1)?
         } else {
-            // This shouldn't happen due to arity check above
-            return Err(
-                EvalError::arity_mismatch(required_count, positional.len(), *call_span).into(),
+            // Unreachable: BIND-ARITY guarantees every required param is covered
+            unreachable!(
+                "BIND-ARITY should have caught missing required param '{}'",
+                param.name
             );
         };
         call_env.borrow_mut().insert(param.name.clone(), thunk);
     }
 
-    // Check for named args that target params already bound positionally
+    // BIND-NAMED: Validation only (all bindings were already done in BIND-POSITIONAL)
     for (name, _) in named {
+        // C-NO-OVERLAP: named arg must not target a positionally-bound parameter
         if let Some(idx) = regular_params.iter().position(|p| &p.name == name) {
             if idx < positional.len() {
                 return Err(Box::new(EvalError {
@@ -663,29 +673,21 @@ fn bind_args_thunks(
                 }));
             }
         }
-    }
 
-    // Handle named args that weren't consumed by positional binding
-    for (name, thunk) in named {
-        let already_bound = call_env.borrow().bindings.contains_key(name);
-        if !already_bound {
-            // Check that the named arg corresponds to a param with default:
-            let is_valid_param = regular_params
-                .iter()
-                .any(|p| &p.name == name && get_default(p).is_some());
-            if !is_valid_param {
-                return Err(Box::new(EvalError {
-                    kind: crate::error::ErrorKind::UnknownNamedArg { name: name.clone() },
-                    definition_span: *call_span,
-                    materialization_span: None,
-                    stack: Vec::new(),
-                }));
-            }
-            call_env.borrow_mut().insert(name.clone(), Rc::clone(thunk));
+        // C-NAMED-VALID: named arg must target an existing parameter
+        // (Kotlin model: ANY param can be named, not just optional params)
+        let param_exists = regular_params.iter().any(|p| &p.name == name);
+        if !param_exists {
+            return Err(Box::new(EvalError {
+                kind: crate::error::ErrorKind::UnknownNamedArg { name: name.clone() },
+                definition_span: *call_span,
+                materialization_span: None,
+                stack: Vec::new(),
+            }));
         }
     }
 
-    // Bind variadic param: collect remaining positional args into a dict with int keys
+    // BIND-VARIADIC: Collect excess positional args into a dict with int keys
     if let Some(var_param) = variadic_param {
         let mut var_map: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
         for (i, thunk) in positional.iter().enumerate().skip(max_positional) {
@@ -1916,7 +1918,8 @@ mod tests {
         });
         let err = eval(&call_expr, env, &test_ctx(), 0).unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.message()
+                .contains("missing argument for required parameter"),
             "got: {}",
             err.message()
         );
@@ -5044,7 +5047,9 @@ mod tests {
         );
 
         let err = eval(&call_expr, env, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("arity mismatch"));
+        assert!(err
+            .message()
+            .contains("missing argument for required parameter"));
         assert!(
             err.stack.iter().any(|f| f.label == "call $f"),
             "expected 'call $f' frame, got: {:?}",

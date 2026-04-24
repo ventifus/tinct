@@ -1,0 +1,7 @@
+# C-COVERAGE success: required param covered by name when positional doesn't reach it
+[
+  f: [fn [a b@[default: 2] c] [call $+ $a [call $+ $b $c]]]
+  result: [call $f 1 c: 5]
+]
+===
+Dict({"f": Function(a, b, c), "result": Int(8)})

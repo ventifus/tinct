@@ -1,0 +1,7 @@
+# Variadic with exactly zero excess args: BIND-VARIADIC should produce empty Dict
+[
+  f: [fn [a ...rest] $rest]
+  result: [call $f 42]
+]
+===
+Dict({"f": Function(a, rest), "result": Dict({})})

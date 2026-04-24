@@ -1,0 +1,7 @@
+# C-NAMED-VALID: named arg for nonexistent param
+[
+  f: [fn [a b] [call $+ $a $b]]
+  result: [call $f 1 2 z: 99]
+]
+===
+unexpected named argument
