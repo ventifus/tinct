@@ -848,3 +848,82 @@ Nits and stdlib fixes found during bidirectional-typing review. Split from bidir
 - [x] Support named args from dict in `$apply` — split dict by key type: Key::Int sorted by value → positional, Key::String → named. (`src/builtins.rs:866-878`) [Minor, eval-engine]
 - [x] Add tests for each binding constraint and error class — 10 eval success + 3 eval error corpus tests covering C-COVERAGE, C-NO-OVERLAP, C-NAMED-VALID, C-VARIADIC, $apply split. (`tests/corpus/eval/fn_kotlin_*.llt-eval`) [Minor, test-crafter]
 - [x] Add tests for interleaved required/optional parameters — interleaved, two-optionals-before-required, optional-middle, mixed key $apply scenarios. (`tests/corpus/eval/fn_kotlin_*.llt-eval`) [Minor, test-crafter]
+
+## let-generalization: Levels-Based Let-Generalization
+
+Implement proper Hindley-Milner let-polymorphism with levels-based generalization (Kiselyov 2013). Without this, polymorphism requires explicit annotations. See doc/06-type-inference.md §Let-Generalization (Levels-Based).
+
+### let-gen-types: Type System Infrastructure
+
+Data structure changes and signature migration. All interdependent — must land together.
+
+- [x] Add `TypeScheme` struct — `vars: Vec<String>`, `body: Type`, `TypeScheme::mono(ty)` constructor (`src/types.rs`)
+- [x] Add `InferState` struct — `name_counter: u32`, `level: u32`, `levels: HashMap<String, u32>` (`src/types.rs`)
+- [x] Change `Type::TypeVar(String)` to `TypeVar(String, u32)` with manual `PartialEq` on name only (`src/types.rs:36`)
+- [x] Change `RowRest::RowVar(String)` to `RowVar(String, u32)` with level (`src/types.rs`)
+- [x] Change `TypeEnv.bindings` from `IndexMap<String, Type>` to `IndexMap<String, TypeScheme>` (`src/types.rs`)
+- [x] Replace `counter: &Cell<u32>` parameter with `state: &mut InferState` in `infer_expr`/`infer_dict`/`infer_fn` (`src/typecheck.rs`)
+- [x] Update all `TypeVar("a".into())` in tests to `TypeVar("a".into(), 0)` (`src/types.rs`, `src/typecheck.rs`)
+
+### let-gen-inference: Core Inference Rules and Generalization
+
+Core algorithm implementation using let-gen-types data structures. All 7 items are interdependent — must land together.
+
+- [x] Implement `instantiate_scheme(scheme, state) -> Type` — freshen all vars at current level (`src/types.rs`)
+- [x] Implement `generalize(level, ty) -> TypeScheme` — collect vars with level > given, abstract them (`src/types.rs`)
+- [x] Update VAR rule: `instantiate_scheme(env.get(name)?, state)` (`src/typecheck.rs`)
+- [x] Update `infer_dict` to 5 passes: key resolution, bind-all (fresh α at `level+1`), type aliases, infer values (at `level+1`), generalize (`src/typecheck.rs`)
+- [x] Implement symmetric level lowering in unify U-VAR rules (`src/types.rs`)
+- [x] Implement Any-unification level zeroing: `unify(α, Any)` sets `level(α) = 0` (`src/types.rs`)
+- [x] Update `typecheck_document` to thread `TypeScheme`s across `---` boundaries (`src/typecheck.rs`)
+
+(let-gen-verify and let-gen-soundness archived above)
+
+## typeassert-structural: TypeAssert Structural Contract Checking
+
+Replace nominal type tag checking with structural contract validation. See DESIGN.md §TypeAssert Runtime Validation.
+
+- [x] Add `resolved_type: Option<Type>` field to `Expr::TypeAssert` (`src/ast.rs`)
+- [x] Update `resolve_type_assert()` to set `resolved_type` on AST node (elaboration) (`src/typecheck.rs:503-523`)
+- [x] Implement `value_matches_type(value, type, span) -> Result<bool, EvalError>` for immediate validation (`src/eval.rs`)
+- [x] Add `ThunkState::Guarded { inner, expected, field_path, guard_span }` variant (`src/value.rs`)
+- [x] Implement proxy contract wrapping: shape check + guard wrapping for record field thunks. Findler & Felleisen (2002). (`src/eval.rs:117-157`)
+- [x] Implement guard memoization: `Guarded` → `Materialized` or `Failed` after first force (`src/eval.rs`)
+- [x] Handle `--no-typecheck` fallback — degrade to current nominal behavior when `resolved_type` is `None` (`src/eval.rs`)
+- [x] Implement blame tracking with even-odd polarity for contract positions. Findler & Felleisen (2002). (`src/eval.rs`) [Major, computer-scientist]
+
+## row-unification — completed sub-sprints
+
+### row-unification-a: Row Variable Pre-Unification Fixes
+
+Bug fixes and documentation in existing row handling code. Independent of the core algorithm.
+
+- [x] Fix row variable substitution creating duplicate fields — `merged.extend(extra_fields)` doesn't check for key collisions (`src/types.rs:166-184`) [Critical, type-theorist]
+- [x] Fix sub_rest ignored in record subtyping — `is_subtype` destructures sub record as `(sub_fields, _sub_rest)`, ignoring RowVar/Open rest; a record with `RowVar(r)` may have additional fields via its row variable not checked against a Closed supertype. Latent issue that becomes real with row variable binding. (`src/types.rs:52-64`) [Major, computer-scientist]
+- [x] Fix RowVar treated identically to Open in `is_subtype` — add TODO comment explaining row-unification placeholder (`src/types.rs:59-62`) [Major, type-theorist]
+- [x] Document RowVar instantiation via TypeVar namespace coincidence — `instantiate()` renames TypeVar names and RowVar names share the same namespace, so RowVars get freshened correctly by accident. Should be documented as intentional or given separate namespace handling. (`src/types.rs:318-330`) [Minor, computer-scientist]
+
+### row-unification-b: Core Remy-Style Unification
+
+Core algorithm implementation. Requires row-unification-a.
+
+- [x] Extend `Substitution::apply` to splice bound row variable fields into records (e.g., `[a: Int | ...r]` with `r → [b: String]` produces `[a: Int, b: String]`)
+- [x] Unify row rests: `RowVar` vs `RowVar` binds one to the other, `RowVar` vs `Closed` binds the var to the leftover fields as a closed record
+- [x] Handle "remainder" binding: `unify([a: Int | ...r], [a: Int, b: String | Closed])` binds `r → [b: String | Closed]`
+- [x] Extend `Type` representation if needed to support partial-row bindings (row var bound to fields + another row var)
+- [x] Update `instantiate` to freshen row variables alongside type variables
+- [x] Add row-specific occurs check for `RowVar("r")` with `Record(..., RowVar("r"))` (infinite row type prevention)
+- [x] Add row variable substitution cycle handling — `Substitution::apply` must handle cycles when row variables bind to records containing the same row variable (`src/types.rs`) [Major, type-theorist]
+- [x] Fix open-record unification silently dropping non-shared fields — only shared fields unified, unique fields ignored without constraint; Remy-style would bind fresh row variables to capture remainders (`src/types.rs:334-338`) [Major, computer-scientist]
+
+### row-unification-c: Verification and Bug Fixes
+
+Bug fixes and verification for Rémy-style row-variable unification. Requires row-unification-b.
+
+- [x] Fix `unify_remainders` reachable silent-success when `rho1 == rho2` with non-empty unique fields — added explicit error arm; changed `_ => Ok(())` fallback to `unreachable!()` (`src/types.rs`) [Major, computer-scientist C51]
+- [x] Fix row occurs check not chasing TypeVar bindings through substitution — `row_var_occurs_in_type` now chases TypeVar bindings through `subst.type_map` (`src/types.rs`) [Minor, computer-scientist C49]
+- [x] Fix anonymous `[...]` open record annotations sharing `_open` row variable name and hardcoded level 0 — now generates fresh `_open{N}` names at `state.level` (`src/typecheck.rs`) [Minor, computer-scientist C49]
+- [x] Test inference through polymorphic functions that extend/restrict records — two corpus tests added: `row_poly_extend.llt-eval`, `row_poly_project.llt-eval`
+- [x] Verify consistency between `unify` and `is_subtype` for all RowRest combinations — 12 unit tests added; post-substitution consistency confirmed correct
+- [x] Ensure row variable occurs check before binding — all 3 binding cases (Cases 2, 3, 4) call `row_var_occurs` before `row_map.insert`; verified sound
+- [x] Add debug assertion in `apply_row` field merge — rejected: duplicates in `apply_row` are legitimate (explicit field wins over row-variable-inherited field); explanatory comments added instead

@@ -1,0 +1,7 @@
+# Row polymorphism: function that extends a record
+# Takes any record with at least `name: String` and adds an `id` field.
+# The open record annotation `...` allows extra fields (here: age: 30).
+[f: [fn [r@[name: String ...]] [call $merge $r [id: 1]]]
+ result: [call $f [name: alice  age: 30]]]
+===
+Dict({"f": Function(r), "result": Dict({"name": String("alice"), "age": Int(30), "id": Int(1)})})

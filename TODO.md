@@ -2,88 +2,6 @@
 
 Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-## let-generalization: Levels-Based Let-Generalization
-
-Implement proper Hindley-Milner let-polymorphism with levels-based generalization (Kiselyov 2013). Without this, polymorphism requires explicit annotations. See doc/06-type-inference.md §Let-Generalization (Levels-Based).
-
-### let-gen-types: Type System Infrastructure
-
-Data structure changes and signature migration. All interdependent — must land together.
-
-- [x] Add `TypeScheme` struct — `vars: Vec<String>`, `body: Type`, `TypeScheme::mono(ty)` constructor (`src/types.rs`)
-- [x] Add `InferState` struct — `name_counter: u32`, `level: u32`, `levels: HashMap<String, u32>` (`src/types.rs`)
-- [x] Change `Type::TypeVar(String)` to `TypeVar(String, u32)` with manual `PartialEq` on name only (`src/types.rs:36`)
-- [x] Change `RowRest::RowVar(String)` to `RowVar(String, u32)` with level (`src/types.rs`)
-- [x] Change `TypeEnv.bindings` from `IndexMap<String, Type>` to `IndexMap<String, TypeScheme>` (`src/types.rs`)
-- [x] Replace `counter: &Cell<u32>` parameter with `state: &mut InferState` in `infer_expr`/`infer_dict`/`infer_fn` (`src/typecheck.rs`)
-- [x] Update all `TypeVar("a".into())` in tests to `TypeVar("a".into(), 0)` (`src/types.rs`, `src/typecheck.rs`)
-
-### let-gen-inference: Core Inference Rules and Generalization
-
-Core algorithm implementation using let-gen-types data structures. All 7 items are interdependent — must land together.
-
-- [x] Implement `instantiate_scheme(scheme, state) -> Type` — freshen all vars at current level (`src/types.rs`)
-- [x] Implement `generalize(level, ty) -> TypeScheme` — collect vars with level > given, abstract them (`src/types.rs`)
-- [x] Update VAR rule: `instantiate_scheme(env.get(name)?, state)` (`src/typecheck.rs`)
-- [x] Update `infer_dict` to 5 passes: key resolution, bind-all (fresh α at `level+1`), type aliases, infer values (at `level+1`), generalize (`src/typecheck.rs`)
-- [x] Implement symmetric level lowering in unify U-VAR rules (`src/types.rs`)
-- [x] Implement Any-unification level zeroing: `unify(α, Any)` sets `level(α) = 0` (`src/types.rs`)
-- [x] Update `typecheck_document` to thread `TypeScheme`s across `---` boundaries (`src/typecheck.rs`)
-
-### let-gen-verify: Verification and Testing
-
-**Depends on:** `let-gen-inference` (algorithm must land first)
-
-- [x] Fix letrec forward-reference typing to Any — resolved by 5-pass bind-all approach: Pass 1 binds all entries to fresh TypeVar at level+1, so forward refs see a TypeVar not Any (`src/typecheck.rs:225`)
-- [x] Add tests: polymorphic identity generalizes, nested dicts increment levels, Any-touched vars not generalized
-- [x] Enable `#[ignore]` unit tests for let-gen-inference algorithms — let-gen-inference sprint wrote full (non-ignored) tests directly: test_instantiate_scheme_monomorphic, test_instantiate_scheme_polymorphic, test_generalize_var_at_higher_level, test_unify_level_lowering_symmetric, and 9 others in src/types.rs:2340-2490. No ignored stubs to enable.
-- [x] Strengthen `test_let_gen_mutual_recursion` to assert specific types for `a` and `b`, not just key presence (`src/typecheck.rs:2004`) [Major, test-crafter C40]
-- [x] Add `test_let_gen_nested_dicts_level_increment` level verification — capture `state.level` before/after inner dict inference and assert inner dict ran at higher level; bug that silently skips level increment would pass without this (`src/typecheck.rs:1979`) [Major, test-crafter C40]
-- [x] Add `test_instantiate_scheme_with_row_var_body` — scheme body is `Record(fields, RowVar("r"))`; verify instantiated type has fresh RowVar, not TypeVar (`src/types.rs`) [Major, test-crafter C40]
-- [x] Add `test_instantiate_scheme_leaves_free_vars_unchanged` — scheme with `vars: ["a"]` and body containing both TypeVar("a") and TypeVar("b"); verify only "a" is freshened (`src/types.rs`) [Major, test-crafter C40]
-- [x] Add corpus test for let-generalization: `tests/corpus/eval/typecheck_let_gen_polymorphic.llt-eval` exercising `[id: [fn [x@a] $x]]` followed by `[call $id 42]` and `[call $id hello]` through the full pipeline [Major, test-crafter C40]
-
-### let-gen-soundness: CALL-POLY Level Poisoning Fix
-
-CALL-POLY uses level-unaware `instantiate()` at typecheck.rs:525, creating fresh type vars at unregistered level (defaults to 0), poisoning generalization via level-lowering in unify(). Also fixes stale eval_file doc comments and type doc accuracy. Found by computer-scientist C43 (soundness) and integration-verifier/type-theorist C43 (docs).
-
-- [x] Fix CALL-POLY `instantiate()` level poisoning — add `instantiate_at_level(ty: &Type, state: &mut InferState) -> Type` to `types.rs` creating fresh vars at `state.level` and registering in `state.levels`; replace `instantiate(&func_ty, &mut state.name_counter)` at `typecheck.rs:525` with `instantiate_at_level(&func_ty, state)`. Kiselyov (2013) soundness: all fresh vars must be registered to prevent premature level-0 capping. (`src/typecheck.rs:525`, `src/types.rs:481-493`) [Major, computer-scientist C43]
-- [x] Fix stale doc comments in `eval_file` and `eval_file_with_input` — Note blocks at `src/eval.rs:315-316` and `src/eval.rs:332-333` instruct callers to call `set_include_context`/`clear_include_context` — functions deleted in the evalcontext-thread sprint. Replace with: "Provide an `EvalContext` via `EvalContext::new()` to configure `$include`; no separate setup call required." (`src/eval.rs:315-316,332-333`) [Major, integration-verifier C43]
-- [x] Fix `doc/05-type-annotations.md:201` "four passes" → "five passes (0–4)" binding to fresh type vars (not Any) — stale description predates the let-gen sprint. (`doc/05-type-annotations.md:201`) [Minor, type-theorist C43]
-- [x] Fix `doc/06-type-inference.md:531` wrong `collect_type_vars()` signature — table shows `BTreeSet<(String, u32)>` return but actual is out-param `&mut BTreeSet<String>`. (`doc/06-type-inference.md:531`) [Minor, type-theorist C43]
-- [x] Fix `doc/06-type-inference.md:184` false claim — `Type::Function` does not carry parameter names; change to redirect to §Completeness in doc/07 for planned named-arg type checking. (`doc/06-type-inference.md:184`) [Nit, type-theorist C43]
-- [x] Add `test_deep_materialize_cycle_sentinel` unit test — the `Some(None)` blackholing branch at `src/eval.rs:1269` is completely untested; construct a HashMap with a `None` sentinel and call `deep_materialize_thunk` to verify the cycle-return path returns the original thunk. (`src/eval.rs:1269`) [Critical, test-crafter C43]
-- [x] Add `test_deep_materialize_preserves_sharing_through_eval` — sharing test using `Thunk::new_unevaluated` (not pre-materialized) to exercise the production path: first entry forces and caches, second entry returns cached result. Existing sharing tests use `Thunk::new_materialized` which bypasses cache population. (`src/eval.rs:4435-4544`) [Major, test-crafter C43]
-
-## call-convention-kotlin: Kotlin-Model Call Convention
-
-Replace count-based arity with per-parameter coverage check. Allow named args for any parameter. See DESIGN.md §Call Convention — Formal Specification.
-
-- [x] Implement C-COVERAGE: per-parameter coverage check replacing `positional.len() < required_count` (`src/eval.rs:520-626`) [Major, eval-engine]
-- [x] Allow named args for any parameter — remove `get_default(p).is_some()` guard (`src/eval.rs`)
-- [x] Implement Garrigue default-env separation — `env_d` (definitions) vs `env_c` (call-site) (`src/eval.rs`)
-- [x] Implement 4 error classes: E-COVERAGE, E-CONFLICT, E-UNKNOWN, E-EXCESS (`src/eval.rs`)
-- [x] Support named args from dict in `$apply` — integer-keyed → positional, string-keyed → named. Garrigue (1995). (`src/builtins.rs:878-932`) [Minor, eval-engine]
-- [x] Add tests for each binding constraint and error class
-- [x] Add tests for interleaved required/optional parameters
-
-## typeassert-structural: TypeAssert Structural Contract Checking
-
-Replace nominal type tag checking with structural contract validation. See DESIGN.md §TypeAssert Runtime Validation.
-
-**Depends on:** `bidirectional-typing` for `check_expr` in elaboration flow
-
-Core contract validation and guard wrapping. Split into typeassert-structural-b for remaining items.
-
-- [x] Add `resolved_type: Option<Type>` field to `Expr::TypeAssert` (`src/ast.rs`)
-- [x] Update `resolve_type_assert()` to set `resolved_type` on AST node (elaboration) (`src/typecheck.rs:503-523`)
-- [x] Implement `value_matches_type(value, type, span) -> Result<bool, EvalError>` for immediate validation (`src/eval.rs`)
-- [x] Add `ThunkState::Guarded { inner, expected, field_path, guard_span }` variant (`src/value.rs`)
-- [x] Implement proxy contract wrapping: shape check + guard wrapping for record field thunks. Findler & Felleisen (2002). (`src/eval.rs:117-157`)
-- [x] Implement guard memoization: `Guarded` → `Materialized` or `Failed` after first force (`src/eval.rs`)
-- [x] Handle `--no-typecheck` fallback — degrade to current nominal behavior when `resolved_type` is `None` (`src/eval.rs`)
-- [x] Implement blame tracking with even-odd polarity for contract positions. Findler & Felleisen (2002). (`src/eval.rs`) [Major, computer-scientist]
-
 ## row-unification: Full Row-Variable Unification (Remy-Style)
 
 Replace the current closed-strict/open-lenient record unification with full Remy-style row-variable unification. Row variables become first-class participants in type inference, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
@@ -92,42 +10,32 @@ Replace the current closed-strict/open-lenient record unification with full Remy
 
 - [x] Design Remy-style row unification model (row variable binding, remainder semantics, occurs check) — see DESIGN.md §Row-Variable Unification — Kinded Rémy Model (Dict+Tail Representation)
 
-### row-unification-a: Row Variable Pre-Unification Fixes
+### row-unification-c: Verification and Bug Fixes
 
-Bug fixes and documentation in existing row handling code. Independent of the core algorithm.
+Bug fixes and verification for row-variable unification. Requires row-unification-b.
 
-- [x] Fix row variable substitution creating duplicate fields — `merged.extend(extra_fields)` doesn't check for key collisions (`src/types.rs:166-184`) [Critical, type-theorist]
-- [x] Fix sub_rest ignored in record subtyping — `is_subtype` destructures sub record as `(sub_fields, _sub_rest)`, ignoring RowVar/Open rest; a record with `RowVar(r)` may have additional fields via its row variable not checked against a Closed supertype. Latent issue that becomes real with row variable binding. (`src/types.rs:52-64`) [Major, computer-scientist]
-- [x] Fix RowVar treated identically to Open in `is_subtype` — add TODO comment explaining row-unification placeholder (`src/types.rs:59-62`) [Major, type-theorist]
-- [x] Document RowVar instantiation via TypeVar namespace coincidence — `instantiate()` renames TypeVar names and RowVar names share the same namespace, so RowVars get freshened correctly by accident. Should be documented as intentional or given separate namespace handling. (`src/types.rs:318-330`) [Minor, computer-scientist]
+- [x] Fix `unify_remainders` reachable silent-success when `rho1 == rho2` with non-empty unique fields — Case 4 guard (`rho1 != rho2`) excludes the case where both rows share the same row variable but have different unique fields; e.g. unifying `{x: Int, ...rho}` with `{y: Str, ...rho}` falls through to `_ => Ok(())` silently succeeding, dropping the unique-field constraints. Soundness violation: the shared tail cannot absorb fields from both sides without contradiction. Fix: add an explicit case before the fallback: `(RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _)) if rho1 == rho2 && (!u1_empty || !u2_empty) => Err(TypeError::new("incompatible fields with shared row variable", span))`. Then change the fallback to `unreachable!()`. (`src/types.rs:603-706`) [Major, computer-scientist C51]
+- [x] Fix row occurs check not chasing TypeVar bindings through substitution — `row_var_occurs_in_type` returns `false` for `TypeVar` even when the type var is bound to a type containing the target row var; theoretical incompleteness, low practical impact given typical HM inference order (`src/types.rs:460-481`) [Minor, computer-scientist C49]
+- [x] Fix anonymous `[...]` open record annotations sharing `_open` row variable name and hardcoded level 0 — multiple open-record annotations on different params share the same `RowVar("_open", 0)`, causing their tails to be identified during unification; the hardcoded level 0 also prevents generalization (Kiselyov 2013: variables at level 0 are never generalized), so a function `[fn [x@[name: String ...]] ...]` cannot infer a polymorphic row tail. Fix: generate fresh names via `state.name_counter` at `state.level`. Named row vars (`...rest`) already get proper treatment at lines 1200-1213. (`src/typecheck.rs:1199`) [Minor, computer-scientist C49]
+- [x] Test inference through polymorphic functions that extend/restrict records (e.g., `[fn add-id [r@[...rest]] [id: 1  ...rest]]`)
+- [x] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
+- [x] Ensure row variable occurs check before binding — existing `occurs_in()` handles `RowVar` case correctly (`src/types.rs:215-228`), but when row-unification adds row variable binding, it must go through the same occurs-check path to prevent infinite types like `r = [x: Int ...r]`. (`src/types.rs`) [Major, computer-scientist]
+- [x] Add debug assertion in `apply_row` field merge for duplicate fields — field partitioning in `unify_rows` ensures disjoint unique fields, so a duplicate during merge indicates an internal error; add `debug_assert!(!merged.contains_key(&key))` (`src/types.rs:404-410`) [Nit, type-theorist C49] — duplicates in apply_row are legitimate (explicit field wins over row-variable-inherited); explanatory comments added instead
 
-### row-unification-b: Core Remy-Style Unification
+### row-unification-d: Row Type Features and Performance
 
-Core algorithm implementation. Requires row-unification-a.
+Feature additions and performance improvements for row types. Requires row-unification-c.
 
-- [x] Extend `Substitution::apply` to splice bound row variable fields into records (e.g., `[a: Int | ...r]` with `r → [b: String]` produces `[a: Int, b: String]`)
-- [x] Unify row rests: `RowVar` vs `RowVar` binds one to the other, `RowVar` vs `Closed` binds the var to the leftover fields as a closed record
-- [x] Handle "remainder" binding: `unify([a: Int | ...r], [a: Int, b: String | Closed])` binds `r → [b: String | Closed]`
-- [x] Extend `Type` representation if needed to support partial-row bindings (row var bound to fields + another row var)
-- [x] Update `instantiate` to freshen row variables alongside type variables
-- [x] Add row-specific occurs check for `RowVar("r")` with `Record(..., RowVar("r"))` (infinite row type prevention)
-- [x] Add row variable substitution cycle handling — `Substitution::apply` must handle cycles when row variables bind to records containing the same row variable (`src/types.rs`) [Major, type-theorist]
-- [x] Fix open-record unification silently dropping non-shared fields — only shared fields unified, unique fields ignored without constraint; Remy-style would bind fresh row variables to capture remainders (`src/types.rs:334-338`) [Major, computer-scientist]
-
-### row-unification-c: Verification and Optimization
-
-Testing, verification, and performance. Requires row-unification-b.
-
-- [ ] Test inference through polymorphic functions that extend/restrict records (e.g., `[fn add-id [r@[...rest]] [id: 1  ...rest]]`)
-- [ ] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
-- [ ] Ensure row variable occurs check before binding — existing `occurs_in()` handles `RowVar` case correctly (`src/types.rs:215-228`), but when row-unification adds row variable binding, it must go through the same occurs-check path to prevent infinite types like `r = [x: Int ...r]`. (`src/types.rs`) [Major, computer-scientist]
 - [ ] Generate unification constraints from access chains — `$x.field` should produce `unify(typeof(x), Record([field: α], ρ))`, enabling field requirement inference from usage. Currently access type checking is direct lookup (limitation, not design choice). See DESIGN.md §Access Chain Evaluation Part 5. (`src/typecheck.rs:297-357`) [Major, type-theorist]
 - [ ] Subtyping proof search for TypeAssert defaults — validate default value type matches asserted type (type-theorist review)
 - [ ] Cache FTV/FRV (free type/row variables) per Type during construction — row-variable occurs check is O(n×m) for n fields × m type depth without caching; 500-field records (K8s manifests) create a hot path. With cached sets, occurs check becomes O(1) set membership. [Major, performance-expert]
 - [ ] Use HashMap for Row.fields at type level, IndexMap only at runtime — row fields are semantically unordered (Rémy left-commutativity), IndexMap's insertion-order preservation adds ~20% overhead unnecessary in the type checker. Runtime `Value::Dict` keeps IndexMap for user-visible key ordering. [Minor, performance-expert]
-- [ ] Fix row occurs check not chasing TypeVar bindings through substitution — `row_var_occurs_in_type` returns `false` for `TypeVar` even when the type var is bound to a type containing the target row var; theoretical incompleteness, low practical impact given typical HM inference order (`src/types.rs:460-481`) [Minor, computer-scientist C49]
-- [ ] Fix anonymous `[...]` open record annotations sharing `_open` row variable name — multiple open-record annotations on different params share the same `RowVar("_open", 0)`, causing their tails to be identified during unification; fix by generating fresh names via `state.name_counter` (`src/typecheck.rs:1199`) [Minor, computer-scientist C49]
-- [ ] Add debug assertion in `apply_row` field merge for duplicate fields — field partitioning in `unify_rows` ensures disjoint unique fields, so a duplicate during merge indicates an internal error; add `debug_assert!(!merged.contains_key(&key))` (`src/types.rs:404-410`) [Nit, type-theorist C49]
+- [ ] Add comment to `unify_tails` RowVar/RowVar binding explaining why no occurs check is needed — safety depends on `resolve_row` guaranteeing both vars are unbound; `rho1 → {fields:{}, tail: RowVar(rho2)}` cannot create a cycle; document Robinson (1965) vacuous satisfaction. (`src/types.rs:548`) [Nit, computer-scientist + integration-verifier C52]
+- [ ] Add comment to `row_var_occurs_in_type` TypeVar chase explaining no-cycle invariant — `unify()` calls `type_var_occurs(name, &b)` before binding `α→b`; cyclic TypeVar chains (α→β→α) cannot exist in `type_map`; the chase terminates without a visited set. (`src/types.rs:493-499`) [Nit, type-theorist + computer-scientist C52]
+- [ ] Update `doc/07-type-extensions.md` pseudocode for `unify_remainders` — line 446 incorrectly claims "same-variable case handled by Case 1 after apply"; Case 1 only fires when both unique sets are empty; the same-rho-different-unique-fields case is the new explicit error arm. Add Case 7 (same ρ, non-empty unique fields on both sides → ERROR). Also add `u2_empty`/`u1_empty` guards to Case 2/3 pseudocode. (`doc/07-type-extensions.md:446-470`) [Minor, computer-scientist + integration-verifier C52]
+- [ ] Add corpus error test for `unify_remainders` same-rho soundness fix — `test_unify_same_rho_different_unique_fields_errors` is a unit test calling `unify()` directly; a regression where `typecheck.rs` stops routing through `unify_remainders` correctly would not be caught. Add an end-to-end corpus test where two call sites force the same named row var to absorb disjoint fields. (`tests/corpus/eval/errors/`) [Minor, test-crafter C52]
+- [ ] Add cross-function anonymous open record test — `test_anonymous_open_record_annotations_get_fresh_vars` tests distinctness within one function; the original bug was cross-function sharing (two separate functions sharing `RowVar("_open", 0)` causing spurious unification). Add test with two functions both using `...` and assert their row vars do not unify. (`src/typecheck.rs`) [Minor, test-crafter C52]
+- [ ] Eliminate Cases 2/3 redundant clones in `unify_remainders` — `unique1.clone()` and `tail1.clone()` in Case 2 (and `unique2`/`tail2` in Case 3) can be replaced by direct moves; the owned values are never used after the match arm. Companion to Case 4 clone elimination at TODO.md line ~308. (`src/types.rs:681-682, 701-702`) [Minor, performance-expert C52]
 
 ## type-extensions: Type System Extensions
 
@@ -178,8 +86,9 @@ Future type system work identified by type-theorist review (2026-04-19). Updated
 - [ ] Consider `HashMap` instead of `IndexMap` for type alias registry — order doesn't matter (`src/types.rs:386`) [Nit, type-theorist]
 - [ ] Clarify `Fn@T` with zero params — document whether it means thunk or nullary function (`src/typecheck.rs:536-541`) [Nit, type-theorist]
 - [x] Research Type::Any consistency vs subtyping separation — see doc/whatif/gradual-typing.md. Covers consistency relation (Siek & Taha 2006), AGT framework (Garcia et al. 2016), is_consistent() vs is_subtype() separation, Any→Unknown+Top split. Recommendation: don't adopt now; revisit when Any causes a real false positive or algebraic subtyping is adopted.
-- [ ] Document principal type property violations — Tinct does not satisfy Damas-Milner principal type theorem: (1) no let-generalization, (2) non-MGU literal coercions, (3) subtyping + parametric polymorphism interaction, (4) Type::Any as universal unifier. Document as known limitation in DESIGN.md §Type Inference. [Minor, computer-scientist]
+- [ ] Document principal type property violations + add false-negative test case — Tinct does not satisfy Damas-Milner principal type theorem: (1) no let-generalization, (2) non-MGU literal coercions, (3) subtyping + parametric polymorphism interaction, (4) `Type::Any` is both top and bottom (`Any <: τ` and `τ <: Any` for all τ — documented in `doc/06-type-inference.md:561-571`). Add a **concrete corpus test** demonstrating the false-negative: `[@Int [call $f "hello"]]` where `$f` is an untyped (Any→Any) identity — TypeAssert silently passes type checking because `Any <: Int`, yet the runtime value is a String. The test should be a `tests/corpus/typecheck/` file that currently produces no type errors but would produce a warning under a sound consistency relation. Add the limitation to DESIGN.md §Type Inference with this example. Fix path: `Type::Any` split (see AnyGradual/AnyPoly item in Integration/Pipeline section). [Minor, computer-scientist + type-theorist]
 - [ ] Document literal promotion symmetry in unification — `IntLiteral↔Int` unification is bidirectional; in a subtyping-aware system `IntLiteral <: Int` but not vice versa; reduces diagnostic value (`src/types.rs:263-264`) [Minor, computer-scientist]
+- [x] Research full Damas-Milner principality path — verdict: full classical DM principality not achievable with gradual typing (proven: Garcia et al. 2016 AGT, Siek et al. 2015). No separate whatif needed. (a) Literal promotion migration designed in doc/06-type-inference.md §Unification (PROPOSED DESIGN block) — achievable and planned under bidirectional-typing. (b) Consistency relation (Siek & Taha 2006) addresses Any-as-top-and-bottom; covered by doc/whatif/gradual-typing.md Phase 2+3, now expanded with full blame tracking. (c) Full principality with subtyping: see doc/whatif/algebraic-subtypes.md (Simple-sub). Achievable target is synthesis-mode local principality + the Gradual Guarantee, not classical DM.
 - [x] Research path-sensitive type narrowing — see doc/whatif/narrowing.md. Make `$if` a type-level special form, fork type environments per branch. Four narrowing patterns: equality-with-literal, type-of guard, key presence, boolean conjunction. No false-branch narrowing (needs negation types). Assumes typeassert-structural complete. Trigger: after let-generalization + bidirectional-typing.
 
 ## typeassert-structural-b: TypeAssert Structural Contract Checking (Part 2)
@@ -194,6 +103,8 @@ Chaperone semantics, elaboration gap, and tests. Split from typeassert-structura
 - [ ] Use chaperone semantics for record proxies. Strickland et al. (2012). (`src/eval.rs`) [Minor, computer-scientist]
 - [ ] Close elaboration gap — evaluator must enforce structural types for eval-only mode soundness. (`src/typecheck.rs:503-523`, `src/eval.rs:117-157`) [Major, computer-scientist]
 - [ ] Add tests for each validation rule and proxy/guard lifecycle
+- [ ] Fix LSP double-typecheck panic risk — `resolve_type_assert` panics if `resolved_type` is already `Some` (write-once guard at `src/typecheck.rs:957-961`); if the LSP caches a parsed AST and calls `typecheck_file_with_types()` a second time on the same AST (e.g., after an edit), the panic fires. Fix: either (a) always parse fresh before each typecheck call, or (b) add a `reset_elaboration(file: &mut File)` pre-pass in `src/typecheck.rs` that walks the AST and sets all `resolved_type` fields back to `None` before re-typechecking. Option (b) is safer for LSP performance. (`src/typecheck.rs:942-976`) [Major, integration-verifier C49]
+- [ ] Fix `validate_and_wrap_record` closed-record cardinality check skipping `Key::Int` entries — the extra-field rejection loop at `src/eval.rs:199-219` only checks `Key::String` keys; integer-keyed entries (auto-indexed dict fields) pass unchecked even against a closed `RowTail::Empty` record type. A dict `[0: "x" name: "y"]` validates against `[@{name: String}]` without error. Fix: extend the cardinality check to also reject `Key::Int` entries not present in `row.fields`. (`src/eval.rs:199-219`) [Minor, computer-scientist C51]
 
 ## include-desugar: $include Pipeline Fix (C49)
 
@@ -202,6 +113,16 @@ Critical correctness gap: `$include` is the only pipeline entry point that does 
 - [ ] Fix `builtin_include` missing `desugar_file` call — add `crate::desugar::desugar_file(&mut file.node);` immediately after the `parse()` call at `src/builtins.rs:1057`, before the guard push and `eval_file` call. One-line fix. (`src/builtins.rs:1054-1077`) [Critical, integration-verifier C49]
 - [ ] Add CLI regression test for `$include` + `$_` — write a helper file containing `$_` syntax, include from a main file, assert evaluated result; catches any future regression of the desugar-in-include path. (`tests/cli_tests.rs`) [Major, integration-verifier C49]
 - [ ] Update `INCLUDE-EVAL` spec to show desugar step — pseudocode at `doc/09-documents.md:527-548` shows `parse(source) → eval_file(file, ...)` with no desugar step; add `desugar(file)` between parse and guard push after Critical fix lands. (`doc/09-documents.md:527-548`) [Minor, integration-verifier C49]
+
+## file-sandbox-security: $include TOCTOU and File Access Hardening
+
+Security hardening for the `$include` file sandbox. The current implementation uses three separate path operations (canonicalize → metadata → read_to_string) creating a TOCTOU race window where the file can change between the validation and the read. The safe primitive is the file descriptor — once an fd is open, the kernel pins the inode regardless of what happens to the path.
+
+- [ ] Research `cap-std` vs `rustix` for fd-based `$include` — `cap-std::fs::Dir::open_ambient_with(RESOLVE_BENEATH)` or `rustix::fs::openat2(..., ResolveFlags::BENEATH | NO_FOLLOW)` closes the TOCTOU gap; evaluate which crate is lighter, whether it covers Windows, and what the migration path from the current `canonicalize()→metadata()→read_to_string()` pattern would look like. (`src/builtins.rs:1021-1050`) [Major, security-expert]
+- [ ] Switch `include_guard` and `include_cache` keys from `PathBuf` to `(device, inode)` pair — path-keyed caching can be defeated by symlink replacement between validation and cache lookup; keying on `(dev, ino)` from `std::fs::Metadata` makes cycle detection and caching immune to path races. Pairs with the cap-std/fd fix: obtain metadata from the open fd, not a separate stat call. (`src/eval.rs`, `src/builtins.rs:1031,1060`) [Major, security-expert]
+- [x] Add CLI file size limit for `$include` — LSP already rejects files > 10MB (`src/lsp.rs`); the `$include` builtin and CLI entry point have no such limit, so a crafted LLT file can force the process to allocate unbounded memory by including a multi-GB file. Add a `MAX_INCLUDE_BYTES` constant (10MB matching LSP) and return `EvalError` if metadata size exceeds it before `read_to_string`. (`src/builtins.rs:1021-1050`, `src/main.rs`) [Minor, security-expert]
+- [ ] Call `pest::parser_state::set_call_limit` in `src/parser.rs` — pest exposes a global call limit API that prevents unbounded parser rule invocations. LLT does not use it. Without this, a 2MB file of nested brackets (`[[[...]]]`) can exhaust the 64MB worker stack and crash the process with SIGSEGV. Add `pest::parser_state::set_call_limit(Some(NonZeroUsize::new(500_000).unwrap()))` before calling `LltParser::parse`. (`src/parser.rs:22`) [Major, security-expert]
+- [ ] Add cargo-fuzz targets for parser and evaluator — pest ships fuzzing infrastructure for its own grammars (`.training/pest/grammars/fuzz/`). LLT has no fuzzing. Add fuzz targets that feed arbitrary bytes through `parse()` and `eval_file()` to catch panics and stack overflows that escape input validation. (`fuzz/` directory, new) [Minor, security-expert]
 
 ## merge-lazy-overlay: Lazy Dict Overlay for $merge
 
@@ -313,6 +234,7 @@ Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 - [ ] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning). Note: `concat` Seq path is also a correctness issue (hits depth limit at ~256 elements), tracked separately in seq-resource-safety
 - [ ] `sort`, `sort-by` / `sort-merge` -- single Rust builtin using Vec::sort_by would be O(n log n) (laziness-auditor review: $sort uses eager $cons per element)
 - [ ] `zip`, `flatten`, `find-deep` -- recursive traversal or lazy seq versions for perf
+- [ ] `until` -- currently LLT recursive, hits MAX_EVAL_DEPTH at ~230 iterations; implement as Rust builtin using a Rust loop for unlimited depth convergence (`stdlib/prelude.llt:153-154`) [Minor, stdlib-author]
 
 ## perf-foundations: Performance Foundations
 
@@ -385,6 +307,13 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Change `Substitution.map` from `IndexMap` to `HashMap` — substitution lookup in `apply_inner()` is the hot path in type inference; IndexMap preserves insertion order that has no semantic meaning for substitutions; ~20% faster lookup. Also change `TypeEnv.type_aliases` to `HashMap` (same rationale). (`src/types.rs:285, 733`) [Major, performance-expert C49]
 - [ ] Change `ThunkState::PendingBuiltin.named` to `Option<IndexMap<...>>` — all sequence combinators pass `IndexMap::new()` for named args that are always empty; ~30 call sites allocate a fresh IndexMap per step for 0-element maps. Treat `None` as empty, eliminating allocation for every sequence element in map/filter/take/drop/reduce/range/repeat/cycle/iterate/unfold. (`src/value.rs:185-192`, `src/builtins.rs` ~30 sites) [Major, performance-expert C49]
 - [ ] Fix `builtin_filter_dict_step` O(n²) dict cloning — step function materializes and clones the full `IndexMap` on every step invocation (once per dict entry). For a 1000-entry dict, this is 1000 full dict clones. Fix: store `Rc<IndexMap<Key, Rc<Thunk>>>` in step args instead of a materialized dict thunk, or restructure to pass individual value thunks, eliminating per-step clone. Distinct from the key-Vec clone tracked above (line ~361). (`src/builtins.rs:1919`) [Major, laziness-auditor + performance-expert C49]
+- [ ] Change `Row.fields` from `IndexMap` to `HashMap` — row field order is semantically irrelevant at the type level (Rémy commutativity); IndexMap adds ~20% lookup overhead over HashMap for zero benefit. All `unify_rows`, `apply_row`, `is_subtype` record checks pay this tax on every field access. (`src/types.rs:34`) [Major, performance-expert C50]
+- [ ] Add fast path in `unify_rows` for closed equal-key rows — when both rows are `RowTail::Empty` and have the same field set, skip the 5-allocation partitioning step (2 HashSets + Vec + 2 IndexMaps) and unify field types directly by key iteration. Most closed-record unifications have matching keys. (`src/types.rs:711-758`) [Major, performance-expert C50]
+- [ ] Change `resolve_row` to return `Cow<'_, Row>` — currently clones the row unconditionally for both `RowTail::Empty` (line 508) and unbound `RowVar` (line 505) cases; `RowTail::Empty` is the common case and never needs resolution. `Cow::Borrowed(row)` eliminates 2 × O(n) clones per `unify_rows` call. (`src/types.rs:484-510`) [Major, performance-expert C50]
+- [ ] Fuse `collect_type_vars` + `collect_row_vars` in `lower_row_var_levels` — each call allocates 2 BTreeSets and walks field types twice; Case 4 row unification calls it twice = 4 BTreeSet allocs + 4 tree walks. A single `collect_all_vars(ty, type_vars, row_vars)` helper halves this. Separate from the `generalize()` fusion in TODO.md:281. (`src/types.rs:559-582`) [Major, performance-expert C50]
+- [ ] Eliminate `unique1`/`unique2` clones in `unify_remainders` Case 4 — add `row_var_occurs_fields(var, fields: &IndexMap, tail: &RowTail)` helper so occurs check takes references without requiring a `Row` struct; then move `unique1`/`unique2` directly into the bound Rows without cloning. Eliminates 2 × O(n) clones per Case 4 unification. (`src/types.rs:611-644`) [Major, performance-expert C50]
+- [ ] Eliminate redundant param-exists scan in `bind_args_thunks` BIND-NAMED — `iter().position()` (scan 1) already determines existence; `iter().any()` (scan 2) at line 909 is always redundant. Replace two-scan pattern with single `match position()` arm covering both None→error and Some(idx<positional)→error cases. (`src/eval.rs:891-918`) [Minor, performance-expert C50]
+- [ ] Fuse `collect_type_vars` + `collect_row_vars` in `instantiate_at_level` — performs 3 full type walks + 3 allocations per CALL-POLY invocation. Same fusion fix as TODO.md:281 applied to this function. Also applies to `instantiate_scheme` which takes pre-collected lists from TypeScheme but still builds a Substitution for a single-variable rename. (`src/types.rs:949-980`) [Major, performance-expert C50]
 
 ## iterative-eval: Iterative Evaluator
 
@@ -508,13 +437,18 @@ Collection shape transforms and predicate variants. Split from stdlib-convenienc
 
 ### stdlib-type-predicates: Type Predicates & Guards
 
-- [ ] `is-int?`, `is-str?`, `is-float?`, `is-bool?`, `is-dict?`, `is-fn?` — type predicate wrappers over `$type-of` (Jsonnet pattern)
+- [ ] `is-int?`, `is-str?`, `is-float?`, `is-bool?`, `is-dict?`, `is-fn?` — type predicate wrappers over `$type-of` (Jsonnet pattern); all one-liners: `[fn [x] [call $= [call $type-of $x] Int]]` etc.
 - [ ] Runtime assertion guards at stdlib function entry with descriptive errors (Jsonnet pattern)
 
 ### stdlib-numeric: Numeric Utilities
 
-- [ ] `min`, `max`, `sum`, `product` — aggregate functions (stdlib-author review)
-- [ ] `abs`, `sign`, `clamp` — numeric primitives (stdlib-author review)
+- [ ] `min`, `max`, `sum`, `product` — aggregate functions (stdlib-author review); all one-liners over `$fold`/`$reduce`
+- [ ] `abs`, `sign`, `clamp` — numeric primitives (stdlib-author review); all one-liners using `$<`, `$-`, `$if`
+
+### stdlib-primitives: Missing Rust Primitives
+
+- [ ] Add `$has?` as Rust builtin — `has?` currently uses `$try` around bracket access, which forces the value (materializes it) to check existence. A Rust-native `$has?` would check `IndexMap::contains_key()` in O(1) without materializing the value. 2-arg: `[call $has? $dict $key]`. Unblocks lazy has-checking. (`src/builtins.rs`) [Minor, stdlib-author]
+- [ ] Add `$has?` Rust primitive design: must handle both String and Int key types (matching bracket access semantics), return Bool, never materialize the value thunk. (`src/builtins.rs`) [Minor, stdlib-author]
 
 ### stdlib-string-ops: String Operations (requires new Rust builtin)
 
@@ -544,11 +478,23 @@ Core error model improvements. Foundation for all later error work.
 - [ ] Fix builtin helper functions materializing with `None` mat_span instead of operand span — `expect_one_arg`, `extract_num_pair`, `require_dict`, `require_string` all call `materialize()` with `None`, losing dual-span error context. Should pass `Some(&args[i].span)`. (`src/builtins.rs:102,131-132`) [Major, span-integrity-checker]
 - [ ] Fix `TypeMismatch::context` field always `None` for general type mismatches — error constructors in eval.rs always pass `None` for context, losing "which operation failed" info. Either make context mandatory and thread builtin name, or add `EvalError::with_context()` builder. (`src/error.rs:42-51`) [Major, span-integrity-checker]
 
+### error-typeassert: TypeAssert Error Reporting (Post typeassert-structural Sprint)
+
+Span and message quality gaps introduced or exposed by the typeassert-structural sprint.
+
+- [ ] Fix Guarded thunk type-check errors bypassing `decorate` — when the inner thunk materializes successfully but fails the type check (eval.rs:1441-1459 and 1464-1479), the constructed `EvalError` is returned raw WITHOUT going through the `decorate` closure. The `mat_span` from the outer `materialize()` call is silently dropped: the error shows only `guard_span` (the TypeAssert annotation), never the access site that triggered forcing. Same bypass at line 1441 (validate_and_wrap_record failure in Record branch). Fix: wrap all error returns in the Guarded match arm with `decorate(err.into())`. (`src/eval.rs:1441-1479`) [Critical, span-integrity-checker T4 / Cycle48]
+- [ ] Fix `validate_and_wrap_record` using `guard_span` as definition-site for shape errors — shape errors (missing field, extra field in closed record) point at the TypeAssert annotation, not the dict literal being validated. Capture `thunk.span` before `materialize()` at eval.rs:334 and pass as `dict_source_span` to `validate_and_wrap_record`; use as definition_span, `guard_span` as materialization_span. (`src/eval.rs:161-256, 334, 343`) [Minor, span-integrity-checker T4]
+- [ ] Fix Guarded thunk field errors using `guard_span` not inner thunk span — nested field type failures point at outer TypeAssert, not the field value's definition site. After materializing `inner` at eval.rs:1427, use `inner.span` as definition_span for field errors at lines 1449-1459 and 1468-1479. (`src/eval.rs:1449-1479`) [Minor, span-integrity-checker T4]
+- [ ] Fix nominal TypeAssert fallback using raw `EvalError` struct literal — eval.rs:421-430 constructs TypeAssertFailed with raw struct instead of `EvalError::type_assert_failed()`. Also: uses `expr.span` for both def and mat spans; should use inner thunk span as definition_span, `expr.span` as materialization_span. (`src/eval.rs:421-430`) [Nit, span-integrity-checker T4]
+- [ ] Normalize TypeAssertFailed message format between shape and guard type errors — shape errors (missing/extra field) use "record with field..." phrasing; guard type errors use "field 'path': Type" phrasing. Both should use consistent fieldpath-prefix scheme. Add format specification to `doc/10-errors.md:770`. (`src/eval.rs:184-215, 1448-1479`, `doc/10-errors.md:770`) [Minor, span-integrity-checker T4]
+- [ ] Add corpus tests for TypeAssert Record/proxy error paths — zero coverage for: missing required field, extra field in closed record, field type mismatch, nested field failure, TypeAssert with default on shape error. Add at least 4 corpus test files. (`tests/corpus/eval/errors/`) [Major, test-crafter + span-integrity-checker T4]
+
 ### error-context: Error Context & Suggestions
 
 Richer error context for debugging.
 
 - [ ] Add available keys to `key_not_found` errors for "did you mean?" suggestions (use `strsim` crate for edit-distance matching)
+- [ ] Filter `Span::origin()` frames from user-facing stack trace output — stdlib calls and synthetic values produce frames with `Span::origin()` (0:0-0:0) that are noise in error output. Filter in `EvalError::Display`: skip frames where `frame.span == Span::origin()`. Derived from Nickel's `group_by_calls()` stdlib-frame filtering pattern. (`src/error.rs:788-791`) [Minor, span-integrity-checker T4]
 - [ ] Filter stdlib/prelude.llt frames from user-facing stack traces (Nickel `group_by_calls` pattern)
 - [ ] Build `$include` chain threading — nested include errors should show the full include path ("included from A at line X")
 - [ ] Add secondary span support for "evaluated to this" labels on lazy evaluation errors (Nickel dual-position pattern)
@@ -586,6 +532,7 @@ Nit-level error infrastructure cleanup.
 - [ ] Simplify `EvalError::new` parameter from `impl Into<String>` to `String` (`src/error.rs:56-79`) [Nit, span-integrity-checker]
 - [ ] Standardize error category names (`src/error.rs:56+`) [Nit, span-integrity-checker]
 - [ ] Fix `from_json` inconsistent `.into()` usage — some error paths use `.into()` for boxing while adjacent paths use explicit `Box::new()`; standardize for consistency (`src/builtins.rs:984`) [Nit, computer-scientist]
+- [ ] Fix `ErrorKind` variant count assertion fragility — `test_partialeq_all_variants_covered` and `test_error_kind_code_exhaustiveness` assert `variants.len() == 27` hardcoded; silently passes if new variant added to enum but not test vector. Replace with compile-time exhaustive match helper: `fn assert_all_variants_present(kind: &ErrorKind) { match kind { ErrorKind::KeyNotFound{..} => {} ... } }` — compile-fails on non-exhaustive match. (`src/error.rs:1071-1082, 1516-1518`) [Nit, span-integrity-checker T4]
 - [ ] Review PendingBuiltin error path span handling — may overwrite operand span (`src/eval.rs:886`) [Nit, span-integrity-checker]
 - [ ] Fix `checked_f64_to_i64` out-of-range branch still using `EvalError::new` — FloatNotFinite migration covered NaN/Inf but the integer range overflow path at line 110 still uses freeform `EvalError::new(format!(...))` instead of a typed ErrorKind variant (`src/builtins.rs:110`) [Nit, span-integrity-checker C31]
 - [ ] Fix `builtin_filter_seq_step` predicate mismatch error using `EvalError::new` → E099 — should use `EvalError::type_mismatch_ctx("filter", "Bool", got_type, call_span)` to produce E010 and match the TypeMismatch structured pattern; `call_span` is available. (`src/builtins.rs:2028`) [Minor, span-integrity-checker C39]
@@ -826,6 +773,8 @@ Infrastructure tooling and output quality improvements. Split from 15-item backl
 - [ ] Add unit tests for `split_test_file()` — the only delimiter-parsing function used by all 344+ corpus tests has zero self-tests. Add cases: normal `===` split, missing `===` (single-part), multiple `===`, `===` inside string literal. (`tests/corpus_tests.rs`) [Major, test-crafter C49]
 - [ ] Add unit tests for `has_error_code_prefix()` — the gate function for the entire `test_eval_error_corpus_has_error_codes` test has zero self-tests. Add: valid prefix `[E001]`, invalid no-brackets `E001`, empty string, prefix after text. (`tests/corpus_tests.rs`) [Major, test-crafter C49]
 - [ ] Fix `test_corpus_structure` missing required dirs — `required_dirs` at `tests/corpus_tests.rs:83-91` does not include `eval/laziness`, `eval/builtins`, or `eval/stdlib`; those directories can be deleted without this test failing. Add all three to the required set. (`tests/corpus_tests.rs:83-91`) [Major, test-crafter C49]
+- [ ] Move flat-root eval corpus tests into subdirectories — 32+ test files sit directly in `tests/corpus/eval/` root (fn_kotlin_*.llt-eval × 14, underscore_*.llt-eval × 11, fn_*.llt-eval × 7) instead of subdirectories. Create `eval/functions/` for fn_* and fn_kotlin_*, `eval/underscore/` for underscore_*. Makes directory structure scannable and subdirectory isolation meaningful. [Nit, test-crafter]
+- [ ] Update valid corpus test format documentation — `tests/corpus_tests.rs:82-128` now REQUIRES expected AST Display output after `===` for all valid corpus tests; the current format used in the codebase (e.g., `dot_access.llt-eval`) confirms this. Any documentation saying "no expected output needed for parse-only" is stale. Check `.claude/agents/test-crafter.md` Corpus Test Format section. [Nit, test-crafter]
 
 ### test-framework-b: Test Framework Enhancements (Part 2)
 
@@ -1186,6 +1135,23 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Fix `instantiate_at_level` level-lowering U-VAR comment saying "type vars in b" when it also collects row vars — `src/types.rs:398-406` comment says "level-lower all type vars in b" but `collect_type_vars` collects both TypeVar and RowVar names. Update comment to "level-lower all type and row vars in b". (`src/types.rs:398-406`) [Minor, type-theorist C48]
 - [ ] Fix `doc/06-type-inference.md:15` Type Grammar using "Str" while user-facing annotations use "String" — no explanation of the split. Add note: "Internal representation uses `Str`; user-facing annotations accept `String` as an alias." (`doc/06-type-inference.md:15`) [Nit, type-theorist C48]
 - [ ] Fix `doc/05-type-annotations.md:185` float literal rationale wrong — says "cannot be used as dict keys" but Float CAN be a dict key; real reasons are equality fragility and NaN comparisons. Fix rationale. (`doc/05-type-annotations.md:185`) [Nit, type-theorist C48]
+- [ ] Fix `LineTable` bare `\r` handling — `src/parser.rs` `LineTable` scans only `\n` to build line-offset table, but pest's `NEWLINE` built-in matches `\r`, `\n`, and `\r\n`. Files using bare CR line endings (classic Mac OS) parse correctly but get wrong line numbers in error messages. Fix: recognize bare `\r` in `LineTable::new` alongside `\n`, treating bare `\r` and `\r\n` as single line endings. (`src/parser.rs`) [Minor, grammar-architect train-3]
+- [ ] Document (or replace) `build_range_expr` byte-offset disambiguation workaround — uses `pair.as_str().find("..")` byte-offset comparison to distinguish range start from range end because pest produces a flat pair tree for `range_expr = { range_value? ~ ".." ~ range_value? }`. Fragile: must be updated in sync with any separator change (e.g., `...`). For an iterative parser rewrite, replace with explicit `before_separator` state flag instead of offset heuristics. (`src/parser.rs:844-918`) [Minor, grammar-architect train-3]
+- [ ] Document Unicode homograph risk in `var_ident` — `grammar.pest` `var_ident` denylists ASCII punctuation but allows Unicode identifier characters; Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions in LLT programs. Add a note to `doc/02-syntax.md` or `DESIGN.md` acknowledging the risk and documenting the design stance (accept Unicode but restrict to NFC, or ASCII-only for safety). (`src/grammar.pest`) [Minor, grammar-architect train-3]
+
+## Integration / Pipeline
+
+Cross-cutting integration gaps identified by integration-verifier agent (2026-04-24). Items span pipeline boundaries, circular dependencies, and serialization contracts.
+
+- [ ] Unify serializer logic via visitor pattern — `value_to_json` and `value_to_display_string` in `src/lib.rs` duplicate dict/seq traversal logic; extract a shared `ValueVisitor` trait or generic traversal helper to eliminate the duplication
+- [ ] Make deep_materialize→serialize contract explicit — document or enforce (via assertion or type-level marker) that all values must be fully materialized before serialization; currently an implicit caller obligation with no enforcement at the `value_to_json` / `value_to_display_string` boundary (`src/lib.rs`)
+- [ ] Break eval↔builtins circular dependency — `src/eval.rs` and `src/builtins.rs` mutually depend on each other (builtins call `materialize`/`eval_call`, eval calls `standard_builtins`); extract a `src/eval_core.rs` interface or use trait objects to break the cycle and enable independent testing
+- [ ] Add depth guard to desugar pass or document invariant — `desugar_file` is always called before `eval` but there is no guard ensuring desugaring depth cannot exceed `MAX_EVAL_DEPTH`; add a MAX_DESUGAR_DEPTH check matching the eval limit, or add a comment documenting why desugar nesting is always shallower than the eval depth limit (`src/desugar.rs`)
+- [ ] Document TypeAssert AST mutation threading implications — elaboration in `resolve_type_assert()` modifies the AST in place by setting `resolved_type` on `Expr::TypeAssert` nodes; this is unsafe for concurrent use (e.g., LSP running typecheck and eval concurrently on shared AST). Document the single-threaded assumption or add `Arc<Mutex<...>>` wrapping for the LSP path (`src/typecheck.rs:503-523`, `src/ast.rs`)
+- [ ] Document nested dict let-polymorphism limitation — nested dicts do not receive full let-polymorphism: only top-level dict entries are generalized in Pass 4; inner dict entries (e.g., `[outer: [inner: [fn [x@a] $x]]]`) remain at the outer level and are not independently generalized. Add to doc/06-type-inference.md §Limitations and doc/05-type-annotations.md (`src/typecheck.rs`)
+- [ ] Add integration test for row-unification-b Type substitution flowing through full pipeline — add `tests/corpus/eval/typecheck/row_unification_pipeline.llt-eval` exercising a row-polymorphic function from parser input through typecheck (row variable unification), eval, and JSON serialization output to catch cross-layer regressions
+- [ ] Add builtin signature macro to prevent duplication across BuiltinFn registrations — `standard_builtins()` at `src/builtins.rs:2619-2676` repeats the same `(name, arity, fn)` tuple structure for 45 entries; extract a `builtin!` macro or builder that enforces consistent arity/name/fn-pointer registration and prevents name/arity drift
+- [ ] Split `Type::Any` into `Type::AnyGradual` (escape hatch) and `Type::AnyPoly` (polymorphic placeholder) for gradual typing correctness — current `Type::Any` serves two conflicting roles: dynamic escape hatch (gradual typing, Siek & Taha 2006) and polymorphic placeholder (pre-generalization TypeVar stand-in); splitting prevents `Any`-poisoning of let-generalization level zeroing and aligns with `doc/whatif/gradual-typing.md` three-phase recommendation (`src/types.rs`)
 
 ## Future Features
 

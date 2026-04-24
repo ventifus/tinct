@@ -401,7 +401,14 @@ impl Substitution {
                             self.apply_row(bound_row, depth + 1, visited_types, visited_rows);
                         visited_rows.remove(name);
 
-                        // Merge fields: explicit fields (new_fields) take precedence
+                        // Merge fields: explicit fields (new_fields) take precedence.
+                        // Duplicates CAN legitimately arise here: a row variable may
+                        // have been bound (by a prior unification step or by direct
+                        // construction) to a row that re-introduces a field already
+                        // present in the explicit fields.  The contains_key guard
+                        // ensures the explicit field always wins, matching Rémy's
+                        // semantics for row-variable substitution application.
+                        // See test_substitution_apply_row_var_duplicate_field.
                         let mut merged = new_fields;
                         for (key, value) in resolved.fields {
                             if !merged.contains_key(&key) {
@@ -457,26 +464,40 @@ fn type_var_occurs_in_row(var_name: &str, row: &Row) -> bool {
 /// Row variable occurs check: does row variable ρ occur in row r?
 /// Checks both the tail (direct occurrence like ρ = {..., ...ρ}) and field types
 /// (nested occurrence like ρ = {x: Record({y: Int, ...ρ})})
-fn row_var_occurs(var_name: &str, row: &Row) -> bool {
+/// Chases TypeVar bindings through `subst` to detect transitive occurrences.
+fn row_var_occurs(var_name: &str, row: &Row, subst: &Substitution) -> bool {
     // Check field types for nested row variables
     let in_fields = row
         .fields
         .values()
-        .any(|ty| row_var_occurs_in_type(var_name, ty));
+        .any(|ty| row_var_occurs_in_type(var_name, ty, subst));
     // Check tail
     let in_tail = matches!(&row.tail, RowTail::RowVar(name, _) if name == var_name);
     in_fields || in_tail
 }
 
 /// Row variable occurs check in type: does ρ occur in type τ through Record nesting?
-fn row_var_occurs_in_type(var_name: &str, ty: &Type) -> bool {
+/// Chases TypeVar bindings through `subst` so that if α is bound to a type containing ρ,
+/// the occurrence is detected. This mirrors Robinson's requirement that the occurs check
+/// operates on substitution-applied types.
+fn row_var_occurs_in_type(var_name: &str, ty: &Type, subst: &Substitution) -> bool {
     match ty {
-        Type::Record(row) => row_var_occurs(var_name, row),
+        Type::Record(row) => row_var_occurs(var_name, row, subst),
         Type::Function { params, ret } => {
-            params.iter().any(|p| row_var_occurs_in_type(var_name, p))
-                || row_var_occurs_in_type(var_name, ret)
+            params
+                .iter()
+                .any(|p| row_var_occurs_in_type(var_name, p, subst))
+                || row_var_occurs_in_type(var_name, ret, subst)
         }
-        Type::Seq(elem) => row_var_occurs_in_type(var_name, elem),
+        Type::Seq(elem) => row_var_occurs_in_type(var_name, elem, subst),
+        Type::TypeVar(name, _) => {
+            // Chase TypeVar binding: if α is bound to τ in subst, check τ for ρ
+            if let Some(bound) = subst.type_map.get(name) {
+                row_var_occurs_in_type(var_name, bound, subst)
+            } else {
+                false
+            }
+        }
         _ => false,
     }
 }
@@ -490,7 +511,10 @@ fn resolve_row(row: &Row, subst: &Substitution) -> Row {
                 let mut visited_types = HashSet::new();
                 let mut visited_rows = HashSet::new();
                 let resolved = subst.apply_row(bound, 0, &mut visited_types, &mut visited_rows);
-                // Merge fields: original fields take precedence
+                // Merge fields: original fields take precedence.
+                // Overlap can arise when ρ was bound by a different unification call
+                // (e.g., {y: T, ...ρ} ~ {y: T, x: S} binds ρ → {x: S}, then
+                // resolving {x: U, ...ρ} sees x in both the explicit and bound rows).
                 let mut merged = row.fields.clone();
                 for (key, value) in resolved.fields {
                     if !merged.contains_key(&key) {
@@ -581,7 +605,11 @@ fn lower_row_var_levels(row: &Row, max_level: u32, state: &mut InferState) {
     }
 }
 
-/// Unify remainders (unique fields + tails) — implements Wand (1987) 4-case algorithm
+/// Unify remainders (unique fields + tails) — implements Wand (1987) 4-case algorithm.
+///
+/// Soundness invariant: every binding case calls `row_var_occurs` BEFORE
+/// `subst.row_map.insert` to prevent construction of infinite row types
+/// (Robinson 1965, extended for rows per Rémy 1994).  Verified for Cases 2–4.
 fn unify_remainders(
     unique1: IndexMap<String, Type>,
     tail1: RowTail,
@@ -613,7 +641,7 @@ fn unify_remainders(
                 fields: unique2.clone(),
                 tail: RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level),
             };
-            if row_var_occurs(rho1, &row2_with_fresh) {
+            if row_var_occurs(rho1, &row2_with_fresh, subst) {
                 return Err(TypeError::new(
                     format!("infinite row type: {rho1} occurs in its own binding"),
                     span,
@@ -625,7 +653,7 @@ fn unify_remainders(
                 fields: unique1.clone(),
                 tail: RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level),
             };
-            if row_var_occurs(rho2, &row1_with_fresh) {
+            if row_var_occurs(rho2, &row1_with_fresh, subst) {
                 return Err(TypeError::new(
                     format!("infinite row type: {rho2} occurs in its own binding"),
                     span,
@@ -653,7 +681,7 @@ fn unify_remainders(
                 fields: unique1.clone(),
                 tail: tail1.clone(),
             };
-            if row_var_occurs(rho2, &row_to_bind) {
+            if row_var_occurs(rho2, &row_to_bind, subst) {
                 return Err(TypeError::new(
                     format!("infinite row type: {rho2} occurs in its own binding"),
                     span,
@@ -673,7 +701,7 @@ fn unify_remainders(
                 fields: unique2.clone(),
                 tail: tail2.clone(),
             };
-            if row_var_occurs(rho1, &row_to_bind) {
+            if row_var_occurs(rho1, &row_to_bind, subst) {
                 return Err(TypeError::new(
                     format!("infinite row type: {rho1} occurs in its own binding"),
                     span,
@@ -702,8 +730,27 @@ fn unify_remainders(
             span,
         )),
 
-        // Fallback: should be unreachable given the above cases
-        _ => Ok(()),
+        // Error case: same row variable with different unique fields on BOTH sides
+        // This handles {x: Int, ...rho} ~ {y: Str, ...rho} which would require
+        // rho to simultaneously provide both x and y, which is impossible
+        (RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _))
+            if rho1 == rho2 && !u1_empty && !u2_empty =>
+        {
+            let mut fields = Vec::new();
+            fields.extend(unique1.keys().cloned());
+            fields.extend(unique2.keys().cloned());
+            Err(TypeError::new(
+                format!(
+                    "incompatible fields [{}] with shared row variable {}",
+                    fields.join(", "),
+                    rho1
+                ),
+                span,
+            ))
+        }
+
+        // Fallback: all cases should be covered by the above patterns
+        _ => unreachable!("unify_remainders: all cases should be covered"),
     }
 }
 
@@ -3434,7 +3481,10 @@ mod tests {
             &mut state,
             span,
         );
-        assert!(result.is_err(), "should fail: closed left cannot absorb unique2 {{c: Bool}}");
+        assert!(
+            result.is_err(),
+            "should fail: closed left cannot absorb unique2 {{c: Bool}}"
+        );
         assert!(
             result.unwrap_err().message.contains("extra fields"),
             "error should mention extra fields"
@@ -3467,7 +3517,10 @@ mod tests {
             &mut state,
             span,
         );
-        assert!(result.is_err(), "should fail: rho binds to {{b: Str, ...rho}} which is an infinite row");
+        assert!(
+            result.is_err(),
+            "should fail: rho binds to {{b: Str, ...rho}} which is an infinite row"
+        );
         assert!(
             result.unwrap_err().message.contains("infinite row type"),
             "error should mention infinite row type"
@@ -3505,10 +3558,72 @@ mod tests {
             &mut state,
             span,
         );
-        assert!(result.is_err(), "should fail: rho occurs in field type Record with rho in tail");
+        assert!(
+            result.is_err(),
+            "should fail: rho occurs in field type Record with rho in tail"
+        );
         assert!(
             result.unwrap_err().message.contains("infinite row type"),
             "error should mention infinite row type"
+        );
+    }
+
+    /// Row occurs check chases TypeVar bindings through the substitution.
+    /// If α is bound to Record({x: Int, ...ρ}), then row_var_occurs_in_type("ρ", TypeVar("α"), &subst)
+    /// must return true — the row variable ρ is transitively reachable through α's binding.
+    /// This prevents construction of infinite row types via indirect TypeVar references.
+    /// See Robinson (1965): the occurs check must operate on substitution-applied types.
+    #[test]
+    fn test_row_occurs_check_chases_typevar_bindings() {
+        let mut subst = Substitution::new();
+
+        // Bind α → Record({x: Int}, RowVar("rho"))
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::Int);
+        let bound_type = Type::Record(Row {
+            fields,
+            tail: RowTail::RowVar("rho".into(), 0),
+        });
+        subst.type_map.insert("alpha".into(), bound_type);
+
+        // row_var_occurs_in_type("rho", TypeVar("alpha"), &subst) should be true
+        let tv_alpha = Type::TypeVar("alpha".into(), 0);
+        assert!(
+            row_var_occurs_in_type("rho", &tv_alpha, &subst),
+            "should detect rho transitively through alpha's binding"
+        );
+
+        // Negative case: unbound TypeVar should not claim to contain any row var
+        let tv_beta = Type::TypeVar("beta".into(), 0);
+        assert!(
+            !row_var_occurs_in_type("rho", &tv_beta, &subst),
+            "unbound TypeVar should not contain any row var"
+        );
+
+        // Negative case: bound TypeVar whose binding does NOT contain the target row var
+        subst.type_map.insert(
+            "gamma".into(),
+            Type::Record(Row {
+                fields: IndexMap::new(),
+                tail: RowTail::Empty,
+            }),
+        );
+        let tv_gamma = Type::TypeVar("gamma".into(), 0);
+        assert!(
+            !row_var_occurs_in_type("rho", &tv_gamma, &subst),
+            "TypeVar bound to type without rho should return false"
+        );
+
+        // row_var_occurs (row-level) should also chase through TypeVar fields
+        let mut row_fields = IndexMap::new();
+        row_fields.insert("y".into(), Type::TypeVar("alpha".into(), 0));
+        let row = Row {
+            fields: row_fields,
+            tail: RowTail::Empty,
+        };
+        assert!(
+            row_var_occurs("rho", &row, &subst),
+            "row_var_occurs should detect rho in field type via TypeVar chasing"
         );
     }
 
@@ -3611,6 +3726,777 @@ mod tests {
         )
         .unwrap();
 
-        assert!(subst.row_map.is_empty(), "no row bindings should be created");
+        assert!(
+            subst.row_map.is_empty(),
+            "no row bindings should be created"
+        );
+    }
+
+    // =========================================================================
+    // Consistency tests: unify() vs is_subtype() for all RowTail combinations
+    //
+    // Core invariant: if unify(A, B) succeeds producing substitution S, then
+    //   is_subtype(S(A), S(B)) must hold (A <: B direction or B <: A).
+    //
+    // Contrapositive: when unify fails, the pre-unification is_subtype is also
+    // false (or the asymmetry is documented as intentional).
+    //
+    // RowTail pair cases covered:
+    //   1a/1b/1c  (Empty, Empty)           — both closed
+    //   2 / 2b    (Empty, RowVar)          — closed sub, open sup
+    //   3 / 3b/3c (RowVar, Empty)          — open sub, closed sup [conservative]
+    //   4 / 4b    (RowVar(r1), RowVar(r2)) — different row vars
+    //   5 / 5b    (RowVar(r), RowVar(r))   — same row var
+    //   + field numeric promotion, nested record nesting
+    // =========================================================================
+
+    /// Case 1a: (Empty, Empty) identical fields — unify succeeds, subtype holds.
+    ///
+    /// A = [a: Int]  (closed)
+    /// B = [a: Int]  (closed)
+    ///
+    /// unify: no bindings. S(A) = A, S(B) = B. is_subtype(A, B) = true.
+    #[test]
+    fn test_is_subtype_consistency_closed_vs_closed_identical() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut fields = IndexMap::new();
+        fields.insert("a".into(), Type::Int);
+
+        let a = closed_record(fields.clone());
+        let b = closed_record(fields);
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+
+        assert!(
+            Type::is_subtype(&sa, &sb),
+            "S(A) <: S(B) must hold after unify(A, B) succeeds for identical closed records"
+        );
+        assert!(
+            Type::is_subtype(&sb, &sa),
+            "S(B) <: S(A) must hold after unify(A, B) succeeds for identical closed records"
+        );
+    }
+
+    /// Case 1b: (Empty, Empty) sub has extra field — unify FAILS, is_subtype false.
+    ///
+    /// A = [a: Int, b: Str]  (closed)
+    /// B = [a: Int]          (closed)
+    ///
+    /// Extra field "b" in A; closed B cannot absorb it. unify and is_subtype both reject.
+    #[test]
+    fn test_is_subtype_consistency_closed_vs_closed_extra_field() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        a_fields.insert("b".into(), Type::Str);
+        let a = closed_record(a_fields);
+
+        let mut b_fields = IndexMap::new();
+        b_fields.insert("a".into(), Type::Int);
+        let b = closed_record(b_fields);
+
+        let result = unify(&a, &b, &mut subst, &mut state, span);
+        assert!(
+            result.is_err(),
+            "unify([a:Int,b:Str](closed), [a:Int](closed)) should fail"
+        );
+
+        assert!(
+            !Type::is_subtype(&a, &b),
+            "[a:Int,b:Str](closed) should NOT be subtype of [a:Int](closed)"
+        );
+        assert!(
+            !Type::is_subtype(&b, &a),
+            "[a:Int](closed) should NOT be subtype of [a:Int,b:Str](closed)"
+        );
+    }
+
+    /// Case 1c: (Empty, Empty) field type mismatch — unify FAILS, is_subtype false both ways.
+    ///
+    /// A = [a: Int]  (closed)
+    /// B = [a: Str]  (closed)
+    #[test]
+    fn test_is_subtype_consistency_closed_vs_closed_field_type_mismatch() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        let a = closed_record(a_fields);
+
+        let mut b_fields = IndexMap::new();
+        b_fields.insert("a".into(), Type::Str);
+        let b = closed_record(b_fields);
+
+        assert!(
+            unify(&a, &b, &mut subst, &mut state, span).is_err(),
+            "unify([a:Int](closed), [a:Str](closed)) should fail"
+        );
+        assert!(
+            !Type::is_subtype(&a, &b),
+            "[a:Int] should NOT be subtype of [a:Str]"
+        );
+        assert!(
+            !Type::is_subtype(&b, &a),
+            "[a:Str] should NOT be subtype of [a:Int]"
+        );
+    }
+
+    /// Case 2: (Empty, RowVar) — closed sub, open sup with same fields.
+    ///
+    /// A = [a: Int]        (closed)
+    /// B = [a: Int, ...r]  (open, RowVar "r")
+    ///
+    /// unify: no unique fields -> Case 1 -> unify_tails(Empty, RowVar(r)) -> r binds to Empty.
+    /// Pre-unification: is_subtype(A, B) = true (sup is open RowVar — always lenient).
+    /// Post-substitution: S(B) = [a: Int] = S(A), subtype holds both ways.
+    #[test]
+    fn test_is_subtype_consistency_closed_sub_open_sup() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        let a = closed_record(a_fields.clone());
+        let b = row_var_record(a_fields, "r", 0);
+
+        // Pre-unification: sup is open -> lenient
+        assert!(
+            Type::is_subtype(&a, &b),
+            "[a:Int](closed) should be subtype of [a:Int ...r](RowVar): sup is open"
+        );
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let r_binding = subst
+            .row_map
+            .get("r")
+            .expect("row var 'r' should be bound after unifying with closed record");
+        assert_eq!(
+            r_binding.tail,
+            RowTail::Empty,
+            "r should bind to closed tail after unifying with Empty"
+        );
+        assert_eq!(r_binding.fields.len(), 0, "r should have no extra fields");
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+
+        assert_eq!(
+            sb, sa,
+            "S([a:Int ...r]) should equal [a:Int] after r binds to Empty"
+        );
+        assert!(
+            Type::is_subtype(&sa, &sb),
+            "S(A) <: S(B) must hold after unify succeeds"
+        );
+        assert!(
+            Type::is_subtype(&sb, &sa),
+            "S(B) <: S(A) must hold after unify succeeds (symmetric post-bind)"
+        );
+    }
+
+    /// Case 2b: (Empty, RowVar) — closed sub with extra fields, open sup with fewer fields.
+    ///
+    /// A = [a: Int, b: Str]  (closed)
+    /// B = [a: Int, ...r]    (open, RowVar "r")
+    ///
+    /// unify: "b" unique to A, B's "r" tail absorbs it (Case 2). r binds to {b: Str, Empty}.
+    /// is_subtype(A, B) = true (sup is RowVar — open tail leniency).
+    /// Post-substitution: S(B) = [a: Int, b: Str] = S(A).
+    #[test]
+    fn test_is_subtype_consistency_closed_sub_with_extra_open_sup() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        a_fields.insert("b".into(), Type::Str);
+        let a = closed_record(a_fields);
+
+        let mut b_fields = IndexMap::new();
+        b_fields.insert("a".into(), Type::Int);
+        let b = row_var_record(b_fields, "r", 0);
+
+        // Pre-unification: sup is RowVar -> lenient
+        assert!(
+            Type::is_subtype(&a, &b),
+            "[a:Int,b:Str](closed) should be subtype of [a:Int ...r](RowVar): sup is open"
+        );
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let r_binding = subst.row_map.get("r").expect("row var 'r' should be bound");
+        assert_eq!(r_binding.tail, RowTail::Empty, "r tail should be Empty");
+        assert_eq!(
+            r_binding.fields.get("b"),
+            Some(&Type::Str),
+            "r should absorb field 'b: Str'"
+        );
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+
+        assert_eq!(
+            sb, sa,
+            "S(B) should equal S(A) after successful unification"
+        );
+        assert!(
+            Type::is_subtype(&sa, &sb),
+            "S(A) <: S(B) must hold after unify succeeds"
+        );
+        assert!(
+            Type::is_subtype(&sb, &sa),
+            "S(B) <: S(A) must hold after unify succeeds"
+        );
+    }
+
+    /// Case 3: (RowVar, Empty) — open sub, closed sup with extra field.
+    ///
+    /// A = [a: Int, ...r]    (open, RowVar "r")
+    /// B = [a: Int, b: Str]  (closed)
+    ///
+    /// Pre-unification is_subtype(A, B): CONSERVATIVE — B has "b" not in A's known fields.
+    /// Bidirectional field check fails (sup has field "b" absent from sub's known set).
+    /// So is_subtype(A, B) = false before unification.
+    ///
+    /// unify: "b" unique to B; A's tail "r" absorbs it (Case 3). r binds to {b: Str, Empty}.
+    /// Post-substitution: S(A) = [a: Int, b: Str] = S(B). Subtype holds both ways.
+    ///
+    /// KEY: unify succeeds, but is_subtype(A, B) is false PRE-substitution.
+    /// The consistency guarantee applies only AFTER substitution.
+    #[test]
+    fn test_is_subtype_consistency_open_sub_closed_sup() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        let a = row_var_record(a_fields, "r", 0);
+
+        let mut b_fields = IndexMap::new();
+        b_fields.insert("a".into(), Type::Int);
+        b_fields.insert("b".into(), Type::Str);
+        let b = closed_record(b_fields);
+
+        // Pre-unification: conservative — B has "b" not in A's known fields
+        assert!(
+            !Type::is_subtype(&a, &b),
+            "[a:Int ...r] (RowVar) should NOT be subtype of [a:Int,b:Str] (closed): \
+             sub might lack 'b' — conservative treatment for unbound RowVar"
+        );
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let r_binding = subst.row_map.get("r").expect("r should be bound");
+        assert_eq!(r_binding.tail, RowTail::Empty);
+        assert_eq!(r_binding.fields.get("b"), Some(&Type::Str));
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+
+        assert_eq!(
+            sa, sb,
+            "S(A) should equal S(B) after binding r to {{b: Str, Empty}}"
+        );
+        assert!(
+            Type::is_subtype(&sa, &sb),
+            "S(A) <: S(B) must hold after substitution"
+        );
+        assert!(
+            Type::is_subtype(&sb, &sa),
+            "S(B) <: S(A) must hold after substitution (symmetric)"
+        );
+    }
+
+    /// Case 3b: (RowVar, Empty) — open sub with exact known fields matches closed sup.
+    ///
+    /// A = [a: Int, ...r]  (open)
+    /// B = [a: Int]        (closed)
+    ///
+    /// Conservative is_subtype: A's known fields exactly match B's — bidirectional check passes.
+    /// is_subtype(A, B) = true.
+    /// unify: no unique fields -> Case 1 -> unify_tails(RowVar(r), Empty) -> r binds to Empty.
+    #[test]
+    fn test_is_subtype_consistency_open_sub_closed_sup_exact_known_fields() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        let a = row_var_record(a_fields.clone(), "r", 0);
+        let b = closed_record(a_fields);
+
+        // Conservative check: A's known fields == B's fields exactly -> passes
+        assert!(
+            Type::is_subtype(&a, &b),
+            "[a:Int ...r] (RowVar) should be subtype of [a:Int] (closed) \
+             when known fields match exactly (conservative check passes)"
+        );
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let r_binding = subst.row_map.get("r").expect("r should be bound");
+        assert_eq!(r_binding.tail, RowTail::Empty);
+        assert_eq!(r_binding.fields.len(), 0);
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+        assert_eq!(sa, sb, "S(A) should equal S(B) after binding r to Empty");
+
+        assert!(
+            Type::is_subtype(&sa, &sb),
+            "S(A) <: S(B) must hold after unify"
+        );
+        assert!(
+            Type::is_subtype(&sb, &sa),
+            "S(B) <: S(A) must hold after unify (symmetric)"
+        );
+    }
+
+    /// Case 3c: (RowVar, Empty) — open sub with EXTRA known fields, closed sup.
+    ///
+    /// A = [a: Int, b: Str, ...r]  (open)
+    /// B = [a: Int]                (closed)
+    ///
+    /// is_subtype: A has extra known "b" not in closed B -> bidirectional check fails.
+    /// unify: "b" unique to A, closed B cannot absorb it -> error.
+    /// Both agree: rejected.
+    #[test]
+    fn test_is_subtype_consistency_open_sub_extra_fields_closed_sup() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        a_fields.insert("b".into(), Type::Str);
+        let a = row_var_record(a_fields, "r", 0);
+
+        let mut b_fields = IndexMap::new();
+        b_fields.insert("a".into(), Type::Int);
+        let b = closed_record(b_fields);
+
+        assert!(
+            !Type::is_subtype(&a, &b),
+            "[a:Int,b:Str ...r] should NOT be subtype of [a:Int](closed): extra known field"
+        );
+
+        let result = unify(&a, &b, &mut subst, &mut state, span);
+        assert!(
+            result.is_err(),
+            "unify([a:Int,b:Str ...r], [a:Int](closed)) should fail: closed row cannot absorb 'b'"
+        );
+        assert!(
+            result.unwrap_err().message.contains("extra fields"),
+            "error should mention extra fields"
+        );
+    }
+
+    /// Case 4: (RowVar(r1), RowVar(r2)) — both open with distinct unique fields (Wand Case 4).
+    ///
+    /// A = [a: Int, ...r1]  (open, row var r1)
+    /// B = [b: Str, ...r2]  (open, row var r2)
+    ///
+    /// unify creates fresh rho_fresh. Binds:
+    ///   r1 -> {b: Str, tail: RowVar(rho_fresh)}
+    ///   r2 -> {a: Int, tail: RowVar(rho_fresh)}
+    ///
+    /// Post-substitution: S(A) = S(B) = [a: Int, b: Str, ...rho_fresh].
+    ///
+    /// Pre-unification is_subtype:
+    /// - is_subtype(A, B): sup B has field "b"; sub A does not have "b" in known fields.
+    ///   The fields_ok check fails: not all sup fields are in sub. Returns FALSE.
+    ///   Open-tail leniency (RowVar in sup) only governs extra fields in sub beyond sup,
+    ///   NOT missing fields in sub that sup requires. The field presence check comes first.
+    /// - is_subtype(B, A): sup A has field "a"; sub B does not have "a". Returns FALSE.
+    ///
+    /// This is NOT a bug: unify succeeds because row variables can absorb missing fields
+    /// (r1 will absorb "b", r2 will absorb "a"). But is_subtype is a pure predicate operating
+    /// on the pre-unification types — without mutation, it cannot infer what row vars will hold.
+    ///
+    /// Post-substitution: S(A) = S(B) = [a: Int, b: Str, ...rho_fresh]. Subtype holds both ways.
+    #[test]
+    fn test_is_subtype_consistency_both_open_different_vars_case4() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        let a = row_var_record(a_fields, "r1", 0);
+
+        let mut b_fields = IndexMap::new();
+        b_fields.insert("b".into(), Type::Str);
+        let b = row_var_record(b_fields, "r2", 0);
+
+        // Pre-unification: is_subtype checks "all sup fields present in sub" first.
+        // A's known fields {a} don't include B's required field "b" -> fields_ok fails -> FALSE.
+        // B's known fields {b} don't include A's required field "a" -> fields_ok fails -> FALSE.
+        // The RowVar-tail leniency only allows extra fields in sub beyond sup's requirements;
+        // it cannot supply missing required fields.
+        assert!(
+            !Type::is_subtype(&a, &b),
+            "[a:Int ...r1] should NOT be subtype of [b:Str ...r2]: \
+             sub is missing required sup field 'b' (fields_ok fails before tail check)"
+        );
+        assert!(
+            !Type::is_subtype(&b, &a),
+            "[b:Str ...r2] should NOT be subtype of [a:Int ...r1]: \
+             sub is missing required sup field 'a' (fields_ok fails before tail check)"
+        );
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let r1_binding = subst.row_map.get("r1").expect("r1 should be bound");
+        assert!(
+            matches!(r1_binding.tail, RowTail::RowVar(_, _)),
+            "r1 tail should be a fresh RowVar (Case 4)"
+        );
+        assert_eq!(
+            r1_binding.fields.get("b"),
+            Some(&Type::Str),
+            "r1 should absorb field 'b: Str' from unique2"
+        );
+
+        let r2_binding = subst.row_map.get("r2").expect("r2 should be bound");
+        assert!(
+            matches!(r2_binding.tail, RowTail::RowVar(_, _)),
+            "r2 tail should be the same fresh RowVar"
+        );
+        assert_eq!(
+            r2_binding.fields.get("a"),
+            Some(&Type::Int),
+            "r2 should absorb field 'a: Int' from unique1"
+        );
+
+        // Both bindings must share the SAME fresh row var
+        let r1_fresh = match &r1_binding.tail {
+            RowTail::RowVar(name, _) => name.clone(),
+            RowTail::Empty => panic!("r1 tail should be RowVar"),
+        };
+        let r2_fresh = match &r2_binding.tail {
+            RowTail::RowVar(name, _) => name.clone(),
+            RowTail::Empty => panic!("r2 tail should be RowVar"),
+        };
+        assert_eq!(
+            r1_fresh, r2_fresh,
+            "r1 and r2 must share the same fresh row variable in Case 4"
+        );
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+        assert_eq!(
+            sa, sb,
+            "S(A) and S(B) should be equal after Case 4 unification"
+        );
+
+        assert!(
+            Type::is_subtype(&sa, &sb),
+            "S(A) <: S(B) must hold after unify succeeds"
+        );
+        assert!(
+            Type::is_subtype(&sb, &sa),
+            "S(B) <: S(A) must hold after unify succeeds"
+        );
+    }
+
+    /// Case 4b: (RowVar(r1), RowVar(r2)) — both open, shared field only (Wand Case 1 path).
+    ///
+    /// A = [a: Int, ...r1]  (open)
+    /// B = [a: Int, ...r2]  (open)
+    ///
+    /// No unique fields -> Case 1 -> unify_tails(r1, r2).
+    /// r1 binds to Row { fields: {}, tail: RowVar(r2) }.
+    /// Post-substitution: S(A) = S(B) = [a: Int, ...r2].
+    #[test]
+    fn test_is_subtype_consistency_both_open_different_vars_case1() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        let a = row_var_record(a_fields.clone(), "r1", 0);
+        let b = row_var_record(a_fields, "r2", 0);
+
+        // Pre-unification: RowVar tails -> lenient both ways
+        assert!(
+            Type::is_subtype(&a, &b),
+            "[a:Int ...r1] should be subtype of [a:Int ...r2]: sup is open RowVar"
+        );
+        assert!(
+            Type::is_subtype(&b, &a),
+            "[a:Int ...r2] should be subtype of [a:Int ...r1]: sup is open RowVar"
+        );
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let r1_binding = subst
+            .row_map
+            .get("r1")
+            .expect("r1 should be bound (Case 1 tail unify)");
+        assert_eq!(
+            r1_binding.fields.len(),
+            0,
+            "r1 binding should have no extra fields"
+        );
+        assert_eq!(
+            r1_binding.tail,
+            RowTail::RowVar("r2".into(), 0),
+            "r1 tail should point to r2"
+        );
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+
+        assert_eq!(sa, sb, "S(A) should equal S(B) after r1 binds to r2");
+        assert!(Type::is_subtype(&sa, &sb), "S(A) <: S(B) after unify");
+        assert!(
+            Type::is_subtype(&sb, &sa),
+            "S(B) <: S(A) after unify (symmetric)"
+        );
+    }
+
+    /// Case 5: (RowVar(r), RowVar(r)) — same row var, same fields — reflexive.
+    ///
+    /// A = [a: Int, ...rho]  (open, row var rho)
+    /// B = [a: Int, ...rho]  (open, same row var rho)
+    ///
+    /// unify: shared "a" only, no unique fields -> Case 1 -> unify_tails(rho, rho) -> reflexive.
+    /// No binding created. is_subtype(A, B) = true by a==b structural equality.
+    #[test]
+    fn test_is_subtype_consistency_same_rowvar_same_fields() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut fields = IndexMap::new();
+        fields.insert("a".into(), Type::Int);
+
+        let a = row_var_record(fields.clone(), "rho", 0);
+        let b = row_var_record(fields, "rho", 0);
+
+        assert!(Type::is_subtype(&a, &b), "A == B structurally, so A <: B");
+        assert!(Type::is_subtype(&b, &a), "A == B structurally, so B <: A");
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        assert!(
+            !subst.row_map.contains_key("rho"),
+            "same row var unification should not create a binding (reflexive)"
+        );
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+
+        assert_eq!(sa, sb, "S(A) == S(B) for same-var records");
+        assert!(Type::is_subtype(&sa, &sb), "S(A) <: S(B)");
+        assert!(Type::is_subtype(&sb, &sa), "S(B) <: S(A)");
+    }
+
+    /// Case 5b: (RowVar(r), RowVar(r)) — same row var, different unique fields.
+    ///
+    /// A = [a: Int, ...rho]  (open, row var rho)
+    /// B = [b: Str, ...rho]  (open, same row var rho)
+    ///
+    /// Both unify AND is_subtype reject this combination.
+    ///
+    /// is_subtype: sup (B or A) has field "b"/"a" that is not in the sub's known fields.
+    ///   fields_ok fails before the tail check. Returns FALSE in both directions.
+    ///
+    /// unify: rejects because rho cannot simultaneously provide both "a" (unique to A)
+    ///   and "b" (unique to B) — that would be unsound.
+    ///
+    /// Both functions agree: this is an invalid combination.
+    ///
+    /// Note: "open-tail leniency" (RowVar in sup allows extra sub fields) does NOT apply
+    /// when the sub is MISSING a required sup field. The fields_ok check runs first.
+    #[test]
+    fn test_is_subtype_consistency_same_rowvar_different_unique_asymmetry() {
+        let mut fields_a = IndexMap::new();
+        fields_a.insert("a".into(), Type::Int);
+        let a = row_var_record(fields_a, "rho", 0);
+
+        let mut fields_b = IndexMap::new();
+        fields_b.insert("b".into(), Type::Str);
+        let b = row_var_record(fields_b, "rho", 0);
+
+        // is_subtype: sub is missing required sup field -> fields_ok fails -> FALSE both ways
+        assert!(
+            !Type::is_subtype(&a, &b),
+            "[a:Int ...rho] should NOT be subtype of [b:Str ...rho]: \
+             sub is missing required sup field 'b' (fields_ok fails)"
+        );
+        assert!(
+            !Type::is_subtype(&b, &a),
+            "[b:Str ...rho] should NOT be subtype of [a:Int ...rho]: \
+             sub is missing required sup field 'a' (fields_ok fails)"
+        );
+
+        // unify: also rejects — rho cannot simultaneously have field 'a' and field 'b'
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        let result = unify(&a, &b, &mut subst, &mut state, span);
+        assert!(
+            result.is_err(),
+            "unify([a:Int ...rho], [b:Str ...rho]) should fail: \
+             rho cannot simultaneously have field 'a' and field 'b'"
+        );
+        assert!(
+            result.unwrap_err().message.contains("incompatible fields"),
+            "error should mention incompatible fields"
+        );
+    }
+
+    /// Numeric promotion through record fields — unify more permissive than is_subtype.
+    ///
+    /// A = [x: Int]    (closed)
+    /// B = [x: Number] (closed)
+    ///
+    /// is_subtype: A <: B (Int <: Number). B <:/ A.
+    /// unify: succeeds via promotion rules (Int ~ Number).
+    /// Post-substitution: S(A) = [x: Int], S(B) = [x: Number] — asymmetric subtype preserved.
+    ///
+    /// Documents the intentional asymmetry: unify is bidirectional, is_subtype is directional.
+    #[test]
+    fn test_is_subtype_consistency_field_numeric_promotion_closed_closed() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut a_fields = IndexMap::new();
+        a_fields.insert("x".into(), Type::Int);
+        let a = closed_record(a_fields);
+
+        let mut b_fields = IndexMap::new();
+        b_fields.insert("x".into(), Type::Number);
+        let b = closed_record(b_fields);
+
+        assert!(
+            Type::is_subtype(&a, &b),
+            "[x:Int] should be subtype of [x:Number]: Int <: Number"
+        );
+        assert!(
+            !Type::is_subtype(&b, &a),
+            "[x:Number] should NOT be subtype of [x:Int]: Number !<: Int"
+        );
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+
+        // Directional subtype preserved post-unification
+        assert!(
+            Type::is_subtype(&sa, &sb),
+            "S(A) <: S(B) must still hold after unify (Int <: Number)"
+        );
+        // unify is more permissive than <: for promotions
+        assert!(
+            !Type::is_subtype(&sb, &sa),
+            "S(B) <:/ S(A): unify is more permissive than <: for promotions"
+        );
+    }
+
+    /// Nested record consistency — RowVar in nested field type.
+    ///
+    /// A = [point: [x: Int, y: Int] (closed)]  (closed outer)
+    /// B = [point: [x: Int, ...r]]              (open inner, closed outer)
+    ///
+    /// is_subtype(A, B): inner sup is RowVar -> extra 'y' allowed -> true.
+    /// unify: inner row var 'r' absorbs "y: Int".
+    /// Post-substitution: S(A) = S(B) (inner 'r' bound to {y: Int, Empty}).
+    #[test]
+    fn test_is_subtype_consistency_nested_record_field() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut inner_a = IndexMap::new();
+        inner_a.insert("x".into(), Type::Int);
+        inner_a.insert("y".into(), Type::Int);
+        let mut outer_a = IndexMap::new();
+        outer_a.insert("point".into(), closed_record(inner_a));
+        let a = closed_record(outer_a);
+
+        let mut inner_b = IndexMap::new();
+        inner_b.insert("x".into(), Type::Int);
+        let mut outer_b = IndexMap::new();
+        outer_b.insert("point".into(), row_var_record(inner_b, "r", 0));
+        let b = closed_record(outer_b);
+
+        assert!(
+            Type::is_subtype(&a, &b),
+            "[point:[x:Int,y:Int]](closed) should be subtype of [point:[x:Int ...r]](closed): \
+             inner sup is RowVar so extra 'y' in sub is allowed"
+        );
+
+        unify(&a, &b, &mut subst, &mut state, span).unwrap();
+
+        let r_binding = subst.row_map.get("r").expect("r should be bound");
+        assert_eq!(r_binding.tail, RowTail::Empty);
+        assert_eq!(r_binding.fields.get("y"), Some(&Type::Int));
+
+        let sa = subst.apply(&a);
+        let sb = subst.apply(&b);
+
+        assert_eq!(sa, sb, "S(A) should equal S(B) after nested unification");
+        assert!(Type::is_subtype(&sa, &sb), "S(A) <: S(B) post-unification");
+        assert!(
+            Type::is_subtype(&sb, &sa),
+            "S(B) <: S(A) post-unification (symmetric)"
+        );
+    }
+
+    /// Same row variable with different unique fields should fail
+    /// This catches the soundness bug: unifying {x: Int, ...rho} with {y: Str, ...rho}
+    /// would silently succeed before the fix, but it's unsound because rho cannot
+    /// simultaneously provide both x and y fields.
+    #[test]
+    fn test_unify_same_rho_different_unique_fields_errors() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = IndexMap::new();
+        f1.insert("x".into(), Type::Int);
+        let mut f2 = IndexMap::new();
+        f2.insert("y".into(), Type::Str);
+
+        // Both have different unique fields but share the same row variable
+        let result = unify(
+            &row_var_record(f1, "rho", 0),
+            &row_var_record(f2, "rho", 0),
+            &mut subst,
+            &mut state,
+            span,
+        );
+
+        assert!(
+            result.is_err(),
+            "should fail: same row variable with different unique fields is unsound"
+        );
+        let err_msg = result.unwrap_err().message;
+        assert!(
+            err_msg.contains("incompatible fields") && err_msg.contains("rho"),
+            "error should mention incompatible fields and the row variable name, got: {}",
+            err_msg
+        );
     }
 }
