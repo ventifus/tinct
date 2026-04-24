@@ -2,6 +2,7 @@
 //! validates type assertions, and performs Hindley-Milner style type variable
 //! unification for polymorphic function calls.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -247,7 +248,16 @@ fn infer_expr(
         Expr::TypeAssert {
             annotation,
             expr: inner,
-        } => resolve_type_assert(annotation, inner, env, expr.span, state, type_map),
+            resolved_type,
+        } => resolve_type_assert(
+            annotation,
+            inner,
+            resolved_type,
+            env,
+            expr.span,
+            state,
+            type_map,
+        ),
 
         Expr::Annotated { name, annotation } => {
             resolve_annotated(name, annotation, env, expr.span, state, &mut None)
@@ -917,6 +927,7 @@ fn expand_type_alias(
 fn resolve_type_assert(
     annotation: &Spanned<Annotation>,
     inner: &Spanned<Expr>,
+    resolved_type: &RefCell<Option<Type>>,
     env: &Rc<TypeEnv>,
     _span: Span,
     state: &mut InferState,
@@ -924,6 +935,16 @@ fn resolve_type_assert(
 ) -> Result<Type, Vec<TypeError>> {
     let expected = resolve_annotation(&annotation.node, env, annotation.span, state, &mut None)
         .map_err(|e| vec![e])?;
+
+    // Store the resolved type in the AST node for runtime validation (elaboration)
+    // INVARIANT: resolved_type is write-once (parser initializes to None, typecheck sets it once)
+    let prev = resolved_type.replace(Some(expected.clone()));
+    if prev.is_some() {
+        panic!(
+            "resolved_type written twice — elaboration invariant violated (span: {:?})",
+            annotation.span
+        );
+    }
 
     // Use checking mode for TypeAssert inner expression (doc/06 line 214-226)
     let check_result = check_expr(inner, &expected, env, state, type_map);

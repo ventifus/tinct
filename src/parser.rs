@@ -1,5 +1,7 @@
 //! Pest PEG parser: converts source text into a fully-spanned AST.
 
+use std::cell::RefCell;
+
 use pest::Parser;
 use pest_derive::Parser;
 
@@ -324,6 +326,7 @@ fn build_type_assert(
         Expr::TypeAssert {
             annotation,
             expr: Box::new(expr),
+            resolved_type: RefCell::new(None),
         },
         span,
     ))
@@ -1366,7 +1369,9 @@ mod tests {
     fn test_type_assert_simple() {
         let ast = parse_ok("[@Number $expr]");
         match &ast.node {
-            Expr::TypeAssert { annotation, expr } => {
+            Expr::TypeAssert {
+                annotation, expr, ..
+            } => {
                 assert!(matches!(&annotation.node, Annotation::Simple(ref s) if s == "Number"));
                 assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "expr"));
             }

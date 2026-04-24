@@ -138,6 +138,7 @@ fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> 
         Expr::TypeAssert {
             expr: inner,
             annotation,
+            ..
         } => {
             // Check inner expression first, then fall back to annotation text.
             hover_at_expr(&inner.node, inner.span, offset, type_map).or_else(|| {

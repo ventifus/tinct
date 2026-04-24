@@ -1,5 +1,7 @@
 //! AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>`.
 
+use crate::types::Type;
+use std::cell::RefCell;
 use std::fmt;
 
 /// Byte offset + line/column position in source text
@@ -121,6 +123,10 @@ pub enum Expr {
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Box<Spanned<Expr>>,
+        /// Type resolved during elaboration (type checking).
+        /// Uses RefCell for write-once elaboration without cloning the entire AST.
+        /// The write-once invariant is enforced at typecheck.rs:941.
+        resolved_type: RefCell<Option<Type>>,
     },
 
     /// Annotated bare word in value position, e.g. `Fn@Number`
@@ -278,7 +284,9 @@ impl fmt::Display for Expr {
                 write!(f, "] {}]", body.node)
             }
             Expr::TypeAlias(inner) => write!(f, "[type {}]", inner.node),
-            Expr::TypeAssert { annotation, expr } => {
+            Expr::TypeAssert {
+                annotation, expr, ..
+            } => {
                 write!(f, "[@{} {}]", annotation.node, expr.node)
             }
             Expr::Annotated { name, annotation } => {
@@ -372,6 +380,7 @@ mod tests {
         let expr = Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Number".into())),
             expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
         };
         assert_eq!(format!("{expr}"), "[@Number 42]");
     }
@@ -391,6 +400,7 @@ mod tests {
         let expr = Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::VarRef("x".into()))),
+            resolved_type: RefCell::new(None),
         };
         assert_eq!(format!("{expr}"), "[@[$type: $Number  $min: 0] $x]");
     }
