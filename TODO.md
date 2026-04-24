@@ -75,14 +75,14 @@ Replace nominal type tag checking with structural contract validation. See DESIG
 
 Core contract validation and guard wrapping. Split into typeassert-structural-b for remaining items.
 
-- [ ] Add `resolved_type: Option<Type>` field to `Expr::TypeAssert` (`src/ast.rs`)
-- [ ] Update `resolve_type_assert()` to set `resolved_type` on AST node (elaboration) (`src/typecheck.rs:503-523`)
-- [ ] Implement `value_matches_type(value, type, span) -> Result<bool, EvalError>` for immediate validation (`src/eval.rs`)
-- [ ] Add `ThunkState::Guarded { inner, expected, field_path, guard_span }` variant (`src/value.rs`)
-- [ ] Implement proxy contract wrapping: shape check + guard wrapping for record field thunks. Findler & Felleisen (2002). (`src/eval.rs:117-157`)
-- [ ] Implement guard memoization: `Guarded` → `Materialized` or `Failed` after first force (`src/eval.rs`)
-- [ ] Handle `--no-typecheck` fallback — degrade to current nominal behavior when `resolved_type` is `None` (`src/eval.rs`)
-- [ ] Implement blame tracking with even-odd polarity for contract positions. Findler & Felleisen (2002). (`src/eval.rs`) [Major, computer-scientist]
+- [x] Add `resolved_type: Option<Type>` field to `Expr::TypeAssert` (`src/ast.rs`)
+- [x] Update `resolve_type_assert()` to set `resolved_type` on AST node (elaboration) (`src/typecheck.rs:503-523`)
+- [x] Implement `value_matches_type(value, type, span) -> Result<bool, EvalError>` for immediate validation (`src/eval.rs`)
+- [x] Add `ThunkState::Guarded { inner, expected, field_path, guard_span }` variant (`src/value.rs`)
+- [x] Implement proxy contract wrapping: shape check + guard wrapping for record field thunks. Findler & Felleisen (2002). (`src/eval.rs:117-157`)
+- [x] Implement guard memoization: `Guarded` → `Materialized` or `Failed` after first force (`src/eval.rs`)
+- [x] Handle `--no-typecheck` fallback — degrade to current nominal behavior when `resolved_type` is `None` (`src/eval.rs`)
+- [x] Implement blame tracking with even-odd polarity for contract positions. Findler & Felleisen (2002). (`src/eval.rs`) [Major, computer-scientist]
 
 ## typeassert-structural-b: TypeAssert Structural Contract Checking (Part 2)
 
@@ -859,6 +859,19 @@ Stale snippets, misclassifications, and missing documentation in doc/11-stdlib.m
 - [ ] Add `flatten_mixed.llt-eval` corpus test — `flatten.llt-eval` only tests `[[1 2] [3 4]]`; no test for mixed scalar/nested `[1 [2 3] 4]` where `flatten-step` takes both branches. (`tests/corpus/eval/stdlib/`) [Nit, stdlib-author C47]
 - [ ] Document `from-entries` accepting Seq inputs — silently accepts Seq inputs via `$reduce` dual-dispatch; useful property but undocumented. Fix: add "(also accepts Seq of `[key: k value: v]` pairs via `$reduce` dual-dispatch)" to reference table. Add `from_entries_seq.llt-eval` corpus test. (`doc/11-stdlib.md`, `tests/corpus/eval/stdlib/`) [Nit, stdlib-author C47]
 
+## call-convention-fixes: Call Convention Doc and Code Fixes (C48)
+
+Documentation and code quality fixes following the call-convention-kotlin sprint. Found by grammar-architect, eval-engine, integration-verifier, and stdlib-author C48 reviews.
+
+- [ ] Fix `doc/04-functions.md:90` "Positional first, then named. Like Python." — contradicts the Kotlin model; any parameter can be named. Replace with "Named args supported for any parameter (Kotlin model)." (`doc/04-functions.md:90`) [Major, grammar-architect C48]
+- [ ] Fix `doc/02-syntax.md:981` stale comment "default: makes them named" — since call-convention-kotlin, any parameter can be passed by name. Update: "named args work for any parameter (Kotlin model)". (`doc/02-syntax.md:981`) [Major, grammar-architect C48]
+- [ ] Fix `doc/10-errors.md` "26 ErrorKind variants" stale at lines 98 and 763 — MissingRequiredParam (E024) added in call-convention-kotlin makes it 27 variants. Update both occurrences. (`doc/10-errors.md:98, 763`) [Major, grammar-architect + integration-verifier C48]
+- [ ] Fix `doc/10-errors.md` Part 3 Display code block missing MissingRequiredParam arm — Display implementation block jumps from ArityMismatch to NamedArgConflict, skipping E024. Add the missing match arm. (`doc/10-errors.md`) [Major, grammar-architect C48]
+- [ ] Fix `doc/11-stdlib.md:117,176` describing `$apply` as "positional only" — call-convention-kotlin added named-arg support (Key::String → named, Key::Int sorted → positional). Update both occurrences. (`doc/11-stdlib.md:117, 176`) [Major, stdlib-author C48]
+- [ ] Add `EvalError::missing_required_param(param: &str, span: Span)` named constructor — `MissingRequiredParam` is constructed as a raw struct literal at `src/eval.rs:622`; add named constructor to `src/error.rs` following the `arity_mismatch` pattern. (`src/eval.rs:622`, `src/error.rs`) [Minor, integration-verifier C48]
+- [ ] Fix `ArityBound::Exact` used for optional-param overarity — when any param has a default, `src/eval.rs:636` should use `AtMost(required_count + optional_count)` not `Exact(required_count)`. (`src/eval.rs:636`) [Major, eval-engine C48]
+- [ ] Replace raw `EvalError` struct literals with named constructors in `bind_args_thunks` — three sites at `src/eval.rs:622, 666, 681` bypass the constructor API. Replace with `EvalError::missing_required_param`, `EvalError::unknown_named_arg`, or equivalent named constructors. (`src/eval.rs:622, 666, 681`) [Minor, eval-engine C48]
+
 ## docs-restructuring-refs: Documentation Cross-Reference Update
 
 Found by grammar-architect and computer-scientist review (2026-04-23). Commit 7b06e98 moved DESIGN.md (6643 lines) and SPEC.md (1509 lines) to `.tmp/`, splitting content into `doc/01-17` chapters. Cross-references across TODO.md, doc/whatif/, doc/, and source code were not updated.
@@ -989,6 +1002,13 @@ New corpus tests identified in cycle 46 review.
 - [ ] Add corpus test for let-gen polymorphism — `[f: [fn [x@a] $x]] [r1: [call $f 42]] [r2: [call $f "hello"]]` should type-check without error; r1 has type Int, r2 has type String. (`tests/corpus/eval/typecheck/`) [Major, test-crafter C46]
 - [ ] Add corpus tests for typecheck errors — end-to-end tests that verify type checker emits correct error kind (E050 TypeError, not E099 Internal) for arity mismatch, unknown variable, wrong argument type. (`tests/corpus/eval/errors/`) [Major, test-crafter C46]
 
+### test-corpus-f: Corpus Coverage Gaps (C48)
+
+New corpus tests identified in cycle 48 review (test-crafter C48).
+
+- [ ] Add corpus tests for `$/`, `$error`, `$try` builtins — no dedicated corpus tests for division (`[call $/ 1 0]` → DivisionByZero E005), explicit error (`[call $error "msg"]` → error propagation), or `$try` catching (`[call $try [fn [] [call $error "x"]]]` → success). Each builtin is only tested indirectly. (`tests/corpus/eval/builtins/`, `tests/corpus/eval/errors/`) [Major, test-crafter C48]
+- [ ] Add `$map` Seq-path laziness corpus test — `map_dict_lazy_values.llt-eval` proves Dict-path laziness but no Seq test exists. Add: `[call $map [fn [x] [call $error "eager"]] [call $range 0 3]]` then access only first element should succeed. (`tests/corpus/eval/laziness/`) [Minor, test-crafter C48]
+
 ### type-error-corpus: Type Error Corpus and Infra Gaps (C47)
 
 Critical test infrastructure and typecheck corpus gaps found by test-crafter and type-theorist C47 reviews.
@@ -1103,6 +1123,9 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Add test for `$apply` calling a builtin with named args (builtin rejection path) — sprint modified `builtin_apply` to pass `named_args` to both Function and Builtin dispatch paths; no test covers builtin path with named args. Most builtins call `reject_named` which returns E023. (`tests/corpus/eval/errors/`) [Minor, test-crafter C47]
 - [ ] Add test for BIND-ARITY with multiple missing required params — current error test `fn_kotlin_coverage_missing` has one missing required param; no test documents which error fires when multiple required params are uncovered (first one? all?). (`tests/corpus/eval/errors/`) [Minor, test-crafter C47]
 - [ ] Short-circuit redundant scan in BIND-NAMED — when C-NO-OVERLAP check at `src/eval.rs:664` finds `Some(idx)` with `idx >= positional.len()`, the C-NAMED-VALID check at line 679 re-scans `regular_params` and always finds the name. Add `continue` or combine the two `regular_params.iter()` scans into one. (`src/eval.rs:664-687`) [Nit, computer-scientist C47]
+- [ ] Fix `instantiate_at_level` level-lowering U-VAR comment saying "type vars in b" when it also collects row vars — `src/types.rs:398-406` comment says "level-lower all type vars in b" but `collect_type_vars` collects both TypeVar and RowVar names. Update comment to "level-lower all type and row vars in b". (`src/types.rs:398-406`) [Minor, type-theorist C48]
+- [ ] Fix `doc/06-type-inference.md:15` Type Grammar using "Str" while user-facing annotations use "String" — no explanation of the split. Add note: "Internal representation uses `Str`; user-facing annotations accept `String` as an alias." (`doc/06-type-inference.md:15`) [Nit, type-theorist C48]
+- [ ] Fix `doc/05-type-annotations.md:185` float literal rationale wrong — says "cannot be used as dict keys" but Float CAN be a dict key; real reasons are equality fragility and NaN comparisons. Fix rationale. (`doc/05-type-annotations.md:185`) [Nit, type-theorist C48]
 
 ## Future Features
 

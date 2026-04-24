@@ -1,0 +1,5 @@
+# Structural TypeAssert: Int annotation with Int value passes
+# Type checker elaborates resolved_type = Some(Type::Int), triggering structural path.
+[@Int 42]
+===
+Int(42)

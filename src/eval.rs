@@ -11,6 +11,7 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
+use crate::types::{RowRest, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -99,6 +100,163 @@ fn key_in_range(k: &Key, start: Option<&Key>, end: Option<&Key>, span: Span) -> 
     Ok(after_start && before_end)
 }
 
+/// Check if a materialized value matches a type for structural TypeAssert validation.
+/// Returns true if the value conforms to the expected type.
+///
+/// This performs immediate type checking per doc/07-type-extensions.md §Validation depth table:
+/// - Primitives (Int, Float, Str, Bool): exact match
+/// - Literals (IntLiteral, StringLiteral): value equality
+/// - Seq, Function: tag-only validation (element/param types opaque per spec doc/07:108-113)
+/// - TypeVar: treated as Any (residual polymorphic instantiation)
+/// - Record: always true (structural validation deferred to proxy contract wrapping)
+fn value_matches_type(value: &Value, expected: &Type) -> bool {
+    match expected {
+        Type::Any => true,
+        Type::Int => matches!(value, Value::Int(_)),
+        Type::Float => matches!(value, Value::Float(_)),
+        Type::Number => matches!(value, Value::Int(_) | Value::Float(_)),
+        Type::Str => matches!(value, Value::String(_)),
+        Type::Bool => matches!(value, Value::Bool(_)),
+        Type::IntLiteral(n) => matches!(value, Value::Int(v) if v == n),
+        Type::StringLiteral(s) => matches!(value, Value::String(v) if v == s),
+        Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin { .. }),
+        Type::Seq(_) => matches!(value, Value::Seq { .. }),
+        Type::TypeVar(_, _) => true,
+        Type::Record(_, _) => true, // Records handled separately via proxy wrapping
+    }
+}
+
+/// Format a Type for error messages in TypeAssert.
+///
+/// Currently delegates to Type's Display impl. This wrapper provides a semantic
+/// name and future-proofs for custom error formatting (e.g., abbreviating long
+/// record types, pretty-printing nested structures).
+fn format_type_for_assert(ty: &Type) -> String {
+    format!("{}", ty)
+}
+
+/// Validate a dict value against a Record type and wrap fields with guards.
+///
+/// Returns a new dict with guarded field thunks. This implements the [VM-RECORD-PROXY]
+/// rule from doc/07-type-extensions.md:
+/// 1. Shape check: verify all required fields exist (with Key::Int fallback)
+/// 2. Cardinality check: verify no extra fields for closed records
+/// 3. Guard wrapping: wrap each typed field with a Guarded thunk
+///
+/// # Parameters
+/// - `entries`: the dict entries to validate
+/// - `fields`: the expected record field types
+/// - `rest`: whether the record is open (allows extra fields) or closed
+/// - `field_path`: accumulated path for nested field errors (empty for top-level)
+/// - `guard_span`: span for guard creation
+///
+/// # Errors
+/// Returns TypeAssertFailed if:
+/// - A required field is missing
+/// - The record has extra fields and rest is Closed
+///
+/// # Note
+/// The caller is responsible for checking default_expr and calling eval() with the default
+/// if this function returns an error. This keeps the helper focused on validation logic.
+/// Guards created by this function do NOT propagate default_expr to avoid infinite recursion.
+fn validate_and_wrap_record(
+    entries: &IndexMap<Key, Rc<Thunk>>,
+    fields: &IndexMap<String, Type>,
+    rest: &RowRest,
+    field_path: Vec<String>,
+    guard_span: Span,
+) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
+    // Shape check: verify all required fields exist
+    // Per doc/07:117, try Key::String first, then Key::Int fallback
+    for (field_name, _field_type) in fields.iter() {
+        let has_field = entries.contains_key(&Key::String(field_name.clone()))
+            || field_name
+                .parse::<i64>()
+                .ok()
+                .map(|idx| entries.contains_key(&Key::Int(idx)))
+                .unwrap_or(false);
+
+        if !has_field {
+            let field_path_prefix = if field_path.is_empty() {
+                String::new()
+            } else {
+                format!("field \"{}\": ", field_path.join("."))
+            };
+
+            return Err(EvalError::type_assert_failed(
+                &format!("{}record with field \"{}\"", field_path_prefix, field_name),
+                &format!(
+                    "{}record missing field \"{}\"",
+                    field_path_prefix, field_name
+                ),
+                guard_span,
+            )
+            .into());
+        }
+    }
+
+    // Cardinality check for closed records
+    // Per review finding #5: iterate keys directly, no Vec allocation
+    if matches!(rest, RowRest::Closed) {
+        for key in entries.keys() {
+            if let Key::String(s) = key {
+                if !fields.contains_key(s) {
+                    let field_path_prefix = if field_path.is_empty() {
+                        String::new()
+                    } else {
+                        format!("field \"{}\": ", field_path.join("."))
+                    };
+
+                    return Err(EvalError::type_assert_failed(
+                        &format!("{}closed record (no extra fields)", field_path_prefix),
+                        &format!(
+                            "{}record with unexpected field \"{}\"",
+                            field_path_prefix, s
+                        ),
+                        guard_span,
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+
+    // Guard wrapping: wrap each typed field thunk
+    // Per review finding #2: handle Key::Int → string field mapping
+    let new_entries = entries
+        .iter()
+        .map(|(key, thunk)| {
+            // Try to find a matching field type
+            let field_type = match key {
+                Key::String(field_name) => fields.get(field_name),
+                Key::Int(n) => fields.get(&n.to_string()),
+            };
+
+            if let Some(field_type) = field_type {
+                let field_name = match key {
+                    Key::String(s) => s.clone(),
+                    Key::Int(n) => n.to_string(),
+                };
+
+                let mut nested_path = field_path.clone();
+                nested_path.push(field_name);
+
+                let guarded = Rc::new(Thunk::new_guarded(
+                    Rc::clone(thunk),
+                    field_type.clone(),
+                    nested_path,
+                    guard_span,
+                ));
+                (key.clone(), guarded)
+            } else {
+                (key.clone(), Rc::clone(thunk))
+            }
+        })
+        .collect();
+
+    Ok(new_entries)
+}
+
 /// Wrap an AST expression in a thunk. Literals produce immediately materialized
 /// thunks; dicts produce materialized thunks whose values are unevaluated;
 /// var refs look up the environment chain.
@@ -161,47 +319,122 @@ pub fn eval(
         Expr::TypeAssert {
             expr: inner,
             annotation,
+            resolved_type,
         } => {
             let thunk = eval(inner, Rc::clone(&env), ctx, depth + 1)?;
-            let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
 
-            let expected_type = match &annotation.node {
-                Annotation::Simple(name) => Some(name.as_str()),
-                Annotation::PropertyDict(_) => {
-                    annotation.node.get_property("type").and_then(|type_expr| {
-                        match &type_expr.node {
-                            Expr::Str(s) => Some(s.as_str()),
-                            _ => None,
+            // Check if elaboration provided a resolved type
+            let resolved = resolved_type.borrow().clone();
+
+            if let Some(expected) = resolved {
+                // STRUCTURAL VALIDATION (type checker succeeded and provided elaboration)
+
+                match &expected {
+                    Type::Record(fields, rest) => {
+                        // [VM-RECORD-PROXY]: shape check + guard wrapping
+                        // Must materialize eagerly to perform shape check
+                        let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
+                        if let Value::Dict(entries) = &value {
+                            // Use helper to validate and wrap record
+                            // If validation fails and default: is present, use default
+                            let default_opt = annotation
+                                .node
+                                .get_property(DEFAULT_ANNOTATION_KEY)
+                                .map(|expr| (expr.clone(), Rc::clone(&env)));
+
+                            match validate_and_wrap_record(entries, fields, rest, vec![], expr.span)
+                            {
+                                Ok(new_entries) => Ok(Rc::new(Thunk::new_materialized(
+                                    Value::Dict(new_entries),
+                                    expr.span,
+                                ))),
+                                Err(err) => {
+                                    if let Some((default, env)) = default_opt {
+                                        eval(&default, env, ctx, depth + 1)
+                                    } else {
+                                        Err(err)
+                                    }
+                                }
+                            }
+                        } else {
+                            // Expected Record but got non-Dict
+                            if let Some(default_expr) =
+                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                            {
+                                return eval(default_expr, env, ctx, depth + 1);
+                            }
+                            Err(EvalError::type_assert_failed(
+                                &format_type_for_assert(&expected),
+                                &value.type_name(),
+                                expr.span,
+                            )
+                            .into())
                         }
-                    })
-                }
-            };
-
-            if let Some(expected) = expected_type {
-                let actual = value.type_name();
-                let matches = if expected == "Number" {
-                    actual == "Int" || actual == "Float"
-                } else {
-                    actual == expected
-                };
-                if !matches {
-                    if let Some(default_expr) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                    {
-                        return eval(default_expr, env, ctx, depth + 1);
                     }
-                    return Err(Box::new(EvalError {
-                        kind: crate::error::ErrorKind::TypeAssertFailed {
-                            expected: expected.to_string(),
-                            got: actual.to_string(),
-                        },
-                        definition_span: expr.span,
-                        materialization_span: None,
-                        stack: Vec::new(),
-                    }));
+                    _ => {
+                        // Non-Record type: immediate validation per spec (line 22)
+                        // "For primitive types, validation is immediate"
+                        let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
+                        if value_matches_type(&value, &expected) {
+                            Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+                        } else {
+                            if let Some(default_expr) =
+                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                            {
+                                return eval(default_expr, env, ctx, depth + 1);
+                            }
+                            Err(EvalError::type_assert_failed(
+                                &format_type_for_assert(&expected),
+                                &value.type_name(),
+                                expr.span,
+                            )
+                            .into())
+                        }
+                    }
                 }
-            }
+            } else {
+                // --no-typecheck FALLBACK (nominal validation)
+                let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
 
-            Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+                let expected_type =
+                    match &annotation.node {
+                        Annotation::Simple(name) => Some(name.as_str()),
+                        Annotation::PropertyDict(_) => annotation
+                            .node
+                            .get_property("type")
+                            .and_then(|type_expr| match &type_expr.node {
+                                Expr::Str(s) => Some(s.as_str()),
+                                _ => None,
+                            }),
+                    };
+
+                if let Some(expected) = expected_type {
+                    let actual = value.type_name();
+                    let matches = if expected == "Number" {
+                        actual == "Int" || actual == "Float"
+                    } else {
+                        actual == expected
+                    };
+                    if !matches {
+                        if let Some(default_expr) =
+                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                        {
+                            return eval(default_expr, env, ctx, depth + 1);
+                        }
+                        return Err(Box::new(EvalError {
+                            kind: crate::error::ErrorKind::TypeAssertFailed {
+                                expected: expected.to_string(),
+                                got: actual.to_string(),
+                            },
+                            definition_span: expr.span,
+                            materialization_span: None,
+                            stack: Vec::new(),
+                        }));
+                    }
+                }
+
+                Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+            }
         }
         Expr::Annotated { name, .. } => {
             // Evaluate as the bare string; the type checker (typecheck.rs) interprets annotations.
@@ -938,7 +1171,8 @@ pub fn materialize(
             }
             ThunkState::Unevaluated { .. }
             | ThunkState::PendingBuiltin { .. }
-            | ThunkState::PendingCall { .. } => {}
+            | ThunkState::PendingCall { .. }
+            | ThunkState::Guarded { .. } => {}
         }
     }
 
@@ -1186,8 +1420,85 @@ pub fn materialize(
                 Err(decorated)
             }
         }
+    } else if let Some((inner, expected, field_path, guard_span)) = thunk.take_guarded() {
+        // Materialize the inner thunk first
+        // LIMITATION: Guard failures do not check default: from the original TypeAssert
+        // annotation because Guarded thunks do not capture the annotation or environment.
+        // This is a known limitation accepted in sprint review round 1 finding #6 and
+        // re-raised in round 2 finding #3. Fixing requires storing default_expr + env in
+        // Thunk State::Guarded, but attempts led to stack overflow. Deferred post-1.0.
+        let result = materialize(&inner, mat_span, _ctx, depth + 1).map_err(&decorate);
+
+        match result {
+            Ok(value) => {
+                // For Record types, apply proxy contract wrapping
+                if let Type::Record(ref fields, ref rest) = expected {
+                    if let Value::Dict(ref entries) = value {
+                        // Use helper to validate and wrap record
+                        match validate_and_wrap_record(
+                            entries, fields, rest, field_path, guard_span,
+                        ) {
+                            Ok(new_entries) => {
+                                let guarded_value = Value::Dict(new_entries);
+                                thunk.set_state(ThunkState::Materialized(guarded_value.clone()));
+                                Ok(guarded_value)
+                            }
+                            Err(err) => {
+                                thunk.cache_failure(&err);
+                                Err(err)
+                            }
+                        }
+                    } else {
+                        // Expected Record but got non-Dict
+                        let field_path_str = field_path.join(".");
+                        let err = EvalError::type_assert_failed(
+                            &format!(
+                                "field \"{}\": {}",
+                                field_path_str,
+                                format_type_for_assert(&expected)
+                            ),
+                            &format!("field \"{}\": {}", field_path_str, value.type_name()),
+                            guard_span,
+                        );
+                        thunk.cache_failure(&err);
+                        Err(err.into())
+                    }
+                } else {
+                    // For non-Record types, simple value check
+                    if value_matches_type(&value, &expected) {
+                        thunk.set_state(ThunkState::Materialized(value.clone()));
+                        Ok(value)
+                    } else {
+                        let field_path_str = field_path.join(".");
+                        let err = EvalError::type_assert_failed(
+                            &format!(
+                                "field \"{}\": {}",
+                                field_path_str,
+                                format_type_for_assert(&expected)
+                            ),
+                            &format!("field \"{}\": {}", field_path_str, value.type_name()),
+                            guard_span,
+                        );
+                        thunk.cache_failure(&err);
+                        Err(err.into())
+                    }
+                }
+            }
+            Err(e) => {
+                // Inner materialization error propagates (not a type mismatch)
+                if e.kind.is_cacheable() {
+                    thunk.cache_failure(&e);
+                }
+                Err(e)
+            }
+        }
     } else {
-        unreachable!("state must be Unevaluated, PendingBuiltin, or PendingCall (Materialized returns early, Failed returns early, InProgress returns early)")
+        unreachable!(
+            "state must be Unevaluated, PendingBuiltin, PendingCall, or Guarded. \
+             All other ThunkState variants are handled in the early-return section at the \
+             top of this function: Materialized returns early, Failed returns early, \
+             InProgress returns early and caches circular dependency error."
+        )
     }
 }
 
@@ -2822,6 +3133,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Int".into())),
             expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2834,6 +3146,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("String".into())),
             expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2846,6 +3159,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Number".into())),
             expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2858,6 +3172,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Number".into())),
             expr: Box::new(sp(Expr::Float(3.14))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2870,6 +3185,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Int".into())),
             expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(None),
         });
         let err = eval(&expr, empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
@@ -2886,6 +3202,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("String".into())),
             expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
         });
         let err = eval(&expr, empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
@@ -2902,6 +3219,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Bool".into())),
             expr: Box::new(sp(Expr::Bool(true))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2918,6 +3236,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2934,6 +3253,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(None),
         });
         let err = eval(&expr, empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
@@ -2954,6 +3274,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2976,6 +3297,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2998,6 +3320,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -3014,6 +3337,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(None),
         });
         let err = eval(&expr, empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
@@ -3040,6 +3364,7 @@ mod tests {
         let expr_pass = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
         });
         let thunk = eval(&expr_pass, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -3059,6 +3384,7 @@ mod tests {
         let expr_fail = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries2)),
             expr: Box::new(sp(Expr::Str("nope".into()))),
+            resolved_type: RefCell::new(None),
         });
         let thunk2 = eval(&expr_fail, empty_env(), &test_ctx(), 0).unwrap();
         let val2 = materialize(&thunk2, None, &test_ctx(), 0).unwrap();
@@ -3081,6 +3407,7 @@ mod tests {
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(None),
         });
         let env = empty_env();
         env.borrow_mut().insert(
@@ -6275,5 +6602,378 @@ mod tests {
         // Cleanup
         std::fs::remove_dir_all(&temp_dir1).unwrap();
         std::fs::remove_dir_all(&temp_dir2).unwrap();
+    }
+
+    // ── Structural TypeAssert tests (resolved_type: Some(Type::...)) ────
+    // These test the NEW structural validation path added by the
+    // typeassert-structural sprint, distinct from the nominal fallback path
+    // (resolved_type: None) tested in the existing TypeAssert tests above.
+
+    #[test]
+    fn test_typeassert_structural_int_pass() {
+        // Structural path: resolved_type = Some(Type::Int), value is Int(42) -> pass
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Int".into())),
+            expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(Some(Type::Int)),
+        });
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn test_typeassert_structural_int_fail() {
+        // Structural path: resolved_type = Some(Type::Int), value is String -> error
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Int".into())),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(Some(Type::Int)),
+        });
+        let err = eval(&expr, empty_env(), &test_ctx(), 0).unwrap_err();
+        assert!(
+            err.message()
+                .contains("type assertion failed: expected Int, got String"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_typeassert_structural_str_pass() {
+        // Structural path: resolved_type = Some(Type::Str), value is String -> pass
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Str".into())),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(Some(Type::Str)),
+        });
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert_eq!(val, Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_typeassert_structural_any() {
+        // Structural path: resolved_type = Some(Type::Any), any value passes
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Any".into())),
+            expr: Box::new(sp(Expr::Str("anything".into()))),
+            resolved_type: RefCell::new(Some(Type::Any)),
+        });
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert_eq!(val, Value::String("anything".into()));
+    }
+
+    #[test]
+    fn test_typeassert_structural_any_accepts_int() {
+        // Type::Any accepts Int as well (covers any-value branch)
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Any".into())),
+            expr: Box::new(sp(Expr::Int(99))),
+            resolved_type: RefCell::new(Some(Type::Any)),
+        });
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert_eq!(val, Value::Int(99));
+    }
+
+    #[test]
+    fn test_typeassert_structural_record_shape_check() {
+        // Structural path: resolved_type = Some(Type::Record(..., Open))
+        // Dict has required field "name" -> pass.
+        // The record type check is immediate (shape check), field guard wrapping deferred.
+        let mut fields = IndexMap::new();
+        fields.insert("name".to_string(), Type::Str);
+        let record_type = Type::Record(fields, RowRest::Open);
+
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("name".into()))),
+                value: sp(Expr::Str("Alice".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("age".into()))),
+                value: sp(Expr::Int(30)),
+            }),
+        ];
+        let dict_expr = sp(Expr::Dict(entries));
+        let inner_expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Record".into())),
+            expr: Box::new(dict_expr),
+            resolved_type: RefCell::new(Some(record_type)),
+        });
+
+        let thunk = eval(&inner_expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        // Should be a Dict with the expected fields
+        match &val {
+            Value::Dict(map) => {
+                assert!(map.contains_key(&Key::String("name".into())));
+                assert!(map.contains_key(&Key::String("age".into())));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_typeassert_structural_record_missing_field() {
+        // Structural path: record type requires field "id", dict doesn't have it -> error
+        let mut fields = IndexMap::new();
+        fields.insert("id".to_string(), Type::Int);
+        let record_type = Type::Record(fields, RowRest::Open);
+
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("name".into()))),
+            value: sp(Expr::Str("Alice".into())),
+        })];
+        let dict_expr = sp(Expr::Dict(entries));
+        let inner_expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Record".into())),
+            expr: Box::new(dict_expr),
+            resolved_type: RefCell::new(Some(record_type)),
+        });
+
+        let err = eval(&inner_expr, empty_env(), &test_ctx(), 0).unwrap_err();
+        assert!(
+            err.message().contains("record missing field \"id\""),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_typeassert_structural_closed_record_extra_field() {
+        // Structural path: closed record (RowRest::Closed), dict has extra field -> error
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), Type::Int);
+        let record_type = Type::Record(fields, RowRest::Closed);
+
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: sp(Expr::Int(1)),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("extra".into()))),
+                value: sp(Expr::Int(2)),
+            }),
+        ];
+        let dict_expr = sp(Expr::Dict(entries));
+        let inner_expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Record".into())),
+            expr: Box::new(dict_expr),
+            resolved_type: RefCell::new(Some(record_type)),
+        });
+
+        let err = eval(&inner_expr, empty_env(), &test_ctx(), 0).unwrap_err();
+        assert!(
+            err.message()
+                .contains("record with unexpected field \"extra\""),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_typeassert_structural_closed_record_exact_fields_pass() {
+        // Structural path: closed record, dict has exactly the required fields -> pass
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), Type::Int);
+        let record_type = Type::Record(fields, RowRest::Closed);
+
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("x".into()))),
+            value: sp(Expr::Int(42)),
+        })];
+        let dict_expr = sp(Expr::Dict(entries));
+        let inner_expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Record".into())),
+            expr: Box::new(dict_expr),
+            resolved_type: RefCell::new(Some(record_type)),
+        });
+
+        let thunk = eval(&inner_expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        match &val {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 1);
+                assert!(map.contains_key(&Key::String("x".into())));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_typeassert_structural_record_non_dict_fails() {
+        // Structural path: resolved_type = Some(Type::Record(...)), value is Int -> error
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), Type::Int);
+        let record_type = Type::Record(fields, RowRest::Open);
+
+        let inner_expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Record".into())),
+            expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(Some(record_type)),
+        });
+
+        let err = eval(&inner_expr, empty_env(), &test_ctx(), 0).unwrap_err();
+        assert!(
+            err.message().contains("type assertion failed"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_typeassert_nominal_fallback() {
+        // Nominal fallback path: resolved_type = None, annotation "Int", value is Int -> pass
+        // (This ensures the existing nominal path is preserved alongside the new structural path.)
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Int".into())),
+            expr: Box::new(sp(Expr::Int(7))),
+            resolved_type: RefCell::new(None),
+        });
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert_eq!(val, Value::Int(7));
+    }
+
+    #[test]
+    fn test_typeassert_nominal_fallback_mismatch() {
+        // Nominal fallback path: resolved_type = None, annotation "Int", value is String -> error
+        // (Verifies nominal fallback still rejects mismatches.)
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::Simple("Int".into())),
+            expr: Box::new(sp(Expr::Str("oops".into()))),
+            resolved_type: RefCell::new(None),
+        });
+        let err = eval(&expr, empty_env(), &test_ctx(), 0).unwrap_err();
+        assert!(
+            err.message()
+                .contains("type assertion failed: expected Int, got String"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    // ── value_matches_type unit tests ────────────────────────────────────
+    // Direct tests of the value_matches_type() helper function, which is
+    // called in the structural TypeAssert handler for non-Record types.
+
+    #[test]
+    fn test_value_matches_type_int() {
+        assert!(value_matches_type(&Value::Int(42), &Type::Int));
+        assert!(!value_matches_type(&Value::String("x".into()), &Type::Int));
+        assert!(!value_matches_type(&Value::Bool(true), &Type::Int));
+    }
+
+    #[test]
+    fn test_value_matches_type_str() {
+        assert!(value_matches_type(
+            &Value::String("hello".into()),
+            &Type::Str
+        ));
+        assert!(!value_matches_type(&Value::Int(1), &Type::Str));
+        assert!(!value_matches_type(&Value::Bool(false), &Type::Str));
+    }
+
+    #[test]
+    fn test_value_matches_type_float() {
+        assert!(value_matches_type(&Value::Float(3.14), &Type::Float));
+        assert!(!value_matches_type(&Value::Int(3), &Type::Float));
+    }
+
+    #[test]
+    fn test_value_matches_type_bool() {
+        assert!(value_matches_type(&Value::Bool(true), &Type::Bool));
+        assert!(value_matches_type(&Value::Bool(false), &Type::Bool));
+        assert!(!value_matches_type(&Value::Int(1), &Type::Bool));
+    }
+
+    #[test]
+    fn test_value_matches_type_number() {
+        // Type::Number accepts both Int and Float
+        assert!(value_matches_type(&Value::Int(42), &Type::Number));
+        assert!(value_matches_type(&Value::Float(1.5), &Type::Number));
+        assert!(!value_matches_type(
+            &Value::String("42".into()),
+            &Type::Number
+        ));
+        assert!(!value_matches_type(&Value::Bool(true), &Type::Number));
+    }
+
+    #[test]
+    fn test_value_matches_type_any() {
+        // Type::Any accepts all value kinds
+        assert!(value_matches_type(&Value::Int(1), &Type::Any));
+        assert!(value_matches_type(&Value::Float(1.0), &Type::Any));
+        assert!(value_matches_type(&Value::String("s".into()), &Type::Any));
+        assert!(value_matches_type(&Value::Bool(true), &Type::Any));
+        assert!(value_matches_type(
+            &Value::Dict(IndexMap::new()),
+            &Type::Any
+        ));
+    }
+
+    #[test]
+    fn test_value_matches_type_int_literal() {
+        // Type::IntLiteral(n) matches only Int(n)
+        assert!(value_matches_type(&Value::Int(5), &Type::IntLiteral(5)));
+        assert!(!value_matches_type(&Value::Int(6), &Type::IntLiteral(5)));
+        assert!(!value_matches_type(
+            &Value::String("5".into()),
+            &Type::IntLiteral(5)
+        ));
+    }
+
+    #[test]
+    fn test_value_matches_type_string_literal() {
+        // Type::StringLiteral("foo") matches only String("foo")
+        assert!(value_matches_type(
+            &Value::String("foo".into()),
+            &Type::StringLiteral("foo".into())
+        ));
+        assert!(!value_matches_type(
+            &Value::String("bar".into()),
+            &Type::StringLiteral("foo".into())
+        ));
+        assert!(!value_matches_type(
+            &Value::Int(0),
+            &Type::StringLiteral("foo".into())
+        ));
+    }
+
+    #[test]
+    fn test_value_matches_type_typevar_always_true() {
+        // Type::TypeVar is treated as Any (residual polymorphic instantiation)
+        assert!(value_matches_type(
+            &Value::Int(1),
+            &Type::TypeVar("a".into(), 0)
+        ));
+        assert!(value_matches_type(
+            &Value::String("x".into()),
+            &Type::TypeVar("a".into(), 0)
+        ));
+        assert!(value_matches_type(
+            &Value::Bool(true),
+            &Type::TypeVar("a".into(), 0)
+        ));
+    }
+
+    #[test]
+    fn test_value_matches_type_record_always_true() {
+        // Type::Record always returns true (deferred to proxy contract wrapping).
+        // This is intentional per the spec: record field validation happens via
+        // validate_and_wrap_record, not value_matches_type.
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), Type::Int);
+        let record_type = Type::Record(fields, RowRest::Closed);
+        // Even a non-Dict value returns true here — record validation is done separately
+        assert!(value_matches_type(&Value::Int(99), &record_type));
+        assert!(value_matches_type(
+            &Value::Dict(IndexMap::new()),
+            &record_type
+        ));
     }
 }

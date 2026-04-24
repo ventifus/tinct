@@ -1,0 +1,5 @@
+# Structural TypeAssert: String annotation with String value passes
+# Type checker elaborates resolved_type = Some(Type::Str), triggering structural path.
+[@String "hello"]
+===
+String("hello")

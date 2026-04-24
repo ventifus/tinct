@@ -273,6 +273,7 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         Expr::TypeAssert {
             annotation,
             expr: inner,
+            ..
         } => {
             desugar_annotation(&mut annotation.node, depth);
             desugar(inner, depth);

@@ -86,6 +86,8 @@ enum Expr {
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Box<Spanned<Expr>>,
+        // Filled by type checker (write-once elaboration). None in --no-typecheck mode.
+        resolved_type: RefCell<Option<Type>>,
     },
 
     // Generalized annotation in value position

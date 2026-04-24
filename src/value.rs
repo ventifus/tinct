@@ -10,6 +10,7 @@ use indexmap::IndexMap;
 
 use crate::ast::{Expr, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
+use crate::types::Type;
 
 /// Arguments passed to built-in functions.
 pub struct BuiltinArgs<'a> {
@@ -195,6 +196,12 @@ pub enum ThunkState {
         call_span: Span,
         ctx: Rc<crate::eval::EvalContext>,
     },
+    Guarded {
+        inner: Rc<Thunk>,
+        expected: Type,
+        field_path: Vec<String>,
+        guard_span: Span,
+    },
     InProgress,
     Materialized(Value),
     Failed(Box<EvalError>),
@@ -273,6 +280,29 @@ impl Thunk {
                 ctx,
             }),
             span,
+            origin,
+        }
+    }
+
+    pub fn new_guarded(
+        inner: Rc<Thunk>,
+        expected: Type,
+        field_path: Vec<String>,
+        guard_span: Span,
+    ) -> Self {
+        let origin = if field_path.is_empty() {
+            Cow::Borrowed("type guard")
+        } else {
+            Cow::Owned(format!("type guard: {}", field_path.join(".")))
+        };
+        Self {
+            state: RefCell::new(ThunkState::Guarded {
+                inner,
+                expected,
+                field_path,
+                guard_span,
+            }),
+            span: guard_span,
             origin,
         }
     }
@@ -396,6 +426,30 @@ impl Thunk {
                 call_span,
                 ctx,
             } => Some((func, args, named, call_span, ctx)),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
+
+    /// Extract Guarded state components and transition thunk to InProgress.
+    ///
+    /// This is NOT a simple accessor - it has side effects:
+    /// - If the thunk is Guarded, it transitions to InProgress and returns the components.
+    ///   The caller is responsible for transitioning to Materialized or Failed after processing.
+    /// - If the thunk is NOT Guarded, the state is restored unchanged and None is returned.
+    ///
+    /// The InProgress transition prevents re-entrance during guard materialization.
+    pub fn take_guarded(&self) -> Option<(Rc<Thunk>, Type, Vec<String>, Span)> {
+        let mut state = self.state.borrow_mut();
+        match std::mem::replace(&mut *state, ThunkState::InProgress) {
+            ThunkState::Guarded {
+                inner,
+                expected,
+                field_path,
+                guard_span,
+            } => Some((inner, expected, field_path, guard_span)),
             other => {
                 *state = other;
                 None
