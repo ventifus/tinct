@@ -785,3 +785,10 @@ Fix AST documentation discrepancies (C41).
 - [x] Fix `doc/15-ast.md` `TypeAssert` fictional `resolved_type: Option<Type>` field [Major, grammar-architect C39]
 - [x] Fix `doc/13-examples.md` §8.9 and §8.10 TypeAssert AST examples showing fictional `resolved_type: None` field [Major, grammar-architect C40]
 - [x] Fix `doc/15-ast.md` nesting depth section describing non-existent iterative parser [Major, grammar-architect C39]
+
+### seq-cycle-fix: Seq Cycle Detection Asymmetry
+
+Fix deep_materialize Seq→Dict terminal documentation and Launchbury sharing preservation (C42).
+
+- [x] Document deep_materialize Seq→Dict terminal case — added 2-line comment explaining Seq tail recurses to empty Dict `[]` as terminal value; infinite sequences hit MAX_EVAL_DEPTH (`src/eval.rs:1243-1244`) [Minor, eval-engine]
+- [x] Fix deep_materialize breaking Launchbury sharing — replaced `HashSet<*const Thunk>` with `HashMap<*const Thunk, Option<Rc<Thunk>>>` dual-purpose cache: `None` sentinel = blackholing (cycle detection), `Some(rc)` = sharing cache (return cached result); added `deep_materialize_thunk` helper encapsulating the protocol; three new unit tests validating `Rc::ptr_eq` preservation for dict, seq, and cross-structure sharing (`src/eval.rs:1260-1280`) [Minor, computer-scientist]
