@@ -1201,19 +1201,28 @@ pub fn materialize(
 ///   opaque values, not collections to traverse.
 ///
 /// `depth` is checked against [`MAX_EVAL_DEPTH`] to prevent stack overflow on
-/// deeply nested structures. Cycle detection is performed using a visited set
-/// to prevent infinite loops on cyclic structures (e.g., mutual dict references).
+/// deeply nested structures. Cycle detection and sharing preservation are handled
+/// via a `HashMap<*const Thunk, Option<Rc<Thunk>>>` cache; see
+/// `deep_materialize_impl` for the dual-purpose semantics.
 pub fn deep_materialize(val: &Value, ctx: &Rc<EvalContext>, depth: usize) -> EvalResult<Value> {
-    use std::collections::HashSet;
-    let mut visited = HashSet::new();
-    deep_materialize_impl(val, ctx, depth, &mut visited)
+    use std::collections::HashMap;
+    let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
+    deep_materialize_impl(val, ctx, depth, &mut cache)
 }
 
+/// Deep-force a value, recursively materializing all thunks in dicts and seqs.
+///
+/// The `cache` serves two purposes:
+/// 1. **Cycle detection** (Launchbury 1993 blackholing): an entry with value `None`
+///    means we are currently processing this thunk — re-encountering it is a cycle.
+/// 2. **Sharing preservation** (Launchbury 1993 sharing invariant): an entry with
+///    value `Some(rc)` means this thunk was already deep-materialized — reuse it
+///    so that `Rc::ptr_eq` holds for outputs derived from shared inputs.
 fn deep_materialize_impl(
     val: &Value,
     ctx: &Rc<EvalContext>,
     depth: usize,
-    visited: &mut std::collections::HashSet<*const Thunk>,
+    cache: &mut std::collections::HashMap<*const Thunk, Option<Rc<Thunk>>>,
 ) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, Span::origin()).into());
@@ -1222,58 +1231,52 @@ fn deep_materialize_impl(
         Value::Dict(map) => {
             let mut result = IndexMap::new();
             for (key, thunk) in map {
-                // Check for cycles using raw pointer identity
-                let thunk_ptr = Rc::as_ptr(thunk);
-                if visited.contains(&thunk_ptr) {
-                    // Cycle detected: return thunk as-is without deep forcing
-                    result.insert(key.clone(), Rc::clone(thunk));
-                    continue;
-                }
-                visited.insert(thunk_ptr);
-                let v = materialize(thunk, None, ctx, depth)?;
-                let forced = deep_materialize_impl(&v, ctx, depth + 1, visited)?;
-                result.insert(
-                    key.clone(),
-                    Rc::new(Thunk::new_materialized(forced, thunk.span)),
-                );
+                let deep_thunk = deep_materialize_thunk(thunk, ctx, depth, cache)?;
+                result.insert(key.clone(), deep_thunk);
             }
             Ok(Value::Dict(result))
         }
         Value::Seq { head, tail } => {
-            // Materialize and deep-force head
-            let head_ptr = Rc::as_ptr(head);
-            if visited.contains(&head_ptr) {
-                // Cycle in head: keep as-is
-                return Ok(Value::Seq {
-                    head: Rc::clone(head),
-                    tail: Rc::clone(tail),
-                });
-            }
-            visited.insert(head_ptr);
-            let head_val = materialize(head, None, ctx, depth)?;
-            let head_forced = deep_materialize_impl(&head_val, ctx, depth + 1, visited)?;
-
-            // Materialize and deep-force tail
-            let tail_ptr = Rc::as_ptr(tail);
-            if visited.contains(&tail_ptr) {
-                // Cycle in tail: keep as-is
-                return Ok(Value::Seq {
-                    head: Rc::new(Thunk::new_materialized(head_forced, head.span)),
-                    tail: Rc::clone(tail),
-                });
-            }
-            visited.insert(tail_ptr);
-            let tail_val = materialize(tail, None, ctx, depth)?;
-            let tail_forced = deep_materialize_impl(&tail_val, ctx, depth + 1, visited)?;
-
+            // Recursively force both head and tail. Tail eventually materializes to empty Dict []
+            // (terminal nil). Infinite sequences (e.g., $iterate) hit MAX_EVAL_DEPTH.
+            let deep_head = deep_materialize_thunk(head, ctx, depth, cache)?;
+            let deep_tail = deep_materialize_thunk(tail, ctx, depth, cache)?;
             Ok(Value::Seq {
-                head: Rc::new(Thunk::new_materialized(head_forced, head.span)),
-                tail: Rc::new(Thunk::new_materialized(tail_forced, tail.span)),
+                head: deep_head,
+                tail: deep_tail,
             })
         }
         // Primitives and functions are already fully materialized
         other => Ok(other.clone()),
     }
+}
+
+/// Deep-materialize a single thunk, preserving sharing via the cache.
+///
+/// Returns an `Rc<Thunk>` that is either:
+/// - The cached result (if this thunk pointer was already processed — sharing preserved)
+/// - The original `Rc::clone` (if this thunk is currently being processed — cycle)
+/// - A new `Rc<Thunk>` containing the deep-materialized value (first encounter)
+fn deep_materialize_thunk(
+    thunk: &Rc<Thunk>,
+    ctx: &Rc<EvalContext>,
+    depth: usize,
+    cache: &mut std::collections::HashMap<*const Thunk, Option<Rc<Thunk>>>,
+) -> EvalResult<Rc<Thunk>> {
+    let thunk_ptr = Rc::as_ptr(thunk);
+    match cache.get(&thunk_ptr) {
+        Some(Some(cached)) => return Ok(Rc::clone(cached)), // sharing hit
+        Some(None) => return Ok(Rc::clone(thunk)),          // cycle: return as-is
+        None => {}
+    }
+    // Mark as in-progress (cycle sentinel)
+    cache.insert(thunk_ptr, None);
+    let v = materialize(thunk, None, ctx, depth)?;
+    let forced = deep_materialize_impl(&v, ctx, depth + 1, cache)?;
+    let result = Rc::new(Thunk::new_materialized(forced, thunk.span));
+    // Cache the result for sharing preservation
+    cache.insert(thunk_ptr, Some(Rc::clone(&result)));
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -4425,6 +4428,119 @@ mod tests {
         let outer_seq = materialize(&current, None, &test_ctx(), 0).unwrap();
         let err = deep_materialize(&outer_seq, &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("maximum evaluation depth exceeded"));
+    }
+
+    // ── Sharing preservation tests (Launchbury 1993 invariant) ──────────
+
+    #[test]
+    fn test_deep_materialize_preserves_dict_sharing() {
+        // Two dict entries share the same Rc<Thunk>. After deep_materialize,
+        // the output entries must still be Rc::ptr_eq — the sharing invariant.
+        let span = test_span(1, 1, 1, 5);
+        let shared_thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        assert!(Rc::ptr_eq(&shared_thunk, &Rc::clone(&shared_thunk)));
+
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), Rc::clone(&shared_thunk));
+        map.insert(Key::String("b".into()), Rc::clone(&shared_thunk));
+        let val = Value::Dict(map);
+
+        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                let a = &map[&Key::String("a".into())];
+                let b = &map[&Key::String("b".into())];
+                assert!(
+                    Rc::ptr_eq(a, b),
+                    "deep_materialize must preserve sharing: entries pointing to the \
+                     same Rc<Thunk> should remain Rc::ptr_eq after deep materialization"
+                );
+                // Also verify the value is correct
+                let v = materialize(a, None, &test_ctx(), 0).unwrap();
+                assert_eq!(v, Value::Int(42));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_preserves_seq_sharing() {
+        // Head and tail share the same Rc<Thunk>. After deep_materialize,
+        // they must still be Rc::ptr_eq.
+        let span = test_span(1, 1, 1, 5);
+        let shared_thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
+
+        let seq = Value::Seq {
+            head: Rc::clone(&shared_thunk),
+            tail: Rc::clone(&shared_thunk),
+        };
+
+        let result = deep_materialize(&seq, &test_ctx(), 0).unwrap();
+        match result {
+            Value::Seq { head, tail } => {
+                assert!(
+                    Rc::ptr_eq(&head, &tail),
+                    "deep_materialize must preserve sharing in Seq: head and tail \
+                     pointing to the same Rc<Thunk> should remain Rc::ptr_eq"
+                );
+                let v = materialize(&head, None, &test_ctx(), 0).unwrap();
+                assert_eq!(v, Value::Int(99));
+            }
+            other => panic!("expected Seq, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_preserves_cross_structure_sharing() {
+        // A shared thunk appears in both a nested dict and a seq within the
+        // same top-level dict. All occurrences must resolve to the same Rc.
+        let span = test_span(1, 1, 1, 5);
+        let shared = Rc::new(Thunk::new_materialized(
+            Value::String("shared".into()),
+            span,
+        ));
+
+        let mut inner_dict = IndexMap::new();
+        inner_dict.insert(Key::String("x".into()), Rc::clone(&shared));
+        let inner_dict_thunk = Rc::new(Thunk::new_materialized(Value::Dict(inner_dict), span));
+
+        let seq_val = Value::Seq {
+            head: Rc::clone(&shared),
+            tail: Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), span)),
+        };
+        let seq_thunk = Rc::new(Thunk::new_materialized(seq_val, span));
+
+        let mut outer = IndexMap::new();
+        outer.insert(Key::String("nested".into()), inner_dict_thunk);
+        outer.insert(Key::String("seq".into()), seq_thunk);
+        let val = Value::Dict(outer);
+
+        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        match result {
+            Value::Dict(map) => {
+                // Extract the shared thunk from the nested dict
+                let nested_val =
+                    materialize(&map[&Key::String("nested".into())], None, &test_ctx(), 0).unwrap();
+                let nested_shared = match nested_val {
+                    Value::Dict(d) => Rc::clone(&d[&Key::String("x".into())]),
+                    other => panic!("expected Dict, got {other:?}"),
+                };
+
+                // Extract the shared thunk from the seq head
+                let seq_val =
+                    materialize(&map[&Key::String("seq".into())], None, &test_ctx(), 0).unwrap();
+                let seq_shared = match seq_val {
+                    Value::Seq { head, .. } => head,
+                    other => panic!("expected Seq, got {other:?}"),
+                };
+
+                assert!(
+                    Rc::ptr_eq(&nested_shared, &seq_shared),
+                    "deep_materialize must preserve sharing across nested dicts and seqs"
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
     }
 
     // ── Stack trace / call stack reconstruction tests ──────────────────
