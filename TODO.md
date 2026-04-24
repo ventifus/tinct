@@ -84,10 +84,106 @@ Core contract validation and guard wrapping. Split into typeassert-structural-b 
 - [x] Handle `--no-typecheck` fallback — degrade to current nominal behavior when `resolved_type` is `None` (`src/eval.rs`)
 - [x] Implement blame tracking with even-odd polarity for contract positions. Findler & Felleisen (2002). (`src/eval.rs`) [Major, computer-scientist]
 
+## row-unification: Full Row-Variable Unification (Remy-Style)
+
+Replace the current closed-strict/open-lenient record unification with full Remy-style row-variable unification. Row variables become first-class participants in type inference, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
+
+**Benefits from:** `type-extensions` Type::Seq inference (for sequence type support in row polymorphism).
+
+- [x] Design Remy-style row unification model (row variable binding, remainder semantics, occurs check) — see DESIGN.md §Row-Variable Unification — Kinded Rémy Model (Dict+Tail Representation)
+
+### row-unification-a: Row Variable Pre-Unification Fixes
+
+Bug fixes and documentation in existing row handling code. Independent of the core algorithm.
+
+- [x] Fix row variable substitution creating duplicate fields — `merged.extend(extra_fields)` doesn't check for key collisions (`src/types.rs:166-184`) [Critical, type-theorist]
+- [x] Fix sub_rest ignored in record subtyping — `is_subtype` destructures sub record as `(sub_fields, _sub_rest)`, ignoring RowVar/Open rest; a record with `RowVar(r)` may have additional fields via its row variable not checked against a Closed supertype. Latent issue that becomes real with row variable binding. (`src/types.rs:52-64`) [Major, computer-scientist]
+- [x] Fix RowVar treated identically to Open in `is_subtype` — add TODO comment explaining row-unification placeholder (`src/types.rs:59-62`) [Major, type-theorist]
+- [x] Document RowVar instantiation via TypeVar namespace coincidence — `instantiate()` renames TypeVar names and RowVar names share the same namespace, so RowVars get freshened correctly by accident. Should be documented as intentional or given separate namespace handling. (`src/types.rs:318-330`) [Minor, computer-scientist]
+
+### row-unification-b: Core Remy-Style Unification
+
+Core algorithm implementation. Requires row-unification-a.
+
+- [ ] Extend `Substitution::apply` to splice bound row variable fields into records (e.g., `[a: Int | ...r]` with `r → [b: String]` produces `[a: Int, b: String]`)
+- [ ] Unify row rests: `RowVar` vs `RowVar` binds one to the other, `RowVar` vs `Closed` binds the var to the leftover fields as a closed record
+- [ ] Handle "remainder" binding: `unify([a: Int | ...r], [a: Int, b: String | Closed])` binds `r → [b: String | Closed]`
+- [ ] Extend `Type` representation if needed to support partial-row bindings (row var bound to fields + another row var)
+- [ ] Update `instantiate` to freshen row variables alongside type variables
+- [ ] Add row-specific occurs check for `RowVar("r")` with `Record(..., RowVar("r"))` (infinite row type prevention)
+- [ ] Add row variable substitution cycle handling — `Substitution::apply` must handle cycles when row variables bind to records containing the same row variable (`src/types.rs`) [Major, type-theorist]
+- [ ] Fix open-record unification silently dropping non-shared fields — only shared fields unified, unique fields ignored without constraint; Remy-style would bind fresh row variables to capture remainders (`src/types.rs:334-338`) [Major, computer-scientist]
+
+### row-unification-c: Verification and Optimization
+
+Testing, verification, and performance. Requires row-unification-b.
+
+- [ ] Test inference through polymorphic functions that extend/restrict records (e.g., `[fn add-id [r@[...rest]] [id: 1  ...rest]]`)
+- [ ] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
+- [ ] Ensure row variable occurs check before binding — existing `occurs_in()` handles `RowVar` case correctly (`src/types.rs:215-228`), but when row-unification adds row variable binding, it must go through the same occurs-check path to prevent infinite types like `r = [x: Int ...r]`. (`src/types.rs`) [Major, computer-scientist]
+- [ ] Generate unification constraints from access chains — `$x.field` should produce `unify(typeof(x), Record([field: α], ρ))`, enabling field requirement inference from usage. Currently access type checking is direct lookup (limitation, not design choice). See DESIGN.md §Access Chain Evaluation Part 5. (`src/typecheck.rs:297-357`) [Major, type-theorist]
+- [ ] Subtyping proof search for TypeAssert defaults — validate default value type matches asserted type (type-theorist review)
+- [ ] Cache FTV/FRV (free type/row variables) per Type during construction — row-variable occurs check is O(n×m) for n fields × m type depth without caching; 500-field records (K8s manifests) create a hot path. With cached sets, occurs check becomes O(1) set membership. [Major, performance-expert]
+- [ ] Use HashMap for Row.fields at type level, IndexMap only at runtime — row fields are semantically unordered (Rémy left-commutativity), IndexMap's insertion-order preservation adds ~20% overhead unnecessary in the type checker. Runtime `Value::Dict` keeps IndexMap for user-visible key ordering. [Minor, performance-expert]
+
+## type-extensions: Type System Extensions
+
+Future type system work identified by type-theorist review (2026-04-19). Updated by type-theorist review (2026-04-22).
+
+- [x] Design type system extension roadmap (Seq types, gradual typing, type classes, error recovery) — see DESIGN.md §Type System Extension Roadmap, `doc/whatif/gradual-typing.md`, `doc/whatif/typeclasses.md`, `doc/whatif/union-types.md`
+- [ ] Add Type::Seq inference to typecheck.rs — sequence builtins ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) currently infer as Any; annotate return types in `check_call` for LSP hover and type safety (`src/typecheck.rs`) [Major, type-theorist]
+- [ ] Fix polymorphic call unification for named args — requires extending `Type::Function` to carry param names; after positional unification, named args are not unified (`src/typecheck.rs:389-447`) [Major, type-theorist, deferred from types-major-fixes]
+- [ ] Gradual typing with Any→concrete boundary tracking and blame (TypeScript/Typed Racket model)
+- [x] Research polymorphic recursion detection — moot without algebraic data types. Polymorphic recursion requires parametric recursive type constructors (e.g., `Nested a → Nested [a]`); tinct has none and none are planned. The monomorphic letrec restriction (Limitation #6) is correct. Revisit only if sum types or user-defined recursive type constructors are added.
+- [ ] Type error recovery with `Type::Error` sentinel that doesn't unify (prevents cascading errors, improves LSP)
+- [ ] Type class constraints for arithmetic/comparison (needed if user-defined types get custom operators)
+- [x] Decide builtin type signature representation — use `Any` for all polymorphic parameter positions, precise return types where known (e.g., `$= : Any → Any → Bool`, `$/ : Any → Any → Float`, `$not : Bool → Bool`). Defer precise input types until algebraic subtyping or type classes exist. Forward-compatible — refine signatures when union types land.
+- [ ] Add `TypeEnv::with_builtins()` constructor pre-registering builtin type signatures — builtins are not registered in `TypeEnv::new()`, so the type checker cannot validate user code using `$=`, `$<`, etc. (`src/types.rs:420-426`, `src/typecheck.rs:149-152`) [Major, type-theorist]
+- [x] Research typeclass-based equality/ordering constraints — see doc/whatif/typeclasses.md. Key decisions: keep `$=` as EQ-INCOMP for dicts (no breaking change), add `$deep-eq` (short-circuiting structural) and `$shallow-eq` (pointer identity for thunks). Key-set equality (order-independent). Constrained row variables deferred to typeclass adoption.
+- [ ] Define hash consistency requirements for Dict key equality — `hash(a) == hash(b)` whenever `Value::PartialEq` says `a == b` (NOT `$=` user-facing equality). Int and Float use separate hash paths even when numerically equal via promotion, so `[1: x]` and `[1.0: y]` are distinct keys. Document before implementing Dict key deduplication or Set types. [Minor, type-theorist]
+- [x] Decide type alias shadowing policy — allow lexical scope shadowing (inner alias shadows outer). Consistent with value binding semantics. Same-dict redefinition already caught by duplicate key check. OCaml/Haskell/TypeScript precedent.
+- [ ] Type environment alias registry shadowing policy — implement chosen policy (`src/types.rs:433-435`) [Major, type-theorist]
+- [ ] `type-of` returns "Dict" for all dicts, no list discrimination — document in Future Features (`src/builtins.rs`, `DESIGN.md:1710`) [Minor, stdlib-author]
+- [ ] Fix type display for empty open record — `[...]` is ambiguous, consider `[... (open)]` notation (`src/types.rs:359`) [Minor, type-theorist]
+- [ ] Make `TypeEnv::lookup` `pub(crate)` — currently private but useful for testing (`src/types.rs:415-427`) [Minor, type-theorist]
+- [ ] Document `Substitution::get` being `cfg(test)` only — either make always-public or explain opaqueness (`src/types.rs:198-202`) [Minor, type-theorist]
+- [ ] Fix instantiation counter overflow — `u32` theoretically overflows; use `u64` or document assumption (`src/types.rs:318-330`) [Minor, type-theorist]
+- [ ] Document `Type::Number` having no literal variant — asymmetry with Int/String is due to dict key constraint (`src/types.rs:21-37`) [Minor, type-theorist]
+- [ ] Fix `Type::Function` Display for nested types — add parentheses for nested function annotations (`src/types.rs:369-378`) [Minor, type-theorist]
+- [x] Decide variadic param annotation semantics — forbid annotations on `...args`. Row types use string keys but variadic collects into Int-keyed Dict; annotation can't participate in type inference. Revisit when Seq types land (variadic may collect into `Seq<T>` instead of Dict).
+- [ ] Fix variadic param type from `Record([], Closed)` to `Any` — no annotation to resolve, just correct the type (`src/typecheck.rs:469-473`) [Minor, type-theorist]
+- [ ] Clarify `resolve_annotated` interpreting all Fn annotations as function types (`src/typecheck.rs:522-533`) [Minor, type-theorist]
+- [ ] Populate type map on errors — record `Type::Any` for failed subexpressions to improve LSP hover (`src/typecheck.rs:200-206`) [Minor, type-theorist]
+- [ ] Fix annotation TypeVar aliasing — same `@a` in two sibling dict entries overwrites `state.levels["a"]`; e.g., `[f: [fn [x@a] $x]  g: [fn [y@a] $y]]` — `g`'s inference overwrites `f`'s level, causing incorrect generalization of `f`'s scheme at Pass 4. Fix: use `state.fresh_var()` for annotation-derived TypeVars (fresh name with counter) instead of the bare annotation name. (`src/typecheck.rs:738`) [Major, type-theorist C40]
+- [ ] Fix `infer_dict` Pass 3 storing raw `value_ty` before substitution application — `field_types.insert(name.clone(), value_ty)` at line 327 stores pre-substitution type; subst applied in separate pass at lines 342-345. Safe today but refactoring footgun. Consider inserting `subst.apply(&value_ty)` directly to maintain "field_types is always post-substitution" invariant. (`src/typecheck.rs:327`) [Minor, type-theorist C40]
+- [ ] Fix `doc/05-type-annotations.md` letrec dict description — line 201 says "bind all resolved key names to Any" (old Pass 1 behavior) and mentions "four passes" but since let-gen-inference, Pass 1 binds to fresh TypeVar at state.level (not Any) and there are now five passes (Pass 0-4). Forward references see a TypeVar, not Any. (`doc/05-type-annotations.md:201`) [Minor, type-theorist C40]
+- [x] Fix `TypeScheme::vars` conflating type variable and row variable names — single `Vec<String>` quantifies both; Rémy-style kinded schemes need `type_vars: Vec<String>` + `row_vars: Vec<String>` so `instantiate_scheme()` routes substitutions correctly (type-map vs row-map). Becomes load-bearing when let-gen-inference + row-unification overlap. (`src/types.rs:171-174`) [Minor, type-theorist C39] — done in bidirectional-typing-b
+- [x] Fix `collect_type_vars()` conflating type and row variable names — collects `RowVar` names into the same `BTreeSet<String>` as `TypeVar` names; `instantiate()` then routes all through the type substitution, freshening row variables as TypeVars. Add separate `collect_row_vars()` (Pierce & Turner 2000) or use two-map substitution. (`src/types.rs:129-151`) [Minor, type-theorist C39] — done in bidirectional-typing-b
+- [ ] Fix `check_bracket_access` rejecting `Type::Number` as key type — only `Type::Str | Type::Int | Type::Any` accepted; `Number` is supertype of `Int` and should produce `Any` return like `Int` does. (`src/typecheck.rs:347-348`) [Fix-later, type-theorist C39]
+- [ ] Consider `HashSet` instead of `BTreeSet` in `collect_type_vars` — order doesn't matter (`src/types.rs:85-106`) [Nit, type-theorist]
+- [ ] Remove unused `Substitution` from `instantiate` return type — or document why returned (`src/types.rs:318-330`) [Nit, type-theorist]
+- [ ] Document `Type::is_subtype` not short-circuiting on `Any` in nested positions (`src/types.rs:42-83`) [Nit, type-theorist]
+- [ ] Fix type display using two spaces between fields — consider single space (`src/types.rs:345-367`) [Nit, type-theorist]
+- [ ] Fix DESIGN.md "pure Robinson" unification claim — DESIGN.md §Unification claims unification is pure Robinson with subtyping handled by [U-SUBSUME]/`check_expr`, but code implements 8 bidirectional literal promotion rules directly in `unify()` (`IntLiteral↔Int`, `IntLiteral↔Number`, `Int↔Number`, `Float↔Number`, `IntLiteral↔Float`, `StringLiteral↔Str`). When `bidirectional-typing` lands, either remove promotions from `unify()` and rely on [SUB]/[U-SUBSUME], or update DESIGN.md to document pragmatic approach as intentional. (`src/types.rs:263-289`, `DESIGN.md`) [Major, type-theorist]
+- [ ] Add comment explaining `IntLiteral(n) ~ Float` literal-specific promotion (`src/types.rs:263`) [Nit, type-theorist]
+- [ ] Fix IntLiteral-Float edge case: `unify` accepts `(IntLiteral, Float)` but `is_subtype` rejects it — when bidirectional-typing lands and promotions are replaced by `is_subtype` fallback, `unify(IntLiteral(42), Float)` will start failing. Either add `IntLiteral <: Float` to `is_subtype` or remove the arm from `unify` now. (`src/types.rs:289` vs `src/types.rs:42-84`) [Nit, computer-scientist]
+- [ ] Fix `TypeEnv::with_parent` taking `Rc` instead of `&Rc` — minor API ergonomics (`src/types.rs:399-405`) [Nit, type-theorist]
+- [ ] Add `Eq` derive to `TypeError` (`src/types.rs:444-448`) [Nit, type-theorist]
+- [ ] Document `TypeMap` using `(offset, offset)` as key instead of `Span` — offsets are sufficient (`src/typecheck.rs:16`) [Nit, type-theorist]
+- [ ] Consider `Result<Type, TypeError>` for `infer_expr` match arms — most wrap single error in vec (`src/typecheck.rs:142-209`) [Nit, type-theorist]
+- [ ] Document `check_call` not verifying named args exist in params — intentional: named args are eval-time (`src/typecheck.rs:389-447`) [Nit, type-theorist]
+- [ ] Consider `HashMap` instead of `IndexMap` for type alias registry — order doesn't matter (`src/types.rs:386`) [Nit, type-theorist]
+- [ ] Clarify `Fn@T` with zero params — document whether it means thunk or nullary function (`src/typecheck.rs:536-541`) [Nit, type-theorist]
+- [x] Research Type::Any consistency vs subtyping separation — see doc/whatif/gradual-typing.md. Covers consistency relation (Siek & Taha 2006), AGT framework (Garcia et al. 2016), is_consistent() vs is_subtype() separation, Any→Unknown+Top split. Recommendation: don't adopt now; revisit when Any causes a real false positive or algebraic subtyping is adopted.
+- [ ] Document principal type property violations — Tinct does not satisfy Damas-Milner principal type theorem: (1) no let-generalization, (2) non-MGU literal coercions, (3) subtyping + parametric polymorphism interaction, (4) Type::Any as universal unifier. Document as known limitation in DESIGN.md §Type Inference. [Minor, computer-scientist]
+- [ ] Document literal promotion symmetry in unification — `IntLiteral↔Int` unification is bidirectional; in a subtyping-aware system `IntLiteral <: Int` but not vice versa; reduces diagnostic value (`src/types.rs:263-264`) [Minor, computer-scientist]
+- [x] Research path-sensitive type narrowing — see doc/whatif/narrowing.md. Make `$if` a type-level special form, fork type environments per branch. Four narrowing patterns: equality-with-literal, type-of guard, key presence, boolean conjunction. No false-branch narrowing (needs negation types). Assumes typeassert-structural complete. Trigger: after let-generalization + bidirectional-typing.
+
 ## typeassert-structural-b: TypeAssert Structural Contract Checking (Part 2)
 
 Chaperone semantics, elaboration gap, and tests. Split from typeassert-structural.
 
+- [ ] Fix Guarded thunk stuck in InProgress on non-cacheable error — `take_guarded()` at line 1423 transitions Guarded→InProgress; if inner materialization fails with non-cacheable error (e.g. DepthExceeded), the Err branch at 1487-1493 calls `cache_failure` only when `is_cacheable()` is true, leaving the thunk in InProgress permanently when false. Next access produces spurious CircularDependency. Fix: add `else { thunk.set_state(ThunkState::Guarded { inner, expected, field_path, guard_span }); }` after line 1490. All four variables are still alive in the Err arm. Every other thunk state handles this correctly (Unevaluated at 1197, PendingBuiltin at 1252, PendingCall at 1281). Violates Launchbury (1993) Theorem 2 (monotonic heap transitions). (`src/eval.rs:1487-1493`) [Critical, computer-scientist C48]
 - [ ] Use chaperone semantics for record proxies. Strickland et al. (2012). (`src/eval.rs`) [Minor, computer-scientist]
 - [ ] Close elaboration gap — evaluator must enforce structural types for eval-only mode soundness. (`src/typecheck.rs:503-523`, `src/eval.rs:117-157`) [Major, computer-scientist]
 - [ ] Add tests for each validation rule and proxy/guard lifecycle
@@ -270,6 +366,7 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Remove unreachable `check_call_with_scheme` CALL-MONO branch — `has_type_vars()` guard at `src/typecheck.rs:695` is always true by invariant: the function is only dispatched when `scheme.type_vars` or `scheme.row_vars` is non-empty, and `instantiate_scheme` inserts a fresh TypeVar for every quantified var. Delete the `if !func_ty.has_type_vars()` block; add `debug_assert!(func_ty.has_type_vars())`. Saves one O(type_size) walk per polymorphic call. (`src/typecheck.rs:695`) [Major, performance-expert C47]
 - [ ] Skip `ann_mapping` HashMap allocation for fully unannotated functions — `HashMap` is allocated on every `infer_fn` and `check_expr` lambda entry even for functions with no annotations (the common case); created, threaded through, never written, then dropped. Add early guard: if all params have no annotation and no return annotation, use `&mut None` directly and skip HashMap. Saves ~40 bytes + HashMap init per unannotated function. (`src/typecheck.rs:865,313`) [Minor, performance-expert C47]
 - [ ] Optimize `instantiate_scheme` for single-var schemes — allocates full `Substitution` (IndexMap-backed) even for the most common polymorphic case (one quantified var). For single-var case, perform renaming inline without constructing `Substitution`; or use `SmallVec<[(String, Type); 2]>` inside `Substitution.map`. (`src/types.rs:570`) [Minor, performance-expert C47]
+- [ ] Defer `field_path` allocation in `validate_and_wrap_record` to error path — `field_path: Vec<String>` parameter is cloned and extended on every nested record level (~5 allocs for K8s-style manifests); only used to construct error messages. Change to `field_path: &[&str]`, construct owned `String` path only in error arm via `field_path.join(".")`. (`src/eval.rs:166-257`) [Major, performance-expert C48]
 
 ## iterative-eval: Iterative Evaluator
 
@@ -290,33 +387,6 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [ ] Verify thunk lifecycle invariants after CEK migration — sharing preservation (thunk identity via `Rc<Thunk>` must be maintained through continuation dispatch), ThunkState simplification (PendingBuiltin/PendingCall subsumed by Cont variants), MAX_EVAL_DEPTH removal (replace with configurable `--max-depth`), monotonicity proof carries over. See DESIGN.md §Thunk Lifecycle — Relationship to CEK Machine Migration. [Major, computer-scientist]
 - [ ] Fix eval_call eagerly materializing function value — `eval_call` at `src/eval.rs:462-463` calls `materialize(&func_thunk, ...)` before creating argument thunks, forcing the function-position expression immediately even when the entire call result is never used. Launchbury (1993) call-by-need requires the application itself to be lazy. PendingCall exists for exactly this deferral but is only used by builtins ($map, $filter), not by eval_call. CEK machine migration naturally resolves this: the CALL continuation defers function forcing until the call result is demanded. (`src/eval.rs:462-463`) [Major, computer-scientist C35]
 - [ ] Fix `$apply` eagerly materializing function and args dict — `builtin_apply` at `src/builtins.rs:858-859` calls `materialize` on both the function thunk and the args dict thunk before spreading and invoking; if the result of `[call $apply $f $args]` is never accessed, both operands are still forced. Spec: return invoke_function thunk directly (no extra materialization). CEK machine migration resolves this via the CALL continuation deferral, same as eval_call. (`src/builtins.rs:858-859`) [Major, eval-engine]
-
-## row-unification: Full Row-Variable Unification (Remy-Style)
-
-Replace the current closed-strict/open-lenient record unification with full Remy-style row-variable unification. Row variables become first-class participants in type inference, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
-
-**Benefits from:** `type-extensions` Type::Seq inference (for sequence type support in row polymorphism).
-
-- [x] Design Remy-style row unification model (row variable binding, remainder semantics, occurs check) — see DESIGN.md §Row-Variable Unification — Kinded Rémy Model (Dict+Tail Representation)
-- [ ] Extend `Substitution::apply` to splice bound row variable fields into records (e.g., `[a: Int | ...r]` with `r → [b: String]` produces `[a: Int, b: String]`)
-- [ ] Unify row rests: `RowVar` vs `RowVar` binds one to the other, `RowVar` vs `Closed` binds the var to the leftover fields as a closed record
-- [ ] Handle "remainder" binding: `unify([a: Int | ...r], [a: Int, b: String | Closed])` binds `r → [b: String | Closed]`
-- [ ] Extend `Type` representation if needed to support partial-row bindings (row var bound to fields + another row var)
-- [ ] Update `instantiate` to freshen row variables alongside type variables
-- [ ] Test inference through polymorphic functions that extend/restrict records (e.g., `[fn add-id [r@[...rest]] [id: 1  ...rest]]`)
-- [ ] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
-- [ ] Add row-specific occurs check for `RowVar("r")` with `Record(..., RowVar("r"))` (infinite row type prevention)
-- [ ] Add row variable substitution cycle handling — `Substitution::apply` must handle cycles when row variables bind to records containing the same row variable (`src/types.rs`) [Major, type-theorist]
-- [ ] Cache FTV/FRV (free type/row variables) per Type during construction — row-variable occurs check is O(n×m) for n fields × m type depth without caching; 500-field records (K8s manifests) create a hot path. With cached sets, occurs check becomes O(1) set membership. [Major, performance-expert]
-- [ ] Use HashMap for Row.fields at type level, IndexMap only at runtime — row fields are semantically unordered (Rémy left-commutativity), IndexMap's insertion-order preservation adds ~20% overhead unnecessary in the type checker. Runtime `Value::Dict` keeps IndexMap for user-visible key ordering. [Minor, performance-expert]
-- [ ] Subtyping proof search for TypeAssert defaults — validate default value type matches asserted type (type-theorist review)
-- [ ] Fix row variable substitution creating duplicate fields — `merged.extend(extra_fields)` doesn't check for key collisions (`src/types.rs:166-184`) [Critical, type-theorist]
-- [ ] Fix RowVar treated identically to Open in `is_subtype` — add TODO comment explaining row-unification placeholder (`src/types.rs:59-62`) [Major, type-theorist]
-- [ ] Fix sub_rest ignored in record subtyping — `is_subtype` destructures sub record as `(sub_fields, _sub_rest)`, ignoring RowVar/Open rest; a record with `RowVar(r)` may have additional fields via its row variable not checked against a Closed supertype. Latent issue that becomes real with row variable binding. (`src/types.rs:52-64`) [Major, computer-scientist]
-- [ ] Document RowVar instantiation via TypeVar namespace coincidence — `instantiate()` renames TypeVar names and RowVar names share the same namespace, so RowVars get freshened correctly by accident. Should be documented as intentional or given separate namespace handling. (`src/types.rs:318-330`) [Minor, computer-scientist]
-- [ ] Generate unification constraints from access chains — `$x.field` should produce `unify(typeof(x), Record([field: α], ρ))`, enabling field requirement inference from usage. Currently access type checking is direct lookup (limitation, not design choice). See DESIGN.md §Access Chain Evaluation Part 5. (`src/typecheck.rs:297-357`) [Major, type-theorist]
-- [ ] Fix open-record unification silently dropping non-shared fields — only shared fields unified, unique fields ignored without constraint; Remy-style would bind fresh row variables to capture remainders (`src/types.rs:334-338`) [Major, computer-scientist]
-- [ ] Ensure row variable occurs check before binding — existing `occurs_in()` handles `RowVar` case correctly (`src/types.rs:215-228`), but when row-unification adds row variable binding, it must go through the same occurs-check path to prevent infinite types like `r = [x: Int ...r]`. (`src/types.rs`) [Major, computer-scientist]
 
 ## sandbox: Sandboxing & Security
 
@@ -340,59 +410,6 @@ Design and implement four unprivileged sandboxing layers. See DESIGN.md §Sandbo
 - [ ] Test: absolute paths outside allowlist fail
 - [ ] Test: symlinks pointing outside allowlist fail
 - [ ] Test: graceful degradation when Landlock/seccomp unavailable
-
-## type-extensions: Type System Extensions
-
-Future type system work identified by type-theorist review (2026-04-19). Updated by type-theorist review (2026-04-22).
-
-- [x] Design type system extension roadmap (Seq types, gradual typing, type classes, error recovery) — see DESIGN.md §Type System Extension Roadmap, `doc/whatif/gradual-typing.md`, `doc/whatif/typeclasses.md`, `doc/whatif/union-types.md`
-- [ ] Add Type::Seq inference to typecheck.rs — sequence builtins ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) currently infer as Any; annotate return types in `check_call` for LSP hover and type safety (`src/typecheck.rs`) [Major, type-theorist]
-- [ ] Fix polymorphic call unification for named args — requires extending `Type::Function` to carry param names; after positional unification, named args are not unified (`src/typecheck.rs:389-447`) [Major, type-theorist, deferred from types-major-fixes]
-- [ ] Gradual typing with Any→concrete boundary tracking and blame (TypeScript/Typed Racket model)
-- [x] Research polymorphic recursion detection — moot without algebraic data types. Polymorphic recursion requires parametric recursive type constructors (e.g., `Nested a → Nested [a]`); tinct has none and none are planned. The monomorphic letrec restriction (Limitation #6) is correct. Revisit only if sum types or user-defined recursive type constructors are added.
-- [ ] Type error recovery with `Type::Error` sentinel that doesn't unify (prevents cascading errors, improves LSP)
-- [ ] Type class constraints for arithmetic/comparison (needed if user-defined types get custom operators)
-- [x] Decide builtin type signature representation — use `Any` for all polymorphic parameter positions, precise return types where known (e.g., `$= : Any → Any → Bool`, `$/ : Any → Any → Float`, `$not : Bool → Bool`). Defer precise input types until algebraic subtyping or type classes exist. Forward-compatible — refine signatures when union types land.
-- [ ] Add `TypeEnv::with_builtins()` constructor pre-registering builtin type signatures — builtins are not registered in `TypeEnv::new()`, so the type checker cannot validate user code using `$=`, `$<`, etc. (`src/types.rs:420-426`, `src/typecheck.rs:149-152`) [Major, type-theorist]
-- [x] Research typeclass-based equality/ordering constraints — see doc/whatif/typeclasses.md. Key decisions: keep `$=` as EQ-INCOMP for dicts (no breaking change), add `$deep-eq` (short-circuiting structural) and `$shallow-eq` (pointer identity for thunks). Key-set equality (order-independent). Constrained row variables deferred to typeclass adoption.
-- [ ] Define hash consistency requirements for Dict key equality — `hash(a) == hash(b)` whenever `Value::PartialEq` says `a == b` (NOT `$=` user-facing equality). Int and Float use separate hash paths even when numerically equal via promotion, so `[1: x]` and `[1.0: y]` are distinct keys. Document before implementing Dict key deduplication or Set types. [Minor, type-theorist]
-- [x] Decide type alias shadowing policy — allow lexical scope shadowing (inner alias shadows outer). Consistent with value binding semantics. Same-dict redefinition already caught by duplicate key check. OCaml/Haskell/TypeScript precedent.
-- [ ] Type environment alias registry shadowing policy — implement chosen policy (`src/types.rs:433-435`) [Major, type-theorist]
-- [ ] `type-of` returns "Dict" for all dicts, no list discrimination — document in Future Features (`src/builtins.rs`, `DESIGN.md:1710`) [Minor, stdlib-author]
-- [ ] Fix type display for empty open record — `[...]` is ambiguous, consider `[... (open)]` notation (`src/types.rs:359`) [Minor, type-theorist]
-- [ ] Make `TypeEnv::lookup` `pub(crate)` — currently private but useful for testing (`src/types.rs:415-427`) [Minor, type-theorist]
-- [ ] Document `Substitution::get` being `cfg(test)` only — either make always-public or explain opaqueness (`src/types.rs:198-202`) [Minor, type-theorist]
-- [ ] Fix instantiation counter overflow — `u32` theoretically overflows; use `u64` or document assumption (`src/types.rs:318-330`) [Minor, type-theorist]
-- [ ] Document `Type::Number` having no literal variant — asymmetry with Int/String is due to dict key constraint (`src/types.rs:21-37`) [Minor, type-theorist]
-- [ ] Fix `Type::Function` Display for nested types — add parentheses for nested function annotations (`src/types.rs:369-378`) [Minor, type-theorist]
-- [x] Decide variadic param annotation semantics — forbid annotations on `...args`. Row types use string keys but variadic collects into Int-keyed Dict; annotation can't participate in type inference. Revisit when Seq types land (variadic may collect into `Seq<T>` instead of Dict).
-- [ ] Fix variadic param type from `Record([], Closed)` to `Any` — no annotation to resolve, just correct the type (`src/typecheck.rs:469-473`) [Minor, type-theorist]
-- [ ] Clarify `resolve_annotated` interpreting all Fn annotations as function types (`src/typecheck.rs:522-533`) [Minor, type-theorist]
-- [ ] Populate type map on errors — record `Type::Any` for failed subexpressions to improve LSP hover (`src/typecheck.rs:200-206`) [Minor, type-theorist]
-- [ ] Fix annotation TypeVar aliasing — same `@a` in two sibling dict entries overwrites `state.levels["a"]`; e.g., `[f: [fn [x@a] $x]  g: [fn [y@a] $y]]` — `g`'s inference overwrites `f`'s level, causing incorrect generalization of `f`'s scheme at Pass 4. Fix: use `state.fresh_var()` for annotation-derived TypeVars (fresh name with counter) instead of the bare annotation name. (`src/typecheck.rs:738`) [Major, type-theorist C40]
-- [ ] Fix `infer_dict` Pass 3 storing raw `value_ty` before substitution application — `field_types.insert(name.clone(), value_ty)` at line 327 stores pre-substitution type; subst applied in separate pass at lines 342-345. Safe today but refactoring footgun. Consider inserting `subst.apply(&value_ty)` directly to maintain "field_types is always post-substitution" invariant. (`src/typecheck.rs:327`) [Minor, type-theorist C40]
-- [ ] Fix `doc/05-type-annotations.md` letrec dict description — line 201 says "bind all resolved key names to Any" (old Pass 1 behavior) and mentions "four passes" but since let-gen-inference, Pass 1 binds to fresh TypeVar at state.level (not Any) and there are now five passes (Pass 0-4). Forward references see a TypeVar, not Any. (`doc/05-type-annotations.md:201`) [Minor, type-theorist C40]
-- [x] Fix `TypeScheme::vars` conflating type variable and row variable names — single `Vec<String>` quantifies both; Rémy-style kinded schemes need `type_vars: Vec<String>` + `row_vars: Vec<String>` so `instantiate_scheme()` routes substitutions correctly (type-map vs row-map). Becomes load-bearing when let-gen-inference + row-unification overlap. (`src/types.rs:171-174`) [Minor, type-theorist C39] — done in bidirectional-typing-b
-- [x] Fix `collect_type_vars()` conflating type and row variable names — collects `RowVar` names into the same `BTreeSet<String>` as `TypeVar` names; `instantiate()` then routes all through the type substitution, freshening row variables as TypeVars. Add separate `collect_row_vars()` (Pierce & Turner 2000) or use two-map substitution. (`src/types.rs:129-151`) [Minor, type-theorist C39] — done in bidirectional-typing-b
-- [ ] Fix `check_bracket_access` rejecting `Type::Number` as key type — only `Type::Str | Type::Int | Type::Any` accepted; `Number` is supertype of `Int` and should produce `Any` return like `Int` does. (`src/typecheck.rs:347-348`) [Fix-later, type-theorist C39]
-- [ ] Consider `HashSet` instead of `BTreeSet` in `collect_type_vars` — order doesn't matter (`src/types.rs:85-106`) [Nit, type-theorist]
-- [ ] Remove unused `Substitution` from `instantiate` return type — or document why returned (`src/types.rs:318-330`) [Nit, type-theorist]
-- [ ] Document `Type::is_subtype` not short-circuiting on `Any` in nested positions (`src/types.rs:42-83`) [Nit, type-theorist]
-- [ ] Fix type display using two spaces between fields — consider single space (`src/types.rs:345-367`) [Nit, type-theorist]
-- [ ] Fix DESIGN.md "pure Robinson" unification claim — DESIGN.md §Unification claims unification is pure Robinson with subtyping handled by [U-SUBSUME]/`check_expr`, but code implements 8 bidirectional literal promotion rules directly in `unify()` (`IntLiteral↔Int`, `IntLiteral↔Number`, `Int↔Number`, `Float↔Number`, `IntLiteral↔Float`, `StringLiteral↔Str`). When `bidirectional-typing` lands, either remove promotions from `unify()` and rely on [SUB]/[U-SUBSUME], or update DESIGN.md to document pragmatic approach as intentional. (`src/types.rs:263-289`, `DESIGN.md`) [Major, type-theorist]
-- [ ] Add comment explaining `IntLiteral(n) ~ Float` literal-specific promotion (`src/types.rs:263`) [Nit, type-theorist]
-- [ ] Fix IntLiteral-Float edge case: `unify` accepts `(IntLiteral, Float)` but `is_subtype` rejects it — when bidirectional-typing lands and promotions are replaced by `is_subtype` fallback, `unify(IntLiteral(42), Float)` will start failing. Either add `IntLiteral <: Float` to `is_subtype` or remove the arm from `unify` now. (`src/types.rs:289` vs `src/types.rs:42-84`) [Nit, computer-scientist]
-- [ ] Fix `TypeEnv::with_parent` taking `Rc` instead of `&Rc` — minor API ergonomics (`src/types.rs:399-405`) [Nit, type-theorist]
-- [ ] Add `Eq` derive to `TypeError` (`src/types.rs:444-448`) [Nit, type-theorist]
-- [ ] Document `TypeMap` using `(offset, offset)` as key instead of `Span` — offsets are sufficient (`src/typecheck.rs:16`) [Nit, type-theorist]
-- [ ] Consider `Result<Type, TypeError>` for `infer_expr` match arms — most wrap single error in vec (`src/typecheck.rs:142-209`) [Nit, type-theorist]
-- [ ] Document `check_call` not verifying named args exist in params — intentional: named args are eval-time (`src/typecheck.rs:389-447`) [Nit, type-theorist]
-- [ ] Consider `HashMap` instead of `IndexMap` for type alias registry — order doesn't matter (`src/types.rs:386`) [Nit, type-theorist]
-- [ ] Clarify `Fn@T` with zero params — document whether it means thunk or nullary function (`src/typecheck.rs:536-541`) [Nit, type-theorist]
-- [x] Research Type::Any consistency vs subtyping separation — see doc/whatif/gradual-typing.md. Covers consistency relation (Siek & Taha 2006), AGT framework (Garcia et al. 2016), is_consistent() vs is_subtype() separation, Any→Unknown+Top split. Recommendation: don't adopt now; revisit when Any causes a real false positive or algebraic subtyping is adopted.
-- [ ] Document principal type property violations — Tinct does not satisfy Damas-Milner principal type theorem: (1) no let-generalization, (2) non-MGU literal coercions, (3) subtyping + parametric polymorphism interaction, (4) Type::Any as universal unifier. Document as known limitation in DESIGN.md §Type Inference. [Minor, computer-scientist]
-- [ ] Document literal promotion symmetry in unification — `IntLiteral↔Int` unification is bidirectional; in a subtyping-aware system `IntLiteral <: Int` but not vice versa; reduces diagnostic value (`src/types.rs:263-264`) [Minor, computer-scientist]
-- [x] Research path-sensitive type narrowing — see doc/whatif/narrowing.md. Make `$if` a type-level special form, fork type environments per branch. Four narrowing patterns: equality-with-literal, type-of guard, key presence, boolean conjunction. No false-branch narrowing (needs negation types). Assumes typeassert-structural complete. Trigger: after let-generalization + bidirectional-typing.
 
 ## theoretical-foundations: Theoretical Foundations (Computer-Scientist Review)
 
@@ -685,6 +702,8 @@ New test coverage items from C44 specialist review (test-crafter and integration
 - [ ] Add dual-dispatch test matrix for 6 builtins — `$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join` each need Dict-path and Seq-path corpus tests plus at least one error case; currently have ~6 total instead of 36. (`tests/corpus/eval/builtins/`) [Major, test-crafter C44]
 - [ ] Add integration tests for typecheck→eval interaction — test that type errors remain advisory and eval proceeds; test `TypeAssert` with `default:` fallback behavior end-to-end. (`src/lib.rs` integration tests) [Minor, integration-verifier C44]
 - [ ] Add `typecheck.rs` `infer()` helper note that desugaring is NOT applied — future contributors writing typecheck tests using `$_.something` will silently test the wrong AST without this clarification. (`src/typecheck.rs:931-937`) [Nit, test-crafter C43]
+- [ ] Add typeassert-structural corpus tests — commit 71686ed added structural contract validation (proxy contracts, guard wrapping, `value_matches_type`) but zero end-to-end corpus tests exist. Create `tests/corpus/eval/typeassert/` with: `contract_dict_missing_key.llt-eval`, `contract_dict_extra_key.llt-eval`, `contract_nested_violation.llt-eval` (closed record rejects extra fields), and at least one success case. [Minor, test-crafter C48]
+- [ ] Add Kotlin call convention success-path corpus tests — call-convention-kotlin sprint (commit d46d462) added 3 error corpus tests but zero success-path tests. Add `tests/corpus/eval/fn_kotlin_success.llt-eval` with valid Kotlin-style call examples: `[call $f 1 y: 2]`, `[call $f x: 1 y: 2 z: 3]`, named arg for required param. (`tests/corpus/eval/`) [Minor, test-crafter C48]
 
 ### test-critical-a: Critical Test Coverage (Backlog, Part A)
 
@@ -1149,3 +1168,5 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [x] Research structural contracts — see doc/whatif/structural-contracts.md. Hybrid: `$$@Type` for static pipeline boundary checking + `$validate` schema-as-dict for runtime constraints. 4-phase: $$@Type → $validate → tinct describe → pipeline blame
 - [x] Research implied `call` — see doc/whatif/implied-call.md. Head-position `$` heuristic: if first unkeyed element is a `$`-reference, treat `[]` as a call. `call` remains valid (backwards compatible). Requires `seq` keyword for list-of-references. Critically depends on `$` sigil — incompatible with bare-word references in simplest form
 - [x] Research bare-word references — see doc/whatif/bare-word-references.md. Nix/Jsonnet model: bare words in value position are references, keys stay as strings, strings must be quoted. Removes `$` sigil. Significant config ergonomic regression (must quote all strings). 4-phase adoption with dual-mode parser. Must be coordinated with implied call
+- [ ] Research secure sandboxed execution mode for attacker-supplied tinct programs — existing `## sandbox` design covers accidental/insider threat (allowlist + Landlock + seccomp + rlimit), but an adversarial threat model (REPL service, API endpoint, CTF/playground) requires stronger isolation: process-level separation (fork+exec into sandboxed child rather than in-process seccomp), hard DoS limits (wall-clock timeout, deterministic memory cap), and defense against speculative/timing side-channels. Assess whether the existing four-layer design is sufficient with stricter defaults, or whether a separate `llt sandbox` subcommand (child-process model) is required. Prior art: Dhall's total evaluation guarantee, Nix's restricted eval, WebAssembly + WASI capability model.
+- [ ] Research tinct-to-SQL translation — design a method or library (similar to LINQ) that translates idiomatic tinct programs into SQL, enabling users to load, transform, and write SQL data without leaving the language. Key questions: (1) translation target (query builder crate vs. direct SQL string generation vs. a `$sql-*` builtin family); (2) mapping tinct's lazy dict/seq model onto SQL's relational model — `$filter`/`$map`/`$reduce` → WHERE/SELECT/GROUP BY; (3) how `---` pipeline stages map onto CTEs or subqueries; (4) handling lazy sequences that cannot be fully materialized (streaming reads vs. buffered); (5) schema inference from tinct type annotations for DDL generation. Prior art: LINQ (C#), Slick (Scala), Diesel (Rust), HaskellDB, jOOQ.
