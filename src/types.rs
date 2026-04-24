@@ -2562,4 +2562,110 @@ mod tests {
         // Level should be set to 0 to prevent generalization
         assert_eq!(state.levels.get("a"), Some(&0));
     }
+
+    // --- Task 4: instantiate_scheme with row var body ---
+
+    #[test]
+    fn test_instantiate_scheme_with_row_var_body() {
+        // Create a TypeScheme whose body is Record(fields, RowRest::RowVar("r", 1))
+        // with vars: vec!["r"]
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::Int);
+        let scheme = TypeScheme {
+            vars: vec!["r".into()],
+            body: Type::Record(fields.clone(), RowRest::RowVar("r".into(), 1)),
+        };
+
+        let mut state = InferState::new();
+        state.level = 2;
+        let result = instantiate_scheme(&scheme, 2, &mut state);
+
+        // Verify the result has a FRESH RowVar (not the original "r")
+        match result {
+            Type::Record(result_fields, row_rest) => {
+                assert_eq!(result_fields, fields);
+                match row_rest {
+                    RowRest::RowVar(name, level) => {
+                        // NOTE: This test may EXPOSE a bug where RowVars are instantiated as TypeVars
+                        // The correct behavior is: RowVar → fresh RowVar
+                        // If this fails, it documents a known issue with the current instantiate_scheme
+                        assert!(
+                            name.starts_with("_t"),
+                            "row var should be freshly renamed, got {}",
+                            name
+                        );
+                        assert_ne!(
+                            name, "r",
+                            "row var should not be the original 'r', got {}",
+                            name
+                        );
+                        assert_eq!(level, 2, "row var should be at level 2");
+                        assert_eq!(
+                            state.levels.get(&name),
+                            Some(&2),
+                            "fresh row var should be registered in levels at level 2"
+                        );
+                    }
+                    RowRest::Closed => panic!("expected RowVar in result, got Closed"),
+                    RowRest::Open => panic!("expected RowVar in result, got Open"),
+                }
+            }
+            other => panic!("expected Record, got {:?}", other),
+        }
+    }
+
+    // --- Task 5: instantiate_scheme leaves free vars unchanged ---
+
+    #[test]
+    fn test_instantiate_scheme_leaves_free_vars_unchanged() {
+        // Create a TypeScheme with vars: vec!["a"] and body Function { params: [TypeVar("a", 1)], ret: TypeVar("b", 1) }
+        // Only "a" is quantified; "b" is free
+        let scheme = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::Function {
+                params: vec![Type::TypeVar("a".into(), 1)],
+                ret: Box::new(Type::TypeVar("b".into(), 1)),
+            },
+        };
+
+        let mut state = InferState::new();
+        state.level = 3;
+        let result = instantiate_scheme(&scheme, 3, &mut state);
+
+        match result {
+            Type::Function { params, ret } => {
+                // "a" should get a fresh name (e.g., "_t0")
+                match &params[0] {
+                    Type::TypeVar(a_name, a_level) => {
+                        assert!(
+                            a_name.starts_with("_t"),
+                            "quantified var 'a' should be renamed to fresh var, got {}",
+                            a_name
+                        );
+                        assert_ne!(
+                            a_name, "a",
+                            "quantified var should not be 'a', got {}",
+                            a_name
+                        );
+                        assert_eq!(*a_level, 3);
+                    }
+                    other => panic!("expected TypeVar in params, got {:?}", other),
+                }
+
+                // "b" should remain unchanged (it's free, not quantified)
+                match ret.as_ref() {
+                    Type::TypeVar(b_name, b_level) => {
+                        assert_eq!(
+                            b_name, "b",
+                            "free var 'b' should be unchanged, got {}",
+                            b_name
+                        );
+                        assert_eq!(*b_level, 1, "free var level should be unchanged");
+                    }
+                    other => panic!("expected TypeVar in return, got {:?}", other),
+                }
+            }
+            other => panic!("expected Function, got {:?}", other),
+        }
+    }
 }
