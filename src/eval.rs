@@ -312,8 +312,8 @@ pub fn eval_document(
 /// - The last document's result is the file's output.
 /// - An empty file (zero documents) returns an empty dict.
 ///
-/// **Note:** If your LLT code uses `$include`, you must call [`crate::set_include_context`]
-/// before calling this function and [`crate::clear_include_context`] after it returns.
+/// **Note:** Provide an `EvalContext` via `EvalContext::new()` to configure `$include`;
+/// no separate setup call required.
 pub fn eval_file(
     file: &File,
     env: Rc<RefCell<Environment>>,
@@ -329,8 +329,8 @@ pub fn eval_file(
 /// document instead of the default empty dict. This supports the CLI's stdin
 /// JSON injection: `cat data.json | llt eval file.llt`.
 ///
-/// **Note:** If your LLT code uses `$include`, you must call [`crate::set_include_context`]
-/// before calling this function and [`crate::clear_include_context`] after it returns.
+/// **Note:** Provide an `EvalContext` via `EvalContext::new()` to configure `$include`;
+/// no separate setup call required.
 pub fn eval_file_with_input(
     file: &File,
     env: Rc<RefCell<Environment>>,
@@ -4538,6 +4538,73 @@ mod tests {
                     Rc::ptr_eq(&nested_shared, &seq_shared),
                     "deep_materialize must preserve sharing across nested dicts and seqs"
                 );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deep_materialize_cycle_sentinel() {
+        // Test the cycle detection path in deep_materialize_thunk.
+        // When a thunk pointer is already in the cache with None value
+        // (the cycle sentinel), it should return the original thunk unchanged.
+        let span = test_span(1, 1, 1, 5);
+        let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+
+        // Create a cache and pre-populate it with a None entry for this thunk
+        let mut cache = std::collections::HashMap::new();
+        let thunk_ptr = Rc::as_ptr(&thunk);
+        cache.insert(thunk_ptr, None);
+
+        // Call deep_materialize_thunk with the pre-populated cache
+        let result = deep_materialize_thunk(&thunk, &test_ctx(), 0, &mut cache).unwrap();
+
+        // Verify the original thunk is returned unchanged (same Rc pointer)
+        assert!(
+            Rc::ptr_eq(&thunk, &result),
+            "deep_materialize_thunk must return the original thunk when cycle sentinel (None) is found in cache"
+        );
+    }
+
+    #[test]
+    fn test_deep_materialize_preserves_sharing_through_eval() {
+        // Test that sharing is preserved when the shared thunk is unevaluated,
+        // exercising the actual cache-population path where:
+        // 1. First encounter forces the thunk and caches the result
+        // 2. Second encounter returns the cached result
+        let span = test_span(1, 1, 1, 5);
+        let expr = Rc::new(Spanned::new(Expr::Int(42), span));
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let ctx = test_ctx();
+
+        // Create an unevaluated thunk
+        let shared_thunk = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+
+        // Place the same thunk in two positions of a dict
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), Rc::clone(&shared_thunk));
+        map.insert(Key::String("b".into()), Rc::clone(&shared_thunk));
+        let val = Value::Dict(map);
+
+        // Deep materialize the container
+        let result = deep_materialize(&val, &ctx, 0).unwrap();
+
+        match result {
+            Value::Dict(map) => {
+                let a = &map[&Key::String("a".into())];
+                let b = &map[&Key::String("b".into())];
+
+                // Verify the two resulting thunks are Rc::ptr_eq
+                assert!(
+                    Rc::ptr_eq(a, b),
+                    "deep_materialize must preserve sharing through actual evaluation: \
+                     two dict entries pointing to the same unevaluated thunk should \
+                     remain Rc::ptr_eq after deep materialization"
+                );
+
+                // Also verify the value is correct
+                let v = materialize(a, None, &ctx, 0).unwrap();
+                assert_eq!(v, Value::Int(42));
             }
             other => panic!("expected Dict, got {other:?}"),
         }

@@ -9,8 +9,8 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::types::{
-    generalize, instantiate, instantiate_scheme, unify, InferState, RowRest, Substitution, Type,
-    TypeEnv, TypeError, TypeScheme,
+    generalize, instantiate_at_level, instantiate_scheme, unify, InferState, RowRest, Substitution,
+    Type, TypeEnv, TypeError, TypeScheme,
 };
 
 /// A map from expression span (start_offset, end_offset) to the inferred type.
@@ -522,11 +522,11 @@ fn check_call(
                 return Ok(*ret.clone());
             }
 
-            let (inst_ty, _) = instantiate(&func_ty, &mut state.name_counter);
+            let inst_ty = instantiate_at_level(&func_ty, state);
 
             let (inst_params, inst_ret) = match &inst_ty {
                 Type::Function { params, ret } => (params, ret),
-                _ => unreachable!("instantiate preserves Function variant"),
+                _ => unreachable!("instantiate_at_level preserves Function variant"),
             };
 
             if !params.is_empty() {
