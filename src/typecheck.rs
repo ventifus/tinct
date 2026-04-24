@@ -249,6 +249,137 @@ fn infer_expr(
     result
 }
 
+/// Check that an expression has a compatible type with the expected type.
+/// Uses bidirectional type checking: synthesize the expression's type via `infer_expr`,
+/// then check subsumption via `is_subtype(actual, expected)`.
+///
+/// Per doc/06-type-inference.md §Bidirectional Typing, this is the [SUB] rule:
+/// if `Γ ⊢ e ⇒ σ` and `σ <: τ`, then `Γ ⊢ e ⇐ τ`.
+///
+/// Special case for lambdas (doc/06 line 136-146): when checking a function expression
+/// against an expected function type, propagate the expected parameter types into the
+/// lambda's parameter inference (Pierce & Turner 2000 lambda checking mode).
+///
+/// This function is used at checking positions where the expected type is fully concrete
+/// (no type variables): CALL-MONO arguments, return annotations, and TypeAssert.
+fn check_expr(
+    expr: &Spanned<Expr>,
+    expected: &Type,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<(), Vec<TypeError>> {
+    // Lambda checking mode: when checking a function expression against a function type,
+    // propagate expected parameter types into the lambda.
+    // Only applies when expected type is fully concrete (no type variables) per doc/06 line 66.
+    if let Expr::Fn {
+        return_ann,
+        params,
+        body,
+        ..
+    } = &expr.node
+    {
+        if let Type::Function {
+            params: expected_params,
+            ret: expected_ret,
+        } = expected
+        {
+            // Only use lambda checking mode if expected type is fully concrete
+            if !expected.has_type_vars() {
+                // Arity check
+                if params.len() != expected_params.len() {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "function arity mismatch: expected {} params, got {}",
+                            expected_params.len(),
+                            params.len()
+                        ),
+                        expr.span,
+                    )]);
+                }
+
+                // Build parameter types: use expected types for unannotated params.
+                // For annotated params, verify the annotation is compatible with the expected
+                // type: expected_ty must be a subtype of the annotation (contravariant check).
+                // Example: expected Fn(Int→...) but param declared @String → Int <: String is
+                // false → error, because callers will pass Int but the body expects String.
+                let param_types: Vec<Type> = params
+                    .iter()
+                    .zip(expected_params.iter())
+                    .map(|(p, expected_ty)| match &p.node.annotation {
+                        Some(ann) => {
+                            let resolved = resolve_annotation(&ann.node, env, ann.span, state)?;
+                            // Contravariant check: expected param type must be subtype of annotation
+                            if !Type::is_subtype(expected_ty, &resolved) {
+                                return Err(TypeError::type_mismatch(
+                                    &resolved,
+                                    expected_ty,
+                                    ann.span,
+                                ));
+                            }
+                            Ok(resolved)
+                        }
+                        None => Ok(expected_ty.clone()),
+                    })
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| vec![e])?;
+
+                // Build function environment with parameter bindings
+                let mut fn_env = TypeEnv::with_parent(Rc::clone(env));
+                for (param, ty) in params.iter().zip(param_types.iter()) {
+                    if param.node.variadic {
+                        fn_env.insert(
+                            param.node.name.clone(),
+                            Type::Record(IndexMap::new(), RowRest::Closed),
+                        );
+                    } else {
+                        fn_env.insert(param.node.name.clone(), ty.clone());
+                    }
+                }
+                let fn_env = Rc::new(fn_env);
+
+                // Check body against expected return type (or infer if no return annotation)
+                match return_ann {
+                    Some(ann) => {
+                        let declared = resolve_annotation(&ann.node, env, ann.span, state)
+                            .map_err(|e| vec![e])?;
+                        // Check that declared return type is compatible with expected
+                        if !Type::is_subtype(&declared, expected_ret) {
+                            return Err(vec![TypeError::type_mismatch(
+                                expected_ret,
+                                &declared,
+                                expr.span,
+                            )]);
+                        }
+                        // Check body against declared return type
+                        check_expr(body, &declared, &fn_env, state, type_map)?;
+                    }
+                    None => {
+                        // No return annotation: check body against expected return type
+                        check_expr(body, expected_ret, &fn_env, state, type_map)?;
+                    }
+                }
+
+                // Record the function type in the type map
+                if let Some(ref mut map) = type_map {
+                    let key = (expr.span.start.offset, expr.span.end.offset);
+                    map.insert(key, expected.clone());
+                }
+
+                return Ok(());
+            }
+        }
+    }
+
+    // Default: synthesize then check subsumption
+    let actual = infer_expr(expr, env, state, type_map)?;
+    if !Type::is_subtype(&actual, expected) {
+        Err(vec![TypeError::type_mismatch(expected, &actual, expr.span)])
+    } else {
+        Ok(())
+    }
+}
+
 fn infer_dict(
     entries: &[Spanned<Entry>],
     env: &Rc<TypeEnv>,
@@ -497,37 +628,53 @@ fn check_call(
 ) -> Result<Type, Vec<TypeError>> {
     let func_ty = infer_expr(func, env, state, type_map)?;
 
-    let mut arg_types = Vec::with_capacity(args.len());
-    for a in args {
-        arg_types.push(infer_expr(a, env, state, type_map)?);
-    }
+    // Infer named args for type map population and error detection
     for na in named_args {
         let _ = infer_expr(&na.node.value, env, state, type_map)?;
     }
 
     match &func_ty {
         Type::Function { params, ret } => {
-            if params.len() != arg_types.len() {
+            if params.len() != args.len() {
                 return Err(vec![TypeError::new(
                     format!(
                         "arity mismatch: expected {} arguments, got {}",
                         params.len(),
-                        arg_types.len()
+                        args.len()
                     ),
                     span,
                 )]);
             }
 
+            // CALL-MONO: function type is fully concrete (no type variables)
+            // Use bidirectional checking for arguments via [SUB] rule (doc/06 line 152-157)
             if !func_ty.has_type_vars() {
+                let mut errors = Vec::new();
+                for (arg, param_ty) in args.iter().zip(params.iter()) {
+                    if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
+                        errors.append(&mut errs);
+                    }
+                }
+                if !errors.is_empty() {
+                    return Err(errors);
+                }
                 return Ok(*ret.clone());
             }
 
+            // CALL-POLY: function type has type variables
+            // Instantiate the function type, synthesize arguments, then unify (doc/06 line 162-170)
             let inst_ty = instantiate_at_level(&func_ty, state);
 
             let (inst_params, inst_ret) = match &inst_ty {
                 Type::Function { params, ret } => (params, ret),
                 _ => unreachable!("instantiate_at_level preserves Function variant"),
             };
+
+            // Synthesize argument types for CALL-POLY (not checking mode)
+            let mut arg_types = Vec::with_capacity(args.len());
+            for a in args {
+                arg_types.push(infer_expr(a, env, state, type_map)?);
+            }
 
             if !params.is_empty() {
                 let mut subst = Substitution::new();
@@ -549,7 +696,7 @@ fn infer_fn(
     params: &[Spanned<Param>],
     body: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
-    span: Span,
+    _span: Span,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
@@ -579,10 +726,8 @@ fn infer_fn(
         Some(ann) => {
             let declared =
                 resolve_annotation(&ann.node, env, ann.span, state).map_err(|e| vec![e])?;
-            let inferred = infer_expr(body, &fn_env, state, type_map)?;
-            if !Type::is_subtype(&inferred, &declared) {
-                return Err(vec![TypeError::type_mismatch(&declared, &inferred, span)]);
-            }
+            // Use checking mode for function body with return annotation (doc/06 line 136-146)
+            check_expr(body, &declared, &fn_env, state, type_map)?;
             declared
         }
         None => infer_expr(body, &fn_env, state, type_map)?,
@@ -607,18 +752,21 @@ fn resolve_type_assert(
     annotation: &Spanned<Annotation>,
     inner: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
-    span: Span,
+    _span: Span,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let expected =
         resolve_annotation(&annotation.node, env, annotation.span, state).map_err(|e| vec![e])?;
-    let actual = infer_expr(inner, env, state, type_map)?;
 
-    if !Type::is_subtype(&actual, &expected) {
+    // Use checking mode for TypeAssert inner expression (doc/06 line 214-226)
+    let check_result = check_expr(inner, &expected, env, state, type_map);
+
+    // If checking fails and there's a default, suppress the error (ASSERT-DEFAULT rule)
+    if check_result.is_err() {
         let has_default = annotation.node.get_property("default").is_some();
         if !has_default {
-            return Err(vec![TypeError::type_mismatch(&expected, &actual, span)]);
+            return check_result.map(|_| expected);
         }
     }
 
@@ -2190,5 +2338,220 @@ mod tests {
             "id with unannotated param should be monomorphic (Any-touched), got scheme: {:?}",
             id_scheme
         );
+    }
+
+    // -- Bidirectional type checking tests --
+
+    #[test]
+    fn test_check_expr_basic_subsumption() {
+        // IntLiteral(42) should check against Int via subsumption
+        let ty = result_field("[x: [@Int 42]]", "x");
+        assert_eq!(ty, Type::Int, "IntLiteral should subsume to Int");
+
+        // IntLiteral(42) should check against Number via subsumption
+        let ty = result_field("[x: [@Number 42]]", "x");
+        assert_eq!(ty, Type::Number, "IntLiteral should subsume to Number");
+
+        // StringLiteral should subsume to String
+        let ty = result_field("[x: [@String hello]]", "x");
+        assert_eq!(ty, Type::Str, "StringLiteral should subsume to String");
+    }
+
+    #[test]
+    fn test_call_mono_argument_checking() {
+        // Monomorphic function call should use check_expr for arguments
+        // This should succeed: IntLiteral(42) <: Int
+        let ty = result_field("[f: [fn [x@Int] $x]]\n[result: [call $f 42]]", "result");
+        assert_eq!(ty, Type::Int, "CALL-MONO should accept IntLiteral arg");
+
+        // This should fail: String is not subtype of Int
+        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f hello]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "CALL-MONO should reject String arg for Int param, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_concrete() {
+        // Lambda checked against concrete function type should propagate param types
+        // Define a concrete function type alias first
+        let env = doc_env("[IntFn: [type [Fn@Int [Int]]]]\n[f: [@IntFn [fn [x] $x]]]");
+        let f_scheme = env.get("f").unwrap();
+        match &f_scheme.body {
+            Type::Function { params, ret } => {
+                assert_eq!(params, &vec![Type::Int]);
+                assert_eq!(**ret, Type::Int);
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_with_polymorphic_expected() {
+        // Lambda checked against polymorphic function type should NOT use checking mode
+        // (falls back to synthesis + subsumption)
+        let ty = result_field(
+            "[Mapper: [type [Fn@b [a]]]]\n[x: [@Mapper [fn [v] $v]]]",
+            "x",
+        );
+        match ty {
+            Type::Function { params, ret } => {
+                // When checking mode is skipped (has_type_vars), params stay as annotated or Any
+                assert_eq!(params, vec![Type::TypeVar("a".into(), 0)]);
+                assert_eq!(*ret, Type::TypeVar("b".into(), 0));
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_type_assert_checking_mode() {
+        // TypeAssert should use check_expr for subsumption
+        let ty = result_field("[x: [@Int 42]]", "x");
+        assert_eq!(ty, Type::Int, "TypeAssert should accept IntLiteral <: Int");
+
+        // TypeAssert with default should suppress errors
+        let ty = result_field("[x: [@[type: Int  default: 0] hello]]", "x");
+        assert_eq!(
+            ty,
+            Type::Int,
+            "TypeAssert with default should suppress errors"
+        );
+    }
+
+    #[test]
+    fn test_call_poly_still_uses_unify() {
+        // Polymorphic function call should still use unification (not check_expr)
+        let ty = result_field("[f: [fn [x@a] $x]]\n[result: [call $f 42]]", "result");
+        assert_eq!(ty, Type::IntLiteral(42), "CALL-POLY should unify");
+
+        // Multiple calls should get independent instantiations
+        let env = doc_env("[f: [fn [x@a] $x]]\n[r1: [call $f 42]]\n[r2: [call $f hello]]");
+        let r1 = env.get("r1").unwrap();
+        let r2 = env.get("r2").unwrap();
+        assert_eq!(r1.body, Type::IntLiteral(42));
+        assert_eq!(r2.body, Type::StringLiteral("hello".into()));
+    }
+
+    #[test]
+    fn test_function_return_annotation_checking() {
+        // Function with return annotation should check body via check_expr
+        // Subsumption should work: IntLiteral(42) <: Int
+        let ty = result_field("[f: [fn@Int [] 42]]", "f");
+        match ty {
+            Type::Function { ret, .. } => {
+                assert_eq!(*ret, Type::Int, "Return type should be declared type");
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+
+        // IntLiteral should subsume to Number in return annotation
+        let ty = result_field("[f: [fn@Number [] 42]]", "f");
+        match ty {
+            Type::Function { ret, .. } => {
+                assert_eq!(*ret, Type::Number);
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+
+        // Type mismatch should fail
+        let errors = check_err("[f: [fn@Int [] hello]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "Function body type mismatch should error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_annotated_param_incompatible() {
+        // Lambda with annotated param checked against expected function type where
+        // the annotation is INCOMPATIBLE with the expected param type should error.
+        // Expected: Fn(Int -> Int), lambda: [fn [x@String] $x]
+        // The annotation String is incompatible: Int (expected) is not a subtype of String.
+        // This tests the fix added in the bidirectional-typing fix pass (contravariant check).
+        let errors = check_err("[x: [@[Fn@Int [Int]] [fn [x@String] $x]]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "Incompatible param annotation should produce type mismatch error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_return_annotation_and_expected_type() {
+        // Lambda with both a return annotation and an expected function type.
+        // [@[Fn@Number [Int]] [fn@Int [x] $x]] — expected return Number, declared return Int.
+        // Since Int <: Number, the check `declared <: expected_ret` passes (covariant return).
+        // Body $x is checked against declared Int (passes since x gets type Int from expected).
+        // The function type recorded in the type_map is the EXPECTED type (Fn(Int→Number))
+        // because check_expr records expected.clone() at the lambda checking mode exit.
+        let ty = result_field("[f: [@[Fn@Number [Int]] [fn@Int [x] $x]]]", "f");
+        match ty {
+            Type::Function { params, ret } => {
+                // Lambda checking mode propagates expected param type Int
+                assert_eq!(
+                    params,
+                    vec![Type::Int],
+                    "param should be Int from expected type"
+                );
+                // The recorded function type is the expected Fn(Int→Number), ret = Number
+                assert_eq!(
+                    *ret,
+                    Type::Number,
+                    "return type is the expected Number (type_map records expected)"
+                );
+            }
+            other => panic!("expected Function type, got {other}"),
+        }
+
+        // Incompatible direction: expected return Int, declared return Number.
+        // is_subtype(&Number, &Int) = false → should error.
+        let errors = check_err("[f: [@[Fn@Int [Int]] [fn@Number [x] 42]]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "Declared return Number is not subtype of expected Int — should error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_zero_param_polymorphic_function_known_bug() {
+        // Pre-existing bug (tracked in TODO.md): in CALL-POLY with zero params,
+        // the code at typecheck.rs line ~671 returns `*ret.clone()` (the pre-instantiation
+        // return type from the original scheme) instead of `*inst_ret.clone()` (the
+        // post-substitution return type from the instantiated scheme).
+        //
+        // The CALL-POLY zero-param branch (params.is_empty()) skips unification entirely
+        // because there are no param/arg pairs to unify on. Without unification, the return
+        // type variable is never bound to anything concrete, so `inst_ret` is just a fresh
+        // TypeVar. But `ret` (the pre-instantiation value) is returned instead, which in
+        // practice is the same fresh TypeVar — just a different object. The real fix is to
+        // handle zero-arity polymorphic calls as monomorphic or require explicit instantiation.
+        //
+        // Practically, zero-arity polymorphic functions in LLT are rare:
+        //   - Unannotated params get Type::Any (monomorphic path, no type vars).
+        //   - Annotated type-var params require at least one param (by definition).
+        //   - [fn@a [] body] fails to type-check because body type ≮ TypeVar a.
+        //
+        // This test verifies the zero-param CALL-MONO path (no type vars) works correctly,
+        // and documents the known limitation in CALL-POLY for zero-arity.
+        // Bug fix location: typecheck.rs CALL-POLY branch, `Ok(*ret.clone())` line.
+
+        // Zero-param monomorphic function (CALL-MONO): the function type is correct.
+        let ty = result_field("[f: [fn@Int [] 42]]", "f");
+        match ty {
+            Type::Function { params, ret } => {
+                assert!(params.is_empty(), "zero-param fn should have no params");
+                assert_eq!(
+                    *ret,
+                    Type::Int,
+                    "declared return type Int should be preserved"
+                );
+            }
+            other => panic!("expected Function type for zero-param fn, got {other}"),
+        }
     }
 }
