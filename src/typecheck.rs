@@ -10,8 +10,8 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::types::{
-    generalize, instantiate_at_level, instantiate_scheme, unify, InferState, RowRest, Substitution,
-    Type, TypeEnv, TypeError, TypeScheme,
+    generalize, instantiate_at_level, instantiate_scheme, unify, InferState, Row, RowTail,
+    Substitution, Type, TypeEnv, TypeError, TypeScheme,
 };
 
 /// A map from expression span (start_offset, end_offset) to the inferred type.
@@ -64,14 +64,20 @@ fn typecheck_document(
 ) -> Result<Rc<TypeEnv>, Vec<TypeError>> {
     let mut errors = Vec::new();
     let mut env = Rc::new(TypeEnv::with_parent(Rc::clone(parent_env)));
-    let mut result_type = Type::Record(IndexMap::new(), RowRest::Closed);
+    let mut result_type = Type::Record(Row {
+        fields: IndexMap::new(),
+        tail: RowTail::Empty,
+    });
 
     let exprs = &doc.node.expressions;
     if exprs.is_empty() {
         let mut result_env = TypeEnv::with_parent(Rc::clone(&env));
         result_env.insert(
             "$".to_string(),
-            Type::Record(IndexMap::new(), RowRest::Closed),
+            Type::Record(Row {
+                fields: IndexMap::new(),
+                tail: RowTail::Empty,
+            }),
         );
         return Ok(Rc::new(result_env));
     }
@@ -111,7 +117,7 @@ fn typecheck_document(
                         result_type = ty;
                     } else {
                         match &ty {
-                            Type::Record(fields, _) => {
+                            Type::Record(Row { fields, .. }) => {
                                 let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
                                 for (name, field_ty) in fields {
                                     new_env.insert(name.clone(), field_ty.clone());
@@ -373,7 +379,10 @@ fn check_expr(
                     if param.node.variadic {
                         fn_env.insert(
                             param.node.name.clone(),
-                            Type::Record(IndexMap::new(), RowRest::Closed),
+                            Type::Record(Row {
+                                fields: IndexMap::new(),
+                                tail: RowTail::Empty,
+                            }),
                         );
                     } else {
                         fn_env.insert(param.node.name.clone(), ty.clone());
@@ -535,7 +544,10 @@ fn infer_dict(
     // Restore enclosing level
     state.level = enclosing_level;
 
-    let record_type = Type::Record(field_types, RowRest::Closed);
+    let record_type = Type::Record(Row {
+        fields: field_types,
+        tail: RowTail::Empty,
+    });
 
     if errors.is_empty() {
         Ok((record_type, schemes))
@@ -579,9 +591,9 @@ fn check_dot_access(
 ) -> Result<Type, Vec<TypeError>> {
     let target_ty = infer_expr(target, env, state, type_map)?;
     match &target_ty {
-        Type::Record(fields, rest) => match fields.get(field) {
+        Type::Record(Row { fields, tail: rest }) => match fields.get(field) {
             Some(ty) => Ok(ty.clone()),
-            None if matches!(rest, RowRest::Open | RowRest::RowVar(_, _)) => Ok(Type::Any),
+            None if matches!(rest, RowTail::RowVar(_, _)) => Ok(Type::Any),
             None => Err(vec![TypeError::field_not_found(field, &target_ty, span)]),
         },
         Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
@@ -601,8 +613,8 @@ fn check_bracket_access(
     let key_ty = infer_expr(key, env, state, type_map)?;
 
     match &target_ty {
-        Type::Record(fields, rest) => {
-            let is_open = matches!(rest, RowRest::Open | RowRest::RowVar(_, _));
+        Type::Record(Row { fields, tail: rest }) => {
+            let is_open = matches!(rest, RowTail::RowVar(_, _));
             let lookup = |field_name: &str| -> Result<Type, Vec<TypeError>> {
                 match fields.get(field_name) {
                     Some(ty) => Ok(ty.clone()),
@@ -889,7 +901,10 @@ fn infer_fn(
         if param.node.variadic {
             fn_env.insert(
                 param.node.name.clone(),
-                Type::Record(IndexMap::new(), RowRest::Closed),
+                Type::Record(Row {
+                    fields: IndexMap::new(),
+                    tail: RowTail::Empty,
+                }),
             );
         } else {
             fn_env.insert(param.node.name.clone(), ty.clone());
@@ -1177,11 +1192,11 @@ fn resolve_type_dict(
     }
 
     let mut fields = IndexMap::new();
-    let mut rest = RowRest::Closed;
+    let mut rest = RowTail::Empty;
     for entry in entries {
         if let Expr::Rest(name) = &entry.node.value.node {
             rest = match name {
-                None => RowRest::Open,
+                None => RowTail::RowVar("_open".to_string(), 0),
                 Some(n) => {
                     // Row variables in type expressions also need fresh names per function
                     if let Some(ref mut mapping) = ann_mapping {
@@ -1191,10 +1206,10 @@ fn resolve_type_dict(
                             fresh
                         });
                         state.levels.insert(fresh_name.clone(), state.level);
-                        RowRest::RowVar(fresh_name.clone(), state.level)
+                        RowTail::RowVar(fresh_name.clone(), state.level)
                     } else {
                         state.levels.insert(n.clone(), state.level);
-                        RowRest::RowVar(n.clone(), state.level)
+                        RowTail::RowVar(n.clone(), state.level)
                     }
                 }
             };
@@ -1220,7 +1235,7 @@ fn resolve_type_dict(
         let ty = resolve_type_expr(&entry.node.value, env, state, ann_mapping)?;
         fields.insert(key, ty);
     }
-    Ok(Type::Record(fields, rest))
+    Ok(Type::Record(Row { fields, tail: rest }))
 }
 
 /// Detect `[Fn@Return [ParamTypes]]` -- a Dict with two auto-indexed entries
@@ -1330,7 +1345,7 @@ mod tests {
 
     fn result_field(input: &str, field: &str) -> Type {
         match result_type(input) {
-            Type::Record(fields, _) => fields.get(field).cloned().unwrap(),
+            Type::Record(Row { fields, .. }) => fields.get(field).cloned().unwrap(),
             other => panic!("expected Record for $$, got {other}"),
         }
     }
@@ -1387,7 +1402,7 @@ mod tests {
     fn test_dict_simple() {
         let ty = infer("[a: 1  b: hello  c: true]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(1)));
                 assert_eq!(fields.get("b"), Some(&Type::StringLiteral("hello".into())));
                 assert_eq!(fields.get("c"), Some(&Type::Bool));
@@ -1400,7 +1415,7 @@ mod tests {
     fn test_dict_auto_indexed() {
         let ty = infer("[foo bar baz]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("0"), Some(&Type::StringLiteral("foo".into())));
                 assert_eq!(fields.get("1"), Some(&Type::StringLiteral("bar".into())));
                 assert_eq!(fields.get("2"), Some(&Type::StringLiteral("baz".into())));
@@ -1413,10 +1428,13 @@ mod tests {
     fn test_dict_nested() {
         let ty = infer("[outer: [inner: 42]]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 let inner = fields.get("outer").unwrap();
                 match inner {
-                    Type::Record(inner_fields, _) => {
+                    Type::Record(Row {
+                        fields: inner_fields,
+                        ..
+                    }) => {
                         assert_eq!(inner_fields.get("inner"), Some(&Type::IntLiteral(42)));
                     }
                     other => panic!("expected Record, got {other}"),
@@ -1430,7 +1448,7 @@ mod tests {
     fn test_dict_letrec_forward_ref() {
         let ty = infer("[a: $b  b: 42]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 // With let-generalization, forward references now participate in unification.
                 // $b unifies with 42, so both a and b have type IntLiteral(42).
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
@@ -1601,7 +1619,7 @@ mod tests {
             "p",
         );
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("name"), Some(&Type::Str));
                 assert_eq!(fields.get("age"), Some(&Type::Number));
             }
@@ -1709,7 +1727,7 @@ mod tests {
         let env = file_env("[x: 42]\n---\n[y: $$]");
         let result = env.get("$").unwrap().body.clone();
         match result {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 let y = fields.get("y").expect("field 'y' should exist");
                 assert!(
                     matches!(y, Type::Record(..)),
@@ -1725,7 +1743,7 @@ mod tests {
         let env = file_env("[x: 1]\n---\n[y: $$.x]");
         let result = env.get("$").unwrap().body.clone();
         match result {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 let y = fields.get("y").expect("field 'y' should exist");
                 assert_eq!(
                     *y,
@@ -1891,7 +1909,7 @@ mod tests {
             "p",
         );
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("x"), Some(&Type::Number));
                 assert_eq!(fields.get("y"), Some(&Type::Number));
                 assert_eq!(fields.len(), 2);
@@ -2133,7 +2151,7 @@ mod tests {
     fn test_call_polymorphic_multiple_calls_different_types() {
         let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id hello]]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("r1"), Some(&Type::IntLiteral(42)));
                 assert_eq!(fields.get("r2"), Some(&Type::StringLiteral("hello".into())));
             }
@@ -2278,7 +2296,10 @@ mod tests {
             "p",
         );
         match ty {
-            Type::Record(fields, RowRest::Open) => {
+            Type::Record(Row {
+                fields,
+                tail: RowTail::RowVar(name, 0),
+            }) if name == "_open" => {
                 assert_eq!(fields.get("name"), Some(&Type::Str));
             }
             other => panic!("expected open Record, got {other}"),
@@ -2292,7 +2313,10 @@ mod tests {
             "p",
         );
         match ty {
-            Type::Record(fields, RowRest::RowVar(name, _)) => {
+            Type::Record(Row {
+                fields,
+                tail: RowTail::RowVar(name, _),
+            }) => {
                 assert_eq!(fields.get("name"), Some(&Type::Str));
                 assert_eq!(name, "rest");
             }
@@ -2307,7 +2331,10 @@ mod tests {
             "p",
         );
         match ty {
-            Type::Record(_, RowRest::Closed) => {}
+            Type::Record(Row {
+                tail: RowTail::Empty,
+                ..
+            }) => {}
             other => panic!("expected closed Record, got {other}"),
         }
     }
@@ -2357,7 +2384,10 @@ mod tests {
     fn test_data_dict_always_closed() {
         let ty = infer("[a: 1  b: 2]");
         match ty {
-            Type::Record(_, RowRest::Closed) => {}
+            Type::Record(Row {
+                tail: RowTail::Empty,
+                ..
+            }) => {}
             other => panic!("expected closed Record for data dict, got {other}"),
         }
     }
@@ -2366,7 +2396,10 @@ mod tests {
     fn test_rest_in_data_dict_ignored() {
         let ty = infer("[a: 1 ...]");
         match ty {
-            Type::Record(fields, RowRest::Closed) => {
+            Type::Record(Row {
+                fields,
+                tail: RowTail::Empty,
+            }) => {
                 assert_eq!(fields.len(), 1);
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(1)));
             }
@@ -2384,7 +2417,7 @@ mod tests {
             "result",
         );
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
                 assert_eq!(
                     fields.get("b"),
@@ -2400,7 +2433,7 @@ mod tests {
         // Forward reference $b should unify with 42
         let ty = infer("[a: $b  b: 42]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
                 assert_eq!(fields.get("b"), Some(&Type::IntLiteral(42)));
             }
@@ -2422,7 +2455,10 @@ mod tests {
         let outer_scheme = env.get("outer").expect("outer should be in env");
 
         match &outer_scheme.body {
-            Type::Record(outer_fields, _) => {
+            Type::Record(Row {
+                fields: outer_fields,
+                ..
+            }) => {
                 // The outer dict's `id` field should have a Function type
                 let id_type = outer_fields
                     .get("id")
@@ -2437,7 +2473,7 @@ mod tests {
                             params
                         );
                         assert!(
-                            matches!(&**ret, Type::TypeVar(_, _)),
+                            matches!(ret.as_ref(), Type::TypeVar(_, _)),
                             "id return should be TypeVar, got {:?}",
                             ret
                         );
@@ -2467,7 +2503,7 @@ mod tests {
         // Mutual recursion within a dict should work with monomorphic inference
         let ty = infer("[a: $b  b: $a  c: 42]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert!(fields.contains_key("a"));
                 assert!(fields.contains_key("b"));
                 assert_eq!(fields.get("c"), Some(&Type::IntLiteral(42)));
@@ -2518,7 +2554,7 @@ mod tests {
         // TypeVars should be handled gracefully in dot access
         let ty = infer("[result: $data.x  data: [x: 1]]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 // result depends on data which hasn't been inferred yet,
                 // so it gets Any
                 assert_eq!(fields.get("result"), Some(&Type::Any));
@@ -2548,7 +2584,7 @@ mod tests {
         // Nested dict [outer: [inner: 42]] should infer correct types
         let ty = result_field("[outer: [inner: 42]]\n[result: $outer]", "result");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(
                     fields.get("inner"),
                     Some(&Type::IntLiteral(42)),
@@ -2928,7 +2964,7 @@ mod tests {
         // The @a in id and the @a in const42 must not interfere with each other.
         let ty = infer("[id: [fn [x@a] $x]  const42: [fn [y@a] 42]]");
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 // Verify both functions exist
                 assert!(fields.contains_key("id"), "should have 'id' field");
                 assert!(
@@ -2960,7 +2996,7 @@ mod tests {
         let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id hello]]");
 
         match ty {
-            Type::Record(fields, _) => {
+            Type::Record(Row { fields, .. }) => {
                 // r1 should be IntLiteral(42) due to polymorphic instantiation
                 assert_eq!(
                     fields.get("r1"),

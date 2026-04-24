@@ -632,7 +632,7 @@ Named arguments are rejected (`reject_named`).
 
 **[T-MERGE] Closed records:**
 
-T-MERGE applies only when both operands have closed record types (`RowRest::Closed`). Open records (`RowRest::Open` or `RowRest::RowVar`) fall through to T-MERGE-ANY.
+T-MERGE applies only when both operands have closed record types (`RowTail::Empty`). Open records (`RowTail::RowVar`) fall through to T-MERGE-ANY.
 
 ```
 Γ ⊢ L : Record(F_L, Closed),  Γ ⊢ R : Record(F_R, Closed)

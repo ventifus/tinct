@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
-use crate::types::{RowRest, Type};
+use crate::types::{Row, RowTail, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -122,7 +122,7 @@ fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin { .. }),
         Type::Seq(_) => matches!(value, Value::Seq { .. }),
         Type::TypeVar(_, _) => true,
-        Type::Record(_, _) => true, // Records handled separately via proxy wrapping
+        Type::Record(_) => true, // Records handled separately via proxy wrapping
     }
 }
 
@@ -145,15 +145,14 @@ fn format_type_for_assert(ty: &Type) -> String {
 ///
 /// # Parameters
 /// - `entries`: the dict entries to validate
-/// - `fields`: the expected record field types
-/// - `rest`: whether the record is open (allows extra fields) or closed
+/// - `row`: the expected record row type (fields + tail)
 /// - `field_path`: accumulated path for nested field errors (empty for top-level)
 /// - `guard_span`: span for guard creation
 ///
 /// # Errors
 /// Returns TypeAssertFailed if:
 /// - A required field is missing
-/// - The record has extra fields and rest is Closed
+/// - The record has extra fields and tail is Empty (closed)
 ///
 /// # Note
 /// The caller is responsible for checking default_expr and calling eval() with the default
@@ -161,14 +160,13 @@ fn format_type_for_assert(ty: &Type) -> String {
 /// Guards created by this function do NOT propagate default_expr to avoid infinite recursion.
 fn validate_and_wrap_record(
     entries: &IndexMap<Key, Rc<Thunk>>,
-    fields: &IndexMap<String, Type>,
-    rest: &RowRest,
+    row: &Row,
     field_path: Vec<String>,
     guard_span: Span,
 ) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
-    for (field_name, _field_type) in fields.iter() {
+    for (field_name, _field_type) in row.fields.iter() {
         let has_field = entries.contains_key(&Key::String(field_name.clone()))
             || field_name
                 .parse::<i64>()
@@ -197,10 +195,10 @@ fn validate_and_wrap_record(
 
     // Cardinality check for closed records
     // Per review finding #5: iterate keys directly, no Vec allocation
-    if matches!(rest, RowRest::Closed) {
+    if matches!(row.tail, RowTail::Empty) {
         for key in entries.keys() {
             if let Key::String(s) = key {
-                if !fields.contains_key(s) {
+                if !row.fields.contains_key(s) {
                     let field_path_prefix = if field_path.is_empty() {
                         String::new()
                     } else {
@@ -228,8 +226,8 @@ fn validate_and_wrap_record(
         .map(|(key, thunk)| {
             // Try to find a matching field type
             let field_type = match key {
-                Key::String(field_name) => fields.get(field_name),
-                Key::Int(n) => fields.get(&n.to_string()),
+                Key::String(field_name) => row.fields.get(field_name),
+                Key::Int(n) => row.fields.get(&n.to_string()),
             };
 
             if let Some(field_type) = field_type {
@@ -330,7 +328,7 @@ pub fn eval(
                 // STRUCTURAL VALIDATION (type checker succeeded and provided elaboration)
 
                 match &expected {
-                    Type::Record(fields, rest) => {
+                    Type::Record(row) => {
                         // [VM-RECORD-PROXY]: shape check + guard wrapping
                         // Must materialize eagerly to perform shape check
                         let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
@@ -342,8 +340,7 @@ pub fn eval(
                                 .get_property(DEFAULT_ANNOTATION_KEY)
                                 .map(|expr| (expr.clone(), Rc::clone(&env)));
 
-                            match validate_and_wrap_record(entries, fields, rest, vec![], expr.span)
-                            {
+                            match validate_and_wrap_record(entries, row, vec![], expr.span) {
                                 Ok(new_entries) => Ok(Rc::new(Thunk::new_materialized(
                                     Value::Dict(new_entries),
                                     expr.span,
@@ -1432,12 +1429,10 @@ pub fn materialize(
         match result {
             Ok(value) => {
                 // For Record types, apply proxy contract wrapping
-                if let Type::Record(ref fields, ref rest) = expected {
+                if let Type::Record(ref row) = expected {
                     if let Value::Dict(ref entries) = value {
                         // Use helper to validate and wrap record
-                        match validate_and_wrap_record(
-                            entries, fields, rest, field_path, guard_span,
-                        ) {
+                        match validate_and_wrap_record(entries, row, field_path, guard_span) {
                             Ok(new_entries) => {
                                 let guarded_value = Value::Dict(new_entries);
                                 thunk.set_state(ThunkState::Materialized(guarded_value.clone()));
@@ -6685,7 +6680,10 @@ mod tests {
         // The record type check is immediate (shape check), field guard wrapping deferred.
         let mut fields = IndexMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let record_type = Type::Record(fields, RowRest::Open);
+        let record_type = Type::Record(Row {
+            fields,
+            tail: RowTail::RowVar("_open".to_string(), 0),
+        });
 
         let entries = vec![
             sp(Entry {
@@ -6721,7 +6719,10 @@ mod tests {
         // Structural path: record type requires field "id", dict doesn't have it -> error
         let mut fields = IndexMap::new();
         fields.insert("id".to_string(), Type::Int);
-        let record_type = Type::Record(fields, RowRest::Open);
+        let record_type = Type::Record(Row {
+            fields,
+            tail: RowTail::RowVar("_open".to_string(), 0),
+        });
 
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("name".into()))),
@@ -6744,10 +6745,13 @@ mod tests {
 
     #[test]
     fn test_typeassert_structural_closed_record_extra_field() {
-        // Structural path: closed record (RowRest::Closed), dict has extra field -> error
+        // Structural path: closed record (RowTail::Empty), dict has extra field -> error
         let mut fields = IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(fields, RowRest::Closed);
+        let record_type = Type::Record(Row {
+            fields,
+            tail: RowTail::Empty,
+        });
 
         let entries = vec![
             sp(Entry {
@@ -6780,7 +6784,10 @@ mod tests {
         // Structural path: closed record, dict has exactly the required fields -> pass
         let mut fields = IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(fields, RowRest::Closed);
+        let record_type = Type::Record(Row {
+            fields,
+            tail: RowTail::Empty,
+        });
 
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
@@ -6809,7 +6816,10 @@ mod tests {
         // Structural path: resolved_type = Some(Type::Record(...)), value is Int -> error
         let mut fields = IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(fields, RowRest::Open);
+        let record_type = Type::Record(Row {
+            fields,
+            tail: RowTail::RowVar("_open".to_string(), 0),
+        });
 
         let inner_expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Record".into())),
@@ -6968,7 +6978,10 @@ mod tests {
         // validate_and_wrap_record, not value_matches_type.
         let mut fields = IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(fields, RowRest::Closed);
+        let record_type = Type::Record(Row {
+            fields,
+            tail: RowTail::Empty,
+        });
         // Even a non-Dict value returns true here — record validation is done separately
         assert!(value_matches_type(&Value::Int(99), &record_type));
         assert!(value_matches_type(
