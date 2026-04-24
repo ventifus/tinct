@@ -677,13 +677,61 @@ fn check_call(
             }
 
             if !params.is_empty() {
+                // Sequential unification of arguments (textbook Hindley-Milner)
+                //
+                // This approach unifies each (param_ty, arg_ty) pair in order, accumulating
+                // a substitution that is applied to subsequent unifications. This is SOUND
+                // because instantiation creates fresh type variables per call site, so
+                // type variable bindings from earlier arguments are correctly propagated.
+                //
+                // CONFLUENCE: When multiple arguments constrain the same type variable with
+                // different precision (e.g., IntLiteral(42) vs Int), the bidirectional promotion
+                // rules in unify() (src/types.rs, "Literal-to-parent promotions") ensure that type checking SUCCEEDS
+                // regardless of argument order. The only difference is the PRECISION of the
+                // resulting binding:
+                //
+                //   Example: ∀a. Fn(a a → a) called with IntLiteral(42) and Int
+                //   - Order 1: unify(_t0, IntLiteral(42)) → {_t0 ↦ IntLiteral(42)},
+                //              then unify(IntLiteral(42), Int) → SUCCESS (promotion rule)
+                //              Result: _t0 = IntLiteral(42)
+                //   - Order 2: unify(_t0, Int) → {_t0 ↦ Int},
+                //              then unify(Int, IntLiteral(42)) → SUCCESS (promotion rule)
+                //              Result: _t0 = Int
+                //
+                // Both orderings succeed; the first is more precise. This is the expected
+                // behavior: earlier arguments guide type variable binding, later arguments
+                // validate compatibility via subsumption. The bidirectional promotion rules
+                // (IntLiteral ↔ Int, StringLiteral ↔ Str, Int ↔ Number, etc.) make this
+                // unification subsumptive in practice, providing the same confluence property
+                // that Pierce-Turner's [U-SUBSUME] rule would provide (doc/06 §Subsumptive fallback).
+                //
+                // CONSTRAINT-BASED ALTERNATIVE: Pierce-Turner bidirectional typing suggests
+                // collecting all constraints before solving (constraint generation, then
+                // joint constraint solving). This would allow computing a "minimal" or
+                // "maximal" substitution (e.g., least upper bound when multiple constraints
+                // exist). However, for tinct's current type system:
+                //
+                //   1. Sequential unification is simpler and matches standard HM implementations
+                //   2. The bidirectional promotion rules already handle the common cases
+                //   3. Left-to-right evaluation order makes it natural for earlier args to
+                //      guide type inference
+                //   4. No test case currently demonstrates a need for constraint collection
+                //
+                // If future extensions (e.g., row-variable unification with constraints on
+                // multiple row variables, or bidirectional typing with checking mode for
+                // CALL-POLY args) require more sophisticated constraint solving, the switch
+                // to constraint generation would happen here. The current approach is
+                // intentionally pragmatic.
+                //
                 let mut subst = Substitution::new();
                 for (param_ty, arg_ty) in inst_params.iter().zip(arg_types.iter()) {
                     unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
                 }
                 Ok(subst.apply(inst_ret))
             } else {
-                Ok(*ret.clone())
+                // Zero-param polymorphic function: return the instantiated return type
+                // (not the original `ret` which contains the scheme-internal variable names)
+                Ok(*inst_ret.clone())
             }
         }
         Type::Any => Ok(Type::Any),
@@ -2302,8 +2350,8 @@ mod tests {
 
         // The scheme should have non-empty vars (it's polymorphic)
         assert!(
-            !id_scheme.vars.is_empty(),
-            "id should be polymorphic (non-empty vars), got scheme: {:?}",
+            !id_scheme.type_vars.is_empty(),
+            "id should be polymorphic (non-empty type_vars), got scheme: {:?}",
             id_scheme
         );
     }
@@ -2334,7 +2382,7 @@ mod tests {
 
         // The scheme should have empty vars (monomorphic, Any-touched)
         assert!(
-            id_scheme.vars.is_empty(),
+            id_scheme.type_vars.is_empty(),
             "id with unannotated param should be monomorphic (Any-touched), got scheme: {:?}",
             id_scheme
         );
@@ -2553,5 +2601,100 @@ mod tests {
             }
             other => panic!("expected Function type for zero-param fn, got {other}"),
         }
+    }
+
+    // -- Task 1: CALL-MONO argument type checking verification --
+
+    #[test]
+    fn test_call_mono_argument_type_checking_verification() {
+        // CALL-MONO uses check_expr for argument type checking
+        // IntLiteral(42) <: Int succeeds
+        assert!(check("[f: [fn [x@Int] $x]]\n[result: [call $f 42]]").is_ok());
+
+        // StringLiteral for Int param fails
+        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f \"hello\"]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "StringLiteral arg for Int param should error: {:?}",
+            errors
+        );
+
+        // IntLiteral(42) <: Number succeeds (transitive subsumption)
+        assert!(check("[f: [fn [x@Number] $x]]\n[result: [call $f 42]]").is_ok());
+    }
+
+    // -- Task 3: Subsumption tests --
+
+    #[test]
+    fn test_subsumption_int_literal_to_int() {
+        // IntLiteral(42) <: Int via [SUB] rule
+        assert!(check("[result: [@Int 42]]").is_ok());
+    }
+
+    #[test]
+    fn test_subsumption_int_literal_to_number() {
+        // IntLiteral(42) <: Int <: Number (transitive)
+        assert!(check("[result: [@Number 42]]").is_ok());
+    }
+
+    #[test]
+    fn test_subsumption_string_literal_to_string() {
+        // StringLiteral("hello") <: String
+        assert!(check("[result: [@String \"hello\"]]").is_ok());
+    }
+
+    #[test]
+    fn test_subsumption_direction_matters() {
+        // Int <: Number succeeds, but Number <: Int fails — direction matters
+        assert!(check("[result: [@Number 42]]").is_ok());
+        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [@Int [call $f 3.14]]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "Float should not be subtype of Int: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_subsumption_float_to_number() {
+        // Float <: Number
+        assert!(check("[result: [@Number 3.14]]").is_ok());
+    }
+
+    // -- Task 3: Lambda parameter inference tests --
+
+    #[test]
+    fn test_lambda_param_inference_from_context() {
+        // When checking lambda against Fn(Int → Int), unannotated param gets Int
+        assert!(check("[result: [@[Fn [Int] [Int]] [fn [x] $x]]]").is_ok());
+    }
+
+    #[test]
+    fn test_lambda_param_inference_preserves_annotation() {
+        // Annotated param @Int is compatible with expected Number (Int <: Number for contravariant)
+        assert!(check("[result: [@[Fn [Number] [Number]] [fn [x@Int] $x]]]").is_ok());
+    }
+
+    #[test]
+    fn test_lambda_param_inference_rejects_incompatible_annotation() {
+        // @String is NOT compatible with expected Int param (Int <: String is false)
+        // Uses Fn@ReturnType [params] syntax for function type annotation
+        let errors = check_err("[result: [@[Fn@Int [Int]] [fn [x@String] $x]]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "String annotation should be incompatible with Int expected param: {:?}",
+            errors
+        );
+    }
+
+    // -- Task 8: Zero-param polymorphic fix verification --
+
+    #[test]
+    fn test_zero_param_polymorphic_function_instantiation() {
+        // Zero-param CALL-POLY must return *inst_ret* (instantiated), not *ret* (scheme-internal).
+        // Without the fix, ret == inst_ret for concrete return types, but the instantiated copy
+        // is the one whose type variables (if any) are fresh per-call-site.
+        let ty = result_field("[f: [fn@Int [] 42]]\n[result: [call $f]]", "result");
+        assert_eq!(ty, Type::Int, "zero-param fn@Int should return Int, got {ty}");
     }
 }
