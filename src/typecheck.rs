@@ -9,7 +9,8 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::types::{
-    instantiate, unify, InferState, RowRest, Substitution, Type, TypeEnv, TypeError,
+    generalize, instantiate, instantiate_scheme, unify, InferState, RowRest, Substitution, Type,
+    TypeEnv, TypeError, TypeScheme,
 };
 
 /// A map from expression span (start_offset, end_offset) to the inferred type.
@@ -74,33 +75,69 @@ fn typecheck_document(
         return Ok(Rc::new(result_env));
     }
 
+    let mut last_dict_schemes: Option<IndexMap<String, TypeScheme>> = None;
+
     for (i, expr) in exprs.iter().enumerate() {
         let is_last = i == exprs.len() - 1;
-        match infer_expr(expr, &env, state, type_map) {
-            Ok(ty) => {
-                if is_last {
-                    result_type = ty;
-                } else {
-                    match &ty {
-                        Type::Record(fields, _) => {
+
+        // Special handling for Dict expressions at document level to preserve schemes
+        if matches!(&expr.node, Expr::Dict(_)) {
+            if let Expr::Dict(entries) = &expr.node {
+                match infer_dict(entries, &env, state, type_map) {
+                    Ok((ty, schemes)) => {
+                        if is_last {
+                            result_type = ty;
+                            last_dict_schemes = Some(schemes);
+                        } else {
                             let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
-                            for (name, field_ty) in fields {
-                                new_env.insert(name.clone(), field_ty.clone());
+                            // Thread schemes into the environment
+                            for (name, scheme) in &schemes {
+                                new_env.insert_scheme(name.clone(), scheme.clone());
                             }
-                            let mut alias_errs = register_type_aliases(expr, &mut new_env, &env);
+                            let mut alias_errs = register_type_aliases(expr, &mut new_env, &env, state);
                             errors.append(&mut alias_errs);
                             env = Rc::new(new_env);
                         }
-                        Type::Any => {}
-                        _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
                     }
+                    Err(mut errs) => errors.append(&mut errs),
                 }
             }
-            Err(mut errs) => errors.append(&mut errs),
+        } else {
+            match infer_expr(expr, &env, state, type_map) {
+                Ok(ty) => {
+                    if is_last {
+                        result_type = ty;
+                    } else {
+                        match &ty {
+                            Type::Record(fields, _) => {
+                                let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
+                                for (name, field_ty) in fields {
+                                    new_env.insert(name.clone(), field_ty.clone());
+                                }
+                                let mut alias_errs =
+                                    register_type_aliases(expr, &mut new_env, &env, state);
+                                errors.append(&mut alias_errs);
+                                env = Rc::new(new_env);
+                            }
+                            Type::Any => {}
+                            _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
+                        }
+                    }
+                }
+                Err(mut errs) => errors.append(&mut errs),
+            }
         }
     }
 
     let mut result_env = TypeEnv::with_parent(env);
+
+    // If the last expression was a dict, thread its schemes into the result environment
+    if let Some(schemes) = last_dict_schemes {
+        for (name, scheme) in schemes {
+            result_env.insert_scheme(name, scheme);
+        }
+    }
+
     result_env.insert("$".to_string(), result_type);
 
     if errors.is_empty() {
@@ -114,6 +151,7 @@ fn register_type_aliases(
     expr: &Spanned<Expr>,
     target_env: &mut TypeEnv,
     resolve_env: &TypeEnv,
+    state: &mut InferState,
 ) -> Vec<TypeError> {
     let mut errors = Vec::new();
     if let Expr::Dict(entries) = &expr.node {
@@ -121,7 +159,7 @@ fn register_type_aliases(
             if let Some(ref key) = entry.node.key {
                 if let Expr::Str(name) = &key.node {
                     if let Expr::TypeAlias(inner) = &entry.node.value.node {
-                        match resolve_type_expr(inner, resolve_env) {
+                        match resolve_type_expr(inner, resolve_env, state) {
                             Ok(alias_ty) => {
                                 target_env.insert_type_alias(name.clone(), alias_ty);
                             }
@@ -149,10 +187,10 @@ fn infer_expr(
 
         Expr::VarRef(name) => env
             .get(name)
-            .map(|scheme| scheme.body.clone())
+            .map(|scheme| instantiate_scheme(scheme, state.level, state))
             .ok_or_else(|| vec![TypeError::undefined_variable(name, expr.span)]),
 
-        Expr::Dict(entries) => infer_dict(entries, env, state, type_map),
+        Expr::Dict(entries) => infer_dict(entries, env, state, type_map).map(|(ty, _schemes)| ty),
 
         Expr::DotAccess {
             expr: target,
@@ -182,7 +220,7 @@ fn infer_expr(
             ..
         } => infer_fn(return_ann, params, body, env, expr.span, state, type_map),
 
-        Expr::TypeAlias(inner) => expand_type_alias(inner, env).map_err(|e| vec![e]),
+        Expr::TypeAlias(inner) => expand_type_alias(inner, env, state).map_err(|e| vec![e]),
 
         Expr::TypeAssert {
             annotation,
@@ -190,7 +228,7 @@ fn infer_expr(
         } => resolve_type_assert(annotation, inner, env, expr.span, state, type_map),
 
         Expr::Annotated { name, annotation } => {
-            resolve_annotated(name, annotation, env, expr.span).map_err(|e| vec![e])
+            resolve_annotated(name, annotation, env, expr.span, state).map_err(|e| vec![e])
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(
@@ -215,25 +253,42 @@ fn infer_dict(
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
+) -> Result<(Type, IndexMap<String, TypeScheme>), Vec<TypeError>> {
+    // Level management: save enclosing level, increment for dict body
+    let enclosing_level = state.level;
+    state.level += 1;
+
     let mut dict_env = TypeEnv::with_parent(Rc::clone(env));
     let mut key_entries: Vec<(Option<String>, bool)> = Vec::new();
     let mut auto_index: i64 = 0;
 
+    // Pass 0: Key resolution
     for entry in entries {
         let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map);
         let is_alias = matches!(&entry.node.value.node, Expr::TypeAlias(_));
-        if let Some(ref name) = key_name {
-            dict_env.insert(name.clone(), Type::Any);
-        }
         key_entries.push((key_name, is_alias));
     }
 
+    // Pass 1: Bind all non-alias entries to fresh TypeVar at level state.level
+    for (key_name, is_alias) in &key_entries {
+        if !is_alias {
+            if let Some(ref name) = key_name {
+                let fresh_var = Type::TypeVar(format!("_t{}", state.name_counter), state.level);
+                state
+                    .levels
+                    .insert(format!("_t{}", state.name_counter), state.level);
+                state.name_counter += 1;
+                dict_env.insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
+            }
+        }
+    }
+
+    // Pass 2: Register type aliases
     for ((key_name, is_alias), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
             if let Some(name) = key_name {
                 if let Expr::TypeAlias(inner) = &entry.node.value.node {
-                    if let Ok(alias_ty) = resolve_type_expr(inner, &dict_env) {
+                    if let Ok(alias_ty) = resolve_type_expr(inner, &dict_env, state) {
                         dict_env.insert_type_alias(name.clone(), alias_ty);
                     }
                 }
@@ -243,29 +298,66 @@ fn infer_dict(
 
     let dict_env = Rc::new(dict_env);
 
-    let mut fields = IndexMap::new();
+    // Pass 3: Infer values and unify with bound type vars
+    let mut field_types = IndexMap::new();
     let mut errors = Vec::new();
+    let mut subst = Substitution::new();
+
     for ((key_name, is_alias), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias || matches!(&entry.node.value.node, Expr::Rest(_)) {
             continue;
         }
-        match infer_expr(&entry.node.value, &dict_env, state, type_map) {
-            Ok(value_ty) => {
-                if let Some(name) = key_name {
-                    fields.insert(name.clone(), value_ty);
+        if let Some(name) = key_name {
+            match infer_expr(&entry.node.value, &dict_env, state, type_map) {
+                Ok(value_ty) => {
+                    // Get the bound TypeVar from Pass 1
+                    if let Some(scheme) = dict_env.get(name) {
+                        let bound_var = scheme.body.clone();
+                        // Unify the inferred type with the bound var
+                        if let Err(e) = unify(
+                            &bound_var,
+                            &value_ty,
+                            &mut subst,
+                            state,
+                            entry.node.value.span,
+                        ) {
+                            errors.push(e);
+                            field_types.insert(name.clone(), Type::Any);
+                        } else {
+                            field_types.insert(name.clone(), value_ty);
+                        }
+                    } else {
+                        field_types.insert(name.clone(), value_ty);
+                    }
                 }
-            }
-            Err(mut errs) => {
-                errors.append(&mut errs);
-                if let Some(name) = key_name {
-                    fields.insert(name.clone(), Type::Any);
+                Err(mut errs) => {
+                    errors.append(&mut errs);
+                    field_types.insert(name.clone(), Type::Any);
                 }
             }
         }
     }
 
+    // Apply substitution to all field types
+    let field_types: IndexMap<String, Type> = field_types
+        .into_iter()
+        .map(|(k, ty)| (k, subst.apply(&ty)))
+        .collect();
+
+    // Pass 4: Generalize - create TypeSchemes for each entry
+    let mut schemes = IndexMap::new();
+    for (name, ty) in &field_types {
+        let scheme = generalize(enclosing_level, ty, state);
+        schemes.insert(name.clone(), scheme);
+    }
+
+    // Restore enclosing level
+    state.level = enclosing_level;
+
+    let record_type = Type::Record(field_types, RowRest::Closed);
+
     if errors.is_empty() {
-        Ok(Type::Record(fields, RowRest::Closed))
+        Ok((record_type, schemes))
     } else {
         Err(errors)
     }
@@ -311,7 +403,7 @@ fn check_dot_access(
             None if matches!(rest, RowRest::Open | RowRest::RowVar(_, _)) => Ok(Type::Any),
             None => Err(vec![TypeError::field_not_found(field, &target_ty, span)]),
         },
-        Type::Any => Ok(Type::Any),
+        Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -345,7 +437,7 @@ fn check_bracket_access(
                 _ => match &key_ty {
                     Type::StringLiteral(s) => lookup(s.as_str()),
                     Type::IntLiteral(n) => lookup(&n.to_string()),
-                    Type::Str | Type::Int | Type::Any => Ok(Type::Any),
+                    Type::Str | Type::Int | Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
                     _ => Err(vec![TypeError::new(
                         format!("bracket access key must be String or Int, got {key_ty}"),
                         span,
@@ -353,7 +445,7 @@ fn check_bracket_access(
                 },
             }
         }
-        Type::Any => Ok(Type::Any),
+        Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -373,7 +465,12 @@ fn check_range_access(
         let bound_ty = infer_expr(bound, env, state, type_map)?;
         if !matches!(
             bound_ty,
-            Type::Int | Type::IntLiteral(_) | Type::Str | Type::StringLiteral(_) | Type::Any
+            Type::Int
+                | Type::IntLiteral(_)
+                | Type::Str
+                | Type::StringLiteral(_)
+                | Type::Any
+                | Type::TypeVar(_, _)
         ) {
             return Err(vec![TypeError::new(
                 format!("range bound must be Int or String, got {bound_ty}"),
@@ -383,7 +480,7 @@ fn check_range_access(
     }
 
     match &target_ty {
-        Type::Record(..) | Type::Any => Ok(target_ty),
+        Type::Record(..) | Type::Any | Type::TypeVar(_, _) => Ok(target_ty),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -434,7 +531,7 @@ fn check_call(
             if !params.is_empty() {
                 let mut subst = Substitution::new();
                 for (param_ty, arg_ty) in inst_params.iter().zip(arg_types.iter()) {
-                    unify(param_ty, arg_ty, &mut subst, span).map_err(|e| vec![e])?;
+                    unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
                 }
                 Ok(subst.apply(inst_ret))
             } else {
@@ -458,7 +555,7 @@ fn infer_fn(
     let param_types: Vec<Type> = params
         .iter()
         .map(|p| match &p.node.annotation {
-            Some(ann) => resolve_annotation(&ann.node, env, ann.span),
+            Some(ann) => resolve_annotation(&ann.node, env, ann.span, state),
             None => Ok(Type::Any),
         })
         .collect::<Result<_, _>>()
@@ -479,7 +576,7 @@ fn infer_fn(
 
     let ret_type = match return_ann {
         Some(ann) => {
-            let declared = resolve_annotation(&ann.node, env, ann.span).map_err(|e| vec![e])?;
+            let declared = resolve_annotation(&ann.node, env, ann.span, state).map_err(|e| vec![e])?;
             let inferred = infer_expr(body, &fn_env, state, type_map)?;
             if !Type::is_subtype(&inferred, &declared) {
                 return Err(vec![TypeError::type_mismatch(&declared, &inferred, span)]);
@@ -495,8 +592,8 @@ fn infer_fn(
     })
 }
 
-fn expand_type_alias(inner: &Spanned<Expr>, env: &Rc<TypeEnv>) -> Result<Type, TypeError> {
-    let _ = resolve_type_expr(inner, env)?;
+fn expand_type_alias(inner: &Spanned<Expr>, env: &Rc<TypeEnv>, state: &mut InferState) -> Result<Type, TypeError> {
+    let _ = resolve_type_expr(inner, env, state)?;
     Ok(Type::Any)
 }
 
@@ -509,7 +606,7 @@ fn resolve_type_assert(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let expected =
-        resolve_annotation(&annotation.node, env, annotation.span).map_err(|e| vec![e])?;
+        resolve_annotation(&annotation.node, env, annotation.span, state).map_err(|e| vec![e])?;
     let actual = infer_expr(inner, env, state, type_map)?;
 
     if !Type::is_subtype(&actual, &expected) {
@@ -527,16 +624,17 @@ fn resolve_annotated(
     annotation: &Spanned<Annotation>,
     env: &Rc<TypeEnv>,
     span: Span,
+    state: &mut InferState,
 ) -> Result<Type, TypeError> {
     if name == "Fn" {
-        resolve_fn_type(&annotation.node, env, annotation.span)
+        resolve_fn_type(&annotation.node, env, annotation.span, state)
     } else {
-        resolve_annotation(&annotation.node, env, span)
+        resolve_annotation(&annotation.node, env, span, state)
     }
 }
 
-fn resolve_fn_type(ann: &Annotation, env: &TypeEnv, span: Span) -> Result<Type, TypeError> {
-    let ret = resolve_annotation_as_type(ann, env, span)?;
+fn resolve_fn_type(ann: &Annotation, env: &TypeEnv, span: Span, state: &mut InferState) -> Result<Type, TypeError> {
+    let ret = resolve_annotation_as_type(ann, env, span, state)?;
     Ok(Type::Function {
         params: vec![],
         ret: Box::new(ret),
@@ -550,21 +648,22 @@ fn resolve_annotation_as_type(
     ann: &Annotation,
     env: &TypeEnv,
     span: Span,
+    state: &mut InferState,
 ) -> Result<Type, TypeError> {
     match ann {
-        Annotation::Simple(name) => resolve_type_name(name, env, span),
-        Annotation::PropertyDict(entries) => resolve_type_dict(entries, env, span),
+        Annotation::Simple(name) => resolve_type_name(name, env, span, state),
+        Annotation::PropertyDict(entries) => resolve_type_dict(entries, env, span, state),
     }
 }
 
-fn resolve_annotation(ann: &Annotation, env: &TypeEnv, span: Span) -> Result<Type, TypeError> {
+fn resolve_annotation(ann: &Annotation, env: &TypeEnv, span: Span, state: &mut InferState) -> Result<Type, TypeError> {
     match ann {
-        Annotation::Simple(name) => resolve_type_name(name, env, span),
+        Annotation::Simple(name) => resolve_type_name(name, env, span, state),
         Annotation::PropertyDict(entries) => {
             if let Some(type_val) = ann.get_property("type") {
-                resolve_type_expr_value(type_val, env)
+                resolve_type_expr_value(type_val, env, state)
             } else {
-                resolve_property_dict_as_record(entries, env, span)
+                resolve_property_dict_as_record(entries, env, span, state)
             }
         }
     }
@@ -574,8 +673,9 @@ fn resolve_property_dict_as_record(
     entries: &[Spanned<Entry>],
     env: &TypeEnv,
     span: Span,
+    state: &mut InferState,
 ) -> Result<Type, TypeError> {
-    resolve_type_dict(entries, env, span).or_else(|e| {
+    resolve_type_dict(entries, env, span, state).or_else(|e| {
         if entries_look_like_type_dict(entries) {
             Err(e)
         } else {
@@ -625,7 +725,7 @@ fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
     })
 }
 
-fn resolve_type_name(name: &str, env: &TypeEnv, span: Span) -> Result<Type, TypeError> {
+fn resolve_type_name(name: &str, env: &TypeEnv, span: Span, state: &mut InferState) -> Result<Type, TypeError> {
     match name {
         "Int" => Ok(Type::Int),
         "Float" => Ok(Type::Float),
@@ -635,7 +735,8 @@ fn resolve_type_name(name: &str, env: &TypeEnv, span: Span) -> Result<Type, Type
         "Any" => Ok(Type::Any),
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
-                Ok(Type::TypeVar(name.to_string(), 0))
+                state.levels.insert(name.to_string(), state.level);
+                Ok(Type::TypeVar(name.to_string(), state.level))
             } else {
                 env.get_type_alias(name)
                     .cloned()
@@ -645,9 +746,9 @@ fn resolve_type_name(name: &str, env: &TypeEnv, span: Span) -> Result<Type, Type
     }
 }
 
-fn resolve_type_expr_value(expr: &Spanned<Expr>, env: &TypeEnv) -> Result<Type, TypeError> {
+fn resolve_type_expr_value(expr: &Spanned<Expr>, env: &TypeEnv, state: &mut InferState) -> Result<Type, TypeError> {
     match &expr.node {
-        Expr::Str(name) | Expr::VarRef(name) => resolve_type_name(name, env, expr.span),
+        Expr::Str(name) | Expr::VarRef(name) => resolve_type_name(name, env, expr.span, state),
         _ => Err(TypeError::new(
             format!("invalid type in annotation: {}", expr.node),
             expr.span,
@@ -655,15 +756,15 @@ fn resolve_type_expr_value(expr: &Spanned<Expr>, env: &TypeEnv) -> Result<Type, 
     }
 }
 
-fn resolve_type_expr(expr: &Spanned<Expr>, env: &TypeEnv) -> Result<Type, TypeError> {
+fn resolve_type_expr(expr: &Spanned<Expr>, env: &TypeEnv, state: &mut InferState) -> Result<Type, TypeError> {
     match &expr.node {
-        Expr::Str(name) | Expr::VarRef(name) => resolve_type_name(name, env, expr.span),
-        Expr::Dict(entries) => resolve_type_dict(entries, env, expr.span),
+        Expr::Str(name) | Expr::VarRef(name) => resolve_type_name(name, env, expr.span, state),
+        Expr::Dict(entries) => resolve_type_dict(entries, env, expr.span, state),
         Expr::Annotated { name, annotation } => {
             if name == "Fn" {
-                resolve_fn_type(&annotation.node, env, annotation.span)
+                resolve_fn_type(&annotation.node, env, annotation.span, state)
             } else {
-                resolve_annotation(&annotation.node, env, expr.span)
+                resolve_annotation(&annotation.node, env, expr.span, state)
             }
         }
         _ => Err(TypeError::new(
@@ -677,8 +778,9 @@ fn resolve_type_dict(
     entries: &[Spanned<Entry>],
     env: &TypeEnv,
     span: Span,
+    state: &mut InferState,
 ) -> Result<Type, TypeError> {
-    if let Some(fn_type) = try_resolve_fn_type_expr(entries, env, span)? {
+    if let Some(fn_type) = try_resolve_fn_type_expr(entries, env, span, state)? {
         return Ok(fn_type);
     }
 
@@ -688,7 +790,10 @@ fn resolve_type_dict(
         if let Expr::Rest(name) = &entry.node.value.node {
             rest = match name {
                 None => RowRest::Open,
-                Some(n) => RowRest::RowVar(n.clone(), 0),
+                Some(n) => {
+                    state.levels.insert(n.clone(), state.level);
+                    RowRest::RowVar(n.clone(), state.level)
+                }
             };
             continue;
         }
@@ -709,7 +814,7 @@ fn resolve_type_dict(
                 ))
             }
         };
-        let ty = resolve_type_expr(&entry.node.value, env)?;
+        let ty = resolve_type_expr(&entry.node.value, env, state)?;
         fields.insert(key, ty);
     }
     Ok(Type::Record(fields, rest))
@@ -722,6 +827,7 @@ fn try_resolve_fn_type_expr(
     entries: &[Spanned<Entry>],
     env: &TypeEnv,
     span: Span,
+    state: &mut InferState,
 ) -> Result<Option<Type>, TypeError> {
     let first = match entries.first() {
         Some(e) if e.node.key.is_none() => e,
@@ -751,7 +857,7 @@ fn try_resolve_fn_type_expr(
         ));
     }
 
-    let ret = resolve_annotation_as_type(ann_node, env, ann_span)?;
+    let ret = resolve_annotation_as_type(ann_node, env, ann_span, state)?;
 
     let param_entries = match &second.node.value.node {
         Expr::Dict(entries) => entries,
@@ -771,7 +877,7 @@ fn try_resolve_fn_type_expr(
                 entry.span,
             ));
         }
-        params.push(resolve_type_expr(&entry.node.value, env)?);
+        params.push(resolve_type_expr(&entry.node.value, env, state)?);
     }
 
     Ok(Some(Type::Function {
@@ -916,7 +1022,9 @@ mod tests {
         let ty = infer("[a: $b  b: 42]");
         match ty {
             Type::Record(fields, _) => {
-                assert_eq!(fields.get("a"), Some(&Type::Any));
+                // With let-generalization, forward references now participate in unification.
+                // $b unifies with 42, so both a and b have type IntLiteral(42).
+                assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
                 assert_eq!(fields.get("b"), Some(&Type::IntLiteral(42)));
             }
             other => panic!("expected Record, got {other}"),
@@ -1227,7 +1335,7 @@ mod tests {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 5);
         assert_eq!(
-            resolve_annotation(&Annotation::Simple("Int".into()), &env, span).unwrap(),
+            resolve_annotation(&Annotation::Simple("Int".into()), &env, span, &mut InferState::new()).unwrap(),
             Type::Int,
         );
     }
@@ -1236,8 +1344,9 @@ mod tests {
     fn test_annotation_type_var() {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 5);
+        // InferState::new() has level=0, so annotation-derived TypeVars start at level 0
         assert_eq!(
-            resolve_annotation(&Annotation::Simple("a".into()), &env, span).unwrap(),
+            resolve_annotation(&Annotation::Simple("a".into()), &env, span, &mut InferState::new()).unwrap(),
             Type::TypeVar("a".into(), 0),
         );
     }
@@ -1265,7 +1374,7 @@ mod tests {
             },
             span,
         )]);
-        assert_eq!(resolve_annotation(&ann, &env, span).unwrap(), Type::Any);
+        assert_eq!(resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(), Type::Any);
     }
 
     #[test]
@@ -1280,7 +1389,7 @@ mod tests {
             },
             span,
         )]);
-        assert_eq!(resolve_annotation(&ann, &env, span).unwrap(), Type::Any);
+        assert_eq!(resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(), Type::Any);
     }
 
     #[test]
@@ -1295,7 +1404,7 @@ mod tests {
             },
             span,
         )]);
-        let result = resolve_annotation(&ann, &env, span);
+        let result = resolve_annotation(&ann, &env, span, &mut InferState::new());
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1315,7 +1424,7 @@ mod tests {
             },
             span,
         )]);
-        assert_eq!(resolve_annotation(&ann, &env, span).unwrap(), Type::Any);
+        assert_eq!(resolve_annotation(&ann, &env, span, &mut InferState::new()).unwrap(), Type::Any);
     }
 
     #[test]
@@ -1335,7 +1444,7 @@ mod tests {
             },
             span,
         )]);
-        let result = resolve_annotation(&ann, &env, span);
+        let result = resolve_annotation(&ann, &env, span, &mut InferState::new());
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("function type"));
     }
@@ -1829,6 +1938,105 @@ mod tests {
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(1)));
             }
             other => panic!("expected closed Record, got {other}"),
+        }
+    }
+
+    // -- Let-generalization tests --
+
+    #[test]
+    fn test_let_gen_varref_instantiation() {
+        // Each reference to $id should get a fresh instantiation
+        let ty = result_field(
+            "[id: [fn [x@a] $x]]\n[result: [a: [call $id 42]  b: [call $id hello]]]",
+            "result",
+        );
+        match ty {
+            Type::Record(fields, _) => {
+                assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
+                assert_eq!(
+                    fields.get("b"),
+                    Some(&Type::StringLiteral("hello".to_string()))
+                );
+            }
+            other => panic!("expected Record, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_let_gen_forward_ref_unification() {
+        // Forward reference $b should unify with 42
+        let ty = infer("[a: $b  b: 42]");
+        match ty {
+            Type::Record(fields, _) => {
+                assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
+                assert_eq!(fields.get("b"), Some(&Type::IntLiteral(42)));
+            }
+            other => panic!("expected Record, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_let_gen_nested_dicts_level_increment() {
+        // Nested dicts should increment levels
+        let ty = result_field("[outer: [inner: 42]]\n[result: $outer]", "result");
+        match ty {
+            Type::Record(fields, _) => {
+                assert_eq!(fields.get("inner"), Some(&Type::IntLiteral(42)));
+            }
+            other => panic!("expected Record, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_let_gen_document_boundary_threading() {
+        // Type schemes should thread across document boundaries
+        // Simpler test: just check that $id is accessible across documents
+        let env = file_env("[id: 42]\n---\n[result: $id]");
+
+        // Check that $id is available in the final environment
+        assert!(env.get("id").is_some(), "id should be in scope");
+
+        // Check that result refers to id correctly
+        assert!(env.get("result").is_some(), "result should be in scope");
+    }
+
+    #[test]
+    fn test_let_gen_mutual_recursion() {
+        // Mutual recursion within a dict should work with monomorphic inference
+        let ty = infer("[a: $b  b: $a  c: 42]");
+        match ty {
+            Type::Record(fields, _) => {
+                // a and b should both be TypeVar (they reference each other)
+                // or Any (if error recovery kicks in)
+                // The key is that it doesn't crash
+                assert!(fields.contains_key("a"));
+                assert!(fields.contains_key("b"));
+                assert_eq!(fields.get("c"), Some(&Type::IntLiteral(42)));
+            }
+            other => panic!("expected Record, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_let_gen_typevar_in_bracket_access() {
+        // TypeVars should be handled gracefully in bracket access
+        assert_eq!(
+            result_field("[result: $data[$key]  data: [x: 1]  key: x]", "result"),
+            Type::Any,
+        );
+    }
+
+    #[test]
+    fn test_let_gen_typevar_in_dot_access() {
+        // TypeVars should be handled gracefully in dot access
+        let ty = infer("[result: $data.x  data: [x: 1]]");
+        match ty {
+            Type::Record(fields, _) => {
+                // result depends on data which hasn't been inferred yet,
+                // so it gets Any
+                assert_eq!(fields.get("result"), Some(&Type::Any));
+            }
+            other => panic!("expected Record, got {other}"),
         }
     }
 }

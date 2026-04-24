@@ -197,9 +197,7 @@ impl fmt::Display for TypeScheme {
 #[derive(Debug, Clone)]
 pub struct InferState {
     pub name_counter: u32,
-    #[allow(dead_code)]
     pub level: u32,
-    #[allow(dead_code)]
     pub levels: HashMap<String, u32>,
 }
 
@@ -213,7 +211,6 @@ impl InferState {
     }
 
     /// Create a fresh type variable at the current level
-    #[allow(dead_code)]
     pub fn fresh_var(&mut self) -> Type {
         let name = format!("_t{}", self.name_counter);
         self.name_counter += 1;
@@ -332,7 +329,13 @@ fn occurs_in(var_name: &str, ty: &Type) -> bool {
     }
 }
 
-pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result<(), TypeError> {
+pub fn unify(
+    a: &Type,
+    b: &Type,
+    subst: &mut Substitution,
+    state: &mut InferState,
+    span: Span,
+) -> Result<(), TypeError> {
     let a = subst.apply(a);
     let b = subst.apply(b);
 
@@ -341,8 +344,18 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
     }
 
     match (&a, &b) {
+        // Any-unification with level zeroing: prevent generalization of Any-touched vars
+        (Type::Any, Type::TypeVar(name, _)) => {
+            state.levels.insert(name.clone(), 0);
+            Ok(())
+        }
+        (Type::TypeVar(name, _), Type::Any) => {
+            state.levels.insert(name.clone(), 0);
+            Ok(())
+        }
         (Type::Any, _) | (_, Type::Any) => Ok(()),
 
+        // U-VAR-LEVEL: bind α to τ, lower levels of all β ∈ FTV(τ)
         (Type::TypeVar(name, _), _) => {
             if occurs_in(name, &b) {
                 return Err(TypeError::new(
@@ -350,15 +363,32 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
                     span,
                 ));
             }
+            // Symmetric level lowering: lower all type vars in b to min(their level, α's level)
+            let alpha_level = state.levels.get(name).copied().unwrap_or(0);
+            let mut vars_in_b = BTreeSet::new();
+            b.collect_type_vars(&mut vars_in_b);
+            for beta in vars_in_b {
+                let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
+                state.levels.insert(beta, beta_level.min(alpha_level));
+            }
             subst.map.insert(name.clone(), b);
             Ok(())
         }
+        // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ)
         (_, Type::TypeVar(name, _)) => {
             if occurs_in(name, &a) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {a}"),
                     span,
                 ));
+            }
+            // Symmetric level lowering: lower all type vars in a to min(their level, α's level)
+            let alpha_level = state.levels.get(name).copied().unwrap_or(0);
+            let mut vars_in_a = BTreeSet::new();
+            a.collect_type_vars(&mut vars_in_a);
+            for beta in vars_in_a {
+                let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
+                state.levels.insert(beta, beta_level.min(alpha_level));
             }
             subst.map.insert(name.clone(), a);
             Ok(())
@@ -414,12 +444,12 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
                 ));
             }
             for (pa, pb) in p1.iter().zip(p2.iter()) {
-                unify(pa, pb, subst, span)?;
+                unify(pa, pb, subst, state, span)?;
             }
-            unify(r1, r2, subst, span)
+            unify(r1, r2, subst, state, span)
         }
 
-        (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, span),
+        (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, state, span),
 
         (Type::Record(f1, r1), Type::Record(f2, r2)) => {
             if matches!(r1, RowRest::Closed) && matches!(r2, RowRest::Closed) {
@@ -438,7 +468,7 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution, span: Span) -> Result
             }
             for (key, ty1) in f1 {
                 if let Some(ty2) = f2.get(key) {
-                    unify(ty1, ty2, subst, span)?;
+                    unify(ty1, ty2, subst, state, span)?;
                 }
             }
             Ok(())
@@ -460,6 +490,54 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
     }
 
     (renaming.apply(ty), renaming)
+}
+
+/// Instantiate a type scheme by creating fresh type variables at the given level.
+/// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
+pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferState) -> Type {
+    if scheme.vars.is_empty() {
+        // Monomorphic scheme: return body directly
+        return scheme.body.clone();
+    }
+
+    // Create fresh type variables at the specified level for each quantified var
+    let mut renaming = Substitution::new();
+    for var in &scheme.vars {
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter += 1;
+        state.levels.insert(fresh_name.clone(), level);
+        renaming
+            .map
+            .insert(var.clone(), Type::TypeVar(fresh_name, level));
+    }
+
+    renaming.apply(&scheme.body)
+}
+
+/// Generalize a type at a binding boundary by quantifying free type variables
+/// whose level is strictly greater than the enclosing scope level.
+/// Used for let-generalization: ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ
+pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
+    let mut all_vars = BTreeSet::new();
+    ty.collect_type_vars(&mut all_vars);
+
+    // Filter: keep only vars where levels[var] > level
+    let generalizable: Vec<String> = all_vars
+        .into_iter()
+        .filter(|var| {
+            let var_level = state.levels.get(var).copied().unwrap_or(0);
+            var_level > level
+        })
+        .collect();
+
+    if generalizable.is_empty() {
+        TypeScheme::mono(ty.clone())
+    } else {
+        TypeScheme {
+            vars: generalizable,
+            body: ty.clone(),
+        }
+    }
 }
 
 impl fmt::Display for Type {
@@ -578,7 +656,6 @@ impl TypeEnv {
         self.bindings.insert(name, TypeScheme::mono(ty));
     }
 
-    #[allow(dead_code)]
     pub fn insert_scheme(&mut self, name: String, scheme: TypeScheme) {
         self.bindings.insert(name, scheme);
     }
@@ -1313,16 +1390,25 @@ mod tests {
     fn test_unify_identical_concrete() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        assert!(unify(&Type::Int, &Type::Int, &mut subst, span).is_ok());
-        assert!(unify(&Type::Str, &Type::Str, &mut subst, span).is_ok());
-        assert!(unify(&Type::Bool, &Type::Bool, &mut subst, span).is_ok());
+        let mut state = InferState::new();
+        assert!(unify(&Type::Int, &Type::Int, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Str, &Type::Str, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Bool, &Type::Bool, &mut subst, &mut state, span).is_ok());
     }
 
     #[test]
     fn test_unify_typevar_with_concrete() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        unify(&Type::TypeVar("a".into(), 0), &Type::Int, &mut subst, span).unwrap();
+        let mut state = InferState::new();
+        unify(
+            &Type::TypeVar("a".into(), 0),
+            &Type::Int,
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
         assert_eq!(subst.get("a"), Some(&Type::Int));
     }
 
@@ -1330,7 +1416,15 @@ mod tests {
     fn test_unify_concrete_with_typevar() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        unify(&Type::Int, &Type::TypeVar("a".into(), 0), &mut subst, span).unwrap();
+        let mut state = InferState::new();
+        unify(
+            &Type::Int,
+            &Type::TypeVar("a".into(), 0),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
         assert_eq!(subst.get("a"), Some(&Type::Int));
     }
 
@@ -1338,10 +1432,12 @@ mod tests {
     fn test_unify_two_typevars() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         unify(
             &Type::TypeVar("a".into(), 0),
             &Type::TypeVar("b".into(), 0),
             &mut subst,
+            &mut state,
             span,
         )
         .unwrap();
@@ -1353,16 +1449,45 @@ mod tests {
     fn test_unify_typevar_already_bound_compatible() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        unify(&Type::TypeVar("a".into(), 0), &Type::Int, &mut subst, span).unwrap();
-        unify(&Type::TypeVar("a".into(), 0), &Type::Int, &mut subst, span).unwrap();
+        let mut state = InferState::new();
+        unify(
+            &Type::TypeVar("a".into(), 0),
+            &Type::Int,
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+        unify(
+            &Type::TypeVar("a".into(), 0),
+            &Type::Int,
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_unify_typevar_already_bound_incompatible() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        unify(&Type::TypeVar("a".into(), 0), &Type::Int, &mut subst, span).unwrap();
-        let result = unify(&Type::TypeVar("a".into(), 0), &Type::Str, &mut subst, span);
+        let mut state = InferState::new();
+        unify(
+            &Type::TypeVar("a".into(), 0),
+            &Type::Int,
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+        let result = unify(
+            &Type::TypeVar("a".into(), 0),
+            &Type::Str,
+            &mut subst,
+            &mut state,
+            span,
+        );
         assert!(result.is_err());
     }
 
@@ -1370,6 +1495,7 @@ mod tests {
     fn test_unify_function_types() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let f1 = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::TypeVar("b".into(), 0)),
@@ -1378,7 +1504,7 @@ mod tests {
             params: vec![Type::Int],
             ret: Box::new(Type::Str),
         };
-        unify(&f1, &f2, &mut subst, span).unwrap();
+        unify(&f1, &f2, &mut subst, &mut state, span).unwrap();
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
         assert_eq!(subst.apply(&Type::TypeVar("b".into(), 0)), Type::Str);
     }
@@ -1387,6 +1513,7 @@ mod tests {
     fn test_unify_function_arity_mismatch() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let f1 = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Bool),
@@ -1395,7 +1522,7 @@ mod tests {
             params: vec![Type::Int, Type::Int],
             ret: Box::new(Type::Bool),
         };
-        let result = unify(&f1, &f2, &mut subst, span);
+        let result = unify(&f1, &f2, &mut subst, &mut state, span);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1407,6 +1534,7 @@ mod tests {
     fn test_unify_record_types() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let mut f1 = IndexMap::new();
         f1.insert("x".into(), Type::TypeVar("a".into(), 0));
         let mut f2 = IndexMap::new();
@@ -1415,6 +1543,7 @@ mod tests {
             &Type::Record(f1, RowRest::Closed),
             &Type::Record(f2, RowRest::Closed),
             &mut subst,
+            &mut state,
             span,
         )
         .unwrap();
@@ -1425,6 +1554,7 @@ mod tests {
     fn test_unify_closed_record_extra_fields_rejected() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let mut f1 = IndexMap::new();
         f1.insert("x".into(), Type::Int);
         let mut f2 = IndexMap::new();
@@ -1434,6 +1564,7 @@ mod tests {
             &Type::Record(f1, RowRest::Closed),
             &Type::Record(f2, RowRest::Closed),
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1447,6 +1578,7 @@ mod tests {
     fn test_unify_open_record_extra_fields_accepted() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let mut f1 = IndexMap::new();
         f1.insert("x".into(), Type::Int);
         let mut f2 = IndexMap::new();
@@ -1456,6 +1588,7 @@ mod tests {
             &Type::Record(f1, RowRest::Open),
             &Type::Record(f2, RowRest::Closed),
             &mut subst,
+            &mut state,
             span,
         )
         .is_ok());
@@ -1465,33 +1598,59 @@ mod tests {
     fn test_unify_any_with_anything() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        assert!(unify(&Type::Any, &Type::Int, &mut subst, span).is_ok());
-        assert!(unify(&Type::Str, &Type::Any, &mut subst, span).is_ok());
+        let mut state = InferState::new();
+        assert!(unify(&Type::Any, &Type::Int, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Str, &Type::Any, &mut subst, &mut state, span).is_ok());
     }
 
     #[test]
     fn test_unify_int_literal_with_int() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        assert!(unify(&Type::IntLiteral(42), &Type::Int, &mut subst, span).is_ok());
-        assert!(unify(&Type::Int, &Type::IntLiteral(99), &mut subst, span).is_ok());
+        let mut state = InferState::new();
+        assert!(unify(
+            &Type::IntLiteral(42),
+            &Type::Int,
+            &mut subst,
+            &mut state,
+            span
+        )
+        .is_ok());
+        assert!(unify(
+            &Type::Int,
+            &Type::IntLiteral(99),
+            &mut subst,
+            &mut state,
+            span
+        )
+        .is_ok());
     }
 
     #[test]
     fn test_unify_int_literal_with_number() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        assert!(unify(&Type::IntLiteral(42), &Type::Number, &mut subst, span).is_ok());
+        let mut state = InferState::new();
+        assert!(unify(
+            &Type::IntLiteral(42),
+            &Type::Number,
+            &mut subst,
+            &mut state,
+            span
+        )
+        .is_ok());
     }
 
     #[test]
     fn test_unify_string_literal_with_string() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         assert!(unify(
             &Type::StringLiteral("hi".into()),
             &Type::Str,
             &mut subst,
+            &mut state,
             span
         )
         .is_ok());
@@ -1499,6 +1658,7 @@ mod tests {
             &Type::Str,
             &Type::StringLiteral("lo".into()),
             &mut subst,
+            &mut state,
             span
         )
         .is_ok());
@@ -1508,7 +1668,14 @@ mod tests {
     fn test_unify_int_literal_different_values() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        let result = unify(&Type::IntLiteral(1), &Type::IntLiteral(2), &mut subst, span);
+        let mut state = InferState::new();
+        let result = unify(
+            &Type::IntLiteral(1),
+            &Type::IntLiteral(2),
+            &mut subst,
+            &mut state,
+            span,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("type mismatch"));
     }
@@ -1517,10 +1684,12 @@ mod tests {
     fn test_unify_int_literal_same_values() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         assert!(unify(
             &Type::IntLiteral(42),
             &Type::IntLiteral(42),
             &mut subst,
+            &mut state,
             span
         )
         .is_ok());
@@ -1530,10 +1699,12 @@ mod tests {
     fn test_unify_string_literal_different_values() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let result = unify(
             &Type::StringLiteral("hello".into()),
             &Type::StringLiteral("world".into()),
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1544,10 +1715,12 @@ mod tests {
     fn test_unify_string_literal_same_values() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         assert!(unify(
             &Type::StringLiteral("hello".into()),
             &Type::StringLiteral("hello".into()),
             &mut subst,
+            &mut state,
             span,
         )
         .is_ok());
@@ -1557,7 +1730,8 @@ mod tests {
     fn test_unify_incompatible_concrete() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        let result = unify(&Type::Int, &Type::Str, &mut subst, span);
+        let mut state = InferState::new();
+        let result = unify(&Type::Int, &Type::Str, &mut subst, &mut state, span);
         assert!(result.is_err());
     }
 
@@ -1565,7 +1739,8 @@ mod tests {
     fn test_unify_int_with_bool() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
-        assert!(unify(&Type::Int, &Type::Bool, &mut subst, span).is_err());
+        let mut state = InferState::new();
+        assert!(unify(&Type::Int, &Type::Bool, &mut subst, &mut state, span).is_err());
     }
 
     #[test]
@@ -1628,6 +1803,7 @@ mod tests {
     fn test_unify_nested_function_types() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let f1 = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::Function {
@@ -1642,7 +1818,7 @@ mod tests {
                 ret: Box::new(Type::Str),
             }),
         };
-        unify(&f1, &f2, &mut subst, span).unwrap();
+        unify(&f1, &f2, &mut subst, &mut state, span).unwrap();
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
         assert_eq!(subst.apply(&Type::TypeVar("b".into(), 0)), Type::Str);
     }
@@ -1651,6 +1827,7 @@ mod tests {
     fn test_unify_occurs_check_direct() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let result = unify(
             &Type::TypeVar("a".into(), 0),
             &Type::Function {
@@ -1658,6 +1835,7 @@ mod tests {
                 ret: Box::new(Type::Int),
             },
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1668,12 +1846,14 @@ mod tests {
     fn test_unify_occurs_check_nested() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         let result = unify(
             &Type::TypeVar("a".into(), 0),
             &Type::Record(fields, RowRest::Closed),
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1684,6 +1864,7 @@ mod tests {
     fn test_unify_occurs_check_reverse() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let result = unify(
             &Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0)],
@@ -1691,6 +1872,7 @@ mod tests {
             },
             &Type::TypeVar("a".into(), 0),
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1749,6 +1931,7 @@ mod tests {
     fn test_unify_closed_records_same_keys() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let mut f1 = IndexMap::new();
         f1.insert("a".into(), Type::Int);
         f1.insert("b".into(), Type::Str);
@@ -1759,6 +1942,7 @@ mod tests {
             &Type::Record(f1, RowRest::Closed),
             &Type::Record(f2, RowRest::Closed),
             &mut subst,
+            &mut state,
             span,
         )
         .is_ok());
@@ -1768,6 +1952,7 @@ mod tests {
     fn test_unify_closed_records_different_keys() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let mut f1 = IndexMap::new();
         f1.insert("a".into(), Type::Int);
         let mut f2 = IndexMap::new();
@@ -1776,6 +1961,7 @@ mod tests {
             &Type::Record(f1, RowRest::Closed),
             &Type::Record(f2, RowRest::Closed),
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1853,10 +2039,12 @@ mod tests {
     fn test_unify_seq_types() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         unify(
             &Type::Seq(Box::new(Type::TypeVar("a".into(), 0))),
             &Type::Seq(Box::new(Type::Int)),
             &mut subst,
+            &mut state,
             span,
         )
         .unwrap();
@@ -1867,10 +2055,12 @@ mod tests {
     fn test_unify_seq_mismatch() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let result = unify(
             &Type::Seq(Box::new(Type::Int)),
             &Type::Seq(Box::new(Type::Str)),
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1880,10 +2070,12 @@ mod tests {
     fn test_unify_seq_vs_non_seq() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let result = unify(
             &Type::Seq(Box::new(Type::Int)),
             &Type::Int,
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1893,10 +2085,12 @@ mod tests {
     fn test_occurs_check_seq() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
+        let mut state = InferState::new();
         let result = unify(
             &Type::TypeVar("a".into(), 0),
             &Type::Seq(Box::new(Type::TypeVar("a".into(), 0))),
             &mut subst,
+            &mut state,
             span,
         );
         assert!(result.is_err());
@@ -1920,18 +2114,12 @@ mod tests {
     #[test]
     fn test_typevar_eq_ignores_level() {
         // [U-REFL]: same name = equal regardless of level
-        assert_eq!(
-            Type::TypeVar("a".into(), 0),
-            Type::TypeVar("a".into(), 5)
-        );
+        assert_eq!(Type::TypeVar("a".into(), 0), Type::TypeVar("a".into(), 5));
     }
 
     #[test]
     fn test_typevar_neq_different_name() {
-        assert_ne!(
-            Type::TypeVar("a".into(), 0),
-            Type::TypeVar("b".into(), 0)
-        );
+        assert_ne!(Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0));
     }
 
     #[test]
@@ -2144,5 +2332,234 @@ mod tests {
 
         // Child shadows parent: child scheme should be returned
         assert_eq!(child.get("x"), Some(&child_scheme));
+    }
+
+    // --- instantiate_scheme ---
+
+    #[test]
+    fn test_instantiate_scheme_monomorphic() {
+        let scheme = TypeScheme::mono(Type::Int);
+        let mut state = InferState::new();
+        state.level = 2;
+        let result = instantiate_scheme(&scheme, 2, &mut state);
+        assert_eq!(result, Type::Int);
+        assert_eq!(state.name_counter, 0); // No fresh vars created
+    }
+
+    #[test]
+    fn test_instantiate_scheme_polymorphic() {
+        let scheme = TypeScheme {
+            vars: vec!["a".into(), "b".into()],
+            body: Type::Function {
+                params: vec![Type::TypeVar("a".into(), 0)],
+                ret: Box::new(Type::TypeVar("b".into(), 0)),
+            },
+        };
+        let mut state = InferState::new();
+        state.level = 3;
+        let result = instantiate_scheme(&scheme, 3, &mut state);
+
+        // Should get fresh variables at level 3
+        match &result {
+            Type::Function { params, ret } => {
+                match &params[0] {
+                    Type::TypeVar(name, level) => {
+                        assert_eq!(*level, 3);
+                        assert!(name.starts_with("_t"));
+                        assert_eq!(state.levels.get(name.as_str()), Some(&3));
+                    }
+                    _ => panic!("expected TypeVar in params"),
+                }
+                match &**ret {
+                    Type::TypeVar(name, level) => {
+                        assert_eq!(*level, 3);
+                        assert!(name.starts_with("_t"));
+                        assert_eq!(state.levels.get(name.as_str()), Some(&3));
+                    }
+                    _ => panic!("expected TypeVar in return"),
+                }
+            }
+            _ => panic!("expected Function"),
+        }
+        assert_eq!(state.name_counter, 2); // Two fresh vars created
+    }
+
+    #[test]
+    fn test_instantiate_scheme_creates_independent_instances() {
+        let scheme = TypeScheme {
+            vars: vec!["a".into()],
+            body: Type::TypeVar("a".into(), 0),
+        };
+        let mut state = InferState::new();
+
+        let inst1 = instantiate_scheme(&scheme, 1, &mut state);
+        let inst2 = instantiate_scheme(&scheme, 1, &mut state);
+
+        // Should be different fresh variables
+        assert_ne!(inst1, inst2);
+    }
+
+    // --- generalize ---
+
+    #[test]
+    fn test_generalize_no_vars() {
+        let state = InferState::new();
+        let ty = Type::Int;
+        let scheme = generalize(0, &ty, &state);
+        assert!(scheme.vars.is_empty());
+        assert_eq!(scheme.body, Type::Int);
+    }
+
+    #[test]
+    fn test_generalize_var_at_higher_level() {
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 2);
+        let ty = Type::TypeVar("a".into(), 2);
+        let scheme = generalize(1, &ty, &state);
+        assert_eq!(scheme.vars, vec!["a"]);
+        assert_eq!(scheme.body, ty);
+    }
+
+    #[test]
+    fn test_generalize_var_at_same_level() {
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 1);
+        let ty = Type::TypeVar("a".into(), 1);
+        let scheme = generalize(1, &ty, &state);
+        // Level 1 is NOT > 1, so should not generalize
+        assert!(scheme.vars.is_empty());
+    }
+
+    #[test]
+    fn test_generalize_var_at_lower_level() {
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 0);
+        let ty = Type::TypeVar("a".into(), 0);
+        let scheme = generalize(1, &ty, &state);
+        // Level 0 is NOT > 1, so should not generalize
+        assert!(scheme.vars.is_empty());
+    }
+
+    #[test]
+    fn test_generalize_multiple_vars_mixed_levels() {
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 2);
+        state.levels.insert("b".into(), 1);
+        state.levels.insert("c".into(), 3);
+        let ty = Type::Function {
+            params: vec![Type::TypeVar("a".into(), 2), Type::TypeVar("b".into(), 1)],
+            ret: Box::new(Type::TypeVar("c".into(), 3)),
+        };
+        let scheme = generalize(1, &ty, &state);
+        // Only a (level 2 > 1) and c (level 3 > 1) should be generalized
+        // b is at level 1, not > 1
+        assert_eq!(scheme.vars.len(), 2);
+        assert!(scheme.vars.contains(&"a".into()));
+        assert!(scheme.vars.contains(&"c".into()));
+        assert!(!scheme.vars.contains(&"b".into()));
+    }
+
+    #[test]
+    fn test_generalize_row_vars() {
+        let mut state = InferState::new();
+        state.levels.insert("r".into(), 2);
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::Int);
+        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 2));
+        let scheme = generalize(1, &ty, &state);
+        assert_eq!(scheme.vars, vec!["r"]);
+    }
+
+    // --- level lowering in unify ---
+
+    #[test]
+    fn test_unify_level_lowering_symmetric() {
+        let span = test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 1);
+        state.levels.insert("b".into(), 3);
+
+        let mut subst = Substitution::new();
+        // Unify a (level 1) with b (level 3)
+        unify(
+            &Type::TypeVar("a".into(), 1),
+            &Type::TypeVar("b".into(), 3),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // b should be lowered to min(3, 1) = 1
+        assert_eq!(state.levels.get("b"), Some(&1));
+    }
+
+    #[test]
+    fn test_unify_level_lowering_in_complex_type() {
+        let span = test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 1);
+        state.levels.insert("b".into(), 3);
+        state.levels.insert("c".into(), 4);
+
+        let mut subst = Substitution::new();
+        let complex = Type::Function {
+            params: vec![Type::TypeVar("b".into(), 3)],
+            ret: Box::new(Type::TypeVar("c".into(), 4)),
+        };
+
+        // Unify a (level 1) with complex type containing b (3) and c (4)
+        unify(
+            &Type::TypeVar("a".into(), 1),
+            &complex,
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // Both b and c should be lowered to 1
+        assert_eq!(state.levels.get("b"), Some(&1));
+        assert_eq!(state.levels.get("c"), Some(&1));
+    }
+
+    #[test]
+    fn test_unify_any_with_typevar_zeros_level() {
+        let span = test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 3);
+
+        let mut subst = Substitution::new();
+        unify(
+            &Type::Any,
+            &Type::TypeVar("a".into(), 3),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // Level should be set to 0 to prevent generalization
+        assert_eq!(state.levels.get("a"), Some(&0));
+    }
+
+    #[test]
+    fn test_unify_typevar_with_any_zeros_level() {
+        let span = test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 2);
+
+        let mut subst = Substitution::new();
+        unify(
+            &Type::TypeVar("a".into(), 2),
+            &Type::Any,
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // Level should be set to 0 to prevent generalization
+        assert_eq!(state.levels.get("a"), Some(&0));
     }
 }
