@@ -18,19 +18,25 @@ Data structure changes and signature migration. All interdependent — must land
 - [x] Replace `counter: &Cell<u32>` parameter with `state: &mut InferState` in `infer_expr`/`infer_dict`/`infer_fn` (`src/typecheck.rs`)
 - [x] Update all `TypeVar("a".into())` in tests to `TypeVar("a".into(), 0)` (`src/types.rs`, `src/typecheck.rs`)
 
-### let-gen-inference: Inference Rules and Generalization
+### let-gen-inference: Core Inference Rules and Generalization
 
-Inference logic that uses the new data structures from let-gen-types.
+Core algorithm implementation using let-gen-types data structures. All 7 items are interdependent — must land together.
 
-- [ ] Implement `instantiate_scheme(scheme, state) -> Type` — freshen all vars at current level (`src/types.rs`)
-- [ ] Implement `generalize(level, ty) -> TypeScheme` — collect vars with level > given, abstract them (`src/types.rs`)
-- [ ] Update VAR rule: `instantiate_scheme(env.get(name)?, state)` (`src/typecheck.rs`)
-- [ ] Update `infer_dict` to 5 passes: key resolution, bind-all (fresh α at `level+1`), type aliases, infer values (at `level+1`), generalize (`src/typecheck.rs`)
-- [ ] Implement symmetric level lowering in unify U-VAR rules (`src/types.rs`)
-- [ ] Implement Any-unification level zeroing: `unify(α, Any)` sets `level(α) = 0` (`src/types.rs`)
-- [ ] Update `typecheck_document` to thread `TypeScheme`s across `---` boundaries (`src/typecheck.rs`)
+- [x] Implement `instantiate_scheme(scheme, state) -> Type` — freshen all vars at current level (`src/types.rs`)
+- [x] Implement `generalize(level, ty) -> TypeScheme` — collect vars with level > given, abstract them (`src/types.rs`)
+- [x] Update VAR rule: `instantiate_scheme(env.get(name)?, state)` (`src/typecheck.rs`)
+- [x] Update `infer_dict` to 5 passes: key resolution, bind-all (fresh α at `level+1`), type aliases, infer values (at `level+1`), generalize (`src/typecheck.rs`)
+- [x] Implement symmetric level lowering in unify U-VAR rules (`src/types.rs`)
+- [x] Implement Any-unification level zeroing: `unify(α, Any)` sets `level(α) = 0` (`src/types.rs`)
+- [x] Update `typecheck_document` to thread `TypeScheme`s across `---` boundaries (`src/typecheck.rs`)
+
+### let-gen-verify: Verification and Testing
+
+**Depends on:** `let-gen-inference` (algorithm must land first)
+
 - [ ] Fix letrec forward-reference typing to Any — resolved by 5-pass bind-all approach (`src/typecheck.rs:225`) [Minor, computer-scientist]
 - [ ] Add tests: polymorphic identity generalizes, nested dicts increment levels, Any-touched vars not generalized
+- [ ] Enable `#[ignore]` unit tests for let-gen-inference algorithms — added as pre-written test contracts in test-critical; remove `#[ignore]` and verify all pass after let-gen-inference sprint (`src/types.rs`)
 
 ## bidirectional-typing: Bidirectional Type Checking
 
@@ -111,6 +117,7 @@ Resource safety gaps in sequence combinators. Found by computer-scientist codeba
 - [x] Fix `builtin_iterate` passing `depth: 0` to PendingBuiltin tail — `BuiltinArgs` destructuring uses `..` to ignore `depth`, then hardcodes `0` for the recursive tail thunk. Resets depth counter on every step, so depth backstop never fires for `iterate` chains. Compare `builtin_unfold_step` which correctly passes caller's `depth`. One-line fix. (`src/builtins.rs:1555-1592`) [Major, computer-scientist]
 - [x] Increment depth in sequence combinator PendingBuiltin chains — `range`, `unfold_step`, `drop_seq_step`, `reduce_seq_step` all create recursive PendingBuiltin chains storing the same `depth` value (never incrementing). A `$filter` examining millions of elements before finding a match will not be caught by `MAX_EVAL_DEPTH`. PendingBuiltin chains are defunctionalized continuations (Reynolds 1972); in a CEK machine each continuation push would consume one unit of fuel. Either increment depth per step, add separate `steps` counter, or document that sequence combinators rely on `$take`/`MAX_COLLECT_SIZE` instead of depth limits. (`src/builtins.rs:1363-1370, 1644-1651, 2238-2260, 2351-2383`) [Major, computer-scientist]
 - [x] Migrate `concat` Seq path from stdlib to Rust builtin (correctness, not just perf) — `stdlib/prelude.llt:303-308` implements `concat` for Seq via recursive user function call (`[call $seq [call $head $xs] [call $concat [call $tail $xs] $ys]]`); each step of left sequence consumes one `MAX_EVAL_DEPTH` level, so sequences > ~256 elements error. Without TCO (Clinger 1998), recursive cons-list operations consume stack proportional to list length. Implement as Rust builtin using PendingBuiltin chain (matching `map`/`filter` pattern). (`stdlib/prelude.llt:303-308`) [Major, computer-scientist]
+- [ ] Fix `builtin_filter_seq_step` depth accumulation on consecutive predicate failures — when an element fails the predicate, the skip path creates a new PendingBuiltin at `depth + 1`; when forced (FORCE-BUILTIN, `depth + 1` again), N consecutive failures consume ~2N depth. Sequence with >128 consecutive failures hits `MAX_EVAL_DEPTH=256` producing DepthExceeded where the user has no mental model. Fix: convert the skip branch to an internal loop like `builtin_collect` does at lines 1218–1253. (`src/builtins.rs:2055-2067`) [Major, eval-engine C39]
 - [ ] Add type validation to concat empty-xs path — `builtin_concat` returns `ys_thunk` directly when xs is empty Dict without checking ys type; `concat([], 42)` succeeds incorrectly. Add materialize+match guard. (`src/builtins.rs`) [Minor, computer-scientist + eval-engine panel]
 - [ ] Add `checked_add` to concat Dict path index arithmetic — `idx += 1` is unchecked, inconsistent with `builtin_collect` and `builtin_append` which use `checked_add`. Overflow unreachable in practice but violates codebase convention. (`src/builtins.rs`) [Nit, eval-engine + performance-expert panel]
 - [ ] Fix `$take` PendingBuiltin depth to use `depth + 1` — take doesn't increment depth in its chain, creating a depth-reset interposition layer. `$take 500 [call $range 0]` fails at ~257 elements because range's depth accumulates but take's doesn't. Practical sequence length limit of N < MAX_EVAL_DEPTH for composed pipelines is undocumented. Self-terminating (bounded by n) so depth tracking is redundant for take itself but constrains composed pipelines. (`src/builtins.rs:2166`) [Minor, computer-scientist panel]
@@ -228,6 +235,8 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Use static empty dict thunk for default `$$` — eliminates allocation on every file eval without stdin (`src/eval.rs:287-291`) [Nit, performance-expert]
 - [ ] Builtin strictness annotations — classify each builtin's argument strictness (strict/lazy per position); arithmetic, comparison, and string builtins are strict in all args, `$if` strict in condition only, `$seq` lazy in both. Strict args can skip thunk allocation in eval_call. Level 1 optimization per Mycroft (1981). (`src/eval.rs:414-438`, `src/builtins.rs`) [Major, computer-scientist]
 - [x] Research Rc cycle leak mitigation strategy — resolved by arena allocation design in DESIGN.md §Allocation Strategy. Section-scoped arenas eliminate Rc cycles within evaluation; selective migration at `---` boundaries handles cross-section values. No separate proposal needed.
+- [ ] Fix `materialize()` PendingCall branch pre-cloning 4 values before function resolution — `func_thunk`, `args`, `named`, and `thunk_ctx` are unconditionally pre-cloned at lines 1031-1034 to support state restoration on non-cacheable errors. On the hot path (successful call), all 4 clones are wasted (~8 atomic increments + 1 IndexMap::clone per call). Defer clones inside the `!e.kind.is_cacheable()` branches only. (`src/eval.rs:1031-1034`) [Major, performance-expert C39]
+- [ ] Fix `builtin_filter` Dict path building redundant secondary key index — constructs both a `Vec<Key>` (line 1778) and a secondary `IndexMap<Key, Thunk>` mapping integer positions to key values (lines 1787-1797). A direct `IndexMap::get_index()` iteration in `builtin_filter_dict_step` would eliminate the secondary structure entirely, halving filter entry allocation overhead. (`src/builtins.rs:1778-1812`) [Minor, performance-expert C39]
 - [ ] Fix `EvalContext::with_base_dir()` allocating fresh `Rc<EvalConfig>` on every `$include` — creates new EvalConfig wrapper even though only base_dir changes; store `base_dir` as `Rc<PathBuf>` or check if base_dir differs before allocating. Hot path for include-heavy configurations. (`src/eval.rs:66-74`) [Critical, performance-expert]
 - [ ] Fix `builtin_map` Dict path allocating `format!()` string per entry — `Cow::Owned(format!("map {}", key))` creates string allocation + format call for every mapped element. Change to `Cow::Borrowed("map")` static label. (`src/builtins.rs:1710`) [Critical, performance-expert]
 - [ ] Fix `func_path` allocating recursively-built String on every DotAccess call — builds label like `$foo.bar.baz` via string concatenation on every function call, even successful ones. Defer label construction to error path only. (`src/eval.rs:456-462`) [Major, performance-expert]
@@ -332,6 +341,9 @@ Future type system work identified by type-theorist review (2026-04-19). Updated
 - [ ] Fix variadic param type from `Record([], Closed)` to `Any` — no annotation to resolve, just correct the type (`src/typecheck.rs:469-473`) [Minor, type-theorist]
 - [ ] Clarify `resolve_annotated` interpreting all Fn annotations as function types (`src/typecheck.rs:522-533`) [Minor, type-theorist]
 - [ ] Populate type map on errors — record `Type::Any` for failed subexpressions to improve LSP hover (`src/typecheck.rs:200-206`) [Minor, type-theorist]
+- [ ] Fix `TypeScheme::vars` conflating type variable and row variable names — single `Vec<String>` quantifies both; Rémy-style kinded schemes need `type_vars: Vec<String>` + `row_vars: Vec<String>` so `instantiate_scheme()` routes substitutions correctly (type-map vs row-map). Becomes load-bearing when let-gen-inference + row-unification overlap. (`src/types.rs:171-174`) [Minor, type-theorist C39]
+- [ ] Fix `collect_type_vars()` conflating type and row variable names — collects `RowVar` names into the same `BTreeSet<String>` as `TypeVar` names; `instantiate()` then routes all through the type substitution, freshening row variables as TypeVars. Add separate `collect_row_vars()` (Pierce & Turner 2000) or use two-map substitution. (`src/types.rs:129-151`) [Minor, type-theorist C39]
+- [ ] Fix `check_bracket_access` rejecting `Type::Number` as key type — only `Type::Str | Type::Int | Type::Any` accepted; `Number` is supertype of `Int` and should produce `Any` return like `Int` does. (`src/typecheck.rs:347-348`) [Fix-later, type-theorist C39]
 - [ ] Consider `HashSet` instead of `BTreeSet` in `collect_type_vars` — order doesn't matter (`src/types.rs:85-106`) [Nit, type-theorist]
 - [ ] Remove unused `Substitution` from `instantiate` return type — or document why returned (`src/types.rs:318-330`) [Nit, type-theorist]
 - [ ] Document `Type::is_subtype` not short-circuiting on `Any` in nested positions (`src/types.rs:42-83`) [Nit, type-theorist]
@@ -498,6 +510,9 @@ Nit-level error infrastructure cleanup.
 - [ ] Fix `from_json` inconsistent `.into()` usage — some error paths use `.into()` for boxing while adjacent paths use explicit `Box::new()`; standardize for consistency (`src/builtins.rs:984`) [Nit, computer-scientist]
 - [ ] Review PendingBuiltin error path span handling — may overwrite operand span (`src/eval.rs:886`) [Nit, span-integrity-checker]
 - [ ] Fix `checked_f64_to_i64` out-of-range branch still using `EvalError::new` — FloatNotFinite migration covered NaN/Inf but the integer range overflow path at line 110 still uses freeform `EvalError::new(format!(...))` instead of a typed ErrorKind variant (`src/builtins.rs:110`) [Nit, span-integrity-checker C31]
+- [ ] Fix `builtin_filter_seq_step` predicate mismatch error using `EvalError::new` → E099 — should use `EvalError::type_mismatch_ctx("filter", "Bool", got_type, call_span)` to produce E010 and match the TypeMismatch structured pattern; `call_span` is available. (`src/builtins.rs:2028`) [Minor, span-integrity-checker C39]
+- [ ] Fix `value_to_json` float NaN/Infinity using `EvalError::new` → E099 instead of `EvalError::float_not_finite()` — wrong error code for user-facing float serialization failure; replace with `EvalError::float_not_finite("to-json", *f, ast::Span::origin())`. (`src/lib.rs:127-132`) [Minor, eval-engine C39]
+- [ ] Fix `builtin_include` wrapping result with `Span::origin()` — `ok_val(val)` at line 1094 creates `Thunk::new_materialized(val, Span::origin())`, discarding the included file's root expression span; errors arising from re-accessing included values show "(defined at 0:0-0:0)". Propagate span from the materialized thunk instead. (`src/builtins.rs:1094`) [Minor, eval-engine + span-integrity-checker C39]
 
 ## stdlib-docs: Stdlib Documentation
 
@@ -519,6 +534,14 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 - [ ] Add doc comment to `Value::Seq` match arm in `value_to_json` explaining why Seq→JSON is an error and requires `$collect` first (`src/lib.rs:161-166`) [Minor, integration-verifier]
 - [ ] Update DESIGN.md concat classification to note dual-dispatch: Seq path is lazy O(1), Dict path is eager O(m) (`DESIGN.md:1257`) [Minor, grammar-architect]
 - [ ] Add comment to Seq cycle detection in `deep_materialize` explaining raw pointer identity pattern (`src/eval.rs:1093-1100`) [Nit, integration-verifier]
+- [ ] Fix `src/eval.rs:315` doc comments referencing deleted `set_include_context`/`clear_include_context` APIs — `eval_file()` and `eval_file_with_input()` doc comments still instruct callers to call these functions, which were deleted in the EvalContext migration. Replace with: "EvalContext carries include state (guard, cache, base_dir). Construct via `EvalContext::new()` before calling." (`src/eval.rs:315,332`) [Major, integration-verifier C39]
+- [ ] Add Desugar stage to `doc/16-architecture.md` pipeline diagram — diagram shows Parser → Type Check → Evaluator; the Desugar stage (`src/desugar.rs`) runs between Parser and Type Check (confirmed at `lib.rs:78-79`, `main.rs:114`) but is absent. The type checker sees post-desugared AST and `$_` VarRef becomes Fn before type checking. (`doc/16-architecture.md:5`) [Minor, integration-verifier C39]
+- [ ] Fix `doc/08-evaluation.md` Sequence operations table using internal names — line 109 lists `concat-seq` (should be `$concat`, the public Rust builtin); line 110 lists `zip-seq` (should be `$zip`, the public function; `zip-seq` is an internal LLT helper). (`doc/08-evaluation.md:109-110`) [Major, stdlib-author C39]
+- [ ] Fix `doc/11-stdlib.md:313` concat description claiming "reindexing" — says "Concatenate two lists, reindexing the second" but the Rust builtin neither reindexes nor requires lists; Seq path lazily chains, Dict path appends elements without reindexing. (`doc/11-stdlib.md:313`) [Minor, stdlib-author C39]
+- [ ] Fix `doc/08-evaluation.md:767` $merge laziness table entry describing planned behavior — reads "Lazy overlay: right shadows left, O(1) construction" but current `$merge` is eager. Add "(planned: merge-lazy-overlay sprint)". (`doc/08-evaluation.md:767`) [Minor, laziness-auditor C39]
+- [ ] Fix `doc/10-errors.md` implementation correspondence table stale line numbers — DECORATE cited at eval.rs:815-843 (actual: 820-848); PROP-DEPTH cited at eval.rs:869-875 (actual: 883-889). Replace numeric ranges with function name references to be stable across insertions. (`doc/10-errors.md:330-346`) [Minor, span-integrity-checker C39]
+- [ ] Fix `doc/06-type-inference.md` Limitations §1 reading as current state — says "Literal promotion handled by bidirectional checking (not unification)" implying promotions are removed from `unify()`, but they are still present in `src/types.rs:368-394`. Mark §1 as "planned state after bidirectional-typing sprint". (`doc/06-type-inference.md:541-543`) [Minor, type-theorist C39]
+- [ ] Fix `doc/06-type-inference.md` spec table claiming `collect_type_vars()` returns `BTreeSet<(String, u32)>` — actual signature is `fn collect_type_vars(&self, vars: &mut BTreeSet<String>)` (names only, not name+level pairs). Update line 531 to match impl; note levels come from `InferState.levels` not the embedded u32. (`doc/06-type-inference.md:531`) [Minor, computer-scientist C39]
 - [ ] Add 4 missing papers to DESIGN.md §Formal References — Findler & Felleisen (2002) contracts, Reynolds (1972) defunctionalization, Sestoft (1997) lazy abstract machine, Remy (1989) original row types; all cited inline in DESIGN.md but missing from the references section [Minor, computer-scientist]
 - [ ] Update DESIGN.md ThunkState sketch to include `Failed(Box<EvalError>)` and `PendingCall` variants (`DESIGN.md:1988-1994`) [Nit, eval-engine]
 - [ ] Delete stale concat comment block in stdlib/prelude.llt — function definition correctly removed (migrated to Rust builtin) but 3-line comment block remains as confusing dead documentation (`stdlib/prelude.llt:301-303`) [Major, stdlib-author]
@@ -536,6 +559,9 @@ Improvements to test infrastructure identified by cross-language analysis and te
 
 ### test-critical: Critical Test Coverage
 
+- [ ] Pre-write `#[ignore]` unit tests for let-gen-inference algorithms — add disabled tests now against specified signatures: `test_generalize_collects_vars_above_level()`, `test_instantiate_scheme_freshens_vars()`, `test_infer_dict_uses_fresh_vars_not_any()`, `test_unify_lowers_levels_symmetrically()`, `test_unify_any_var_sets_level_zero()`. Gate with `#[ignore] // TODO: enable when let-gen-inference lands`. Cost: nothing. Value: spec-driven TDD anchor that makes the sprint self-validating. (`src/types.rs` near line 2148) [Critical, test-crafter C39]
+- [ ] Add `tests/corpus/invalid/semantic_errors/` test content and corpus runner — directory exists but has zero files and no runner in `tests/corpus_tests.rs`. Add type mismatch, undefined variable, undefined type alias, and arity mismatch corpus tests; add `test_semantic_error_corpus()` runner calling `typecheck_file()` and validating error messages. (`tests/corpus/invalid/semantic_errors/`, `tests/corpus_tests.rs`) [Major, test-crafter C39]
+- [ ] Add `TypeVar`/`RowVar` PartialEq level-blindness test in unification context — tests added in let-gen-types sprint verify level-ignored equality in isolation but not whether the `[U-REFL]` fast path `if a == b { return Ok(()) }` is safe when same-name vars exist at different levels in a substitution; add test verifying this does not cause incorrect generalization. (`src/types.rs:339`) [Major, test-crafter C39]
 - [ ] PendingBuiltin state transition unit tests — verify Unevaluated→PendingBuiltin→Materialized lifecycle, error recovery, cycle detection in isolation (`src/value.rs`, `src/eval.rs`) [Critical, test-crafter]
 - [ ] Add error corpus tests with span assertions — current tests check message content only, not definition_span, materialization_span, or stack frame accuracy (`tests/corpus/eval/errors/`) [Critical, test-crafter + span-integrity-checker]
 - [ ] Add selective materialization unit tests — use mock/panic functions to prove unused branches stay unevaluated (`src/eval.rs`) [Critical, test-crafter]
@@ -705,6 +731,21 @@ Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-1
 - [ ] **DESIGN.md Structured Error Model Part 9 `is_cacheable()` listed as "integration deferred"** — Part 9 says `"defined, integration deferred to error-structured-migrate"` but is_cacheable() was fully integrated in error-structured-migrate-c. Part 8 (Error Semantics) correctly shows MEMO-SKIP with line references. Part 9 contradicts Part 8. Change to `"integrated in eval.rs materialize()"`. (`DESIGN.md:5178`) [Major, computer-scientist C33]
 - [ ] **DESIGN.md Structured Error Model Part 9 PROP-DEPTH listed as "integration deferred"** — Part 9 says `"is_cacheable() integration deferred"` but is fully integrated. Change to match Part 8. (`DESIGN.md:5184`) [Major, computer-scientist C33]
 - [ ] **DESIGN.md Structured Error Model Part 9 EvalError line reference stale** — says `"error.rs:20-25"` but EvalError is now at `error.rs:408-413`. Part 8 correctly references 408-413. (`DESIGN.md:5180`) [Major, computer-scientist C33]
+
+### doc-ast-fixes: doc/15-ast.md Accuracy Fixes
+
+Found by grammar-architect codebase review (2026-04-23, Cycle #39).
+
+- [ ] Fix `doc/15-ast.md` `Fn` node missing `desugared: bool` field — doc shows 3 fields; actual `src/ast.rs` has 4 including `desugared: bool` (origin tag from Pombrio & Krishnamurthi 2014). Every downstream pass that pattern-matches `Expr::Fn` is affected by this omission. (`doc/15-ast.md:77-81`) [Critical, grammar-architect C39]
+- [ ] Fix `doc/15-ast.md` `TypeAssert` fictional `resolved_type: Option<Type>` field — field does not exist in `src/ast.rs`; it is a planned addition from the `typeassert-structural` sprint, not a current field. Remove or mark as `// planned: typeassert-structural sprint`. (`doc/15-ast.md:85-89`) [Major, grammar-architect C39]
+- [ ] Fix `doc/15-ast.md` nesting depth section describing non-existent iterative parser — reads "The iterative parser enforces `MAX_PARSE_DEPTH` at the stack frame level, avoiding native stack overflow" but the current parser is still pest-based; `src/parser.rs:14` says the opposite. Revert to accurate pest description. (`doc/15-ast.md:204-206`) [Major, grammar-architect C39]
+
+### doc-treesitter-fixes: Tree-sitter Grammar Accuracy Fixes
+
+Found by grammar-architect codebase review (2026-04-23, Cycle #39).
+
+- [ ] Fix `tree-sitter-llt/grammar.js` `fn_annotation` to use `token.immediate("@")` — currently uses bare `"@"` (whitespace allowed by `extras`), so `fn @Number [x] body` (space before `@`) is accepted by tree-sitter but rejected by pest. Both `param_annotation` and `annotated_bare` correctly use `token.immediate("@")`. (`tree-sitter-llt/grammar.js:145-149`) [Major, grammar-architect C39]
+- [ ] Document tree-sitter bare word starter `-` exclusion — `bare_word_start` regex excludes `-` but pest's `bare_word_start` allows it, making `-foo` a valid pest bare word but a tree-sitter failure. Add comment alongside the existing `.` exclusion note. (`tree-sitter-llt/grammar.js:7-9`) [Minor, grammar-architect C39]
 
 ### DESIGN.md documentation gaps (eval-engine review)
 
