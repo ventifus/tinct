@@ -336,8 +336,13 @@ Seq(τ) <: Seq(σ)  if τ <: σ                      [S-SEQ]
 
 Record(F₁,ρ₁) <: Record(F₂,ρ₂) if:
     ∀(k:σ) ∈ F₂, ∃(k:τ) ∈ F₁ with τ <: σ       (width+depth)
-    If ρ₂ = Closed: keys(F₁) ⊆ keys(F₂)
-        (combined with width condition, enforces exact key equality)
+    If ρ₂ = Closed:
+        If ρ₁ = Closed: keys(F₁) ⊆ keys(F₂)
+            (with width condition above this enforces keys(F₁) = keys(F₂))
+        If ρ₁ = Open | RowVar: keys(F₁) ⊆ keys(F₂) ∧ keys(F₂) ⊆ keys(F₁)
+            (bidirectional — ρ₁ may carry unknown extra fields; a Closed sup
+             cannot accept them, so we conservatively require known field sets
+             to be exactly equal. If the known sets differ, the check fails.)
     If ρ₂ = Open | RowVar: always ok              [S-REC]
 
 Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:

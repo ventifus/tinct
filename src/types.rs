@@ -91,7 +91,7 @@ impl Type {
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
-            (Type::Record(sub_fields, _sub_rest), Type::Record(sup_fields, sup_rest)) => {
+            (Type::Record(sub_fields, sub_rest), Type::Record(sup_fields, sup_rest)) => {
                 let fields_ok = sup_fields.iter().all(|(k, sup_ty)| {
                     sub_fields
                         .get(k)
@@ -100,8 +100,31 @@ impl Type {
                 if !fields_ok {
                     return false;
                 }
+                // Task 2 fix: check sub_rest when sup_rest is Closed
                 match sup_rest {
-                    RowRest::Closed => sub_fields.keys().all(|k| sup_fields.contains_key(k)),
+                    RowRest::Closed => {
+                        // If sup is Closed, sub cannot have unknown extra fields via RowVar
+                        // (we can't prove subtyping when sub may have additional fields we don't know about)
+                        match sub_rest {
+                            RowRest::Closed => {
+                                sub_fields.keys().all(|k| sup_fields.contains_key(k))
+                            }
+                            RowRest::Open => {
+                                // An Open sub-record may have unknown additional fields, so a Closed
+                                // supertype cannot accept it unless the known field sets are exactly equal.
+                                // This matches the conservative treatment of RowVar (bidirectional check).
+                                sub_fields.keys().all(|k| sup_fields.contains_key(k))
+                                    && sup_fields.keys().all(|k| sub_fields.contains_key(k))
+                            }
+                            RowRest::RowVar(_, _) => {
+                                // Conservative: if sub has RowVar and sup is Closed, we can't prove subtyping
+                                // unless sub's known fields are exactly sup's fields
+                                sub_fields.keys().all(|k| sup_fields.contains_key(k))
+                                    && sup_fields.keys().all(|k| sub_fields.contains_key(k))
+                            }
+                        }
+                    }
+                    // TODO(row-unification): RowVar should participate in subtyping via row variable binding, not be treated as Open.
                     RowRest::Open | RowRest::RowVar(_, _) => true,
                 }
             }
@@ -307,7 +330,16 @@ impl Substitution {
                             match resolved {
                                 Type::Record(extra_fields, resolved_rest) => {
                                     let mut merged = new_fields;
-                                    merged.extend(extra_fields);
+                                    // Task 1 fix: check for duplicate keys before merging
+                                    for (key, value) in extra_fields {
+                                        if merged.contains_key(&key) {
+                                            // Prefer the original record's fields (explicit fields take precedence)
+                                            // This is correct because the original fields were explicit in the source,
+                                            // while extra_fields come from row variable binding.
+                                            continue;
+                                        }
+                                        merged.insert(key, value);
+                                    }
                                     Type::Record(merged, resolved_rest)
                                 }
                                 Type::TypeVar(new_name, new_level) => {
@@ -578,6 +610,11 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     }
 
     // Create fresh row variables (as Record with RowVar rest)
+    // Task 4: Row variables and type variables share the same naming counter (`_t{n}`),
+    // so `instantiate_scheme` freshens both correctly by accident. This is intentional:
+    // row variables use the same namespace as type variables for simplicity.
+    // When row-unification adds kinded substitutions (separate type_map and row_map),
+    // this will need separate handling to preserve the invariant that row vars bind to Rows, not Types.
     for var in &scheme.row_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter += 1;
@@ -1232,6 +1269,53 @@ mod tests {
             &Type::Record(sub, RowRest::Closed),
             &Type::Record(sup, RowRest::RowVar("r".into(), 0)),
         ));
+    }
+
+    #[test]
+    fn test_subtype_open_sub_closed_sup_fewer_fields_rejected() {
+        // Open sub with FEWER known fields than Closed sup must be rejected.
+        // Old code: sub_fields ⊆ sup_fields → true (wrong).
+        // New code: bidirectional check → sup field "age" not in sub → false (correct).
+        //
+        // sub: [name: Str | Open]  (may have additional unknown fields)
+        // sup: [name: Str, age: Int | Closed]  (must have exactly name + age)
+        let mut sub_fields = IndexMap::new();
+        sub_fields.insert("name".into(), Type::Str);
+        let sub = Type::Record(sub_fields, RowRest::Open);
+
+        let mut sup_fields = IndexMap::new();
+        sup_fields.insert("name".into(), Type::Str);
+        sup_fields.insert("age".into(), Type::Int);
+        let sup = Type::Record(sup_fields, RowRest::Closed);
+
+        assert!(
+            !Type::is_subtype(&sub, &sup),
+            "[name: Str | Open] should NOT be subtype of [name: Str, age: Int | Closed]: \
+             sub is Open so may lack 'age'"
+        );
+    }
+
+    #[test]
+    fn test_subtype_open_sub_closed_sup_extra_fields_rejected() {
+        // Open sub with MORE known fields than Closed sup must be rejected.
+        // sub's extra field "age" is not in sup → bidirectional check fails.
+        //
+        // sub: [name: Str, age: Int | Open]
+        // sup: [name: Str | Closed]
+        let mut sub_fields = IndexMap::new();
+        sub_fields.insert("name".into(), Type::Str);
+        sub_fields.insert("age".into(), Type::Int);
+        let sub = Type::Record(sub_fields, RowRest::Open);
+
+        let mut sup_fields = IndexMap::new();
+        sup_fields.insert("name".into(), Type::Str);
+        let sup = Type::Record(sup_fields, RowRest::Closed);
+
+        assert!(
+            !Type::is_subtype(&sub, &sup),
+            "[name: Str, age: Int | Open] should NOT be subtype of [name: Str | Closed]: \
+             sub has extra field 'age' not in Closed sup"
+        );
     }
 
     #[test]
@@ -2023,6 +2107,33 @@ mod tests {
         let ty = Type::Record(fields.clone(), RowRest::RowVar("r".into(), 0));
         let result = subst.apply(&ty);
         assert_eq!(result, Type::Record(fields, RowRest::RowVar("r".into(), 0)));
+    }
+
+    #[test]
+    fn test_substitution_apply_row_var_duplicate_field() {
+        // When a row variable binding contains a key that also exists in the original record,
+        // the original (explicit) field must take precedence over the row-variable-bound field.
+        let mut subst = Substitution::new();
+        // r is bound to { x: Str, z: Bool } — 'x' collides with original record
+        let mut extra = IndexMap::new();
+        extra.insert("x".into(), Type::Str); // collides with original x: Int
+        extra.insert("z".into(), Type::Bool);
+        subst
+            .map
+            .insert("r".into(), Type::Record(extra, RowRest::Closed));
+
+        // original record: { x: Int ...r }
+        let mut fields = IndexMap::new();
+        fields.insert("x".into(), Type::Int);
+        let ty = Type::Record(fields, RowRest::RowVar("r".into(), 0));
+
+        let result = subst.apply(&ty);
+
+        // Expected: { x: Int, z: Bool } — x stays Int (explicit wins), z is spliced in
+        let mut expected = IndexMap::new();
+        expected.insert("x".into(), Type::Int);
+        expected.insert("z".into(), Type::Bool);
+        assert_eq!(result, Type::Record(expected, RowRest::Closed));
     }
 
     #[test]
