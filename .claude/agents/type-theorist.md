@@ -147,13 +147,13 @@ Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if
 
 ### Git Repos
 
-Clone each repo if not already present at the specified path. Skip the clone step if the directory already exists.
+Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip if the directory already exists.
 
-- **dhall-lang/dhall-haskell** — `git clone --depth=1 https://github.com/dhall-lang/dhall-haskell .training/dhall-haskell` — Focus: `dhall/src/Dhall/TypeCheck.hs` for bidirectional type checking, record type handling, union types. Review issues about type inference edge cases.
-- **nickel-lang/nickel** — `git clone --depth=1 https://github.com/nickel-lang/nickel .training/nickel` — Focus: `core/src/typecheck/` for row polymorphism implementation, gradual typing, how they combine static and dynamic typing. Their row types are very relevant to LLT's design.
-- **cue-lang/cue** — `git clone --depth=1 https://github.com/cue-lang/cue .training/cue` — Focus: lattice-based type system, structural types, how they unify values and types. Different approach but relevant design trade-offs.
-- **elm/compiler** — `git clone --depth=1 https://github.com/elm/compiler .training/elm` — Focus: `compiler/src/Type/` for clean HM type inference, `Unify.hs` and `Constrain.hs`. Review issues about confusing type error messages.
-- **rust-lang/reference** — `git clone --depth=1 https://github.com/rust-lang/reference .training/rust-lang-reference` — Focus: Rust's trait system, generics, type coercions, subtyping rules. Useful for understanding implementation constraints when encoding HM inference and row polymorphism in Rust's type system. **Note: this is a separate repo from rust-lang/rust (the compiler). Clone path is `.training/rust-lang-reference`.**
+- **dhall-lang/dhall-haskell** — `mcp__toolbox__gh_repo_clone(repo="dhall-lang/dhall-haskell", directory=".training/dhall-haskell")` — Focus: `dhall/src/Dhall/TypeCheck.hs` for bidirectional type checking, record type handling, union types. Review issues about type inference edge cases.
+- **nickel-lang/nickel** — `mcp__toolbox__gh_repo_clone(repo="nickel-lang/nickel", directory=".training/nickel")` — Focus: `core/src/typecheck/` for row polymorphism implementation, gradual typing, how they combine static and dynamic typing. Their row types are very relevant to LLT's design.
+- **cue-lang/cue** — `mcp__toolbox__gh_repo_clone(repo="cue-lang/cue", directory=".training/cue")` — Focus: lattice-based type system, structural types, how they unify values and types. Different approach but relevant design trade-offs.
+- **elm/compiler** — `mcp__toolbox__gh_repo_clone(repo="elm/compiler", directory=".training/elm")` — Focus: `compiler/src/Type/` for clean HM type inference, `Unify.hs` and `Constrain.hs`. Review issues about confusing type error messages.
+- **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. Key files: `src/type-system.md` (Rust's type system — constraints when encoding HM inference), `src/subtyping.md` (variance rules — contrast with LLT's structural subtyping), `src/type-coercions.md` (coercion rules).
 
 ### Local Documents
 - `src/types.rs` — Type representation, substitution, unification (study every method)

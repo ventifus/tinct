@@ -160,70 +160,77 @@ first-ten: [call $collect [call $take 10 $squares]]
 
 ## Rust-Native vs Tinct-Implemented Boundary
 
-**Principle:** Only implement in Rust what cannot be expressed in Tinct itself. Everything else is Tinct code loaded from a prelude file at startup.
+**Principle:** Only implement in Rust what cannot be expressed in Tinct itself. For operators that must remain Rust (arithmetic, comparison, control flow, sequence manipulation), register both the primary name and a stable alias. The primary name is wrapped in a Tinct prelude function; the stable alias is the fallback that wrappers call, and that domain-specific stdlib modules (e.g. `stdlib/sql.llt`) call when they need to shadow the primary name.
 
-**Rust-native builtins (44 total):**
+**Rust-native builtins:**
 
-| Group | Functions | Rationale |
-|-------|-----------|-----------|
-| Arithmetic | `+`, `-`, `*`, `/` | Operate on host numeric types (i64, f64); no Tinct primitive can perform arithmetic. |
-| Comparison | `=`, `<` | Compare host values; cross-type Int/Float comparison requires host-level coercion. `>`, `<=`, `>=` are derived from `<` and `not`. |
-| Control | `if` | Requires selective materialization (only materialize the chosen branch). `not` is derived: `[fn [x] [call $if $x false true]]`. |
-| Dict primitives | `keys`, `length`, `merge`, `append` | Operate on the IndexMap directly: `keys` extracts the key set, `length` reads `IndexMap::len()`, `merge` right-biased combines two IndexMaps, `append` inserts a value at the next integer key. |
-| Strings | `str`, `split`, `replace`, `upper`, `lower`, `trim` | Strings are opaque values; all operations that inspect or transform string content require Rust. `join` and `words` are derived from `str`/`split` + recursion. |
-| Numeric | `floor`, `round` | `floor` truncates toward negative infinity (Rust `f64::floor`). `round` rounds half-away-from-zero (Rust `f64::round`). `ceil` and `trunc` are derived from `floor` and comparison. |
-| Parsing | `to-int`, `to-float` | String-to-number parsing only (e.g., `"42"` to `42`). Numeric conversion (float-to-int) uses `floor`/`round`/`trunc`; int-to-float uses arithmetic promotion (`[call $+ $x 0.0]`). |
-| Evaluation control | `eval`, `error`, `try`, `apply` | `eval` deep-forces thunks (evaluator access); `error` constructs EvalError; `try` catches materialization errors; `apply` spreads a dict as positional args. |
-| Type introspection | `type-of` | Inspects the Value enum variant; no Tinct expression can determine a value's type. |
-| Sequences | `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join` | `seq` constructs lazy cons cells; `head`/`tail` extract without materializing tail; `collect` converts Seq to dict with integer keys; `seq?` type predicate. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) return infinite or finite Seq (O(1) construction). `take`, `map`, `filter`, `drop` are dual-dispatch: on Dict preserve keys, on Seq return Seq. `reduce` accumulates with early termination on empty Seq. `join` converts Dict/Seq to string with separator (O(n²) concatenation). All require `Rc<Thunk>` manipulation unavailable in Tinct. |
-| I/O | `from-json`, `include` | `from-json` parses a JSON string into an Tinct dict; requires a JSON parser (serde_json). `include` evaluates an Tinct file and returns its result; requires filesystem access, cycle detection, and path resolution. |
+| Group | Stable alias | Primary name | Rationale |
+|-------|-------------|--------------|-----------|
+| Arithmetic | `add`, `sub`, `mul`, `div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). |
+| Comparison | `lt`, `eq` | `<`, `=` | Cross-type Int/Float coercion at host level. `>`, `<=`, `>=` are derived from `<` and `not`. |
+| Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is forced. |
+| Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
+| Dict primitives | — | `keys`, `length`, `merge`, `append` | Operate on IndexMap directly. |
+| Strings | — | `str`, `split`, `replace`, `upper`, `lower`, `trim` | Strings are opaque; all content operations require Rust. |
+| Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
+| Parsing | — | `to-int`, `to-float` | String-to-number only. |
+| Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-forces; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict as positional args. |
+| Type introspection | — | `type-of` | Inspects the Value enum variant. |
+| Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join` (no stable aliases needed). |
+| I/O | — | `from-json`, `include` | serde_json, filesystem access. |
 
-**Derived functions (moved from Rust to Tinct):**
+**Tinct-implemented stdlib (wrappers and derived functions):**
 
-| Function | Derivation | Why not Rust |
-|----------|-----------|--------------|
-| `not` | `[fn [x] [call $if $x false true]]` | `if` already handles Bool dispatch |
-| `>` | `[fn [a b] [call $< $b $a]]` | Argument swap |
-| `<=` | `[fn [a b] [call $not [call $< $b $a]]]` | Negated `>` |
-| `>=` | `[fn [a b] [call $not [call $< $a $b]]]` | Negated `<` |
-| `quot` | `[fn [a b] [call $trunc [call $/ $a $b]]]` | Truncation toward zero (Clojure semantics) |
-| `mod` | `[fn [a b] [call $- $a [call $* [call $quot $a $b] $b]]]` | Algebraic identity: `a - (a quot b) * b` |
+The prelude wraps every primary-name operator that has a stable alias, making it shadowable by domain-specific stdlib modules:
+
+| Function | Derivation | Notes |
+|----------|-----------|-------|
+| `<` | `[fn [a b] [call $lt $a $b]]` | Shadowable; calls stable alias `$lt` |
+| `=` | `[fn [a b] [call $eq $a $b]]` | Shadowable; calls stable alias `$eq` |
+| `+` | `[fn [a b] [call $add $a $b]]` | Shadowable; calls `$add` |
+| `-` | `[fn [a b] [call $sub $a $b]]` | Shadowable; calls `$sub` |
+| `*` | `[fn [a b] [call $mul $a $b]]` | Shadowable; calls `$mul` |
+| `/` | `[fn [a b] [call $div $a $b]]` | Shadowable; calls `$div` |
+| `if` | `[fn [c t e] [call $builtin-if $c $t $e]]` | Shadowable; calls `$builtin-if` |
+| `filter` | `[fn [pred xs] [call $builtin-filter $pred $xs]]` | Shadowable; calls `$builtin-filter` |
+| `map` | `[fn [f xs] [call $builtin-map $f $xs]]` | Shadowable; calls `$builtin-map` |
+| `reduce` | `[fn [f init xs] [call $builtin-reduce $f $init $xs]]` | Shadowable; calls `$builtin-reduce` |
+| `take` | `[fn [n xs] [call $builtin-take $n $xs]]` | Shadowable; calls `$builtin-take` |
+| `drop` | `[fn [n xs] [call $builtin-drop $n $xs]]` | Shadowable; calls `$builtin-drop` |
+| `not` | `[fn [x] [call $builtin-if $x false true]]` | Uses `$builtin-if` directly |
+| `>` | `[fn [a b] [call $lt $b $a]]` | Argument swap |
+| `<=` | `[fn [a b] [call $not [call $lt $b $a]]]` | Negated `>` |
+| `>=` | `[fn [a b] [call $not [call $lt $a $b]]]` | Negated `<` |
+| `and` | `[fn [a b] [call $builtin-if $a $b false]]` | Short-circuit via lazy args |
+| `or` | `[fn [a b] [call $builtin-if $a $a $b]]` | Pass-through: returns `a` if truthy |
+| `quot` | `[fn [a b] [call $trunc [call $div $a $b]]]` | Truncation toward zero |
+| `mod` | `[fn [a b] [call $- $a [call $* [call $quot $a $b] $b]]]` | Algebraic identity |
 | `ceil` | `[fn [x] [call $- 0 [call $floor [call $- 0 $x]]]]` | `ceil(x) = -floor(-x)` |
 | `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
 | `words` | `[call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]` | `split` + `filter` |
 
-Note: `and` and `or` are also Tinct-derived (`[fn [a b] [call $if $a $b false]]` works via lazy args, giving short-circuit semantics for free). Similarly, `get` is just `[fn [xs k] $xs[$k]]` using bracket access.
+**Why shadowable wrappers matter:**
 
-**Tinct-implemented stdlib:**
-
-Everything else is implemented in Tinct using the Rust builtins above plus language features (bracket access, dict literals, `fn`, `call`, recursion via letrec). Key implementation patterns:
-
-- **Derived primitives**: `not` from `if`, comparison operators from `<`, `mod` from arithmetic, `ceil`/`trunc` from `floor`, `words` from `split`.
-- **Short-circuit logic** via lazy args: `and` = `[fn [a b] [call $if $a $b false]]`.
-- **Dict utilities** as wrappers: `get` = `[fn [xs k] $xs[$k]]`, `empty?` = `[fn [xs] [call $= [call $length $xs] 0]]`, `has?` wraps `try` around bracket access.
-- **Control flow** from `if`: `cond` = nested `if`, `when`/`unless` = single-arm `if`.
-- **Composition** is pure Tinct: `identity` = `[fn [x] $x]`, `compose` = `[fn [f g] [fn [x] [call $f [call $g $x]]]]`.
-- **List operations** use `keys` + `length` + `merge` + recursion to build new integer-keyed dicts.
+Any `$include`d stdlib module can shadow the primary-name operators in lexical scope. `stdlib/sql.llt` uses this to provide SQL-aware versions of `$filter`, `$map`, `$<`, `$=`, `$and`, `$if`, etc. that propagate SQL expression trees when applied to proxy rows. Each shadow calls the stable `$builtin-X` alias for non-SQL fallback. User code written after `$include "stdlib/sql.llt"` gets transparent SQL dispatch without any API changes. See `doc/whatif/sql-translation.md`.
 
 **Loading mechanism:**
 
 The Tinct stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `include_str!`. At startup:
 
-1. Create root environment with Rust-native builtins
-2. Parse and evaluate `prelude.llt` with root environment as parent
+1. Create root environment with Rust-native builtins (primary names + stable aliases)
+2. Parse and evaluate `prelude.llt` with root environment as parent — adds wrappers and derived functions
 3. User code's environment inherits from the stdlib environment
 
-This ensures Rust builtins are available to Tinct stdlib code (e.g., `and` references `$if`), and user code sees both layers:
-
 ```
-Rust builtins ($+, $-, $<, $=, $if, $keys, $merge, $str, $floor, $map, $filter, $reduce, $drop, $join, ...)
-  └── Tinct stdlib ($not, $>, $mod, $ceil, $and, $fold, $compose, ...)
-        └── User code
+Rust primitives ($lt, $eq, $add, $builtin-if, $builtin-filter, $proxy, ...)
+  └── Tinct prelude (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
+        └── User code / domain stdlib ($include "stdlib/sql.llt" shadows filter, map, <, =, ...)
+              └── User predicates and programs
 ```
 
 ## Stdlib Function Reference (62 functions)
 
-Functions available to all user code. Most are implemented in Tinct in `stdlib/prelude.llt`; some performance-critical operations (`map`, `filter`, `reduce`, `drop`, `join`, `take`, and all sequence constructors) are Rust-native builtins with dual-dispatch on Dict vs Seq. Private implementation details (functions suffixed with `-impl`) are omitted.
+Functions available to all user code. Most are implemented in Tinct in `stdlib/prelude.llt`. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`) are omitted.
 
 **Utility Functions:**
 

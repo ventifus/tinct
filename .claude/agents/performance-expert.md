@@ -177,12 +177,12 @@ Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if
 
 ### Git Repos
 
-Clone each repo if not already present at the specified path. Skip the clone step if the directory already exists.
+Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip if the directory already exists.
 
-- **NixOS/nix** — `git clone --depth=1 https://github.com/NixOS/nix .training/nix` — Focus: `src/libexpr/eval.cc` thunk forcing hot path, environment representation (`Env` struct with flat slot array vs chain), value representation optimization, `maybeThunk` fast path. Review issues tagged "performance" for real-world bottlenecks.
-- **google/jsonnet** — `git clone --depth=1 https://github.com/google/jsonnet .training/jsonnet` — Focus: `core/vm.cpp` VM execution loop, object field caching, heap allocation strategy, stack vs heap thunks. Review benchmarks and performance-related PRs.
-- **nickel-lang/nickel** — `git clone --depth=1 https://github.com/nickel-lang/nickel .training/nickel` — Rust configuration language with similar architecture. Focus: `core/src/eval/` for Rust-specific performance patterns, arena allocation, how they handle Rc<RefCell> overhead.
-- **rust-lang/reference** — `git clone --depth=1 https://github.com/rust-lang/reference .training/rust-lang-reference` — Focus: type layout and `repr`, memory model, drop order, interior mutability semantics, optimization-relevant guarantees. Essential for reasoning about allocation overhead, Rc/clone cost, and whether layout optimizations are sound. **Note: this is a separate repo from rust-lang/rust (the compiler). Clone path is `.training/rust-lang-reference`.**
+- **NixOS/nix** — `mcp__toolbox__gh_repo_clone(repo="NixOS/nix", directory=".training/nix")` — Focus: `src/libexpr/eval.cc` thunk forcing hot path, environment representation (`Env` struct with flat slot array vs chain), value representation optimization, `maybeThunk` fast path. Review issues tagged "performance" for real-world bottlenecks.
+- **google/jsonnet** — `mcp__toolbox__gh_repo_clone(repo="google/jsonnet", directory=".training/jsonnet")` — Focus: `core/vm.cpp` VM execution loop, object field caching, heap allocation strategy, stack vs heap thunks. Review benchmarks and performance-related PRs.
+- **nickel-lang/nickel** — `mcp__toolbox__gh_repo_clone(repo="nickel-lang/nickel", directory=".training/nickel")` — Rust configuration language with similar architecture. Focus: `core/src/eval/` for Rust-specific performance patterns, arena allocation, how they handle Rc<RefCell> overhead.
+- **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. Key files: `src/type-layout.md` (repr(C/Rust), niche optimization — basis for struct layout changes), `src/memory-allocation-and-lifetime.md` (when memory is freed — thunk/environment retention), `src/destructors.md` (drop order — when Rc counts reach zero).
 
 ### Local Documents
 - `src/eval.rs` — The eval/materialize hot loop (profile every allocation in the main match arms)

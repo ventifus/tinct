@@ -29,10 +29,15 @@ impl PartialEq for RowTail {
 }
 
 /// Row representation for record types (dict+tail representation)
+///
+/// `fields` uses `HashMap` (not `IndexMap`) because row field order is semantically irrelevant
+/// at the type level — Rémy's commutativity equations make rows unordered. `Display` sorts
+/// field names for deterministic output. Runtime `Value::Dict` keeps `IndexMap` for ordered
+/// user-visible semantics; this HashMap is only at the type-inference layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
-    pub fields: IndexMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
-    pub tail: RowTail,                  // Empty (closed) or RowVar(ρ) (open)
+    pub fields: HashMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
+    pub tail: RowTail,                 // Empty (closed) or RowVar(ρ) (open)
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +268,11 @@ pub struct InferState {
     pub name_counter: u32,
     pub level: u32,
     pub levels: HashMap<String, u32>,
+    /// Global accumulated substitution: collects constraints from access-chain inference
+    /// and other constraint generators. Applied when resolving type variables during
+    /// inference, so that constraints from `$x.field1` are visible when processing
+    /// `$x.field2` in the same expression. See doc/07-type-extensions.md Part 5.
+    pub subst: Substitution,
 }
 
 impl InferState {
@@ -271,15 +281,29 @@ impl InferState {
             name_counter: 0,
             level: 0,
             levels: HashMap::new(),
+            subst: Substitution::new(),
         }
     }
 
-    #[cfg(test)]
-    pub fn fresh_var(&mut self) -> Type {
+    /// Create a fresh type variable at the current level and register it in `state.levels`.
+    pub fn fresh_type_var(&mut self) -> Type {
         let name = format!("_t{}", self.name_counter);
         self.name_counter += 1;
         self.levels.insert(name.clone(), self.level);
         Type::TypeVar(name, self.level)
+    }
+
+    /// Create a fresh row variable name at the current level and register it in `state.levels`.
+    pub fn fresh_row_var_name(&mut self) -> (String, u32) {
+        let name = format!("_t{}", self.name_counter);
+        self.name_counter += 1;
+        self.levels.insert(name.clone(), self.level);
+        (name, self.level)
+    }
+
+    #[cfg(test)]
+    pub fn fresh_var(&mut self) -> Type {
+        self.fresh_type_var()
     }
 }
 
@@ -369,7 +393,7 @@ impl Substitution {
         }
 
         // Apply substitution to field types
-        let new_fields: IndexMap<String, Type> = row
+        let new_fields: HashMap<String, Type> = row
             .fields
             .iter()
             .map(|(k, v)| {
@@ -480,6 +504,30 @@ fn row_var_occurs(var_name: &str, row: &Row, subst: &Substitution) -> bool {
 /// Chases TypeVar bindings through `subst` so that if α is bound to a type containing ρ,
 /// the occurrence is detected. This mirrors Robinson's requirement that the occurs check
 /// operates on substitution-applied types.
+///
+/// ## Call pattern analysis (Task 3: FTV/FRV caching feasibility)
+///
+/// This function is called exclusively through `row_var_occurs`, which is invoked:
+///
+///   1. In `unify_remainders` Cases 2, 3, 4 — exactly **once** per row-variable binding,
+///      checking whether the variable being bound appears in the row it would be bound to.
+///      The walk is O(|unique_fields| × depth) — unavoidable for a sound occurs check.
+///
+///   2. Via `row_var_occurs_pub` in `typecheck.rs` access-chain generation — once per
+///      dot-access on an open record.
+///
+/// The optimization proposed in TODO.md (pre-collect all free row vars once per unification
+/// context, then check membership) would only help if `row_var_occurs` were called in a
+/// loop over the same fields with different target variables. In the current code, Cases 2
+/// and 3 each check ONE variable against ONE row (one call total). Case 4 checks TWO
+/// different variables against TWO different rows — a pre-collected FRV set cannot eliminate
+/// either walk because they target different variables. There is no O(n×m) pattern to break.
+///
+/// **Decision**: no caching optimization is warranted at this call site. The occurs check
+/// is already called the minimum number of times required for soundness. If future work
+/// introduces a loop that calls `row_var_occurs` for each field in a large record (e.g., a
+/// bulk row-compatibility check), revisit by collecting `FRV(row)` once before the loop via
+/// `ty.collect_row_vars(&mut frv_set)` and replacing per-field tree walks with `frv_set.contains`.
 fn row_var_occurs_in_type(var_name: &str, ty: &Type, subst: &Substitution) -> bool {
     match ty {
         Type::Record(row) => row_var_occurs(var_name, row, subst),
@@ -559,7 +607,7 @@ fn unify_tails(
                 subst.row_map.insert(
                     rho1.clone(),
                     Row {
-                        fields: IndexMap::new(),
+                        fields: HashMap::new(),
                         tail: RowTail::RowVar(rho2.clone(), rho2_level.min(rho1_level)),
                     },
                 );
@@ -571,7 +619,7 @@ fn unify_tails(
             subst.row_map.insert(
                 rho.clone(),
                 Row {
-                    fields: IndexMap::new(),
+                    fields: HashMap::new(),
                     tail: RowTail::Empty,
                 },
             );
@@ -607,15 +655,27 @@ fn lower_row_var_levels(row: &Row, max_level: u32, state: &mut InferState) {
     }
 }
 
+/// Public wrapper for `row_var_occurs` — used in access-chain constraint generation
+/// (doc/07-type-extensions.md Part 5) to check for cyclic row bindings before binding.
+pub fn row_var_occurs_pub(var_name: &str, row: &Row, subst: &Substitution) -> bool {
+    row_var_occurs(var_name, row, subst)
+}
+
+/// Public wrapper for `lower_row_var_levels` — used in access-chain constraint generation
+/// (doc/07-type-extensions.md Part 5) to enforce level invariants before binding a row variable.
+pub fn lower_row_var_levels_pub(row: &Row, max_level: u32, state: &mut InferState) {
+    lower_row_var_levels(row, max_level, state);
+}
+
 /// Unify remainders (unique fields + tails) — implements Wand (1987) 4-case algorithm.
 ///
 /// Soundness invariant: every binding case calls `row_var_occurs` BEFORE
 /// `subst.row_map.insert` to prevent construction of infinite row types
 /// (Robinson 1965, extended for rows per Rémy 1994).  Verified for Cases 2–4.
 fn unify_remainders(
-    unique1: IndexMap<String, Type>,
+    unique1: HashMap<String, Type>,
     tail1: RowTail,
-    unique2: IndexMap<String, Type>,
+    unique2: HashMap<String, Type>,
     tail2: RowTail,
     subst: &mut Substitution,
     state: &mut InferState,
@@ -680,8 +740,8 @@ fn unify_remainders(
         // Guard requires u2_empty to prevent silently dropping unique2 when both sides have unique fields
         (_, RowTail::RowVar(rho2, _)) if !u1_empty && u2_empty => {
             let row_to_bind = Row {
-                fields: unique1.clone(),
-                tail: tail1.clone(),
+                fields: unique1,
+                tail: tail1,
             };
             if row_var_occurs(rho2, &row_to_bind, subst) {
                 return Err(TypeError::new(
@@ -700,8 +760,8 @@ fn unify_remainders(
         // Guard requires u1_empty to prevent silently dropping unique1 when both sides have unique fields
         (RowTail::RowVar(rho1, _), _) if !u2_empty && u1_empty => {
             let row_to_bind = Row {
-                fields: unique2.clone(),
-                tail: tail2.clone(),
+                fields: unique2,
+                tail: tail2,
             };
             if row_var_occurs(rho1, &row_to_bind, subst) {
                 return Err(TypeError::new(
@@ -720,14 +780,22 @@ fn unify_remainders(
         (_, RowTail::Empty) if !u1_empty => Err(TypeError::new(
             format!(
                 "extra fields [{}] in closed row",
-                unique1.keys().cloned().collect::<Vec<_>>().join(", ")
+                {
+                    let mut keys: Vec<_> = unique1.keys().cloned().collect();
+                    keys.sort();
+                    keys.join(", ")
+                }
             ),
             span,
         )),
         (RowTail::Empty, _) if !u2_empty => Err(TypeError::new(
             format!(
                 "extra fields [{}] in closed row",
-                unique2.keys().cloned().collect::<Vec<_>>().join(", ")
+                {
+                    let mut keys: Vec<_> = unique2.keys().cloned().collect();
+                    keys.sort();
+                    keys.join(", ")
+                }
             ),
             span,
         )),
@@ -738,9 +806,12 @@ fn unify_remainders(
         (RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _))
             if rho1 == rho2 && !u1_empty && !u2_empty =>
         {
-            let mut fields = Vec::new();
-            fields.extend(unique1.keys().cloned());
-            fields.extend(unique2.keys().cloned());
+            let mut fields: Vec<_> = unique1
+                .keys()
+                .chain(unique2.keys())
+                .cloned()
+                .collect();
+            fields.sort();
             Err(TypeError::new(
                 format!(
                     "incompatible fields [{}] with shared row variable {}",
@@ -773,14 +844,14 @@ fn unify_rows(
     let keys2: HashSet<&String> = resolved2.fields.keys().collect();
     let shared: Vec<&String> = keys1.intersection(&keys2).copied().collect();
 
-    let unique1: IndexMap<String, Type> = resolved1
+    let unique1: HashMap<String, Type> = resolved1
         .fields
         .iter()
         .filter(|(k, _)| !keys2.contains(k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
-    let unique2: IndexMap<String, Type> = resolved2
+    let unique2: HashMap<String, Type> = resolved2
         .fields
         .iter()
         .filter(|(k, _)| !keys1.contains(k))
@@ -979,7 +1050,7 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
         renaming.row_map.insert(
             var,
             Row {
-                fields: IndexMap::new(),
+                fields: HashMap::new(),
                 tail: RowTail::RowVar(fresh, 0),
             },
         );
@@ -1019,7 +1090,7 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
         renaming.row_map.insert(
             var,
             Row {
-                fields: IndexMap::new(),
+                fields: HashMap::new(),
                 tail: RowTail::RowVar(fresh_name, state.level),
             },
         );
@@ -1056,7 +1127,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         renaming.row_map.insert(
             var.clone(),
             Row {
-                fields: IndexMap::new(),
+                fields: HashMap::new(),
                 tail: RowTail::RowVar(fresh_name, level),
             },
         );
@@ -1126,7 +1197,10 @@ impl fmt::Display for Type {
             Type::TypeVar(name, _level) => write!(f, "{name}"),
             Type::Record(row) => {
                 write!(f, "[")?;
-                for (i, (key, ty)) in row.fields.iter().enumerate() {
+                // Sort field names for deterministic output (HashMap has no insertion order).
+                let mut sorted_fields: Vec<(&String, &Type)> = row.fields.iter().collect();
+                sorted_fields.sort_by_key(|(k, _)| k.as_str());
+                for (i, (key, ty)) in sorted_fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, "  ")?;
                     }
@@ -1298,7 +1372,7 @@ mod tests {
     use crate::test_util::test_span;
 
     // Helper to create closed records in tests
-    fn closed_record(fields: IndexMap<String, Type>) -> Type {
+    fn closed_record(fields: HashMap<String, Type>) -> Type {
         Type::Record(Row {
             fields,
             tail: RowTail::Empty,
@@ -1306,7 +1380,7 @@ mod tests {
     }
 
     // Helper to create open records with row variable
-    fn row_var_record(fields: IndexMap<String, Type>, var_name: &str, level: u32) -> Type {
+    fn row_var_record(fields: HashMap<String, Type>, var_name: &str, level: u32) -> Type {
         Type::Record(Row {
             fields,
             tail: RowTail::RowVar(var_name.to_string(), level),
@@ -1343,23 +1417,24 @@ mod tests {
 
     #[test]
     fn test_display_record() {
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("name".into(), Type::Str);
         fields.insert("age".into(), Type::Int);
+        // Fields are sorted alphabetically for deterministic output (HashMap has no insertion order)
         assert_eq!(
             format!("{}", closed_record(fields)),
-            "[name: String  age: Int]"
+            "[age: Int  name: String]"
         );
     }
 
     #[test]
     fn test_display_record_empty() {
-        assert_eq!(format!("{}", closed_record(IndexMap::new())), "[]");
+        assert_eq!(format!("{}", closed_record(HashMap::new())), "[]");
     }
 
     #[test]
     fn test_display_record_open() {
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("name".into(), Type::Str);
         assert_eq!(
             format!("{}", row_var_record(fields, "_open", 0)),
@@ -1370,14 +1445,14 @@ mod tests {
     #[test]
     fn test_display_record_open_empty() {
         assert_eq!(
-            format!("{}", row_var_record(IndexMap::new(), "_open", 0)),
+            format!("{}", row_var_record(HashMap::new(), "_open", 0)),
             "[...]"
         );
     }
 
     #[test]
     fn test_display_record_row_var() {
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("name".into(), Type::Str);
         assert_eq!(
             format!("{}", row_var_record(fields, "rest", 0)),
@@ -1461,12 +1536,12 @@ mod tests {
 
     #[test]
     fn test_subtype_record_structural() {
-        let mut sub = IndexMap::new();
+        let mut sub = HashMap::new();
         sub.insert("name".into(), Type::Str);
         sub.insert("age".into(), Type::Int);
         sub.insert("extra".into(), Type::Bool);
 
-        let mut sup = IndexMap::new();
+        let mut sup = HashMap::new();
         sup.insert("name".into(), Type::Str);
         sup.insert("age".into(), Type::Int);
 
@@ -1478,10 +1553,10 @@ mod tests {
 
     #[test]
     fn test_subtype_record_missing_field() {
-        let mut sub = IndexMap::new();
+        let mut sub = HashMap::new();
         sub.insert("name".into(), Type::Str);
 
-        let mut sup = IndexMap::new();
+        let mut sup = HashMap::new();
         sup.insert("name".into(), Type::Str);
         sup.insert("age".into(), Type::Int);
 
@@ -1491,12 +1566,12 @@ mod tests {
     #[test]
     fn test_subtype_closed_record_extra_field_rejected() {
         // Closed sub with extra field should NOT be subtype of closed sup
-        let mut sub_fields = IndexMap::new();
+        let mut sub_fields = HashMap::new();
         sub_fields.insert("a".into(), Type::Int);
         sub_fields.insert("b".into(), Type::Int);
         let sub = closed_record(sub_fields);
 
-        let mut sup_fields = IndexMap::new();
+        let mut sup_fields = HashMap::new();
         sup_fields.insert("a".into(), Type::Int);
         let sup = closed_record(sup_fields);
 
@@ -1508,11 +1583,11 @@ mod tests {
 
     #[test]
     fn test_subtype_closed_record_same_fields_ok() {
-        let mut sub_fields = IndexMap::new();
+        let mut sub_fields = HashMap::new();
         sub_fields.insert("a".into(), Type::Int);
         let sub = closed_record(sub_fields);
 
-        let mut sup_fields = IndexMap::new();
+        let mut sup_fields = HashMap::new();
         sup_fields.insert("a".into(), Type::Int);
         let sup = closed_record(sup_fields);
 
@@ -1524,11 +1599,11 @@ mod tests {
 
     #[test]
     fn test_subtype_closed_to_row_var() {
-        let mut sub_fields = IndexMap::new();
+        let mut sub_fields = HashMap::new();
         sub_fields.insert("a".into(), Type::Int);
         let sub = closed_record(sub_fields);
 
-        let mut sup_fields = IndexMap::new();
+        let mut sup_fields = HashMap::new();
         sup_fields.insert("a".into(), Type::Int);
         let sup = row_var_record(sup_fields, "r", 0);
 
@@ -1540,12 +1615,12 @@ mod tests {
 
     #[test]
     fn test_subtype_row_var_to_closed() {
-        let mut sub_fields = IndexMap::new();
+        let mut sub_fields = HashMap::new();
         sub_fields.insert("a".into(), Type::Int);
         sub_fields.insert("b".into(), Type::Int);
         let sub = row_var_record(sub_fields, "r", 0);
 
-        let mut sup_fields = IndexMap::new();
+        let mut sup_fields = HashMap::new();
         sup_fields.insert("a".into(), Type::Int);
         let sup = closed_record(sup_fields);
 
@@ -1600,7 +1675,7 @@ mod tests {
         assert!(!Type::is_subtype(&Type::Bool, &Type::Float));
         assert!(!Type::is_subtype(
             &Type::Int,
-            &closed_record(IndexMap::new())
+            &closed_record(HashMap::new())
         ));
     }
 
@@ -1618,15 +1693,15 @@ mod tests {
 
     #[test]
     fn test_subtype_nested_record() {
-        let mut inner_sub = IndexMap::new();
+        let mut inner_sub = HashMap::new();
         inner_sub.insert("x".into(), Type::Int);
         inner_sub.insert("y".into(), Type::Int);
-        let mut outer_sub = IndexMap::new();
+        let mut outer_sub = HashMap::new();
         outer_sub.insert("point".into(), closed_record(inner_sub));
 
-        let mut inner_sup = IndexMap::new();
+        let mut inner_sup = HashMap::new();
         inner_sup.insert("x".into(), Type::Number);
-        let mut outer_sup = IndexMap::new();
+        let mut outer_sup = HashMap::new();
         outer_sup.insert("point".into(), row_var_record(inner_sup, "_open", 0));
 
         assert!(Type::is_subtype(
@@ -1642,11 +1717,11 @@ mod tests {
 
     #[test]
     fn test_subtype_closed_sub_open_sup() {
-        let mut sub = IndexMap::new();
+        let mut sub = HashMap::new();
         sub.insert("name".into(), Type::Str);
         sub.insert("age".into(), Type::Int);
 
-        let mut sup = IndexMap::new();
+        let mut sup = HashMap::new();
         sup.insert("name".into(), Type::Str);
 
         assert!(Type::is_subtype(
@@ -1657,11 +1732,11 @@ mod tests {
 
     #[test]
     fn test_subtype_closed_sub_closed_sup_extra_fields_rejected() {
-        let mut sub = IndexMap::new();
+        let mut sub = HashMap::new();
         sub.insert("name".into(), Type::Str);
         sub.insert("age".into(), Type::Int);
 
-        let mut sup = IndexMap::new();
+        let mut sup = HashMap::new();
         sup.insert("name".into(), Type::Str);
 
         assert!(!Type::is_subtype(&closed_record(sub), &closed_record(sup),));
@@ -1669,10 +1744,10 @@ mod tests {
 
     #[test]
     fn test_subtype_closed_exact_match() {
-        let mut sub = IndexMap::new();
+        let mut sub = HashMap::new();
         sub.insert("name".into(), Type::Str);
 
-        let mut sup = IndexMap::new();
+        let mut sup = HashMap::new();
         sup.insert("name".into(), Type::Str);
 
         assert!(Type::is_subtype(&closed_record(sub), &closed_record(sup),));
@@ -1680,11 +1755,11 @@ mod tests {
 
     #[test]
     fn test_subtype_open_sub_open_sup() {
-        let mut sub = IndexMap::new();
+        let mut sub = HashMap::new();
         sub.insert("name".into(), Type::Str);
         sub.insert("age".into(), Type::Int);
 
-        let mut sup = IndexMap::new();
+        let mut sup = HashMap::new();
         sup.insert("name".into(), Type::Str);
 
         assert!(Type::is_subtype(
@@ -1695,11 +1770,11 @@ mod tests {
 
     #[test]
     fn test_subtype_row_var_behaves_like_open() {
-        let mut sub = IndexMap::new();
+        let mut sub = HashMap::new();
         sub.insert("name".into(), Type::Str);
         sub.insert("age".into(), Type::Int);
 
-        let mut sup = IndexMap::new();
+        let mut sup = HashMap::new();
         sup.insert("name".into(), Type::Str);
 
         assert!(Type::is_subtype(
@@ -1716,11 +1791,11 @@ mod tests {
         //
         // sub: [name: Str | Open]  (may have additional unknown fields)
         // sup: [name: Str, age: Int | Closed]  (must have exactly name + age)
-        let mut sub_fields = IndexMap::new();
+        let mut sub_fields = HashMap::new();
         sub_fields.insert("name".into(), Type::Str);
         let sub = row_var_record(sub_fields, "_open", 0);
 
-        let mut sup_fields = IndexMap::new();
+        let mut sup_fields = HashMap::new();
         sup_fields.insert("name".into(), Type::Str);
         sup_fields.insert("age".into(), Type::Int);
         let sup = closed_record(sup_fields);
@@ -1739,12 +1814,12 @@ mod tests {
         //
         // sub: [name: Str, age: Int | Open]
         // sup: [name: Str | Closed]
-        let mut sub_fields = IndexMap::new();
+        let mut sub_fields = HashMap::new();
         sub_fields.insert("name".into(), Type::Str);
         sub_fields.insert("age".into(), Type::Int);
         let sub = row_var_record(sub_fields, "_open", 0);
 
-        let mut sup_fields = IndexMap::new();
+        let mut sup_fields = HashMap::new();
         sup_fields.insert("name".into(), Type::Str);
         let sup = closed_record(sup_fields);
 
@@ -1783,7 +1858,7 @@ mod tests {
 
     #[test]
     fn test_has_type_vars_record() {
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         assert!(closed_record(fields).has_type_vars());
     }
@@ -1834,7 +1909,7 @@ mod tests {
     #[test]
     fn test_env_type_alias() {
         let mut env = TypeEnv::new();
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("name".into(), Type::Str);
         env.insert_type_alias("Person".into(), closed_record(fields.clone()));
         assert_eq!(env.get_type_alias("Person"), Some(&closed_record(fields)));
@@ -1874,7 +1949,7 @@ mod tests {
     #[test]
     fn test_type_error_field_not_found() {
         let span = test_span(1, 1, 1, 5);
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("a".into(), Type::Int);
         let err = TypeError::field_not_found("b", &closed_record(fields), span);
         assert_eq!(err.message, "field 'b' not found in [a: Int]");
@@ -1957,12 +2032,12 @@ mod tests {
     fn test_substitution_apply_in_record() {
         let mut subst = Substitution::new();
         subst.type_map.insert("a".into(), Type::Int);
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         fields.insert("y".into(), Type::Str);
         let ty = closed_record(fields);
 
-        let mut expected = IndexMap::new();
+        let mut expected = HashMap::new();
         expected.insert("x".into(), Type::Int);
         expected.insert("y".into(), Type::Str);
         assert_eq!(subst.apply(&ty), closed_record(expected));
@@ -2156,9 +2231,9 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("x".into(), Type::TypeVar("a".into(), 0));
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("x".into(), Type::Int);
         unify(
             &closed_record(f1),
@@ -2176,9 +2251,9 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("x".into(), Type::Int);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("x".into(), Type::Int);
         f2.insert("y".into(), Type::Str);
         let result = unify(
@@ -2197,9 +2272,9 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("x".into(), Type::Int);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("x".into(), Type::Int);
         f2.insert("y".into(), Type::Str);
         unify(
@@ -2470,7 +2545,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         let result = unify(
             &Type::TypeVar("a".into(), 0),
@@ -2505,7 +2580,7 @@ mod tests {
     #[test]
     fn test_substitution_apply_row_var_to_record() {
         let mut subst = Substitution::new();
-        let mut extra = IndexMap::new();
+        let mut extra = HashMap::new();
         extra.insert("y".into(), Type::Str);
         subst.row_map.insert(
             "r".into(),
@@ -2515,12 +2590,12 @@ mod tests {
             },
         );
 
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = row_var_record(fields, "r", 0);
         let result = subst.apply(&ty);
 
-        let mut expected = IndexMap::new();
+        let mut expected = HashMap::new();
         expected.insert("x".into(), Type::Int);
         expected.insert("y".into(), Type::Str);
         assert_eq!(result, closed_record(expected));
@@ -2530,7 +2605,7 @@ mod tests {
     fn test_substitution_apply_row_var_to_row_var() {
         let mut subst = Substitution::new();
         // Bind row variable "r" to a row with just a row variable "s" tail
-        let empty_fields = IndexMap::new();
+        let empty_fields = HashMap::new();
         subst.row_map.insert(
             "r".into(),
             Row {
@@ -2539,12 +2614,12 @@ mod tests {
             },
         );
 
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = row_var_record(fields, "r", 0);
         let result = subst.apply(&ty);
 
-        let mut expected = IndexMap::new();
+        let mut expected = HashMap::new();
         expected.insert("x".into(), Type::Int);
         assert_eq!(result, row_var_record(expected, "s", 0));
     }
@@ -2552,7 +2627,7 @@ mod tests {
     #[test]
     fn test_substitution_apply_row_var_unbound() {
         let subst = Substitution::new();
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = row_var_record(fields.clone(), "r", 0);
         let result = subst.apply(&ty);
@@ -2565,7 +2640,7 @@ mod tests {
         // the original (explicit) field must take precedence over the row-variable-bound field.
         let mut subst = Substitution::new();
         // r is bound to { x: Str, z: Bool } — 'x' collides with original record
-        let mut extra = IndexMap::new();
+        let mut extra = HashMap::new();
         extra.insert("x".into(), Type::Str); // collides with original x: Int
         extra.insert("z".into(), Type::Bool);
         subst.row_map.insert(
@@ -2577,14 +2652,14 @@ mod tests {
         );
 
         // original record: { x: Int ...r }
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = row_var_record(fields, "r", 0);
 
         let result = subst.apply(&ty);
 
         // Expected: { x: Int, z: Bool } — x stays Int (explicit wins), z is spliced in
-        let mut expected = IndexMap::new();
+        let mut expected = HashMap::new();
         expected.insert("x".into(), Type::Int);
         expected.insert("z".into(), Type::Bool);
         assert_eq!(result, closed_record(expected));
@@ -2595,10 +2670,10 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("a".into(), Type::Int);
         f1.insert("b".into(), Type::Str);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("a".into(), Type::Int);
         f2.insert("b".into(), Type::Str);
         assert!(unify(
@@ -2616,9 +2691,9 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("a".into(), Type::Int);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("b".into(), Type::Int);
         let result = unify(
             &closed_record(f1),
@@ -2806,10 +2881,21 @@ mod tests {
     #[test]
     fn test_rowvar_display_hides_level() {
         // RowVar appears in record display as "...name"
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = row_var_record(fields, "r", 99);
         assert_eq!(format!("{ty}"), "[x: Int  ...r]");
+    }
+
+    #[test]
+    fn test_rowtail_eq_empty_both() {
+        assert_eq!(RowTail::Empty, RowTail::Empty);
+    }
+
+    #[test]
+    fn test_rowtail_neq_empty_vs_rowvar() {
+        assert_ne!(RowTail::Empty, RowTail::RowVar("x".into(), 0));
+        assert_ne!(RowTail::RowVar("x".into(), 0), RowTail::Empty);
     }
 
     // --- TypeScheme ---
@@ -3141,7 +3227,7 @@ mod tests {
     fn test_generalize_row_vars() {
         let mut state = InferState::new();
         state.levels.insert("r".into(), 2);
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = row_var_record(fields, "r", 2);
         let scheme = generalize(1, &ty, &state);
@@ -3248,7 +3334,7 @@ mod tests {
     fn test_instantiate_scheme_with_row_var_body() {
         // Create a TypeScheme whose body is Record(fields, RowRest::RowVar("r", 1))
         // with row_vars: vec!["r"]
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let scheme = TypeScheme {
             type_vars: vec![],
@@ -3362,9 +3448,9 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("a".into(), Type::Int);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("b".into(), Type::Str);
 
         unify(
@@ -3409,10 +3495,10 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("a".into(), Type::Int);
         f1.insert("b".into(), Type::Str);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("a".into(), Type::Int);
 
         unify(
@@ -3439,9 +3525,9 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("a".into(), Type::Int);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("a".into(), Type::Int);
         f2.insert("b".into(), Type::Str);
 
@@ -3469,10 +3555,10 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("a".into(), Type::Int);
         f1.insert("b".into(), Type::Str);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("a".into(), Type::Int);
         f2.insert("c".into(), Type::Bool);
 
@@ -3503,10 +3589,10 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("a".into(), Type::Int);
         f1.insert("b".into(), Type::Str);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("a".into(), Type::Int);
 
         // Left: closed {a: Int, b: Str, ...rho}, right: open {a: Int, ...rho}
@@ -3540,17 +3626,17 @@ mod tests {
         let mut state = InferState::new();
 
         // Build {x: Record({...rho}), a: Int} closed
-        let nested_fields = IndexMap::new(); // empty fields, tail is rho
+        let nested_fields = HashMap::new(); // empty fields, tail is rho
         let nested_record = Type::Record(Row {
             fields: nested_fields,
             tail: RowTail::RowVar("rho".into(), 0),
         });
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("a".into(), Type::Int);
         f1.insert("x".into(), nested_record);
 
         // Build {a: Int, ...rho}
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("a".into(), Type::Int);
 
         let result = unify(
@@ -3580,7 +3666,7 @@ mod tests {
         let mut subst = Substitution::new();
 
         // Bind α → Record({x: Int}, RowVar("rho"))
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let bound_type = Type::Record(Row {
             fields,
@@ -3606,7 +3692,7 @@ mod tests {
         subst.type_map.insert(
             "gamma".into(),
             Type::Record(Row {
-                fields: IndexMap::new(),
+                fields: HashMap::new(),
                 tail: RowTail::Empty,
             }),
         );
@@ -3617,7 +3703,7 @@ mod tests {
         );
 
         // row_var_occurs (row-level) should also chase through TypeVar fields
-        let mut row_fields = IndexMap::new();
+        let mut row_fields = HashMap::new();
         row_fields.insert("y".into(), Type::TypeVar("alpha".into(), 0));
         let row = Row {
             fields: row_fields,
@@ -3638,9 +3724,9 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("x".into(), Type::Int);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("x".into(), Type::Int);
 
         // Both have the same shared field and same row var — Case 1 → unify_tails(rho, rho) → Ok
@@ -3668,8 +3754,8 @@ mod tests {
         let mut state = InferState::new();
 
         // No unique fields on either side, different row vars → Case 1 → unify_tails(rho1, rho2)
-        let f1 = IndexMap::new();
-        let f2 = IndexMap::new();
+        let f1 = HashMap::new();
+        let f2 = HashMap::new();
         unify(
             &row_var_record(f1, "rho1", 0),
             &row_var_record(f2, "rho2", 0),
@@ -3685,6 +3771,46 @@ mod tests {
         assert_eq!(binding.tail, RowTail::RowVar("rho2".into(), 0));
     }
 
+    /// Both tails are RowVar with different levels — test level minimization
+    #[test]
+    fn test_unify_tails_both_rowvar_level_minimization() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // Set different levels for the two row variables
+        state.levels.insert("rho1".into(), 2);
+        state.levels.insert("rho2".into(), 4);
+
+        // No unique fields on either side, different row vars → Case 1 → unify_tails(rho1, rho2)
+        let f1 = HashMap::new();
+        let f2 = HashMap::new();
+        unify(
+            &row_var_record(f1, "rho1", 2),
+            &row_var_record(f2, "rho2", 4),
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        // rho1 should be bound to Row { fields: {}, tail: RowVar("rho2", 2) }
+        let binding = subst.row_map.get("rho1").expect("rho1 should be bound");
+        assert_eq!(binding.fields.len(), 0);
+        assert_eq!(
+            binding.tail,
+            RowTail::RowVar("rho2".into(), 2),
+            "tail should use min(2, 4) = 2"
+        );
+
+        // rho2's level in state.levels should be lowered to min(2, 4) = 2
+        assert_eq!(
+            state.levels.get("rho2").copied(),
+            Some(2),
+            "rho2 level should be lowered to min(rho1_level, rho2_level) = min(2, 4) = 2"
+        );
+    }
+
     /// RowVar vs Empty — RowVar must bind to Row { fields: {}, tail: Empty }
     #[test]
     fn test_unify_tails_rowvar_vs_empty() {
@@ -3693,8 +3819,8 @@ mod tests {
         let mut state = InferState::new();
 
         // No unique fields, left is open (rho), right is closed → Case 1 → unify_tails(rho, Empty)
-        let f1 = IndexMap::new();
-        let f2 = IndexMap::new();
+        let f1 = HashMap::new();
+        let f2 = HashMap::new();
         unify(
             &row_var_record(f1, "rho", 0),
             &closed_record(f2),
@@ -3717,8 +3843,8 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let f1 = IndexMap::new();
-        let f2 = IndexMap::new();
+        let f1 = HashMap::new();
+        let f2 = HashMap::new();
         unify(
             &closed_record(f1),
             &closed_record(f2),
@@ -3764,7 +3890,7 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("a".into(), Type::Int);
 
         let a = closed_record(fields.clone());
@@ -3797,12 +3923,12 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         a_fields.insert("b".into(), Type::Str);
         let a = closed_record(a_fields);
 
-        let mut b_fields = IndexMap::new();
+        let mut b_fields = HashMap::new();
         b_fields.insert("a".into(), Type::Int);
         let b = closed_record(b_fields);
 
@@ -3832,11 +3958,11 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         let a = closed_record(a_fields);
 
-        let mut b_fields = IndexMap::new();
+        let mut b_fields = HashMap::new();
         b_fields.insert("a".into(), Type::Str);
         let b = closed_record(b_fields);
 
@@ -3868,7 +3994,7 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         let a = closed_record(a_fields.clone());
         let b = row_var_record(a_fields, "r", 0);
@@ -3923,12 +4049,12 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         a_fields.insert("b".into(), Type::Str);
         let a = closed_record(a_fields);
 
-        let mut b_fields = IndexMap::new();
+        let mut b_fields = HashMap::new();
         b_fields.insert("a".into(), Type::Int);
         let b = row_var_record(b_fields, "r", 0);
 
@@ -3985,11 +4111,11 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         let a = row_var_record(a_fields, "r", 0);
 
-        let mut b_fields = IndexMap::new();
+        let mut b_fields = HashMap::new();
         b_fields.insert("a".into(), Type::Int);
         b_fields.insert("b".into(), Type::Str);
         let b = closed_record(b_fields);
@@ -4038,7 +4164,7 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         let a = row_var_record(a_fields.clone(), "r", 0);
         let b = closed_record(a_fields);
@@ -4084,12 +4210,12 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         a_fields.insert("b".into(), Type::Str);
         let a = row_var_record(a_fields, "r", 0);
 
-        let mut b_fields = IndexMap::new();
+        let mut b_fields = HashMap::new();
         b_fields.insert("a".into(), Type::Int);
         let b = closed_record(b_fields);
 
@@ -4138,11 +4264,11 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         let a = row_var_record(a_fields, "r1", 0);
 
-        let mut b_fields = IndexMap::new();
+        let mut b_fields = HashMap::new();
         b_fields.insert("b".into(), Type::Str);
         let b = row_var_record(b_fields, "r2", 0);
 
@@ -4231,7 +4357,7 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         let a = row_var_record(a_fields.clone(), "r1", 0);
         let b = row_var_record(a_fields, "r2", 0);
@@ -4287,7 +4413,7 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut fields = IndexMap::new();
+        let mut fields = HashMap::new();
         fields.insert("a".into(), Type::Int);
 
         let a = row_var_record(fields.clone(), "rho", 0);
@@ -4330,11 +4456,11 @@ mod tests {
     /// when the sub is MISSING a required sup field. The fields_ok check runs first.
     #[test]
     fn test_is_subtype_consistency_same_rowvar_different_unique_asymmetry() {
-        let mut fields_a = IndexMap::new();
+        let mut fields_a = HashMap::new();
         fields_a.insert("a".into(), Type::Int);
         let a = row_var_record(fields_a, "rho", 0);
 
-        let mut fields_b = IndexMap::new();
+        let mut fields_b = HashMap::new();
         fields_b.insert("b".into(), Type::Str);
         let b = row_var_record(fields_b, "rho", 0);
 
@@ -4382,11 +4508,11 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut a_fields = IndexMap::new();
+        let mut a_fields = HashMap::new();
         a_fields.insert("x".into(), Type::Int);
         let a = closed_record(a_fields);
 
-        let mut b_fields = IndexMap::new();
+        let mut b_fields = HashMap::new();
         b_fields.insert("x".into(), Type::Number);
         let b = closed_record(b_fields);
 
@@ -4430,16 +4556,16 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut inner_a = IndexMap::new();
+        let mut inner_a = HashMap::new();
         inner_a.insert("x".into(), Type::Int);
         inner_a.insert("y".into(), Type::Int);
-        let mut outer_a = IndexMap::new();
+        let mut outer_a = HashMap::new();
         outer_a.insert("point".into(), closed_record(inner_a));
         let a = closed_record(outer_a);
 
-        let mut inner_b = IndexMap::new();
+        let mut inner_b = HashMap::new();
         inner_b.insert("x".into(), Type::Int);
-        let mut outer_b = IndexMap::new();
+        let mut outer_b = HashMap::new();
         outer_b.insert("point".into(), row_var_record(inner_b, "r", 0));
         let b = closed_record(outer_b);
 
@@ -4476,9 +4602,9 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
 
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("x".into(), Type::Int);
-        let mut f2 = IndexMap::new();
+        let mut f2 = HashMap::new();
         f2.insert("y".into(), Type::Str);
 
         // Both have different unique fields but share the same row variable
@@ -4518,11 +4644,11 @@ mod tests {
 
         // Build left = {x: Int, ...rho_inner}, right = {...rho_outer}
         // This triggers Case 2: left has unique field {x}, right has no unique fields
-        let mut f1 = IndexMap::new();
+        let mut f1 = HashMap::new();
         f1.insert("x".into(), Type::Int);
         let left = row_var_record(f1, "rho_inner", 3);
 
-        let f2 = IndexMap::new();
+        let f2 = HashMap::new();
         let right = row_var_record(f2, "rho_outer", 1);
 
         // Unify them
@@ -4560,8 +4686,8 @@ mod tests {
         let mut state = InferState::new();
 
         // No unique fields, left is closed (Empty), right is open (rho)
-        let f1 = IndexMap::new();
-        let f2 = IndexMap::new();
+        let f1 = HashMap::new();
+        let f2 = HashMap::new();
         unify(
             &closed_record(f1),
             &row_var_record(f2, "rho", 0),
@@ -4586,7 +4712,7 @@ mod tests {
         let mut subst = Substitution::new();
 
         // Bind β → Record({z: Int}, RowVar("rho"))
-        let mut beta_fields = IndexMap::new();
+        let mut beta_fields = HashMap::new();
         beta_fields.insert("z".into(), Type::Int);
         let beta_bound = Type::Record(Row {
             fields: beta_fields,
@@ -4595,7 +4721,7 @@ mod tests {
         subst.type_map.insert("beta".into(), beta_bound);
 
         // Bind α → Record({x: TypeVar("beta")})
-        let mut alpha_fields = IndexMap::new();
+        let mut alpha_fields = HashMap::new();
         alpha_fields.insert("x".into(), Type::TypeVar("beta".into(), 0));
         let alpha_bound = Type::Record(Row {
             fields: alpha_fields,

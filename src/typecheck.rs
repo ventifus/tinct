@@ -10,8 +10,9 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::types::{
-    generalize, instantiate_at_level, instantiate_scheme, unify, InferState, Row, RowTail,
-    Substitution, Type, TypeEnv, TypeError, TypeScheme,
+    generalize, instantiate_at_level, instantiate_scheme, lower_row_var_levels_pub,
+    row_var_occurs_pub, unify, InferState, Row, RowTail, Substitution, Type, TypeEnv, TypeError,
+    TypeScheme,
 };
 
 /// A map from expression span (start_offset, end_offset) to the inferred type.
@@ -65,7 +66,7 @@ fn typecheck_document(
     let mut errors = Vec::new();
     let mut env = Rc::new(TypeEnv::with_parent(Rc::clone(parent_env)));
     let mut result_type = Type::Record(Row {
-        fields: IndexMap::new(),
+        fields: HashMap::new(),
         tail: RowTail::Empty,
     });
 
@@ -75,7 +76,7 @@ fn typecheck_document(
         result_env.insert(
             "$".to_string(),
             Type::Record(Row {
-                fields: IndexMap::new(),
+                fields: HashMap::new(),
                 tail: RowTail::Empty,
             }),
         );
@@ -380,7 +381,7 @@ fn check_expr(
                         fn_env.insert(
                             param.node.name.clone(),
                             Type::Record(Row {
-                                fields: IndexMap::new(),
+                                fields: HashMap::new(),
                                 tail: RowTail::Empty,
                             }),
                         );
@@ -489,7 +490,7 @@ fn infer_dict(
     let dict_env = Rc::new(dict_env);
 
     // Pass 3: Infer values and unify with bound type vars
-    let mut field_types = IndexMap::new();
+    let mut field_types: HashMap<String, Type> = HashMap::new();
     let mut errors = Vec::new();
     let mut subst = Substitution::new();
 
@@ -528,10 +529,11 @@ fn infer_dict(
         }
     }
 
-    // Apply substitution to all field types
-    let field_types: IndexMap<String, Type> = field_types
+    // Apply substitution to all field types.
+    // Apply state.subst first (access-chain constraints), then local subst (letrec bindings).
+    let field_types: HashMap<String, Type> = field_types
         .into_iter()
-        .map(|(k, ty)| (k, subst.apply(&ty)))
+        .map(|(k, ty)| (k, subst.apply(&state.subst.apply(&ty))))
         .collect();
 
     // Pass 4: Generalize - create TypeSchemes for each entry
@@ -590,13 +592,80 @@ fn check_dot_access(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let target_ty = infer_expr(target, env, state, type_map)?;
-    match &target_ty {
-        Type::Record(Row { fields, tail: rest }) => match fields.get(field) {
+    // Apply the global accumulated substitution so that constraints from prior accesses
+    // on the same target are visible (doc/07-type-extensions.md Part 5).
+    let target_ty = state.subst.apply(&target_ty);
+    match target_ty {
+        Type::Record(Row {
+            ref fields,
+            ref tail,
+        }) => match fields.get(field) {
             Some(ty) => Ok(ty.clone()),
-            None if matches!(rest, RowTail::RowVar(_, _)) => Ok(Type::Any),
-            None => Err(vec![TypeError::field_not_found(field, &target_ty, span)]),
+            None => match tail {
+                // Open record (RowVar tail) and field not found: bind ρ → Row({field: β}, RowVar(ρ_fresh))
+                // This records the constraint "ρ must contain field with type β".
+                RowTail::RowVar(rho, _rho_level) => {
+                    // Create fresh type var β for the field type
+                    let beta = state.fresh_type_var();
+                    // Create fresh row var ρ_fresh for the remaining tail
+                    let (rho_fresh_name, rho_fresh_level) = state.fresh_row_var_name();
+
+                    // Build the row to bind: Row({ field: β }, RowVar(ρ_fresh))
+                    let mut new_fields = HashMap::new();
+                    new_fields.insert(field.to_string(), beta.clone());
+                    let binding = Row {
+                        fields: new_fields,
+                        tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
+                    };
+
+                    // Occurs check: ρ must not appear in the row being bound
+                    // (uses state.subst to chase through any existing bindings)
+                    if row_var_occurs_pub(rho, &binding, &state.subst) {
+                        return Err(vec![TypeError::new(
+                            format!("infinite row type: {rho} occurs in its own binding"),
+                            span,
+                        )]);
+                    }
+
+                    // Level lowering: lower all vars in the binding to ρ's level
+                    let rho_level = state.levels.get(rho).copied().unwrap_or(0);
+                    lower_row_var_levels_pub(&binding, rho_level, state);
+
+                    // Bind ρ → binding in the global substitution
+                    state.subst.row_map.insert(rho.clone(), binding);
+
+                    Ok(beta)
+                }
+                // Closed record (Empty tail) and field not found: error
+                RowTail::Empty => Err(vec![TypeError::field_not_found(field, &target_ty, span)]),
+            },
         },
-        Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
+        // Unknown type (TypeVar α): generate constraint α = Record({field: β}, RowVar(ρ))
+        // This records "α must be a record with at least this field".
+        Type::TypeVar(ref alpha, alpha_level) => {
+            // Create fresh β for the field type and ρ for the remaining row
+            let beta = state.fresh_type_var();
+            let (rho_name, rho_level) = state.fresh_row_var_name();
+
+            // Build the record type to unify α with
+            let mut fields = HashMap::new();
+            fields.insert(field.to_string(), beta.clone());
+            let record_ty = Type::Record(Row {
+                fields,
+                tail: RowTail::RowVar(rho_name, rho_level),
+            });
+
+            // Unify TypeVar(α) with Record({field: β}, RowVar(ρ)) using the global substitution.
+            // mem::take prevents simultaneous mutable borrows of state.subst and state.
+            let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
+            let mut subst = std::mem::take(&mut state.subst);
+            let result = unify(&alpha_ty, &record_ty, &mut subst, state, span);
+            state.subst = subst;
+            result.map_err(|e| vec![e])?;
+
+            Ok(beta)
+        }
+        Type::Any => Ok(Type::Any),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -902,7 +971,7 @@ fn infer_fn(
             fn_env.insert(
                 param.node.name.clone(),
                 Type::Record(Row {
-                    fields: IndexMap::new(),
+                    fields: HashMap::new(),
                     tail: RowTail::Empty,
                 }),
             );
@@ -969,6 +1038,27 @@ fn resolve_type_assert(
         let has_default = annotation.node.get_property("default").is_some();
         if !has_default {
             return check_result.map(|_| expected);
+        }
+    }
+
+    // Validate the default value type — hard error if the default cannot satisfy the asserted type.
+    if let Some(default_expr) = annotation.node.get_property("default") {
+        match infer_expr(default_expr, env, state, type_map) {
+            Ok(default_ty) => {
+                if !Type::is_subtype(&default_ty, &expected) {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "default value type mismatch: default has type {default_ty}, \
+                             but assertion expects {expected}"
+                        ),
+                        default_expr.span,
+                    )]);
+                }
+            }
+            Err(errs) => {
+                // Propagate inference errors from the default expression
+                return Err(errs);
+            }
         }
     }
 
@@ -1191,7 +1281,7 @@ fn resolve_type_dict(
         return Ok(fn_type);
     }
 
-    let mut fields = IndexMap::new();
+    let mut fields: HashMap<String, Type> = HashMap::new();
     let mut rest = RowTail::Empty;
     for entry in entries {
         if let Expr::Rest(name) = &entry.node.value.node {
@@ -1521,6 +1611,55 @@ mod tests {
             .any(|e| e.message.contains("expected record type")));
     }
 
+    // -- Access chain constraint generation (doc/07 Part 5) --
+
+    #[test]
+    fn test_dot_access_typevar_generates_constraint() {
+        // When `$x` has an unknown type (TypeVar α during letrec), `$x.field` generates
+        // the constraint α = Record({field: β}, RowVar(ρ)) and returns β.
+        // This test verifies that the constraint is generated (result is TypeVar β)
+        // rather than falling back to Any.
+        //
+        // The full end-to-end case: `$x` is a letrec-bound TypeVar for `data`,
+        // and `$data.name` on a TypeVar returns a fresh β.
+        let ty = infer("[result: $data.name  data: [name: hello]]");
+        match ty {
+            Type::Record(Row { fields, .. }) => {
+                // result is a TypeVar (the fresh field type β), not Any.
+                let result_ty = fields.get("result").expect("field 'result' should exist");
+                assert!(
+                    matches!(result_ty, Type::TypeVar(_, _)),
+                    "expected TypeVar β from constraint generation, got {result_ty}"
+                );
+            }
+            other => panic!("expected Record, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_open_record_extends_tail() {
+        // When `$p` has type Record({name: Str}, RowVar(ρ)) (an open record via type annotation)
+        // and we access `$p.unknown` (field not in known fields), the RowVar case generates
+        // constraint ρ → Row({unknown: β}, RowVar(ρ_fresh)) and returns β.
+        // This extends the known tail rather than falling back to Any.
+        //
+        // Two accesses on the same open record accumulate constraints:
+        // first access binds ρ → Row({f1: β₁}, RowVar(ρ₁))
+        // second access sees ρ already bound, extracts from ρ₁ → Row({f2: β₂}, RowVar(ρ₂))
+        let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
+        // r1 and r2 should both be TypeVars (fresh inferred types, not Any)
+        match env.get("r1").map(|s| &s.body) {
+            Some(Type::TypeVar(_, _)) => {}
+            Some(other) => panic!("expected TypeVar for first unknown field, got {other}"),
+            None => panic!("field 'r1' not found in env"),
+        }
+        match env.get("r2").map(|s| &s.body) {
+            Some(Type::TypeVar(_, _)) => {}
+            Some(other) => panic!("expected TypeVar for second unknown field, got {other}"),
+            None => panic!("field 'r2' not found in env"),
+        }
+    }
+
     // -- Bracket access --
 
     #[test]
@@ -1613,6 +1752,68 @@ mod tests {
             errors.iter().any(|e| e.message.contains("type mismatch")),
             "TypeAssert without default: should still report type error, got: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn test_typeassert_default_wrong_type_emits_error() {
+        // [@Number default: "hello" expr] — default is Str, asserted type is Number
+        // Should emit a default value type mismatch error
+        let errors = check_err("[@[type: Number  default: hello] 42]");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("default value type mismatch")),
+            "TypeAssert with wrong default type should emit error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_typeassert_default_correct_type_no_error() {
+        // [@Number default: 0 expr] — default is IntLiteral(0) which is subtype of Number
+        // Should not emit any error
+        let result = check("[@[type: Number  default: 0] 42]");
+        assert!(
+            result.is_ok(),
+            "TypeAssert with correct default type should not emit error, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_typeassert_default_wrong_type_main_check_fails() {
+        // [@Number default: "hello" wrong_expr] — both main and default are wrong
+        // Should emit a default value type mismatch error
+        let errors = check_err("[@[type: Number  default: hello] world]");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("default value type mismatch")),
+            "TypeAssert with wrong default and wrong expr should emit default mismatch error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_typeassert_default_int_subtype_of_number() {
+        // [@Number default: 42 expr] — IntLiteral(42) <: Number — no error
+        let result = check("[@[type: Number  default: 42] hello]");
+        assert!(
+            result.is_ok(),
+            "TypeAssert with Int default for Number assertion should not emit error, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_typeassert_default_string_literal_subtype_of_str() {
+        // [@String default: "ok" expr] — StringLiteral("ok") <: Str — no error
+        let result = check("[@[type: String  default: ok] 42]");
+        assert!(
+            result.is_ok(),
+            "TypeAssert with Str default for String assertion should not emit error, got: {:?}",
+            result.unwrap_err()
         );
     }
 
@@ -2495,12 +2696,17 @@ mod tests {
 
     #[test]
     fn test_dot_access_on_open_record_unknown_field() {
-        assert_eq!(
-            result_field(
-                "[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice]]]\n[result: $p.unknown]",
-                "result",
-            ),
-            Type::Any,
+        // Accessing an unknown field on an open record (RowVar tail) now generates a
+        // constraint binding ρ → Row({unknown: β}, RowVar(ρ_fresh)) and returns β.
+        // The result is a TypeVar (the fresh field type), not Any.
+        // See doc/07-type-extensions.md Part 5 (RowVar case).
+        let ty = result_field(
+            "[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice]]]\n[result: $p.unknown]",
+            "result",
+        );
+        assert!(
+            matches!(ty, Type::TypeVar(_, _)),
+            "expected TypeVar for unknown open-record field, got {ty}"
         );
     }
 
@@ -2675,13 +2881,21 @@ mod tests {
 
     #[test]
     fn test_let_gen_typevar_in_dot_access() {
-        // TypeVars should be handled gracefully in dot access
+        // Dot access on a TypeVar now generates a constraint (TypeVar α case) rather than
+        // returning Any. When `$data` has an unknown type during letrec pass 3,
+        // `$data.x` generates constraint α = Record({x: β}, RowVar(ρ)) and returns β.
+        // The result is a TypeVar β (the fresh field type).
+        // Note: full constraint propagation between letrec fields and state.subst is future
+        // work — β is not yet resolved to IntLiteral(1) even though data: [x: 1] confirms it.
         let ty = infer("[result: $data.x  data: [x: 1]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
-                // result depends on data which hasn't been inferred yet,
-                // so it gets Any
-                assert_eq!(fields.get("result"), Some(&Type::Any));
+                // result is a TypeVar (β, the inferred field type of x), not Any.
+                let result_ty = fields.get("result").expect("field 'result' should exist");
+                assert!(
+                    matches!(result_ty, Type::TypeVar(_, _)),
+                    "expected TypeVar for constrained dot access field, got {result_ty}"
+                );
             }
             other => panic!("expected Record, got {other}"),
         }
