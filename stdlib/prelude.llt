@@ -418,7 +418,10 @@ zip-step: [fn [xs ys xks yks i acc xk yk]
 
 # Flatten nested lists one level deep.
 # Inherently materializing: must inspect each value to check if it is a list.
-flatten: [fn [xs] [call $flatten-impl $xs [call $keys $xs] 0 []]]
+flatten: [fn [xs]
+    [call $if [call $seq? $xs]
+        [call $error "flatten: expected Dict, got Seq -- collect the Seq first"]
+        [call $flatten-impl $xs [call $keys $xs] 0 []]]]
 
 flatten-impl: [fn [xs ks i acc]
     [call $if [call $>= $i [call $length $ks]]

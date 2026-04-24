@@ -527,6 +527,7 @@ All 44 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 | `drop` † | `S × S → LT` | Lazy-transforming | Both strict; Seq result via PendingBuiltin step |
 | `reduce` † ‡ | `L × L × S → LT` | Lazy-transforming | Function and init lazy; collection strict for dispatch |
 | `join` † | `S × S → V` | Materializing | Both strict; materializes all elements for concatenation |
+| `concat` † | `S × L → LT` | Lazy-transforming | First arg strict for dispatch; second lazy; Seq path lazy chain, Dict path eager merge |
 
 ### Part 3: Delta Rules
 

@@ -817,3 +817,24 @@ Implement bidirectional type checking with synthesis (⇒) and checking (⇐) mo
 - [x] Fix function variance inconsistency between `unify` and `is_subtype` — `check_expr` applies [SUB] at leaves, resolving the dual-path divergence (`src/types.rs:291-315, 67-82`) [Major, computer-scientist]
 - [x] Implement lambda checking mode — `infer_fn` checks against expected function type. Pierce & Turner (2000), Dunfield & Krishnaswami (2021). (`src/typecheck.rs:449`) [Major, computer-scientist]
 - [x] Implement checking mode propagation to call arguments — Pierce-Turner S-App rule. (`src/typecheck.rs:389-446`) [Major, computer-scientist]
+
+### bidirectional-typing-b: Bidirectional Type Checking (Part 2)
+
+Monomorphic fix, constraint synthesis, tests, and doc comments. Split from bidirectional-typing.
+
+- [x] Fix monomorphic function calls skipping argument type checking — `!func_ty.has_type_vars()` bypasses argument-parameter unification (`src/typecheck.rs:421-422`) [Major, computer-scientist]
+- [x] Implement constraint-based type argument synthesis for polymorphic calls — Pierce-Turner constraint generation with variance-aware minimal substitution (`src/typecheck.rs:425-439`) [Minor, computer-scientist]
+- [x] Add tests: literal promotion via subsumption, lambda parameter inference from context
+- [x] Add doc comment to `instantiate()` explaining level-0 convention for call-site vars — call-site vars created by `instantiate()` are intentionally absent from `InferState.levels` (treated as level 0 = never generalize) in contrast to `InferState::fresh_var()` which always registers. (`src/types.rs:481-493`) [Minor, type-theorist C43]
+- [x] Split `TypeScheme.vars: Vec<String>` into `type_vars` and `row_vars` before row-unification — current conflation works due to `apply_inner` `_` arm fallback but creates forward-incompatibility: row-unification sprint requires separate `type_map`/`row_map` substitutions and the conflated `vars` field becomes a blocking impedance mismatch. Pre-split now reduces the row-unification diff surface. (`src/types.rs:172-184`) [Major, type-theorist C43]
+- [x] Mark `doc/06-type-inference.md` §Unification `[U-SUBSUME]` as proposed design — current text describes `[U-SUBSUME]` as a "general bidirectional is_subtype fallback" but `src/types.rs:397-424` has 8 specific bidirectional promotion rules and the fallthrough is `Err(type_mismatch)`, not a general subsumption check. The doc is aspirational; mark `[U-SUBSUME]` and the "no promotion rules" claim as PROPOSED DESIGN / NOT YET IMPLEMENTED; document the 8 current promotion rules as deliberate pragmatic extensions of Robinson. (`doc/06-type-inference.md:249-307`) [Major, type-theorist C43]
+- [x] Add `generalize()` early-exit for monomorphic types — for every Pass 4 entry, `generalize()` calls `collect_type_vars()` which walks the full type tree and builds a BTreeSet even when the type has no type vars (common case: all-concrete config dicts). Add `if !ty.has_type_vars() { return TypeScheme::mono(ty.clone()); }` early exit. (`src/types.rs:520-541`) [Minor, computer-scientist C43]
+- [x] Fix `check_call` zero-param polymorphic function return bypass — line 539 returns `*ret.clone()` (pre-instantiation return type) for zero-param polymorphic functions, bypassing `inst_ret`. The `else` branch should return `*inst_ret.clone()` to use the instantiated type. (`src/typecheck.rs:539`) [Minor, computer-scientist C43 panel]
+
+### bidirectional-typing-c: Bidirectional Type Checking (Part 3)
+
+Nits and stdlib fixes found during bidirectional-typing review. Split from bidirectional-typing.
+
+- [x] Eliminate double instantiation waste — VAR-POLY at `typecheck.rs:191` via `instantiate_scheme` and CALL-POLY at `typecheck.rs:525` via `instantiate_at_level` both instantiate. Refactored to `check_call_with_scheme()` for single instantiation. (`src/typecheck.rs:191,525`) [Nit, computer-scientist C43 panel]
+- [x] Add `concat` row to strictness signature table — dual-dispatch (lazy Seq chain via PendingBuiltin, eager Dict append); added to "Higher-order collection operations" group. (`doc/08-evaluation.md:425-530`) [Minor, stdlib-author C43]
+- [x] Fix `flatten` Seq input — adds `$seq?` guard with descriptive error "flatten: expected Dict, got Seq — collect the Seq first". (`stdlib/prelude.llt:421`) [Minor, stdlib-author C43]
