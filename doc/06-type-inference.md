@@ -269,7 +269,20 @@ unify(StringLiteral(s), StringLiteral(t), S) =
     error       if s ≠ t                         [U-STRLIT-NEQ]
 ```
 
-No explicit literal-to-parent promotion rules in unification. The previous bidirectional silent coercion rules (`[U-INTLIT-UP]`, `[U-INTLIT-DN]`, `[U-INT-NUM]`, `[U-NUM-INT]`, `[U-FLT-NUM]`, `[U-NUM-FLT]`, `[U-INTLIT-FLT]`, `[U-FLT-INTLIT]`, `[U-STRLIT]`, `[U-STR-STRLIT]`) are all removed. Subtyping relationships between concrete types are handled by [U-SUBSUME] below.
+> **PROPOSED DESIGN — NOT YET IMPLEMENTED.** The text below describes the target state where all promotion rules are removed from `unify()` and handled exclusively by `check_expr` via the [SUB] rule. The current implementation (`src/types.rs` `unify()`) retains bidirectional promotion rules as pragmatic extensions of Robinson unification:
+>
+> | Rule | Coercion |
+> |------|----------|
+> | IntLiteral(n) ↔ Int | Literal widens to base type |
+> | IntLiteral(n) ↔ Number | Literal widens to numeric supertype |
+> | Int ↔ Number | Int widens to numeric supertype |
+> | Float ↔ Number | Float widens to numeric supertype |
+> | IntLiteral(n) ↔ Float | Literal widens to Float |
+> | StringLiteral(s) ↔ Str | Literal widens to base type |
+>
+> These rules fire bidirectionally within `unify()` and modify the substitution (unlike [U-SUBSUME] which does not). They will be removed when the bidirectional typing migration is complete (all checking positions use `check_expr`).
+
+**Target state (after bidirectional-typing migration):** No explicit literal-to-parent promotion rules in unification. All will be removed. Subtyping relationships between concrete types will be handled by [U-SUBSUME] below.
 
 Structural:
 
@@ -294,13 +307,15 @@ unify(σ, τ, S) where ¬has_type_vars(σ) ∧ ¬has_type_vars(τ):
     else: error                                  [U-FAIL]
 ```
 
-[U-SUBSUME] is the bridge between unification and subtyping. It fires after all other rules (structural decomposition, type variable binding) have been tried. When two concrete types remain and they are in a subtype relationship in either direction, unification succeeds without modifying the substitution. This is essential for **confluence in CALL-POLY**: when a type variable α is bound to `IntLiteral(42)` by one argument and later compared against `Int` by another (via substitution resolution), [U-SUBSUME] recognizes `IntLiteral(42) <: Int` and succeeds regardless of argument order.
+> **PROPOSED DESIGN:** This rule is the target for concrete-type compatibility in `unify()`. Currently, the 6 promotion rules listed above handle most concrete-type cases directly; [U-SUBSUME] would replace them with a single `is_subtype` fallback.
 
-**Relationship to Robinson unification.** Robinson (1965) is purely syntactic — it has no notion of subtyping, so `unify(IntLiteral(42), Int)` would simply fail (different constructors). [U-SUBSUME] extends Robinson with a ground-type compatibility check: when both sides are concrete and in a subtype relationship, unification succeeds without modifying the substitution. This is a pragmatic middle ground — Robinson handles structural decomposition and variable binding; [U-SUBSUME] handles the subtype lattice at ground types. The substitution is never modified by [U-SUBSUME], so existing variable bindings (which may carry literal precision) are preserved. This is the same approach Rust's type inference uses: subtyping constraints between concrete types are resolved as compatibility checks rather than LUB computation (Dolan & Mycroft 2017 describe the full alternative — algebraic subtyping — which tinct intentionally does not adopt; see `doc/whatif/algebraic-subtypes.md`).
+**Target behavior (post-migration):** [U-SUBSUME] will be the bridge between unification and subtyping. It will fire after all other rules (structural decomposition, type variable binding) have been tried. When two concrete types remain and they are in a subtype relationship in either direction, unification will succeed without modifying the substitution. This is essential for **confluence in CALL-POLY**: when a type variable α is bound to `IntLiteral(42)` by one argument and later compared against `Int` by another (via substitution resolution), [U-SUBSUME] will recognize `IntLiteral(42) <: Int` and succeed regardless of argument order.
 
-[U-SUBSUME] checks both directions because unification is symmetric — the two types arrive without a designated "actual" vs "expected" role. The bidirectional check covers both orderings: `unify(IntLiteral(42), Int)` succeeds (IntLiteral(42) <: Int) and `unify(Int, IntLiteral(42))` also succeeds (IntLiteral(42) <: Int, checked as `is_subtype(τ, σ)`). The substitution is unchanged because there are no type variables to bind.
+**Relationship to Robinson unification.** Robinson (1965) is purely syntactic — it has no notion of subtyping, so `unify(IntLiteral(42), Int)` would simply fail (different constructors). [U-SUBSUME] will extend Robinson with a ground-type compatibility check: when both sides are concrete and in a subtype relationship, unification will succeed without modifying the substitution. This is a pragmatic middle ground — Robinson handles structural decomposition and variable binding; [U-SUBSUME] will handle the subtype lattice at ground types. The substitution will not be modified by [U-SUBSUME], so existing variable bindings (which may carry literal precision) are preserved. This is the same approach Rust's type inference uses: subtyping constraints between concrete types are resolved as compatibility checks rather than LUB computation (Dolan & Mycroft 2017 describe the full alternative — algebraic subtyping — which tinct intentionally does not adopt; see `doc/whatif/algebraic-subtypes.md`).
 
-**Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] is bidirectional because it operates within unification where the original directionality is lost after structural decomposition. This is sound because the substitution is not modified — the bidirectional check only determines compatibility, not binding direction.
+[U-SUBSUME] will check both directions because unification is symmetric — the two types arrive without a designated "actual" vs "expected" role. The bidirectional check will cover both orderings: `unify(IntLiteral(42), Int)` succeeds (IntLiteral(42) <: Int) and `unify(Int, IntLiteral(42))` also succeeds (IntLiteral(42) <: Int, checked as `is_subtype(τ, σ)`). The substitution is unchanged because there are no type variables to bind.
+
+**Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] will be bidirectional because it operates within unification where the original directionality is lost after structural decomposition. This is sound because the substitution is not modified — the bidirectional check only determines compatibility, not binding direction.
 
 All other non-structural, non-subsumable combinations: error [U-FAIL]
 
@@ -539,7 +554,7 @@ Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) →
 
 ## Limitations and Non-Guarantees
 
-1. **Literal promotion handled by bidirectional checking (not unification).** Literal-to-parent type compatibility (e.g., `IntLiteral(42) <: Int`) is handled exclusively by `is_subtype` in checking mode via the [SUB] rule — see §Bidirectional Typing. Unification is pure Robinson: `unify(IntLiteral(42), Int)` fails because these are distinct types. The previous bidirectional silent coercion rules have been removed. This preserves type precision and properly separates subtyping from unification (Pierce & Turner 2000).
+1. **Literal promotion via unification and bidirectional checking.** **Planned state (after bidirectional-typing migration):** Literal promotion will be handled exclusively by `is_subtype` in checking mode via the [SUB] rule. The bidirectional promotion rules in `unify()` will be removed. **Current state:** `unify()` retains 6 bidirectional promotion rules (see the Unification section above) as pragmatic extensions. Both paths coexist during the migration. When the migration is complete, unification will be pure Robinson and `unify(IntLiteral(42), Int)` will fail unless wrapped in a checking context that applies [SUB].
 
 2. **Named args not unified.** Named arguments in `[call ...]` are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
 

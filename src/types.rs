@@ -164,12 +164,37 @@ impl Type {
             _ => false,
         }
     }
+
+    /// Collect row variables from RowRest positions in the type tree.
+    /// Unlike collect_type_vars which collects both TypeVar and RowVar,
+    /// this method only collects from RowRest::RowVar positions.
+    pub fn collect_row_vars(&self, vars: &mut BTreeSet<String>) {
+        match self {
+            Type::Record(fields, rest) => {
+                for ty in fields.values() {
+                    ty.collect_row_vars(vars);
+                }
+                if let RowRest::RowVar(name, _) = rest {
+                    vars.insert(name.clone());
+                }
+            }
+            Type::Function { params, ret } => {
+                for p in params {
+                    p.collect_row_vars(vars);
+                }
+                ret.collect_row_vars(vars);
+            }
+            Type::Seq(elem) => elem.collect_row_vars(vars),
+            _ => {}
+        }
+    }
 }
 
 /// Type scheme for let-generalization (∀α₁...αₙ. τ)
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
-    pub vars: Vec<String>,
+    pub type_vars: Vec<String>,
+    pub row_vars: Vec<String>,
     pub body: Type,
 }
 
@@ -177,7 +202,8 @@ impl TypeScheme {
     /// Create a monomorphic scheme (no quantified variables)
     pub fn mono(ty: Type) -> Self {
         Self {
-            vars: vec![],
+            type_vars: vec![],
+            row_vars: vec![],
             body: ty,
         }
     }
@@ -185,10 +211,16 @@ impl TypeScheme {
 
 impl fmt::Display for TypeScheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.vars.is_empty() {
+        if self.type_vars.is_empty() && self.row_vars.is_empty() {
             write!(f, "{}", self.body)
         } else {
-            write!(f, "∀{}. {}", self.vars.join(" "), self.body)
+            let all_vars: Vec<String> = self
+                .type_vars
+                .iter()
+                .chain(self.row_vars.iter())
+                .cloned()
+                .collect();
+            write!(f, "∀{}. {}", all_vars.join(" "), self.body)
         }
     }
 }
@@ -478,6 +510,15 @@ pub fn unify(
     }
 }
 
+/// Instantiate a type by creating fresh type variables at level 0.
+/// Call-site vars are created at level 0 and intentionally NOT registered in
+/// `InferState.levels`. This means they are treated as level 0 = never generalize,
+/// because `generalize()` only generalizes variables where `levels[var] > enclosing_level`
+/// and absent variables default to 0. In contrast, `InferState::fresh_var()` always
+/// registers at `state.level`, and `instantiate_at_level()` registers at the current
+/// level for proper participation in generalization.
+///
+/// This function is test-only; production code uses `instantiate_at_level()`.
 #[cfg(test)]
 pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
     let mut vars = BTreeSet::new();
@@ -520,20 +561,31 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
 /// Instantiate a type scheme by creating fresh type variables at the given level.
 /// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
 pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferState) -> Type {
-    if scheme.vars.is_empty() {
+    if scheme.type_vars.is_empty() && scheme.row_vars.is_empty() {
         // Monomorphic scheme: return body directly
         return scheme.body.clone();
     }
 
     // Create fresh type variables at the specified level for each quantified var
     let mut renaming = Substitution::new();
-    for var in &scheme.vars {
+    for var in &scheme.type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter += 1;
         state.levels.insert(fresh_name.clone(), level);
         renaming
             .map
             .insert(var.clone(), Type::TypeVar(fresh_name, level));
+    }
+
+    // Create fresh row variables (as Record with RowVar rest)
+    for var in &scheme.row_vars {
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter += 1;
+        state.levels.insert(fresh_name.clone(), level);
+        renaming.map.insert(
+            var.clone(),
+            Type::Record(IndexMap::new(), RowRest::RowVar(fresh_name, level)),
+        );
     }
 
     renaming.apply(&scheme.body)
@@ -543,11 +595,31 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
 /// whose level is strictly greater than the enclosing scope level.
 /// Used for let-generalization: ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ
 pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
-    let mut all_vars = BTreeSet::new();
-    ty.collect_type_vars(&mut all_vars);
+    // Early exit for monomorphic types (common case: all-concrete config dicts)
+    if !ty.has_type_vars() {
+        return TypeScheme::mono(ty.clone());
+    }
+
+    let mut all_type_vars = BTreeSet::new();
+    ty.collect_type_vars(&mut all_type_vars);
+
+    let mut all_row_vars = BTreeSet::new();
+    ty.collect_row_vars(&mut all_row_vars);
 
     // Filter: keep only vars where levels[var] > level
-    let generalizable: Vec<String> = all_vars
+    let generalizable_type_vars: Vec<String> = all_type_vars
+        .into_iter()
+        .filter(|var| {
+            // Exclude row vars from type_vars (row vars collected separately)
+            !all_row_vars.contains(var)
+        })
+        .filter(|var| {
+            let var_level = state.levels.get(var).copied().unwrap_or(0);
+            var_level > level
+        })
+        .collect();
+
+    let generalizable_row_vars: Vec<String> = all_row_vars
         .into_iter()
         .filter(|var| {
             let var_level = state.levels.get(var).copied().unwrap_or(0);
@@ -555,11 +627,12 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
         })
         .collect();
 
-    if generalizable.is_empty() {
+    if generalizable_type_vars.is_empty() && generalizable_row_vars.is_empty() {
         TypeScheme::mono(ty.clone())
     } else {
         TypeScheme {
-            vars: generalizable,
+            type_vars: generalizable_type_vars,
+            row_vars: generalizable_row_vars,
             body: ty.clone(),
         }
     }
@@ -2182,7 +2255,8 @@ mod tests {
     #[test]
     fn test_type_scheme_mono_empty_vars() {
         let scheme = TypeScheme::mono(Type::Int);
-        assert!(scheme.vars.is_empty());
+        assert!(scheme.type_vars.is_empty());
+        assert!(scheme.row_vars.is_empty());
         assert_eq!(scheme.body, Type::Int);
     }
 
@@ -2193,7 +2267,8 @@ mod tests {
             ret: Box::new(Type::Bool),
         };
         let scheme = TypeScheme::mono(body.clone());
-        assert!(scheme.vars.is_empty());
+        assert!(scheme.type_vars.is_empty());
+        assert!(scheme.row_vars.is_empty());
         assert_eq!(scheme.body, body);
     }
 
@@ -2206,7 +2281,8 @@ mod tests {
     #[test]
     fn test_type_scheme_display_polymorphic() {
         let scheme = TypeScheme {
-            vars: vec!["a".into(), "b".into()],
+            type_vars: vec!["a".into(), "b".into()],
+            row_vars: vec![],
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
@@ -2218,7 +2294,8 @@ mod tests {
     #[test]
     fn test_type_scheme_display_single_var() {
         let scheme = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         assert_eq!(format!("{scheme}"), "∀a. a");
@@ -2227,11 +2304,13 @@ mod tests {
     #[test]
     fn test_type_scheme_partial_eq_same() {
         let s1 = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         let s2 = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         assert_eq!(s1, s2);
@@ -2240,11 +2319,13 @@ mod tests {
     #[test]
     fn test_type_scheme_partial_eq_different_vars() {
         let s1 = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::Int,
         };
         let s2 = TypeScheme {
-            vars: vec!["b".into()],
+            type_vars: vec!["b".into()],
+            row_vars: vec![],
             body: Type::Int,
         };
         assert_ne!(s1, s2);
@@ -2261,7 +2342,8 @@ mod tests {
     fn test_type_scheme_partial_eq_mono_vs_poly() {
         let s1 = TypeScheme::mono(Type::TypeVar("a".into(), 0));
         let s2 = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         assert_ne!(s1, s2);
@@ -2335,7 +2417,8 @@ mod tests {
     fn test_env_insert_scheme_stores_and_retrieves() {
         let mut env = TypeEnv::new();
         let scheme = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         env.insert_scheme("f".into(), scheme.clone());
@@ -2350,7 +2433,8 @@ mod tests {
 
         let mut child = TypeEnv::with_parent(Rc::new(parent));
         let child_scheme = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         child.insert_scheme("x".into(), child_scheme.clone());
@@ -2374,7 +2458,8 @@ mod tests {
     #[test]
     fn test_instantiate_scheme_polymorphic() {
         let scheme = TypeScheme {
-            vars: vec!["a".into(), "b".into()],
+            type_vars: vec!["a".into(), "b".into()],
+            row_vars: vec![],
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0)],
                 ret: Box::new(Type::TypeVar("b".into(), 0)),
@@ -2412,7 +2497,8 @@ mod tests {
     #[test]
     fn test_instantiate_scheme_creates_independent_instances() {
         let scheme = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         let mut state = InferState::new();
@@ -2431,7 +2517,8 @@ mod tests {
         let state = InferState::new();
         let ty = Type::Int;
         let scheme = generalize(0, &ty, &state);
-        assert!(scheme.vars.is_empty());
+        assert!(scheme.type_vars.is_empty());
+        assert!(scheme.row_vars.is_empty());
         assert_eq!(scheme.body, Type::Int);
     }
 
@@ -2441,7 +2528,8 @@ mod tests {
         state.levels.insert("a".into(), 2);
         let ty = Type::TypeVar("a".into(), 2);
         let scheme = generalize(1, &ty, &state);
-        assert_eq!(scheme.vars, vec!["a"]);
+        assert_eq!(scheme.type_vars, vec!["a"]);
+        assert!(scheme.row_vars.is_empty());
         assert_eq!(scheme.body, ty);
     }
 
@@ -2452,7 +2540,8 @@ mod tests {
         let ty = Type::TypeVar("a".into(), 1);
         let scheme = generalize(1, &ty, &state);
         // Level 1 is NOT > 1, so should not generalize
-        assert!(scheme.vars.is_empty());
+        assert!(scheme.type_vars.is_empty());
+        assert!(scheme.row_vars.is_empty());
     }
 
     #[test]
@@ -2462,7 +2551,8 @@ mod tests {
         let ty = Type::TypeVar("a".into(), 0);
         let scheme = generalize(1, &ty, &state);
         // Level 0 is NOT > 1, so should not generalize
-        assert!(scheme.vars.is_empty());
+        assert!(scheme.type_vars.is_empty());
+        assert!(scheme.row_vars.is_empty());
     }
 
     #[test]
@@ -2478,10 +2568,11 @@ mod tests {
         let scheme = generalize(1, &ty, &state);
         // Only a (level 2 > 1) and c (level 3 > 1) should be generalized
         // b is at level 1, not > 1
-        assert_eq!(scheme.vars.len(), 2);
-        assert!(scheme.vars.contains(&"a".into()));
-        assert!(scheme.vars.contains(&"c".into()));
-        assert!(!scheme.vars.contains(&"b".into()));
+        assert_eq!(scheme.type_vars.len(), 2);
+        assert!(scheme.type_vars.contains(&"a".into()));
+        assert!(scheme.type_vars.contains(&"c".into()));
+        assert!(!scheme.type_vars.contains(&"b".into()));
+        assert!(scheme.row_vars.is_empty());
     }
 
     #[test]
@@ -2492,7 +2583,8 @@ mod tests {
         fields.insert("x".into(), Type::Int);
         let ty = Type::Record(fields, RowRest::RowVar("r".into(), 2));
         let scheme = generalize(1, &ty, &state);
-        assert_eq!(scheme.vars, vec!["r"]);
+        assert_eq!(scheme.row_vars, vec!["r"]);
+        assert!(scheme.type_vars.is_empty());
     }
 
     // --- level lowering in unify ---
@@ -2593,11 +2685,12 @@ mod tests {
     #[test]
     fn test_instantiate_scheme_with_row_var_body() {
         // Create a TypeScheme whose body is Record(fields, RowRest::RowVar("r", 1))
-        // with vars: vec!["r"]
+        // with row_vars: vec!["r"]
         let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
         let scheme = TypeScheme {
-            vars: vec!["r".into()],
+            type_vars: vec![],
+            row_vars: vec!["r".into()],
             body: Type::Record(fields.clone(), RowRest::RowVar("r".into(), 1)),
         };
 
@@ -2643,10 +2736,11 @@ mod tests {
 
     #[test]
     fn test_instantiate_scheme_leaves_free_vars_unchanged() {
-        // Create a TypeScheme with vars: vec!["a"] and body Function { params: [TypeVar("a", 1)], ret: TypeVar("b", 1) }
+        // Create a TypeScheme with type_vars: vec!["a"] and body Function { params: [TypeVar("a", 1)], ret: TypeVar("b", 1) }
         // Only "a" is quantified; "b" is free
         let scheme = TypeScheme {
-            vars: vec!["a".into()],
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 1)],
                 ret: Box::new(Type::TypeVar("b".into(), 1)),
