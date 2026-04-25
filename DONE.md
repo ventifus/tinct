@@ -953,3 +953,16 @@ Doc/06 sync and minor correctness fixes for the access-chain changes. Requires r
 - [x] Tighten doc/07:138 TypeScript/Haskell/OCaml analogy. (`doc/07-type-extensions.md:138`)
 - [x] Apply `state.subst` in `check_call_with_scheme` CALL-MONO return — `state.subst.apply(ret)`. (`src/typecheck.rs:835`)
 - [x] Apply `state.subst` to `target_ty` in `check_range_access`. (`src/typecheck.rs:762`)
+
+### row-unification-g: Test Coverage and Nit Fixes
+
+Test coverage gaps and nit fixes from the row-unification-e and row-unification-f panel reviews. Requires row-unification-f.
+
+- [x] Remove vestigial `unify_tails` line from doc/07 Part 5 pseudocode — line 562 shows `unify_tails(RowVar(ρ), RowVar(ρ_fresh))` with comment "not needed, just bind:" followed by the actual direct binding; the vestigial line is confusing. (`doc/07-type-extensions.md:562`) [Nit, computer-scientist C52]
+- [x] Add `check_dot_access` occurs-check error path test — `typecheck.rs:621-628` returns "infinite row type: {rho} occurs in its own binding" when dot-access on an open-record produces a self-referential row binding; zero tests trigger this path. Add `test_dot_access_open_record_infinite_row_cycle`. (`src/typecheck.rs:621-628`) [Major, test-crafter C52]
+- [x] Strengthen `test_dot_access_typevar_generates_constraint` assertion — currently only checks result is `TypeVar` not `Any`; does not verify the correct constraint `α = Record({name: β}, ρ)` was generated. Extract the TypeVar name for `result`, then verify `data`'s inferred type is a `Record` with field `name` equal to that same TypeVar. (`src/typecheck.rs:1617-1637`) [Major, test-crafter C52]
+- [x] Strengthen `test_dot_access_open_record_extends_tail` assertion — verifies `r1` and `r2` are TypeVars but not that they are DISTINCT TypeVars; if the implementation returned the same fresh β twice, test would pass. Add assertion that the TypeVar names differ. (`src/typecheck.rs:1649-1661`) [Major, test-crafter C52]
+- [x] Add TypeAssert default inference-error propagation test — `resolve_type_assert` at `typecheck.rs:1058-1061` propagates `Err(errs)` when the default expression itself fails to infer; no test exercises this arm. Add `check_err("[@[type: Number  default: $undefined_var] 42]")` asserting any error is produced. (`src/typecheck.rs:1058-1061`) [Minor, test-crafter C52]
+- [x] Add corpus tests for Part 5 access chain constraint generation — `tests/corpus/eval/typecheck/` has row_poly tests but none for access chains; add test for `[result: $data.name  data: [name: hello]]` type-checking correctly, and multi-field accumulation. [Minor, test-crafter C52]
+- [x] Add corpus tests for TypeAssert default behavior — `tests/corpus/eval/type_assertions/` has only 3 pass tests and 1 error test; add corpus tests for `default:` suppression (wrong main expr, correct default) and default type mismatch (hard error). [Minor, test-crafter C52]
+- [x] Add comment to `mem::take` in `check_dot_access` TypeVar case — borrow-split rationale not documented; future readers may be confused by the pattern. (`src/typecheck.rs:661`) [Nit, type-theorist C52]
