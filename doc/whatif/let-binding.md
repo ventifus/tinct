@@ -33,20 +33,22 @@ Sequential expressions already provide `let*` semantics at the
 document level. But inside function bodies, only a single expression
 is allowed:
 
-```lisp
+```tinct
 # One expression — no intermediate bindings
 double: [fn [x] [call $* $x 2]]
 
-# Workaround for intermediate bindings: wrapper dict + dot access
+# Workaround for intermediate bindings: nested call fn
+# Note: dot access on a bracket expr ([{...}].result) is not valid tinct.
+# Access chains must start from a var_ref. The only single-expression
+# workaround is a nested function application that names each intermediate:
 process: [fn [data]
-    [
-      cleaned: [call $clean $data]
-      result: [call $transform $cleaned]
-    ].result]    # extract the final value
+    [call [fn [cleaned] [call $transform $cleaned]]
+          [call $clean $data]]]
 ```
 
-The wrapper-dict pattern works but is verbose and unintuitive for
-multi-step computations.
+The nested-fn workaround works but is verbose and unintuitive for
+multi-step computations — each additional intermediate requires another
+nested `[call [fn [name] ...] value]` layer.
 
 ### What's Missing
 

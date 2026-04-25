@@ -432,8 +432,17 @@ fn check_expr(
 
     // Default: synthesize then check subsumption
     let actual = infer_expr(expr, env, state, type_map)?;
-    if !Type::is_subtype(&actual, expected) {
-        Err(vec![TypeError::type_mismatch(expected, &actual, expr.span)])
+    // Apply state.subst to both types before comparison — access-chain constraints
+    // may have bound TypeVars in state.subst. Without substitution, the comparison
+    // uses stale TypeVars.
+    let actual = state.subst.apply(&actual);
+    let expected_resolved = state.subst.apply(expected);
+    if !Type::is_subtype(&actual, &expected_resolved) {
+        Err(vec![TypeError::type_mismatch(
+            &expected_resolved,
+            &actual,
+            expr.span,
+        )])
     } else {
         Ok(())
     }
@@ -704,6 +713,8 @@ fn check_bracket_access(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let target_ty = infer_expr(target, env, state, type_map)?;
+    // Apply the global accumulated substitution (same pattern as check_dot_access)
+    let target_ty = state.subst.apply(&target_ty);
     let key_ty = infer_expr(key, env, state, type_map)?;
 
     match &target_ty {
@@ -747,6 +758,8 @@ fn check_range_access(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let target_ty = infer_expr(target, env, state, type_map)?;
+    // Apply the global accumulated substitution (same pattern as check_dot_access)
+    let target_ty = state.subst.apply(&target_ty);
 
     for bound in [start, end].into_iter().flatten() {
         let bound_ty = infer_expr(bound, env, state, type_map)?;
@@ -818,7 +831,8 @@ fn check_call_with_scheme(
                 if !errors.is_empty() {
                     return Err(errors);
                 }
-                return Ok(*ret.clone());
+                // Apply state.subst to return type (mirrors CALL-POLY path at line 837)
+                return Ok(state.subst.apply(ret));
             }
 
             // CALL-POLY: function type still has type variables after instantiation
@@ -3381,5 +3395,15 @@ mod tests {
             }
             other => panic!("expected Record type, got {:?}", other),
         }
+    }
+
+    // -- state.subst apply() regression test --
+
+    #[test]
+    fn test_bracket_access_forward_ref_resolves_correctly() {
+        // Forward-reference bracket access should resolve to field type.
+        // Exercises the state.subst.apply() path in check_bracket_access (line ~717).
+        let ty = result_field("[result: $data[name]  data: [name: hello]]", "result");
+        assert_eq!(ty, Type::StringLiteral("hello".to_string()));
     }
 }

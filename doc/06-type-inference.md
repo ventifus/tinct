@@ -190,9 +190,15 @@ Named arguments are synthesized but not checked against parameter types — `Typ
 ────────────────────────────────── [DOT]
 Γ ⊢ e.k : τ
 
-Γ ⊢ e : Record(F, Open | RowVar(_)),  k ∉ F
-────────────────────────────────── [DOT-OPEN]
-Γ ⊢ e.k : Any
+Γ ⊢ e ⇒ α,  β fresh,  ρ fresh
+S = unify(α ≐ Record({k: β}, RowVar(ρ)))
+────────────────────────────────── [DOT-VAR]
+Γ ⊢ e.k ⇒ β
+
+Γ ⊢ e : Record(F, RowVar(ρ)),  k ∉ F,  β fresh,  ρ' fresh
+S[ρ ↦ Row({k: β}, RowVar(ρ'))]
+────────────────────────────────── [DOT-ROWVAR]
+Γ ⊢ e.k ⇒ β
 
 Γ ⊢ e : Record(F, ρ),  Γ ⊢ key : StringLiteral(k),  F(k) = τ
 ────────────────────────────────── [BRACKET-LIT]
@@ -400,6 +406,7 @@ pub struct InferState {
     pub name_counter: u32,   // monotonic fresh variable name counter
     pub level: u32,          // current binding depth
     pub levels: HashMap<String, u32>,  // var name → current level
+    pub subst: Substitution, // global constraint accumulator for access-chain bindings
 }
 ```
 
@@ -532,7 +539,8 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `generalize()` | `fn(u32, Type, &InferState) → TypeScheme` |
 | `unify()` U-VAR | Bind + symmetric level lowering |
 | `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
-| `InferState` | `{ name_counter: u32, level: u32, levels: HashMap<String, u32> }` |
+| `InferState` | `{ name_counter: u32, level: u32, levels: HashMap<String, u32>, subst: Substitution }` |
+| `InferState.subst` | Accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR]; merged into letrec substitution in Pass 3b |
 | `collect_type_vars()` | `fn(&self, &mut BTreeSet<String>)` — out-param, no level |
 | `Type::Display` | Shows `TypeVar` name only (level hidden) |
 

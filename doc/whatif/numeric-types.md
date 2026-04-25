@@ -66,12 +66,12 @@ optimizes.
 Range constraints use the existing `@` annotation system, connecting
 to structural contracts (`doc/whatif/structural-contracts.md`):
 
-```lisp
-Port: [type Int @[min: 0  max: 65535]]
-Byte: [type Int @[min: 0  max: 255]]
-Percentage: [type Float @[min: 0.0  max: 100.0]]
-BigCounter: [type Int @[min: 0]]  # no upper bound -> BigInt
-Price: [type Decimal @[precision: 2]]
+```tinct
+Port:       [type Int@[min: 0  max: 65535]]
+Byte:       [type Int@[min: 0  max: 255]]
+Percentage: [type Float@[min: 0.0  max: 100.0]]
+BigCounter: [type Int@[min: 0]]   # no upper bound -> BigInt
+Price:      [type Decimal@[precision: 2]]
 ```
 
 No new type constructors are needed. `Int`, `Float`, and `Number`
@@ -93,8 +93,8 @@ The result of arithmetic on range-constrained values is an
 unconstrained `Int` (or `Float`) — the range applies to the
 annotated binding, not to derived values:
 
-```lisp
-Port: [type Int @[min: 0  max: 65535]]
+```tinct
+Port: [type Int@[min: 0  max: 65535]]
 port: [@Port 8080]
 next: [call $+ $port 1]  # next is Int, not Port — no range constraint
 ```
@@ -313,8 +313,8 @@ representation.
 
 Add `@[min: N  max: M]` as a contract on `Int` and `Float`:
 
-```lisp
-Port: [type Int @[min: 0  max: 65535]]
+```tinct
+Port: [type Int@[min: 0  max: 65535]]
 port: [@Port $config.port]  # validates at runtime
 ```
 
@@ -353,8 +353,8 @@ Phase 1. Programs that worked before continue to work identically.
 For ranges exceeding i64 (or with no upper bound), the runtime
 automatically uses `BigInt`:
 
-```lisp
-BigId: [type Int @[min: 0]]  # no upper bound -> BigInt
+```tinct
+BigId: [type Int@[min: 0]]  # no upper bound -> BigInt
 factorial: [fn [n]
     [call $if [call $= $n 0]
         1

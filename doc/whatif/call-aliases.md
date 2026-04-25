@@ -21,8 +21,8 @@ Current workarounds include function wrappers and existing ergonomic
 forms:
 
 ```lisp
-# Function wrappers
-apply: [fn [f ...args] [call $f ...args]]
+# Function wrappers — note: spread-in-call ([call $f ...args]) is not valid
+# tinct syntax; $apply is a builtin for this purpose
 pipe:  [fn [x f] [call $f $x]]
 
 # $_ implicit lambda

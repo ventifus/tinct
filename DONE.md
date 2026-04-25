@@ -940,3 +940,16 @@ Verification follow-on for row-unification-c. Requires row-unification-c.
 - [x] Add `test_lower_row_var_levels_prevents_generalization` (`src/types.rs:4510`)
 - [x] Add `test_unify_tails_empty_vs_rowvar` symmetric direction (`src/types.rs:4557`)
 - [x] Add multi-hop TypeVar chase test (`src/types.rs:4585`)
+
+### row-unification-f-b: State.Subst Doc Sync and Minor Fixes
+
+Doc/06 sync and minor correctness fixes for the access-chain changes. Requires row-unification-f.
+
+- [x] Apply `state.subst` before `is_subtype` in `check_expr` default path — bilateral `state.subst.apply()` on both `actual` and `expected`. (`src/typecheck.rs:438-439`)
+- [x] Apply `state.subst` to target type in `check_bracket_access` — `state.subst.apply()` on `target_ty`. (`src/typecheck.rs:717`)
+- [x] Update doc/06 `[DOT-OPEN]` rule to reflect constraint generation — replaced with [DOT-VAR] and [DOT-ROWVAR] rules. (`doc/06-type-inference.md:193-201`)
+- [x] Add `subst` field to `InferState` struct block and reference table in doc/06. (`doc/06-type-inference.md:409, 542-543`)
+- [x] Fix doc/07:134 `### Default type validation` heading inconsistency — reverted to bold paragraph header. (`doc/07-type-extensions.md:134`)
+- [x] Tighten doc/07:138 TypeScript/Haskell/OCaml analogy. (`doc/07-type-extensions.md:138`)
+- [x] Apply `state.subst` in `check_call_with_scheme` CALL-MONO return — `state.subst.apply(ret)`. (`src/typecheck.rs:835`)
+- [x] Apply `state.subst` to `target_ty` in `check_range_access`. (`src/typecheck.rs:762`)

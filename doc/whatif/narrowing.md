@@ -10,10 +10,10 @@ tinct has singleton literal types (`IntLiteral(42)`,
 type checker has no path sensitivity — a variable has the same type in
 both branches of an `$if`.
 
-```lisp
-[if [= $x "hello"]
-  $x       ;; still typed as Str, not StringLiteral("hello")
-  $x]      ;; still typed as Str
+```tinct
+[call $if [call $= $x "hello"]
+  $x       # still typed as Str, not StringLiteral("hello")
+  $x]      # still typed as Str
 ```
 
 - `$if` is typed via `check_call` like any other builtin — no
@@ -85,21 +85,21 @@ environment).
 
 #### Pattern 1: Equality with Literal
 
-```lisp
-[= $x "hello"]
+```tinct
+[call $= $x "hello"]
 ```
 
 - **True branch:** `$x : StringLiteral("hello")`
 - **False branch:** `$x : Str` (no negation — would need `Str \ {"hello"}`)
 
 Recognizes `$=` with one operand being a `VarRef` and the other a literal
-expression. Both operand orderings are recognized (`[= "hello" $x]` and
-`[= $x "hello"]`).
+expression. Both operand orderings are recognized (`[call $= "hello" $x]` and
+`[call $= $x "hello"]`).
 
 #### Pattern 2: Type-of Guard
 
-```lisp
-[= [type-of $x] "Int"]
+```tinct
+[call $= [call $type-of $x] "Int"]
 ```
 
 - **True branch:** `$x : Int`
@@ -112,13 +112,13 @@ is a string literal matching a known type name. Maps `"Int"` → `Type::Int`,
 `Type::Seq(Any)`, `"Function"` → `Type::Any` (can't narrow further).
 
 When type predicates are available (see `doc/whatif/type-predicates.md`),
-this pattern extends to recognize `[$int? $x]` directly, without the
+this pattern extends to recognize `[call $int? $x]` directly, without the
 `$type-of` indirection.
 
 #### Pattern 3: Key Presence
 
-```lisp
-[has? $x "name"]
+```tinct
+[call $has? $x "name"]
 ```
 
 - **True branch:** `$x : Record([name: α], Open)` where `α` is fresh —
@@ -131,8 +131,8 @@ already has a record type, the key is added to the existing fields.
 
 #### Pattern 4: Boolean Conjunction
 
-```lisp
-[and [= $x "hello"] [has? $y "name"]]
+```tinct
+[call $and [call $= $x "hello"] [call $has? $y "name"]]
 ```
 
 Conjunction (`$and`) applies both narrowings to the true-branch

@@ -8,7 +8,7 @@ tinct has exactly one I/O operation: `$include`, which reads a `.llt`, `.json`, 
 
 ```tinct
 # Current: all I/O goes through $include
-$include "users.json"
+[call $include "users.json"]
 ---
 [call $filter [fn [u] [call $< 30 $u.age]] $$]
 ```
@@ -311,6 +311,7 @@ println:    [fn [s]           [call $emit [call $str $s "\n"]]]
 
 ```tinct
 # stdlib/net.llt
+# Note: multi-expression fn bodies require doc/whatif/let-binding.md Phase 1
 fetch: [fn [net-cap url]
   [parsed: [call $parse-url $url]]
   [conn: [call $if [call $= $parsed.scheme "https"]
@@ -333,7 +334,7 @@ fetch-opts: [fn [net-cap url opts] ...]
 This avoids lazy I/O's equational reasoning violations: each line-read is a strict I/O operation triggered by the observable force of a `$tail`, not deferred via `unsafeInterleaveIO`. The finalization guarantee is weaker than Kiselyov (2012)'s fold-based iteratees — `Drop` timing depends on when the `Rc` reference count hits zero, which in a lazy language is unpredictable if the Seq is kept alive in a long-lived binding. For tinct's single-shot config evaluation model this is acceptable; the process exits shortly after evaluation completes, releasing all handles.
 
 ```tinct
-$include "stdlib/io.llt"
+[call $include "stdlib/io.llt"]
 
 [call $read-lines $fs "large-log.txt"]
 ---
@@ -476,7 +477,7 @@ Phase 2 (future): distinct `Type::DirCap`, `Type::NetCap`, `Type::Handle`.
 `$dir-cap`, `$open`, `$narrow`, `$revocable`, `$slurp`, `$write`, `$lines`, `$emit`, `$stdin`, `$env` (with `--no-caps`/`--allow-env` gating), and `stdlib/io.llt`. CLI `--cap-fs` injection.
 
 ```tinct
-$include "stdlib/io.llt"
+[call $include "stdlib/io.llt"]
 
 # llt eval --cap-fs fs=/var/data --allow-env DATABASE_URL script.llt
 
@@ -494,8 +495,8 @@ $include "stdlib/io.llt"
 `$net-cap`, `$connect`, `$tls` (basic), CLI `--cap-net` injection, `stdlib/net.llt`. Enables HTTP and arbitrary TCP protocol implementations in tinct.
 
 ```tinct
-$include "stdlib/io.llt"
-$include "stdlib/net.llt"
+[call $include "stdlib/io.llt"]
+[call $include "stdlib/net.llt"]
 
 # llt eval --cap-fs fs=/var/data --cap-net net=schema.internal script.llt
 
