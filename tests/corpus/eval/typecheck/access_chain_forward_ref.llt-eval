@@ -1,0 +1,6 @@
+# Access chain constraint generation: forward-reference dot-access
+# The type checker generates a constraint for $data.name before $data is defined.
+# This tests Part 5 access chain constraint generation (check_dot_access).
+[result: $data.name  data: [name: hello]]
+===
+Dict({"result": String("hello"), "data": Dict({"name": String("hello")})})

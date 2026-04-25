@@ -565,7 +565,6 @@ check_dot_access(Γ, e, field) :
       else match tail:
         RowVar(ρ) → let β = fresh_type_var()
                      let ρ_fresh = fresh_row_var()
-                     unify_tails(RowVar(ρ), RowVar(ρ_fresh))  # not needed, just bind:
                      S ∪ {ρ → Row { fields: {field: β}, tail: RowVar(ρ_fresh) }}
                      return β
         Empty     → ERROR: field not found in closed record
