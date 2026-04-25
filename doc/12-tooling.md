@@ -79,7 +79,7 @@ Two layers of defense for `$include` and any future file I/O:
 - Stdlib is embedded via `include_str!` at compile time — no filesystem access, unaffected by sandboxing.
 - REPL: default allow-path is cwd. LSP: workspace root (or document directory if no workspace).
 
-**Check ordering in `$include`:** canonicalize path → allowlist check → cache check → cycle detection → read file. The allowlist check happens after canonicalization (to prevent symlink bypasses) but before the cache check (to prevent cached results from bypassing updated allowlists).
+**Check ordering in `$include`:** canonicalize path → allowlist check → cache lookup → cycle detection → read file → **hash check (if hash provided)** → cache store → parse. Cache lookup and cycle detection are cheap in-memory operations; the read and hash are deferred until after both pass. On a cache hit, the stored hash map (recorded on first read) is checked against the caller's expected algorithm and digest; if they match, the cached result is returned without re-reading. The cache is session-scoped (in-memory only; not persisted to disk).
 
 **Error message format:** `"include: path '/etc/passwd' is outside allowed paths (allowed: ['/home/user/project'])"` — shows resolved path and the allowlist so the user knows exactly what happened and how to fix it.
 
@@ -88,6 +88,88 @@ tinct --allow-path . eval main.llt                           # default (explicit
 tinct --allow-path ./lib --allow-path /shared eval main.llt  # explicit allowlist
 tinct --allow-path / eval main.llt                           # unrestricted
 ```
+
+### Import Integrity Hashes
+
+`$include` accepts an optional integrity hash as a second argument. When present, tinct verifies the hash of the raw file bytes before parsing. A mismatch is a hard error — evaluation does not proceed.
+
+```tinct
+# Without hash: normal include (no integrity check)
+[call $include "config/settings.llt"]
+
+# With hash: content is verified before evaluation
+[call $include "config/settings.llt" "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e"]
+```
+
+The hash is a quoted string with the format `"algo:hexdigest"`. The algorithm name and hex digest are separated by `:`.
+
+**Default algorithm: BLAKE3.** BLAKE3 (O'Connor et al. 2020) is the default and preferred algorithm. Against quantum adversaries, Grover's algorithm halves the bit-security of any hash function. BLAKE3 outputs 256 bits, giving 128 bits of quantum security — well above the threshold considered infeasible even with near-term quantum hardware. BLAKE3 is also significantly faster than SHA-2 or SHA-3, though for typical config files (< 1 MB) this is imperceptible.
+
+**Multiple algorithms supported:** The hash prefix determines the algorithm. Supported algorithms:
+
+| Prefix | Algorithm | Hex length | Quantum security |
+|--------|-----------|-----------|-----------------|
+| `blake3:` | BLAKE3 | 64 chars (256 bits) | 128 bits |
+| `sha3-256:` | SHA3-256 (FIPS 202) | 64 chars (256 bits) | 128 bits † |
+| `sha3-512:` | SHA3-512 (FIPS 202) | 128 chars (512 bits) | 256 bits † |
+| `sha256:` | SHA-256 | 64 chars (256 bits) | ~85 bits (Grover) |
+
+† SHA-3's sponge construction gives capacity-based quantum security bounds that differ from the simple "output-bits ÷ 2" rule. SHA3-256 has capacity 512, giving 256 bits of classical collision resistance and 128 bits against Grover; SHA3-512 has capacity 1024, giving 256 bits of quantum security. The bounds are sound but derive from different assumptions than SHA-2.
+
+`sha256:` is accepted for interoperability but not recommended for new programs — Grover's algorithm reduces its effective collision resistance to ~85 bits. `llt hash` defaults to BLAKE3.
+
+The hex digest must be exactly the correct length for the algorithm. Shorter or longer strings are rejected with a clear error before any file access.
+
+**What is hashed:** Raw file bytes (`std::fs::read` → `Vec<u8>`), before UTF-8 validation or parsing. No normalization. Independently verifiable: `b3sum file.llt`, `sha3-256sum file.llt`, `sha256sum file.llt`.
+
+**Why raw bytes and not semantic content:** A semantic hash would require evaluating the include before verifying it — circular, since evaluation IS the import. Tinct also has no canonical normal form (general recursion means normalization does not always terminate). Raw bytes are simpler, stable, and independently verifiable with standard tools.
+
+**Generating the hash:** The `llt hash <file>` subcommand outputs the hash in the correct format:
+
+```bash
+$ llt hash config/settings.llt
+blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e
+
+$ llt hash --algo sha3-256 config/settings.llt
+sha3-256:a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
+```
+
+(The example digests above are the BLAKE3 and SHA3-256 hashes of the empty string — real files produce different values.)
+
+Use the output as the second argument to `[call $include ...]`:
+
+```tinct
+[call $include "config/settings.llt" "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e"]
+```
+
+**Cache integration:** When a file is first included with a hash, `builtin_include` reads the raw bytes (`Vec<u8>`), computes the hash, verifies it matches the expected value, and stores `{evaluated_result, hash_map: HashMap<Algo, HexDigest>}` in the session cache keyed by canonical path. On subsequent includes of the same path:
+
+- If the new include provides a hash: look up the algorithm in `hash_map`. Hit → compare; match returns cached result, mismatch errors. Miss (algorithm not seen before) → re-read the file, compute the new algorithm's hash, verify, store the new entry in `hash_map`, return the same cached evaluated result. This ensures integrity is always verified against fresh bytes for each new algorithm, while the evaluated result is reused (files are assumed not to change during a single `llt eval` session).
+- If the new include has no hash: return cached result without hash verification (same as today).
+
+The cache is session-scoped and held in memory — it does not persist across `llt eval` invocations. Stdlib is embedded via `include_str!` at compile time and is not subject to hash verification.
+
+**Error on mismatch:**
+
+```
+include: hash mismatch for 'config/settings.llt'
+  expected: blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e
+  actual:   blake3:b7c2f3a1d9e891f42c2d4b578c9a0e3f1b6d7e8a2c5f0d4e9b3a7c1f8e2d5b4
+```
+
+**Conflicting hashes:** If the same file is included twice with different expected hashes for the same algorithm, the second include errors — the hash verified on the first read is stored in `hash_map`; if the second caller's expected hash differs from it, the mismatch error fires without re-reading the file.
+
+**Require-integrity mode:** `--require-integrity` makes any `[call $include ...]` without a hash a hard error. Use for environments where all dependencies must be content-addressed:
+
+```bash
+llt eval --require-integrity --allow-path ./vendor main.llt
+```
+
+Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redundant. `--require-integrity` is meaningful alongside `--allow-path`, where `$include` is permitted but must always carry a hash.
+
+**Use cases:** Pinning a shared config file in CI so an unreviewed change fails loudly. Verifying third-party tinct libraries. High-security evaluation environments where all includes must be content-addressed.
+
+**Builtin change:** `builtin_include` gains an optional second positional argument — the hash string. No grammar or parser changes. All existing `[call $include "path"]` calls without a hash continue to work unchanged.
 
 ### Network Sandbox (seccomp-bpf)
 

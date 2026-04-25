@@ -107,7 +107,7 @@ In tinct's capability model, a client certificate is an **identity capability**:
 `$tls` reads both Handles to EOF at call time, configures rustls with the PEM bytes, then closes both Handles. The resulting `Value::Handle` embodies both directions of authentication: server is verified against CA roots; client identity is presented via the cert.
 
 ```tinct
-$include "stdlib/io.llt"
+[call $include "stdlib/io.llt"]
 
 # llt eval --cap-fs fs=/etc/service-certs --cap-net net=api.internal script.llt
 
@@ -255,6 +255,7 @@ Phase 2: `$fetch` remains tinct code using HTTP/1.0 over Handle. TLS options (CA
 
 ```tinct
 # stdlib/net.llt — $fetch-opts passes TLS config to $tls
+# Note: multi-expression fn bodies require doc/whatif/let-binding.md Phase 1
 fetch-opts: [fn [net-cap url opts]
   [parsed:  [call $parse-url $url]]
   [tls-cfg: [call $dict-select $opts ["ca-bundle" "client-cert" "client-key" "pin-sha256"]]]
@@ -287,8 +288,8 @@ Phase 4 (future): `Type::Handle` with a `tls: bool` tag. `$tls-peer-cert` infers
 `$tls` extended with optional opts dict: `ca-bundle`, `system-roots`, `client-cert`, `client-key`, `pin-sha256`, `alpn`. `$tls-peer-cert` added. `stdlib/net.llt` `$fetch-opts` updated. `rustls-native-certs` and `webpki-roots` added.
 
 ```tinct
-$include "stdlib/io.llt"
-$include "stdlib/net.llt"
+[call $include "stdlib/io.llt"]
+[call $include "stdlib/net.llt"]
 
 # llt eval --cap-fs certs=/etc/tinct-certs --cap-net net=vault.internal:8200 script.llt
 

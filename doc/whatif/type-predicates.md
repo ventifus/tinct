@@ -163,10 +163,10 @@ existing builtin call mechanism.
 **Current:** No type predicates in stdlib.
 **Proposed:** Optionally add `$list?` as a stdlib function (not a builtin)
 that checks for dict-with-integer-keys convention:
-```lisp
+```tinct
 list?: [fn [xs]
-  [call $and [$dict? $xs]
-    [call $every? [fn [k] [$int? $k]] [call $keys $xs]]]]
+  [call $and [call $dict? $xs]
+    [call $every? [fn [k] [call $int? $k]] [call $keys $xs]]]]
 ```
 **Impact:** Minor — optional convenience function, not a language change.
 
