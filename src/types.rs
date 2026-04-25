@@ -778,25 +778,19 @@ fn unify_remainders(
 
         // Error case: closed tail cannot absorb unique fields
         (_, RowTail::Empty) if !u1_empty => Err(TypeError::new(
-            format!(
-                "extra fields [{}] in closed row",
-                {
-                    let mut keys: Vec<_> = unique1.keys().cloned().collect();
-                    keys.sort();
-                    keys.join(", ")
-                }
-            ),
+            format!("extra fields [{}] in closed row", {
+                let mut keys: Vec<_> = unique1.keys().cloned().collect();
+                keys.sort();
+                keys.join(", ")
+            }),
             span,
         )),
         (RowTail::Empty, _) if !u2_empty => Err(TypeError::new(
-            format!(
-                "extra fields [{}] in closed row",
-                {
-                    let mut keys: Vec<_> = unique2.keys().cloned().collect();
-                    keys.sort();
-                    keys.join(", ")
-                }
-            ),
+            format!("extra fields [{}] in closed row", {
+                let mut keys: Vec<_> = unique2.keys().cloned().collect();
+                keys.sort();
+                keys.join(", ")
+            }),
             span,
         )),
 
@@ -806,11 +800,7 @@ fn unify_remainders(
         (RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _))
             if rho1 == rho2 && !u1_empty && !u2_empty =>
         {
-            let mut fields: Vec<_> = unique1
-                .keys()
-                .chain(unique2.keys())
-                .cloned()
-                .collect();
+            let mut fields: Vec<_> = unique1.keys().chain(unique2.keys()).cloned().collect();
             fields.sort();
             Err(TypeError::new(
                 format!(
@@ -865,16 +855,53 @@ fn unify_rows(
         unify(ty1, ty2, subst, state, span)?;
     }
 
-    // Step 4: Unify remainders
-    unify_remainders(
-        unique1,
-        resolved1.tail,
-        unique2,
-        resolved2.tail,
+    // Step 3.5: Re-resolve tails after shared-field unification
+    // Step 3's recursive unify() calls may have bound row variables that appear
+    // as resolved1.tail or resolved2.tail (e.g., when unifying nested Record types
+    // that share a row variable with the outer row's tail). Passing stale tails to
+    // Step 4 would cause unify_remainders to overwrite the Step-3 binding, violating
+    // the Robinson (1965) substitution-threading invariant.
+    let re_resolved1 = resolve_row(
+        &Row {
+            fields: unique1,
+            tail: resolved1.tail,
+        },
         subst,
-        state,
-        span,
-    )
+    );
+    let re_resolved2 = resolve_row(
+        &Row {
+            fields: unique2,
+            tail: resolved2.tail,
+        },
+        subst,
+    );
+
+    // Step 3.6: Re-partition after re-resolution
+    // Re-resolution may surface new fields from row variable bindings that overlap
+    // with the other side's unique fields. These must be unified as shared fields
+    // before passing the truly unique remainders to unify_remainders.
+    let rekeys1: HashSet<&String> = re_resolved1.fields.keys().collect();
+    let rekeys2: HashSet<&String> = re_resolved2.fields.keys().collect();
+    let new_shared: Vec<&String> = rekeys1.intersection(&rekeys2).copied().collect();
+
+    if !new_shared.is_empty() {
+        // New shared fields surfaced by re-resolution — unify them and re-partition.
+        // Delegate to unify_rows which handles the full resolve-partition-unify-remainder
+        // cycle. Terminates because each round binds at least one row variable, and the
+        // occurs check bounds the number of variables.
+        unify_rows(&re_resolved1, &re_resolved2, subst, state, span)
+    } else {
+        // Step 4: Unify remainders with re-resolved tails (no new shared fields)
+        unify_remainders(
+            re_resolved1.fields,
+            re_resolved1.tail,
+            re_resolved2.fields,
+            re_resolved2.tail,
+            subst,
+            state,
+            span,
+        )
+    }
 }
 
 pub fn unify(
@@ -4701,6 +4728,126 @@ mod tests {
         let binding = subst.row_map.get("rho").expect("rho should be bound");
         assert_eq!(binding.tail, RowTail::Empty);
         assert_eq!(binding.fields.len(), 0);
+    }
+
+    /// Test that shared-field unification bindings are not overwritten by stale tail references.
+    ///
+    /// Scenario: ρ appears both as the tail of an outer row AND inside a nested Record field.
+    /// Step 3 (shared-field unification) binds ρ via the nested record.
+    /// Step 4 must re-resolve the outer tail to see that binding, rather than using the
+    /// pre-Step-3 stale RowVar(ρ) reference that would overwrite the binding.
+    ///
+    /// Row1: {a: Record({x: Int, ...ρ}), ...ρ}
+    /// Row2: {a: Record({x: Int, y: Str}), z: Bool}
+    ///
+    /// Step 3 binds ρ → {y: Str, ∅} from inner record unification.
+    /// Without the fix, Step 4 would overwrite ρ → {z: Bool, ∅}, losing the y: Str constraint.
+    /// With the fix, Step 4 re-resolves ρ, sees it's already bound to {y: Str, ∅}, and the
+    /// outer row resolves to {a: ..., y: Str} vs {a: ..., z: Bool} — correctly producing an error.
+    ///
+    /// Formal model: Robinson (1965) substitution-threading invariant — bindings from
+    /// earlier unification steps must be visible to later steps.
+    #[test]
+    fn test_reresolution_after_shared_field_unification() {
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        state.level = 1;
+        state.levels.insert("rho".into(), 1);
+        let span = test_span(1, 1, 1, 1);
+
+        // Row1: {a: Record({x: Int, ...ρ}), ...ρ}
+        let inner1 = Type::Record(Row {
+            fields: HashMap::from([("x".into(), Type::Int)]),
+            tail: RowTail::RowVar("rho".into(), 1),
+        });
+        let row1 = Row {
+            fields: HashMap::from([("a".into(), inner1)]),
+            tail: RowTail::RowVar("rho".into(), 1),
+        };
+
+        // Row2: {a: Record({x: Int, y: Str}), z: Bool}
+        let inner2 = Type::Record(Row {
+            fields: HashMap::from([("x".into(), Type::Int), ("y".into(), Type::Str)]),
+            tail: RowTail::Empty,
+        });
+        let row2 = Row {
+            fields: HashMap::from([("a".into(), inner2), ("z".into(), Type::Bool)]),
+            tail: RowTail::Empty,
+        };
+
+        // Unifying these should FAIL because:
+        // - Inner unification binds ρ → {y: Str, ∅}
+        // - So outer row1 expands to {a: ..., y: Str}
+        // - Outer row2 has {a: ..., z: Bool}
+        // - {y: Str} vs {z: Bool} with both tails closed → error
+        let result = unify(
+            &Type::Record(row1),
+            &Type::Record(row2),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(
+            result.is_err(),
+            "should fail: ρ bound by inner unification prevents outer tail from absorbing z: Bool"
+        );
+    }
+
+    /// Test that re-resolution works correctly when the row variable binding is compatible.
+    ///
+    /// Row1: {a: Record({x: Int, ...ρ}), ...ρ}
+    /// Row2: {a: Record({x: Int, y: Str}), y: Str}
+    ///
+    /// Step 3 binds ρ → {y: Str, ∅} from inner record unification.
+    /// After re-resolution, outer row1 becomes {a: ..., y: Str, ∅}.
+    /// Outer row2 is {a: ..., y: Str, ∅}.
+    /// The newly-surfaced y: Str fields match — unification should succeed.
+    #[test]
+    fn test_reresolution_compatible_binding() {
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        state.level = 1;
+        state.levels.insert("rho".into(), 1);
+        let span = test_span(1, 1, 1, 1);
+
+        // Row1: {a: Record({x: Int, ...ρ}), ...ρ}
+        let inner1 = Type::Record(Row {
+            fields: HashMap::from([("x".into(), Type::Int)]),
+            tail: RowTail::RowVar("rho".into(), 1),
+        });
+        let row1 = Row {
+            fields: HashMap::from([("a".into(), inner1)]),
+            tail: RowTail::RowVar("rho".into(), 1),
+        };
+
+        // Row2: {a: Record({x: Int, y: Str}), y: Str}
+        let inner2 = Type::Record(Row {
+            fields: HashMap::from([("x".into(), Type::Int), ("y".into(), Type::Str)]),
+            tail: RowTail::Empty,
+        });
+        let row2 = Row {
+            fields: HashMap::from([("a".into(), inner2), ("y".into(), Type::Str)]),
+            tail: RowTail::Empty,
+        };
+
+        // Should succeed: ρ → {y: Str, ∅} from inner, then outer y: Str matches
+        let result = unify(
+            &Type::Record(row1),
+            &Type::Record(row2),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(
+            result.is_ok(),
+            "should succeed: ρ bound to {{y: Str}} by inner, outer y: Str matches. Got: {:?}",
+            result.err()
+        );
+
+        // Verify ρ is bound to {y: Str, ∅}
+        let rho_binding = subst.row_map.get("rho").expect("rho should be bound");
+        assert_eq!(rho_binding.fields.get("y"), Some(&Type::Str));
+        assert_eq!(rho_binding.tail, RowTail::Empty);
     }
 
     /// Test multi-hop TypeVar chase in row_var_occurs_in_type.

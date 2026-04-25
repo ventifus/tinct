@@ -529,11 +529,36 @@ fn infer_dict(
         }
     }
 
-    // Apply substitution to all field types.
-    // Apply state.subst first (access-chain constraints), then local subst (letrec bindings).
+    // Pass 3b: Merge state.subst into local subst after infer+unify (Pass 3), before application (Pass 3c).
+    // Algorithm W threads a single substitution through inference. The two-substitution
+    // model (local subst + state.subst) is a borrow-checker workaround. We reconcile them
+    // here after the infer+unify loop has accumulated constraints into both substitutions.
+
+    // For type_map: apply local subst to state.subst bindings, then merge
+    for (k, v) in &state.subst.type_map {
+        let applied_v = subst.apply(v);
+        subst.type_map.entry(k.clone()).or_insert(applied_v);
+    }
+
+    // For row_map: apply local subst to field types in state.subst row bindings, then merge
+    for (k, row) in &state.subst.row_map {
+        // Apply local subst to all field types in the row
+        let applied_fields: HashMap<String, Type> = row
+            .fields
+            .iter()
+            .map(|(field_name, field_ty)| (field_name.clone(), subst.apply(field_ty)))
+            .collect();
+        let applied_row = Row {
+            fields: applied_fields,
+            tail: row.tail.clone(),
+        };
+        subst.row_map.entry(k.clone()).or_insert(applied_row);
+    }
+
+    // Pass 3c: Apply the merged substitution to all field types
     let field_types: HashMap<String, Type> = field_types
         .into_iter()
-        .map(|(k, ty)| (k, subst.apply(&state.subst.apply(&ty))))
+        .map(|(k, ty)| (k, subst.apply(&ty)))
         .collect();
 
     // Pass 4: Generalize - create TypeSchemes for each entry
@@ -809,10 +834,10 @@ fn check_call_with_scheme(
                 for (param_ty, arg_ty) in params.iter().zip(arg_types.iter()) {
                     unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
                 }
-                Ok(subst.apply(ret))
+                Ok(state.subst.apply(&subst.apply(ret)))
             } else {
                 // Zero-param function: return the return type
-                Ok(*ret.clone())
+                Ok(state.subst.apply(ret))
             }
         }
         Type::Any => Ok(Type::Any),
@@ -930,11 +955,11 @@ fn check_call(
                 for (param_ty, arg_ty) in inst_params.iter().zip(arg_types.iter()) {
                     unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
                 }
-                Ok(subst.apply(inst_ret))
+                Ok(state.subst.apply(&subst.apply(inst_ret)))
             } else {
                 // Zero-param polymorphic function: return the instantiated return type
                 // (not the original `ret` which contains the scheme-internal variable names)
-                Ok(*inst_ret.clone())
+                Ok(state.subst.apply(inst_ret))
             }
         }
         Type::Any => Ok(Type::Any),
@@ -1045,6 +1070,11 @@ fn resolve_type_assert(
     if let Some(default_expr) = annotation.node.get_property("default") {
         match infer_expr(default_expr, env, state, type_map) {
             Ok(default_ty) => {
+                // Apply state.subst to both types before comparison — access-chain constraints
+                // may have bound TypeVars in state.subst (e.g., $data.name generates row-variable
+                // bindings). Without substitution, the comparison uses stale TypeVars.
+                let default_ty = state.subst.apply(&default_ty);
+                let expected = state.subst.apply(&expected);
                 if !Type::is_subtype(&default_ty, &expected) {
                     return Err(vec![TypeError::new(
                         format!(
