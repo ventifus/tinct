@@ -1037,6 +1037,18 @@ Make comparison, arithmetic, and collection operators shadowable from stdlib, en
 - [x] Corpus test: `$proxy` field access calls handler; verify different field names produce different results (`tests/corpus/eval/`)
 - [x] Add composition test that verifies conjunctive enforcement: program uses `$include` AND runs with `--timeout`, both flags active (`tests/cli_tests.rs`)
 
+### test-crafter-c62-b: Test Additions and Doc Bibliography (Cycle #62)
+
+Overflow from test-crafter-c62. Items independent of one another.
+
+- [x] Add `test_call_poly_state_subst_isolation` — `test_call_poly_state_subst_applied` at `src/typecheck.rs:3606` documents in a 50-line comment that removing `state.subst.apply()` from the CALL-POLY return does NOT break this test; add a companion test using cross-document scope where state.subst is populated by a prior dot-access constraint BEFORE the polymorphic call, so that removing only the CALL-POLY `state.subst.apply()` changes the result. (`src/typecheck.rs`) [Minor, test-crafter C62]
+- [x] Fix `_rho_level` bound-but-ignored in `check_dot_access` RowVar arm — `src/typecheck.rs:642` binds `_rho_level` from the RowTail but line 666 re-looks up the level via `state.levels.get(rho).copied().unwrap_or(0)`, creating a silent implicit dependency. Use `_rho_level` directly with a `debug_assert!` that it matches `state.levels.get(rho)`, making the invariant explicit. (`src/typecheck.rs:642, 666`) [Nit, integration-verifier C62]
+- [x] Fix doc/07 `unify_remainders` pseudocode Cases 2/3 missing guards — lines 465 and 471 show `(false, _, true, RowVar(ρ₂))` and `(true, RowVar(ρ₁), false, _)` without the `u2_empty`/`u1_empty` guards that prevent shadowing Case 4. The implementation is correct but the pseudocode omits the guards; a reader would not know why they exist. Add guards to pseudocode with comment: "Guard prevents shadowing Case 4 — when both have unique fields with different RowVars, Case 4 applies." (`doc/07-type-extensions.md:465, 471`) [Nit, integration-verifier C62]
+- [x] Add Wand (1987), Gaster & Jones (1996), Harper & Pierce (1991) to `doc/17-references.md` — all three cited in `doc/07-type-extensions.md:678-680` by name but absent from the canonical bibliography. Promote citation text to doc/17 §Row polymorphism. [Supersedes doc-rowunification-retrospective-b Major] (`doc/17-references.md:21-23`) [Major, grammar-architect C62]
+- [x] Remove stale "Task 2:" sprint label from `test_dot_access_constraint_generation_on_typevar_forward_ref` comment — the comment at `src/typecheck.rs` still has "Task 2:" prefix from the test-crafter-c62 sprint plan; replace with blank or the function's actual description. (`src/typecheck.rs`) [Nit, sprint-reviewer C62]
+- [x] Add `// TODO(row-unification-f-b)` comment at `test_dot_access_typevar_generates_constraint` assertion site — the dual-accept `assert!(matches!(..., Type::StringLiteral(_) | Type::TypeVar(_, _)))` at `src/typecheck.rs` will become single-accept when row-unification-f-b lands (TypeVar resolved → StringLiteral). Without a tracked comment, the row-unification-f-b sprint won't know to tighten the assertion. (`src/typecheck.rs`) [Nit, test-crafter C62]
+- [x] Add `tests/corpus/valid/complex` to `test_corpus_structure` required_dirs — directory exists (added in a prior sprint) but is not in the `required_dirs` guard at `tests/corpus_tests.rs`; deleting it would not fail the structure test. (`tests/corpus_tests.rs`) [Nit, test-crafter C62]
+
 ### test-crafter-c62: Test Coverage and Doc Corrections (Cycle #62)
 
 New findings from Cycle #62 full codebase health review (test-crafter). Items independent of one another unless noted.
