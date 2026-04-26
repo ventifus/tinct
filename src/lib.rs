@@ -74,14 +74,23 @@ pub use value::{Environment, Key, Thunk, Value};
 /// into a readable representation. Primarily used for testing and corpus validation.
 /// For JSON output, use [`value_to_json`] after evaluation instead.
 pub fn eval_source(input: &str) -> Result<String, String> {
+    eval_source_with_config(input, false)
+}
+
+/// Parse and evaluate LLT source with configurable filesystem access.
+///
+/// This is a variant of [`eval_source`] that allows control over the `no_fs` flag.
+/// When `no_fs` is `true`, filesystem operations (like `$include`) are disabled.
+/// Primarily used for corpus tests that verify the `IncludeForbidden` error path.
+pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
     let mut file = parse(input).map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
     // Type errors are advisory; evaluation proceeds regardless.
     let _ = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
-    // Create evaluation context (current directory, no sandbox)
-    let ctx = eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&env), false);
+    // Create evaluation context (current directory, configurable sandbox)
+    let ctx = eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&env), no_fs);
     let thunk =
         eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(|e| format!("{e}"))?;
     let val = eval::materialize(&thunk, None, &ctx, 0).map_err(|e| format!("{e}"))?;

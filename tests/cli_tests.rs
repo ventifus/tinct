@@ -1198,7 +1198,7 @@ fn timeout_flag_exits_with_sigalrm() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn no_fs_happy_path() {
+fn no_fs_flag_happy_path() {
     // Test that --no-fs does not interfere with normal evaluation that
     // doesn't require filesystem access.
     let (path, _dir) = write_temp_llt("no_fs_happy", "[x: 1]");
@@ -1226,7 +1226,7 @@ fn no_fs_happy_path() {
 
 #[test]
 #[cfg(unix)]
-fn timeout_fast_program_succeeds() {
+fn timeout_flag_fast_program_succeeds() {
     // Test that --timeout does not interfere with programs that complete
     // within the time limit. A fast-completing program should succeed with
     // exit code 0, not timeout.
@@ -1254,7 +1254,7 @@ fn timeout_fast_program_succeeds() {
 }
 
 #[test]
-fn timeout_invalid_argument_rejected() {
+fn timeout_flag_invalid_argument_rejected() {
     // Test that invalid --timeout arguments are rejected at parse time by clap
     // with a non-zero exit code. This tests the clap ValueParser, not runtime.
     let (path, _dir) = write_temp_llt("timeout_invalid_arg", "[x: 1]");
@@ -1285,7 +1285,7 @@ fn timeout_invalid_argument_rejected() {
 
 #[test]
 #[cfg(unix)]
-fn no_fs_and_timeout_compose() {
+fn no_fs_flag_and_timeout_flag_compose() {
     // Test that --no-fs and --timeout flags can be used together without
     // conflict. Both sandbox flags should be active.
     let (path, _dir) = write_temp_llt("no_fs_timeout_compose", "[x: 1]");
@@ -1309,4 +1309,36 @@ fn no_fs_and_timeout_compose() {
     let json: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("failed to parse JSON output");
     assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+#[cfg(unix)]
+fn no_fs_flag_and_timeout_flag_conjunctive_enforcement() {
+    // Test that both --no-fs and --timeout flags are actively enforced
+    // simultaneously. The test should fail due to --no-fs blocking $include,
+    // not due to timeout.
+    let (path, _dir) = write_temp_llt(
+        "conjunctive_enforcement",
+        "[call $include \"some_file.llt\"]",
+    );
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--no-fs", "--timeout", "5s", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit code when --no-fs blocks $include"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1 (error from --no-fs), not timeout code 2"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("filesystem access is disabled") || stderr.contains("E042"),
+        "expected E042 error message about disabled filesystem access, got: {stderr}"
+    );
 }
