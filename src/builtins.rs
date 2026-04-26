@@ -8949,6 +8949,43 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn include_forbidden_when_no_fs() {
+        // When no_fs is true, $include should return IncludeForbidden error
+        let dir = std::env::temp_dir().join("llt_test_include_no_fs");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "test.llt", "[x: 42]");
+
+        // Create context with no_fs: true
+        let stdlib_env = create_stdlib_env().expect("stdlib env");
+        let ctx = crate::eval::EvalContext::new(dir.clone(), stdlib_env, true);
+
+        let args = vec![thunk(Value::String("test.llt".into()))];
+        let err = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        })
+        .unwrap_err();
+
+        // Check error message and code
+        let error_msg = format!("{}", err);
+        assert!(
+            error_msg.contains("filesystem access is disabled"),
+            "got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("[E042]"),
+            "missing error code [E042], got: {}",
+            error_msg
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     // Sequence builtins tests
 
     #[test]
