@@ -490,6 +490,7 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E034 | `EmptyCollection` | Value |
 | E040 | `DepthExceeded` | Limit |
 | E041 | `JsonDepthExceeded` | Limit |
+| E042 | `IncludeForbidden` | Limit |
 | E050 | `IncludeNotAvailable` | Include |
 | E051 | `IncludeIoError` | Include |
 | E052 | `IncludeCycle` | Include |
@@ -780,6 +781,7 @@ All 26 `ErrorKind` variants map to stable error codes and human-readable message
 | **EmptyCollection** | E034 | `"{op} on empty collection"` | Builtin call expression |
 | **DepthExceeded** | E040 | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
 | **JsonDepthExceeded** | E041 | `"maximum JSON nesting depth exceeded ({limit})"` | `$from-json` call expression |
+| **IncludeForbidden** | E042 | `"filesystem access is disabled (--no-fs)"` | `$include` call expression |
 | **IncludeNotAvailable** | E050 | `"include: not available in this context"` | `$include` call expression |
 | **IncludeIoError** | E051 | `"include: cannot access \"{path}\": {detail}"` | `$include` call expression |
 | **IncludeCycle** | E052 | `"circular include detected: \"{path}\""` | `$include` call expression |

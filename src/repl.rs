@@ -118,9 +118,12 @@ impl ReplSession {
             .borrow_mut()
             .insert("$".to_string(), Rc::clone(&empty_dict));
 
-        // Create REPL session context (REPL runs in current directory)
-        let ctx =
-            crate::eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&stdlib_env));
+        // Create REPL session context (REPL runs in current directory, no sandbox)
+        let ctx = crate::eval::EvalContext::new(
+            std::path::PathBuf::from("."),
+            Rc::clone(&stdlib_env),
+            false,
+        );
 
         Self {
             env: session_env,

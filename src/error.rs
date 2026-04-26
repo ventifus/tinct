@@ -106,6 +106,8 @@ pub enum ErrorKind {
     JsonDepthExceeded {
         limit: usize,
     },
+    /// Filesystem access is disabled (--no-fs sandbox flag).
+    IncludeForbidden,
 
     // --- Include errors (E050-E059) ---
     IncludeNotAvailable,
@@ -175,6 +177,7 @@ impl ErrorKind {
             Self::EmptyCollection { .. } => "E034",
             Self::DepthExceeded { .. } => "E040",
             Self::JsonDepthExceeded { .. } => "E041",
+            Self::IncludeForbidden => "E042",
             Self::IncludeNotAvailable => "E050",
             Self::IncludeIoError { .. } => "E051",
             Self::IncludeCycle { .. } => "E052",
@@ -250,6 +253,7 @@ impl fmt::Display for ErrorKind {
             Self::JsonDepthExceeded { limit } => {
                 write!(f, "maximum JSON nesting depth exceeded ({limit})")
             }
+            Self::IncludeForbidden => write!(f, "filesystem access is disabled (--no-fs)"),
             Self::IncludeNotAvailable => write!(f, "include: not available in this context"),
             Self::IncludeIoError { path, detail } => {
                 write!(f, "include: cannot access \"{path}\": {detail}")
@@ -347,6 +351,7 @@ impl PartialEq for ErrorKind {
             (Self::JsonDepthExceeded { limit: l1 }, Self::JsonDepthExceeded { limit: l2 }) => {
                 l1 == l2
             }
+            (Self::IncludeForbidden, Self::IncludeForbidden) => true,
             (Self::IncludeNotAvailable, Self::IncludeNotAvailable) => true,
             (
                 Self::IncludeIoError {
@@ -660,6 +665,15 @@ impl EvalError {
     pub fn json_depth_exceeded(limit: usize, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::JsonDepthExceeded { limit },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn include_forbidden(definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::IncludeForbidden,
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -1031,6 +1045,7 @@ mod tests {
             },
             ErrorKind::DepthExceeded { limit: 256 },
             ErrorKind::JsonDepthExceeded { limit: 128 },
+            ErrorKind::IncludeForbidden,
             ErrorKind::IncludeNotAvailable,
             ErrorKind::IncludeIoError {
                 path: "x".to_string(),
@@ -1068,8 +1083,8 @@ mod tests {
             },
         ];
 
-        // Verify we have all 27 variants
-        assert_eq!(variants.len(), 27, "Expected 27 ErrorKind variants");
+        // Verify we have all 28 variants
+        assert_eq!(variants.len(), 28, "Expected 28 ErrorKind variants");
 
         // Each variant should equal itself
         for variant in &variants {
@@ -1313,6 +1328,10 @@ mod tests {
             format!("{}", ErrorKind::JsonDepthExceeded { limit: 128 }),
             "maximum JSON nesting depth exceeded (128)"
         );
+        assert_eq!(
+            format!("{}", ErrorKind::IncludeForbidden),
+            "filesystem access is disabled (--no-fs)"
+        );
 
         // Include errors (E050-E059)
         assert_eq!(
@@ -1476,6 +1495,7 @@ mod tests {
             },
             ErrorKind::DepthExceeded { limit: 256 },
             ErrorKind::JsonDepthExceeded { limit: 128 },
+            ErrorKind::IncludeForbidden,
             ErrorKind::IncludeNotAvailable,
             ErrorKind::IncludeIoError {
                 path: "x".to_string(),
@@ -1513,8 +1533,8 @@ mod tests {
             },
         ];
 
-        // Verify we have all 27 variants
-        assert_eq!(variants.len(), 27, "Expected 27 ErrorKind variants");
+        // Verify we have all 28 variants
+        assert_eq!(variants.len(), 28, "Expected 28 ErrorKind variants");
 
         let mut codes = std::collections::HashSet::new();
 
@@ -1551,8 +1571,8 @@ mod tests {
             );
         }
 
-        // Verify we collected 27 unique codes
-        assert_eq!(codes.len(), 27, "Expected 27 unique error codes");
+        // Verify we collected 28 unique codes
+        assert_eq!(codes.len(), 28, "Expected 28 unique error codes");
     }
 
     #[test]

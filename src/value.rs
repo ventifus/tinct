@@ -557,6 +557,7 @@ mod tests {
         crate::eval::EvalContext::new(
             std::path::PathBuf::from("."),
             Rc::new(RefCell::new(Environment::new())),
+            false,
         )
     }
 
@@ -975,6 +976,7 @@ mod tests {
         let ctx1 = crate::eval::EvalContext::new(
             std::path::PathBuf::from("/test/path/1"),
             Rc::new(RefCell::new(Environment::new())),
+            false,
         );
 
         // Create a thunk that captures ctx1
@@ -1045,6 +1047,7 @@ mod tests {
         let ctx1 = crate::eval::EvalContext::new(
             std::path::PathBuf::from("/test/path/builtin"),
             Rc::new(RefCell::new(Environment::new())),
+            false,
         );
 
         let span = test_span(1, 1, 1, 5);
@@ -1083,6 +1086,7 @@ mod tests {
         let ctx1 = crate::eval::EvalContext::new(
             std::path::PathBuf::from("/test/path/call"),
             Rc::new(RefCell::new(Environment::new())),
+            false,
         );
 
         let span = test_span(1, 1, 1, 5);

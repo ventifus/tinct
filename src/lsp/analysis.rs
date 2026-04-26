@@ -269,7 +269,7 @@ mod tests {
 
     /// Helper: create an EvalContext for tests.
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new(std::path::PathBuf::from("."), test_env())
+        crate::eval::EvalContext::new(std::path::PathBuf::from("."), test_env(), false)
     }
 
     #[test]

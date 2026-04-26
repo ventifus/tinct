@@ -87,9 +87,12 @@ impl DocumentStore {
         // so the LSP can still provide parsing/type-checking diagnostics.
         let stdlib_env =
             create_stdlib_env().unwrap_or_else(|_| Rc::new(RefCell::new(Environment::new())));
-        // Create evaluation context (current directory for LSP)
-        let eval_ctx =
-            crate::eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&stdlib_env));
+        // Create evaluation context (current directory for LSP, no sandbox)
+        let eval_ctx = crate::eval::EvalContext::new(
+            std::path::PathBuf::from("."),
+            Rc::clone(&stdlib_env),
+            false,
+        );
         Self {
             docs: HashMap::new(),
             stdlib_env,
@@ -132,7 +135,7 @@ mod tests {
     }
 
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new(std::path::PathBuf::from("."), test_env())
+        crate::eval::EvalContext::new(std::path::PathBuf::from("."), test_env(), false)
     }
 
     #[test]

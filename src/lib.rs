@@ -80,8 +80,8 @@ pub fn eval_source(input: &str) -> Result<String, String> {
     // Type errors are advisory; evaluation proceeds regardless.
     let _ = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
-    // Create evaluation context (current directory)
-    let ctx = eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&env));
+    // Create evaluation context (current directory, no sandbox)
+    let ctx = eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&env), false);
     let thunk =
         eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(|e| format!("{e}"))?;
     let val = eval::materialize(&thunk, None, &ctx, 0).map_err(|e| format!("{e}"))?;
@@ -270,7 +270,11 @@ mod tests {
     }
 
     fn test_ctx() -> Rc<eval::EvalContext> {
-        eval::EvalContext::new(std::path::PathBuf::from("."), builtins::create_root_env())
+        eval::EvalContext::new(
+            std::path::PathBuf::from("."),
+            builtins::create_root_env(),
+            false,
+        )
     }
 
     #[test]
