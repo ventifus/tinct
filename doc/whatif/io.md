@@ -48,7 +48,7 @@ Each I/O builtin:
 
 All file and network I/O flows through **capability values** — opaque, unforgeable tinct values that represent authority over a resource. There is no ambient `$open-file path` that any code can call: opening a resource requires a capability, and capabilities must be explicitly received (passed as arguments or injected by the CLI). This is the object capability model (Miller 2006) applied to tinct's I/O layer.
 
-Three capability types plus a revocable wrapper:
+Four capability types plus a revocable wrapper:
 
 **`Value::DirCap`** — authority to open files within a directory tree. Wraps `cap_std::fs::Dir`. On Linux 5.6+, `cap_std` uses the `openat2(RESOLVE_BENEATH)` syscall, making path traversal (`../`) and symlink escapes structurally impossible at the kernel level. On older kernels and macOS, `cap_std` falls back to a userspace emulation that validates each path component individually; the security property holds in both paths.
 
@@ -57,6 +57,16 @@ Three capability types plus a revocable wrapper:
 **`Value::Handle`** — authority to read from and write to one specific open resource (a file or socket). Created by `$open`, `$connect`, or `$tls`; received from the runtime as `$stdin`. A `Handle` is itself a capability — more narrowly scoped than a `DirCap` (one file vs. a whole directory tree).
 
 **`Value::RevocableDirCap`** — a `DirCap` wrapper that can be invalidated after the fact. See §Handle Revocation.
+
+Three values are automatically injected into the root environment by the runtime:
+
+**`$pwd`** — a `DirCap` for the working directory at the time `llt eval` is invoked. Used for project-local file access: `$include $pwd "config.llt"`, `$open $pwd "output.yaml" "w"`. Suppressed by `--no-pwd`.
+
+**`$libdir`** — a `DirCap` for the system library directory: where tinct's standard libraries reside. Used as `$include $libdir "io.llt"`. Survives `--no-pwd` — it is language infrastructure equivalent to builtins. Suppressed only by `--no-libdir`. The backing source (installed files, embedded bytes, or a `--libdir-path` override) is an implementation detail; `$libdir` is the stable interface.
+
+**`$stdin`** — a `Handle` for fd 0. Suppressed by `--no-stdin`.
+
+All three are real values and participate fully in the cap model: `$pwd` and `$libdir` can be narrowed (`$narrow $libdir "net"` is pure attenuation and harmless), passed to functions, and used with `$revocable`. They cannot be widened — `DirCap` authority flows only downward via `$narrow`.
 
 ### Capabilities Are Bound at Open Time
 
@@ -77,7 +87,7 @@ This is identical to the Unix model: `open(2)` checks permissions and returns a 
 [secret: [call $slurp $fh]]
 ```
 
-The auditable access points are `$open`, `$connect`, and `$tls` — grep these to find every place new authority is acquired. `$slurp`, `$write`, and `$lines` consume an existing `Handle` and never acquire new authority.
+The auditable access points are `$include`, `$open`, `$connect`, and `$tls` — grep these to find every place new authority is acquired. `$slurp`, `$write`, and `$lines` consume an existing `Handle` and never acquire new authority.
 
 **Handle aliasing and write ordering:** A `Handle` is backed by `Rc<RefCell<...>>`. If the same handle is referenced from two independent lazy bindings, both of which call `$write`, the write order depends on which thunk is forced first — exactly the kind of observable effect ordering a lazy language normally avoids. For deterministic ordering, create an explicit data dependency by nesting writes or using pipeline stages (see §Sequencing).
 
@@ -134,6 +144,20 @@ Important: `$revocable` does not revoke handles already opened through the cap. 
 [conn:    [call $connect $net "db.internal" 5432]]
 [secure:  [call $tls $net "api.example.com" 443]]
 ```
+
+### `$include` Is Always Cap-Qualified
+
+`$include` takes a `DirCap` as its first argument. There is no ambient path resolution:
+
+```tinct
+[call $include $libdir "io.llt"]      # system library
+[call $include $pwd    "config.llt"]  # project-local file
+[call $include $pkg    "auth.llt"]    # explicit user cap
+```
+
+All paths are relative to the provided cap and enforced via `RESOLVE_BENEATH` — the same guarantee as `$open`. The cap provides full disambiguation: `"io.llt"` relative to `$libdir` is a system library module; `"io.llt"` relative to `$pwd` is a project file. No path-prefix convention is needed.
+
+`$include` adds three behaviours on top of `$open`: the file is parsed and evaluated as tinct, its bindings are merged into the caller's environment, and the result is cached by `(st_dev, st_ino)` so the same physical file is evaluated at most once regardless of which cap or path was used to reach it. Cycle detection uses the same key.
 
 ### Using Handles: The Three Handle Operations
 
@@ -238,11 +262,11 @@ llt eval --cap-net net=api.internal --cap-net net=10.42.0.0/16 script.llt
 
 For Phase 2 implementation: `$tls` uses `rustls` with the system CA store. Full chain validation and hostname verification are always enabled with no skip-verify option.
 
-### Ambient Handles: `$stdin` and `$emit`
+### `$stdin` and `$emit`
 
-`$stdin` and `$emit` are ambient — they do not require caps. stdin and stdout are file descriptors the process inherits from its parent; requiring a capability to write to stdout would add verbosity with no meaningful security benefit (the parent process already granted stdout when it spawned `llt eval`).
+`$stdin` and `$emit` do not require user-provided caps. stdin and stdout are file descriptors the process inherits from its parent; requiring a capability to write to stdout would add verbosity with no meaningful security benefit (the parent process already granted stdout when it spawned `llt eval`).
 
-`$stdin` is a `Value::Handle` for fd 0, bound at startup. `$emit` writes to stdout — it is a special Rust builtin that also sets the `emitted` flag so the CLI suppresses default JSON serialization. Note: in embedded contexts where `llt` is used as a library or language server, fd 1 may be an IPC socket rather than a terminal; `$emit` writes to whatever fd 1 is.
+`$stdin` is a `Value::Handle` for fd 0, injected into the root environment at startup. It can be suppressed with `--no-stdin` for batch jobs that should never read from stdin. `$emit` writes to stdout — it is a special Rust builtin that also sets the `emitted` flag so the CLI suppresses default JSON serialization. Note: in embedded contexts where `llt` is used as a library or language server, fd 1 may be an IPC socket rather than a terminal; `$emit` writes to whatever fd 1 is.
 
 ```tinct
 # stdin: slurp all and parse as JSON
@@ -259,13 +283,13 @@ For Phase 2 implementation: `$tls` uses `rustls` with the system CA store. Full 
 
 `$env name` reads one environment variable by name and returns its value as a `String`, or `Null` if unset. Environment variables are a standard channel for secrets in CI and container environments (`DATABASE_URL`, `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, etc.), so `$env` is gated:
 
-- Under `--no-caps`: `$env` returns `Null` for all names. A sandboxed invocation cannot read env vars.
+- Under `--no-env`: `$env` returns `Null` for all names. A sandboxed invocation cannot read env vars.
 - Under `--allow-env NAME` (Phase 1): only the named variable(s) are readable; all others return `Null`. Multiple `--allow-env` flags accumulate.
 - Default (neither flag): all env vars readable. Appropriate for trusted programs run by the user.
 
 ```bash
 # Fully sandboxed — no env access
-llt eval --no-fs --no-caps --timeout 5s script.llt
+llt eval --no-pwd --no-env --timeout 5s script.llt
 
 # Specific variable allowlist
 llt eval --allow-env DATABASE_URL --allow-env APP_ENV script.llt
@@ -278,21 +302,32 @@ Future: `Value::EnvCap` as a language-level capability for env access, injectabl
 **CLI injection (recommended for untrusted programs):**
 
 ```bash
-llt eval --cap-fs fs=/var/data --cap-net net=api.internal script.llt
+llt eval --cap-fs pkg=/var/lib/plugins --cap-net api=schema.internal script.llt
 ```
 
-Inside `script.llt`, `$fs` and `$net` are the only available capabilities. The program cannot open files outside `/var/data` or connect to hosts other than `api.internal`. `--no-caps` disables `$dir-cap` and `$net-cap` builtins; programs in that mode must receive all caps from CLI flags.
+Inside `script.llt`, `$pkg` and `$api` are available alongside the runtime-injected `$pwd`, `$libdir`, and `$stdin`. The program cannot open files outside `/var/lib/plugins` (via `$pkg`) or the working directory (via `$pwd`), and cannot connect to hosts other than `schema.internal`.
 
-Note: `--no-caps` does not disable `$include`. For full filesystem isolation, use `--no-caps --no-fs` together. A fully sandboxed invocation:
+The `--no-*` flags suppress individual runtime-injected values by name, mirroring the name they affect:
 
 ```bash
-llt eval --no-fs --no-caps --allow-env APP_ENV --timeout 5s --max-memory 64M script.llt
+--no-pwd      # $pwd not injected — $include $pwd and $open $pwd fail
+--no-libdir   # $libdir not injected — $include $libdir fails
+--no-stdin    # $stdin not injected — $slurp $stdin fails
+--no-env      # $env returns Null for all names
 ```
+
+A fully sandboxed invocation:
+
+```bash
+llt eval --no-pwd --no-stdin --no-env --timeout 5s --max-memory 64M script.llt
+```
+
+(`$libdir` is retained even in sandboxed invocations so stdlib is accessible. Suppress it explicitly with `--no-libdir` if needed.)
 
 **Explicit creation (for trusted programs):**
 
 ```tinct
-# $dir-cap is allowlist-checked against --allow-path (same as $include)
+# $dir-cap creates a DirCap for an arbitrary path (allowlist-checked)
 [fs:  [call $dir-cap "/var/data"]]
 
 # $net-cap accepts a list of allowlist entries
@@ -334,9 +369,9 @@ fetch-opts: [fn [net-cap url opts] ...]
 This avoids lazy I/O's equational reasoning violations: each line-read is a strict I/O operation triggered by the observable force of a `$tail`, not deferred via `unsafeInterleaveIO`. The finalization guarantee is weaker than Kiselyov (2012)'s fold-based iteratees — `Drop` timing depends on when the `Rc` reference count hits zero, which in a lazy language is unpredictable if the Seq is kept alive in a long-lived binding. For tinct's single-shot config evaluation model this is acceptable; the process exits shortly after evaluation completes, releasing all handles.
 
 ```tinct
-[call $include "stdlib/io.llt"]
+[call $include $libdir "io.llt"]
 
-[call $read-lines $fs "large-log.txt"]
+[call $read-lines $pwd "large-log.txt"]
 ---
 [call $filter [fn [line] [call $str-contains $line "ERROR"]] $$]
 ---
@@ -361,7 +396,7 @@ Why not other I/O models?
 - *No ambient authority*: `$open` without a `DirCap` is a type error; there is no `$open-file path`
 - *Attenuation*: `$narrow` produces a strictly narrower `DirCap`; handles are narrower still; `$revocable` adds prospective revocation
 - *No confused deputy*: `RESOLVE_BENEATH` (via cap-std) is the mitigation — even if a function is passed a user-controlled path string alongside a `DirCap`, the path cannot escape the cap's root, so the confused deputy cannot access files outside the cap's scope
-- *Auditability*: grep `$open`, `$connect`, `$tls` to find all resource acquisition sites
+- *Auditability*: grep `$include`, `$open`, `$connect`, `$tls` to find all resource acquisition sites
 - *Transferability*: capabilities are first-class values; a function that receives a `DirCap` can pass it to callees. `$narrow` is the mechanism for limiting what is delegated.
 
 ### Strictness Annotation
@@ -371,6 +406,7 @@ I/O builtins documented with Mycroft (1981) strictness annotations in `doc/08-ev
 | Builtin | Args strict | Returns | Notes |
 |---------|------------|---------|-------|
 | `$emit` | S | `Null` | Writes to stdout; sets `emitted` flag |
+| `$include` | S, S | `Env` | Evaluates `.llt`/`.json`/`.yaml` within DirCap; caches by `(st_dev, st_ino)` |
 | `$dir-cap` | S | `DirCap` | Creates directory capability; allowlist-checked |
 | `$net-cap` | S | `NetCap` | Creates network capability; requires `--allow-network` |
 | `$open` | S, S, S | `Handle` | Opens file within DirCap (RESOLVE_BENEATH) |
@@ -381,8 +417,10 @@ I/O builtins documented with Mycroft (1981) strictness annotations in `doc/08-ev
 | `$slurp` | S | `Str` | Reads Handle to EOF |
 | `$write` | S, S | `Handle` | Writes to Handle; returns same Handle |
 | `$lines` | S | `Seq` | Opens coinductive stream; each `$tail` forces one readline |
-| `$env` | S | `Str\|Null` | Reads env var; returns Null under `--no-caps` or if not in `--allow-env` list |
-| `$stdin` | — | `Handle` | Pre-opened handle to fd 0 |
+| `$env` | S | `Str\|Null` | Reads env var; returns Null under `--no-env` or if not in `--allow-env` list |
+| `$stdin` | — | `Handle` | Runtime-injected handle to fd 0; suppressed by `--no-stdin` |
+| `$pwd` | — | `DirCap` | Runtime-injected DirCap for the working directory; suppressed by `--no-pwd` |
+| `$libdir` | — | `DirCap` | Runtime-injected DirCap for the system library directory; suppressed by `--no-libdir` |
 
 ### Type System Integration
 
@@ -398,9 +436,11 @@ Phase 3 (future, no commitment): if type classes arrive, `IO` becomes an enforce
 
 **`$emit`:** Write `String` to stdout. Strict. Returns `Null`. Sets `emitted: bool` in `EvalContext`.
 
-**`$dir-cap path`:** Create `Value::DirCap` wrapping `cap_std::fs::Dir`. Strict. Allowlist-checked against `--allow-path`. Fails under `--no-caps`.
+**`$include dir-cap path`:** Modified — now takes a `DirCap` as its first argument. Evaluates the file at `path` within `dir-cap` using RESOLVE_BENEATH, then merges the resulting bindings into the caller's environment. Caches by `(st_dev, st_ino)` pair rather than canonical path string, so the same physical file accessed via different caps gets a single cache entry. Cycle detection uses the same key.
 
-**`$net-cap entries`:** Create `Value::NetCap` from a Seq or single String of allowlist entries (exact hostnames, host:port, IPv4/IPv6 CIDR). Strict. Requires `--allow-network`. Fails under `--no-caps`.
+**`$dir-cap path`:** Create `Value::DirCap` wrapping `cap_std::fs::Dir`. Strict. Allowlist-checked against `--allow-path`; fails if the path is not allowlisted.
+
+**`$net-cap entries`:** Create `Value::NetCap` from a Seq or single String of allowlist entries (exact hostnames, host:port, IPv4/IPv6 CIDR). Strict. Requires `--allow-network`; fails if network access is not permitted.
 
 **`$open dir-cap path mode`:** Open file at path relative to `DirCap`. On Linux 5.6+: `openat2(RESOLVE_BENEATH)`. On older kernels/macOS: cap-std userspace emulation. Mode: `"r"`, `"w"`, `"a"`. Returns `Value::Handle`.
 
@@ -418,11 +458,15 @@ Phase 3 (future, no commitment): if type classes arrive, `IO` becomes an enforce
 
 **`$lines handle`:** Return a coinductive `Value::Seq` backed by the handle. Strict in handle. Each `$tail` forces one `BufRead::read_line()`. `Drop` on the last `Rc` closes the underlying OS fd.
 
-**`$env name`:** Read environment variable. Returns `String` or `Null`. Under `--no-caps`: always `Null`. Under `--allow-env NAME`: returns value only for allowed names; `Null` otherwise. Under neither flag: reads freely.
+**`$env name`:** Read environment variable. Returns `String` or `Null`. Under `--no-env`: always `Null`. Under `--allow-env NAME`: returns value only for allowed names; `Null` otherwise. Under neither flag: reads freely.
 
-**`$stdin`:** `Value::Handle` for fd 0, bound at startup.
+**`$stdin`:** `Value::Handle` for fd 0, injected into the root environment at startup. Suppressed by `--no-stdin`.
 
-**Impact:** Significant — thirteen new builtins, four new value variants (`Value::DirCap`, `Value::NetCap`, `Value::RevocableDirCap`, `Value::Handle`), `EvalContext` gains `emitted: bool`.
+**`$pwd`:** `Value::DirCap` for the working directory, injected into the root environment at startup. Suppressed by `--no-pwd`.
+
+**`$libdir`:** `Value::DirCap` for the system library directory, injected into the root environment at startup. Suppressed by `--no-libdir`. The backing directory is resolved from `--libdir-path` if provided, otherwise from the default installation path.
+
+**Impact:** Significant — thirteen modified or new builtins plus three runtime-injected values (`$stdin`, `$pwd`, `$libdir`), four new value variants (`Value::DirCap`, `Value::NetCap`, `Value::RevocableDirCap`, `Value::Handle`), `EvalContext` gains `emitted: bool`.
 
 ### New Stdlib (`stdlib/io.llt`, `stdlib/net.llt`)
 
@@ -441,25 +485,33 @@ Phase 3 (future, no commitment): if type classes arrive, `IO` becomes an enforce
 
 **`Value::Handle`:** Wraps `Rc<RefCell<Box<dyn io::Read + io::Write>>>`. Note: `Rc` is `!Send` — handles cannot cross thread boundaries, consistent with tinct's single-threaded evaluator. Parallelism would require migrating to `Arc<Mutex<...>>`. `$lines` Seq tails hold an `Rc` clone; `Drop` on the last clone closes the fd.
 
-**`EvalContext`:** Add `emitted: bool`, `env_allowlist: Option<HashSet<String>>` (populated from `--allow-env` flags; `None` means unrestricted, `Some([])` means none allowed).
+**`EvalContext`:** Add `emitted: bool`, `env_allowlist: Option<HashSet<String>>` (populated from `--allow-env` flags; `None` means unrestricted, `Some([])` means none allowed). Root environment gains `$pwd`, `$libdir`, and `$stdin` bindings unless suppressed by their respective `--no-*` flags.
 
-**Impact:** Moderate — four new value variants, two new context fields, one new Seq tail type.
+**Impact:** Moderate — four new value variants, two new context fields, three new root environment bindings, one new Seq tail type.
 
 ### CLI (`src/main.rs`)
 
-**`--cap-fs NAME=PATH`:** Create `DirCap`, bind as `$NAME`. Allowlist-checked. Repeatable.
+**`--cap-fs NAME=PATH`:** Create `DirCap` for `PATH`, bind as `$NAME` in the root environment. Allowlist-checked. Repeatable.
 
-**`--cap-net NAME=ENTRY`:** Accumulate entries into `NetCap` for `$NAME`. Repeatable; multiple uses of same name accumulate into one cap.
+**`--cap-net NAME=ENTRY`:** Accumulate entries into `NetCap` for `$NAME`. Repeatable; multiple uses of the same name accumulate into one cap.
 
-**`--no-caps`:** Disable `$dir-cap` and `$net-cap` builtins. Also silences `$env` (returns `Null` for all names). Does **not** disable `$include` — use `--no-fs` for that.
+**`--no-pwd`:** Suppress the `$pwd` runtime injection.
+
+**`--no-libdir`:** Suppress the `$libdir` runtime injection. Programs cannot load stdlib via `$include $libdir ...`.
+
+**`--no-stdin`:** Suppress the `$stdin` runtime injection.
+
+**`--no-env`:** Silence `$env` — returns `Null` for all environment variable names.
+
+**`--libdir-path PATH`:** Override the system library directory (default: installation path). Useful for development and custom deployments.
 
 **`--allow-env NAME`:** Add `NAME` to the env variable allowlist. Repeatable. When any `--allow-env` flag is present, `$env` returns `Null` for unlisted names.
 
-**Impact:** Moderate — four new flags, cap injection into root environment, env allowlist in `EvalContext`.
+**Impact:** Moderate — eight new flags, three runtime-injected values (`$pwd`, `$libdir`, `$stdin`) added to root environment, env allowlist in `EvalContext`.
 
 ### Sandbox (`doc/12-tooling.md`)
 
-The cap model supplements the OS-level sandbox. `--allow-path` gates `$dir-cap` and `$include`. `--allow-network` gates `$net-cap`. Landlock and seccomp remain as defense-in-depth. The `--no-caps` flag adds a language-level restriction on top of the OS layer.
+The cap model supplements the OS-level sandbox. `--allow-path` gates `$dir-cap`. `--allow-network` gates `$net-cap`. Landlock and seccomp remain as defense-in-depth. The `--no-pwd`, `--no-stdin`, and `--no-env` flags add language-level restrictions on top of the OS layer, suppressing individual runtime-injected values by name.
 
 **Impact:** Minor — new flags documented; existing sandbox layers unchanged.
 
@@ -474,15 +526,15 @@ Phase 2 (future): distinct `Type::DirCap`, `Type::NetCap`, `Type::Handle`.
 
 ### Phase 1: File Caps, `$emit`, `$stdin`, `$env`
 
-`$dir-cap`, `$open`, `$narrow`, `$revocable`, `$slurp`, `$write`, `$lines`, `$emit`, `$stdin`, `$env` (with `--no-caps`/`--allow-env` gating), and `stdlib/io.llt`. CLI `--cap-fs` injection.
+`$dir-cap`, `$open`, `$narrow`, `$revocable`, `$slurp`, `$write`, `$lines`, `$emit`, `$stdin`, `$env` (with `--no-env`/`--allow-env` gating), and `stdlib/io.llt`. Runtime injection of `$pwd`, `$libdir`, `$stdin` with corresponding `--no-*` flags. CLI `--cap-fs` injection.
 
 ```tinct
-[call $include "stdlib/io.llt"]
+[call $include $libdir "io.llt"]
 
-# llt eval --cap-fs fs=/var/data --allow-env DATABASE_URL script.llt
+# llt eval --cap-fs data=/var/data --allow-env DATABASE_URL script.llt
 
 [db-url:  [call $env "DATABASE_URL"]]
-[db-pass: [call $read-file $fs "secrets/db-password"]]
+[db-pass: [call $read-file $data "secrets/db-password"]]
 [config:  [db: [url: $db-url  password: $db-pass]]]
 ---
 [call $emit [call $to-yaml $$]]
@@ -495,12 +547,12 @@ Phase 2 (future): distinct `Type::DirCap`, `Type::NetCap`, `Type::Handle`.
 `$net-cap`, `$connect`, `$tls` (basic), CLI `--cap-net` injection, `stdlib/net.llt`. Enables HTTP and arbitrary TCP protocol implementations in tinct.
 
 ```tinct
-[call $include "stdlib/io.llt"]
-[call $include "stdlib/net.llt"]
+[call $include $libdir "io.llt"]
+[call $include $libdir "net.llt"]
 
-# llt eval --cap-fs fs=/var/data --cap-net net=schema.internal script.llt
+# llt eval --cap-fs data=/var/data --cap-net api=schema.internal script.llt
 
-[schema: [call $fetch $net "https://schema.internal/v2/deployment"]]
+[schema: [call $fetch $api "https://schema.internal/v2/deployment"]]
 ---
 [call $validate [call $parse-json $schema] $$]
 ---
@@ -509,9 +561,9 @@ Phase 2 (future): distinct `Type::DirCap`, `Type::NetCap`, `Type::Handle`.
 
 **Prerequisites:** Phase 1 complete; `rustls = "0.23"` in `Cargo.toml`; see `doc/whatif/tls.md` for full TLS configuration design.
 
-### Phase 3: Atomic Writes, Streaming Fetch, `--no-caps`
+### Phase 3: Atomic Writes, Streaming Fetch, Sandbox Hardening
 
-Atomic file writes (write-to-temp + rename). Streaming fetch response body via `$lines` over the socket handle. `--no-caps` enforcement hardened. `$stdin` streaming for large inputs.
+Atomic file writes (write-to-temp + rename). Streaming fetch response body via `$lines` over the socket handle. `$stdin` streaming for large inputs. Full `--no-pwd --no-stdin --no-env` enforcement hardened and tested.
 
 **Prerequisites:** Phase 2 complete.
 
