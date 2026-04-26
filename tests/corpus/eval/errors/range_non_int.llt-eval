@@ -1,4 +1,4 @@
 # range: error when called with non-Int argument
 [call $range hello]
 ===
-range: expected Int, got Str
+[E010] range: expected Int, got Str

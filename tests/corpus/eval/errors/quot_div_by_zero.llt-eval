@@ -1,4 +1,4 @@
 # quot: division by zero produces an error
 [call $quot 10 0]
 ===
-/: division by zero
+[E031] /: division by zero

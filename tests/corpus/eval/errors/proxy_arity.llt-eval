@@ -1,4 +1,4 @@
 # $proxy requires exactly 1 argument; calling with 0 args is an arity error
 [call $proxy]
 ===
-arity mismatch
+[E020] arity mismatch

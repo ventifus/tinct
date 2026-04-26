@@ -4,4 +4,4 @@
 ]
 [call $f2 []]
 ===
-on empty collection
+[E034] head on empty collection

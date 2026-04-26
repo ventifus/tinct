@@ -1,4 +1,4 @@
 # no_fs
 [call $include "some_file.llt"]
 ===
-filesystem access is disabled
+[E042] filesystem access is disabled

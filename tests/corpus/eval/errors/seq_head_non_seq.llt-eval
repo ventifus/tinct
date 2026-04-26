@@ -1,4 +1,4 @@
 # head: error on non-Seq
 [call $head 42]
 ===
-expected Seq
+[E010] head: expected Seq, got Int

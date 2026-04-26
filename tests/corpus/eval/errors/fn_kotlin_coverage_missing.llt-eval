@@ -4,4 +4,4 @@
   result: [call $f 1 c: 5]
 ]
 ===
-missing argument for required parameter
+[E024] missing argument for required parameter

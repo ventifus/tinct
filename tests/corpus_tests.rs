@@ -38,6 +38,10 @@ struct TestFile<'a> {
 /// Supports directives on the first line:
 /// - `# no_fs` — evaluate with filesystem access disabled (`no_fs: true`)
 ///
+/// IMPORTANT: If the first line starts with `#`, it is treated as a directive line
+/// and is STRIPPED from the input before evaluation. This means `#`-prefixed content
+/// on line 1 is never evaluated, even if it's just a comment.
+///
 /// Note: Expected output (the section after `===`) is compared against the result
 /// of `parse_expression()`, which returns the LAST expression from the FIRST document.
 /// For single-expression files, this is straightforward. For multi-expression or
@@ -59,7 +63,12 @@ fn split_test_file(content: &str) -> TestFile {
         ("", content)
     };
 
-    let no_fs = directives_line.contains("no_fs");
+    // Check if "no_fs" is the only directive (after the leading #)
+    // This avoids false positives on comments containing "no_fs" as a word
+    let no_fs = directives_line
+        .strip_prefix('#')
+        .map(|s| s.trim())
+        .map_or(false, |s| s == "no_fs");
     let content = rest;
 
     if let Some(pos) = content.find(NEWLINE_DELIM_NEWLINE) {
@@ -600,4 +609,77 @@ fn test_typecheck_error_corpus() {
         }
         panic!("Type error corpus tests failed");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for split_test_file()
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_split_test_file_no_fs_directive() {
+    let content = "# no_fs\n[call $include \"file.llt\"]\n===\nfilesystem access is disabled";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[call $include \"file.llt\"]\n");
+    assert_eq!(test.expected, Some("filesystem access is disabled"));
+    assert!(test.no_fs, "no_fs directive should be detected");
+}
+
+#[test]
+fn test_split_test_file_no_fs_substring_false_positive() {
+    let content = "# testing no_fs filesystem semantics\n[x: 1]\n===\n[\"x\": 1]";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expected, Some("[\"x\": 1]"));
+    assert!(
+        !test.no_fs,
+        "no_fs should NOT be set for substring match 'no_fs'"
+    );
+}
+
+#[test]
+fn test_split_test_file_no_fs_prefix_false_positive() {
+    let content = "# no_fs_path\n[x: 1]\n===\n[\"x\": 1]";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expected, Some("[\"x\": 1]"));
+    assert!(
+        !test.no_fs,
+        "no_fs should NOT be set for token 'no_fs_path'"
+    );
+}
+
+#[test]
+fn test_split_test_file_no_directive() {
+    let content = "[x: 1 y: 2]\n===\n[\"x\": 1  \"y\": 2]";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[x: 1 y: 2]\n");
+    assert_eq!(test.expected, Some("[\"x\": 1  \"y\": 2]"));
+    assert!(!test.no_fs, "no_fs should default to false");
+}
+
+#[test]
+fn test_split_test_file_eof_without_trailing_newline() {
+    let content = "[x: 1]\n===[\"x\": 1]";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expected, Some("[\"x\": 1]"));
+    assert!(!test.no_fs);
+}
+
+#[test]
+fn test_split_test_file_missing_delimiter() {
+    let content = "[x: 1]";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[x: 1]");
+    assert_eq!(test.expected, None);
+    assert!(!test.no_fs);
+}
+
+#[test]
+fn test_split_test_file_delimiter_in_expected() {
+    let content = "[x: 1]\n===\n[\"x\": 1]  # comment with === in it";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expected, Some("[\"x\": 1]  # comment with === in it"));
+    assert!(!test.no_fs);
 }

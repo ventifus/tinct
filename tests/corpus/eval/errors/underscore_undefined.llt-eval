@@ -2,4 +2,4 @@
 # Should produce undefined variable error
 $_
 ===
-undefined variable: $_
+[E002] undefined variable: $_

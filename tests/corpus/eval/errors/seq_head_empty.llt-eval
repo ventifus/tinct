@@ -1,4 +1,4 @@
 # head: error on empty seq
 [call $head []]
 ===
-head on empty collection
+[E034] head on empty collection

@@ -1342,3 +1342,35 @@ fn no_fs_flag_and_timeout_flag_conjunctive_enforcement() {
         "expected E042 error message about disabled filesystem access, got: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Error cases — JSON serialization failures
+// ---------------------------------------------------------------------------
+
+#[test]
+fn eval_proxy_json_serialization_error() {
+    // Proxy values cannot be serialized to JSON. This test verifies that when
+    // a Proxy is returned by the evaluator, the CLI exits with an error when
+    // trying to convert the result to JSON output.
+    let (path, _dir) = write_temp_llt("proxy_json_serialization", "[call $proxy [fn [k] $k]]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit code when serializing Proxy to JSON"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1 (error) when serializing Proxy to JSON"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot serialize Proxy to JSON") || stderr.contains("E099"),
+        "expected error message about Proxy JSON serialization, got: {stderr}"
+    );
+}
