@@ -58,7 +58,7 @@ No formatting options. The formatter defines the canonical Tinct style. The only
 
 ## Sandboxing & Security
 
-Tinct uses four unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are global (before the subcommand), since a single `tinct` invocation runs exactly one subcommand.
+Tinct uses four unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are scoped to the subcommands that use them — for example, `--no-fs` and `--timeout` are `eval` subcommand flags.
 
 ### Filesystem Sandbox (Application-Level + Landlock)
 
@@ -272,6 +272,8 @@ llt eval --no-fs --timeout 5s --max-memory 64M --max-cpu 10 main.llt
 | 3 | Resource limit — memory or CPU cap hit (SIGXCPU/SIGXFSZ) |
 
 **Architecture:** `llt eval` is the sandboxed process. The parent service uses the exit code to distinguish timeout (code 2) from hard resource exhaustion (code 3) from user errors (code 1). All four sandboxing layers (filesystem allowlist, network seccomp, rlimit, process seccomp) compose — `--no-fs --timeout 5s --max-memory 64M` enables all simultaneously.
+
+**Security note:** The `IncludeForbidden` error raised by `$include` in `--no-fs` mode is catchable via `$try` (intentional, following the Nix `tryEval` model for graceful degradation). An attacker can detect `--no-fs` mode by wrapping `$include` in `$try`. This is accepted because making the error uncatchable would prevent legitimate programs from falling back to embedded defaults when external config files are unavailable. See doc/10-errors.md §Special error properties for the full rationale.
 
 **Comparison with VM-level isolation (e.g. Cloudflare Workers / V8 isolates):** V8 isolates achieve language-level sandboxing with microsecond startup time and planet-scale density, at the cost of tying the sandbox to a specific JavaScript engine. `llt eval` uses OS-level process isolation — a stronger security boundary (separate address space, separate file descriptor table, kernel enforcement via seccomp and Landlock) at the cost of per-process overhead (~10ms fork+exec). For tinct's scale (configuration evaluation, not request-per-millisecond hot path), OS process isolation is the correct tradeoff.
 

@@ -990,3 +990,16 @@ Extend `llt eval` with `--no-fs`, `--timeout`, and structured exit codes for adv
 - [x] Define exit code constants: 0=success, 1=eval/parse/type error (current behavior), 2=timeout (SIGALRM), 3=resource limit (SIGXCPU/SIGXFSZ from rlimit) — update `run_eval` to map error variants to correct exit codes (`src/main.rs`)
 - [x] Add corpus test: `--no-fs` with an `$include` call produces an error (`tests/corpus/eval/errors/`)
 - [x] Add corpus test: `--timeout 0s` causes exit code 2 (or smallest meaningful duration that reliably fires before eval completes)
+
+## sandbox-polish-a: Sandbox Code Hardening
+
+Code hardening for the `eval-sandbox-flags` sprint. See DONE.md for original sprint.
+
+- [x] Add `#[cfg(unix)]` guard on SIGALRM/alarm code in `src/main.rs`; return clear error on non-Unix platforms when `--timeout` is used (`src/main.rs:170-191`)
+- [x] Add alarm cancellation on success path: `unsafe { libc::alarm(0); }` before `Ok(())` return in `run_eval` — prevents stale alarm from firing during slow stdout serialization (`src/main.rs`)
+- [x] Replace `libc::signal()` with `libc::sigaction()` for SIGALRM handler installation — more portable, avoids unspecified handler-reset and syscall-restart behavior (`src/main.rs:182`)
+- [x] Add inline comment explaining exit code allocation: `// Exit code 2 is reserved for --timeout; panics are general errors (code 1)` at panic exit branch (`src/main.rs:111`)
+- [x] `parse_duration` unit test: `999ms` rounds up to 1 second (boundary case) (`src/main.rs`)
+- [x] `parse_duration` unit test: very large minutes value (e.g. `100000000m`) rejected as out-of-range (`src/main.rs`)
+- [x] Document `IncludeForbidden` catchability as a conscious design decision — add note to `doc/10-errors.md` or `doc/12-tooling.md` §Adversarial Evaluation explaining why sandbox violations are catchable via `$try` (Nix `tryEval` model: graceful degradation; tradeoff: allows attacker to detect `--no-fs` mode)
+- [x] Correct `doc/12-tooling.md` §Adversarial Evaluation flag-scope description — currently says "flags are global (before the subcommand)" but they are correctly scoped to the `eval` subcommand (`doc/12-tooling.md`)
