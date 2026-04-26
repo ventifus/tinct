@@ -1,4 +1,4 @@
 # flatten: Seq input produces descriptive error
 [call $flatten [call $seq 1 [call $seq 2 []]]]
 ===
-flatten: expected Dict, got Seq -- collect the Seq first
+[E080] flatten: expected Dict, got Seq -- collect the Seq first

@@ -3,4 +3,4 @@
 # When called with [a: 1], key "missing" is not found
 [call $_.missing [a: 1]]
 ===
-key not found: missing
+[E001] key not found: missing

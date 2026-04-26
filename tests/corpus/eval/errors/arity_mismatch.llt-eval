@@ -2,4 +2,4 @@
 
 [call $f 1 2 3]
 ===
-arity mismatch
+[E020] arity mismatch

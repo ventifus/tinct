@@ -3,4 +3,4 @@
 # Calling with "hello" produces type mismatch (can't add string and int)
 [call [call $+ $_ 1] "hello"]
 ===
-type mismatch
+[E010] type mismatch
