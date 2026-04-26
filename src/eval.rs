@@ -6989,4 +6989,153 @@ mod tests {
             &record_type
         ));
     }
+
+    // ── validate_and_wrap_record unit tests ──────────────────────────────────
+    // Tests for validate_and_wrap_record helper function, particularly the
+    // field_path error message generation for nested record validation.
+
+    #[test]
+    fn test_validate_and_wrap_record_nested_field_path_error() {
+        // Test that validate_and_wrap_record generates correct error messages
+        // when field_path is non-empty (nested record validation).
+        //
+        // This exercises the code path at eval.rs:178-193 where field_path_prefix
+        // is built as `format!("field \"{}\": ", field_path.join("."))`.
+
+        // Create a row type requiring field "y"
+        let mut fields = HashMap::new();
+        fields.insert("y".to_string(), Type::Int);
+        let row = Row {
+            fields,
+            tail: RowTail::Empty,
+        };
+
+        // Create entries that are missing field "y"
+        let entries = IndexMap::new();
+
+        // Call validate_and_wrap_record with nested field_path ["outer", "inner"]
+        let field_path = vec!["outer".to_string(), "inner".to_string()];
+        let guard_span = test_span(1, 1, 1, 10);
+
+        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span);
+
+        // Should error with field path prefix in the message
+        assert!(result.is_err(), "Expected error for missing field");
+        let err = result.unwrap_err();
+        let msg = err.message();
+
+        // Verify the error message contains the field path prefix
+        assert!(
+            msg.contains("field \"outer.inner\":"),
+            "Expected field path prefix 'field \"outer.inner\":' in error message, got: {}",
+            msg
+        );
+
+        // Verify the error message describes the missing field
+        assert!(
+            msg.contains("record missing field \"y\""),
+            "Expected 'record missing field \"y\"' in error message, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_validate_and_wrap_record_nested_field_path_extra_field_error() {
+        // Test that validate_and_wrap_record generates correct error messages
+        // for unexpected fields in closed records when field_path is non-empty.
+        //
+        // This exercises the code path at eval.rs:202-216 where field_path_prefix
+        // is built for cardinality check errors.
+
+        // Create a closed row type (Empty tail) requiring only field "x"
+        let mut fields = HashMap::new();
+        fields.insert("x".to_string(), Type::Int);
+        let row = Row {
+            fields,
+            tail: RowTail::Empty, // Closed record
+        };
+
+        // Create entries with "x" plus an unexpected field "z"
+        let mut entries = IndexMap::new();
+        let span = test_span(1, 1, 1, 5);
+        entries.insert(
+            Key::String("x".to_string()),
+            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
+        );
+        entries.insert(
+            Key::String("z".to_string()),
+            Rc::new(Thunk::new_materialized(Value::Int(99), span)),
+        );
+
+        // Call validate_and_wrap_record with nested field_path ["config"]
+        let field_path = vec!["config".to_string()];
+        let guard_span = test_span(1, 1, 1, 10);
+
+        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span);
+
+        // Should error with field path prefix in the message
+        assert!(
+            result.is_err(),
+            "Expected error for unexpected field in closed record"
+        );
+        let err = result.unwrap_err();
+        let msg = err.message();
+
+        // Verify the error message contains the field path prefix
+        assert!(
+            msg.contains("field \"config\":"),
+            "Expected field path prefix 'field \"config\":' in error message, got: {}",
+            msg
+        );
+
+        // Verify the error message describes the unexpected field
+        assert!(
+            msg.contains("record with unexpected field \"z\""),
+            "Expected 'record with unexpected field \"z\"' in error message, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_validate_and_wrap_record_empty_field_path() {
+        // Verify that when field_path is empty, no prefix is added to error messages.
+        // This is the common case for top-level TypeAssert validation.
+
+        // Create a row type requiring field "name"
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), Type::Str);
+        let row = Row {
+            fields,
+            tail: RowTail::Empty,
+        };
+
+        // Create empty entries (missing "name")
+        let entries = IndexMap::new();
+
+        // Call with empty field_path
+        let field_path = vec![];
+        let guard_span = test_span(1, 1, 1, 10);
+
+        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span);
+
+        assert!(result.is_err(), "Expected error for missing field");
+        let err = result.unwrap_err();
+        let msg = err.message();
+
+        // Should NOT contain the empty-path prefix `field "": ` that would be inserted
+        // if the `field_path.is_empty()` guard were absent (i.e., format!("field \"{}\": ",
+        // vec![].join(".")) = `field "": `).
+        assert!(
+            !msg.contains("field \"\": "),
+            "Expected no empty-path prefix for empty field_path, got: {}",
+            msg
+        );
+
+        // Should contain the direct error message
+        assert!(
+            msg.contains("record missing field \"name\""),
+            "Expected 'record missing field \"name\"' in error message, got: {}",
+            msg
+        );
+    }
 }

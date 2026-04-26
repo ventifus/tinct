@@ -1,0 +1,10 @@
+# Lazy evaluation: TypeAssert record guard fires only on field access
+# Closed record type annotation guards each field with its type.
+# Field `bad` contains an error expression but is never accessed.
+# If the guard fired eagerly (at assertion time), the test would fail.
+# If the guard fires lazily (correct), the test passes because `good` is accessed but `bad` is not.
+[@[good: Int  bad: Int] [good: 42  bad: [call $error "should not fire"]]]
+---
+$$.good
+===
+Int(42)
