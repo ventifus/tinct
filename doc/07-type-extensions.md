@@ -461,14 +461,18 @@ unify_remainders(U₁, t₁, U₂, t₂, S):
         ∪ {ρ₂ → Row { fields: U₁, tail: RowVar(ρ_fresh) }}
 
     # Case 2: Only left has unique fields — right tail must absorb them
-    # Guard: U₂ must be empty (when both sides have unique fields, Case 4 applies)
-    (false, _, true, RowVar(ρ₂)) →
+    # Guard: when u2_empty prevents shadowing Case 4 — when both sides have unique
+    # fields with different RowVars, Case 4 applies. The `true` in position 3
+    # encodes u2_empty; the explicit `when` mirrors the guard in the implementation.
+    (false, _, true, RowVar(ρ₂)) when u2_empty →
       if row_var_occurs(ρ₂, Row(U₁, t₁)): ERROR infinite row
       S ∪ {ρ₂ → Row { fields: U₁, tail: t₁ }}
 
     # Case 3: Only right has unique fields — left tail must absorb them
-    # Guard: U₁ must be empty (when both sides have unique fields, Case 4 applies)
-    (true, RowVar(ρ₁), false, _) →
+    # Guard: when u1_empty prevents shadowing Case 4 — when both sides have unique
+    # fields with different RowVars, Case 4 applies. The `true` in position 1
+    # encodes u1_empty; the explicit `when` mirrors the guard in the implementation.
+    (true, RowVar(ρ₁), false, _) when u1_empty →
       if row_var_occurs(ρ₁, Row(U₂, t₂)): ERROR infinite row
       S ∪ {ρ₁ → Row { fields: U₂, tail: t₂ }}
 
@@ -674,10 +678,12 @@ impl Row {
 
 ### Part 10: Formal References
 
-- **Rémy, D. (1994).** "Type inference for records in natural extension of ML." In *Theoretical Aspects of Object-Oriented Programming*, pp. 291–346. MIT Press. — Principal type theorem (Theorem 4.7), kinded row unification, presence/absence flags, left-commutativity equations. Foundational model for tinct's kind separation between Type and Row.
-- **Wand, M. (1987).** "Complete type inference for simple objects." In *LICS '87*, pp. 37–44. IEEE. — Row variables as record tails, completeness proof (corrected 1988). Proves principal types for the presence-only restriction. Tinct's four-case unification algorithm follows Wand's field-partitioning structure with Rémy's kind separation.
-- **Gaster, B.R. & Jones, M.P. (1996).** "A polymorphic type system for extensible records and variants." TR NOTTCS-TR-96-3, Nottingham. — Lacks predicates for field absence. Not adopted (requires type class infrastructure) but relevant if typed field deletion is added or if `$merge` needs precise open-record typing.
-- **Harper, R. & Pierce, B. (1991).** "A record calculus based on symmetric concatenation." In *POPL '91*, pp. 131–142. ACM. — Concatenation typing with disjointness constraints. Relevant to `$merge` formal specification.
+For full citations see [doc/17-references.md §Row polymorphism](17-references.md). Brief annotations relevant to this chapter:
+
+- **Rémy (1994)** — Principal type theorem (Theorem 4.7), kinded row unification, presence/absence flags, left-commutativity equations. Foundational model for tinct's kind separation between Type and Row.
+- **Wand (1987)** — Row variables as record tails, completeness proof. Tinct's four-case `unify_remainders` algorithm follows Wand's field-partitioning structure with Rémy's kind separation; the code comments cite this paper as the "4-case algorithm" source.
+- **Gaster & Jones (1996)** — Lacks predicates for field absence. Not adopted (requires type class infrastructure) but relevant if typed field deletion is added or if `$merge` needs precise open-record typing.
+- **Harper & Pierce (1991)** — Concatenation typing with disjointness constraints. Relevant to `$merge` formal specification.
 - **Bernstein, M. (2024).** "Adding row polymorphism to Damas-Hindley-Milner." Blog post. — Tutorial implementation of Wand's approach in dict-based (quotient algebra) representation. Reference implementation for the four-case field-partitioning unification pattern used in tinct's design.
 
 ## Type System Extension Roadmap

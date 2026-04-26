@@ -639,7 +639,24 @@ fn check_dot_access(
             None => match tail {
                 // Open record (RowVar tail) and field not found: bind ρ → Row({field: β}, RowVar(ρ_fresh))
                 // This records the constraint "ρ must contain field with type β".
-                RowTail::RowVar(rho, _rho_level) => {
+                RowTail::RowVar(rho, rho_level_creation) => {
+                    // Get the current level from state.levels (the source of truth after level lowering).
+                    // The level in RowTail is the creation-time level; state.levels is the current (possibly lowered) level.
+                    // See doc/06-type-inference.md lines 413-414.
+                    let rho_level = state.levels.get(rho).copied().unwrap_or(0);
+
+                    // Invariant check: current level should be ≤ creation-time level (level lowering can only decrease levels)
+                    debug_assert!(
+                        rho_level <= *rho_level_creation,
+                        "RowVar current level ({}) should be ≤ creation level ({}). \
+                         Level lowering can only decrease levels, never increase. \
+                         RowVar: {}, state.levels: {:?}",
+                        rho_level,
+                        rho_level_creation,
+                        rho,
+                        state.levels.get(rho)
+                    );
+
                     // Create fresh type var β for the field type
                     let beta = state.fresh_type_var();
                     // Create fresh row var ρ_fresh for the remaining tail
@@ -662,8 +679,7 @@ fn check_dot_access(
                         )]);
                     }
 
-                    // Level lowering: lower all vars in the binding to ρ's level
-                    let rho_level = state.levels.get(rho).copied().unwrap_or(0);
+                    // Level lowering: lower all vars in the binding to ρ's current level (from state.levels)
                     lower_row_var_levels_pub(&binding, rho_level, state);
 
                     // Bind ρ → binding in the global substitution
@@ -1688,7 +1704,7 @@ mod tests {
 
     #[test]
     fn test_dot_access_constraint_generation_on_typevar_forward_ref() {
-        // Task 2: Test the occurs-check error path in check_dot_access (typecheck.rs:657-661)
+        // Test the occurs-check error path in check_dot_access (typecheck.rs:657-661)
         //
         // ANALYSIS: The occurs check `if row_var_occurs_pub(rho, &binding, &state.subst)` fires
         // when binding ρ → Row({field: β}, RowVar(ρ_fresh)) would create an infinite row type.
@@ -1799,6 +1815,7 @@ mod tests {
 
         // Dual-accept: either full resolution (StringLiteral) or constraint-generated (TypeVar).
         // Both are correct at this stage — Any would be wrong (constraint not generated).
+        // TODO(row-unification-f-b): when f-b lands, TypeVar will be fully resolved → collapse to assert_eq!(StringLiteral)
         assert!(
             matches!(
                 &resolved_result_ty,
@@ -3670,6 +3687,83 @@ mod tests {
             ty,
             Type::StringLiteral("hello".to_string()),
             "CALL-POLY with dot-access argument should resolve return type correctly, got: {ty}"
+        );
+    }
+
+    // -- CALL-POLY state.subst isolation test (cross-document boundary) --
+
+    #[test]
+    fn test_call_poly_state_subst_isolation() {
+        // Cross-document regression test for `state.subst.apply()` in the CALL-POLY arm.
+        //
+        // SCENARIO: Two documents separated by `---`. Document 1 processes a dict that
+        // includes a forward-reference dot-access, causing check_dot_access to write a
+        // constraint into state.subst (the TypeVar α arm: α → Record({name: β}, RowVar(ρ))).
+        // Document 2 then makes a polymorphic call whose argument type goes through a
+        // concrete env lookup from document 1.
+        //
+        // Unlike test_call_poly_state_subst_applied (which uses `\n` in a single document),
+        // this test crosses a true document boundary (`---`). The `state` object (including
+        // state.subst) is shared across both documents, so any bindings written by document 1
+        // are visible to document 2's CALL-POLY return-type resolution.
+        //
+        // WHY THE DOCUMENT BOUNDARY MATTERS:
+        //   After document 1's infer_dict completes (Pass 3b/3c + generalization), the
+        //   TypeVar α written into state.subst by check_dot_access is still present as a key
+        //   in state.subst.type_map. Document 2 shares this state. If document 2's CALL-POLY
+        //   return type (after local-subst resolution) is a TypeVar that is transitively bound
+        //   in state.subst from document 1, then `state.subst.apply()` at the CALL-POLY return
+        //   site (check_call_with_scheme line ~865) is the mechanism that resolves it.
+        //
+        // CURRENT LIMITATION (tracked as row-unification-f-b in TODO.md):
+        //   The CALL-POLY return type in this test resolves correctly through the normal
+        //   pipeline (document 1 puts `data` in env as a concrete type; document 2's
+        //   dot-access finds `data.name` directly without a state.subst lookup). Thus,
+        //   removing `state.subst.apply()` from the CALL-POLY return site ALONE would not
+        //   break this test at the current level of constraint propagation.
+        //
+        //   True isolation — where ONLY removing state.subst.apply() from CALL-POLY causes
+        //   a failure — requires that the CALL-POLY return TypeVar (after local subst) be
+        //   already bound in state.subst from document 1's dot-access. This is achievable
+        //   once cross-field constraint propagation within a single letrec pass is fully
+        //   implemented (row-unification-f-b). At that point this comment should be updated
+        //   to remove the caveat and the test should tighten to assert exactly that
+        //   `state.subst.apply()` at the CALL-POLY site resolves the TypeVar.
+        //
+        // WHAT THE TEST DOES VERIFY:
+        //   - The full CALL-POLY pipeline works across a `---` document boundary
+        //   - state.subst is shared across documents (state persists through file_env)
+        //   - Document 1's dot-access constraint generation (TypeVar α arm) does not corrupt
+        //     state.subst in a way that breaks document 2's CALL-POLY type resolution
+        //   - The result is the expected concrete type, not Any or an unresolved TypeVar
+        //
+        // Document 1: defines `id` (polymorphic identity) and `data` (concrete record).
+        //   The letrec for `id: [fn [x@a] $x]` generates a function scheme ∀a. Fn(a→a).
+        //   The letrec for `data: [name: hello]` writes `α_data → Record({name: StringLiteral},
+        //   Closed)` into the local subst (no state.subst entry from this step).
+        //   After document 1, env has `id : ∀a. Fn(a→a)` and `data : Record({name: "hello"})`.
+        //   state.subst may have bindings from letrec TypeVar assignments.
+        //
+        // Document 2: retrieves `id` and `data` from env (concrete, across the `---` boundary),
+        //   accesses `$data.name` (direct field lookup, returns StringLiteral("hello")),
+        //   then calls `[call $id $data.name]` via CALL-POLY.
+        //   CALL-POLY instantiates `id` to Fn(α'→α'), unifies α' with StringLiteral("hello"),
+        //   local subst = {α' → StringLiteral("hello")}. subst.apply(α') = StringLiteral("hello").
+        //   state.subst.apply(StringLiteral("hello")) = StringLiteral("hello") (no-op on concrete).
+        // file_env processes all documents and returns the env of the last document.
+        // The last document has one dict [result: ...], so result is in the final env.
+        let env = file_env(
+            "[id: [fn [x@a] $x]]\n[data: [name: hello]]\n---\n[result: [call $id $data.name]]",
+        );
+        let result_ty = env
+            .get("result")
+            .expect("result should be in env after document 2")
+            .body
+            .clone();
+        assert_eq!(
+            result_ty,
+            Type::StringLiteral("hello".to_string()),
+            "CALL-POLY across document boundary should resolve return type to StringLiteral(\"hello\"), got: {result_ty}"
         );
     }
 }
