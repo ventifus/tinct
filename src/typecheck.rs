@@ -1047,9 +1047,25 @@ fn infer_fn(
             let declared =
                 resolve_annotation(&ann.node, env, ann.span, state, &mut ann_mapping_opt)
                     .map_err(|e| vec![e])?;
-            // Use checking mode for function body with return annotation (doc/06 line 136-146)
-            check_expr(body, &declared, &fn_env, state, type_map)?;
-            declared
+
+            // When declared return type contains type variables, switch to unification mode
+            // (doc/06 line 136-146, Damas & Milner 1982, Pierce & Turner 2000 §3.2).
+            // TypeVars in is_subtype only match via reflexive equality, so
+            // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
+            // Unification mode binds the TypeVars via constraint solving.
+            if declared.has_type_vars() {
+                let body_ty = infer_expr(body, &fn_env, state, type_map)?;
+                // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
+                let mut subst = std::mem::take(&mut state.subst);
+                let result = unify(&body_ty, &declared, &mut subst, state, body.span);
+                state.subst = subst;
+                result.map_err(|e| vec![e])?;
+                declared
+            } else {
+                // Use checking mode for concrete return types (no type variables)
+                check_expr(body, &declared, &fn_env, state, type_map)?;
+                declared
+            }
         }
         None => infer_expr(body, &fn_env, state, type_map)?,
     };
@@ -3327,6 +3343,70 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.message.contains("type mismatch")),
             "Function body type mismatch should error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_function_return_annotation_with_type_var() {
+        // Function with polymorphic return annotation should use unification mode
+        // [fn@a [x@a] 42] — return annotation contains TypeVar, so body type
+        // should be unified with the declared type, binding the TypeVar.
+        // Without the fix, check_expr uses is_subtype which requires exact match
+        // for TypeVars (reflexive equality only), so is_subtype(IntLiteral(42), TypeVar("a"))
+        // returns false and the function is rejected.
+        //
+        // The key is that this should successfully type check (not error).
+        let result = check("[f: [fn@a [x@a] 42]]");
+        assert!(
+            result.is_ok(),
+            "Function with polymorphic return annotation should type check: {:?}",
+            result.err()
+        );
+
+        // Identity function with return annotation should also work
+        let result = check("[f: [fn@a [x@a] $x]]");
+        assert!(
+            result.is_ok(),
+            "Identity function with polymorphic return annotation should type check: {:?}",
+            result.err()
+        );
+
+        // Polymorphic function that returns a different type than param should succeed
+        // [fn@a [x@b] 42] where a and b are different type variables
+        // After unification: a gets bound to IntLiteral(42), but param is still b
+        // This should succeed since there's no constraint linking a and b
+        let result = check("[f: [fn@a [x@b] 42]]");
+        assert!(
+            result.is_ok(),
+            "Polymorphic function with different param/return type vars should type check: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_function_return_annotation_with_type_var_error_path() {
+        // Exercise the error path of the new unification-mode branch
+        // (declared.has_type_vars() = true) at src/typecheck.rs:1056-1062.
+        //
+        // When the body expression fails to infer a type, the error propagates
+        // via `?` at line 1057. This test confirms that the new path correctly
+        // surfaces body inference errors rather than silently succeeding.
+        //
+        // [fn@a [x@a] [call 42 1]] — return annotation @a contains a TypeVar
+        // so we enter the unification-mode branch. The body `[call 42 1]`
+        // attempts to call an integer literal as a function, which fails
+        // infer_expr with "expected function type, got IntLiteral(42)".
+        let errors = check_err("[f: [fn@a [x@a] [call 42 1]]]");
+        assert!(
+            !errors.is_empty(),
+            "Calling a non-function in a TypeVar-annotated fn body should produce type errors"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("expected function type")),
+            "Expected 'expected function type' error, got: {:?}",
             errors
         );
     }
