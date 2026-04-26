@@ -1,0 +1,11 @@
+# Shadow operators in user scope; prelude functions must still work correctly
+# because they use $builtin-lt, $builtin-add, etc. internally.
+# $> (prelude) uses $builtin-lt, so shadowing < should not affect it.
+[
+  <: [fn [a b] false]
+  +: [fn [a b] 0]
+  gt-result: [call $> 5 3]
+  not-result: [call $not false]
+]
+===
+Dict({"<": Function(a, b), "+": Function(a, b), "gt-result": Bool(true), "not-result": Bool(true)})

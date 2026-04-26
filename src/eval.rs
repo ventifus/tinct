@@ -975,7 +975,55 @@ fn eval_as_dict(
     }
 }
 
-/// DotAccess: materialize target, look up string key in dict.
+/// Invoke a proxy handler with a string key, returning the result thunk.
+fn invoke_proxy_handler(
+    handler: &Rc<Thunk>,
+    key_str: &str,
+    ctx: &Rc<EvalContext>,
+    access_span: &Span,
+    depth: usize,
+) -> EvalResult<Rc<Thunk>> {
+    let handler_val = materialize(handler, Some(access_span), ctx, depth + 1)?;
+    let key_arg = Rc::new(Thunk::new_materialized(
+        Value::String(key_str.to_string()),
+        *access_span,
+    ));
+    match handler_val {
+        Value::Function {
+            params,
+            body,
+            env: closure_env,
+        } => invoke_function(&CallContext {
+            params: &params,
+            body: &body,
+            closure_env: &closure_env,
+            positional: &[key_arg],
+            named: &IndexMap::new(),
+            default_env: &ctx.config.stdlib_env,
+            call_span: *access_span,
+            depth: depth + 1,
+            origin: Cow::Borrowed("proxy field access"),
+            ctx,
+        }),
+        Value::Builtin { func, .. } => Ok(Rc::new(Thunk::new_pending_builtin(
+            func,
+            vec![key_arg],
+            IndexMap::new(),
+            depth + 1,
+            *access_span,
+            Cow::Borrowed("proxy field access"),
+            Rc::clone(ctx),
+        ))),
+        _ => Err(EvalError::type_mismatch(
+            "Function or Builtin",
+            handler_val.type_name(),
+            *access_span,
+        )
+        .into()),
+    }
+}
+
+/// DotAccess: materialize target, look up string key in dict or call proxy handler.
 fn eval_dot_access(
     target: &Spanned<Expr>,
     field: &str,
@@ -984,18 +1032,29 @@ fn eval_dot_access(
     access_span: &Span,
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
-    let map = eval_as_dict(target, env, ctx, access_span, depth).map_err(|mut e| {
+    let push_frame = |mut e: Box<EvalError>| -> Box<EvalError> {
         e.push_frame(format!("accessing .{field}"), *access_span);
         e
-    })?;
-    let key = Key::String(field.to_string());
-    match map.get(&key) {
-        Some(thunk) => Ok(Rc::clone(thunk)),
-        None => Err(EvalError::key_not_found(field, *access_span).into()),
+    };
+    let target_thunk = eval(target, Rc::clone(env), ctx, depth + 1).map_err(&push_frame)?;
+    let target_val =
+        materialize(&target_thunk, Some(access_span), ctx, depth + 1).map_err(push_frame)?;
+    match target_val {
+        Value::Dict(map) => {
+            let key = Key::String(field.to_string());
+            match map.get(&key) {
+                Some(thunk) => Ok(Rc::clone(thunk)),
+                None => Err(EvalError::key_not_found(field, *access_span).into()),
+            }
+        }
+        Value::Proxy { handler } => invoke_proxy_handler(&handler, field, ctx, access_span, depth),
+        _ => Err(
+            EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), *access_span).into(),
+        ),
     }
 }
 
-/// BracketAccess: materialize target, evaluate key, look up in dict.
+/// BracketAccess: materialize target, evaluate key, look up in dict or call proxy handler.
 fn eval_bracket_access(
     target: &Spanned<Expr>,
     key_expr: &Spanned<Expr>,
@@ -1004,14 +1063,29 @@ fn eval_bracket_access(
     access_span: &Span,
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
-    let map = eval_as_dict(target, env, ctx, access_span, depth).map_err(|mut e| {
+    let push_frame = |mut e: Box<EvalError>| -> Box<EvalError> {
         e.push_frame("accessing [..]", *access_span);
         e
-    })?;
-    let key = eval_key(key_expr, env, ctx, depth)?;
-    match map.get(&key) {
-        Some(thunk) => Ok(Rc::clone(thunk)),
-        None => Err(EvalError::key_not_found(&key.to_string(), *access_span).into()),
+    };
+    let target_thunk = eval(target, Rc::clone(env), ctx, depth + 1).map_err(&push_frame)?;
+    let target_val =
+        materialize(&target_thunk, Some(access_span), ctx, depth + 1).map_err(push_frame)?;
+    match target_val {
+        Value::Dict(map) => {
+            let key = eval_key(key_expr, env, ctx, depth)?;
+            match map.get(&key) {
+                Some(thunk) => Ok(Rc::clone(thunk)),
+                None => Err(EvalError::key_not_found(&key.to_string(), *access_span).into()),
+            }
+        }
+        Value::Proxy { handler } => {
+            let key = eval_key(key_expr, env, ctx, depth)?;
+            let key_str = key.to_string();
+            invoke_proxy_handler(&handler, &key_str, ctx, access_span, depth)
+        }
+        _ => Err(
+            EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), *access_span).into(),
+        ),
     }
 }
 
@@ -3484,6 +3558,41 @@ mod tests {
         assert!(
             err.message().contains("maximum evaluation depth exceeded"),
             "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_proxy_invoke_depth_limit() {
+        // Verify that accessing a proxy field at depth >= MAX_EVAL_DEPTH triggers
+        // the depth exceeded error rather than a Rust stack overflow.
+        //
+        // Strategy: create a proxy value and access it via a DotAccess expression
+        // at depth = MAX_EVAL_DEPTH. eval_dot_access calls invoke_proxy_handler
+        // at that depth, which immediately tries to materialize the handler at
+        // depth + 1 = MAX_EVAL_DEPTH + 1, hitting the depth check.
+        let span = test_span(1, 1, 1, 5);
+
+        // A simple handler thunk (value doesn't matter — depth check fires before it's invoked)
+        let handler = Rc::new(Thunk::new_materialized(Value::Int(0), span));
+        let proxy = Value::Proxy { handler };
+        let proxy_thunk = Rc::new(Thunk::new_materialized(proxy, span));
+
+        // Insert the proxy into the env so $p resolves to it
+        let env = empty_env();
+        env.borrow_mut()
+            .insert("p".to_string(), Rc::clone(&proxy_thunk));
+
+        // Evaluate $p.field at depth MAX_EVAL_DEPTH
+        let dot_expr = sp(Expr::DotAccess {
+            expr: Box::new(sp(Expr::VarRef("p".into()))),
+            field: "field".to_string(),
+        });
+        let ctx = test_ctx();
+        let err = eval(&dot_expr, env, &ctx, MAX_EVAL_DEPTH).unwrap_err();
+        assert!(
+            err.message().contains("maximum evaluation depth exceeded"),
+            "expected depth limit error for proxy field access, got: {}",
             err.message()
         );
     }

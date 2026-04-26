@@ -1023,4 +1023,16 @@ Test coverage gaps and naming consistency from sandbox-polish-b panel review.
 - [x] Extend corpus test harness to support `no_fs` directive, then add E042 IncludeForbidden corpus test (`tests/corpus_tests.rs`, `tests/corpus/eval/errors/`)
 - [x] Add `parse_duration` test for `checked_add` None path: `"18446744073709550617ms"` (u64::MAX - 998, exact boundary) (`src/main.rs`)
 - [x] Rename sandbox CLI tests to include `_flag` infix for consistency with existing `no_fs_flag_blocks_include` and `timeout_flag_exits_with_sigalrm` (`tests/cli_tests.rs`)
+
+## overridable-ops: Overridable Operators and `$proxy`
+
+Make comparison, arithmetic, and collection operators shadowable from stdlib, enabling embedded DSLs (e.g. `stdlib/sql.llt`) to intercept them. Add `$proxy` as a generic field-access interception primitive. See `doc/whatif/sql-translation.md` §Implementation in stdlib.
+
+- [x] Add `$proxy handler-fn` Rust builtin: returns `Value::Proxy { handler }` — a new value variant where any field access `.field` calls `handler("field")` and returns the result (`src/builtins.rs`, `src/eval.rs`)
+- [x] Handle `Value::Proxy` in field-access evaluation — force handler and call with field name string (`src/eval.rs`)
+- [x] Add stable Rust aliases in `create_root_env()` for operators that need wrappers: `builtin-lt` (=`<`), `builtin-eq` (=`=`), `builtin-add` (=`+`), `builtin-sub` (=`-`), `builtin-mul` (=`*`), `builtin-div` (=`/`), `builtin-if` (=`if`), `builtin-filter` (=`filter`), `builtin-map` (=`map`), `builtin-reduce` (=`reduce`), `builtin-take` (=`take`), `builtin-drop` (=`drop`) (`src/builtins.rs`)
+- [x] Add prelude wrappers in `stdlib/prelude.llt` for `<`, `=`, `+`, `-`, `*`, `/` — each delegates to its `$builtin-X` alias — so these names become shadowable without breaking the prelude's own uses (which continue to resolve via the letrec scope to the wrapper, which calls the Rust primitive) (`stdlib/prelude.llt`)
+- [x] Add prelude wrappers for `filter`, `map`, `reduce`, `take`, `drop` — each delegates to its `$builtin-X` alias (`stdlib/prelude.llt`)
+- [x] Corpus test: shadow `<` with a custom version in user scope; verify it is called instead of the builtin (`tests/corpus/eval/`)
+- [x] Corpus test: `$proxy` field access calls handler; verify different field names produce different results (`tests/corpus/eval/`)
 - [x] Add composition test that verifies conjunctive enforcement: program uses `$include` AND runs with `--timeout`, both flags active (`tests/cli_tests.rs`)

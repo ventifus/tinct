@@ -1,0 +1,4 @@
+# Proxy handler must be a Function or Builtin; Int is rejected
+[p: [call $proxy 42]  result: $p.test]
+===
+type mismatch: expected Function or Builtin, got Int

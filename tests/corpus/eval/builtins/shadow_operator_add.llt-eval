@@ -1,0 +1,8 @@
+# Shadow + with a custom version that multiplies instead
+# The real + would return 7 for (3 + 4), but our version returns 12
+[
+  +: [fn [a b] [call $builtin-mul $a $b]]
+  result: [call $+ 3 4]
+]
+===
+Dict({"+": Function(a, b), "result": Int(12)})

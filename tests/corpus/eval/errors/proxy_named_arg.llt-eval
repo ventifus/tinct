@@ -1,0 +1,4 @@
+# $proxy does not accept named arguments
+[call $proxy handler: [fn [k] $k]]
+===
+does not accept named arguments

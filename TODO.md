@@ -2,17 +2,18 @@
 
 Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-## overridable-ops: Overridable Operators and `$proxy`
+### proxy-followup: Proxy Deferred Items (Cycle #61 panel overflow)
 
-Make comparison, arithmetic, and collection operators shadowable from stdlib, enabling embedded DSLs (e.g. `stdlib/sql.llt`) to intercept them. Add `$proxy` as a generic field-access interception primitive. See `doc/whatif/sql-translation.md` §Implementation in stdlib.
+Low-priority follow-on work from the overridable-ops panel review.
 
-- [ ] Add `$proxy handler-fn` Rust builtin: returns `Value::Proxy { handler }` — a new value variant where any field access `.field` calls `handler("field")` and returns the result (`src/builtins.rs`, `src/eval.rs`)
-- [ ] Handle `Value::Proxy` in field-access evaluation — force handler and call with field name string (`src/eval.rs`)
-- [ ] Add stable Rust aliases in `create_root_env()` for operators that need wrappers: `lt` (=`<`), `eq` (=`=`), `add` (=`+`), `sub` (=`-`), `mul` (=`*`), `div` (=`/`), `builtin-if` (=`if`), `builtin-filter` (=`filter`), `builtin-map` (=`map`), `builtin-reduce` (=`reduce`), `builtin-take` (=`take`), `builtin-drop` (=`drop`) (`src/builtins.rs`)
-- [ ] Add prelude wrappers in `stdlib/prelude.llt` for `<`, `=`, `+`, `-`, `*`, `/` — each delegates to its `$builtin-X` alias — so these names become shadowable without breaking the prelude's own uses (which continue to resolve via the letrec scope to the wrapper, which calls the Rust primitive) (`stdlib/prelude.llt`)
-- [ ] Add prelude wrappers for `filter`, `map`, `reduce`, `take`, `drop` — each delegates to its `$builtin-X` alias (`stdlib/prelude.llt`)
-- [ ] Corpus test: shadow `<` with a custom version in user scope; verify it is called instead of the builtin (`tests/corpus/eval/`)
-- [ ] Corpus test: `$proxy` field access calls handler; verify different field names produce different results (`tests/corpus/eval/`)
+- [ ] Add `Type::Proxy` variant so type checker can reject proxy-valued non-access uses rather than returning `Any`; proxy field access will remain `Any` (handler result is opaque) (`src/types.rs`, `src/typecheck.rs`) [Minor, integration-verifier C61]
+- [ ] Migrate `value_to_json` Proxy error from `EvalError::new` (E099 Internal) to a typed `ErrorKind::ValueNotSerializable { value_type }` (`src/lib.rs:209`, `src/error.rs`) [Minor, integration-verifier C61]
+- [ ] Add proxy-to-JSON and proxy-display to `deep_materialize_impl` — currently falls through catch-all without traversing `handler` thunk; add `Value::Proxy { handler }` arm that clones the proxy but deep-materializes handler thunk (`src/eval.rs:1635`) [Minor, computer-scientist C61]
+- [ ] Proxy bracket access: pass original `Value::Int`/`Value::String` to handler instead of always flattening to String — lets handler distinguish `$p[0]` from `$p["0"]` (`src/eval.rs:1081-1085`) [Minor, computer-scientist C61]
+- [ ] Expand `builtin_aliases_callable.llt-eval` to cover all 12 `builtin-*` aliases — currently covers only 6; add direct calls to `builtin-sub`, `builtin-div`, `builtin-mul`, `builtin-reduce`, `builtin-take`, `builtin-drop` (`tests/corpus/eval/builtins/`) [Nit, test-crafter C61]
+- [ ] Add proxy 2-arg arity error corpus test — `[call $proxy f1 f2]` should error with arity mismatch (`tests/corpus/eval/errors/`) [Nit, test-crafter C61]
+- [ ] Fix `test_proxy_invoke_depth_limit` comment — says depth fires in `invoke_proxy_handler` but actually fires earlier in `eval(target, ..., depth+1)` during VarRef resolution (`src/eval.rs:3567-3573`) [Nit, eval-engine C61]
+- [ ] Empty `IndexMap::new()` in `invoke_proxy_handler` (2 sites) — use `Lazy<IndexMap<...>>` or pass empty slice to avoid heap allocation per proxy field access (`src/eval.rs:1001,1011`) [Nit, performance-expert C61]
 
 ## include-fd-hardening: fd-Based $include with cap-std
 

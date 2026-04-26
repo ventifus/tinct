@@ -1,0 +1,11 @@
+# builtin-* aliases are directly callable as stable escape hatches
+[
+  a: [call $builtin-lt 1 2]
+  b: [call $builtin-add 3 4]
+  c: [call $builtin-eq hello hello]
+  d: [call $builtin-if true 10 20]
+  e: [call $collect [call $builtin-filter [fn [x] [call $builtin-lt $x 3]] [call $seq 1 [call $seq 2 []]]]]
+  f: [call $collect [call $builtin-map [fn [x] [call $builtin-add $x 1]] [call $seq 10 [call $seq 20 []]]]]
+]
+===
+Dict({"a": Bool(true), "b": Int(7), "c": Bool(true), "d": Int(10), "e": Dict({0: Int(1), 1: Int(2)}), "f": Dict({0: Int(11), 1: Int(21)})})
