@@ -559,6 +559,7 @@ fn infer_dict(
             .collect();
         let applied_row = Row {
             fields: applied_fields,
+            // Tail not applied through local subst here — Pass 3c's `subst.apply()` chases tail chains transitively.
             tail: row.tail.clone(),
         };
         subst.row_map.entry(k.clone()).or_insert(applied_row);
@@ -2031,6 +2032,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_typeassert_default_suppresses_main_error_but_propagates_ok() {
+        // Task 6: ASSERT-DEFAULT suppression — when a valid default is present, the
+        // main-check error (hello is not a Number) is suppressed and typecheck returns Ok.
+        //
+        // resolve_type_assert (typecheck.rs) follows this logic:
+        //   1. Infer main expr type; if mismatch AND default present → suppress, return Ok
+        //   2. Infer default type; if default type mismatches asserted type → Err
+        //
+        // The expression is wrapped in a dict so the result is observable via result_field.
+        // `hello` is a bare word (StringLiteral type), not a Number → mismatch, suppressed.
+        let result = check("[result: [@[type: Number  default: 0] hello]]");
+        assert!(
+            result.is_ok(),
+            "TypeAssert with valid default should suppress main-check error (hello is not a Number), \
+             but typecheck returned: {:?}",
+            result.unwrap_err()
+        );
+    }
+
     // -- TypeAlias --
 
     #[test]
@@ -3101,6 +3122,7 @@ mod tests {
         // The result is a TypeVar β (the fresh field type).
         // Note: full constraint propagation between letrec fields and state.subst is future
         // work — β is not yet resolved to IntLiteral(1) even though data: [x: 1] confirms it.
+        // See row-unification-f-b in TODO.md.
         let ty = infer("[result: $data.x  data: [x: 1]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
@@ -3576,5 +3598,74 @@ mod tests {
         // Exercises the state.subst.apply() path in check_bracket_access (line ~717).
         let ty = result_field("[result: $data[name]  data: [name: hello]]", "result");
         assert_eq!(ty, Type::StringLiteral("hello".to_string()));
+    }
+
+    // -- CALL-POLY state.subst constraint test --
+
+    #[test]
+    fn test_call_poly_state_subst_applied() {
+        // Task 7: Regression test for `state.subst.apply()` in the CALL-POLY arm of
+        // check_call_with_scheme and check_call.
+        //
+        // The two CALL-POLY sites are:
+        //   check_call_with_scheme line ~852: Ok(state.subst.apply(&subst.apply(ret)))
+        //   check_call            line ~973: Ok(state.subst.apply(&subst.apply(inst_ret)))
+        //
+        // Without state.subst.apply(), the return type is only `subst.apply(ret)`.
+        // If the TypeVar remaining in ret after local-subst resolution is also bound
+        // in state.subst (e.g., because a prior dot-access constraint wrote to state.subst
+        // before this call site was processed), the result type would be stale/unresolved.
+        //
+        // HOW THIS TEST DETECTS THE REGRESSION:
+        //   The forward-reference in `$data` forces Pass 1 to assign TypeVar(_t_data) to
+        //   `data`'s slot.  When `result` is processed (left-to-right in Pass 3),
+        //   check_dot_access sees TypeVar(_t_data) for `$data`, enters the TypeVar arm, and
+        //   writes `_t_data → Record({name: _t_name}, ρ)` into state.subst (not local subst).
+        //   It returns TypeVar(_t_name) as the field type (arg to $id).
+        //   After call unification: local subst[_t_call = _t_name].
+        //   subst.apply(inst_ret) = _t_name (local subst resolves _t_call to _t_name).
+        //   state.subst.apply(_t_name) = _t_name (not yet bound; data not yet processed).
+        //
+        //   After Pass 3 processes `data: [name: hello]`, unification propagates
+        //   _t_data = Record({name: StringLiteral("hello")}, Closed) through state.subst,
+        //   and Pass 3b/3c resolves _t_name = StringLiteral("hello") globally.
+        //
+        //   The final asserted type of `result` comes through this chain.  If state.subst.apply()
+        //   were removed from the CALL-POLY return and ALSO from Pass 3b/3c, the type would
+        //   remain an unresolved TypeVar.  The test thus provides a regression guard for the
+        //   full state.subst pipeline of which the CALL-POLY site is the first link.
+        //
+        //   A stronger isolation test (where ONLY removing state.subst.apply() from the CALL-POLY
+        //   site causes failure) requires a scenario where _t_name is already bound in state.subst
+        //   BEFORE the call is processed — achievable once cross-field constraint propagation within
+        //   a single letrec pass is fully implemented (tracked as future work).
+        // NOTE: The test input uses plain `\n` separators (NOT `---\n`), so the parser
+        // produces ONE document containing three sequential dict expressions.
+        // `typecheck_document` processes them left-to-right in a single letrec pass,
+        // threading each expression's field scheme into the environment before moving on.
+        //
+        // When `[call $id $data.name]` is processed, both `id` (already a TypeScheme)
+        // and `$data` (TypeVar(_t_data) at that point) are in scope from the preceding
+        // expressions.  check_dot_access enters the TypeVar arm for `$data`, writes
+        // `_t_data → Record({name: _t_name}, ρ)` into state.subst, and returns
+        // TypeVar(_t_name) as the arg type.  After Pass 3b/3c resolves `data: [name: hello]`,
+        // _t_name is bound to StringLiteral("hello") globally, and `result` resolves.
+        //
+        // state.subst.apply() at the CALL-POLY return is benign in this scenario (local subst
+        // already resolved the binding), but the test guards the full CALL-POLY path end-to-end
+        // (arg inference → unification → return type resolution).  A stronger isolation test
+        // (where ONLY removing state.subst.apply() from the CALL-POLY site causes failure)
+        // requires cross-field constraint propagation within a letrec pass, tracked as
+        // future work (row-unification-h).
+        let ty = result_field(
+            "[id: [fn [x@a] $x]]\n[data: [name: hello]]\n[result: [call $id $data.name]]",
+            "result",
+        );
+        // result should be StringLiteral("hello") via CALL-POLY: id returns same type as arg
+        assert_eq!(
+            ty,
+            Type::StringLiteral("hello".to_string()),
+            "CALL-POLY with dot-access argument should resolve return type correctly, got: {ty}"
+        );
     }
 }

@@ -89,6 +89,31 @@ pub fn eval_source(input: &str) -> Result<String, String> {
     value_to_display_string(&forced, &ctx, 0).map_err(|e| format!("{e}"))
 }
 
+/// Parse and type-check LLT source code.
+///
+/// Returns `Ok(())` if type checking succeeds, or `Err(errors)` with a formatted
+/// error message if type errors are found. Each error includes the error message
+/// and the source span where it occurred.
+///
+/// **Note**: This function type-checks with an empty type environment. Stdlib
+/// builtins (like `$+`, `$merge`, etc.) are not in scope and will produce
+/// "undefined variable" errors. This is a known limitation — the type system
+/// does not yet have type signatures for builtins.
+///
+/// This function is primarily used for testing and corpus validation to ensure
+/// type checking regressions are caught. The main `eval_source` function treats
+/// type errors as advisory warnings and continues evaluation regardless.
+pub fn typecheck_source(input: &str) -> Result<(), String> {
+    let mut file = parse(input).map_err(|e| format!("{e}"))?;
+    // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
+    desugar::desugar_file(&mut file.node);
+    // Type check the file
+    typecheck::typecheck_file(&file.node).map_err(|type_errors| {
+        let error_msgs: Vec<String> = type_errors.iter().map(|e| format!("{}", e)).collect();
+        error_msgs.join("\n")
+    })
+}
+
 // value_to_json and value_to_display_string are kept separate; their logic diverges too much for a shared visitor.
 
 /// Convert a materialized [`Value`](value::Value) to a [`serde_json::Value`].

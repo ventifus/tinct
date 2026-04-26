@@ -887,8 +887,9 @@ fn unify_rows(
     if !new_shared.is_empty() {
         // New shared fields surfaced by re-resolution — unify them and re-partition.
         // Delegate to unify_rows which handles the full resolve-partition-unify-remainder
-        // cycle. Terminates because each round binds at least one row variable, and the
-        // occurs check bounds the number of variables.
+        // cycle. Terminates because each recursive entry requires Step 3 to have bound
+        // at least one row variable (surfacing new_shared fields), strictly reducing the
+        // number of unbound row variables. The occurs check prevents cyclic bindings.
         unify_rows(&re_resolved1, &re_resolved2, subst, state, span)
     } else {
         // Step 4: Unify remainders with re-resolved tails (no new shared fields)

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use tinct::{eval_source, parse, parse_expression};
+use tinct::{eval_source, parse, parse_expression, typecheck_source};
 
 /// Recursively find all .llt-eval files in a directory
 fn find_test_files(dir: &Path) -> Vec<PathBuf> {
@@ -416,4 +416,141 @@ fn has_error_code_prefix(error_msg: &str) -> bool {
             && w[4].is_ascii_digit()
             && w[5] == ']'
     })
+}
+
+/// Typecheck corpus runner — disabled until stdlib builtins have type signatures.
+///
+/// 4 of 8 corpus files use builtins (`$+`, `$merge`, `$get`) that are not registered
+/// in `TypeEnv::new()`, causing spurious "undefined variable" type errors.
+/// Re-enable once the `typecheck-stdlib-types` sprint lands (`TypeEnv::with_builtins()`).
+/// See TODO.md §type-extensions — "Add `TypeEnv::with_builtins()` constructor".
+#[test]
+#[ignore = "stdlib builtins lack type signatures — re-enable once typecheck-stdlib-types sprint is complete"]
+fn test_typecheck_corpus() {
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval/typecheck");
+
+    let test_files = find_test_files(&corpus_dir);
+    assert!(
+        !test_files.is_empty(),
+        "No test files found in {}",
+        corpus_dir.display()
+    );
+
+    let mut failed = Vec::new();
+
+    for test_file in &test_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+        let relative_path = test_file
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(test_file);
+
+        let (input, _expected) = split_test_file(&content);
+
+        // Type check should succeed for all files in tests/corpus/eval/typecheck/
+        match typecheck_source(input) {
+            Ok(()) => {
+                // Success - this is expected
+            }
+            Err(error_msg) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!(
+                        "Expected typecheck to succeed, but got error(s):\n{}",
+                        error_msg
+                    ),
+                ));
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n{} typecheck test(s) failed:", failed.len());
+        for (path, error) in &failed {
+            eprintln!("  - {}: {}", path.display(), error);
+        }
+        panic!("Typecheck corpus tests failed");
+    }
+}
+
+/// Type error corpus runner — disabled until stdlib builtins have type signatures.
+///
+/// Companion to `test_typecheck_corpus`: files in `tests/corpus/invalid/type_errors/`
+/// are expected to fail type-checking with a specific error substring. Disabled because
+/// the type checker's `TypeEnv` lacks stdlib builtin signatures, making any test that
+/// exercises builtins unreliable. Re-enable together with `test_typecheck_corpus` once
+/// the `typecheck-stdlib-types` sprint lands.
+#[test]
+#[ignore = "stdlib builtins lack type signatures — re-enable once typecheck-stdlib-types sprint is complete"]
+fn test_typecheck_error_corpus() {
+    let corpus_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/invalid/type_errors");
+
+    // Only run this test if the directory exists
+    if !corpus_dir.exists() {
+        // Skip silently if the directory doesn't exist yet
+        return;
+    }
+
+    let test_files = find_test_files(&corpus_dir);
+    if test_files.is_empty() {
+        // Directory exists but has no tests yet - this is fine
+        return;
+    }
+
+    let mut failed = Vec::new();
+
+    for test_file in &test_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+        let relative_path = test_file
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(test_file);
+
+        let (input, expected) = split_test_file(&content);
+
+        let expected_substr = match expected {
+            Some(e) => e,
+            None => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    "type error corpus test file missing expected error substring after ==="
+                        .to_string(),
+                ));
+                continue;
+            }
+        };
+
+        // Type check should fail for all files in tests/corpus/invalid/type_errors/
+        match typecheck_source(input) {
+            Ok(()) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    "Expected typecheck to fail, but it succeeded".to_string(),
+                ));
+            }
+            Err(error_msg) => {
+                // Check if the error message contains the expected substring
+                if !error_msg.contains(expected_substr) {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual errors ---\n{}",
+                            expected_substr, error_msg
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n{} type error test(s) failed:", failed.len());
+        for (path, error) in &failed {
+            eprintln!("  - {}: {}", path.display(), error);
+        }
+        panic!("Type error corpus tests failed");
+    }
 }
