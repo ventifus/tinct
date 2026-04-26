@@ -979,3 +979,14 @@ Overflow from row-unification-g plus nit fixes from the row-unification-f panel 
 - [x] Add ASSERT-DEFAULT suppression test — add `test_typeassert_default_suppresses_main_error_but_propagates_ok` that calls `check("[result: [@[type: Number  default: 0] hello]]")` and verifies the result is `Ok`, confirming main-check error is suppressed when a valid default is present. (`src/typecheck.rs`) [Minor, sprint-reviewer C53]
 - [x] Add CALL-POLY state.subst constraint test — add a test where a forward-reference dot-access binds a TypeVar in state.subst before a polymorphic call whose return type references that same TypeVar, verifying `state.subst.apply()` in the CALL-POLY arm changes the result. Without this, removing `state.subst.apply()` from `check_call`/`check_call_with_scheme` would not break any test. (`src/typecheck.rs:837, 958`) [Minor, test-crafter C53]
 - [x] Add typecheck corpus runner — `tests/corpus/eval/typecheck/` is executed by the eval runner which discards type errors (`let _ = typecheck::typecheck_file(...)` at corpus_tests.rs:81); type-checker regressions that don't change runtime output are invisible. Add a dedicated `test_typecheck_corpus()` that calls `typecheck_file()` and validates Ok/Err. (`tests/corpus_tests.rs:81`, `tests/corpus/eval/typecheck/`) [Major, test-crafter C54]
+
+## eval-sandbox-flags: Adversarial Evaluation Flags
+
+Extend `llt eval` with `--no-fs`, `--timeout`, and structured exit codes for adversarial/sandboxed use. See `doc/12-tooling.md` §Adversarial Evaluation.
+
+- [x] Add `--no-fs` flag to the `eval` subcommand in clap — sets `EvalConfig::no_fs = true`; `$include` returns an error immediately when `no_fs` is set (`src/main.rs`, `src/builtins.rs`)
+- [x] Add `no_fs: bool` to `EvalConfig`; check it at the top of `builtin_include` and emit `EvalError::IncludeForbidden` (`src/eval.rs`, `src/builtins.rs`)
+- [x] Add `--timeout <duration>` flag to the `eval` subcommand — parse duration string (e.g. `30s`, `500ms`); install SIGALRM handler via `libc::alarm()` at start of `run_eval`; handler exits with code 2 (`src/main.rs`)
+- [x] Define exit code constants: 0=success, 1=eval/parse/type error (current behavior), 2=timeout (SIGALRM), 3=resource limit (SIGXCPU/SIGXFSZ from rlimit) — update `run_eval` to map error variants to correct exit codes (`src/main.rs`)
+- [x] Add corpus test: `--no-fs` with an `$include` call produces an error (`tests/corpus/eval/errors/`)
+- [x] Add corpus test: `--timeout 0s` causes exit code 2 (or smallest meaningful duration that reliably fires before eval completes)

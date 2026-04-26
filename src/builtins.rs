@@ -1005,6 +1005,12 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         ctx,
     } = ctx_arg;
+
+    // Check if filesystem access is disabled before doing anything else.
+    if ctx.config.no_fs {
+        return Err(EvalError::include_forbidden(call_span).into());
+    }
+
     let val = expect_one_arg("include", args, named, &ctx, depth, call_span)?;
     let file_path_str = require_string("include", val, call_span)?;
 
@@ -2706,7 +2712,7 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 
     // Create a bootstrap EvalContext with just the root env (before stdlib is loaded)
     let bootstrap_ctx =
-        crate::eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&root_env));
+        crate::eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&root_env), false);
 
     let prelude_source = include_str!("../stdlib/prelude.llt");
     let mut file = crate::parser::parse(prelude_source).map_err(|e| {
@@ -2763,7 +2769,7 @@ mod tests {
     }
 
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new(std::path::PathBuf::from("."), create_root_env())
+        crate::eval::EvalContext::new(std::path::PathBuf::from("."), create_root_env(), false)
     }
 
     fn mat(result: EvalResult<Rc<Thunk>>) -> Value {
@@ -8346,7 +8352,7 @@ mod tests {
     /// Helper: create an EvalContext pointing at the given base directory.
     fn include_ctx(base_dir: &std::path::Path) -> Rc<crate::eval::EvalContext> {
         let stdlib_env = create_stdlib_env().expect("stdlib env");
-        crate::eval::EvalContext::new(base_dir.to_path_buf(), stdlib_env)
+        crate::eval::EvalContext::new(base_dir.to_path_buf(), stdlib_env, false)
     }
 
     /// Helper: write a temp file and return its path.

@@ -11,6 +11,11 @@ use tinct::{
 
 const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
 
+// Exit codes for llt eval
+const EXIT_ERROR: i32 = 1;
+const EXIT_TIMEOUT: i32 = 2;
+// EXIT_RESOURCE: i32 = 3; // reserved for future --max-memory/--max-cpu
+
 /// tinct -- a unified data representation and transformation language.
 #[derive(Parser)]
 #[command(name = "tinct", version, about)]
@@ -30,6 +35,14 @@ enum Commands {
         /// Deep-force all thunks before serializing (surfaces errors before partial output).
         #[arg(long)]
         eval: bool,
+
+        /// Disable filesystem access ($include).
+        #[arg(long)]
+        no_fs: bool,
+
+        /// Wall-clock timeout (e.g. "5s", "500ms", "2m"). Exit code 2 on expiry.
+        #[arg(long)]
+        timeout: Option<String>,
 
         /// Input LLT file. Use `-` to read LLT source from stdin.
         file: String,
@@ -69,7 +82,13 @@ fn main() {
     let result = std::thread::Builder::new()
         .stack_size(WORKER_STACK_SIZE)
         .spawn(move || match cli.command {
-            Commands::Eval { format, eval, file } => run_eval(&file, &format, eval),
+            Commands::Eval {
+                format,
+                eval,
+                no_fs,
+                timeout,
+                file,
+            } => run_eval(&file, &format, eval, no_fs, timeout.as_deref()),
             Commands::Fmt {
                 check,
                 in_place,
@@ -87,16 +106,101 @@ fn main() {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             eprintln!("{e}");
-            process::exit(1);
+            process::exit(EXIT_ERROR);
         }
         Err(_) => {
             eprintln!("internal error: worker thread panicked");
-            process::exit(2);
+            process::exit(EXIT_ERROR);
         }
     }
 }
 
-fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<(), String> {
+/// Parse a duration string like "5s", "500ms", "2m" into seconds (u32).
+/// Rounds up milliseconds to the nearest second (minimum 1).
+fn parse_duration(s: &str) -> Result<u32, String> {
+    let s = s.trim();
+
+    // Try to parse with suffix
+    if let Some(rest) = s.strip_suffix("ms") {
+        let ms: u64 = rest
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid duration: {s}"))?;
+        // Round up to nearest second, minimum 1
+        let secs = (ms + 999) / 1000;
+        if secs == 0 || secs > u32::MAX as u64 {
+            return Err(format!("duration out of range: {s}"));
+        }
+        return Ok(secs as u32);
+    }
+
+    if let Some(rest) = s.strip_suffix('s') {
+        let secs: u32 = rest
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid duration: {s}"))?;
+        if secs == 0 {
+            return Err("timeout must be at least 1 second".to_string());
+        }
+        return Ok(secs);
+    }
+
+    if let Some(rest) = s.strip_suffix('m') {
+        let mins: u32 = rest
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid duration: {s}"))?;
+        if mins == 0 {
+            return Err("timeout must be at least 1 second".to_string());
+        }
+        let secs = mins
+            .checked_mul(60)
+            .ok_or_else(|| format!("duration out of range: {s}"))?;
+        return Ok(secs);
+    }
+
+    // No suffix — assume seconds
+    let secs: u32 = s.parse().map_err(|_| format!("invalid duration: {s}"))?;
+    if secs == 0 {
+        return Err("timeout must be at least 1 second".to_string());
+    }
+    Ok(secs)
+}
+
+/// SIGALRM handler — exits with timeout code.
+extern "C" fn timeout_handler(_sig: i32) {
+    unsafe { libc::_exit(EXIT_TIMEOUT) };
+}
+
+/// Install SIGALRM handler and start the alarm timer.
+fn install_timeout(duration_str: &str) -> Result<(), String> {
+    let seconds = parse_duration(duration_str)?;
+
+    unsafe {
+        // Install signal handler
+        let handler = timeout_handler as usize;
+        if libc::signal(libc::SIGALRM, handler) == libc::SIG_ERR {
+            return Err("failed to install SIGALRM handler".to_string());
+        }
+
+        // Start the alarm
+        libc::alarm(seconds);
+    }
+
+    Ok(())
+}
+
+fn run_eval(
+    file_path: &str,
+    format: &OutputFormat,
+    force_eval: bool,
+    no_fs: bool,
+    timeout: Option<&str>,
+) -> Result<(), String> {
+    // Install timeout handler if requested (must happen before evaluation)
+    if let Some(duration) = timeout {
+        install_timeout(duration)?;
+    }
     // Read the LLT source
     let source = read_source(file_path)?;
 
@@ -133,7 +237,7 @@ fn run_eval(file_path: &str, format: &OutputFormat, force_eval: bool) -> Result<
     };
 
     // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
-    let eval_ctx = tinct::EvalContext::new(base_dir, Rc::clone(&env));
+    let eval_ctx = tinct::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
 
     let initial_input = stdin_input;
 
@@ -261,4 +365,58 @@ fn read_stdin_json() -> Result<Option<Rc<Thunk>>, String> {
 
     let val = json_to_value(&json, 0, Span::origin()).map_err(|e| format!("{e}"))?;
     Ok(Some(val))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_duration_seconds() {
+        assert_eq!(parse_duration("5s"), Ok(5));
+        assert_eq!(parse_duration("1s"), Ok(1));
+        assert_eq!(parse_duration("30s"), Ok(30));
+    }
+
+    #[test]
+    fn parse_duration_milliseconds() {
+        assert_eq!(parse_duration("500ms"), Ok(1));
+        assert_eq!(parse_duration("1000ms"), Ok(1));
+        assert_eq!(parse_duration("1500ms"), Ok(2));
+        assert_eq!(parse_duration("1ms"), Ok(1));
+    }
+
+    #[test]
+    fn parse_duration_minutes() {
+        assert_eq!(parse_duration("1m"), Ok(1 * 60));
+        assert_eq!(parse_duration("2m"), Ok(2 * 60));
+    }
+
+    #[test]
+    fn parse_duration_bare_number() {
+        assert_eq!(parse_duration("10"), Ok(10));
+        assert_eq!(parse_duration("1"), Ok(1));
+    }
+
+    #[test]
+    fn parse_duration_zero_rejected() {
+        assert!(parse_duration("0s").is_err());
+        assert!(parse_duration("0m").is_err());
+        assert!(parse_duration("0").is_err());
+        assert!(parse_duration("0ms").is_err());
+    }
+
+    #[test]
+    fn parse_duration_invalid() {
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("5x").is_err());
+        assert!(parse_duration("-1s").is_err());
+    }
+
+    #[test]
+    fn parse_duration_whitespace() {
+        assert_eq!(parse_duration(" 5s "), Ok(5));
+        assert_eq!(parse_duration("  10  "), Ok(10));
+    }
 }

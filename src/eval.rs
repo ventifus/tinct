@@ -26,6 +26,7 @@ const DEFAULT_ANNOTATION_KEY: &str = "default";
 pub struct EvalConfig {
     pub base_dir: PathBuf,
     pub stdlib_env: Rc<RefCell<Environment>>,
+    pub no_fs: bool,
     // future: allowed_paths, sandbox_policy
 }
 
@@ -48,11 +49,12 @@ pub struct EvalContext {
 }
 
 impl EvalContext {
-    pub fn new(base_dir: PathBuf, stdlib_env: Rc<RefCell<Environment>>) -> Rc<Self> {
+    pub fn new(base_dir: PathBuf, stdlib_env: Rc<RefCell<Environment>>, no_fs: bool) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
+                no_fs,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -69,6 +71,7 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env: Rc::clone(&self.config.stdlib_env),
+                no_fs: self.config.no_fs,
             }),
             state: Rc::clone(&self.state),
         })
@@ -1600,7 +1603,7 @@ mod tests {
 
     fn test_ctx() -> Rc<EvalContext> {
         let env = empty_env();
-        EvalContext::new(PathBuf::from("."), env)
+        EvalContext::new(PathBuf::from("."), env, false)
     }
 
     #[test]
@@ -6332,6 +6335,7 @@ mod tests {
         let ctx = EvalContext::new(
             temp_dir.clone(),
             crate::builtins::create_stdlib_env().unwrap(),
+            false,
         );
 
         // First include: should evaluate and cache
@@ -6390,6 +6394,7 @@ mod tests {
         let ctx = EvalContext::new(
             temp_dir.clone(),
             crate::builtins::create_stdlib_env().unwrap(),
+            false,
         );
 
         // Manually insert the canonical path into the include guard
@@ -6438,10 +6443,12 @@ mod tests {
         let ctx1 = EvalContext::new(
             temp_dir1.clone(),
             crate::builtins::create_stdlib_env().unwrap(),
+            false,
         );
         let ctx2 = EvalContext::new(
             temp_dir2.clone(),
             crate::builtins::create_stdlib_env().unwrap(),
+            false,
         );
 
         // Include test.llt from ctx1
@@ -6510,6 +6517,7 @@ mod tests {
         let ctx1 = EvalContext::new(
             temp_dir1.clone(),
             crate::builtins::create_stdlib_env().unwrap(),
+            false,
         );
 
         // Create ctx2 that shares ctx1's state but has a different base_dir

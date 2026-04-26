@@ -1117,3 +1117,78 @@ fn include_path_traversal_parent_dir() {
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!({"data": {"greeting": "hello"}}));
 }
+
+// ---------------------------------------------------------------------------
+// --no-fs flag (sandbox filesystem access)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_fs_flag_blocks_include() {
+    // --no-fs flag should prevent $include from accessing the filesystem
+    let (path, _dir) = write_temp_llt("no_fs_flag", "[call $include \"some_file.llt\"]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--no-fs", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit code when --no-fs blocks $include"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1 (error) for --no-fs violation"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("filesystem access is disabled") || stderr.contains("E042"),
+        "expected error message about disabled filesystem access, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --timeout flag (wall-clock timeout)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn timeout_flag_exits_with_sigalrm() {
+    // Test that --timeout flag installs SIGALRM handler and exits with code 2.
+    // Use an infinite workload (iterate with collect) that can never complete.
+    // Set a short timeout (1s) to ensure SIGALRM fires.
+    let source = r#"[call $collect [call $iterate [fn [x] [call $+ x 1]] 0]]"#;
+    let (path, _dir) = write_temp_llt("timeout_flag", source);
+
+    let start = std::time::Instant::now();
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--timeout", "1s", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+    let elapsed = start.elapsed();
+
+    // The process must not succeed
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit code with --timeout 1s on infinite workload"
+    );
+
+    // The --timeout flag should cause exit code 2 when SIGALRM fires.
+    let exit_code = output.status.code();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        exit_code,
+        Some(2),
+        "expected exit code 2 (timeout), got {:?}\nstderr: {}",
+        exit_code,
+        stderr
+    );
+
+    // Process should terminate quickly (within timeout period + overhead)
+    assert!(
+        elapsed.as_secs() <= 3,
+        "process took too long: {:?}",
+        elapsed
+    );
+}

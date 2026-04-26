@@ -2,16 +2,23 @@
 
 Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-## eval-sandbox-flags: Adversarial Evaluation Flags
+## sandbox-polish: Sandbox Flag Polish and Test Coverage
 
-Extend `llt eval` with `--no-fs`, `--timeout`, and structured exit codes for adversarial/sandboxed use. See `doc/12-tooling.md` §Adversarial Evaluation.
+Follow-up polish for the `eval-sandbox-flags` sprint. See DONE.md for original sprint.
 
-- [ ] Add `--no-fs` flag to the `eval` subcommand in clap — sets `EvalConfig::no_fs = true`; `$include` returns an error immediately when `no_fs` is set (`src/main.rs`, `src/builtins.rs`)
-- [ ] Add `no_fs: bool` to `EvalConfig`; check it at the top of `builtin_include` and emit `EvalError::IncludeForbidden` (`src/eval.rs`, `src/builtins.rs`)
-- [ ] Add `--timeout <duration>` flag to the `eval` subcommand — parse duration string (e.g. `30s`, `500ms`); install SIGALRM handler via `libc::alarm()` at start of `run_eval`; handler exits with code 2 (`src/main.rs`)
-- [ ] Define exit code constants: 0=success, 1=eval/parse/type error (current behavior), 2=timeout (SIGALRM), 3=resource limit (SIGXCPU/SIGXFSZ from rlimit) — update `run_eval` to map error variants to correct exit codes (`src/main.rs`)
-- [ ] Add corpus test: `--no-fs` with an `$include` call produces an error (`tests/corpus/eval/errors/`)
-- [ ] Add corpus test: `--timeout 0s` causes exit code 2 (or smallest meaningful duration that reliably fires before eval completes)
+- [ ] Add `#[cfg(unix)]` guard on SIGALRM/alarm code in `src/main.rs`; return clear error on non-Unix platforms when `--timeout` is used (`src/main.rs:170-191`)
+- [ ] Document `IncludeForbidden` catchability as a conscious design decision — add note to `doc/10-errors.md` or `doc/12-tooling.md` §Adversarial Evaluation explaining why sandbox violations are catchable via `$try` (Nix `tryEval` model: graceful degradation; tradeoff: allows attacker to detect `--no-fs` mode)
+- [ ] Add alarm cancellation on success path: `unsafe { libc::alarm(0); }` before `Ok(())` return in `run_eval` — prevents stale alarm from firing during slow stdout serialization (`src/main.rs`)
+- [ ] Replace `libc::signal()` with `libc::sigaction()` for SIGALRM handler installation — more portable, avoids unspecified handler-reset and syscall-restart behavior (`src/main.rs:182`)
+- [ ] Add inline comment explaining exit code allocation: `// Exit code 2 is reserved for --timeout; panics are general errors (code 1)` at panic exit branch (`src/main.rs:111`)
+- [ ] CLI test: `--no-fs` does not break normal evaluation (happy path — `[x: 1]` with `--no-fs` should succeed with exit code 0) (`tests/cli_tests.rs`)
+- [ ] CLI test: `--timeout` with fast-completing program succeeds (exit code 0, not timeout) (`tests/cli_tests.rs`)
+- [ ] CLI test: invalid `--timeout` argument (e.g. `abc`) rejects at parse time with exit code 1 (`tests/cli_tests.rs`)
+- [ ] CLI test: `--no-fs` and `--timeout` flags compose correctly (`tests/cli_tests.rs`)
+- [ ] `parse_duration` unit test: `999ms` rounds up to 1 second (boundary case) (`src/main.rs`)
+- [ ] `parse_duration` unit test: very large minutes value (e.g. `100000000m`) rejected as out-of-range (`src/main.rs`)
+- [ ] Corpus test: `IncludeForbidden` E042 error format in `tests/corpus/eval/errors/` (`tests/corpus/eval/errors/`)
+- [ ] Correct `doc/12-tooling.md` §Adversarial Evaluation flag-scope description — currently says "flags are global (before the subcommand)" but they are correctly scoped to the `eval` subcommand (`doc/12-tooling.md`)
 
 ## overridable-ops: Overridable Operators and `$proxy`
 
@@ -151,6 +158,7 @@ Allocation hotspots introduced by the f-b bilateral apply additions. Requires ro
 - [ ] Add CALL-POLY inner `subst.apply` is_empty guard — `state.subst.apply(&subst.apply(ret))` at `src/typecheck.rs:837, 958`; the outer `state.subst.apply` is already guarded (row-unification-perf-b), but the inner `subst.apply(ret)` still allocates two HashSets unconditionally; guard with `if subst.type_map.is_empty() && subst.row_map.is_empty() { ret.clone() } else { subst.apply(ret) }`. (`src/typecheck.rs:837, 958`) [Major, performance-expert C55]
 - [ ] Reduce `infer_fn` annotation map allocation — `let mut ann_mapping = HashMap::new()` is allocated for every function annotation resolution; for common unannotated params (no `@type` pattern), the map is populated and queried but always empty; add early return before the `ann_mapping` allocation when no params contain annotation patterns. (`src/typecheck.rs`) [Minor, performance-expert C55]
 - [ ] Add `check_bracket_access` and `check_range_access` `is_empty()` apply guard — `state.subst.apply(&target_ty)` at `src/typecheck.rs:717` and `src/typecheck.rs:762` allocate 2 HashSets unconditionally on every bracket/range access expression; guard both with the same `if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() { target_ty } else { state.subst.apply(&target_ty) }` pattern used for `check_expr` in row-unification-perf-c. (`src/typecheck.rs:717, 762`) [Minor, performance-expert C56]
+- [ ] Add `resolve_type_assert` `state.subst.apply()` is_empty guard — `resolve_type_assert` at `src/typecheck.rs:1091-1092` calls `state.subst.apply()` on both `expected` and `default_ty` unconditionally, allocating two HashSets per TypeAssert annotation even when `state.subst` is empty (the common case in non-polymorphic programs); guard both calls with `if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() { ty.clone() } else { state.subst.apply(ty) }` matching the pattern used throughout perf-b/perf-c. (`src/typecheck.rs:1091-1092`) [Minor, performance-expert C57]
 
 ### doc-rowunification-retrospective: Doc/07 Retrospective and README Sync
 
@@ -176,7 +184,8 @@ Overflow from doc-rowunification-retrospective plus new doc findings from C54 re
 - [ ] Fix doc/06 TypeScheme sigma grammar missing row quantification — line 367 shows "forall alpha_1...alpha_n. tau" (type variables only) but `generalize()` quantifies both `type_vars` and `row_vars` (types.rs:233-234). Add row variable quantification to the sigma grammar: "forall (alpha_1...alpha_n, rho_1...rho_m). tau". (`doc/06-type-inference.md:367`) [Nit, computer-scientist C54]
 - [ ] Fix doc/08-evaluation.md $or pseudocode — lines 715 and 763 show `$or` as `[fn [a b] [call $if $a true $b]]` but prelude.llt:56 is `[fn [a b] [call $if $a $a $b]]`; the doc says `$or` returns the literal `true` when the first arg is truthy, but the implementation returns `$a` (pass-through identity). Update both lines. (`doc/08-evaluation.md:715, 763`) [Nit, eval-engine C54]
 - [ ] Fix Moggi (1991) DOI in `doc/17-references.md` — line 31 has `doi:10.1006/inco.1996.2613` (Moggi's 1996 paper) but the cited entry is Moggi (1991) "Notions of Computation and Monads"; correct DOI is `doi:10.1016/0890-5401(91)90052-4`. The correct value already appears in `doc/whatif/io.md:542`. (`doc/17-references.md:31`) [Minor, sprint-reviewer C57]
-- [ ] Add Wand (1987) to `doc/17-references.md` bibliography — Wand (1987) "Complete Type Inference for Simple Objects" is cited throughout `doc/07-type-extensions.md` and has a full entry in Part 10 there, but is absent from `doc/17-references.md`'s Row polymorphism section. Promote the citation from `doc/07-type-extensions.md` Part 10 to `doc/17`. (`doc/17-references.md`) [Minor, sprint-reviewer C57]
+- [ ] Fix `doc/07-type-extensions.md:583` stale Part 5 qualifier — text reads "Part 5 is a separate enhancement... can be implemented after Parts 1–4 are complete" but Part 5 (access-chain constraint generation via `check_dot_access` TypeVar/RowVar cases) was fully implemented in row-unification-e. Replace with: "Part 5 is complete as of row-unification-e." (`doc/07-type-extensions.md:583`) [Minor, grammar-architect C57]
+- [x] Add Wand (1987) to `doc/17-references.md` bibliography — duplicate of line 166. (`doc/17-references.md`) [Minor, sprint-reviewer C57, dup of C53]
 
 ### doc-rowunification-retrospective-c: Inference Rule Doc Correctness (C55 Overflow)
 
@@ -210,7 +219,7 @@ Overflow from row-unification-h plus new type inference completeness findings fr
 - [ ] Fix `check_bracket_access` not generating row constraints for open records — when target type is `Record({...}, RowVar(ρ, _))` and the string-literal key is not in known fields, returns `Type::Any` (line 726) instead of generating the constraint `ρ → Row({key: β}, ρ')` as `check_dot_access` does (lines 641-671). This means `$x["name"]` infers less precisely than `$x.name` — the bracket form does not propagate field-presence constraints through the row variable. Fix: mirror `check_dot_access`'s RowVar arm — create fresh β, fresh ρ', do occurs check + level lowering, bind ρ in `state.subst`. Model: Rémy (1994) row constraint generation must be uniform across all record access forms. (`src/typecheck.rs:721-731`) [Minor, computer-scientist C56]
 - [ ] Fix `check_bracket_access` not generating constraints for TypeVar targets — when target type is `TypeVar(α, _)`, returns `Type::Any` (line 746) instead of generating `unify(α, Record({key: β}, RowVar(ρ)))` as `check_dot_access` does (lines 679-700). This means `$x["name"]` on an unknown-type target does not constrain α to be a record at all. Fix: for string-literal and int-literal keys, mirror `check_dot_access`'s TypeVar arm; for dynamic keys (non-literal expressions), `Type::Any` remains correct since the field name is unknown at inference time. (`src/typecheck.rs:746`) [Minor, computer-scientist C56]
 - [ ] Fix `check_call` CALL-MONO returns `*ret.clone()` without `state.subst.apply` — the CALL-MONO arm at `src/typecheck.rs:903` returns `Ok(*ret.clone())` while `check_call_with_scheme` CALL-MONO at line 835 correctly returns `Ok(state.subst.apply(ret))`; the invariant that CALL-MONO only fires when `!func_ty.has_type_vars()` makes this safe today but is fragile — if the guard is ever relaxed for RowVar-only polymorphism, `check_call` silently becomes wrong. Fix: change line 903 to `return Ok(state.subst.apply(ret))` for defensive consistency. (`src/typecheck.rs:903`) [Minor, type-theorist C56]
-- [ ] Fix `check_range_access` TypeVar arm — `check_range_access` match at `src/typecheck.rs:783` does not handle `Type::TypeVar(_, _)` targets; during letrec inference on a forward-referenced dict, TypeVar targets fall through to "expected record type, got _t0" error. `check_dot_access` and `check_bracket_access` handle TypeVar explicitly. Fix: add `Type::TypeVar(_, _) => Ok(target_ty)` before the `_ =>` arm, matching bracket-access behavior. Companion to the check_range_access test in row-unification-g-c. (`src/typecheck.rs:783`) [Minor, type-theorist C56]
+- [x] Fix `check_range_access` TypeVar arm — `check_range_access` match at `src/typecheck.rs:784` already handles `Type::TypeVar(_, _)` in pattern `Type::Record(..) | Type::Any | Type::TypeVar(_, _) => Ok(target_ty)`. Fixed during row-unification-g sprint. (`src/typecheck.rs:784`) [Minor, type-theorist C56, verified C57]
 
 ## type-extensions: Type System Extensions
 
@@ -323,7 +332,7 @@ Public API completeness and error quality improvements from the C56 integration-
 
 ## include-desugar: $include Pipeline Fix (C49)
 
-Critical correctness gap: `$include` is the only pipeline entry point that does not call `desugar_file()` between parse and eval. All other entry points (`main.rs`, `lib.rs`, `repl.rs`, and the LSP) call `desugar_file` before eval; `builtin_include` does not. Any included file using `$_` implicit lambda syntax silently produces "undefined variable _" at runtime instead of the correct desugared lambda.
+Critical correctness gap: `$include` is the only pipeline entry point that does not call `desugar_file()` between parse and eval. All other entry points (`main.rs`, `lib.rs`, `repl.rs`) call `desugar_file` before eval; `builtin_include` does not. (Note: the LSP also lacks `desugar_file` — tracked separately at `error-ux`.) Any included file using `$_` implicit lambda syntax silently produces "undefined variable _" at runtime instead of the correct desugared lambda.
 
 - [ ] Fix `builtin_include` missing `desugar_file` call — add `crate::desugar::desugar_file(&mut file.node);` immediately after the `parse()` call at `src/builtins.rs:1057`, before the guard push and `eval_file` call. One-line fix. (`src/builtins.rs:1054-1077`) [Critical, integration-verifier C49]
 - [ ] Add CLI regression test for `$include` + `$_` — write a helper file containing `$_` syntax, include from a main file, assert evaluated result; catches any future regression of the desugar-in-include path. (`tests/cli_tests.rs`) [Major, integration-verifier C49]
@@ -1389,6 +1398,8 @@ Found by computer-scientist and stdlib-author codebase reviews (2026-04-22).
 - [ ] Fix `LineTable` bare `\r` handling — `src/parser.rs` `LineTable` scans only `\n` to build line-offset table, but pest's `NEWLINE` built-in matches `\r`, `\n`, and `\r\n`. Files using bare CR line endings (classic Mac OS) parse correctly but get wrong line numbers in error messages. Fix: recognize bare `\r` in `LineTable::new` alongside `\n`, treating bare `\r` and `\r\n` as single line endings. (`src/parser.rs`) [Minor, grammar-architect train-3]
 - [ ] Document (or replace) `build_range_expr` byte-offset disambiguation workaround — uses `pair.as_str().find("..")` byte-offset comparison to distinguish range start from range end because pest produces a flat pair tree for `range_expr = { range_value? ~ ".." ~ range_value? }`. Fragile: must be updated in sync with any separator change (e.g., `...`). For an iterative parser rewrite, replace with explicit `before_separator` state flag instead of offset heuristics. (`src/parser.rs:844-918`) [Minor, grammar-architect train-3]
 - [ ] Document Unicode homograph risk in `var_ident` — `grammar.pest` `var_ident` denylists ASCII punctuation but allows Unicode identifier characters; Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions in LLT programs. Add a note to `doc/02-syntax.md` or `DESIGN.md` acknowledging the risk and documenting the design stance (accept Unicode but restrict to NFC, or ASCII-only for safety). (`src/grammar.pest`) [Minor, grammar-architect train-3]
+- [ ] Fix `doc/15-ast.md:211-223` Annotation Bracket Restriction incomplete — §Annotation Brackets restriction table says special forms (`call`, `fn`, `type`) are parse errors inside annotation brackets, but does not address `type_assert_body` (which is also rejected inside annotation brackets yet is not categorized as a 'special form'); add `type_assert_body` to the restriction table with a clarifying note. (`doc/15-ast.md:211-223`) [Nit, grammar-architect C57]
+- [ ] Add TODO citation to `test_bracket_access_forward_ref_resolves_correctly` `#[ignore]` — test at `src/typecheck.rs:3595` is `#[ignore]` with no comment explaining why or citing the tracking sprint; add `// TODO: enable when check_bracket_access generates row constraints for open records — see row-unification-h-b`. (`src/typecheck.rs:3595`) [Nit, test-crafter C57]
 
 ## Integration / Pipeline
 
