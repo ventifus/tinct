@@ -236,9 +236,19 @@ fn test_corpus_structure() {
         "tests/corpus/valid/simple",
         "tests/corpus/valid/complex",
         "tests/corpus/valid/edge_cases",
+        "tests/corpus/valid/access",
+        "tests/corpus/valid/annotations",
+        "tests/corpus/valid/literals",
+        "tests/corpus/valid/special_forms",
+        "tests/corpus/valid/documents",
         "tests/corpus/invalid/syntax_errors",
         "tests/corpus/eval",
         "tests/corpus/eval/errors",
+        "tests/corpus/eval/builtins",
+        "tests/corpus/eval/stdlib",
+        "tests/corpus/eval/laziness",
+        "tests/corpus/eval/typecheck",
+        "tests/corpus/eval/type_assertions",
     ];
 
     for dir in &required_dirs {

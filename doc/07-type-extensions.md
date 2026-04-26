@@ -537,7 +537,7 @@ instantiate(τ, counter):
   return apply_type(τ, renaming)
 ```
 
-Row variables and type variables use **separate namespaces** — `_t0` is unambiguously a type variable or a row variable depending on which map it appears in. The current implementation conflates them in a single `BTreeSet<String>` and single `Substitution::map` — this must be split.
+Row variables and type variables use **separate namespaces** — `_t0` is unambiguously a type variable or a row variable depending on which map it appears in. The implementation uses separate namespaces: `type_map` for type variables, `row_map` for row variables.
 
 **Generalization** (with levels, per [Type Inference](06-type-inference.md) §Let-Generalization): row variables carry levels identically to type variables. A row variable `ρ` with `levels[ρ] > ℓ` is generalized at a let-binding. The `TypeScheme` representation extends to track both:
 
@@ -580,7 +580,7 @@ The TypeVar case is new and important: `$x.name` where `$x` has unknown type `α
 
 The RowVar case in Record access binds `ρ` to `Row({field: β}, RowVar(ρ_fresh))`, correctly recording the constraint "ρ must contain field with type β, plus whatever else is in ρ_fresh." This is sound because if ρ is later unified with a row that lacks the field, the binding will conflict.
 
-Part 5 is a separate enhancement to the type checker, independent from the core row type and unification work, and can be implemented after Parts 1–4 are complete.
+Part 5 is complete as of row-unification-e.
 
 ### Part 6: Subtyping
 
@@ -615,12 +615,12 @@ Display for Row { fields, tail }:
   return parts.join("  ")
 ```
 
-Generated row variable names (from anonymous `...` syntax) are displayed as bare `...` rather than `..._r0` to avoid confusing users with names they didn't write. Named row variables (user-written `...name`) display as `...name`.
+Generated row variable names (from anonymous `...` syntax) are displayed as bare `...` rather than `..._open0` to avoid confusing users with names they didn't write. Named row variables (user-written `...name`) display as `...name`.
 
 Examples:
 - `Record(Row { fields: {name: Str, age: Int}, tail: Empty })` → `[name: Str  age: Int]`
 - `Record(Row { fields: {name: Str}, tail: RowVar("r") })` → `[name: Str ...r]`
-- `Record(Row { fields: {name: Str, age: Int}, tail: RowVar("_r0") })` → `[name: Str  age: Int ...]`
+- `Record(Row { fields: {name: Str, age: Int}, tail: RowVar("_open0") })` → `[name: Str  age: Int ...]`
 - `Record(Row { fields: {}, tail: Empty })` → `[]`
 - `Record(Row { fields: {}, tail: RowVar("rest") })` → `[...rest]`
 
@@ -637,7 +637,7 @@ The migration replaces `RowRest` with `RowTail`, adds `Row` as a struct, and cha
 | `Substitution { map }` | `Substitution { type_map, row_map }` |
 | `collect_type_vars` (single set) | `collect_type_vars` + `collect_row_vars` (two sets) |
 
-**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) become `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` as today; the type checker owns the fresh-name counter and generates `_r{n}` names during type resolution. This makes all openness explicit and eliminates the `Open` variant entirely.
+**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) become `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` as today; the type checker owns the fresh-name counter and generates `_open{n}` names during type resolution. This makes all openness explicit and eliminates the `Open` variant entirely.
 
 **Structural similarity.** The dict+tail representation is structurally close to the current `Record(IndexMap<String, Type>, RowRest)` — the field map is preserved as-is, and `RowRest` becomes `RowTail` with `Closed` → `Empty` and `Open` eliminated. This minimizes the migration surface compared to a cons-list representation. Pattern matches on `Record(fields, rest)` become `Record(Row { fields, tail })` — a mechanical transformation.
 
