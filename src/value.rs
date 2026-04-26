@@ -85,6 +85,8 @@ pub enum Value {
     Builtin { name: &'static str, func: BuiltinFn },
     /// Lazy linked-list sequence (head element, tail sequence)
     Seq { head: Rc<Thunk>, tail: Rc<Thunk> },
+    /// Proxy object — field access calls the handler function with the field name
+    Proxy { handler: Rc<Thunk> },
 }
 
 impl Value {
@@ -99,6 +101,7 @@ impl Value {
             Value::Function { .. } => "Function",
             Value::Builtin { .. } => "Builtin",
             Value::Seq { .. } => "Seq",
+            Value::Proxy { .. } => "Proxy",
         }
     }
 }
@@ -120,6 +123,7 @@ impl fmt::Debug for Value {
             }
             Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
             Value::Seq { .. } => write!(f, "Seq(...)"),
+            Value::Proxy { .. } => write!(f, "Proxy"),
         }
     }
 }
@@ -153,6 +157,7 @@ impl fmt::Display for Value {
             }
             Value::Builtin { name, .. } => write!(f, "<builtin {name}>"),
             Value::Seq { .. } => write!(f, "Seq(...)"),
+            Value::Proxy { .. } => write!(f, "<proxy>"),
         }
     }
 }

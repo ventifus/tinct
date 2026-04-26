@@ -205,6 +205,9 @@ pub fn value_to_json(
             head.span,
         )
         .into()),
+        Value::Proxy { .. } => {
+            Err(error::EvalError::new("cannot serialize Proxy to JSON", ast::Span::origin()).into())
+        }
     }
 }
 
@@ -261,6 +264,7 @@ pub fn value_to_display_string(
             let head_str = value_to_display_string(&head_val, ctx, depth + 1)?;
             Ok(format!("Seq({}, ...)", head_str))
         }
+        value::Value::Proxy { .. } => Ok("Proxy".to_string()),
     }
 }
 
@@ -523,6 +527,18 @@ mod tests {
         };
         let err = value_to_json(&b, &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("cannot serialize Function to JSON"));
+    }
+
+    #[test]
+    fn test_json_proxy_error() {
+        let handler = Rc::new(Thunk::new_materialized(Value::Int(0), ast::Span::origin()));
+        let proxy = Value::Proxy { handler };
+        let err = value_to_json(&proxy, &test_ctx(), 0).unwrap_err();
+        assert!(
+            err.message().contains("cannot serialize Proxy to JSON"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[test]

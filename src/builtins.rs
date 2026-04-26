@@ -2623,6 +2623,25 @@ fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
+fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    reject_named("proxy", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Proxy {
+            handler: Rc::clone(&args[0]),
+        },
+        call_span,
+    )))
+}
+
 /// Returns all builtin definitions as (name, function) pairs.
 ///
 /// All builtins conform to the standard `BuiltinFn` signature, including `if`
@@ -2686,6 +2705,8 @@ pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
         ("reduce", builtin_reduce),
         ("join", builtin_join),
         ("concat", builtin_concat),
+        // Proxy
+        ("proxy", builtin_proxy),
     ]
 }
 
@@ -2699,6 +2720,32 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
         ));
         env.borrow_mut().insert(name.to_string(), thunk);
     }
+
+    // Add stable "builtin-*" aliases for operators that will be shadowed by prelude wrappers.
+    // These provide an escape hatch to the raw Rust implementations.
+    let aliases: Vec<(&'static str, BuiltinFn)> = vec![
+        ("builtin-lt", builtin_lt),
+        ("builtin-eq", builtin_eq),
+        ("builtin-add", builtin_add),
+        ("builtin-sub", builtin_sub),
+        ("builtin-mul", builtin_mul),
+        ("builtin-div", builtin_div_float),
+        ("builtin-if", builtin_if),
+        ("builtin-filter", builtin_filter),
+        ("builtin-map", builtin_map),
+        ("builtin-reduce", builtin_reduce),
+        ("builtin-take", builtin_take),
+        ("builtin-drop", builtin_drop),
+    ];
+
+    for (name, func) in aliases {
+        let thunk = Rc::new(Thunk::new_materialized(
+            Value::Builtin { name, func },
+            Span::origin(),
+        ));
+        env.borrow_mut().insert(name.to_string(), thunk);
+    }
+
     env
 }
 
@@ -7135,7 +7182,7 @@ mod tests {
         assert!(names.contains(&"join"), "missing join");
         assert!(names.contains(&"concat"), "missing concat");
         // Total count
-        assert_eq!(names.len(), 45, "expected 45 builtins, got {}", names.len());
+        assert_eq!(names.len(), 46, "expected 46 builtins, got {}", names.len());
     }
 
     #[test]

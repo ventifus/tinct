@@ -1,0 +1,4 @@
+# proxy : creates a proxy value that echoes field name
+[handler: [fn [field] $field]  p: [call $proxy $handler]  result: $p.test]
+===
+Dict({"handler": Function(field), "p": Proxy, "result": String("test")})

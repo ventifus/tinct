@@ -1,0 +1,9 @@
+# proxy : bracket access calls handler with field name
+[
+  handler: [fn [name] $name]
+  p: [call $proxy $handler]
+  a: $p["foo"]
+  b: $p["bar"]
+]
+===
+Dict({"handler": Function(name), "p": Proxy, "a": String("foo"), "b": String("bar")})
