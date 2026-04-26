@@ -2,17 +2,14 @@
 
 Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-## sandbox-polish-b: Sandbox Integration Tests
+## sandbox-polish-c: Sandbox Test Polish
 
-Integration test coverage for sandbox flags. Requires sandbox-polish-a.
+Test coverage gaps and naming consistency from sandbox-polish-b panel review.
 
-- [ ] CLI test: `--no-fs` does not break normal evaluation (happy path — `[x: 1]` with `--no-fs` should succeed with exit code 0) (`tests/cli_tests.rs`)
-- [ ] CLI test: `--timeout` with fast-completing program succeeds (exit code 0, not timeout) (`tests/cli_tests.rs`)
-- [ ] CLI test: invalid `--timeout` argument (e.g. `abc`) rejects at parse time with exit code 1 (`tests/cli_tests.rs`)
-- [ ] CLI test: `--no-fs` and `--timeout` flags compose correctly (`tests/cli_tests.rs`)
-- [ ] Corpus test: `IncludeForbidden` E042 error format in `tests/corpus/eval/errors/` (`tests/corpus/eval/errors/`)
-- [ ] `parse_duration` unit test: millisecond u32::MAX overflow path (`4294967296000ms` should be rejected as out-of-range) (`src/main.rs`)
-- [ ] `parse_duration`: use `checked_add` for `ms + 999` rounding expression to prevent overflow on extreme millisecond inputs (`src/main.rs`)
+- [ ] Extend corpus test harness to support `no_fs` directive, then add E042 IncludeForbidden corpus test (`tests/corpus_tests.rs`, `tests/corpus/eval/errors/`)
+- [ ] Add `parse_duration` test for `checked_add` None path: `"18446744073709550617ms"` (u64::MAX - 998, exact boundary) (`src/main.rs`)
+- [ ] Rename sandbox CLI tests to include `_flag` infix for consistency with existing `no_fs_flag_blocks_include` and `timeout_flag_exits_with_sigalrm` (`tests/cli_tests.rs`)
+- [ ] Add composition test that verifies conjunctive enforcement: program uses `$include` AND runs with `--timeout`, both flags active (`tests/cli_tests.rs`)
 
 ## overridable-ops: Overridable Operators and `$proxy`
 
@@ -197,6 +194,8 @@ New doc correctness findings from C55 review. Requires doc-rowunification-retros
 - [ ] Document `InferState.subst` merge strategy in doc/06 — the InferState struct table added in row-unification-f-b lists `subst: Substitution` but does not describe the Pass 3b merge semantics (`or_insert`, local wins on collision) or the Robinson (1965) threading invariant. Add a paragraph under the InferState.subst entry describing the merge protocol and its correctness condition. (`doc/06-type-inference.md`) [Minor, grammar-architect C55]
 - [ ] Note `[U-SUBSUME]` divergence from `unify()` promotion arms — doc/06 describes `[U-SUBSUME]` as the sole source of literal promotion (IntLiteral ≤ Int, Int ≤ Number, etc.) but `unify()` implements 6 bidirectional promotion arms directly in the Robinson unification cases; this dual-path design is undocumented. Add a note to the [U-SUBSUME] section explaining the intentional pragmatic duplication and that unify() promotion arms are symmetric while [U-SUBSUME] is directed. (`doc/06-type-inference.md`) [Minor, computer-scientist C55]
 - [ ] Fix doc/11-stdlib.md `$sort` compile-time claim — line 75 (or nearby) states that `$sort` detects mixed-type sequences at compile time; this is false — `$sort` compares values at runtime and errors when comparison fails on incompatible types; there is no static type check. Replace with: "`$sort` errors at runtime when called on a sequence containing incompatible types for comparison; no compile-time detection." (`doc/11-stdlib.md:75`) [Minor, stdlib-author C55]
+- [ ] Fix `doc/02-syntax.md` phantom `semicolon` rule — §3.5 (Dict Entries) and §6 (Complete Grammar) show `semicolon = _{ ";" }` as a named pest rule and `dict_entries = { (entry ~ semicolon?)* }`, but `grammar.pest:119` inlines the literal `";"?` with no named rule. The doc calls §6 "the normative grammar definition." Fix: add `semicolon = _{ ";" }` as a named silent rule to `grammar.pest` after `dict_entries`; update `dict_entries` to reference `semicolon?`. Zero semantic change — pest compiles silent named rules identically to inlined literals. (`src/grammar.pest`, `doc/02-syntax.md`) [Minor, grammar-architect C59]
+- [ ] Add manual `PartialEq` note to `RowTail` in doc/07 — Part 1 code block shows `#[derive(Debug, Clone, PartialEq, Eq)]` but `src/types.rs:14-28` has `#[derive(Debug, Clone, Eq)]` with a manual `PartialEq` impl that ignores the level field (two RowVars with same name are equal regardless of level). Update doc to show the manual `PartialEq` with a note explaining why: level is a bookkeeping field, not part of the structural identity used during unification. (`doc/07-type-extensions.md`) [Nit, integration-verifier C59]
 - [ ] Add `Failed` and `Guarded` variants to `doc/16-architecture.md` ThunkState sketch — lines 109-115 enumerate `Unevaluated`, `PendingBuiltin`, `PendingCall`, `InProgress`, `Materialized` (5 states); missing `Failed(Error)` (error memoization, in the formal spec) and `Guarded { inner, expected, field_path, span }` (TypeAssert proxy contracts, present since typeassert-structural sprint). Add both variants with one-line descriptions. (`doc/16-architecture.md:109-115`) [Nit, grammar-architect C56]
 - [ ] Label `Type Check` box as advisory in `doc/16-architecture.md` pipeline diagram — diagram box reads `"Type Check"` without noting it is skipped by the CLI; advisory note appears only in prose below the diagram. Add `"(advisory)"` label or `"(skipped by CLI)"` annotation to the diagram box itself so the diagram is self-documenting. (`doc/16-architecture.md:15-28`) [Nit, integration-verifier C56]
 
@@ -321,6 +320,8 @@ Chaperone semantics, elaboration gap, and tests. Split from typeassert-structura
 
 Public API completeness and error quality improvements from the C56 integration-verifier review.
 
+- [ ] Fix `Expr::Rest` error using raw `EvalError` struct literal — `src/eval.rs:466-473` constructs `EvalError` with a raw struct literal (kind `Internal`) rather than the `EvalError::internal()` named constructor used by all other eval errors. Replace with `EvalError::internal("rest marker (...) is only valid inside type expressions", expr.span).into()`. (`src/eval.rs:466-473`) [Nit, integration-verifier C59]
+- [ ] Add divergence documentation for `is_cacheable` and `is_catchable` — both currently return `!matches!(self, Self::DepthExceeded { .. })` but serve distinct semantic roles (cacheability = Launchbury (1993) thunk state machine monotonicity; catchability = user-facing `$try` semantics per Nix `tryEval` model). Add `// INVARIANT: currently equivalent to is_catchable(); these can diverge if a future error should be cached but not catchable.` comment on each method cross-referencing the other, so future contributors know the bodies may differ. (`src/error.rs:198-208`) [Minor, computer-scientist C59]
 - [ ] Re-export `ErrorKind` and `ArityBound` from `lib.rs` — `error` module is `pub(crate)`, making `EvalError.kind: ErrorKind` opaque to library consumers who want to branch on error kind; add `pub use error::{ErrorKind, ArityBound, StackFrame};` to `src/lib.rs:55`. (`src/lib.rs:55`) [Major, integration-verifier C56]
 - [ ] Re-export `EvalConfig` and `EvalState` from `lib.rs` — `doc/16-architecture.md` states these are public API, but only `EvalContext` appears in the `pub use eval::{...}` block; external callers constructing or inspecting evaluation sessions cannot access the config or state types. Add `EvalConfig, EvalState` to the `pub use eval::{...}` block. (`src/lib.rs:47-48`) [Major, integration-verifier C56]
 - [ ] Fix `ArityBound::Exact(1)` formatting as "1 arguments" — `Display` impl at `src/error.rs:21` unconditionally appends "arguments"; change to `Self::Exact(1) => write!(f, "1 argument")`, `Self::Exact(n) => write!(f, "{n} arguments")`; same fix for `AtMost(1)` → "at most 1 argument"; update the test at `src/error.rs:1087`. (`src/error.rs:21`) [Minor, integration-verifier C56]
@@ -355,6 +356,7 @@ Security hardening for the `$include` file sandbox. The current implementation u
 - [ ] Add LSP method name length cap in `handle_request` — `handle_request()` at `src/lsp/server.rs:111` dispatches on `req.method` string without a length bound; an attacker who injects a very long method string (e.g., 100KB) forces O(n) string comparisons against all registered handlers with no early exit. Add `if req.method.len() > 256 { return Err(ResponseError { code: MethodNotFound, ... }); }` before the dispatch match. [Minor, security-expert C52]
 - [ ] Add `MAX_SUBST_SIZE` cap to `state.subst` to prevent DoS — `check_dot_access` on an open-record-typed target binds one `RowVar` in `state.subst.row_map` per call; the accumulator is never cleared during a file's type inference. N dot-accesses accumulate N entries; the occurs check at `row_var_occurs_pub` walks all reachable prior bindings, giving O(N²) type-check time total. A crafted file with N open-record dot-accesses can exhaust memory. Add `MAX_SUBST_SIZE: usize = 50_000` constant; before each `subst.type_map.insert` and `subst.row_map.insert`, check `type_map.len() + row_map.len() < MAX_SUBST_SIZE`; return `TypeError::new("type inference resource limit exceeded", span)` if exceeded. (`src/typecheck.rs:635`, `src/types.rs:317-319`) [Major, security-expert C53]
 - [ ] Disable or sandbox `$include` in LSP evaluation — the LSP calls `eval_file()` on every document open/change (`src/lsp/document.rs:55`), which can execute `$include` with user-controlled paths, reading arbitrary files from the filesystem. An attacker who tricks a user into opening a malicious `.llt` file in their editor could exfiltrate file contents. Mitigation: either (a) skip evaluation in LSP mode (parse+typecheck only), (b) pass a restricted `EvalContext` with `$include` disabled/sandboxed, or (c) defer eval to an explicit user action. CWE-22. (`src/lsp/document.rs:55`, `src/builtins.rs:1000-1113`) [Major, security-expert train-4]
+- [ ] Add `cargo audit` as a CI gate — the codebase has no automated dependency vulnerability scanning; add `cargo audit` (from the RustSec Advisory Database) to the CI pipeline so new advisories are surfaced before they accumulate. No known vulnerabilities as of C59. (`Cargo.toml`, CI config) [Minor, security-expert C59]
 - [x] Design import integrity hashes for `$include` (Dhall model) — see `doc/12-tooling.md` §Import Integrity Hashes. Hash passed as second quoted-string argument: `[call $include "path" "blake3:hexdigest"]`. Raw bytes hashed (no normalization). BLAKE3 default (128-bit quantum security); sha3-256, sha3-512, sha256 also accepted. Cache stores `HashMap<Algo, HexDigest>` per path; hits verify against stored digest, cross-algorithm misses re-read. Check order: cache lookup → cycle detection → read → hash check → cache store. `--require-integrity` flag, `llt hash` subcommand.
 - [ ] Add `blake3` and `sha3` crates to `Cargo.toml` for hash verification (`Cargo.toml`)
 - [ ] Extend `builtin_include` to accept optional second positional argument — parse `"algo:hexdigest"` string, validate hex length, hash raw bytes via `std::fs::read` (not `read_to_string`), error on mismatch (`src/builtins.rs`)
@@ -364,6 +366,23 @@ Security hardening for the `$include` file sandbox. The current implementation u
 - [ ] Add `llt hash <file>` subcommand — outputs `blake3:hexdigest`; `--algo sha3-256|sha3-512|sha256` selects algorithm (`src/main.rs`)
 - [ ] Add corpus test: include with correct hash passes; incorrect hash errors (`tests/corpus/eval/`)
 - [ ] Add corpus test: `--require-integrity` errors on hashless include (`tests/corpus/eval/`)
+
+## stdlib-doc-a: Stdlib Documentation and Missing Reference Chapter
+
+Stdlib documentation gaps found by C59 review. `doc/09-builtins.md` is expected by spec task specs but does not exist; many stale counts and classification errors in `doc/11-stdlib.md`.
+
+- [ ] Create `doc/09-builtins.md` — dedicated chapter covering all 45 Rust-native builtins with: arity, strictness signature (S/L/Sc notation from doc/08), result classification, error cases, dual-dispatch behavior, cross-references to formal spec. Resolves the primary documentation gap where the authoritative builtin reference is scattered between doc/08 and doc/11. (`doc/09-builtins.md`, new file) [Major, stdlib-author C59]
+- [ ] Fix `doc/11-stdlib.md` false `$deep-eq` claim — line 106 says "Structural equality is available via `$deep-eq`"; this function does not exist. Remove the sentence. (`doc/11-stdlib.md:106`) [Major, stdlib-author C49]
+- [ ] Fix `doc/11-stdlib.md` "62 functions" heading — update to ~97 (45 Rust-native + ~52 LLT-implemented). (`doc/11-stdlib.md:231`) [Major, stdlib-author C49]
+- [ ] Fix `doc/11-stdlib.md` "44 total" count — line 165 says "44 total"; should be 45. (`doc/11-stdlib.md:165`) [Minor, stdlib-author C49]
+- [ ] Add `const`, `any?`, `all?`, `until`, `from-entries` to reference tables in `doc/11-stdlib.md` — all five are implemented and used but absent from the function reference tables. (`doc/11-stdlib.md:228-374`) [Major, stdlib-author C49]
+- [ ] Move `join` from LLT-derived table to Rust-native table in `doc/11-stdlib.md` — `join` was migrated to Rust for O(n) performance; currently wrongly classified as LLT-derived. Also fix O(n²) claim to O(n) and fix "join and words are derived" rationale to "words is derived". (`doc/11-stdlib.md:173-277`) [Major, stdlib-author C49]
+- [ ] Add `concat` to Sequences group cell in `doc/11-stdlib.md` — it is the 45th Rust builtin but missing from the list. (`doc/11-stdlib.md:178`) [Minor, stdlib-author C49]
+- [ ] Fix `doc/11-stdlib.md` concat description claiming "reindexing the second" — Seq path lazily chains (O(1) initial), Dict path appends without reindexing. (`doc/11-stdlib.md:320`) [Minor, stdlib-author C49]
+- [ ] Fix `doc/08-evaluation.md:389,425` "44 builtins" counts — update to 45. (`doc/08-evaluation.md:389, 425`) [Minor, stdlib-author C49]
+- [ ] Fix `doc/08-evaluation.md` phantom function names — `concat-seq` → `$concat`; `zip-seq` → `$zip` at lines 109-110. (`doc/08-evaluation.md:109-110`) [Major, stdlib-author C49]
+- [ ] Rename `zip-seq`/`zip-dict` to `zip-seq-impl`/`zip-dict-impl` in prelude — these are internal helpers; all other internal helpers use suffix conventions. (`stdlib/prelude.llt:400,407`) [Minor, stdlib-author C49]
+- [ ] Replace stale concat 3-line comment block in prelude with one-liner matching `join` pattern. (`stdlib/prelude.llt:300-303`) [Nit, stdlib-author C49]
 
 ## merge-lazy-overlay: Lazy Dict Overlay for $merge
 

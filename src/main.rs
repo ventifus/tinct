@@ -128,7 +128,10 @@ fn parse_duration(s: &str) -> Result<u32, String> {
             .parse()
             .map_err(|_| format!("invalid duration: {s}"))?;
         // Round up to nearest second, minimum 1
-        let secs = (ms + 999) / 1000;
+        let secs = ms
+            .checked_add(999)
+            .ok_or_else(|| format!("duration out of range: {s}"))?
+            / 1000;
         if secs == 0 || secs > u32::MAX as u64 {
             return Err(format!("duration out of range: {s}"));
         }
@@ -455,6 +458,15 @@ mod tests {
         // 100000000 * 60 overflows u32::MAX, should return error
         assert!(parse_duration("100000000m").is_err());
         let err_msg = parse_duration("100000000m").unwrap_err();
+        assert!(err_msg.contains("duration out of range"));
+    }
+
+    #[test]
+    fn parse_duration_ms_u32max_overflow() {
+        // u32::MAX = 4294967295, so 4294967296 seconds should overflow
+        // 4294967296000ms → (4294967296000 + 999) / 1000 = 4294967296 > u32::MAX
+        assert!(parse_duration("4294967296000ms").is_err());
+        let err_msg = parse_duration("4294967296000ms").unwrap_err();
         assert!(err_msg.contains("duration out of range"));
     }
 }

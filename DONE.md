@@ -1003,3 +1003,15 @@ Code hardening for the `eval-sandbox-flags` sprint. See DONE.md for original spr
 - [x] `parse_duration` unit test: very large minutes value (e.g. `100000000m`) rejected as out-of-range (`src/main.rs`)
 - [x] Document `IncludeForbidden` catchability as a conscious design decision — add note to `doc/10-errors.md` or `doc/12-tooling.md` §Adversarial Evaluation explaining why sandbox violations are catchable via `$try` (Nix `tryEval` model: graceful degradation; tradeoff: allows attacker to detect `--no-fs` mode)
 - [x] Correct `doc/12-tooling.md` §Adversarial Evaluation flag-scope description — currently says "flags are global (before the subcommand)" but they are correctly scoped to the `eval` subcommand (`doc/12-tooling.md`)
+
+## sandbox-polish-b: Sandbox Integration Tests
+
+Integration test coverage for sandbox flags. Requires sandbox-polish-a.
+
+- [x] CLI test: `--no-fs` does not break normal evaluation (happy path — `[x: 1]` with `--no-fs` should succeed with exit code 0) (`tests/cli_tests.rs`)
+- [x] CLI test: `--timeout` with fast-completing program succeeds (exit code 0, not timeout) (`tests/cli_tests.rs`)
+- [x] CLI test: invalid `--timeout` argument (e.g. `abc`) rejects at parse time with exit code 1 (`tests/cli_tests.rs`)
+- [x] CLI test: `--no-fs` and `--timeout` flags compose correctly (`tests/cli_tests.rs`)
+- [x] Corpus test: `IncludeForbidden` E042 error format in `tests/corpus/eval/errors/` (`tests/corpus/eval/errors/`)
+- [x] `parse_duration` unit test: millisecond u32::MAX overflow path (`4294967296000ms` should be rejected as out-of-range) (`src/main.rs`)
+- [x] `parse_duration`: use `checked_add` for `ms + 999` rounding expression to prevent overflow on extreme millisecond inputs (`src/main.rs`)

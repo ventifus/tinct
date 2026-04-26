@@ -1192,3 +1192,121 @@ fn timeout_flag_exits_with_sigalrm() {
         elapsed
     );
 }
+
+// ---------------------------------------------------------------------------
+// Sandbox flag composition and happy paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_fs_happy_path() {
+    // Test that --no-fs does not interfere with normal evaluation that
+    // doesn't require filesystem access.
+    let (path, _dir) = write_temp_llt("no_fs_happy", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--no-fs", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success when --no-fs doesn't affect code, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit code 0 for successful evaluation"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("failed to parse JSON output");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+#[cfg(unix)]
+fn timeout_fast_program_succeeds() {
+    // Test that --timeout does not interfere with programs that complete
+    // within the time limit. A fast-completing program should succeed with
+    // exit code 0, not timeout.
+    let (path, _dir) = write_temp_llt("timeout_fast", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--timeout", "5s", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success for fast program with --timeout 5s, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit code 0 (not timeout) for fast-completing program"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("failed to parse JSON output");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+fn timeout_invalid_argument_rejected() {
+    // Test that invalid --timeout arguments are rejected at parse time by clap
+    // with a non-zero exit code. This tests the clap ValueParser, not runtime.
+    let (path, _dir) = write_temp_llt("timeout_invalid_arg", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--timeout", "abc", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit code for invalid --timeout argument"
+    );
+
+    let exit_code = output.status.code();
+    // clap typically exits with code 1 or 2 for validation errors
+    assert!(
+        exit_code == Some(1) || exit_code == Some(2),
+        "expected exit code 1 or 2 for clap parse error, got {:?}",
+        exit_code
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid") || stderr.contains("error") || stderr.contains("parse"),
+        "expected error message about invalid timeout value, got: {stderr}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn no_fs_and_timeout_compose() {
+    // Test that --no-fs and --timeout flags can be used together without
+    // conflict. Both sandbox flags should be active.
+    let (path, _dir) = write_temp_llt("no_fs_timeout_compose", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--no-fs", "--timeout", "5s", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success with both --no-fs and --timeout, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit code 0 for composed flags"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("failed to parse JSON output");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
