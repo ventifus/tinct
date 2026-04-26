@@ -1,0 +1,4 @@
+# no_fs
+[call $include "some_file.llt"]
+===
+filesystem access is disabled

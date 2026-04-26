@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use tinct::{eval_source, parse, parse_expression, typecheck_source};
+use tinct::{eval_source, eval_source_with_config, parse, parse_expression, typecheck_source};
 
 /// Recursively find all .llt-eval files in a directory
 fn find_test_files(dir: &Path) -> Vec<PathBuf> {
@@ -22,37 +22,74 @@ fn find_test_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Parsed test file with optional directives.
+struct TestFile<'a> {
+    /// The LLT source code to evaluate (directives stripped).
+    input: &'a str,
+    /// Expected output or error substring (if `===` delimiter present).
+    expected: Option<&'a str>,
+    /// Whether to enable `--no-fs` mode (from `# no_fs` directive).
+    no_fs: bool,
+}
+
 /// Split a test file on `===` delimiter. Returns (input, Option<expected>).
 /// Uses `===` instead of `---` because `---` is a valid LLT document separator.
+///
+/// Supports directives on the first line:
+/// - `# no_fs` — evaluate with filesystem access disabled (`no_fs: true`)
 ///
 /// Note: Expected output (the section after `===`) is compared against the result
 /// of `parse_expression()`, which returns the LAST expression from the FIRST document.
 /// For single-expression files, this is straightforward. For multi-expression or
 /// multi-document files, only the final expression of the first document is compared.
-fn split_test_file(content: &str) -> (&str, Option<&str>) {
+fn split_test_file(content: &str) -> TestFile {
     const DELIM: &str = "===";
     const NEWLINE_DELIM_NEWLINE: &str = "\n===\n";
     const NEWLINE_DELIM: &str = "\n===";
 
+    // Check for directives on the first line
+    let (directives_line, rest) = if let Some(newline_pos) = content.find('\n') {
+        let (first_line, remainder) = content.split_at(newline_pos);
+        if first_line.trim().starts_with('#') {
+            (first_line.trim(), &remainder[1..]) // skip the newline
+        } else {
+            ("", content)
+        }
+    } else {
+        ("", content)
+    };
+
+    let no_fs = directives_line.contains("no_fs");
+    let content = rest;
+
     if let Some(pos) = content.find(NEWLINE_DELIM_NEWLINE) {
         let (input, rest) = content.split_at(pos + 1); // include trailing newline before delimiter
         let expected = &rest[DELIM.len() + 1..]; // skip "===\n"
-        (input, Some(expected.trim()))
+        TestFile {
+            input,
+            expected: Some(expected.trim()),
+            no_fs,
+        }
     } else if let Some(pos) = content.find(NEWLINE_DELIM) {
         // === at end of file with no trailing newline
         let (input, rest) = content.split_at(pos + 1);
         let expected = &rest[DELIM.len()..];
         let trimmed = expected.trim();
-        (
+        TestFile {
             input,
-            if trimmed.is_empty() {
+            expected: if trimmed.is_empty() {
                 None
             } else {
                 Some(trimmed)
             },
-        )
+            no_fs,
+        }
     } else {
-        (content, None)
+        TestFile {
+            input: content,
+            expected: None,
+            no_fs,
+        }
     }
 }
 
@@ -77,9 +114,9 @@ fn test_valid_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (input, expected) = split_test_file(&content);
+        let test = split_test_file(&content);
 
-        let expected_output = match expected {
+        let expected_output = match test.expected {
             Some(e) => e,
             None => {
                 failed.push((
@@ -92,10 +129,10 @@ fn test_valid_corpus() {
 
         // Use parse (full file) to verify the input is valid.
         // For expected output comparison, use parse_expression (single expr).
-        match parse(input) {
+        match parse(test.input) {
             Ok(_) => {
                 // Expected output is compared against single-expression format
-                match parse_expression(input) {
+                match parse_expression(test.input) {
                     Ok(ast) => {
                         let actual = format!("{}", ast.node);
                         if actual.trim() != expected_output {
@@ -148,9 +185,9 @@ fn test_invalid_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (input, expected) = split_test_file(&content);
+        let test = split_test_file(&content);
 
-        let expected_substr = match expected {
+        let expected_substr = match test.expected {
             Some(e) => e,
             None => {
                 failed.push((
@@ -162,7 +199,7 @@ fn test_invalid_corpus() {
             }
         };
 
-        match parse(input) {
+        match parse(test.input) {
             Ok(_) => failed.push((
                 relative_path.to_path_buf(),
                 "Expected parse to fail".to_string(),
@@ -236,9 +273,9 @@ fn test_eval_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (input, expected) = split_test_file(&content);
+        let test = split_test_file(&content);
 
-        let expected_output = match expected {
+        let expected_output = match test.expected {
             Some(e) => e,
             None => {
                 failed.push((
@@ -249,7 +286,7 @@ fn test_eval_corpus() {
             }
         };
 
-        match eval_source(input) {
+        match eval_source(test.input) {
             Ok(actual) => {
                 if actual.trim() != expected_output {
                     failed.push((
@@ -298,9 +335,9 @@ fn test_eval_error_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (input, expected) = split_test_file(&content);
+        let test = split_test_file(&content);
 
-        let expected_substr = match expected {
+        let expected_substr = match test.expected {
             Some(e) => e,
             None => {
                 failed.push((
@@ -312,7 +349,7 @@ fn test_eval_error_corpus() {
             }
         };
 
-        match eval_source(input) {
+        match eval_source_with_config(test.input, test.no_fs) {
             Ok(actual) => {
                 failed.push((
                     relative_path.to_path_buf(),
@@ -364,10 +401,10 @@ fn test_eval_error_corpus_has_error_codes() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (input, _expected) = split_test_file(&content);
+        let test = split_test_file(&content);
 
         // Evaluate and check if error contains an error code
-        match eval_source(input) {
+        match eval_source_with_config(test.input, test.no_fs) {
             Ok(actual) => {
                 failed.push((
                     relative_path.to_path_buf(),
@@ -446,10 +483,10 @@ fn test_typecheck_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (input, _expected) = split_test_file(&content);
+        let test = split_test_file(&content);
 
         // Type check should succeed for all files in tests/corpus/eval/typecheck/
-        match typecheck_source(input) {
+        match typecheck_source(test.input) {
             Ok(()) => {
                 // Success - this is expected
             }
@@ -509,9 +546,9 @@ fn test_typecheck_error_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (input, expected) = split_test_file(&content);
+        let test = split_test_file(&content);
 
-        let expected_substr = match expected {
+        let expected_substr = match test.expected {
             Some(e) => e,
             None => {
                 failed.push((
@@ -524,7 +561,7 @@ fn test_typecheck_error_corpus() {
         };
 
         // Type check should fail for all files in tests/corpus/invalid/type_errors/
-        match typecheck_source(input) {
+        match typecheck_source(test.input) {
             Ok(()) => {
                 failed.push((
                     relative_path.to_path_buf(),

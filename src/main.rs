@@ -469,4 +469,16 @@ mod tests {
         let err_msg = parse_duration("4294967296000ms").unwrap_err();
         assert!(err_msg.contains("duration out of range"));
     }
+
+    #[test]
+    fn parse_duration_checked_add_boundary() {
+        // Test the exact boundary where checked_add(999) returns None.
+        // u64::MAX = 18446744073709551615
+        // u64::MAX - 998 = 18446744073709550617
+        // When we call checked_add(999), we get: 18446744073709550617 + 999 = 18446744073709551616
+        // This exceeds u64::MAX, so checked_add returns None.
+        assert!(parse_duration("18446744073709550617ms").is_err());
+        let err_msg = parse_duration("18446744073709550617ms").unwrap_err();
+        assert!(err_msg.contains("duration out of range"));
+    }
 }

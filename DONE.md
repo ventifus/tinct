@@ -1015,3 +1015,12 @@ Integration test coverage for sandbox flags. Requires sandbox-polish-a.
 - [x] Corpus test: `IncludeForbidden` E042 error format in `tests/corpus/eval/errors/` (`tests/corpus/eval/errors/`)
 - [x] `parse_duration` unit test: millisecond u32::MAX overflow path (`4294967296000ms` should be rejected as out-of-range) (`src/main.rs`)
 - [x] `parse_duration`: use `checked_add` for `ms + 999` rounding expression to prevent overflow on extreme millisecond inputs (`src/main.rs`)
+
+## sandbox-polish-c: Sandbox Test Polish
+
+Test coverage gaps and naming consistency from sandbox-polish-b panel review.
+
+- [x] Extend corpus test harness to support `no_fs` directive, then add E042 IncludeForbidden corpus test (`tests/corpus_tests.rs`, `tests/corpus/eval/errors/`)
+- [x] Add `parse_duration` test for `checked_add` None path: `"18446744073709550617ms"` (u64::MAX - 998, exact boundary) (`src/main.rs`)
+- [x] Rename sandbox CLI tests to include `_flag` infix for consistency with existing `no_fs_flag_blocks_include` and `timeout_flag_exits_with_sigalrm` (`tests/cli_tests.rs`)
+- [x] Add composition test that verifies conjunctive enforcement: program uses `$include` AND runs with `--timeout`, both flags active (`tests/cli_tests.rs`)
