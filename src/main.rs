@@ -110,6 +110,7 @@ fn main() {
         }
         Err(_) => {
             eprintln!("internal error: worker thread panicked");
+            // Exit code 2 reserved for --timeout (SIGALRM); panics are general errors (code 1)
             process::exit(EXIT_ERROR);
         }
     }
@@ -168,18 +169,25 @@ fn parse_duration(s: &str) -> Result<u32, String> {
 }
 
 /// SIGALRM handler — exits with timeout code.
+#[cfg(unix)]
 extern "C" fn timeout_handler(_sig: i32) {
     unsafe { libc::_exit(EXIT_TIMEOUT) };
 }
 
 /// Install SIGALRM handler and start the alarm timer.
+#[cfg(unix)]
 fn install_timeout(duration_str: &str) -> Result<(), String> {
     let seconds = parse_duration(duration_str)?;
 
     unsafe {
-        // Install signal handler
-        let handler = timeout_handler as usize;
-        if libc::signal(libc::SIGALRM, handler) == libc::SIG_ERR {
+        // Install signal handler using sigaction (more portable than signal())
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = timeout_handler as libc::sighandler_t;
+        // SA_RESTART: restart syscalls interrupted by this signal (avoid EINTR)
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa.sa_mask);
+
+        if libc::sigaction(libc::SIGALRM, &sa, std::ptr::null_mut()) != 0 {
             return Err("failed to install SIGALRM handler".to_string());
         }
 
@@ -199,7 +207,15 @@ fn run_eval(
 ) -> Result<(), String> {
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
-        install_timeout(duration)?;
+        #[cfg(unix)]
+        {
+            install_timeout(duration)?;
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!("error: --timeout is only supported on Unix platforms");
+            process::exit(EXIT_ERROR);
+        }
     }
     // Read the LLT source
     let source = read_source(file_path)?;
@@ -274,6 +290,14 @@ fn run_eval(
             let output =
                 value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
             println!("{output}");
+        }
+    }
+
+    // Cancel any pending alarm before returning success
+    #[cfg(unix)]
+    if timeout.is_some() {
+        unsafe {
+            libc::alarm(0);
         }
     }
 
@@ -418,5 +442,19 @@ mod tests {
     fn parse_duration_whitespace() {
         assert_eq!(parse_duration(" 5s "), Ok(5));
         assert_eq!(parse_duration("  10  "), Ok(10));
+    }
+
+    #[test]
+    fn parse_duration_999ms_boundary() {
+        // 999ms rounds up to 1 second (alarm() requires whole seconds)
+        assert_eq!(parse_duration("999ms"), Ok(1));
+    }
+
+    #[test]
+    fn parse_duration_large_minutes_overflow() {
+        // 100000000 * 60 overflows u32::MAX, should return error
+        assert!(parse_duration("100000000m").is_err());
+        let err_msg = parse_duration("100000000m").unwrap_err();
+        assert!(err_msg.contains("duration out of range"));
     }
 }
