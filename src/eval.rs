@@ -996,19 +996,18 @@ fn invoke_proxy_handler(
                 ctx,
             })
         }),
-        Value::Builtin { func, .. } => EMPTY_NAMED_ARGS.with(|empty| {
-            // Clone is necessary: new_pending_builtin requires owned IndexMap
-            // (PendingBuiltin state must own its args). For empty maps, clone is O(1).
+        Value::Builtin { func, .. } => {
+            // Create a fresh empty IndexMap for named args (0 capacity, no allocation)
             Ok(Rc::new(Thunk::new_pending_builtin(
                 func,
                 vec![key_arg],
-                empty.clone(),
+                IndexMap::new(),
                 depth + 1,
                 *access_span,
                 Cow::Borrowed("proxy field access"),
                 Rc::clone(ctx),
             )))
-        }),
+        }
         _ => Err(EvalError::type_mismatch(
             "Function or Builtin",
             handler_val.type_name(),

@@ -12,7 +12,8 @@
 8. [Evaluation](08-evaluation.md) — Lazy semantics, thunks, materialization, letrec, sequences
 9. [Documents & Pipelines](09-documents.md) — `---` separators, `$$` isolation, scope chains, `$include`
 10. [Error Handling](10-errors.md) — Exception model, `$try`, ErrorKind, error semantics
-11. [Standard Library](11-stdlib.md) — Builtins, 62-function reference, equality, merge
+11. [Standard Library](11-stdlib.md) — Builtins, stdlib reference, equality, merge
+11a. [Builtin Reference](11a-builtins.md) — Complete reference for all 46 Rust-native builtins (+ 12 stable aliases)
 
 ## Tooling
 

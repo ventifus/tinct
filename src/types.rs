@@ -1221,7 +1221,15 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
 /// Generalize a type at a binding boundary by quantifying free type variables
 /// whose level is strictly greater than the enclosing scope level.
 /// Used for let-generalization: ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ
+///
+/// Defense-in-depth: applies the current substitution first, per Damas & Milner (1982).
+/// Generalization must operate over the image of the substitution, not the raw type.
 pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
+    // Apply substitution first — defense-in-depth per Damas & Milner (1982).
+    // Generalization must operate over the image of the substitution.
+    // Without this, a bound TypeVar would be generalized incorrectly.
+    let ty = &state.subst.apply(ty);
+
     // Early exit for monomorphic types (common case: all-concrete config dicts)
     if !ty.has_type_vars() {
         return TypeScheme::mono(ty.clone());
@@ -3360,6 +3368,38 @@ mod tests {
         let scheme = generalize(1, &ty, &state);
         assert_eq!(scheme.row_vars, vec!["r"]);
         assert!(scheme.type_vars.is_empty());
+    }
+
+    #[test]
+    fn test_generalize_applies_subst_before_collecting() {
+        // Defense-in-depth test: generalize() must apply substitution first.
+        // Without this, a TypeVar bound in state.subst would be incorrectly generalized.
+        let mut state = InferState::new();
+
+        // Create a type variable "a" at level 2 (higher than enclosing level 1)
+        state.levels.insert("a".into(), 2);
+
+        // Bind "a" to Int in the substitution
+        state.subst.type_map.insert("a".into(), Type::Int);
+
+        // Create a type containing the bound variable
+        let ty = Type::TypeVar("a".into(), 2);
+
+        // Generalize at level 1
+        let scheme = generalize(1, &ty, &state);
+
+        // The variable should NOT be generalized because it's bound to Int.
+        // After applying substitution, the type is Int (no free vars).
+        assert!(
+            scheme.type_vars.is_empty(),
+            "Bound TypeVar should not be generalized after substitution application"
+        );
+        assert!(scheme.row_vars.is_empty());
+        assert_eq!(
+            scheme.body,
+            Type::Int,
+            "Generalized type should be Int, not TypeVar"
+        );
     }
 
     // --- level lowering in unify ---

@@ -16,7 +16,7 @@ Syntactically, `[call $f $x]` is a bracket expression with unkeyed entries (the 
 **Parser recognition:** The parser checks the first entry of every `[]`. If it matches a keyword (`call`, `fn`, `type`), the parser emits a specialized AST node. Otherwise it emits a `Dict` node. This is a parser-level decision, not an evaluator-level one.
 
 ```tinct
-[call $f $x $y]                # Parsed as CallExpr — requires exact arity
+[call $f $x $y]                # Parsed as CallExpr — arity checked at eval time
 [fn [x] [call $+ $x 1]]       # Parsed as FnExpr — function definition
 ```
 
@@ -40,7 +40,7 @@ named_arg_key = @{ "$" ~ var_ident | bare_word }
 
 **Note:** Both `$timeout: 60` and `timeout: 60` create a named argument with name `"timeout"`. The `$` prefix is syntactic sugar for readability (mirroring the `$var` variable reference syntax) — the parser strips the `$` prefix, storing only `"timeout"` in the AST's `NamedArg.name` field. This ensures the argument name matches the parameter name directly during binding without prefix-stripping at evaluation time.
 
-Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See [Call Convention — Formal Specification](#call-convention--formal-specification) for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
+Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time — the parser recognizes `call` as a keyword and emits a `Call` AST node, but arity checking beyond function-position detection is deferred to the evaluator (which has access to the function's parameter list). See [Call Convention — Formal Specification](#call-convention--formal-specification) for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
 
 Examples:
 ```tinct
@@ -223,12 +223,11 @@ DESUGAR(e, depth) =
             [n{value=DESUGAR(n.value, depth + 1)}        -- recurse all named vals
              | n ∈ named]))
 
-  -- WRAP-DICT: same pattern — check raw, wrap, recurse non-DIRECT
+  -- WRAP-DICT: same pattern — check raw, wrap, recurse all values
   | Dict(entries)
       where ∃ entry ∈ entries. DIRECT(entry.value)
       → Fn([_], Dict(                                   -- [WRAP-DICT]
-            [if DIRECT(e.value) then e
-             else e{value=DESUGAR(e.value, depth + 1)}
+            [e{value=DESUGAR(e.value, depth + 1)}
              | e ∈ entries]))
 
   -- WRAP-DOT/BRACKET/RANGE: standalone access chain rooted at $_
@@ -302,14 +301,13 @@ This replaced the eval-time `env.borrow().get("_").is_none()` check with a purel
 **Implementation sketch:**
 
 ```rust
-fn desugar_file(file: &mut Spanned<File>) { /* walk documents/expressions */ }
+fn desugar_file(file: &mut File) { /* walk documents/expressions */ }
 fn desugar_expr(expr: &mut Spanned<Expr>) { desugar(expr, 0) }
 
 fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
     // Check WRAP conditions on raw children BEFORE recursing
     if depth == 0 {
-        if let Some(wrapped) = try_wrap(expr, depth) {
-            *expr = wrapped;
+        if try_wrap(expr) {
             return;
         }
     }

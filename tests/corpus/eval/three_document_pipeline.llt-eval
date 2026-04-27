@@ -1,0 +1,8 @@
+# Three-document pipeline: $$ flows through each stage
+[x: 1]
+---
+[y: [call $+ $$[x] 10]]
+---
+[result: [call $+ $$[y] 100]]
+===
+Dict({"result": Int(111)})

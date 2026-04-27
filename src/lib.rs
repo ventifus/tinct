@@ -27,13 +27,13 @@ pub(crate) mod test_util;
 pub(crate) mod typecheck;
 pub(crate) mod types;
 pub(crate) mod value;
-// Phase 3a: Rust-native builtin functions.
+// Rust-native builtin functions (stdlib-1 sprint).
 pub(crate) mod builtins;
-// Phase 3b: $_ desugaring (pre-typecheck AST transformation).
+// $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
-// Phase 6a: REPL (Read-Eval-Print Loop).
+// REPL (Read-Eval-Print Loop).
 pub mod repl;
-// Phase 6b: LSP (Language Server Protocol).
+// LSP (Language Server Protocol).
 #[cfg(feature = "lsp")]
 pub mod lsp;
 

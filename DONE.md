@@ -1388,6 +1388,82 @@ Docs-only sprint (no build gate or panel review).
 - [x] deep_materialize cache semantics — documented dual-purpose HashMap (None=blackhole, Some=sharing), stack-local lifecycle, global per-call scope [Minor, eval-engine]
 - [x] Materialization span semantics for PendingCall func error — documented call_span as mat_span for nested forcing, consistent with PendingBuiltin [Minor, eval-engine]
 
+### stdlib-doc-a: Stdlib Documentation and Missing Reference Chapter
+
+18 items (most already done by prior sprints in this session). Key new work: doc/11a-builtins.md, $deep-eq removal, any?/all? table, operator_wrappers corpus test.
+
+- [x] Create doc/11a-builtins.md — new builtin reference chapter (46 builtins + 12 stable aliases) [Major]
+- [x] Fix $deep-eq false claim — removed from doc/11-stdlib.md [Major]
+- [x] Add any?/all? to Logic reference table in doc/11-stdlib.md [Major]
+- [x] Fix concat description — dual dispatch documented (lazy Seq vs eager Dict) [Minor]
+- [x] Add operator_wrappers.llt-eval corpus test covering all 12 wrapper functions [Major]
+- [x] 13 items already done by prior sprints (function count, builtin count, alias names, proxy, concat, join, zip rename, comments, phantom names, wrapper table entries)
+
+### docs-vs-code-functions-eval: doc/04, doc/08, doc/09, doc/10, doc/16 vs Code Accuracy
+
+Split from docs-vs-code. Docs-only sprint (no build gate or panel review). 15 items.
+
+- [x] Fix doc/16 pipeline diagram `desugar_underscores` → `desugar` — already correct [Minor]
+- [x] Fix doc/10 error kind list exhaustiveness — qualified claim, added missing variants [Major]
+- [x] Fix doc/04 call arity checking — noted as eval-time [Minor]
+- [x] Fix doc/16 EvalContext section — thread-local INCLUDE_CTX status updated [Critical]
+- [x] Fix doc/09 pipeline model code fence → indented block [Nit]
+- [x] Fix doc/08 laziness tables future tense — already resolved by prior sprint [Minor]
+- [x] Fix doc/16 BuiltinFn signature — BuiltinArgs struct documented [Minor]
+- [x] Fix doc/09 include caching — expanded (PathBuf key, thread-local scope, error non-caching, lifetime) [Minor]
+- [x] Fix doc/04 try_wrap sketch — updated to bool return, no depth [Major]
+- [x] Fix doc/04 desugar_file sketch — Spanned<File> → File [Nit]
+- [x] Fix doc/08 FORCE-BUILTIN/FORCE-CALL — added Σ_θ to all forcing rules [Minor]
+- [x] Fix doc/04 WRAP-DICT pseudocode — unconditional recursion [Minor]
+- [x] Fix doc/10 Part 9 is_cacheable() — "integration deferred" → "integrated" [Major]
+- [x] Fix doc/10 Part 9 PROP-DEPTH — "integration deferred" → "integrated" [Major]
+- [x] Fix doc/10 Part 9 EvalError line reference — updated to current line [Major]
+
+### misc-nits-d: Miscellaneous Nits (Part 4)
+
+9 items, all nits. 3 new fixes, 6 already done by prior sprints.
+
+- [x] Fix resolve_type_assert pre-substitution expected — state.subst.apply added [Nit, type-theorist C68]
+- [x] Fix doc/11 -> Threading code block — already done [Nit, stdlib-author C68]
+- [x] Fix prelude header builtin-* aliases — already done [Nit, stdlib-author C66]
+- [x] Fix doc/11 $merge lazy claim — already done [Nit, stdlib-author C65]
+- [x] Fix hardcoded variant count in error tests — already done [Nit, integration-verifier C64]
+- [x] Fix check_dot_access debug_assert redundant lookup — fixed [Nit, integration-verifier C64]
+- [x] Add value_matches_type Proxy test — already done [Nit, test-crafter C70]
+- [x] Add deep_materialize_impl proxy test — already done [Nit, test-crafter C70]
+- [x] Optimize invoke_proxy_handler Builtin path — empty.clone() → IndexMap::new() [Nit, performance-expert C70]
+
+## readme-polish: README and CLAUDE.md Accuracy Fixes (C47)
+
+- [x] Fix src/parser.rs:15 "Phase 6" → "Parser Rewrite milestone (iterative-parser sprint)" [Major]
+- [x] Fix doc/09-documents.md typo "An Tinct" → "A Tinct" [Minor]
+- [x] Fix src/lib.rs:29-35 orphaned phase comments removed [Minor]
+- [x] Add architecture redirect to CLAUDE.md [Minor]
+- [x] Add pest recursion caveat to doc/15-ast.md [Major]
+- [x] Fix parse_expression docstring — already done by parser-doc-fixes [Nit]
+- [x] Stage doc/whatif/tls.md [Nit]
+- [x] Document parse_expression in doc/15-ast.md [Nit]
+- [x] Add (dev, ino) migration note to doc/16-architecture.md EvalState sketch [Nit]
+
+### cycle-findings-c70-b-docs-tests: Doc and Test Fixes (Cycle #70)
+
+14 items: 8 doc fixes + 6 corpus tests.
+
+- [x] Fix doc/16 Environment HashMap→IndexMap inline comment [Minor]
+- [x] Fix doc/11 derivation table ceil $builtin-sub [Minor]
+- [x] Fix doc/11 $or "returns true" → "returns $a" — already done by prior sprint [Nit]
+- [x] Fix doc/11 $merge Part 6 line numbers [Nit]
+- [x] Fix doc/08 depth 0 → depth+1 for repeat/iterate/unfold [Minor]
+- [x] Fix doc/08 DELTA-ITERATE rule d → d+1 [Minor]
+- [x] Fix doc/06 [U-ANY] level-zeroing note added [Minor]
+- [x] Fix doc/15 parser.rs:431→430 line reference [Nit]
+- [x] Add type_alias_eval.llt-eval corpus test [Minor]
+- [x] Add annotated_bare_eval.llt-eval corpus test [Minor]
+- [x] Add three_document_pipeline.llt-eval corpus test [Minor]
+- [x] Add range_arity_mismatch.llt-eval error corpus test [Minor]
+- [x] Add proxy_type_of.llt-eval corpus test [Minor]
+- [x] Add scope_chain_int_keys_not_bound.llt-eval corpus test [Nit]
+
 ### doc-rowunification-retrospective-c: Inference Rule Doc Correctness (C55 Overflow)
 
 Docs-only sprint (no build gate or panel review).
@@ -1415,3 +1491,13 @@ Minor findings from Cycle #33 codebase review. All items independent.
 - [x] Add corpus tests for Proxy dot and bracket access — `eval_dot_access` and `eval_bracket_access` dispatch to `invoke_proxy_handler` for Proxy values but there are no end-to-end corpus tests verifying handler receives the correct key type. Fix: add `tests/corpus/eval/builtins/proxy_access_dot.llt-eval` (String key from dot access) and `proxy_access_bracket.llt-eval` (Int key from bracket access). (`tests/corpus/eval/builtins/`) [Minor, eval-engine C33]
 - [x] Add `check_dot_access` / `lower_row_var_levels_pub` callsite unit test — the public wrapper `lower_row_var_levels_pub` at `src/types.rs:700-702` is called from `check_dot_access` at `typecheck.rs:718` in the RowVar arm; a regression in the callsite (wrong `max_level` arg) would not be caught by the types.rs unit tests. Fix: add `test_check_dot_access_lowers_row_var_levels` verifying inner variable levels are lowered to `min(inner, rho_level)`. (`src/typecheck.rs:718`) [Minor, test-crafter C33]
 - [x] Expand `tests/corpus/eval/access/` with range and bracket-int-key tests — 3 files exist (dot access, bracket string key, bracket access); still absent: range access and bracket access with integer key. Fix: add `range_access_simple.llt-eval` and `bracket_access_int_key.llt-eval`. (`tests/corpus/eval/access/`) [Minor, test-crafter C33]
+
+### cycle-findings-c34-a: Major Findings (Cycle #34)
+
+Major findings from Cycle #34 full codebase health review. All items independent.
+
+- [x] Fix Guarded thunk DepthExceeded restoration — when `materialize(&inner, ...)` at `src/eval.rs:1541` fails with DepthExceeded (non-cacheable), the Guarded state is not restored; thunk remains stuck in InProgress. Fix: before the existing `match result` block, add an arm `if let Err(ref e) = result && !e.kind.is_cacheable() { thunk.set_state(ThunkState::Guarded { inner, expected, field_path, guard_span }); return Err(...); }`. (`src/eval.rs:1541-1611`) [Major, eval-engine C34]
+- [x] Fix `doc/11-stdlib.md:106` false claim that `$deep-eq` exists — line 106 states "Structural equality is available via `$deep-eq`" but this function does not exist in `stdlib/prelude.llt` or `src/builtins.rs`. Fix: remove the sentence. (`doc/11-stdlib.md:106`) [Major, stdlib-author C34]
+- [x] Fix `doc/11-stdlib.md:231` function count understated — corrected to "~110 total: 46 Rust builtins + 64 LLT functions (52 public API + 12 shadowable wrappers)" based on actual verification. (`doc/11-stdlib.md:231`) [Major, stdlib-author C34]
+- [x] Add `state.subst.apply(ty)` at the start of `generalize()` for defense-in-depth — Damas & Milner (1982) gen() requires generalization over the image of the current substitution, not the raw type. Fix: add `let ty = &state.subst.apply(ty);` as first line of `generalize()`. (`src/types.rs:1224`) [Major, computer-scientist C34]
+- [x] Audit desugar ordering across all eval entry points — added desugar call to `$include` builtin in `src/builtins.rs` and to all `typecheck.rs` test helpers; all entry points now correctly call `desugar_file` before `typecheck_file`/`eval_file`. (`src/builtins.rs:1180`, `src/typecheck.rs`) [Major, integration-verifier C34]

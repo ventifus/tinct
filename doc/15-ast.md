@@ -20,6 +20,8 @@ struct Document {
 
 The `parse()` function returns `Result<Spanned<File>, ParseError>`.
 
+The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the last expression of the first document. Multi-expression inputs discard all but the last expression; multi-document inputs discard all but the first document. No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
+
 ### Core Expression Type
 
 ```rust
@@ -117,7 +119,7 @@ struct NamedArg {
 }
 ```
 
-**Named Argument Key Normalization:** The `name` field always contains the bare identifier without the `$` prefix. Both `key: val` and `$key: val` call syntax produce `NamedArg { name: "key", ... }`. The `$` prefix is stripped during AST construction (`parser.rs:431`) because named arguments represent parameter name bindings (matched against `Param.name` strings by the evaluator), not value expressions. The `$` sigil is syntactic sugar allowing `$timeout: 60` (clearer for readers: "I'm binding to the timeout parameter") without requiring the evaluator to strip prefixes at runtime.
+**Named Argument Key Normalization:** The `name` field always contains the bare identifier without the `$` prefix. Both `key: val` and `$key: val` call syntax produce `NamedArg { name: "key", ... }`. The `$` prefix is stripped during AST construction (`parser.rs:430`) because named arguments represent parameter name bindings (matched against `Param.name` strings by the evaluator), not value expressions. The `$` sigil is syntactic sugar allowing `$timeout: 60` (clearer for readers: "I'm binding to the timeout parameter") without requiring the evaluator to strip prefixes at runtime.
 
 ```rust
 /// A function parameter
@@ -212,6 +214,8 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 ### Bracket Nesting Depth Limit
 
 The parser enforces `MAX_PARSE_DEPTH` during AST construction (not during pest's parse phase), avoiding native stack overflow. `MAX_PARSE_DEPTH` (256) is the policy limit; inputs exceeding this limit produce a clear parse error.
+
+**Note:** pest itself recurses on Rust's call stack during parse. ~500+ nested brackets may cause native stack overflow before this depth check fires. This is an accepted limitation resolved by the Parser Rewrite milestone.
 
 ### Annotation Bracket Restriction
 

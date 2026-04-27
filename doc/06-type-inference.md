@@ -312,6 +312,8 @@ unify(α, τ, S) = S[α ↦ τ]   if α ∉ FV(τ)       [U-VAR-L]
 unify(τ, α, S) = S[α ↦ τ]   if α ∉ FV(τ)       [U-VAR-R]
 ```
 
+**Note:** When one side is a type variable α and the other is `Any`, the implementation fires specialized TypeVar rules ([U-ANY-VAR]/[U-VAR-ANY], see §Let-Generalization) first, which zero ℓ(α) to prevent unsound generalization of Any-unified variables. The general [U-ANY-L]/[U-ANY-R] rules above apply only when neither side is a TypeVar.
+
 Literal identity (same literal value = same type):
 
 ```
