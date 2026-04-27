@@ -944,14 +944,14 @@ true false                      # Bool
 $x                              # Variable reference
 [$key: $value]                  # Computed key and value
 
-# Key-based access (brackets and dot — desugars to $get)
-$person.name                    # -> [call $get $person name]
-$config.database.host           # -> chained $get
-$data[5]                        # -> [call $get $data 5]  key 5
-$data[-1]                       # -> [call $get $data -1] key -1, NOT last
-$dict[$key]                     # -> [call $get $dict $key]
-$data[2..5]                     # -> key-range slice: keys in [2, 5)
-$config.services[0].host        # -> mixed chaining
+# Key-based access (brackets and dot — semantically equivalent to $get)
+$person.name                    # equivalent to [call $get $person name]
+$config.database.host           # equivalent to chained $get
+$data[5]                        # equivalent to [call $get $data 5]  key 5
+$data[-1]                       # equivalent to [call $get $data -1] key -1, NOT last
+$dict[$key]                     # equivalent to [call $get $dict $key]
+$data[2..5]                     # key-range slice: keys in [2, 5)
+$config.services[0].host        # mixed chaining
 
 # Position-based access (functions, not syntax)
 [call $nth $data 0]       # first entry by position
@@ -964,8 +964,8 @@ $config.services[0].host        # -> mixed chaining
 [call $f $arg1 opt: $val]       # Named args (bare key-value)
 
 # Implicit lambda ($_ shorthand)
-[call $+ $_ 1]                  # -> [fn [_] [call $+ $_ 1]]
-[call $> $_.age 30]             # -> [fn [_] [call $> $_.age 30]]
+[call $+ $_ 1]                  # desugars to [fn [_] [call $+ $_ 1]]
+[call $> $_.age 30]             # desugars to [fn [_] [call $> $_.age 30]]
 
 # Apply (spread list into function args)
 [call $apply $f $arg-list]      # Spreads list entries as positional args
