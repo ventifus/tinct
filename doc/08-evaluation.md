@@ -237,7 +237,7 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 
 Forcing (materialization) dispatches on the current state to produce a value or error. Rules use the judgment form `force(θ, d) ⇒ v` where θ is a thunk, d is the current depth, and v is the resulting value.
 
-**Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`θ.state ← InProgress`) with declarative judgments (`eval(expr, env, d+1) ⇒ θ'`). A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `force(θ, d, σ) ⇒ (v, σ')`. The notation here maps directly to the `materialize()` implementation for ease of cross-checking.
+**Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`θ.state ← InProgress`) with declarative judgments (`eval(expr, env, Σ_θ, d+1) ⇒ θ'`). `Σ_θ` denotes the evaluation context (`EvalContext`) captured at thunk construction time — it carries context-dependent state (base directory, include guards) that must reflect the thunk's definition site. A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `force(θ, d, σ) ⇒ (v, σ')`. The notation here maps directly to the `materialize()` implementation for ease of cross-checking.
 
 **Precondition:** FORCE-DEPTH is checked before state dispatch. All other rules implicitly have `d ≤ MAX_EVAL_DEPTH` as a precondition.
 
@@ -283,20 +283,22 @@ force(θ, d) ⇒ error("circular dependency")
 
 **[FORCE-EVAL]**
 ```
-θ.state = Unevaluated(expr, env)
+θ.state = Unevaluated(expr, env, Σ_θ)
 θ.state ← InProgress                          (blackhole)
-eval(expr, env, d+1) ⇒ θ'
+eval(expr, env, Σ_θ, d+1) ⇒ θ'
 force(θ', d+1) ⇒ v
 θ.state ← Materialized(v)                     (memoize)
 ───────────────────────────
 force(θ, d) ⇒ v
 ```
 
+`Σ_θ` is the evaluation context captured at thunk construction time. The thunk evaluates in its captured context, not the current forcing context — this ensures that context-dependent state (base directory, include guards, depth budget) reflects the thunk's definition site.
+
 **[FORCE-EVAL-ERR]**
 ```
-θ.state = Unevaluated(expr, env)
+θ.state = Unevaluated(expr, env, Σ_θ)
 θ.state ← InProgress
-eval(expr, env, d+1) ⇒ θ'
+eval(expr, env, Σ_θ, d+1) ⇒ θ'
 force(θ', d+1) ⇒ error(e)
 θ.state ← Failed(e)                           (memoize error)
 ───────────────────────────
@@ -305,9 +307,9 @@ force(θ, d) ⇒ error(e)
 
 **[FORCE-BUILTIN]**
 ```
-θ.state = PendingBuiltin(f, args, named, pd, cs)
+θ.state = PendingBuiltin(f, args, named, pd, cs, Σ_θ)
 θ.state ← InProgress
-f(args, named, pd, cs) ⇒ θ'
+f(args, named, Σ_θ, pd, cs) ⇒ θ'
 force(θ', d+1) ⇒ v
 θ.state ← Materialized(v)
 ───────────────────────────
@@ -320,10 +322,10 @@ The builtin receives `pd` (the pending depth captured at PendingBuiltin construc
 
 **[FORCE-CALL]**
 ```
-θ.state = PendingCall(f_θ, args, named, cs)
+θ.state = PendingCall(f_θ, args, named, cs, Σ_θ)
 θ.state ← InProgress
 force(f_θ, d+1) ⇒ Function(params, body, env)
-invoke(params, body, env, args, named) ⇒ θ'
+invoke(params, body, env, args, named, Σ_θ) ⇒ θ'
 force(θ', d+1) ⇒ v
 θ.state ← Materialized(v)
 ───────────────────────────
@@ -332,10 +334,10 @@ force(θ, d) ⇒ v
 
 **[FORCE-CALL-BUILTIN]**
 ```
-θ.state = PendingCall(f_θ, args, named, cs)
+θ.state = PendingCall(f_θ, args, named, cs, Σ_θ)
 θ.state ← InProgress
 force(f_θ, d+1) ⇒ Builtin(func)
-func(args, named, d, cs) ⇒ θ'
+func(args, named, Σ_θ, d, cs) ⇒ θ'
 force(θ', d+1) ⇒ v
 θ.state ← Materialized(v)
 ───────────────────────────
@@ -379,8 +381,8 @@ Implicit decisions in the current implementation, made explicit:
 
 These states are defunctionalized continuations (Reynolds 1972). Each is observationally equivalent to an Unevaluated thunk holding an expression that would perform the same computation:
 
-- `PendingBuiltin(f, args, named, d, cs)` ≡ `Unevaluated([call $f ...args ...named], env)` where env binds the arg thunks
-- `PendingCall(f_θ, args, named, cs)` ≡ `Unevaluated([call <force f_θ> ...args ...named], env)`
+- `PendingBuiltin(f, args, named, pd, cs, Σ_θ)` ≡ `Unevaluated([call $f ...args ...named], env, Σ_θ)` where env binds the arg thunks
+- `PendingCall(f_θ, args, named, cs, Σ_θ)` ≡ `Unevaluated([call <force f_θ> ...args ...named], env, Σ_θ)`
 
 The equivalence for PendingCall holds because `eval` of `[call ...]` already performs dynamic dispatch on the callee — if `f_θ` materializes to a Builtin rather than a Function, both the PendingCall path (FORCE-CALL-BUILTIN) and the hypothetical Unevaluated path would dispatch to the same builtin.
 
@@ -547,7 +549,7 @@ Delta rules specify the forcing behavior for builtins marked ‡ in the signatur
 
 Rules use the judgment form `δ(f, [θ₁, ..., θₙ], d, cs) ⇒ r` where f is the builtin, θᵢ are argument thunks, d is the current depth, cs is the call span, and r is the result (a thunk or error). All current delta rules use positional args only; named args are empty (`∅`) and omitted from rules for brevity.
 
-**Depth in PendingBuiltin:** When constructing a PendingBuiltin, builtins that perform no materialization themselves (e.g., `$repeat`, `$iterate`, `$unfold`) store depth `0` because the stored depth is only used when the PendingBuiltin is eventually forced (the materialization-site depth governs recursive forcing via FORCE-BUILTIN in §Thunk Lifecycle). Builtins that materialize within the step function (e.g., `$filter` step, `$reduce` step) store the current `depth` for their internal materialization calls.
+**Depth in PendingBuiltin:** When constructing a PendingBuiltin, builtins that perform no materialization themselves (e.g., `$repeat`, `$iterate`, `$unfold`) store `depth+1` to account for the recursion step when the PendingBuiltin is eventually forced (the materialization-site depth governs recursive forcing via FORCE-BUILTIN in §Thunk Lifecycle). Builtins that materialize within the step function (e.g., `$filter` step, `$reduce` step) store the current `depth` for their internal materialization calls.
 
 **[DELTA-IF-TRUE]**
 ```
@@ -613,7 +615,7 @@ Collect materializes the Seq *spine* (all tail thunks) but head thunks pass thro
 ───────────────────────────
 δ(iterate, [θ_f, θ_x], d, cs) ⇒ Materialized(Seq(
     Rc::clone(θ_x),
-    PendingBuiltin(iterate, [Rc::clone(θ_f), PendingCall(θ_f, [θ_x])], d, cs)
+    PendingBuiltin(iterate, [Rc::clone(θ_f), PendingCall(θ_f, [θ_x])], d+1, cs)
 ))
 ```
 

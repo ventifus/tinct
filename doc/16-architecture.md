@@ -42,7 +42,7 @@
 
 The evaluator threads an `EvalContext` through `eval()`, `materialize()`, and builtin dispatch. This separates evaluation infrastructure (file resolution, sandboxing) from variable bindings (`Environment`) and stack depth tracking (`depth`).
 
-**Design decision:** EvalContext replaces the thread-local `INCLUDE_CTX` pattern. Thread-locals create invisible coupling, prevent multi-file LSP support (each document needs its own include context), and require fragile set/clear ceremonies at every call site.
+**Migration status:** Types defined and threaded (evalcontext-types sprint). Thread-local `INCLUDE_CTX` fully removed — no longer present in codebase.
 
 **Config/State split:** EvalContext separates immutable session configuration from mutable evaluation state. Config is `Rc` (no RefCell) — the compiler enforces immutability. State is `Rc<RefCell>` for interior mutability.
 
@@ -105,7 +105,8 @@ enum Value {
         env: Environment,
     },
     Builtin(fn(BuiltinArgs) -> Result<Rc<Thunk>, Error>),
-    // BuiltinArgs { positional: Vec<Rc<Thunk>>, named: IndexMap<String, Rc<Thunk>> }
+    // BuiltinArgs<'a> { args: &'a [Rc<Thunk>], named: &'a IndexMap<String, Rc<Thunk>>,
+    //                   depth: usize, call_span: Span, ctx: Rc<EvalContext> }
 }
 
 struct Thunk {
@@ -137,7 +138,7 @@ enum Key {
 }
 
 struct Environment {
-    bindings: HashMap<String, Rc<Thunk>>,
+    bindings: HashMap<String, Rc<Thunk>>,  // currently IndexMap; HashMap migration tracked in TODO.md row-unification-perf-c
     parent: Option<Rc<RefCell<Environment>>>,   // mutable — letrec needs self-referential bindings
 }
 ```

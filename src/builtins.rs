@@ -1172,9 +1172,12 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     })?;
 
     // Parse.
-    let file = crate::parser::parse(&source).map_err(|e| {
+    let mut file = crate::parser::parse(&source).map_err(|e| {
         EvalError::include_parse_failed(canonical.display().to_string(), e.to_string(), call_span)
     })?;
+
+    // Desugar $_ implicit lambdas (pre-typecheck and pre-eval AST transformation).
+    crate::desugar::desugar_file(&mut file.node);
 
     // Add to include guard before recursing.
     ctx.state

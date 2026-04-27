@@ -1,0 +1,4 @@
+# type-of: Proxy returns "Proxy"
+[call $type-of [call $proxy [fn [f] $f]]]
+===
+String("Proxy")

@@ -4,20 +4,18 @@
 
 Data flows through stages. Within a file, `---` separates independent documents. Each document's output becomes `$$` for the next:
 
-```
-file.llt
-├── document 1 (data)         → $$ for doc 2
-├── ---
-├── document 2 (transform)    → $$ for doc 3
-├── ---
-└── document 3 (output)       → final value, serialized by CLI
-```
+    file.llt
+    ├── document 1 (data)         → $$ for doc 2
+    ├── ---
+    ├── document 2 (transform)    → $$ for doc 3
+    ├── ---
+    └── document 3 (output)       → final value, serialized by CLI
 
 Within a document, sequential expressions form a scope chain — each expression's bindings are visible to the next.
 
 ## Document Structure
 
-An Tinct **file** contains one or more **documents** separated by `---`. Each document contains one or more **expressions**. This three-level hierarchy governs scoping, isolation, and data flow.
+A Tinct **file** contains one or more **documents** separated by `---`. Each document contains one or more **expressions**. This three-level hierarchy governs scoping, isolation, and data flow.
 
 ```
 file
@@ -508,6 +506,16 @@ include(path_str, Σ, d, s) ⇒ Ok(Rc::clone(Σ.cache[canonical]))
 ```
 
 Cache hits return a clone of the cached thunk pointer. No file I/O, no evaluation. This is Jsonnet-style import memoization: multiple includes of the same file share a single evaluation result.
+
+**Cache implementation details:**
+
+- **Cache key:** Canonical `PathBuf` (after symlink resolution and normalization via `std::fs::canonicalize`). Different relative paths that resolve to the same file share a single cache entry — `./lib/utils.llt` and `subdir/../lib/utils.llt` hit the same cache key if they canonicalize to the same absolute path.
+
+- **Cache scope:** Thread-local, stored in `EvalContext::state::include_cache` (`eval.rs:43`, `HashMap<PathBuf, Rc<Thunk>>`). Each thread has its own cache; no cross-thread sharing. The cache is shared across all nested `$include` calls within a single evaluation session.
+
+- **Cache lifetime:** Lives as long as the `EvalContext`. In the CLI, a single `EvalContext` is created per `tinct eval` invocation and cleared on exit. In the REPL, the `EvalContext` persists across REPL inputs, so included files are cached for the entire REPL session — a file modified on disk mid-session will not be re-read until the REPL is restarted.
+
+- **Error non-caching:** Failed includes are NOT cached. If `$include("broken.llt")` fails (parse error, I/O error, eval error), subsequent `$include("broken.llt")` calls re-attempt evaluation. Only successful results populate the cache. Note that the call-site thunk caches the failure (via `ThunkState::Failed`) — the same call site will not retry — but a different call site including the same file will retry the file-level evaluation.
 
 **[INCLUDE-CYCLE]** — Cycle detection:
 

@@ -1,0 +1,6 @@
+# Int-keyed entries are accessible via bracket on $$ but don't create variable bindings
+[1 2 3]
+---
+$$[0]
+===
+Int(1)

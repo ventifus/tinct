@@ -84,6 +84,7 @@ fn typecheck_document(
     }
 
     let mut last_dict_schemes: Option<IndexMap<String, TypeScheme>> = None;
+    let mut last_expr: Option<&Spanned<Expr>> = None;
 
     for (i, expr) in exprs.iter().enumerate() {
         let is_last = i == exprs.len() - 1;
@@ -95,6 +96,7 @@ fn typecheck_document(
                     if is_last {
                         result_type = ty;
                         last_dict_schemes = Some(schemes);
+                        last_expr = Some(expr);
                     } else {
                         let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
                         // Thread schemes into the environment
@@ -136,13 +138,20 @@ fn typecheck_document(
         }
     }
 
-    let mut result_env = TypeEnv::with_parent(env);
+    let mut result_env = TypeEnv::with_parent(Rc::clone(&env));
 
     // If the last expression was a dict, thread its schemes into the result environment
     if let Some(schemes) = last_dict_schemes {
         for (name, scheme) in schemes {
             result_env.insert_scheme(name, scheme);
         }
+    }
+
+    // Register type aliases from the last expression
+    // Note: errors are intentionally ignored here, matching the behavior of infer_dict Pass 2.
+    // Type alias resolution errors are reported when the aliases are used, not when registered.
+    if let Some(expr) = last_expr {
+        let _ = register_type_aliases(expr, &mut result_env, &env, state);
     }
 
     result_env.insert("$".to_string(), result_type);
@@ -703,11 +712,11 @@ fn check_dot_access(
                         rho_level <= *rho_level_creation,
                         "RowVar current level ({}) should be ≤ creation level ({}). \
                          Level lowering can only decrease levels, never increase. \
-                         RowVar: {}, state.levels: {}",
+                         RowVar: {}, state.levels: {:?}",
                         rho_level,
                         rho_level_creation,
                         rho,
-                        rho_level
+                        &state.levels
                     );
 
                     // Create fresh type var β for the field type
@@ -1261,6 +1270,10 @@ fn resolve_type_assert(
         }
     }
 
+    // Apply substitution before returning to ensure bound type variables are resolved.
+    // The expected type may contain TypeVars that were bound during checking mode or
+    // access-chain inference (e.g., check_dot_access binds row variables).
+    let expected = state.subst.apply(&expected);
     Ok(expected)
 }
 
@@ -1642,7 +1655,8 @@ mod tests {
     use super::*;
 
     fn check(input: &str) -> Result<(), Vec<TypeError>> {
-        let file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
         typecheck_file(&file.node)
     }
 
@@ -1651,7 +1665,8 @@ mod tests {
     }
 
     fn infer(input: &str) -> Type {
-        let file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
         let expr = &file.node.documents[0].node.expressions[0];
@@ -1659,7 +1674,8 @@ mod tests {
     }
 
     fn doc_env(input: &str) -> Rc<TypeEnv> {
-        let file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
         typecheck_document(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
@@ -1678,7 +1694,8 @@ mod tests {
     }
 
     fn file_env(input: &str) -> Rc<TypeEnv> {
-        let file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
         let mut env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
         for doc in &file.node.documents {
@@ -1803,7 +1820,8 @@ mod tests {
         );
 
         // Also verify via direct infer_expr call
-        let file = crate::parse("[a: $undefined1  b: 42  c: $undefined2]").unwrap();
+        let mut file = crate::parse("[a: $undefined1  b: 42  c: $undefined2]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
         let expr = &file.node.documents[0].node.expressions[0];
@@ -1961,7 +1979,8 @@ mod tests {
         //   state.subst contains the γ_data constraint (proving the binding was stored),
         //   and β appears in state.levels (proving it was freshly allocated by the mechanism).
 
-        let file = crate::parse("[result: $data.name  data: [name: hello]]").unwrap();
+        let mut file = crate::parse("[result: $data.name  data: [name: hello]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
 
@@ -3151,35 +3170,41 @@ mod tests {
         //   calls lower_row_var_levels_pub(&binding, rho_level, state) at line 755.
         //
         //   ρ must be at an OUTER level (lower number) than β and ρ_fresh for the lowering
-        //   to be non-trivial. We achieve this by placing ρ (via the Open type annotation) in
-        //   the outer dict (level 1) and performing $p.unknown inside a nested inner dict
-        //   (level 2). This forces β and ρ_fresh to be created at level 2, then lowered to
-        //   ρ's level (1). Without the lowering call, the assertions below fail (2 ≤ 1 is false).
+        //   to be non-trivial. We use three separate document expressions so that p's type
+        //   is fully resolved into state.subst before $p.unknown is checked. The Open alias
+        //   is registered at document level (state.level=0), so ρ is at level 0. The access
+        //   $p.unknown happens inside a nested dict (level 2), so β and ρ_fresh are created
+        //   at level 2, then lowered to ρ's level (0). Without the lowering call, the
+        //   assertions below fail (2 ≤ 0 is false).
         //
-        // TEST CASE (single document, one top-level dict with a nested inner dict):
-        //   [
-        //     Open: [type [name: String ...]]     -- Open record type; RowVar ρ created at level 1
-        //     p: [@Open [name: Alice]]             -- p : Open = Record({name: String}, RowVar(ρ))
-        //     result: [inner: $p.unknown]          -- nested dict forces $p.unknown at level 2
-        //   ]
+        // WHY THREE EXPRESSIONS (NOT ONE OR TWO):
+        //   In a single dict (letrec), p and result are siblings. p's type binding is in the
+        //   local letrec subst, not in state.subst. So when check_dot_access processes $p,
+        //   state.subst.apply(TypeVar(_tA)) returns TypeVar(_tA) — the TypeVar path is taken
+        //   instead of the RowVar path, and ρ from Open is never directly bound.
+        //   Using three expressions ensures p's type (Record({name: String}, RowVar(ρ))) is
+        //   exported into state.subst via Pass 3d before expression 3 processes $p.unknown.
+        //
+        // TEST CASE (single document, three top-level expressions):
+        //   [Open: [type [name: String ...]]]    -- expr 1: registers Open alias; ρ at level 0
+        //   [p: [@Open [name: Alice]]]           -- expr 2: p : Record({name: String}, RowVar(ρ))
+        //   [result: [inner: $p.unknown]]        -- expr 3: nested dict forces $p.unknown at level 2
         //
         //   When we access $p.unknown at level 2:
-        //   1. $p has type Open = Record({name: String}, RowVar(ρ, level=1))
-        //   2. check_dot_access sees "unknown" not in {name}, tail is RowVar(ρ) at level 1
+        //   1. $p has type Record({name: String}, RowVar(ρ, level=0)) — from state.subst
+        //   2. check_dot_access sees "unknown" not in {name}, tail is RowVar(ρ) at level 0
         //   3. It creates fresh β at level 2 and ρ_fresh at level 2
-        //   4. It calls lower_row_var_levels_pub to lower β and ρ_fresh to ρ's level (1)
+        //   4. It calls lower_row_var_levels_pub to lower β and ρ_fresh to ρ's level (0)
         //   5. It binds ρ → Row({unknown: β}, RowVar(ρ_fresh)) in state.subst
-        //   6. After lowering: beta_level = 1, rho_fresh_level = 1
+        //   6. After lowering: beta_level = 0, rho_fresh_level = 0
         //
         //   The assertions `beta_level <= rho_level` and `rho_fresh_level <= rho_level` are
-        //   non-trivial: they pass only because lowering reduced the levels from 2 to 1.
-        //   Deleting the lower_row_var_levels_pub call would leave them at 2, failing 2 ≤ 1.
+        //   non-trivial: they pass only because lowering reduced the levels from 2 to 0.
+        //   Deleting the lower_row_var_levels_pub call would leave them at 2, failing 2 ≤ 0.
         let code = r#"
-            [
-                Open: [type [name: String ...]]
-                p: [@Open [name: Alice]]
-                result: [inner: $p.unknown]
-            ]
+            [Open: [type [name: String ...]]]
+            [p: [@Open [name: Alice]]]
+            [result: [inner: $p.unknown]]
         "#;
 
         let result = check(code);
@@ -3212,13 +3237,15 @@ mod tests {
 
         // Core verification: inspect InferState to confirm level lowering occurred.
         //
-        // ρ is created at level 1 (outer dict) when the Open alias is registered.
-        // β and ρ_fresh are created at level 2 (inner dict) when $p.unknown is checked.
-        // lower_row_var_levels_pub must lower them to level 1 (ρ's current level).
+        // ρ is created at level 0 (document level) when register_type_aliases runs for
+        // expression 1 (state.level = 0 after infer_dict returns and restores the level).
+        // β and ρ_fresh are created at level 2 (expression 3's inner dict) when $p.unknown
+        // is checked. lower_row_var_levels_pub must lower them to level 0 (ρ's level).
         //
         // NON-VACUOUSNESS: if lower_row_var_levels_pub is deleted, β and ρ_fresh stay at
-        // level 2 and the assertions below become "2 ≤ 1", which is false → test fails.
-        let file = crate::parse(code).unwrap();
+        // level 2 and the assertions below become "2 ≤ 0", which is false → test fails.
+        let mut file = crate::parse(code).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
 
@@ -3258,11 +3285,11 @@ mod tests {
             .copied()
             .expect("ρ should be in state.levels after dot access");
 
-        // ρ was created inside the outer dict (infer_dict increments level to 1), so level = 1.
+        // ρ was created at document level (state.level = 0 when register_type_aliases runs).
         // Confirm this expectation so the non-vacuousness of the assertion is explicit.
         assert_eq!(
-            rho_level, 1,
-            "ρ (Open's row var) should be at level 1 (created inside the outer dict)"
+            rho_level, 0,
+            "ρ (Open's row var) should be at level 0 (created at document level by register_type_aliases)"
         );
 
         // Check β's level — must be TypeVar; panic if not
@@ -3282,12 +3309,12 @@ mod tests {
             .copied()
             .expect("β should be in state.levels after dot access");
 
-        // β was originally created at level 2 (inside the nested inner dict) and lowered to 1.
-        // Without lowering: beta_level = 2, assertion 2 ≤ 1 would fail.
+        // β was originally created at level 2 (inside the nested inner dict) and lowered to 0.
+        // Without lowering: beta_level = 2, assertion 2 ≤ 0 would fail.
         assert!(
             beta_level <= rho_level,
             "β level ({}) should be ≤ ρ level ({}) after lower_row_var_levels_pub; \
-             β is created at the inner dict level (2) and must be lowered to ρ's level (1)",
+             β is created at the inner dict level (2) and must be lowered to ρ's level (0)",
             beta_level,
             rho_level
         );
@@ -3305,12 +3332,12 @@ mod tests {
             .copied()
             .expect("ρ_fresh should be in state.levels after dot access");
 
-        // ρ_fresh was originally created at level 2 and lowered to 1.
-        // Without lowering: rho_fresh_level = 2, assertion 2 ≤ 1 would fail.
+        // ρ_fresh was originally created at level 2 and lowered to 0.
+        // Without lowering: rho_fresh_level = 2, assertion 2 ≤ 0 would fail.
         assert!(
             rho_fresh_level <= rho_level,
             "ρ_fresh level ({}) should be ≤ ρ level ({}) after lower_row_var_levels_pub; \
-             ρ_fresh is created at the inner dict level (2) and must be lowered to ρ's level (1)",
+             ρ_fresh is created at the inner dict level (2) and must be lowered to ρ's level (0)",
             rho_fresh_level,
             rho_level
         );
@@ -4407,7 +4434,8 @@ mod tests {
         // an FFI binding, or a value whose type cannot be statically determined). The call
         // `[call $f 42]` exercises check_call via the monomorphic (empty type_vars) path.
         let input = "[call $f 42]";
-        let file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
 
         // Build a parent env with `f: Any` — monomorphic scheme, empty type_vars.
         let mut parent_env = TypeEnv::new();
@@ -4578,7 +4606,8 @@ mod tests {
         // a single dict, $p is still a TypeVar during Pass 3 — the TypeVar arm catches
         // it before the Proxy arm fires. We test check_range_access directly instead.
 
-        let file = crate::parse("[dummy: 1][0..1]").unwrap();
+        let mut file = crate::parse("[dummy: 1][0..1]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
 
@@ -4588,7 +4617,8 @@ mod tests {
         assert!(result.is_ok(), "range access on Record should succeed");
 
         // Now test with a Proxy target directly by constructing the match input
-        let proxy_target = crate::parse("[call $proxy [fn [k] 42]]").unwrap();
+        let mut proxy_target = crate::parse("[call $proxy [fn [k] 42]]").unwrap();
+        crate::desugar::desugar_file(&mut proxy_target.node);
         let proxy_expr = &proxy_target.node.documents[0].node.expressions[0];
         let result =
             check_range_access(proxy_expr, &None, &None, &env, span, &mut state, &mut None);

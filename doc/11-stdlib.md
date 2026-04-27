@@ -103,7 +103,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Arithmetic & comparison** (materializing — must evaluate operands):
 - `+`, `-`, `*` (auto-promote: Int op Int → Int, mixed → Float)
 - `/` (always returns Float), `quot`, `mod` (Int only, return Int; both are prelude functions)
-- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values — there is no structural/deep equality. Structural equality is available via `$deep-eq`.
+- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values — there is no structural/deep equality. Structural equality checking for nested dicts is not currently implemented.
 - `to-int`, `to-float`, `floor`, `ceil`, `round` (numeric conversions)
 
 **Strings** (materializing — must evaluate arguments):
@@ -205,7 +205,7 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `or` | `[fn [a b] [call $builtin-if $a $a $b]]` | Pass-through: returns `a` if truthy |
 | `quot` | `[fn [a b] [call $trunc [call $builtin-div $a $b]]]` | Truncation toward zero |
 | `mod` | `[fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]` | Algebraic identity |
-| `ceil` | `[fn [x] [call $- 0 [call $floor [call $- 0 $x]]]]` | `ceil(x) = -floor(-x)` |
+| `ceil` | `[fn [x] [call $builtin-sub 0 [call $floor [call $builtin-sub 0 $x]]]]` | `ceil(x) = -floor(-x)` |
 | `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
 | `words` | `[call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]` | `split` + `filter` |
 
@@ -228,7 +228,7 @@ Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-f
               └── User predicates and programs
 ```
 
-## Stdlib Function Reference (~100 total: 46 Rust builtins + 54 LLT functions)
+## Stdlib Function Reference (~110 total: 46 Rust builtins + 64 LLT functions (52 public API + 12 shadowable wrappers))
 
 Functions available to all user code. Most are implemented in Tinct in `stdlib/prelude.llt`. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`) are omitted.
 
@@ -254,6 +254,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `not` | `[fn [x] ...]` | Boolean negation |
 | `and` | `[fn [a b] ...]` | Short-circuit AND: returns `$b` if `$a` is true, else `false` |
 | `or` | `[fn [a b] ...]` | Short-circuit OR: returns first arg unchanged when truthy, otherwise evaluates and returns second arg |
+| `any?` | `[fn [pred xs] ...]` | True if predicate holds for any element in collection |
+| `all?` | `[fn [pred xs] ...]` | True if predicate holds for all elements in collection |
 
 **Comparison (derived from `<` and `=`):**
 
@@ -326,7 +328,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `rest` | `[fn [xs] ...]` | All elements except the first, reindexed from 0 |
 | `cons` | `[fn [x xs] ...]` | Prepend an element, reindexing from 0 |
 | `conj` | `[fn [xs x] ...]` | Append an element (delegates to `$append`) |
-| `concat` | `[fn [xs ys] ...]` | Concatenate two lists, reindexing the second |
+| `concat` | `[fn [xs ys] ...]` | Concatenate two collections; Seq concat is lazy (O(1)), Dict concat reindexes to 0..n |
 | `reverse` | `[fn [xs] ...]` | Reverse a list |
 | `reindex` | `[fn [xs] ...]` | Rebuild with dense 0..n integer keys |
 
@@ -742,16 +744,16 @@ The overlay introduces two observable differences, both intentional:
 
 | Spec element | Implementation |
 |-------------|----------------|
-| MERGE rule | `builtin_merge` (`builtins.rs:435-462`) |
-| `materialize(θ_L, _, d)` | `materialize(&args[0], None, depth)` (line 446) |
-| `materialize(θ_R, _, d)` | `materialize(&args[1], None, depth)` (line 447) |
-| `require_dict` | `require_dict("merge", left_val, call_span)` (lines 448-449) |
-| LEFT-KEEP | First loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 455-457) |
-| RIGHT-BIAS | Second loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 459-461) |
+| MERGE rule | `builtin_merge` (`builtins.rs:425-454`) |
+| `materialize(θ_L, _, d)` | `materialize(&args[0], None, depth)` (line 437) |
+| `materialize(θ_R, _, d)` | `materialize(&args[1], None, depth)` (line 438) |
+| `require_dict` | `require_dict("merge", left_val, call_span)` (lines 439-440) |
+| LEFT-KEEP | First loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 446-448) |
+| RIGHT-BIAS | Second loop: `result.insert(key.clone(), Rc::clone(thunk))` (lines 450-452) |
 | Iteration order | IndexMap preserves insertion order; `insert` on existing key replaces value at existing position |
 | Value preservation (P8) | `Rc::clone(thunk)` — pointer copy, no materialization |
-| `reject_named` | `reject_named("merge", named, call_span)` (line 442) |
-| Arity check | `args.len() != 2` (line 443) |
+| `reject_named` | `reject_named("merge", named, call_span)` (line 433) |
+| Arity check | `args.len() != 2` (line 434) |
 
 ### Part 7: Worked Example
 
