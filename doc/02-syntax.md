@@ -485,7 +485,7 @@ param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
 
 param_annotation = ${ "@" ~ annotation_value }
 
-variadic_param = !{ "..." ~ param_name }
+variadic_param = @{ "..." ~ param_name }
 ```
 
 Examples:
@@ -779,7 +779,7 @@ param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
 
 param_annotation = ${ "@" ~ annotation_value }
 
-variadic_param = !{ "..." ~ param_name }
+variadic_param = @{ "..." ~ param_name }
 
 annotation_value = !{ bracket_expr | annotation_word }
 

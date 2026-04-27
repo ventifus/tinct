@@ -104,7 +104,7 @@ param_name = @{
 
 param_annotation = ${ "@" ~ annotation_value }
 
-variadic_param = !{ "..." ~ param_name }
+variadic_param = @{ "..." ~ param_name }
 
 // Non-atomic (!{}) breaks compound-atomic inheritance, enabling whitespace inside [type: Number default: 30]
 annotation_value = !{ bracket_expr | annotation_word }

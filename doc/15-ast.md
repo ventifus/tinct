@@ -115,7 +115,11 @@ struct NamedArg {
     name: String,
     value: Spanned<Expr>,
 }
+```
 
+**Named Argument Key Normalization:** The `name` field always contains the bare identifier without the `$` prefix. Both `key: val` and `$key: val` call syntax produce `NamedArg { name: "key", ... }`. The `$` prefix is stripped during AST construction (`parser.rs:431`) because named arguments represent parameter name bindings (matched against `Param.name` strings by the evaluator), not value expressions. The `$` sigil is syntactic sugar allowing `$timeout: 60` (clearer for readers: "I'm binding to the timeout parameter") without requiring the evaluator to strip prefixes at runtime.
+
+```rust
 /// A function parameter
 struct Param {
     name: String,
