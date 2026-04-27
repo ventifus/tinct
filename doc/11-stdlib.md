@@ -228,7 +228,7 @@ Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-f
               └── User predicates and programs
 ```
 
-## Stdlib Function Reference (~98 total: 46 Rust builtins + 52 LLT functions)
+## Stdlib Function Reference (~100 total: 46 Rust builtins + 54 LLT functions)
 
 Functions available to all user code. Most are implemented in Tinct in `stdlib/prelude.llt`. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`) are omitted.
 
@@ -245,6 +245,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `identity` | `[fn [x] $x]` | Returns its argument unchanged |
+| `const` | `[fn [x] [fn [y] $x]]` | Returns first argument, ignores second. Classic K combinator |
 
 **Logic:**
 
@@ -290,6 +291,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `when` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is true, else `[]` |
 | `unless` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is false, else `[]` |
 | `cond` | `[fn [pairs] ...]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
+| `until` | `[fn [pred f x] ...]` | Iterate function until predicate holds. Applies `$f` repeatedly to `$x` until `pred($x)` is true. Recursive; hits MAX_EVAL_DEPTH (~256) on large inputs |
 
 **Field Interception:**
 

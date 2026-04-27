@@ -583,9 +583,9 @@ This is consistent with Nix's `import` (which also eagerly evaluates the importe
 
 **P3 — Guard restoration (INCLUDE-RESTORE):** The include guard and `base_dir` are always restored to their pre-call state, even when evaluation fails.
 
-*Correspondence:* `builtins.rs:1129-1135` — the `restore` closure runs in both the `Ok` and `Err` branches of the match on `eval_result`. This ensures that a failed include does not leave stale entries in the guard set (which would cause false cycle-detection errors for subsequent includes of the same file from different call sites).
+*Correspondence:* `builtins.rs:1178-1196` — the `cleanup()` closure removes the canonical path from the include guard. The `materialize()` call is wrapped in a `match` statement with `cleanup()` explicitly called in both the `Ok` branch (line 1189) and the `Err` branch (line 1193). This ensures that a failed include does not leave stale entries in the guard set (which would cause false cycle-detection errors for subsequent includes of the same file from different call sites).
 
-**Known defect:** The `materialize` call at `builtins.rs:1142` uses the `?` operator, which returns before `restore` runs if materialization fails. This means P3 is violated for materialization errors — the guard entry and modified `base_dir` are not restored. This should be fixed by capturing the materialize result before calling restore: `let val_result = materialize(...); restore(cell); let val = val_result?;`.
+**Previously known defect (resolved):** Earlier versions violated P3 for materialization errors — the `materialize` call used the `?` operator, which returned before cleanup ran. This has been fixed by using an explicit `match` with cleanup in both branches (see `builtins.rs:1178-1210`).
 
 **P4 — Include determinism (conditional):** For a fixed filesystem state, the document pipeline `eval_file(file, ρ, d)` is deterministic. When the filesystem changes between evaluations, results may differ — `$include` is the sole source of nondeterminism in tinct (see §Thunk Lifecycle — Semantic Properties, Determinism; also Semantic Commitment 2 in §Thunk Lifecycle — Semantic Commitments).
 

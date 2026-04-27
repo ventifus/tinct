@@ -293,7 +293,8 @@ When classifying a bare token, the tokenizer applies rules in this order:
 2. Numeric → `float_lit` or `int_lit`
 3. `true`/`false` → `bool_lit`
 4. `"` → `quoted_string`
-5. Everything else → `bare_word`
+5. If followed by `@` (in value position), treat as annotated value (`Fn@Number` → `annotated_bare`). This rule applies at the `atom` level only (value position). At the bracket-expression level, `[fn@Type ...]` is handled by `fn_form`'s explicit `fn_annotation?` component, making `fn` there a keyword, not an annotated bare word.
+6. Everything else → `bare_word`
 
 This order is enforced by PEG's ordered choice in the `atom` rule.
 

@@ -41,6 +41,12 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 
 **Key evaluation scope:** Dict keys are evaluated in the *parent* scope, not the dict's own letrec scope. This means key expressions cannot reference sibling bindings within the same dict. This is intentional for letrec correctness: keys must be deterministic regardless of entry order, and allowing keys to depend on sibling values (which are still unevaluated thunks) would introduce order-dependence or require eager evaluation of referenced entries.
 
+**Why parent scope for keys:** The two-environment pattern (`parent_env` for keys, `dict_env` for values) ensures that computed keys are pure with respect to the dict's own bindings. A key expression like `[$a]` in `[x: 1 [$a]: 2]` resolves `$a` in the *enclosing* scope, not the dict scope — users might expect `$a` to reference the sibling binding `x: 1`, but this would create ordering dependence (does `x` exist when the key is evaluated?) and break the letrec invariant that all entries are mutually visible *as thunks* before any are forced.
+
+Implementation: keys are evaluated via `eval_key(key_expr, parent_env, ctx, depth)` (lines 631 in `src/eval.rs`) before the shared `dict_env` is populated with value thunks. This sequencing is critical: all keys must be known before string-keyed entries can be inserted into `dict_env` as bindings (lines 656-660).
+
+**Effectful key expressions:** Computed keys may contain effectful operations (currently only `$include`). These effects execute in the parent scope context, not the dict's letrec scope. For example, `[$include "keys.llt"]` in a dict key position evaluates the included file with access to the parent environment's bindings, not the dict's own entries. This is consistent with the scoping rule but means included files used as keys cannot reference the dict's own bindings.
+
 **Circular dependencies** are detected at materialization-time and reported with a clear cycle trace.
 
 **Nested dicts create new scopes.** Each `[]` dict introduces a new lexical scope. Inner scopes see all bindings from outer scopes, and inner bindings shadow outer bindings of the same name within that inner dict. Scoping is lexical, not dynamic — closures capture their defining environment, not the calling environment. This matches Haskell's `let`/`where` and Nix's attribute sets.
@@ -268,6 +274,12 @@ The materialization span update has three cases (`eval.rs:876-896`): (1) if e ha
 force(θ, d) ⇒ error("circular dependency")
 θ.state ← Failed(err)         (memoize the cycle error)
 ```
+
+**Cycle detection recovery strategy:** When a thunk in `InProgress` state is re-encountered during materialization (indicating a circular dependency), the evaluator constructs a `CircularDependency` error, decorates it with the materialization span (if provided), and transitions the thunk to `Failed` state via `cache_failure()` before propagating the error (`eval.rs:1265-1278`). The `InProgress → Failed` transition is permanent — subsequent access to the same thunk returns the cached error without re-detecting the cycle. The error caching happens *before* propagation to ensure that all references to the cyclic thunk see the same error.
+
+**State management after cycle detection:** The thunk is left in `Failed` state, not restored to its original state (`Unevaluated`, `PendingBuiltin`, etc.). This is correct because circular dependencies are semantic errors, not transient resource exhaustion — retrying the same thunk will always produce the same cycle. The cached error may be refined with additional materialization spans as the error propagates through the call stack (via the `Failed → Failed` diagnostic self-edge), but the error identity is fixed.
+
+**Error propagation path:** After transitioning to `Failed`, the error is returned via `Err(err_boxed)`. Callers higher in the materialization stack see the error and propagate it upward. If the same thunk is accessed from a different call site later, the `Failed` case (lines 1242-1264) fires immediately, returning the cached error (potentially with an updated materialization span for the new access site).
 
 **[FORCE-EVAL]**
 ```
@@ -845,7 +857,30 @@ This table documents the laziness behavior of every operation and the rationale 
 
 ---
 
-## Allocation Strategy
+## Deep Materialization — Implementation
+
+The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively force all thunks in a value tree. This is distinct from selective materialization (which forces only what's needed for computation) — deep materialization forces *everything*, producing a fully-evaluated value tree suitable for serialization or comparison.
+
+**Cache data structure:** `deep_materialize` uses a stack-local `HashMap<*const Thunk, Option<Rc<Thunk>>>` created at the entry point (`eval.rs:1639`) and passed through the recursion. The cache has a dual-purpose design (`eval.rs:1686-1691`):
+
+| Cache entry | Meaning | Purpose |
+|-------------|---------|---------|
+| `None` | Blackhole sentinel — thunk is currently being deep-materialized | Cycle detection (Launchbury 1993 blackholing) |
+| `Some(Rc<Thunk>)` | Cached result — thunk was already deep-materialized | Sharing preservation (reuse the same `Rc<Thunk>` allocation) |
+
+**Cache lifecycle:** The cache is created per `deep_materialize` call and dropped on return. It is *not* shared across multiple top-level `deep_materialize` invocations — each call to `$eval` or CLI evaluation creates a fresh cache. The cache is global *within* a single call: all branches of a nested dict or sequence tree share the same cache instance.
+
+**Cycle handling:** When a thunk pointer is encountered for the second time within the same deep materialization (cache entry is `None`), the function returns `Rc::clone(thunk)` — the original thunk, not forced (`eval.rs:1706`). This prevents infinite recursion on cyclic structures (e.g., `[x: $x]` or mutual dict references). The cycle is detected at the *structure* level (same thunk pointer seen twice during traversal), not the *value* level (the thunk's own `InProgress` sentinel, which detects cycles within a single thunk's evaluation).
+
+**Sharing preservation:** When a thunk appears multiple times in the input value tree (e.g., `let shared = [expensive: [call $f]] in [a: $shared  b: $shared]`), the cache ensures the deep-materialized result is a *single* `Rc<Thunk>` shared by all references. Without the cache, `deep_materialize` would create independent copies for each occurrence, breaking `Rc::ptr_eq` and wasting memory.
+
+**Cache cleanup on error:** If `materialize()` or recursive `deep_materialize_impl()` fails, the cache entry is removed before propagating the error (`eval.rs:1716-1718, 1724-1727`). This prevents cache poisoning: a failed thunk leaves no stale `None` sentinel that would cause subsequent encounters to incorrectly return an unevaluated thunk.
+
+**Growth characteristics:** For large dicts, the `HashMap` grows monotonically as new thunks are encountered. The cache never shrinks during traversal — it accumulates all seen thunk pointers until the entire `deep_materialize` call completes. For a dict with 10,000 entries containing shared sub-dicts, the cache may hold thousands of entries. This is acceptable because (a) the cache lifetime is bounded by the single `deep_materialize` call, not the session, and (b) the alternative (no cache) would traverse shared structures multiple times, defeating sharing.
+
+**Comparison to selective materialization:** Regular `materialize()` has no visited set — it forces a single thunk and memoizes the result in `ThunkState::Materialized`. Cyclic dependencies are caught by the `InProgress` sentinel *within* the thunk, not by a global traversal cache. `deep_materialize` adds a *second* layer of cycle detection at the structural level (pointer identity across the value tree), orthogonal to the per-thunk `InProgress` cycle detection.
+
+**Relationship to Nix:** Nix's `forceValueDeep` (eval.cc:2264) uses a similar `std::set<const Value *> seen` for pointer-identity cycle detection. The key difference: Nix's set is visit-tracking only (all entries are pointers, not `Option<ptr>`), because Nix uses a conservative GC and doesn't need explicit sharing preservation — shared `Value*` pointers are naturally deduplicated. Tinct's `Option<Rc<Thunk>>` design combines visit-tracking (`None`) with result caching (`Some(rc)`) in a single structure.
 
 **Decision:** Two-phase strategy. Phase 1 applies backward-compatible optimizations to the current `Rc<Thunk>` + `IndexMap<String, Rc<Thunk>>` runtime. Phase 2 introduces arena allocation and flat environments bundled with the iterative evaluator.
 

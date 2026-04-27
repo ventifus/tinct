@@ -144,7 +144,7 @@ module.exports = grammar({
 
     fn_annotation: ($) =>
       seq(
-        "@",
+        token.immediate("@"),
         $._annotation_value,
       ),
 
@@ -376,6 +376,11 @@ module.exports = grammar({
 
     bare_word: (_$) =>
       token(seq(
+        // Excludes `-` from starter (unlike pest's bare_word_start) to
+        // prevent ambiguity with negative numeric literals (-42, -3.14).
+        // Pest uses ordered choice (int_lit before bare_word in atom rule)
+        // to resolve this; tree-sitter's GLR model requires lexer-level
+        // exclusion.
         /[^\s\[\]:;#"@$.\-]/,
         repeat(BARE_WORD_CHAR),
       )),
