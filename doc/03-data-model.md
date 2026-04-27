@@ -125,8 +125,8 @@ Data access has two distinct modes: **key-based** (look up by key) and **positio
 
 ```tinct
 # Dot notation (string keys)
-$person.name                    # → [call $get $person name]
-$config.database.host           # → chained $get
+$person.name                    # ≡ [call $get $person name]
+$config.database.host           # ≡ chained $get
 
 # Bracket notation (any key type)
 $data[5]                        # Integer key 5

@@ -128,7 +128,7 @@ Dicts are inferred in five sequential passes using the [DICT-GEN] rule — see �
 
 ```
 For each param pᵢ:
-    if variadic (...pᵢ): σᵢ = Record([], Closed)   (see Limitation #5)
+    if variadic (...pᵢ): σᵢ = Record([], Closed)   (see Limitation #4)
     else if annotated pᵢ@σᵢ: use σᵢ
     else: σᵢ = Any
 Γ' = Γ, p₁:σ₁, ..., pₙ:σₙ
@@ -347,7 +347,7 @@ Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
                                                  [S-FN]
 ```
 
-**Note on [S-ANY-TOP] and [S-ANY-BOT]:** Having Any as both the top and bottom of the type lattice violates antisymmetry (τ <: σ ∧ σ <: τ ⇒ τ = σ) and makes the subtype relation unsound as a partial order. This is intentional for tinct's gradual type system — Any marks the boundary between typed and untyped code (see Limitation #3).
+**Note on [S-ANY-TOP] and [S-ANY-BOT]:** Having Any as both the top and bottom of the type lattice violates antisymmetry (τ <: σ ∧ σ <: τ ⇒ τ = σ) and makes the subtype relation unsound as a partial order. This is intentional for tinct's gradual type system — Any marks the boundary between typed and untyped code (see Limitation #2).
 
 ## Instantiation
 
