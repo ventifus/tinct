@@ -872,6 +872,10 @@ fn check_range_access(
 
     match &target_ty {
         Type::Record(..) | Type::Any | Type::TypeVar(_, _) => Ok(target_ty),
+        Type::Proxy => Err(vec![TypeError::new(
+            "range access is not supported on Proxy values",
+            span,
+        )]),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -4386,6 +4390,39 @@ mod tests {
         // Currently it just accepts TypeVar and returns it, meaning range access on an inferred
         // type provides no additional type information. See check_dot_access TypeVar arm
         // for the constraint-generation pattern.
+    }
+
+    #[test]
+    fn test_range_access_on_proxy_errors() {
+        // Range access is NOT supported on Proxy values (unlike dot and bracket access).
+        // Runtime eval_range_access returns an error for Value::Proxy (src/eval.rs:1118-1127).
+        // Type checker should match this behavior.
+        //
+        // Note: cannot test via check_err("[p: proxy  x: $p[0..1]]") because within
+        // a single dict, $p is still a TypeVar during Pass 3 — the TypeVar arm catches
+        // it before the Proxy arm fires. We test check_range_access directly instead.
+
+        let file = crate::parse("[dummy: 1][0..1]").unwrap();
+        let env = Rc::new(TypeEnv::new());
+        let mut state = InferState::new();
+
+        let target = &file.node.documents[0].node.expressions[0];
+        let span = target.span;
+        let result = check_range_access(target, &None, &None, &env, span, &mut state, &mut None);
+        assert!(result.is_ok(), "range access on Record should succeed");
+
+        // Now test with a Proxy target directly by constructing the match input
+        let proxy_target = crate::parse("[call $proxy [fn [k] 42]]").unwrap();
+        let proxy_expr = &proxy_target.node.documents[0].node.expressions[0];
+        let result =
+            check_range_access(proxy_expr, &None, &None, &env, span, &mut state, &mut None);
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("range access is not supported on Proxy")),
+            "expected 'range access is not supported on Proxy' error, got: {errors:?}"
+        );
     }
 
     // -- Variadic param type inference --

@@ -1036,8 +1036,8 @@ fn eval_dot_access(
         materialize(&target_thunk, Some(access_span), ctx, depth + 1).map_err(push_frame)?;
     match target_val {
         Value::Dict(map) => {
-            let key = Key::String(field.to_string());
-            match map.get(&key) {
+            // Use StrKey wrapper to avoid allocating Key::String
+            match map.get(&crate::value::StrKey(field)) {
                 Some(thunk) => Ok(Rc::clone(thunk)),
                 None => Err(EvalError::key_not_found(field, *access_span).into()),
             }
@@ -1116,18 +1116,20 @@ fn eval_range_access(
     let map = match target_val {
         Value::Dict(map) => map,
         Value::Proxy { .. } => {
-            return Err(EvalError::type_mismatch_ctx(
-                "range access".to_string(),
-                "Dict",
-                "Proxy",
-                *access_span,
-            )
-            .into());
+            return Err(push_frame(
+                EvalError::type_mismatch_ctx(
+                    "range access".to_string(),
+                    "Dict",
+                    "Proxy",
+                    *access_span,
+                )
+                .into(),
+            ));
         }
         _ => {
-            return Err(
+            return Err(push_frame(
                 EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into(),
-            );
+            ));
         }
     };
 
@@ -3794,6 +3796,76 @@ mod tests {
         assert!(msg.contains("range access"), "got: {}", msg);
         assert!(msg.contains("expected Dict"), "got: {}", msg);
         assert!(msg.contains("got Proxy"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_range_access_on_proxy_push_frame() {
+        // Task 1: Verify range access on Proxy includes "accessing" in stack frame
+        let span = test_span(1, 1, 1, 5);
+        let handler = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let proxy = Value::Proxy { handler };
+
+        let env = empty_env();
+        env.borrow_mut()
+            .insert("p".into(), Rc::new(Thunk::new_materialized(proxy, span)));
+
+        let expr = sp(Expr::RangeAccess {
+            expr: Box::new(sp(Expr::VarRef("p".into()))),
+            start: Some(Box::new(sp(Expr::Int(0)))),
+            end: Some(Box::new(sp(Expr::Int(2)))),
+        });
+        let err = eval(&expr, env, &test_ctx(), 0).unwrap_err();
+        // Verify the push_frame call added the accessing frame to the stack
+        // The stack frames are stored separately from the message, so check both
+        assert!(
+            !err.stack.is_empty(),
+            "should have stack frames from push_frame"
+        );
+        // The frame label should contain "accessing"
+        let has_accessing_frame = err
+            .stack
+            .iter()
+            .any(|frame| frame.label.contains("accessing"));
+        assert!(
+            has_accessing_frame,
+            "stack should contain 'accessing' frame, got: {:?}",
+            err.stack
+        );
+    }
+
+    #[test]
+    fn test_range_access_on_non_dict_push_frame() {
+        // Task 2: Verify range access on non-Dict value includes "accessing" in stack frame
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "x".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 5),
+            )),
+        );
+
+        let expr = sp(Expr::RangeAccess {
+            expr: Box::new(sp(Expr::VarRef("x".into()))),
+            start: Some(Box::new(sp(Expr::Int(0)))),
+            end: Some(Box::new(sp(Expr::Int(2)))),
+        });
+        let err = eval(&expr, env, &test_ctx(), 0).unwrap_err();
+        // Verify the push_frame call added the accessing frame to the stack
+        assert!(
+            !err.stack.is_empty(),
+            "should have stack frames from push_frame"
+        );
+        // The frame label should contain "accessing"
+        let has_accessing_frame = err
+            .stack
+            .iter()
+            .any(|frame| frame.label.contains("accessing"));
+        assert!(
+            has_accessing_frame,
+            "stack should contain 'accessing' frame, got: {:?}",
+            err.stack
+        );
     }
 
     #[test]

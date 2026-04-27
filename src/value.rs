@@ -6,7 +6,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use indexmap::IndexMap;
+use indexmap::{Equivalent, IndexMap};
 
 use crate::ast::{Expr, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
@@ -58,6 +58,29 @@ impl fmt::Display for Key {
         match self {
             Key::Int(n) => write!(f, "{n}"),
             Key::String(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// A wrapper type for `&str` that hashes the same way as `Key::String`.
+/// This enables zero-allocation lookups in `IndexMap<Key, V>`.
+#[derive(Debug)]
+pub(crate) struct StrKey<'a>(pub &'a str);
+
+impl Hash for StrKey<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash the String discriminant from Key enum
+        std::mem::discriminant(&Key::String(String::new())).hash(state);
+        // Then hash the string content
+        self.0.hash(state);
+    }
+}
+
+impl Equivalent<Key> for StrKey<'_> {
+    fn equivalent(&self, key: &Key) -> bool {
+        match key {
+            Key::String(s) => self.0 == s.as_str(),
+            Key::Int(_) => false,
         }
     }
 }
@@ -1137,5 +1160,24 @@ mod tests {
             Rc::ptr_eq(&taken_ctx, &ctx1),
             "PendingCall should evaluate using captured ctx1"
         );
+    }
+
+    #[test]
+    fn test_strkey_lookup() {
+        // Task 6: Test StrKey hash/equivalent for zero-allocation lookups
+        let mut map: IndexMap<Key, i32> = IndexMap::new();
+        map.insert(Key::String("foo".into()), 42);
+        map.insert(Key::String("bar".into()), 99);
+        map.insert(Key::Int(0), 100);
+
+        // Positive case: lookup with StrKey should work
+        assert_eq!(map.get(&StrKey("foo")), Some(&42));
+        assert_eq!(map.get(&StrKey("bar")), Some(&99));
+
+        // Negative case: non-matching key should return None
+        assert_eq!(map.get(&StrKey("baz")), None);
+
+        // StrKey should not match Int keys
+        assert_eq!(map.get(&StrKey("0")), None);
     }
 }

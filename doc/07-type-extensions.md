@@ -290,10 +290,22 @@ Replace the current closed-strict/open-lenient record unification with kinded ro
 Rows are a **separate sort** from types. A row maps labels to types with an optional tail variable:
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub enum RowTail {
     Empty,              // closed row — no more fields
     RowVar(String, u32), // ρ — row variable (name, Kiselyov generalization level)
+}
+
+// PartialEq ignores the level field — two RowVars with the same name are equal regardless of level.
+// Level is a bookkeeping field for generalization, not part of structural identity.
+impl PartialEq for RowTail {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (RowTail::Empty, RowTail::Empty) => true,
+            (RowTail::RowVar(n1, _), RowTail::RowVar(n2, _)) => n1 == n2,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -424,8 +436,29 @@ unify_rows(Row { fields: F₁, tail: t₁ }, Row { fields: F₂, tail: t₂ }, S
   for l in shared:
     S = unify_types(F₁[l], F₂[l], S)
 
+  # Step 3.5: Re-resolve tails after shared-field unification
+  # Step 3's recursive unify_types() calls may have bound row variables that appear
+  # as t₁ or t₂ (e.g., when unifying nested Record types that share a row variable
+  # with the outer row's tail). Re-resolve to surface any new bindings.
+  (unique₁, t₁') = resolve_row(unique₁, t₁, S)
+  (unique₂, t₂') = resolve_row(unique₂, t₂, S)
+
+  # Step 3.6: Re-partition after re-resolution
+  # Re-resolution may surface new fields from row variable bindings that overlap
+  # with the other side's unique fields. Unify these new shared fields.
+  new_shared = unique₁.keys() ∩ unique₂.keys()
+  if new_shared ≠ ∅:
+    for l in new_shared:
+      S = unify_types(unique₁[l], unique₂[l], S)
+    # Remove newly-shared fields from unique sets
+    unique₁ = { l: unique₁[l] for l in unique₁.keys() \ new_shared }
+    unique₂ = { l: unique₂[l] for l in unique₂.keys() \ new_shared }
+    # Recursive call with updated remainders
+    return unify_rows(Row { fields: unique₁, tail: t₁' },
+                      Row { fields: unique₂, tail: t₂' }, S)
+
   # Step 4: Unify remainders (unique fields + tails)
-  S = unify_remainders(unique₁, t₁, unique₂, t₂, S)
+  S = unify_remainders(unique₁, t₁', unique₂, t₂', S)
   return S
 
 resolve_row(fields, tail, S):
@@ -461,18 +494,16 @@ unify_remainders(U₁, t₁, U₂, t₂, S):
         ∪ {ρ₂ → Row { fields: U₁, tail: RowVar(ρ_fresh) }}
 
     # Case 2: Only left has unique fields — right tail must absorb them
-    # Guard: when u2_empty prevents shadowing Case 4 — when both sides have unique
-    # fields with different RowVars, Case 4 applies. The `true` in position 3
-    # encodes u2_empty; the explicit `when` mirrors the guard in the implementation.
-    (false, _, true, RowVar(ρ₂)) when u2_empty →
+    # The `true` in position 3 already encodes that U₂ is empty; Case 4 is checked first
+    # in implementation to prevent shadowing when both sides have unique fields.
+    (false, _, true, RowVar(ρ₂)) →
       if row_var_occurs(ρ₂, Row(U₁, t₁)): ERROR infinite row
       S ∪ {ρ₂ → Row { fields: U₁, tail: t₁ }}
 
     # Case 3: Only right has unique fields — left tail must absorb them
-    # Guard: when u1_empty prevents shadowing Case 4 — when both sides have unique
-    # fields with different RowVars, Case 4 applies. The `true` in position 1
-    # encodes u1_empty; the explicit `when` mirrors the guard in the implementation.
-    (true, RowVar(ρ₁), false, _) when u1_empty →
+    # The `true` in position 1 already encodes that U₁ is empty; Case 4 is checked first
+    # in implementation to prevent shadowing when both sides have unique fields.
+    (true, RowVar(ρ₁), false, _) →
       if row_var_occurs(ρ₁, Row(U₂, t₂)): ERROR infinite row
       S ∪ {ρ₁ → Row { fields: U₂, tail: t₂ }}
 
@@ -629,9 +660,9 @@ Examples:
 - `Record(Row { fields: {}, tail: Empty })` → `[]`
 - `Record(Row { fields: {}, tail: RowVar("rest") })` → `[...rest]`
 
-### Part 8: Migration from Current Representation
+### Part 8: Migration Reference (Complete)
 
-The migration replaces `RowRest` with `RowTail`, adds `Row` as a struct, and changes `Record(IndexMap, RowRest)` to `Record(Row)`:
+The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and changed `Record(IndexMap, RowRest)` to `Record(Row)`:
 
 | Current | New |
 |---------|-----|
@@ -642,22 +673,13 @@ The migration replaces `RowRest` with `RowTail`, adds `Row` as a struct, and cha
 | `Substitution { map }` | `Substitution { type_map, row_map }` |
 | `collect_type_vars` (single set) | `collect_type_vars` + `collect_row_vars` (two sets) |
 
-**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) become `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` as today; the type checker owns the fresh-name counter and generates `_open{n}` names during type resolution. This makes all openness explicit and eliminates the `Open` variant entirely.
+**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) became `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` as today; the type checker owns the fresh-name counter and generates `_t{n}` names during type resolution. This made all openness explicit and eliminated the `Open` variant entirely.
 
-**Structural similarity.** The dict+tail representation is structurally close to the current `Record(IndexMap<String, Type>, RowRest)` — the field map is preserved as-is, and `RowRest` becomes `RowTail` with `Closed` → `Empty` and `Open` eliminated. This minimizes the migration surface compared to a cons-list representation. Pattern matches on `Record(fields, rest)` become `Record(Row { fields, tail })` — a mechanical transformation.
+**Structural similarity.** The dict+tail representation was structurally close to the prior `Record(IndexMap<String, Type>, RowRest)` — the field map was preserved as-is, and `RowRest` became `RowTail` with `Closed` → `Empty` and `Open` eliminated. This minimized the migration surface compared to a cons-list representation. Pattern matches on `Record(fields, rest)` became `Record(Row { fields, tail })` — a mechanical transformation.
 
-**Substitution split.** Every `subst.map.insert(name, ty)` must be routed to the correct map: type variables to `type_map`, row variables to `row_map`. In the current implementation, row variables and type variables share a single namespace. After the split, the unification function determines which map to use based on the variable's kind (inferred from context: `TypeVar(α)` → `type_map`, `RowTail::RowVar(ρ)` → `row_map`).
+**Substitution split.** The unification function now routes variable bindings to the correct map based on the variable's kind (inferred from context: `TypeVar(α)` → `type_map`, `RowTail::RowVar(ρ)` → `row_map`). Type variables and row variables use separate namespaces enforced by the `Substitution` structure.
 
-**Helper functions needed:**
-
-```rust
-impl Row {
-    fn closed(fields: HashMap<String, Type>) -> Row { ... }
-    fn open(fields: HashMap<String, Type>, var: String) -> Row { ... }
-    fn empty() -> Row { ... }
-    fn var(name: String) -> Row { ... }  // Row { fields: {}, tail: RowVar(name) }
-}
-```
+**Construction.** Inline struct construction is used in the implementation (e.g., `Row { fields: HashMap::new(), tail: RowTail::Empty }`). Helper functions like `Row::closed()` or `Row::var()` were not added.
 
 ### Part 9: Properties
 
@@ -675,17 +697,11 @@ impl Row {
 
 **P7 — Label uniqueness.** The `HashMap<String, Type>` structurally prevents duplicate labels in any row. This invariant is maintained through all operations: construction (from source), unification (partitioning preserves uniqueness), and substitution application (field merging of disjoint maps). No runtime duplicate-label check is needed.
 
-**P8 — Tail-field disjointness.** The fields of a row and the fields of its resolved tail are always disjoint, by construction from the partitioning step of unification. When `unify_remainders` binds a tail `ρ` to `Row { fields: U, tail: t }`, the unique fields `U` were computed as the set difference `F_other \ shared` — fields present in the other row but not in the row containing `ρ`. Since `ρ` is the tail of the row that contributed the `shared` fields, and `U` contains only fields *not* in that row, the two sets are disjoint. This guarantees that `apply_row` field merging (which unions a row's explicit fields with its resolved tail's fields) never encounters duplicate keys.
+**P8 — Tail-field disjointness.** The fields of a row and the fields of its resolved tail are disjoint at unification time, not after full substitution resolution. When `unify_remainders` binds a tail `ρ` to `Row { fields: U, tail: t }`, the unique fields `U` were computed as the set difference `F_other \ shared` — fields present in the other row but not in the row containing `ρ`. Since `ρ` is the tail of the row that contributed the `shared` fields, and `U` contains only fields *not* in that row, the two sets are disjoint at binding time. However, later unifications may bind row variables in `t`, surfacing new fields that overlap with the row's explicit fields. The implementation handles this via re-resolution and re-partitioning (Steps 3.5 and 3.6 in `unify_rows`), ensuring that overlapping fields are unified as shared fields before passing the truly disjoint remainders to `unify_remainders`.
 
 ### Part 10: Formal References
 
-For full citations see [doc/17-references.md §Row polymorphism](17-references.md). Brief annotations relevant to this chapter:
-
-- **Rémy (1994)** — Principal type theorem (Theorem 4.7), kinded row unification, presence/absence flags, left-commutativity equations. Foundational model for tinct's kind separation between Type and Row.
-- **Wand (1987)** — Row variables as record tails, completeness proof. Tinct's four-case `unify_remainders` algorithm follows Wand's field-partitioning structure with Rémy's kind separation; the code comments cite this paper as the "4-case algorithm" source.
-- **Gaster & Jones (1996)** — Lacks predicates for field absence. Not adopted (requires type class infrastructure) but relevant if typed field deletion is added or if `$merge` needs precise open-record typing.
-- **Harper & Pierce (1991)** — Concatenation typing with disjointness constraints. Relevant to `$merge` formal specification.
-- **Bernstein, M. (2024).** "Adding row polymorphism to Damas-Hindley-Milner." Blog post. — Tutorial implementation of Wand's approach in dict-based (quotient algebra) representation. Reference implementation for the four-case field-partitioning unification pattern used in tinct's design.
+See [doc/17-references.md §Row polymorphism](17-references.md) for full citations of Rémy (1994), Wand (1987), Gaster & Jones (1996), Harper & Pierce (1991), and Bernstein (2024).
 
 ## Type System Extension Roadmap
 
@@ -708,7 +724,7 @@ The Precision area does not change any inference rules or subtyping relationship
 
 Completeness's named arg unification depends on Precision (builtin type signatures must exist before named args can be checked against them). Other Completeness items (polymorphic recursion detection, function variance fix, `Any` formalization) may proceed in parallel with Precision.
 
-**Relationship to other work.** The §Row-Variable Unification and let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) are separate infrastructure areas, not part of this roadmap. Completeness's polymorphic recursion detection assumes let-generalization is implemented. Row variable binding is arguably more impactful than any single roadmap item — without it, row polymorphism annotations exist syntactically but row variables are never bound during inference.
+**Relationship to other work.** The §Row-Variable Unification and let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) are separate infrastructure areas, not part of this roadmap. Completeness's polymorphic recursion detection assumes let-generalization is implemented. Row variable binding is complete as of row-unification-e.
 
 **Expressiveness.** Three independent features, each addressed by a specific condition. These are design extensions analyzed in `doc/whatif/` files.
 

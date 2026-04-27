@@ -352,9 +352,9 @@ Five properties that hold for all access chains.
 
 **Property 4: Depth Consumption**
 
-*Statement:* A chain of length `n` consumes `n` depth levels — each FORCE-DICT invocation increments depth by 1 (via `eval(target, ρ, d+1)` and `force(θ, d+1)` in `eval_as_dict`).
+*Statement:* A chain of length `n` consumes `n` depth levels — each FORCE-DICT invocation increments depth by 1 (via `eval(target, ρ, d+1)` and `materialize(θ, d+1)` in each access function).
 
-*Proof sketch:* By inspection of FORCE-DICT, which passes `d+1` to both `eval` and `force`. Each chain step invokes FORCE-DICT once (Property 1), so `n` steps consume `n` depth levels. For `MAX_EVAL_DEPTH = 256` and typical chain lengths (1–5), this is negligible. The CEK machine removes MAX_EVAL_DEPTH, making this property moot. ∎
+*Proof sketch:* By inspection of FORCE-DICT, which passes `d+1` to both `eval` and `materialize`. Each chain step invokes FORCE-DICT once (Property 1), so `n` steps consume `n` depth levels. For `MAX_EVAL_DEPTH = 256` and typical chain lengths (1–5), this is negligible. The CEK machine removes MAX_EVAL_DEPTH, making this property moot. ∎
 
 **Property 5: Sharing Preservation**
 
@@ -386,10 +386,10 @@ The type checker mirrors the access algebra with type-level projections:
 
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
-| FORCE-DICT | `eval_as_dict()` | `eval.rs:714-727` |
-| ACCESS-DOT | `eval_dot_access()` | `eval.rs:729-746` |
-| ACCESS-BRACKET | `eval_bracket_access()` | `eval.rs:748-765` |
-| ACCESS-RANGE | `eval_range_access()` | `eval.rs:767-796` |
+| FORCE-DICT | Inlined in each access function (`eval` + `materialize` on target) | `eval.rs:1022-1143` |
+| ACCESS-DOT | `eval_dot_access()` | `eval.rs:1022-1056` |
+| ACCESS-BRACKET | `eval_bracket_access()` | `eval.rs:1059-1094` |
+| ACCESS-RANGE | `eval_range_access()` | `eval.rs:1099-1143` |
 | `key_in_range` | `key_in_range()` | `eval.rs:26-46` |
 | `Key::PartialOrd` | `impl PartialOrd for Key` | `value.rs:34-42` |
 | Chain nesting | Parser produces nested `DotAccess`/`BracketAccess`/`RangeAccess` AST nodes | `ast.rs:79-93` |
