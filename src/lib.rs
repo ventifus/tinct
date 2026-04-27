@@ -6,6 +6,7 @@
 //!
 //! Additional public API:
 //! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input
+//! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
 //! - [`EvalContext`] -- evaluation context with base directory and stdlib environment for `$include`

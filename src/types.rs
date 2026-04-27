@@ -127,16 +127,14 @@ impl Type {
                                     .all(|k| sup_row.fields.contains_key(k))
                             }
                             RowTail::RowVar(_, _) => {
-                                // Conservative: if sub has RowVar and sup is Closed,
-                                // we can't prove subtyping unless known fields match exactly
-                                sub_row
-                                    .fields
-                                    .keys()
-                                    .all(|k| sup_row.fields.contains_key(k))
-                                    && sup_row
-                                        .fields
-                                        .keys()
-                                        .all(|k| sub_row.fields.contains_key(k))
+                                // Open records (RowVar tail) cannot satisfy closed record
+                                // constraints — Rémy (1994). The row variable may be instantiated
+                                // with additional fields that the closed supertype rejects.
+                                // This is the sound PRE-unification behavior: is_subtype is called
+                                // before unification binds the RowVar to Empty. After unification,
+                                // the substituted type will have RowTail::Empty and the (Empty, Empty)
+                                // arm applies correctly. See test_is_subtype_consistency_open_sub_closed_sup_exact_known_fields.
+                                false
                             }
                         }
                     }
@@ -1669,6 +1667,50 @@ mod tests {
             ret: Box::new(Type::Number),
         };
         assert!(Type::is_subtype(&sub, &sup));
+    }
+
+    #[test]
+    fn test_is_subtype_open_record_not_subtype_of_closed() {
+        // Sound pre-unification: open record with RowVar tail cannot satisfy a closed supertype.
+        // Rémy (1994): the row variable may instantiate with additional fields the closed type rejects.
+        let mut a_fields = HashMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        let open = row_var_record(a_fields.clone(), "r", 0);
+        let closed = closed_record(a_fields);
+
+        assert!(
+            !Type::is_subtype(&open, &closed),
+            "[a:Int ...r] (RowVar) should NOT be subtype of [a:Int] (closed)"
+        );
+    }
+
+    #[test]
+    fn test_is_subtype_closed_record_subtype_of_closed() {
+        // Closed record with exact same fields IS a subtype of a closed record.
+        let mut a_fields = HashMap::new();
+        a_fields.insert("a".into(), Type::Int);
+        let sub = closed_record(a_fields.clone());
+        let sup = closed_record(a_fields);
+
+        assert!(
+            Type::is_subtype(&sub, &sup),
+            "[a:Int] (closed) should be subtype of [a:Int] (closed) — same fields"
+        );
+    }
+
+    #[test]
+    fn test_is_subtype_open_record_subtype_of_open() {
+        // Open record (RowVar tail) IS a subtype of another open record with the same fields.
+        // Both have RowVar tails — the sup is open so extra fields are acceptable.
+        let mut fields = HashMap::new();
+        fields.insert("a".into(), Type::Int);
+        let sub = row_var_record(fields.clone(), "r1", 0);
+        let sup = row_var_record(fields, "r2", 0);
+
+        assert!(
+            Type::is_subtype(&sub, &sup),
+            "[a:Int ...r1] (RowVar) should be subtype of [a:Int ...r2] (RowVar) — sup is open"
+        );
     }
 
     #[test]
@@ -4197,11 +4239,14 @@ mod tests {
         let a = row_var_record(a_fields.clone(), "r", 0);
         let b = closed_record(a_fields);
 
-        // Conservative check: A's known fields == B's fields exactly -> passes
+        // Sound pre-unification check: open record (RowVar tail) cannot satisfy closed record
+        // constraint (Rémy 1994). The row variable may be instantiated with additional fields.
+        // Post-unification (after r binds to Empty via unify()), the types are equal and
+        // is_subtype holds — verified below.
         assert!(
-            Type::is_subtype(&a, &b),
-            "[a:Int ...r] (RowVar) should be subtype of [a:Int] (closed) \
-             when known fields match exactly (conservative check passes)"
+            !Type::is_subtype(&a, &b),
+            "[a:Int ...r] (RowVar) should NOT be subtype of [a:Int] (closed) pre-unification: \
+             the row variable may be instantiated with additional fields that the closed type rejects"
         );
 
         unify(&a, &b, &mut subst, &mut state, span).unwrap();

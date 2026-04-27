@@ -62,7 +62,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `cond` | Materializes conditions in order; returns first matching branch as thunk |
 | `when`, `unless` | Materializes condition; returns body or `[]` |
 | `and` | Materializes first; if false, returns false without materializing second |
-| `or` | Materializes first; if true, returns true without materializing second |
+| `or` | Materializes first; if truthy, returns it without materializing second |
 | `not` | Materializes its argument |
 
 **List operations** (integer keys only, always renumber to dense 0..n):
@@ -93,7 +93,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `nth`, `last`, `slice` | Structural — positional access, returns thunks |
 | `take`, `drop` | Structural — positional subsequence, thunks preserved |
 | `zip` | Structural — pairs entries, values stay thunks |
-| `length`, `empty?` | Structural — counts entries, ignores values |
+| `length`, `empty?` | Materializing — counts entries by materializing the collection |
 | `map`, `map-entries` | Lazy-transforming — on dicts, returns dict with PendingCall thunks; on seqs, returns lazy seq |
 | `filter` | On dicts, returns Seq (must evaluate predicates); on seqs, returns lazy seq |
 | `reduce`, `fold` | **Materializing** — accumulates, materializes each step |
@@ -281,7 +281,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `join` | `[fn [sep xs] ...]` | Join values as strings with separator (Rust builtin, O(n); dual-dispatch Dict/Seq) |
-| `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings |
+| `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq) |
 
 **Control Flow:**
 

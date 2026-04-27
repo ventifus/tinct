@@ -334,11 +334,14 @@ Record(F₁,ρ₁) <: Record(F₂,ρ₂) if:
     If ρ₂ = Closed:
         If ρ₁ = Closed: keys(F₁) ⊆ keys(F₂)
             (with width condition above this enforces keys(F₁) = keys(F₂))
-        If ρ₁ = Open | RowVar: keys(F₁) ⊆ keys(F₂) ∧ keys(F₂) ⊆ keys(F₁)
-            (bidirectional — ρ₁ may carry unknown extra fields; a Closed sup
-             cannot accept them, so we conservatively require known field sets
-             to be exactly equal. If the known sets differ, the check fails.)
-    If ρ₂ = Open | RowVar: always ok              [S-REC]
+        If ρ₁ = RowVar: false (Rémy 1994 — an open record with a RowVar tail
+            cannot satisfy a closed supertype. The row variable may be
+            instantiated with additional fields that the closed record rejects.
+            This is the sound pre-unification behavior; post-unification (after
+            the RowVar is bound to Empty by unify()), the types are concrete and
+            subtyping holds — see
+            test_is_subtype_consistency_open_sub_closed_sup_exact_known_fields.)
+    If ρ₂ = RowVar: always ok                     [S-REC]
 
 Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
     |p| = |q|
@@ -374,7 +377,7 @@ Tinct uses levels-based let-generalization following Kiselyov (2013) to support 
 **Type schemes.** The type environment Γ maps names to *type schemes* σ rather than bare types τ:
 
 ```
-σ ::= ∀α₁...αₙ. τ    (n ≥ 0; when n = 0, equivalent to monomorphic τ)
+σ ::= ∀(α₁...αₙ, ρ₁...ρₘ). τ    (n,m ≥ 0; when both zero, equivalent to monomorphic τ)
 ```
 
 Implementation: `TypeEnv.bindings` changes from `IndexMap<String, Type>` to `IndexMap<String, TypeScheme>`. The `TypeScheme` struct:
@@ -514,7 +517,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 - **Monomorphic scheme** (no quantified vars): routes to `check_call`, which infers the function expression normally. Since the scheme has no quantified variables, no instantiation occurs. The inferred type is typically concrete, so the CALL-MONO path fires directly.
 - **Non-VarRef function expressions** (e.g., inline lambdas): always route to `check_call`.
 
-**Substitution name uniqueness.** `Substitution::map` is keyed by variable name. User-annotated type variables (e.g., `@a`) are not globally unique, but `instantiate_scheme()` renames them to fresh `_tN` names before any substitution sharing occurs. Within a single letrec group during Pass 3, each entry's annotation-derived variables are instantiated independently, preventing collision.
+**Substitution name uniqueness.** `Substitution::type_map` and `Substitution::row_map` are keyed by variable name, routing type and row variable bindings to their respective maps. User-annotated type variables (e.g., `@a`) are not globally unique, but `instantiate_scheme()` renames them to fresh `_tN` names before any substitution sharing occurs. Within a single letrec group during Pass 3, each entry's annotation-derived variables are instantiated independently, preventing collision.
 
 **Error recovery.** If Pass 3 inference fails for an entry, `Type::Any` is inserted for that entry (matching current behavior). Level lowering from partial unification before the failure is retained in `InferState.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in Pass 4 proceeds for successfully-inferred entries; failed entries get `TypeScheme::mono(Type::Any)`.
 

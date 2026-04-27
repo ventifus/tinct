@@ -345,8 +345,8 @@ The substitution splits into two kinded maps:
 
 ```rust
 pub struct Substitution {
-    pub type_map: HashMap<String, Type>,   // α → τ  (kind: Type)
-    pub row_map: HashMap<String, Row>,     // ρ → r  (kind: Row)
+    pub type_map: IndexMap<String, Type>,   // α → τ  (kind: Type)
+    pub row_map: IndexMap<String, Row>,     // ρ → r  (kind: Row)
 }
 ```
 
@@ -432,7 +432,7 @@ resolve_row(fields, tail, S):
   match tail:
     RowVar(ρ) if ρ ∈ S.row_map →
       let bound = apply_row(S.row_map[ρ], S)
-      return (fields ∪ bound.fields, bound.tail)
+      return (fields ∪ (bound.fields \ dom(fields)), bound.tail)   # explicit fields win
     _ → return (fields, tail)
 ```
 
@@ -476,8 +476,9 @@ unify_remainders(U₁, t₁, U₂, t₂, S):
       if row_var_occurs(ρ₁, Row(U₂, t₂)): ERROR infinite row
       S ∪ {ρ₁ → Row { fields: U₂, tail: t₂ }}
 
-    # Error cases: closed tail cannot absorb unique fields from the other side
+    # Case 5: Left side has unique fields but right tail is closed — extra fields not allowed
     (false, _, _, Empty) → ERROR: extra fields {U₁.keys()} in closed row
+    # Case 6: Right side has unique fields but left tail is closed — extra fields not allowed
     (_, Empty, false, _) → ERROR: extra fields {U₂.keys()} in closed row
 
     # Case 7: Same row variable but both sides have unique fields — impossible constraint
@@ -692,7 +693,7 @@ The type system evolves across three areas. Each is independently useful and pro
 
 **Precision.** Register builtin type signatures, add Seq type inference, add error recovery for LSP.
 
-- `TypeEnv::with_builtins()` constructor pre-registering type signatures for all 44 Rust-native builtins. Dual-dispatch builtins (`$map`, `$filter`, etc.) are typed as `Any` (matching §Dual-Dispatch Builtins above). Non-overloaded builtins get precise types (e.g., `$+ : Fn(Number, Number → Number)`, `$length : Fn(Any → Int)`).
+- `TypeEnv::with_builtins()` constructor pre-registering type signatures for all Rust-native builtins. Dual-dispatch builtins (`$map`, `$filter`, etc.) are typed as `Any` (matching §Dual-Dispatch Builtins above). Non-overloaded builtins get precise types (e.g., `$+ : Fn(Number, Number → Number)`, `$length : Fn(Any → Int)`).
 - Seq type inference for sequence-only builtins (`$seq`, `$range`, `$repeat`, `$cycle`, `$iterate`, `$unfold`, `$take`). Annotate return types in `check_call` so LSP hover shows `Seq(Int)` instead of `Any`. Dual-dispatch builtins (`$map`, `$filter` on Dict|Seq) remain typed as `Any` — precise typing requires type classes or union types (see §Expressiveness).
 - `Type::Error` sentinel — a type that propagates silently through inference without generating additional errors. When a subexpression fails type checking, `Type::Error` prevents cascading errors (currently, a single type error can produce 5–10 follow-on errors from dependent expressions). Semantics: `unify(Error, τ) → S` unchanged (no binding, no error), `is_subtype(Error, _) = false`. `Type::Error` is recorded in the type map so LSP hover can show "error" rather than nothing. This is the standard approach used by GHC, Elm, and Rust.
 

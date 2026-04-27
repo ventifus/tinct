@@ -125,7 +125,7 @@ pub enum Expr {
         expr: Box<Spanned<Expr>>,
         /// Type resolved during elaboration (type checking).
         /// Uses RefCell for write-once elaboration without cloning the entire AST.
-        /// The write-once invariant is enforced at typecheck.rs:941.
+        /// The write-once invariant is enforced at typecheck.rs:1131.
         resolved_type: RefCell<Option<Type>>,
     },
 

@@ -887,7 +887,12 @@ fn check_call_with_scheme(
             if !params.is_empty() {
                 let mut subst = Substitution::new();
                 for (param_ty, arg_ty) in params.iter().zip(arg_types.iter()) {
-                    unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
+                    // Apply state.subst to arg_ty before unification (Algorithm W substitution threading).
+                    // arg_ty may contain TypeVars bound in state.subst from access-chain inference
+                    // (e.g., check_dot_access). Per Damas & Milner 1982, accumulated constraints must
+                    // be applied before each unification step to prevent treating bound vars as free.
+                    let resolved_arg = state.subst.apply(arg_ty);
+                    unify(param_ty, &resolved_arg, &mut subst, state, span).map_err(|e| vec![e])?;
                 }
                 Ok(state.subst.apply(&subst.apply(ret)))
             } else {
@@ -913,7 +918,11 @@ fn check_call(
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_type_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
-    let func_ty = state.subst.apply(&func_ty);
+    let func_ty = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+        func_ty
+    } else {
+        state.subst.apply(&func_ty)
+    };
 
     // Infer named args for type map population and error detection
     for na in named_args {
@@ -1017,7 +1026,12 @@ fn check_call(
                 //
                 let mut subst = Substitution::new();
                 for (param_ty, arg_ty) in inst_params.iter().zip(arg_types.iter()) {
-                    unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
+                    // Apply state.subst to arg_ty before unification (Algorithm W substitution threading).
+                    // arg_ty may contain TypeVars bound in state.subst from access-chain inference
+                    // (e.g., check_dot_access). Per Damas & Milner 1982, accumulated constraints must
+                    // be applied before each unification step to prevent treating bound vars as free.
+                    let resolved_arg = state.subst.apply(arg_ty);
+                    unify(param_ty, &resolved_arg, &mut subst, state, span).map_err(|e| vec![e])?;
                 }
                 Ok(state.subst.apply(&subst.apply(inst_ret)))
             } else {
@@ -1793,7 +1807,7 @@ mod tests {
         // function, so if it were ever triggered, it would work correctly.
 
         // CONCLUSION: This test documents that:
-        // 1. The occurs check exists in check_dot_access (lines 657-661)
+        // 1. The occurs check exists in check_dot_access (line 699)
         // 2. It uses row_var_occurs_pub which is tested in types.rs
         // 3. Normal constraint generation works correctly
         // 4. The error path is likely unreachable but serves as defensive programming
@@ -3903,11 +3917,10 @@ mod tests {
     fn test_call_poly_state_subst_isolation() {
         // Cross-document regression test for `state.subst.apply()` in the CALL-POLY arm.
         //
-        // SCENARIO: Two documents separated by `---`. Document 1 processes a dict that
-        // includes a forward-reference dot-access, causing check_dot_access to write a
-        // constraint into state.subst (the TypeVar α arm: α → Record({name: β}, RowVar(ρ))).
-        // Document 2 then makes a polymorphic call whose argument type goes through a
-        // concrete env lookup from document 1.
+        // SCENARIO: Two documents separated by `---`. Document 1 defines a polymorphic identity
+        // function `id` and a concrete record `data` — there is no dot-access in Document 1.
+        // Document 2 accesses `$data.name` (direct field lookup) and calls `[call $id $data.name]`
+        // via CALL-POLY, whose argument type is resolved through the cross-document env lookup.
         //
         // Unlike test_call_poly_state_subst_applied (which uses `\n` in a single document),
         // this test crosses a true document boundary (`---`). The `state` object (including

@@ -369,7 +369,7 @@ fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let map = require_dict("keys", val, call_span)?;
 
     let origin = call_span;
-    let mut result = IndexMap::new();
+    let mut result = IndexMap::with_capacity(map.len());
     for (i, (key, _)) in map.iter().enumerate() {
         let key_value = match key {
             Key::Int(n) => Value::Int(*n),
@@ -812,7 +812,7 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     match call_result {
         Ok(value) => {
-            let mut result = IndexMap::new();
+            let mut result = IndexMap::with_capacity(1);
             result.insert(
                 Key::String("ok".to_string()),
                 Rc::new(Thunk::new_materialized(value, call_span)),
@@ -825,7 +825,7 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             if !e.kind.is_catchable() {
                 return Err(e);
             }
-            let mut result = IndexMap::new();
+            let mut result = IndexMap::with_capacity(1);
             result.insert(
                 Key::String("err".to_string()),
                 Rc::new(Thunk::new_materialized(

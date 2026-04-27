@@ -377,8 +377,7 @@ fn build_call(
     // Grammar: call_form = { keyword_call ~ value ~ call_args }
     let mut inner = pair.into_inner();
 
-    let kw = inner.next().expect("grammar guarantees keyword_call");
-    debug_assert_eq!(kw.as_rule(), Rule::keyword_call);
+    let _ = inner.next().expect("grammar guarantees keyword_call");
 
     let func = build_value(
         inner
@@ -450,8 +449,7 @@ fn build_fn(
     // Grammar: fn_form = { keyword_fn ~ fn_annotation? ~ param_list ~ value }
     let mut inner = pair.into_inner();
 
-    let kw = inner.next().expect("grammar guarantees keyword_fn");
-    debug_assert_eq!(kw.as_rule(), Rule::keyword_fn);
+    let _ = inner.next().expect("grammar guarantees keyword_fn");
 
     let mut return_ann = None;
     let mut next = inner
@@ -628,7 +626,7 @@ fn build_annotation_value(
             span,
         )),
         rule => Err(ParseError {
-            message: format!("unexpected rule in annotation_value: {rule:?}"),
+            message: format!("unexpected annotation value type: {rule:?}"),
             span: Some(span),
         }),
     }
@@ -642,8 +640,7 @@ fn build_type_alias(
 ) -> Result<Spanned<Expr>, ParseError> {
     // Grammar: type_form = { keyword_type ~ value }
     let mut inner = pair.into_inner();
-    let kw = inner.next().expect("grammar guarantees keyword_type");
-    debug_assert_eq!(kw.as_rule(), Rule::keyword_type);
+    let _ = inner.next().expect("grammar guarantees keyword_type");
     let body = build_value(
         inner
             .next()

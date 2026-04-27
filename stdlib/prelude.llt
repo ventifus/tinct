@@ -92,7 +92,7 @@ all?-impl: [fn [pred xs ks i]
 # ============================================================================
 
 # Integer quotient: truncates toward zero (like Clojure's quot).
-# Uses $/ (float division) then $trunc (toward-zero truncation to Int).
+# Uses $builtin-div (float division) then $trunc (toward-zero truncation to Int).
 # Inherently materializing: derived from arithmetic operations.
 quot: [fn [a b] [call $trunc [call $builtin-div $a $b]]]
 
@@ -132,6 +132,7 @@ when: [fn [pred body] [call $builtin-if $pred $body []]]
 unless: [fn [pred body] [call $builtin-if $pred [] $body]]
 
 # Multi-branch conditional. Takes a list of [condition result] pairs.
+# Returns [] (empty dict) when no branch matches.
 # Usage: [call $cond [
 #   [[call $> $x 10] big]
 #   [[call $> $x 0]  positive]
@@ -297,10 +298,7 @@ cons-impl: [fn [x xs i len acc]
 # Append an element to the end of a list.
 conj: [fn [xs x] [call $append $xs $x]]
 
-# Concatenate two collections.
-# If xs is Seq: lazily chain xs and ys (O(1) initial, O(n) on materialization).
-# If xs is Dict: eagerly append all elements from ys (O(m) where m = length(ys)).
-# Now implemented as Rust builtin for better performance and depth limit handling.
+# concat is a Rust-native builtin (dual-dispatch on Dict/Seq).
 
 # Reverse a list. Inherently materializing: must know all entries to reverse.
 reverse: [fn [xs] [call $reverse-impl $xs [call $builtin-sub [call $length $xs] 1] []]]
