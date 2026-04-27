@@ -359,13 +359,25 @@ fn check_expr(
                                 state,
                                 &mut ann_mapping_opt,
                             )?;
-                            // Contravariant check: expected param type must be subtype of annotation
-                            if !Type::is_subtype(expected_ty, &resolved) {
-                                return Err(TypeError::type_mismatch(
-                                    &resolved,
-                                    expected_ty,
-                                    ann.span,
-                                ));
+                            // Contravariant check: expected param type must be subtype of annotation.
+                            // When annotation contains type variables, use unification mode instead of
+                            // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
+                            if resolved.has_type_vars() {
+                                let mut subst = std::mem::take(&mut state.subst);
+                                let result =
+                                    unify(expected_ty, &resolved, &mut subst, state, ann.span);
+                                state.subst = subst;
+                                result.map_err(|_e| {
+                                    TypeError::type_mismatch(&resolved, expected_ty, ann.span)
+                                })?;
+                            } else {
+                                if !Type::is_subtype(expected_ty, &resolved) {
+                                    return Err(TypeError::type_mismatch(
+                                        &resolved,
+                                        expected_ty,
+                                        ann.span,
+                                    ));
+                                }
                             }
                             Ok(resolved)
                         }
@@ -402,13 +414,25 @@ fn check_expr(
                             &mut ann_mapping_opt,
                         )
                         .map_err(|e| vec![e])?;
-                        // Check that declared return type is compatible with expected
-                        if !Type::is_subtype(&declared, expected_ret) {
-                            return Err(vec![TypeError::type_mismatch(
-                                expected_ret,
-                                &declared,
-                                expr.span,
-                            )]);
+                        // Check that declared return type is compatible with expected.
+                        // When declared contains type variables, use unification mode instead of
+                        // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
+                        if declared.has_type_vars() {
+                            let mut subst = std::mem::take(&mut state.subst);
+                            let result =
+                                unify(&declared, expected_ret, &mut subst, state, ann.span);
+                            state.subst = subst;
+                            result.map_err(|_e| {
+                                vec![TypeError::type_mismatch(expected_ret, &declared, expr.span)]
+                            })?;
+                        } else {
+                            if !Type::is_subtype(&declared, expected_ret) {
+                                return Err(vec![TypeError::type_mismatch(
+                                    expected_ret,
+                                    &declared,
+                                    expr.span,
+                                )]);
+                            }
                         }
                         // Check body against declared return type
                         check_expr(body, &declared, &fn_env, state, type_map)?;
@@ -886,6 +910,10 @@ fn check_call(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let func_ty = infer_expr(func, env, state, type_map)?;
+    // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
+    // with polymorphic return annotations). Without this, has_type_vars() incorrectly returns
+    // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
+    let func_ty = state.subst.apply(&func_ty);
 
     // Infer named args for type map population and error detection
     for na in named_args {
@@ -3460,6 +3488,105 @@ mod tests {
             errors.iter().any(|e| e.message.contains("type mismatch")),
             "Declared return Number is not subtype of expected Int — should error, got: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_param_annotation_with_type_var() {
+        // Task 1 fix: Lambda with @a-style param annotation checked against concrete function type.
+        // When the annotation is a TypeVar, is_subtype fails (TypeVars only match reflexively).
+        // The fix switches to unification mode when resolved.has_type_vars().
+        //
+        // Pattern: [call $identity [fn@b [y@b] $y]] where identity is polymorphic.
+        // check_expr sees expected_ty=concrete from identity's instantiation, resolved=TypeVar("b").
+        // Without fix: is_subtype(concrete, TypeVar("b")) = false → error.
+        // With fix: unify(concrete, TypeVar("b")) binds b → success.
+        let result = check("[identity: [fn [x@a] $x]]\n[result: [call $identity [fn@b [y@b] $y]]]");
+        assert!(
+            result.is_ok(),
+            "Lambda with TypeVar param annotation in checking mode should unify, not subsume: {:?}",
+            result.err()
+        );
+
+        // Verify the result typechecks with concrete argument
+        let ty = result_field(
+            "[identity: [fn [x@a] $x]]\n[result: [call $identity [fn@b [y@b] $y]]]\n[test: [call $result 42]]",
+            "test"
+        );
+        assert_eq!(
+            ty,
+            Type::IntLiteral(42),
+            "Result function should work with concrete arg"
+        );
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_return_annotation_with_type_var() {
+        // Task 1 fix: Lambda with @a-style return annotation checked against concrete function type.
+        // When the return annotation is a TypeVar, is_subtype fails (TypeVars only match reflexively).
+        // The fix switches to unification mode when declared.has_type_vars().
+        //
+        // Pattern: [@[Fn@Int [Int]] [fn@c [x] 42]] — expected return Int, declared TypeVar("c").
+        // Without fix: is_subtype(TypeVar("c"), Int) = false → error.
+        // With fix: unify(TypeVar("c"), Int) binds c → success.
+        let result = check("[f: [@[Fn@Int [Int]] [fn@c [x] 42]]]");
+        assert!(
+            result.is_ok(),
+            "Lambda with TypeVar return annotation in checking mode should unify, not subsume: {:?}",
+            result.err()
+        );
+
+        // Verify the recorded function type
+        let ty = result_field("[f: [@[Fn@Int [Int]] [fn@c [x] $x]]]", "f");
+        match ty {
+            Type::Function { params, ret } => {
+                assert_eq!(params, vec![Type::Int], "param from expected type");
+                assert_eq!(*ret, Type::Int, "return from expected type");
+            }
+            other => panic!("expected Function type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_inline_lambda_with_polymorphic_return_annotation() {
+        // Task 2 fix: Inline lambda with polymorphic return annotation.
+        // Pattern: [call [fn@a [x@a] $x] 42] — identity function with polymorphic annotation.
+        //
+        // Without fix at check_call line ~888:
+        // 1. infer_fn returns Fn(TypeVar("_t5") -> TypeVar("_t5")) with state.subst = {_t5 -> TypeVar("_t6")}
+        //    (from unifying body $x with return annotation @a)
+        // 2. check_call receives func_ty with unresolved _t5
+        // 3. has_type_vars() = true → CALL-POLY fires
+        // 4. instantiate_at_level freshens _t5 to _t7
+        // 5. unify tries to bind _t7, but the substitution for _t5 is lost → wrong type
+        //
+        // With fix: state.subst.apply() resolves _t5 before has_type_vars() check.
+        let ty = result_field("[result: [call [fn@a [x@a] $x] 42]]", "result");
+        assert_eq!(
+            ty,
+            Type::IntLiteral(42),
+            "Inline lambda with polymorphic return annotation should infer correctly"
+        );
+
+        // Verify multi-arg case where all params share the same type variable
+        let ty = result_field("[result: [call [fn@a [x@a y@a] $x] 1 1]]", "result");
+        assert_eq!(
+            ty,
+            Type::IntLiteral(1),
+            "Multi-arg inline lambda with polymorphic annotation should work"
+        );
+
+        // Verify constant-return case: [call [fn@a [x@a] 42] 42]
+        // Based on the mempalace C66 finding. When param and return share annotation @a,
+        // they're constrained to be the same type. The body type (IntLiteral(42)) binds @a.
+        // Without the fix: CALL-POLY would fire, freshen the TypeVars, and produce incorrect types.
+        // With the fix: state.subst.apply() resolves the function type to Fn(IntLiteral(42) -> IntLiteral(42)),
+        // CALL-MONO fires, and the call succeeds with matching literal types.
+        let ty = result_field("[result: [call [fn@a [x@a] 42] 42]]", "result");
+        assert_eq!(
+            ty,
+            Type::IntLiteral(42),
+            "Constant-return inline lambda with matching arg should work"
         );
     }
 
