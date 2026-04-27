@@ -999,7 +999,7 @@ fn invoke_proxy_handler(
             closure_env: &closure_env,
             positional: &[key_arg],
             named: &IndexMap::new(),
-            default_env: &ctx.config.stdlib_env,
+            default_env: &closure_env,
             call_span: *access_span,
             depth: depth + 1,
             origin: Cow::Borrowed("proxy field access"),

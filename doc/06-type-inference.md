@@ -133,7 +133,11 @@ For each param pᵢ:
     else: σᵢ = Any
 Γ' = Γ, p₁:σ₁, ..., pₙ:σₙ
 If return annotation @σᵣ given:
-    Γ' ⊢ body ⇐ σᵣ                                  [checking mode]
+    if has_type_vars(σᵣ):
+        Γ' ⊢ body ⇒ τ_body                           [synthesis mode]
+        unify(τ_body, σᵣ, S)                          [unification mode]
+    else:
+        Γ' ⊢ body ⇐ σᵣ                               [checking mode]
     use σᵣ as return type.
 Else:
     Γ' ⊢ body ⇒ τᵣ                                   [synthesis mode]
@@ -143,7 +147,7 @@ Else:
 
 Unannotated non-variadic params get type Any. This is the source of the "Any escape hatch" — without annotations, functions have monomorphic type Fn(Any...Any → τᵣ). Polymorphism requires explicit type variable annotations (e.g., `x@a`).
 
-When a return annotation is present, the body is **checked** against it (⇐ mode): the body is synthesized, then subsumption verifies the inferred type is a subtype of the declared type. This replaces the previous `is_subtype` check with the unified bidirectional mechanism.
+When a return annotation is present, the dispatch depends on whether σᵣ contains type variables. If σᵣ is fully concrete (no type variables), the body is **checked** against it (⇐ mode): the body is synthesized, then subsumption verifies the inferred type is a subtype of the declared type. If σᵣ contains type variables (e.g., `fn@a`), the body is **synthesized** and then **unified** with σᵣ. This is necessary because type variables are not ground — `is_subtype` treats them as opaque and only matches reflexively, so `is_subtype(IntLiteral(42), TypeVar("_t5"))` would incorrectly reject valid code. Unification mode binds the type variables via constraint solving (Damas & Milner, 1982), which is the correct mechanism for annotations that introduce polymorphism.
 
 **Function call (bidirectional):**
 

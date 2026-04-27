@@ -2,6 +2,46 @@
 
 Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
+### grammar-architect-c66: Parser and Grammar Findings (Cycle #66)
+
+New findings from Cycle #66 full codebase health review (grammar-architect). All items independent.
+
+- [ ] Fix `Expr::TypeAssert` derives `PartialEq` via `resolved_type: RefCell<Option<Type>>` — `#[derive(PartialEq)]` on `Expr` at `src/ast.rs:67` means pre-typecheck and post-typecheck `TypeAssert` nodes compare unequal even when structurally identical (the `resolved_type` RefCell changes after typechecking). A test comparing a pre-check AST against a post-check one will fail with a confusing message. Either implement manual `PartialEq` for `Expr` that delegates to all fields except `resolved_type` in the `TypeAssert` arm, or add a comment documenting the asymmetry. (`src/ast.rs:67, 123-130`) [Minor, grammar-architect C66]
+- [ ] Fix stale line reference in `src/ast.rs:128` comment — the write-once invariant comment says `"typecheck.rs:941"` but the actual `debug_assert!` is at `src/typecheck.rs:1103`. Update to `typecheck.rs:1103`. (`src/ast.rs:128`) [Nit, grammar-architect C66]
+- [ ] Add `call@Type` / `fn@Type` to doc/02 disambiguation table — `call@Type` as first token in `[]` silently falls through keyword dispatch to produce `Annotated { name: "call", ... }` (not a call keyword). This is correct behavior but entirely absent from §7 Token Disambiguation table. Add row: "`call@Type` (first in `[]`) → `Annotated { name: "call", ... }` (NOT keyword) — `@` after bare word converts keyword candidate to annotated value." (`doc/02-syntax.md`) [Nit, grammar-architect C66]
+- [ ] Add cross-references to three grammar rules with identical character class patterns — `param_name`, `annotation_word`, `access_field` at `src/grammar.pest:101-103, 113-115, 147-149` all expand to `(ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?`. A future change to one should be applied to all three. Add `// Same character class as annotation_word and access_field — update all three together` above `param_name`; equivalent above the other two. (`src/grammar.pest:101, 113, 147`) [Nit, grammar-architect C66]
+- [ ] Fix Display tests for `Annotation::PropertyDict` use `Expr::VarRef` keys instead of `Expr::Str` — `test_display_type_assert_with_property_dict` and `test_display_annotation_property_dict_with_entries` at `src/ast.rs:395-406, 599-611` construct annotation entries with `Expr::VarRef("type")` as keys. The parser always produces `Expr::Str("type")` for bare-word annotation keys. Replace `Expr::VarRef("type")` / `Expr::VarRef("Number")` with `Expr::Str("type")` / `Expr::Str("Number")` and add comment: "Annotation keys from the parser are always `Expr::Str` (bare words); `Expr::VarRef` keys are structurally valid but never produced by the parser." (`src/ast.rs:395-406, 599-611`) [Nit, grammar-architect C66]
+
+### test-crafter-c66: Test Coverage Findings (Cycle #66)
+
+New findings from Cycle #66 full codebase health review (test-crafter). All items independent.
+
+- [ ] Add unit test `test_value_partial_eq_proxy_always_false` — `Value::Proxy` falls into the `_ => false` wildcard arm of `PartialEq` (alongside Dict, Function, Builtin, Seq) but this is unverified. Add test alongside existing `test_value_partial_eq_dict_always_false` etc.: create a `Value::Proxy { handler }` and assert `p.clone() != p`. (`src/value.rs`) [Major, test-crafter C66]
+- [ ] Add corpus test for `$try` not catching `DepthExceeded` — `is_catchable()` returns `false` for `DepthExceeded` but there's no corpus test exercising this end-to-end. Unit test `try_depth_exceeded_not_catchable` exists at `src/builtins.rs:4368`. Add `tests/corpus/eval/errors/try_depth_exceeded_not_caught.llt-eval` if a reliable corpus-format triggering mechanism exists; otherwise add a comment in the unit test acknowledging the corpus gap. (`tests/corpus/eval/errors/`) [Major, test-crafter C66]
+- [ ] Add unit test `test_display_proxy` for `value_to_display_string` Proxy arm — all other `Value` variants have `test_display_*` unit tests in `src/lib.rs`. Proxy returns `"Proxy"` but this is uncovered. Add: create `Value::Proxy { handler }`, call `value_to_display_string`, assert result is `"Proxy"`. (`src/lib.rs`) [Minor, test-crafter C66]
+- [ ] Add corpus test for `$cond` laziness — `tests/corpus/eval/laziness/` has no test proving that `$cond` skips later branches. Add `tests/corpus/eval/laziness/cond_skips_later_branches.llt-eval`: `[call $cond [[true first] [true [call $error "should not evaluate"]]]]` → `String("first")`. (`tests/corpus/eval/laziness/`) [Minor, test-crafter C66]
+- [ ] Add unit test documenting `split_test_file` behavior when `===` appears on its own line in the expected section — `\n===\n` in the expected output WOULD cause `split_test_file` to split at the wrong place, truncating the expected value. Add test that documents this accepted limitation rather than fixing it (since `===` in expected output is not a real use case). (`tests/corpus_tests.rs`) [Nit, test-crafter C66]
+
+### stdlib-author-c66: Stdlib Doc Findings (Cycle #66)
+
+New findings from Cycle #66 full codebase health review (stdlib-author). All items independent.
+
+- [ ] Fix prelude header comment lists primary-name operators as dependencies but internals use `builtin-*` aliases — the file-level header at `stdlib/prelude.llt:7-17` says "These functions depend on `+`, `-`, `*`, `/`, `<`, `=`, `if`" but after the overridable-ops sprint these are defined INSIDE the prelude as shadowable wrappers. The prelude's internals call `$builtin-lt`, `$builtin-eq`, `$builtin-if`, `$builtin-add`, etc. directly. Section headers at lines 91, 103, 114 also reference primary-name ops. Fix: update lines 9-12 to list the actual `builtin-*` aliases the prelude depends on, and add a note that the primary-name wrappers are defined at the bottom of this file. Update section headers at lines 91, 103, 114 to use `builtin-*` names. (`stdlib/prelude.llt:7-17, 91, 103, 114`) [Nit, stdlib-author C66]
+
+### integration-verifier-c66: Cross-Layer Findings (Cycle #66)
+
+New findings from Cycle #66 full codebase health review (integration-verifier). All items independent.
+
+- [ ] Fix proxy access errors in `eval_dot_access` and `eval_bracket_access` missing `push_frame` — `invoke_proxy_handler` return at `src/eval.rs:1050` (dot access) and `src/eval.rs:1083` (bracket access) is NOT wrapped in `map_err(&push_frame)`. Dict access errors always include the `"accessing .field"` stack frame; proxy errors do not — asymmetry makes proxy errors harder to diagnose. Fix: chain `.map_err(&push_frame)` on both `invoke_proxy_handler` returns. Also add a corpus test `proxy_access_error_has_context.llt-eval` where a proxy handler raises an error. (`src/eval.rs:1050, 1083`) [Minor, integration-verifier C66]
+- [ ] Fix `doc/10-errors.md` Part 8/9 Implementation Correspondence table stale line numbers — typeassert-structural sprint shifted all materialize-related functions by ~320 lines. Key stale refs: `attach_materialization_context` is at `eval.rs:1129-1156` (doc says 815-843); `PROP-EVAL` Unevaluated path at `eval.rs:1255-1279` (doc says 931-951); `PROP-CYCLE` at `eval.rs:1231-1244` (doc says 908-922); `MEMO-CACHE` at `value.rs:467-469` (doc says 384-386); `TRY` at `builtins.rs:760-884` (doc says 800-884). Update all line numbers in the Part 8 and Part 9 tables. (`doc/10-errors.md:334-348`) [Nit, integration-verifier C66]
+
+### performance-expert-c66: Performance Findings (Cycle #66)
+
+New findings from Cycle #66 full codebase health review (performance-expert). All items independent.
+
+- [ ] Add capacity hint to `deep_materialize_impl` Dict arm — `IndexMap::new()` at `src/eval.rs:1617` allocates with default capacity. The input `map` has a known length at that point. Change to `IndexMap::with_capacity(map.len())`. Saves 2-3 realloc cycles per Dict deep-materialization (called during JSON serialization). (`src/eval.rs:1617`) [Nit, performance-expert C66]
+- [ ] Add capacity hint to BIND-VARIADIC excess-args dict — `IndexMap::new()` at `src/eval.rs:925` allocates with default capacity for the variadic named-args dict. The excess-arg count is available before the loop: change to `IndexMap::with_capacity(positional.len().saturating_sub(max_positional))`. (`src/eval.rs:925`) [Nit, performance-expert C66]
+
 ### grammar-architect-c65: Parser and Grammar Findings (Cycle #65)
 
 New findings from Cycle #65 full codebase health review (grammar-architect). All items independent.
@@ -1417,7 +1457,7 @@ Critical test infrastructure and typecheck corpus gaps found by test-crafter and
 - [ ] Add `test_unify_int_literal_with_float` and `test_unify_float_with_int_literal` — `(Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => Ok(())` at `src/types.rs:456` is only incidentally covered by other tests; no dedicated unit test. (`src/types.rs:456`) [Minor, test-crafter C47]
 - [ ] Add `test_check_expr_lambda_arity_mismatch` — `typecheck.rs:317-325` returns arity mismatch when lambda in checking mode has different param count than expected type; no test for this path. (`src/typecheck.rs:317`) [Minor, test-crafter C47]
 - [ ] Add laziness corpus proof tests — `tests/corpus/eval/laziness/` missing: proof `$map` on dict returns thunks not eager values, proof `$filter` is selective, proof `$and`/`$or` short-circuit on error in second arg. (`tests/corpus/eval/laziness/`) [Minor, test-crafter C47]
-- [ ] Fix `flatten_seq_error.llt-eval` matching full error message substring without [E0XX] code — only stdlib-level error test without error code; will fail if message wording changes. Accept and document, or add error code to `$error` path. (`tests/corpus/eval/errors/flatten_seq_error.llt-eval`) [Nit, test-crafter C47]
+- [x] Fix `flatten_seq_error.llt-eval` matching full error message substring without [E0XX] code — only stdlib-level error test without error code; will fail if message wording changes. Accept and document, or add error code to `$error` path. (`tests/corpus/eval/errors/flatten_seq_error.llt-eval`) [Nit, test-crafter C47] — already contains `[E080]` as of test-crafter-c64 sprint
 
 ### misc-nits: Miscellaneous Nits
 
