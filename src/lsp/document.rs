@@ -41,12 +41,18 @@ impl DocumentState {
         stdlib_env: &Rc<RefCell<Environment>>,
         eval_ctx: &Rc<crate::eval::EvalContext>,
     ) -> Self {
-        let ast = parse(&text);
+        let mut ast = parse(&text);
         let mut type_errors = Vec::new();
         let mut eval_errors = Vec::new();
         let mut type_map = TypeMap::new();
 
-        if let Ok(ref file) = ast {
+        if let Ok(ref mut file) = ast {
+            // Desugar before type check and eval: rewrites $_ implicit lambdas to explicit forms.
+            // This matches the pipeline used by all other entry points (main.rs, repl.rs, lib.rs,
+            // builtins.rs). Without this pass the type checker sees VarRef("_") instead of Fn nodes,
+            // producing spurious "undefined variable _" errors for any $_ expression.
+            crate::desugar::desugar_file(&mut file.node);
+
             // Run type checker (advisory), collecting the span-to-type map for hover.
             let (errs, map) = typecheck_file_with_types(&file.node);
             type_errors = errs;
@@ -208,6 +214,22 @@ mod tests {
 
         store.remove_document(&url);
         assert!(store.get(&url).is_none());
+    }
+
+    #[test]
+    fn test_document_state_underscore_desugared() {
+        // Regression: before the desugar_file fix, $_ was seen by the type checker as VarRef("_"),
+        // producing a spurious "undefined variable _" type error. After the fix, the desugar pass
+        // rewrites $_ to an explicit lambda, so no type error should be emitted.
+        let env = test_env();
+        let ctx = test_ctx();
+        let state = DocumentState::new("[f: $_]".to_string(), &env, &ctx);
+        assert!(state.ast.is_ok(), "parse should succeed");
+        assert!(
+            state.type_errors.is_empty(),
+            "desugar should eliminate spurious 'undefined variable _' error; got: {:?}",
+            state.type_errors
+        );
     }
 
     #[test]

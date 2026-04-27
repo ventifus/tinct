@@ -712,7 +712,7 @@ Standard library functions defined in `stdlib/prelude.llt` inherit their materia
 |----------|------------|-------------------|
 | `not` | `[fn [x] [call $if $x false true]]` | Materializing — forces x via `$if`'s condition position |
 | `and` | `[fn [a b] [call $if $a $b false]]` | Selective — forces a; b forced only if a is true |
-| `or` | `[fn [a b] [call $if $a true $b]]` | Selective — forces a; b forced only if a is false |
+| `or` | `[fn [a b] [call $if $a $a $b]]` | Selective — forces a; b forced only if a is false; returns a if truthy |
 | `when` | `[fn [pred body] [call $if $pred $body []]]` | Selective — forces pred; body forced only if pred is true |
 | `unless` | `[fn [pred body] [call $if $pred [] $body]]` | Selective — forces pred; body forced only if pred is false |
 | `cond` | Recursive via `cond-impl` → `cond-check` → `$if` | Selective — forces conditions left-to-right via nested `$if`; first matching branch returned as thunk |
@@ -760,7 +760,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | **Control Flow** | | |
 | `$if` | Returns branch thunk directly (no materialization of branch) | The chosen branch stays lazy until accessed by caller |
 | `$and` | Materializes first arg; second only if first is true (short-circuit via `$if`) | Short-circuit via `[fn [a b] [call $if $a $b false]]` |
-| `$or` | Materializes first arg; second only if first is false (short-circuit via `$if`) | Short-circuit via `[fn [a b] [call $if $a true $b]]` |
+| `$or` | Materializes first arg; second only if first is false (short-circuit via `$if`) | Short-circuit via `[fn [a b] [call $if $a $a $b]]`; returns a if truthy |
 | `$not` | Materializes argument | Must inspect value |
 | `$when`, `$unless` | Materializes condition; body returned as thunk | Body returned lazy via `$if` |
 | `$cond` | Materializes conditions left-to-right; first matching branch returned as thunk | Delegates to `$if`; no code change needed |

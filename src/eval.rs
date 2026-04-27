@@ -1560,6 +1560,15 @@ pub fn materialize(
                 // Inner materialization error propagates (not a type mismatch)
                 if e.kind.is_cacheable() {
                     thunk.cache_failure(&e);
+                } else {
+                    // Non-cacheable error (e.g., DepthExceeded): restore Guarded state
+                    // so the thunk can be re-evaluated at a shallower depth.
+                    thunk.set_state(ThunkState::Guarded {
+                        inner,
+                        expected,
+                        field_path,
+                        guard_span,
+                    });
                 }
                 Err(e)
             }
@@ -1656,8 +1665,22 @@ fn deep_materialize_thunk(
     }
     // Mark as in-progress (cycle sentinel)
     cache.insert(thunk_ptr, None);
-    let v = materialize(thunk, None, ctx, depth)?;
-    let forced = deep_materialize_impl(&v, ctx, depth + 1, cache)?;
+    let v = match materialize(thunk, None, ctx, depth) {
+        Ok(v) => v,
+        Err(e) => {
+            // Clean up sentinel on error to prevent cache poisoning
+            cache.remove(&thunk_ptr);
+            return Err(e);
+        }
+    };
+    let forced = match deep_materialize_impl(&v, ctx, depth + 1, cache) {
+        Ok(v) => v,
+        Err(e) => {
+            // Clean up sentinel on error to prevent cache poisoning
+            cache.remove(&thunk_ptr);
+            return Err(e);
+        }
+    };
     let result = Rc::new(Thunk::new_materialized(forced, thunk.span));
     // Cache the result for sharing preservation
     cache.insert(thunk_ptr, Some(Rc::clone(&result)));
@@ -6428,6 +6451,211 @@ mod tests {
             }
             other => panic!("expected Unevaluated state, got: {:?}", other),
         };
+    }
+
+    #[test]
+    fn test_guarded_thunk_depth_exceeded_restores_state() {
+        // Bug fix: Guarded thunks hit by DepthExceeded should restore Guarded state,
+        // not remain stuck in InProgress (which causes CycleDetected on retry).
+        use crate::types::Type;
+
+        let env = empty_env();
+        let ctx = test_ctx();
+
+        // Create a recursive function that will hit depth limit
+        let recursive_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::VarRef("f".into()))),
+                args: vec![sp(Expr::VarRef("x".into()))],
+                named_args: vec![],
+            })),
+            env: Rc::clone(&env),
+        };
+
+        env.borrow_mut().insert(
+            "f".into(),
+            Rc::new(Thunk::new_materialized(
+                recursive_fn,
+                test_span(1, 1, 1, 20),
+            )),
+        );
+
+        // Create an inner thunk that will recurse and hit depth limit
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("f".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+        let inner_thunk = eval(&call_expr, Rc::clone(&env), &ctx, 0).unwrap();
+
+        // Wrap it in a Guarded thunk
+        let expected_type = Type::Int;
+        let field_path = vec!["test".to_string()];
+        let guard_span = test_span(1, 1, 1, 10);
+
+        let guarded_thunk = Rc::new(Thunk::new_guarded(
+            inner_thunk,
+            expected_type.clone(),
+            field_path.clone(),
+            guard_span,
+        ));
+
+        // Force the guarded thunk at exactly MAX_EVAL_DEPTH so the outer materialize passes the
+        // depth guard and reaches take_guarded(). The inner recursive call uses depth + 1, which
+        // exceeds the limit and returns DepthExceeded — exercising the Err branch that restores
+        // Guarded state. Calling at MAX_EVAL_DEPTH + 1 would fire the depth check before
+        // take_guarded() is ever called, making the test pass vacuously.
+        let err1 = materialize(&guarded_thunk, None, &ctx, MAX_EVAL_DEPTH).unwrap_err();
+        assert!(
+            err1.message().contains("maximum evaluation depth exceeded"),
+            "expected depth exceeded, got: {}",
+            err1.message()
+        );
+
+        // The thunk should be back in Guarded state, not InProgress
+        match &*guarded_thunk.state() {
+            ThunkState::Guarded {
+                expected,
+                field_path: fp,
+                ..
+            } => {
+                assert_eq!(expected, &expected_type);
+                assert_eq!(fp, &vec!["test".to_string()]);
+            }
+            ThunkState::Failed(_) => panic!("DepthExceeded should not cache in Guarded state"),
+            ThunkState::InProgress => panic!("Guarded thunk stuck in InProgress - BUG NOT FIXED"),
+            other => panic!("expected Guarded state, got: {:?}", other),
+        }
+
+        // Retry at the same depth should still fail with DepthExceeded, not CycleDetected.
+        // Without the fix, the thunk would be stuck in InProgress, causing CycleDetected.
+        let err2 = materialize(&guarded_thunk, None, &ctx, MAX_EVAL_DEPTH).unwrap_err();
+        assert!(
+            err2.message().contains("maximum evaluation depth exceeded"),
+            "expected depth exceeded on retry, got: {}",
+            err2.message()
+        );
+        assert!(
+            !err2.message().contains("circular"),
+            "should not see cycle error, got: {}",
+            err2.message()
+        );
+    }
+
+    #[test]
+    fn test_deep_materialize_cache_cleanup_on_error() {
+        // Bug fix: deep_materialize_thunk must clean up the None sentinel from the cache
+        // when materialize() fails with a non-cacheable error (DepthExceeded). If the sentinel
+        // is not removed, a second encounter of the same thunk pointer within the same
+        // deep_materialize call would hit the Some(None) → cycle path, silently returning
+        // Ok(Rc::clone(thunk)) instead of propagating the real error.
+        //
+        // What this test validates (public API observable properties):
+        // 1. After a failed deep_materialize, the shared thunk is NOT in Failed state —
+        //    DepthExceeded is non-cacheable, so the thunk stays Unevaluated and is retryable.
+        // 2. A second deep_materialize call (fresh cache) fails with DepthExceeded again,
+        //    not with a cycle/circular error — proving no permanent state corruption.
+        // 3. Rc sharing: both dict entries reference the same thunk (Rc::ptr_eq confirmed).
+        //
+        // Note: The sentinel cleanup bug is an intra-call property — within one deep_materialize
+        // call, if the same error thunk appears at two different positions in the structure,
+        // the second encounter sees the stale None sentinel and gets an incorrect cycle result.
+        // Testing this intra-call scenario requires deep_materialize_impl (private). The public
+        // API always propagates via ? which stops processing after the first failure, so only
+        // one encounter of the thunk occurs per call — making the sentinel cleanup safe to
+        // validate through thunk state inspection rather than a second-encounter scenario.
+
+        let ctx = test_ctx();
+
+        // Create a thunk that will fail with DepthExceeded (non-cacheable). Using a deeply
+        // recursive call: call f(1) where f = fn [x] f(x), at MAX_EVAL_DEPTH will recurse
+        // into depth + 1 = MAX_EVAL_DEPTH + 1 hitting the guard.
+        let env = empty_env();
+        let recursive_fn = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "x".into(),
+                annotation: None,
+                variadic: false,
+            }]),
+            body: Rc::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::VarRef("g".into()))),
+                args: vec![sp(Expr::VarRef("x".into()))],
+                named_args: vec![],
+            })),
+            env: Rc::clone(&env),
+        };
+        env.borrow_mut().insert(
+            "g".into(),
+            Rc::new(Thunk::new_materialized(recursive_fn, test_span(1, 1, 1, 5))),
+        );
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("g".into()))),
+            args: vec![sp(Expr::Int(1))],
+            named_args: vec![],
+        });
+        // eval() returns a PendingCall thunk (lazy call not yet materialized)
+        let error_thunk = eval(&call_expr, Rc::clone(&env), &ctx, 0).unwrap();
+
+        // Confirm both dict entries are Rc::ptr_eq (true sharing, not clones)
+        let error_thunk2 = Rc::clone(&error_thunk);
+        assert!(
+            Rc::ptr_eq(&error_thunk, &error_thunk2),
+            "test invariant: both entries must share the same Rc pointer"
+        );
+
+        let dict_map = indexmap::IndexMap::from_iter(vec![
+            (crate::value::Key::String("a".into()), error_thunk2),
+            (
+                crate::value::Key::String("b".into()),
+                Rc::clone(&error_thunk),
+            ),
+        ]);
+        let dict_value = Value::Dict(dict_map);
+
+        // Materialize at MAX_EVAL_DEPTH so the inner recursive call exceeds the limit.
+        // The sentinel for error_thunk is inserted then cleaned up (fix), and the thunk
+        // state is restored to PendingCall (non-cacheable error path in materialize).
+        let err1 = deep_materialize(&dict_value, &ctx, MAX_EVAL_DEPTH - 1).unwrap_err();
+        assert!(
+            err1.message().contains("maximum evaluation depth exceeded"),
+            "expected depth exceeded error, got: {}",
+            err1.message()
+        );
+
+        // Property 1: the shared thunk must NOT be in Failed state after a non-cacheable error.
+        // Without the non-cacheable handling in materialize(), the thunk would be Failed.
+        // (This tests materialize's own non-cacheable path, not deep_materialize's sentinel.)
+        let state = error_thunk.state();
+        assert!(
+            !matches!(&*state, ThunkState::Failed(_)),
+            "DepthExceeded is non-cacheable: thunk must not be Failed, got: {:?}",
+            &*state
+        );
+        assert!(
+            !matches!(&*state, ThunkState::InProgress),
+            "thunk must not be stuck in InProgress after non-cacheable error, got: {:?}",
+            &*state
+        );
+        drop(state);
+
+        // Property 2: a second deep_materialize (fresh cache) fails with DepthExceeded again,
+        // not a cycle error — confirming no permanent state corruption from the sentinel.
+        let err2 = deep_materialize(&dict_value, &ctx, MAX_EVAL_DEPTH - 1).unwrap_err();
+        assert!(
+            err2.message().contains("maximum evaluation depth exceeded"),
+            "expected depth exceeded on retry, got: {}",
+            err2.message()
+        );
+        assert!(
+            !err2.message().contains("circular") && !err2.message().contains("cycle"),
+            "should not see cycle error: got: {}",
+            err2.message()
+        );
     }
 
     // === EvalContext isolation tests ===

@@ -164,7 +164,7 @@ impl fmt::Display for Value {
 
 /// Compares primitives (Int, Float, String, Bool) by value; cross-variant
 /// comparison always returns false (e.g. `Int(1) != Float(1.0)`). Float uses
-/// IEEE 754 semantics (NaN != NaN). Dict, Function, Builtin, and Seq are
+/// IEEE 754 semantics (NaN != NaN). Dict, Function, Builtin, Seq, and Proxy are
 /// intentionally non-comparable and always return false, even to themselves.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
@@ -173,7 +173,7 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
-            // Dict, Function, Builtin, and Seq are not structurally compared
+            // Dict, Function, Builtin, Seq, and Proxy are not structurally compared
             _ => false,
         }
     }
@@ -201,6 +201,9 @@ pub enum ThunkState {
         call_span: Span,
         ctx: Rc<crate::eval::EvalContext>,
     },
+    /// Wraps an inner thunk and validates its materialized value against an expected type.
+    /// Carries no `ctx` field because it does not evaluate AST directly; it forces the
+    /// inner thunk (which carries its own `ctx`) and then validates the result.
     Guarded {
         inner: Rc<Thunk>,
         expected: Type,
