@@ -17,6 +17,7 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | Fn(τ₁...τₙ → τᵣ)          function (n params, return type)
     | Seq(τ)                     lazy sequence
     | Record(f₁:τ₁...fₙ:τₙ, ρ)  record with row rest ρ
+    | Proxy                      opaque proxy (field access dispatches to handler)
     | α                          type variable
     | Any                        dynamic/unknown type
 
