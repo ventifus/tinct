@@ -1194,3 +1194,53 @@ Row variable level monotonicity violations in `resolve_type_dict` — exact same
 
 - [x] Fix `resolve_type_dict` named row variable level reset in function scope — `src/typecheck.rs:1474` does `state.levels.insert(fresh_name, state.level)` unconditionally after `or_insert_with`, even when the row variable was already mapped. If unification lowered the row variable's level between first and second reference, this resets it upward, violating Kiselyov (2013) monotonicity invariant (levels can only decrease). Fix: split into existing-mapping path (read current level from `state.levels` via `.get().expect()`, no insert) and new-mapping path (insert at `state.level`), matching the C71 fix pattern in `resolve_type_name` lines 1365-1381. (`src/typecheck.rs:1468-1475`) [Major, computer-scientist C31]
 - [x] Fix `resolve_type_dict` named row variable level reset outside function scope — `src/typecheck.rs:1477` does `state.levels.insert(n, state.level)` unconditionally. Fix: check `state.levels.get(n)` first; only insert if absent, matching the C71 fix pattern in `resolve_type_name` lines 1385-1390. (`src/typecheck.rs:1476-1479`) [Major, computer-scientist C31]
+
+### error-infra-nits-b: Error Nits (Part 2, Continued)
+
+Fix-later items from the error-infra-nits-b sprint panel review.
+
+- [x] Fix `all_error_kind_variants()` doc comment claiming "compile-time" exhaustiveness — fixed to accurately say "runtime, not compile-time". (`src/error.rs`) [Nit, computer-scientist C70 panel]
+- [x] Fix `ArityBound::AtMost(1)` still displays "at most 1 arguments" — already correct (singular form was present). (`src/error.rs:23-24`) [Nit, integration-verifier C70 panel]
+- [x] Fix PendingBuiltin comment referencing absolute line numbers — replaced with function names (`materialize()`, `attach_materialization_context()`). (`src/eval.rs:1291-1293`) [Nit, computer-scientist C70 panel]
+- [x] Restore float value in `checked_f64_to_i64` overflow error message — formatted float into op string: `format!("{name}: {f} is out of i64 range")`. (`src/builtins.rs:71`) [Nit, computer-scientist C70 panel]
+
+### misc-nits-b: Miscellaneous Nits (Part 2)
+
+Simple code comment/doc nits from codebase reviews.
+
+- [x] Document type alias entries returning empty dict at runtime (`src/eval.rs`) [Minor]
+- [x] Fix `eval_source()` relative PathBuf comment (`src/lib.rs`) [Nit]
+- [x] Fix `EvalError::Display` mat_span suppression — skip printing when equals definition_span (`src/error.rs`) [Minor]
+- [x] Fix `ArityBound::Exact(1)` displaying "1 arguments" (`src/error.rs`) [Nit]
+- [x] `unreachable!()` in `unescape` unknown escape fallback (`src/parser.rs`) [Nit]
+- [x] Rename `zip-seq`/`zip-dict` → `zip-seq-impl`/`zip-dict-impl` (`stdlib/prelude.llt`) [Nit]
+- [x] Rename `quot_div_by_zero.llt-eval` → `division_by_zero.llt-eval` (`tests/corpus/eval/errors/`) [Nit]
+- [x] Fix stale DESIGN.md line range in `src/desugar.rs:7` docstring [Nit]
+- [x] Fix `grammar.pest` comment capitalization inconsistency [Nit]
+- [x] Fix `ident_char` comment at `grammar.pest:79` [Nit]
+
+### test-framework: Test Framework Enhancements (completed items)
+
+- [x] Extend error test framework: support `=== ERROR: substring` for message validation
+- [x] Add `tests/corpus/eval/regressions/` directory for regression tests
+- [x] Add cross-feature interaction tests (`tests/corpus/eval/cross_feature/`)
+- [x] Rename builtin tests — convention is descriptive names without `test_` prefix; 5 outliers renamed
+- [x] Add unit tests for `split_test_file()` (11 tests)
+- [x] Add unit tests for `has_error_code_prefix()` (10 tests)
+- [x] Fix `has_error_code_prefix()` hardcoded 3-digit window — documented with doc comment
+- [x] Add `tests/corpus/eval/access/` directory with 3 corpus tests
+- [x] Fix `test_corpus_structure` missing required dirs
+- [x] Move flat-root eval corpus tests into subdirectories (functions/, underscore/)
+- [x] Update valid corpus test format documentation
+
+### cycle-findings-c32-a: Major Findings (Cycle #32)
+
+Major findings from Cycle #32 full codebase health review. All items independent.
+
+- [x] Fix `$replace` output size amplification — `builtin_replace` at `src/builtins.rs:577` calls `input.replace(pattern, &replacement)` with no output size guard. An empty-string pattern inserts `replacement` between every character: for a 10MB input and 10MB replacement string, the requested allocation is ~100 TB. Fix: add `const MAX_STRING_SIZE: usize = 64 * 1024 * 1024` alongside `MAX_COLLECT_SIZE`; compute `match_count` (via `str::matches` or `input.chars().count() + 1` for empty pattern), check that output_len ≤ MAX_STRING_SIZE before calling `str::replace`. Return `EvalError::internal(...)` if exceeded. (`src/builtins.rs:557-578`) [Major, security-expert C32]
+- [x] Fix `eval_range_access` doesn't handle `Proxy` values — `eval_dot_access` and `eval_bracket_access` both call `invoke_proxy_handler` when the target materializes to `Value::Proxy`. `eval_range_access` calls `eval_as_dict` instead, producing a confusing "type mismatch: expected Dict, got Proxy" error with no indication that range access is unsupported on proxies. Fix: add a `Value::Proxy` arm in `eval_range_access` that either invokes the proxy handler with a range representation, or returns a clear "range access is not supported on Proxy" error. (`src/eval.rs:1121-1125`) [Major, integration-verifier C32]
+- [x] Add corpus test for `MissingRequiredParam` (E024) — added `tests/corpus/eval/errors/missing_required_param.llt-eval` asserting `[E024]`. (`tests/corpus/eval/errors/`) [Major, test-crafter C32]
+- [x] Add corpus test for `ValueNotSerializable` (E035) — added `tests/corpus/eval/errors/proxy_to_json.llt-eval` with architectural limitation documented: E035 only emitted via CLI JSON path. (`tests/corpus/eval/errors/`) [Major, test-crafter C32]
+- [x] Fuse `unify()` U-VAR arms to use single tree walk — added `collect_all_vars` helper; replaced both call pairs in U-VAR-L and U-VAR-SYM with single traversal; also used in `lower_row_var_levels`. (`src/types.rs:945-984`) [Major, performance-expert C32]
+- [x] Fix `infer_dict` allocates fresh `Substitution` — investigated: false premise; `IndexMap::new()` already has zero-cap; added doc comment to `Substitution::new()` confirming this. (`src/types.rs`) [Major, performance-expert C32]
+- [x] Fix `doc/08-evaluation.md` `$apply` Laziness Design table — updated row to match strictness table ("Materializes function + arg dict; splits by key type; invokes"). (`doc/08-evaluation.md:828`) [Major, eval-engine C32]

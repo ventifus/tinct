@@ -472,6 +472,9 @@ pub fn eval(
             args,
             named_args,
         } => eval_call(func, args, named_args, &env, ctx, &expr.span, depth),
+        // Type alias entries are compile-time-only constructs consumed by the type checker.
+        // At runtime, they evaluate to an empty dict to maintain dict structure without
+        // contributing runtime values.
         Expr::TypeAlias(_inner) => Ok(Rc::new(Thunk::new_materialized(
             Value::Dict(IndexMap::new()),
             expr.span,
@@ -964,25 +967,6 @@ fn get_default(param: &Param) -> Option<Spanned<Expr>> {
         .cloned()
 }
 
-/// Evaluate a target expression, materialize, and return the inner IndexMap if
-/// it's a Dict, otherwise return a type-mismatch error. Shared by all access
-/// chain functions (dot, bracket, range).
-fn eval_as_dict(
-    target: &Spanned<Expr>,
-    env: &Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-    access_span: &Span,
-    depth: usize,
-) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
-    // Must materialize target to obtain IndexMap for key lookup
-    let target_thunk = eval(target, Rc::clone(env), ctx, depth + 1)?;
-    let target_val = materialize(&target_thunk, Some(access_span), ctx, depth + 1)?;
-    match target_val {
-        Value::Dict(map) => Ok(map),
-        _ => Err(EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into()),
-    }
-}
-
 /// Invoke a proxy handler with a key value, returning the result thunk.
 fn invoke_proxy_handler(
     handler: &Rc<Thunk>,
@@ -1119,10 +1103,32 @@ fn eval_range_access(
     access_span: &Span,
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
-    let map = eval_as_dict(target, env, ctx, access_span, depth).map_err(|mut e| {
+    let push_frame = |mut e: Box<EvalError>| -> Box<EvalError> {
         e.push_frame("accessing [..:..]".to_string(), *access_span);
         e
-    })?;
+    };
+    let target_thunk = eval(target, Rc::clone(env), ctx, depth + 1).map_err(&push_frame)?;
+    let target_val =
+        materialize(&target_thunk, Some(access_span), ctx, depth + 1).map_err(push_frame)?;
+
+    let map = match target_val {
+        Value::Dict(map) => map,
+        Value::Proxy { .. } => {
+            return Err(EvalError::type_mismatch_ctx(
+                "range access".to_string(),
+                "Dict",
+                "Proxy",
+                *access_span,
+            )
+            .into());
+        }
+        _ => {
+            return Err(
+                EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into(),
+            );
+        }
+    };
+
     let start_key = start.map(|e| eval_key(e, env, ctx, depth)).transpose()?;
     let end_key = end.map(|e| eval_key(e, env, ctx, depth)).transpose()?;
 
@@ -1305,9 +1311,9 @@ pub fn materialize(
             call_span,
             ctx: Rc::clone(&thunk_ctx),
         };
-        // Note: errors are decorated with mat_span here and again at line 1298-1299
-        // for nested materialize calls. The attach_materialization_context function
-        // has deduplication logic (lines 1139-1147) to prevent duplicate span entries.
+        // Note: errors are decorated with mat_span here and again in the recursive
+        // materialize() call below. The attach_materialization_context() function
+        // has deduplication logic to prevent duplicate span entries.
         match func(builtin_args).map_err(&decorate) {
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion.
@@ -3760,6 +3766,32 @@ mod tests {
             "got: {}",
             err.message()
         );
+    }
+
+    #[test]
+    fn test_range_access_on_proxy() {
+        // Range access on Proxy values should produce a clear error message
+        let span = test_span(1, 1, 1, 5);
+        let handler = Rc::new(Thunk::new_materialized(
+            Value::Int(42), // handler value doesn't matter for this test
+            span,
+        ));
+        let proxy = Value::Proxy { handler };
+
+        let env = empty_env();
+        env.borrow_mut()
+            .insert("p".into(), Rc::new(Thunk::new_materialized(proxy, span)));
+
+        let expr = sp(Expr::RangeAccess {
+            expr: Box::new(sp(Expr::VarRef("p".into()))),
+            start: Some(Box::new(sp(Expr::Int(0)))),
+            end: Some(Box::new(sp(Expr::Int(2)))),
+        });
+        let err = eval(&expr, env, &test_ctx(), 0).unwrap_err();
+        let msg = err.message();
+        assert!(msg.contains("range access"), "got: {}", msg);
+        assert!(msg.contains("expected Dict"), "got: {}", msg);
+        assert!(msg.contains("got Proxy"), "got: {}", msg);
     }
 
     #[test]
