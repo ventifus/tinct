@@ -50,7 +50,7 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 6. **Scan for scope gaps**: does the TODO.md sprint capture all work needed? Look for missing tasks implied by doc/*.md that aren't tracked
 7. Break the sprint's tasks into work items
 8. Identify which agents are needed for each task and which files they'll touch
-9. **Clean up and create SPRINT.md**. Delete any existing SPRINT.md from a previous sprint, then create fresh:
+9. **Create `.tmp/sprint-{slug}.md`** (substituting the actual sprint slug, e.g. `.tmp/sprint-seq-core.md`). Multiple sprint teams may run in parallel — never read or modify another sprint's `.tmp/sprint-*.md` file. Create the file fresh:
 
 ```markdown
 # Sprint: [slug] — [description]
@@ -109,10 +109,10 @@ All three must pass with zero issues before proceeding.
 #### 2c: Sprint Review (Gate)
 
 1. Ensure `.tmp/` directory exists: `mkdir -p .tmp`
-2. Dispatch a `sprint-reviewer` agent to review all uncommitted changes. It writes its full report to `.tmp/sprint-review.md` and returns a verdict: **APPROVE** or **REQUEST_CHANGES**.
+2. Dispatch a `sprint-reviewer` agent to review all uncommitted changes. Brief it with the sprint slug so it writes its full report to `.tmp/sprint-review-{slug}.md`. It returns a verdict: **APPROVE** or **REQUEST_CHANGES**.
 
 - **APPROVE**: exit the inner loop, proceed to Step 3 (panel review)
-- **REQUEST_CHANGES**: dispatch a `fix-reviewer` agent, briefing it to read `.tmp/sprint-review.md` for findings and remediation plan. After fix-reviewer completes, delete `.tmp/sprint-review.md` so the next sprint-review iteration reviews fresh code. Loop back to 2b.
+- **REQUEST_CHANGES**: dispatch a `fix-reviewer` agent, briefing it to read `.tmp/sprint-review-{slug}.md` for findings and remediation plan. After fix-reviewer completes, delete `.tmp/sprint-review-{slug}.md` so the next sprint-review iteration reviews fresh code. Loop back to 2b.
 
 **Stuck detection**: if the sprint-reviewer issues REQUEST_CHANGES 3 times on the same finding, record it as `KNOWN ISSUE` in SPRINT.md, add it to TODO.md, and proceed as if APPROVE. Never halt the sprint.
 
@@ -143,7 +143,7 @@ Use this routing table to build the agent list:
 | **computer-scientist** | _always_ |
 
 Dispatch all matched agents in parallel using `subagent_type` for each. Brief each with:
-- Instruction to read `.tmp/sprint-review.md` for the generalist review findings
+- Instruction to read `.tmp/sprint-review-{slug}.md` for the generalist review findings
 - Instruction to run `git diff HEAD` to see the full sprint diff
 - Instruction to assess the sprint as a whole: correctness, integration, cross-cutting concerns
 - Instruction to use their **Sprint Panel Review** output format (defined in each agent's definition — includes APPROVE/REQUEST_CHANGES verdict)
@@ -168,14 +168,14 @@ Record each fix-now finding's status in SPRINT.md (`TODO` or `FIXED`):
 
 If ANY agent issued `REQUEST_CHANGES` (i.e., any fix-now findings exist):
 
-1. Dispatch a `fix-reviewer` agent — brief it to read SPRINT.md `## Review Findings` for the panel's findings. It evaluates each finding, implements valid fixes, and updates SPRINT.md progress. Do NOT implement fixes yourself.
-2. Mark fixed findings as `FIXED` in SPRINT.md
+1. Dispatch a `fix-reviewer` agent — brief it to read `.tmp/sprint-{slug}.md` `## Review Findings` for the panel's findings. It evaluates each finding, implements valid fixes, and updates the sprint file's progress. Do NOT implement fixes yourself.
+2. Mark fixed findings as `FIXED` in `.tmp/sprint-{slug}.md`
 3. **Build gate**: run `just fmt`, then `just build`, then `just test` — fix any issues
-4. Delete `.tmp/sprint-review.md` so panel agents review fresh code, not stale findings
-5. Re-dispatch the same agent set from Step 3a (via `subagent_type`). Brief each to: run `git diff HEAD` for the current sprint diff, read SPRINT.md `## Review Findings` for remaining fix-now items, and use their Sprint Panel Review output format
+4. Delete `.tmp/sprint-review-{slug}.md` so panel agents review fresh code, not stale findings
+5. Re-dispatch the same agent set from Step 3a (via `subagent_type`). Brief each to: run `git diff HEAD` for the current sprint diff, read `.tmp/sprint-{slug}.md` `## Review Findings` for remaining fix-now items, and use their Sprint Panel Review output format
 6. Repeat until all specialist agents issue `APPROVE` and no in-scope findings remain
 
-**Stuck detection**: if the same finding persists after 3 fix-review cycles, record it as `KNOWN ISSUE` in SPRINT.md and add it to TODO.md so it doesn't get lost when SPRINT.md is recycled. Never halt the sprint — record the issue and move on.
+**Stuck detection**: if the same finding persists after 3 fix-review cycles, record it as `KNOWN ISSUE` in `.tmp/sprint-{slug}.md` and add it to TODO.md so it doesn't get lost. Never halt the sprint — record the issue and move on.
 
 ### Step 5: Sprint Completion
 
@@ -186,9 +186,9 @@ If ANY agent issued `REQUEST_CHANGES` (i.e., any fix-now findings exist):
 
 This skill never commits. When called from `/cycle`, Phase 3 creates the single commit. When run standalone, tell the user: "Sprint complete. All changes are uncommitted — review and commit when ready."
 
-## SPRINT.md Format
+## Sprint File Format
 
-SPRINT.md is an ephemeral tracking document (gitignored, never committed). This skill owns SPRINT.md — no other skill writes to it. It tracks task status during implementation and review findings after the holistic review:
+Each sprint uses `.tmp/sprint-{slug}.md` as its ephemeral tracking document (`.tmp/` is gitignored; the file is never committed). Multiple sprints may run in parallel — each owns only its own file and must never read or modify another sprint's `.tmp/sprint-*.md`. It tracks task status during implementation and review findings after the holistic review:
 
 ```markdown
 # Sprint: [slug] — [description]
@@ -219,7 +219,7 @@ Valid finding statuses: `TODO`, `FIXED`, `KNOWN ISSUE`
 - **Inner loop gates panel**: sprint-reviewer must APPROVE before the specialist panel runs. No point dispatching all specialists if the generalist already sees fix-now problems.
 - **Build gate before every review**: `just fmt` + `just build` + `just test` must all pass before dispatching any reviewer. Don't waste agent time reviewing code that doesn't compile.
 - **Relevant specialists review every sprint**: once past the sprint-reviewer gate, matched specialists plus always-dispatched test-crafter, integration-verifier, and computer-scientist review the full sprint diff. Dispatch is file-based — agents whose domains weren't touched are skipped.
-- **Two-bucket triage**: findings either get fixed now (sprint-scope) or go to TODO.md (future work). Nothing gets lost.
+- **Two-bucket triage**: findings either get fixed now (sprint-scope) or go to TODO.md (genuinely future work). Nit-level findings are always fix-now — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
 - **Never halt**: stuck detection records KNOWN ISSUE and continues. The sprint always completes.
 - **Design decisions come from doc/*.md**: don't invent new decisions without documenting them
 - **No commits**: this skill never commits. The caller (/cycle or the user) handles the commit

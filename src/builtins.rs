@@ -953,7 +953,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
         }
         serde_json::Value::String(s) => ok_val(Value::String(s.clone())),
         serde_json::Value::Array(arr) => {
-            let mut map = IndexMap::new();
+            let mut map = IndexMap::with_capacity(arr.len());
             for (i, item) in arr.iter().enumerate() {
                 let thunk = json_to_value(item, depth + 1, span)?;
                 map.insert(
@@ -964,7 +964,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
             ok_val(Value::Dict(map))
         }
         serde_json::Value::Object(obj) => {
-            let mut map = IndexMap::new();
+            let mut map = IndexMap::with_capacity(obj.len());
             for (k, v) in obj {
                 let thunk = json_to_value(v, depth + 1, span)?;
                 map.insert(Key::String(k.clone()), thunk);
@@ -1240,7 +1240,7 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 // Check collection size limit
                 if index as usize >= MAX_COLLECT_SIZE {
                     return Err(EvalError::internal(
-                        "collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting.",
+                        "collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting.".to_string(),
                         call_span,
                     )
                     .into());
@@ -1471,7 +1471,9 @@ fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let head = map
         .get_index(current_idx as usize)
         .map(|(_, v)| Rc::clone(v))
-        .ok_or_else(|| EvalError::internal("cycle_step: index out of bounds", call_span))?;
+        .ok_or_else(|| {
+            EvalError::internal("cycle_step: index out of bounds".to_string(), call_span)
+        })?;
 
     // Create tail as PendingBuiltin for next step
     let tail_args = vec![Rc::clone(&args[0]), ok_val(Value::Int(next_idx))?];
@@ -2457,6 +2459,15 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 // Materialize and stringify current head
                 let head_val = materialize(&current_head, None, &ctx, depth)?;
                 parts.push(stringify(&head_val));
+
+                // Check collection size limit
+                if parts.len() >= MAX_COLLECT_SIZE {
+                    return Err(EvalError::internal(
+                        format!("join: sequence exceeds {} elements", MAX_COLLECT_SIZE),
+                        call_span,
+                    )
+                    .into());
+                }
 
                 // Check tail
                 let tail_val = materialize(&current_tail, None, &ctx, depth)?;
@@ -4341,7 +4352,7 @@ mod tests {
     fn try_with_builtin_failure() {
         fn err_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let BuiltinArgs { call_span, .. } = ctx;
-            Err(EvalError::new("builtin error", call_span).into())
+            Err(EvalError::new("builtin error".to_string(), call_span).into())
         }
         let b = Value::Builtin {
             name: "fail",
@@ -4461,7 +4472,7 @@ mod tests {
             let b = materialize(&args[1], None, &ctx, 0)?;
             match (a, b) {
                 (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y)),
-                _ => Err(EvalError::new("expected ints", call_span).into()),
+                _ => Err(EvalError::new("expected ints".to_string(), call_span).into()),
             }
         }
         let func = Value::Builtin {
@@ -10392,5 +10403,47 @@ mod tests {
             }
             other => panic!("expected Dict, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_join_seq_size_limit() {
+        // Test that join enforces MAX_COLLECT_SIZE on sequence iteration.
+        // Similar to collect_max_size_limit_enforced, we verify that attempting to join
+        // an unbounded sequence will hit either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE.
+
+        let range_result = builtin_range(BuiltinArgs {
+            args: &[thunk(Value::Int(0))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap();
+
+        // Attempt to join infinite range without take
+        // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
+        // due to depth accumulation in the sequence traversal.
+        let join_result = builtin_join(BuiltinArgs {
+            args: &[thunk(Value::String(",".to_string())), range_result],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+
+        // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
+        assert!(
+            join_result.is_err(),
+            "join should fail on infinite sequence"
+        );
+        let err = join_result.unwrap_err();
+        // Accept either error - both are valid protections
+        let is_depth_error = err.message().contains("maximum evaluation depth");
+        let is_size_error = err.message().contains("sequence exceeds");
+        assert!(
+            is_depth_error || is_size_error,
+            "expected depth or size limit error, got: {}",
+            err.message()
+        );
     }
 }

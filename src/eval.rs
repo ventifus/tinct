@@ -27,7 +27,7 @@ pub struct EvalConfig {
     pub base_dir: PathBuf,
     pub stdlib_env: Rc<RefCell<Environment>>,
     pub no_fs: bool,
-    // future: allowed_paths, sandbox_policy
+    // future: allowed_paths (cap-std include-fd-hardening sprint)
 }
 
 /// Mutable evaluation state (include guard, caching).
@@ -85,7 +85,10 @@ fn key_in_range(k: &Key, start: Option<&Key>, end: Option<&Key>, span: Span) -> 
     let after_start = match start {
         Some(s) => {
             let ord = k.partial_cmp(s).ok_or_else(|| {
-                EvalError::internal("range access requires comparable key types", span)
+                EvalError::internal(
+                    "range access requires comparable key types".to_string(),
+                    span,
+                )
             })?;
             ord != std::cmp::Ordering::Less
         }
@@ -94,7 +97,10 @@ fn key_in_range(k: &Key, start: Option<&Key>, end: Option<&Key>, span: Span) -> 
     let before_end = match end {
         Some(e) => {
             let ord = k.partial_cmp(e).ok_or_else(|| {
-                EvalError::internal("range access requires comparable key types", span)
+                EvalError::internal(
+                    "range access requires comparable key types".to_string(),
+                    span,
+                )
             })?;
             ord == std::cmp::Ordering::Less
         }
@@ -615,21 +621,18 @@ fn eval_dict(
             Some(key_expr) => eval_key(key_expr, parent_env, ctx, depth)?,
             None => {
                 let k = Key::Int(auto_index);
-                // Overflow unreachable: memory exhaustion prevents a single dict from reaching i64::MAX entries.
-                auto_index += 1;
+                auto_index = auto_index
+                    .checked_add(1)
+                    .ok_or_else(|| EvalError::integer_overflow("dict auto-index", entry.span))?;
                 k
             }
         };
 
         if dict_map.contains_key(&key) {
-            return Err(Box::new(EvalError {
-                kind: crate::error::ErrorKind::DuplicateKey {
-                    key: key.to_string(),
-                },
-                definition_span: entry.span,
-                materialization_span: None,
-                stack: Vec::new(),
-            }));
+            return Err(Box::new(EvalError::duplicate_key(
+                &key.to_string(),
+                entry.span,
+            )));
         }
 
         let thunk = Rc::new(Thunk::new_unevaluated(
@@ -683,7 +686,11 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
 
 /// Extract a human-readable label from a function expression for stack frames.
 fn func_label(expr: &Expr) -> Cow<'static, str> {
-    Cow::Owned(format!("call {}", func_path(expr)))
+    // Fast path for common VarRef case: build label directly to avoid intermediate format! in func_path
+    match expr {
+        Expr::VarRef(name) => Cow::Owned(format!("call ${name}")),
+        _ => Cow::Owned(format!("call {}", func_path(expr))),
+    }
 }
 
 fn func_path(expr: &Expr) -> String {
@@ -896,14 +903,10 @@ fn bind_args_thunks(
         // C-NO-OVERLAP: named arg must not target a positionally-bound parameter
         if let Some(idx) = regular_params.iter().position(|p| &p.name == name) {
             if idx < positional.len() {
-                return Err(Box::new(EvalError {
-                    kind: crate::error::ErrorKind::NamedArgConflict {
-                        param: name.clone(),
-                    },
-                    definition_span: *call_span,
-                    materialization_span: None,
-                    stack: Vec::new(),
-                }));
+                return Err(Box::new(EvalError::named_arg_conflict(
+                    name.clone(),
+                    *call_span,
+                )));
             }
         }
 
@@ -911,12 +914,10 @@ fn bind_args_thunks(
         // (Kotlin model: ANY param can be named, not just optional params)
         let param_exists = regular_params.iter().any(|p| &p.name == name);
         if !param_exists {
-            return Err(Box::new(EvalError {
-                kind: crate::error::ErrorKind::UnknownNamedArg { name: name.clone() },
-                definition_span: *call_span,
-                materialization_span: None,
-                stack: Vec::new(),
-            }));
+            return Err(Box::new(EvalError::unknown_named_arg(
+                name.clone(),
+                *call_span,
+            )));
         }
     }
 
@@ -1597,21 +1598,13 @@ pub fn materialize(
 /// `depth` is checked against [`MAX_EVAL_DEPTH`] to prevent stack overflow on
 /// deeply nested structures. Cycle detection and sharing preservation are handled
 /// via a `HashMap<*const Thunk, Option<Rc<Thunk>>>` cache; see
-/// `deep_materialize_impl` for the dual-purpose semantics.
+/// `deep_materialize_thunk` for the dual-purpose semantics.
 pub fn deep_materialize(val: &Value, ctx: &Rc<EvalContext>, depth: usize) -> EvalResult<Value> {
-    use std::collections::HashMap;
     let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
     deep_materialize_impl(val, ctx, depth, &mut cache)
 }
 
 /// Deep-force a value, recursively materializing all thunks in dicts and seqs.
-///
-/// The `cache` serves two purposes:
-/// 1. **Cycle detection** (Launchbury 1993 blackholing): an entry with value `None`
-///    means we are currently processing this thunk — re-encountering it is a cycle.
-/// 2. **Sharing preservation** (Launchbury 1993 sharing invariant): an entry with
-///    value `Some(rc)` means this thunk was already deep-materialized — reuse it
-///    so that `Rc::ptr_eq` holds for outputs derived from shared inputs.
 fn deep_materialize_impl(
     val: &Value,
     ctx: &Rc<EvalContext>,
@@ -1647,6 +1640,13 @@ fn deep_materialize_impl(
 
 /// Deep-materialize a single thunk, preserving sharing via the cache.
 ///
+/// The `cache` serves two purposes:
+/// 1. **Cycle detection** (Launchbury 1993 blackholing): an entry with value `None`
+///    means we are currently processing this thunk — re-encountering it is a cycle.
+/// 2. **Sharing preservation** (Launchbury 1993 sharing invariant): an entry with
+///    value `Some(rc)` means this thunk was already deep-materialized — reuse it
+///    so that `Rc::ptr_eq` holds for outputs derived from shared inputs.
+///
 /// Returns an `Rc<Thunk>` that is either:
 /// - The cached result (if this thunk pointer was already processed — sharing preserved)
 /// - The original `Rc::clone` (if this thunk is currently being processed — cycle)
@@ -1665,6 +1665,8 @@ fn deep_materialize_thunk(
     }
     // Mark as in-progress (cycle sentinel)
     cache.insert(thunk_ptr, None);
+    // materialize uses current depth because it has its own depth guard;
+    // deep_materialize_impl increments to account for one level of nesting
     let v = match materialize(thunk, None, ctx, depth) {
         Ok(v) => v,
         Err(e) => {
@@ -5517,7 +5519,7 @@ mod tests {
     #[test]
     fn test_error_display_with_full_stack() {
         // Integration test: verify the Display output includes all stack frames
-        let err = EvalError::new("something broke", test_span(1, 5, 1, 12))
+        let err = EvalError::new("something broke".to_string(), test_span(1, 5, 1, 12))
             .with_materialization_span(test_span(10, 1, 10, 5))
             .with_frame("call $inner", test_span(5, 1, 5, 20))
             .with_frame("call $outer", test_span(8, 1, 8, 25));
@@ -6088,7 +6090,7 @@ mod tests {
         // When a PendingBuiltin fails, it should transition to Failed state
         fn failing_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let crate::value::BuiltinArgs { call_span, .. } = ctx;
-            Err(EvalError::new("builtin intentionally failed", call_span).into())
+            Err(EvalError::new("builtin intentionally failed".to_string(), call_span).into())
         }
 
         let env = empty_env();

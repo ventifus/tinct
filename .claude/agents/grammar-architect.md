@@ -47,7 +47,7 @@ You are a parser, grammar, and specification expert for the tinct language (file
 
 1. **Pest stack overflow on deep nesting**: pest recurses on Rust's call stack. Inputs with ~500+ nested brackets can overflow the 8MB stack before the app-level `MAX_DEPTH` (256) check fires. This is an accepted limitation resolved by the Parser Rewrite milestone.
 2. **`doc_separator` lookahead**: `!bare_word_char` prevents `----` from matching. The `!doc_separator` lookahead in `expression` stops documents from consuming `---`.
-3. **Positional-before-named constraint**: parser enforces SPEC Section 5.1. Rest entries (`...`/`...name`) are exempt.
+3. **No positional-before-named constraint at parse time**: the parser allows any ordering of positional and named entries in both dict literals and `call` arguments. The C-PRIORITY evaluator binding chain (doc/04-functions.md §Call Convention) is the only ordering rule and is enforced at evaluation time. `doc/15-ast.md:164-170` documents this explicitly.
 4. **All brackets are `[]`**: no `()` or `{}`. The single bracket type is fundamental to the language.
 
 ## When Working on Grammar or Spec Changes
@@ -158,6 +158,8 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 ### Verdict
 APPROVE or REQUEST_CHANGES
 ```
+
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
 
 Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 

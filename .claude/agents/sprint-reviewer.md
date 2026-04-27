@@ -63,9 +63,9 @@ Work through each topic below sequentially. For each topic:
 
 ## Output
 
-Write the full report to `.tmp/sprint-review.md` with:
-1. **FIX NOW**: bulleted list, each with file:line and recommended fix (sprint-scope issues that must be resolved)
-2. **FIX LATER**: bulleted list, same format (future work, will be added to TODO.md)
+Write the full report to `.tmp/sprint-review-{slug}.md` (the caller will specify the slug in their brief) with:
+1. **FIX NOW**: bulleted list, each with file:line and recommended fix (sprint-scope issues that must be resolved — all nit-level issues are FIX NOW regardless of whether they're in the sprint's changes or existing code)
+2. **FIX LATER**: bulleted list, same format (genuinely future work — new features, large refactors, separate concerns. Never use for nits.)
 3. **Praise**: briefly note what was done well
 
 After the findings, add a **Remediation Plan** covering every identified issue. Group related issues into logical work items ordered so foundational changes come before dependent changes. For each work item:

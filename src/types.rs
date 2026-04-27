@@ -810,7 +810,7 @@ fn unify_remainders(
             ))
         }
 
-        // Fallback: all cases should be covered by the above patterns
+        // All 7 pattern cases are exhaustive over (u1_empty, tail1, u2_empty, tail2); this arm is dead by invariant.
         _ => unreachable!("unify_remainders: all cases should be covered"),
     }
 }

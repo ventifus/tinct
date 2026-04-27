@@ -95,7 +95,7 @@ All errors are constructed via `EvalError` methods that create an error with a s
 | `named_arg_rejected(builtin, span)` | `NamedArgRejected { builtin }` | `"{builtin} does not accept named arguments"` | Call expression |
 | `internal(message, span)` | `Internal { message }` | `"{message}"` (implementation-defined) | Context-dependent |
 
-See `src/error.rs` for the full set of 26 `ErrorKind` variants and their constructors. Additional variants not listed above include: `UndefinedVariable`, `TypeAssertFailed`, `NamedArgConflict`, `UnknownNamedArg`, `DuplicateKey`, `JsonDepthExceeded`, `IncludeNotAvailable`, `IncludeIoError`, `IncludeCycle`, `IncludeParseFailed`, `IncludeFileTooLarge`, `ParseConversion`, `JsonParse`, and `JsonRange`.
+See `src/error.rs` for the full set of 28 `ErrorKind` variants and their constructors. Additional variants not listed above include: `UndefinedVariable`, `TypeAssertFailed`, `NamedArgConflict`, `UnknownNamedArg`, `DuplicateKey`, `JsonDepthExceeded`, `IncludeNotAvailable`, `IncludeIoError`, `IncludeCycle`, `IncludeParseFailed`, `IncludeFileTooLarge`, `ParseConversion`, `JsonParse`, and `JsonRange`.
 
 **Special error properties:**
 
@@ -773,7 +773,7 @@ Builtin error messages are prefixed with the builtin name when the error origina
 
 ## Error Categories — Complete Reference
 
-All 26 `ErrorKind` variants map to stable error codes and human-readable messages:
+All 28 `ErrorKind` variants map to stable error codes and human-readable messages:
 
 | ErrorKind Variant | Error Code | Message Pattern | Definition Site |
 |-------------------|------------|----------------|-----------------|
@@ -806,7 +806,7 @@ All 26 `ErrorKind` variants map to stable error codes and human-readable message
 | **UserError** | E080 | `"{message}"` (user-provided) | `$error` call expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
-The 27 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
+The 28 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
 
 ## Span Assignment Corrections
 
