@@ -3,7 +3,6 @@
 .claude/settings.local.json
 .mcp.json
 .tmp/
-SPRINT.md
 # Rust build artifacts
 /target
 /tinct/target

@@ -50,7 +50,8 @@ The evaluator threads an `EvalContext` through `eval()`, `materialize()`, and bu
 struct EvalConfig {
     base_dir: PathBuf,
     stdlib_env: Rc<RefCell<Environment>>,
-    // future: sandbox_policy, max_depth_override, trace_enabled
+    no_fs: bool,
+    // future: allowed_paths (cap-std include-fd-hardening sprint)
 }
 
 struct EvalState {

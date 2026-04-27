@@ -18,9 +18,17 @@ pub enum ArityBound {
 impl fmt::Display for ArityBound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Exact(1) => write!(f, "1 argument"),
             Self::Exact(n) => write!(f, "{n} arguments"),
+            Self::AtMost(1) => write!(f, "at most 1 argument"),
             Self::AtMost(n) => write!(f, "at most {n} arguments"),
-            Self::Range(lo, hi) => write!(f, "{lo} to {hi} arguments"),
+            Self::Range(lo, hi) => {
+                if *lo == *hi && *lo == 1 {
+                    write!(f, "1 argument")
+                } else {
+                    write!(f, "{lo} to {hi} arguments")
+                }
+            }
         }
     }
 }
@@ -431,17 +439,15 @@ pub struct EvalError {
 impl EvalError {
     /// Compatibility shim for existing callers. Delegates to `internal()`.
     /// New code should use typed ErrorKind variants instead.
-    pub fn new(message: impl Into<String>, definition_span: Span) -> Self {
+    pub fn new(message: String, definition_span: Span) -> Self {
         Self::internal(message, definition_span)
     }
 
     /// Create an error with the Internal escape hatch kind.
     /// Use typed ErrorKind variants instead when possible.
-    pub fn internal(message: impl Into<String>, definition_span: Span) -> Self {
+    pub fn internal(message: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::Internal {
-                message: message.into(),
-            },
+            kind: ErrorKind::Internal { message },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -816,7 +822,7 @@ mod tests {
     #[test]
     fn test_eval_error_new() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::new("something broke", span);
+        let err = EvalError::new("something broke".to_string(), span);
         assert_eq!(err.message(), "something broke");
         assert_eq!(err.definition_span, span);
         assert_eq!(err.materialization_span, None);
@@ -827,7 +833,8 @@ mod tests {
     fn test_eval_error_with_materialization_span() {
         let def_span = test_span(1, 1, 1, 5);
         let mat_span = test_span(10, 3, 10, 8);
-        let err = EvalError::new("lazy fail", def_span).with_materialization_span(mat_span);
+        let err =
+            EvalError::new("lazy fail".to_string(), def_span).with_materialization_span(mat_span);
         assert_eq!(err.materialization_span, Some(mat_span));
     }
 
@@ -835,7 +842,7 @@ mod tests {
     fn test_eval_error_with_frame() {
         let span = test_span(1, 1, 1, 5);
         let frame_span = test_span(5, 1, 5, 10);
-        let err = EvalError::new("err", span).with_frame("my_function", frame_span);
+        let err = EvalError::new("err".to_string(), span).with_frame("my_function", frame_span);
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "my_function");
         assert_eq!(err.stack[0].span, frame_span);
@@ -875,7 +882,7 @@ mod tests {
     #[test]
     fn test_eval_error_display_basic() {
         let span = test_span(3, 5, 3, 10);
-        let err = EvalError::new("oops", span);
+        let err = EvalError::new("oops".to_string(), span);
         let display = format!("{err}");
         assert_eq!(display, "[E099] oops (defined at 3:5-3:10)");
     }
@@ -886,7 +893,7 @@ mod tests {
         let mat_span = test_span(20, 1, 20, 5);
         let frame1_span = test_span(10, 2, 10, 8);
         let frame2_span = test_span(15, 1, 15, 12);
-        let err = EvalError::new("bad value", def_span)
+        let err = EvalError::new("bad value".to_string(), def_span)
             .with_materialization_span(mat_span)
             .with_frame("outer", frame1_span)
             .with_frame("inner", frame2_span);
@@ -901,7 +908,7 @@ mod tests {
     #[test]
     fn test_eval_error_push_frame() {
         let span = test_span(1, 1, 1, 5);
-        let mut err = EvalError::new("error", span);
+        let mut err = EvalError::new("error".to_string(), span);
 
         assert!(err.stack.is_empty());
 
@@ -1099,9 +1106,11 @@ mod tests {
     #[test]
     fn test_arity_bound_display() {
         // Test Display output for all ArityBound variants
-        assert_eq!(format!("{}", ArityBound::Exact(1)), "1 arguments");
+        assert_eq!(format!("{}", ArityBound::Exact(1)), "1 argument");
         assert_eq!(format!("{}", ArityBound::Exact(2)), "2 arguments");
+        assert_eq!(format!("{}", ArityBound::AtMost(1)), "at most 1 argument");
         assert_eq!(format!("{}", ArityBound::AtMost(3)), "at most 3 arguments");
+        assert_eq!(format!("{}", ArityBound::Range(1, 1)), "1 argument");
         assert_eq!(format!("{}", ArityBound::Range(1, 3)), "1 to 3 arguments");
         assert_eq!(format!("{}", ArityBound::Range(0, 5)), "0 to 5 arguments");
     }

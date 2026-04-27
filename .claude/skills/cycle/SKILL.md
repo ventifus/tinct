@@ -41,7 +41,7 @@ Brief each agent with:
 
 After all agents report back:
 1. **Deduplicate**: if multiple agents flag the same issue, keep the most detailed description
-2. **Update TODO.md** with all findings: add to existing phases or create new sub-phases. Tag each with severity.
+2. **Update TODO.md** with Critical, Major, and Minor findings only. Skip Nit-level items — they're too small to track and will be addressed naturally when the relevant code is sprinted. Tag each added item with its severity.
 
 Do NOT read agent definitions into your own context. Do NOT create intermediate files.
 
@@ -72,7 +72,7 @@ Only edit TODO.md — do not create other files. If no changes are needed, move 
 
 1. Check if there are any changes to commit (`git status --short`). If no changes, skip the commit.
 2. Run `just test` one final time to confirm everything is green
-3. Stage all changes: `git add -u` for tracked files, then `git add -A --ignore-errors` to pick up any new files (gitignore already excludes SPRINT.md, .tmp/, .training/, etc.)
+3. Stage all changes: `git add -u` for tracked files, then `git add -A --ignore-errors` to pick up any new files (gitignore already excludes .tmp/, .training/, etc.)
 4. Create a single commit. The sprint reports its slug and description — use them for the message:
    - Analysis + sprint: `"[slug]: [description]"`
    - Analysis only (sprint skipped): `"review: update TODO with codebase health findings"`
@@ -108,5 +108,5 @@ Fields:
 - **Never skip Phase 1**: every cycle starts with a health check, even if the previous cycle just did one. Code changes from the sprint may have introduced new issues.
 - **One sprint per cycle**: do not run multiple sprints in a single cycle. Each sprint gets its own health check sandwich.
 - **One commit per cycle**: `/sprint` never commits. All changes accumulate as uncommitted edits until Phase 4 creates the single commit.
-- **Context management**: dispatch all heavy work to agents. Your context stays focused on coordination: TODO.md grooming, SPRINT.md status, commit logistics, and cycle logging.
+- **Context management**: dispatch all heavy work to agents. Your context stays focused on coordination: TODO.md grooming, sprint file status, commit logistics, and cycle logging.
 - **No ralph-loop**: this skill loops internally. Do not use ralph-loop — its stop hook conflicts with background agent polling.

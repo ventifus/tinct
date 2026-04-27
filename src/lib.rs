@@ -197,18 +197,20 @@ pub fn value_to_json(
             }
         }
         Value::Function { .. } | Value::Builtin { .. } => Err(error::EvalError::new(
-            "cannot serialize Function to JSON",
+            "cannot serialize Function to JSON".to_string(),
             ast::Span::origin(),
         )
         .into()),
         Value::Seq { head, .. } => Err(error::EvalError::new(
-            "cannot serialize Seq to JSON: use $collect first",
+            "cannot serialize Seq to JSON: use $collect first".to_string(),
             head.span,
         )
         .into()),
-        Value::Proxy { .. } => {
-            Err(error::EvalError::new("cannot serialize Proxy to JSON", ast::Span::origin()).into())
-        }
+        Value::Proxy { .. } => Err(error::EvalError::new(
+            "cannot serialize Proxy to JSON".to_string(),
+            ast::Span::origin(),
+        )
+        .into()),
     }
 }
 

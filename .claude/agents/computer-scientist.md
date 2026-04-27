@@ -184,6 +184,8 @@ Group fixes by the formal property they restore. Foundational fixes first.
 APPROVE or REQUEST_CHANGES
 ```
 
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+
 Issue **APPROVE** if no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist.
 
 ## Citation Style

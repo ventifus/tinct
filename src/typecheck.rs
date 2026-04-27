@@ -89,27 +89,24 @@ fn typecheck_document(
         let is_last = i == exprs.len() - 1;
 
         // Special handling for Dict expressions at document level to preserve schemes
-        if matches!(&expr.node, Expr::Dict(_)) {
-            if let Expr::Dict(entries) = &expr.node {
-                match infer_dict(entries, &env, state, type_map) {
-                    Ok((ty, schemes)) => {
-                        if is_last {
-                            result_type = ty;
-                            last_dict_schemes = Some(schemes);
-                        } else {
-                            let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
-                            // Thread schemes into the environment
-                            for (name, scheme) in &schemes {
-                                new_env.insert_scheme(name.clone(), scheme.clone());
-                            }
-                            let mut alias_errs =
-                                register_type_aliases(expr, &mut new_env, &env, state);
-                            errors.append(&mut alias_errs);
-                            env = Rc::new(new_env);
+        if let Expr::Dict(entries) = &expr.node {
+            match infer_dict(entries, &env, state, type_map) {
+                Ok((ty, schemes)) => {
+                    if is_last {
+                        result_type = ty;
+                        last_dict_schemes = Some(schemes);
+                    } else {
+                        let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
+                        // Thread schemes into the environment
+                        for (name, scheme) in &schemes {
+                            new_env.insert_scheme(name.clone(), scheme.clone());
                         }
+                        let mut alias_errs = register_type_aliases(expr, &mut new_env, &env, state);
+                        errors.append(&mut alias_errs);
+                        env = Rc::new(new_env);
                     }
-                    Err(mut errs) => errors.append(&mut errs),
                 }
+                Err(mut errs) => errors.append(&mut errs),
             }
         } else {
             match infer_expr(expr, &env, state, type_map) {
@@ -900,7 +897,17 @@ fn check_call_with_scheme(
                 Ok(state.subst.apply(ret))
             }
         }
-        Type::Any => Ok(Type::Any),
+        Type::Any => {
+            // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
+            // This loop runs only for Any-typed callees — for Type::Function arms, positional args are
+            // already inferred exactly once inside CALL-MONO (check_expr) and CALL-POLY (infer_expr).
+            // Running it here unconditionally would cause double-inference for Function calls, mutating
+            // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
+            for arg in args {
+                let _ = infer_expr(arg, env, state, type_map)?;
+            }
+            Ok(Type::Any)
+        }
         _ => Err(vec![TypeError::not_a_function(&func_ty, span)]),
     }
 }
@@ -1040,7 +1047,17 @@ fn check_call(
                 Ok(state.subst.apply(inst_ret))
             }
         }
-        Type::Any => Ok(Type::Any),
+        Type::Any => {
+            // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
+            // This loop runs only for Any-typed callees — for Type::Function arms, positional args are
+            // already inferred exactly once inside CALL-MONO (check_expr) and CALL-POLY (infer_expr).
+            // Running it here unconditionally would cause double-inference for Function calls, mutating
+            // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
+            for arg in args {
+                let _ = infer_expr(arg, env, state, type_map)?;
+            }
+            Ok(Type::Any)
+        }
         _ => Err(vec![TypeError::not_a_function(&func_ty, span)]),
     }
 }
@@ -3984,6 +4001,73 @@ mod tests {
             result_ty,
             Type::StringLiteral("hello".to_string()),
             "CALL-POLY across document boundary should resolve return type to StringLiteral(\"hello\"), got: {result_ty}"
+        );
+    }
+
+    // -- Type::Any callee positional arg type_map population --
+
+    #[test]
+    fn test_call_any_callee_populates_type_map_for_positional_args() {
+        // Regression test for the Type::Any arm in check_call and check_call_with_scheme.
+        //
+        // When the callee resolves to Type::Any (e.g., a variable bound to Any in the env),
+        // positional arguments must still be inferred and recorded in type_map — otherwise
+        // LSP hover over argument expressions in Any-typed calls produces no type information.
+        //
+        // The fix (typecheck.rs check_call ~1050, check_call_with_scheme ~900) added an
+        // `infer_expr` loop inside the Type::Any arm only. This test guards that loop:
+        // if it were removed, the span of `42` would not appear in type_map and the assertion
+        // below would fail.
+        //
+        // SETUP: `f` is bound to TypeScheme::mono(Type::Any) in the parent env, simulating
+        // any runtime-typed or externally-typed callable (e.g., a function loaded from JSON,
+        // an FFI binding, or a value whose type cannot be statically determined). The call
+        // `[call $f 42]` exercises check_call via the monomorphic (empty type_vars) path.
+        let input = "[call $f 42]";
+        let file = crate::parse(input).unwrap();
+
+        // Build a parent env with `f: Any` — monomorphic scheme, empty type_vars.
+        let mut parent_env = TypeEnv::new();
+        parent_env.insert_scheme("f".to_string(), TypeScheme::mono(Type::Any));
+        let parent_env = Rc::new(parent_env);
+
+        let mut state = InferState::new();
+        let mut type_map = TypeMap::new();
+
+        let expr = &file.node.documents[0].node.expressions[0];
+        let result = infer_expr(expr, &parent_env, &mut state, &mut Some(&mut type_map));
+
+        // The call to an Any-typed function returns Any.
+        assert_eq!(
+            result,
+            Ok(Type::Any),
+            "calling Any-typed callee should return Type::Any, got: {result:?}"
+        );
+
+        // Extract the span of the `42` argument from the parsed AST to look it up in type_map.
+        let arg_span = match &expr.node {
+            Expr::Call { args, .. } => {
+                assert_eq!(args.len(), 1, "expected exactly one positional arg");
+                let arg = &args[0];
+                (arg.span.start.offset, arg.span.end.offset)
+            }
+            other => panic!("expected Expr::Call, got {other:?}"),
+        };
+
+        // The span of `42` must appear in type_map: the Type::Any arm must have inferred it.
+        assert!(
+            type_map.contains_key(&arg_span),
+            "type_map should contain the span of `42` (span {arg_span:?}) after calling an Any-typed function, \
+             but only found spans: {:?}",
+            type_map.keys().collect::<Vec<_>>()
+        );
+
+        // The inferred type of `42` should be IntLiteral(42).
+        assert_eq!(
+            type_map[&arg_span],
+            Type::IntLiteral(42),
+            "the positional arg `42` should infer to IntLiteral(42), got: {:?}",
+            type_map[&arg_span]
         );
     }
 }
