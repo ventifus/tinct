@@ -72,7 +72,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `first`, `rest` | Structural — returns thunks in new positions |
 | `cons`, `conj`, `concat` | Structural — combines thunks into new structure |
 | `reverse`, `reindex` | Structural — reorders/renumbers, values untouched |
-| `sort`, `sort-by` | **Materializing** — must compare values to determine order. `$sort` uses lexicographic comparison for strings, numeric comparison for numbers. Sorting mixed types (e.g., strings and numbers in the same collection) is a type error caught at compile time. |
+| `sort`, `sort-by` | **Materializing** — must compare values to determine order. `$sort` uses lexicographic comparison for strings, numeric comparison for numbers. `$sort` errors at runtime when called on a collection containing incompatible types for comparison; no compile-time detection. |
 
 **Dict operations** (any key type, preserve keys):
 
@@ -166,8 +166,8 @@ first-ten: [call $collect [call $take 10 $squares]]
 
 | Group | Stable alias | Primary name | Rationale |
 |-------|-------------|--------------|-----------|
-| Arithmetic | `add`, `sub`, `mul`, `div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). |
-| Comparison | `lt`, `eq` | `<`, `=` | Cross-type Int/Float coercion at host level. `>`, `<=`, `>=` are derived from `<` and `not`. |
+| Arithmetic | `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). |
+| Comparison | `builtin-lt`, `builtin-eq` | `<`, `=` | Cross-type Int/Float coercion at host level. `>`, `<=`, `>=` are derived from `<` and `not`. |
 | Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is forced. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
 | Dict primitives | — | `keys`, `length`, `merge`, `append` | Operate on IndexMap directly. |
@@ -185,12 +185,12 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 
 | Function | Derivation | Notes |
 |----------|-----------|-------|
-| `<` | `[fn [a b] [call $lt $a $b]]` | Shadowable; calls stable alias `$lt` |
-| `=` | `[fn [a b] [call $eq $a $b]]` | Shadowable; calls stable alias `$eq` |
-| `+` | `[fn [a b] [call $add $a $b]]` | Shadowable; calls `$add` |
-| `-` | `[fn [a b] [call $sub $a $b]]` | Shadowable; calls `$sub` |
-| `*` | `[fn [a b] [call $mul $a $b]]` | Shadowable; calls `$mul` |
-| `/` | `[fn [a b] [call $div $a $b]]` | Shadowable; calls `$div` |
+| `<` | `[fn [a b] [call $builtin-lt $a $b]]` | Shadowable; calls stable alias `$builtin-lt` |
+| `=` | `[fn [a b] [call $builtin-eq $a $b]]` | Shadowable; calls stable alias `$builtin-eq` |
+| `+` | `[fn [a b] [call $builtin-add $a $b]]` | Shadowable; calls `$builtin-add` |
+| `-` | `[fn [a b] [call $builtin-sub $a $b]]` | Shadowable; calls `$builtin-sub` |
+| `*` | `[fn [a b] [call $builtin-mul $a $b]]` | Shadowable; calls `$builtin-mul` |
+| `/` | `[fn [a b] [call $builtin-div $a $b]]` | Shadowable; calls `$builtin-div` |
 | `if` | `[fn [c t e] [call $builtin-if $c $t $e]]` | Shadowable; calls `$builtin-if` |
 | `filter` | `[fn [pred xs] [call $builtin-filter $pred $xs]]` | Shadowable; calls `$builtin-filter` |
 | `map` | `[fn [f xs] [call $builtin-map $f $xs]]` | Shadowable; calls `$builtin-map` |
@@ -198,13 +198,13 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `take` | `[fn [n xs] [call $builtin-take $n $xs]]` | Shadowable; calls `$builtin-take` |
 | `drop` | `[fn [n xs] [call $builtin-drop $n $xs]]` | Shadowable; calls `$builtin-drop` |
 | `not` | `[fn [x] [call $builtin-if $x false true]]` | Uses `$builtin-if` directly |
-| `>` | `[fn [a b] [call $lt $b $a]]` | Argument swap |
-| `<=` | `[fn [a b] [call $not [call $lt $b $a]]]` | Negated `>` |
-| `>=` | `[fn [a b] [call $not [call $lt $a $b]]]` | Negated `<` |
+| `>` | `[fn [a b] [call $builtin-lt $b $a]]` | Argument swap |
+| `<=` | `[fn [a b] [call $not [call $builtin-lt $b $a]]]` | Negated `>` |
+| `>=` | `[fn [a b] [call $not [call $builtin-lt $a $b]]]` | Negated `<` |
 | `and` | `[fn [a b] [call $builtin-if $a $b false]]` | Short-circuit via lazy args |
 | `or` | `[fn [a b] [call $builtin-if $a $a $b]]` | Pass-through: returns `a` if truthy |
-| `quot` | `[fn [a b] [call $trunc [call $div $a $b]]]` | Truncation toward zero |
-| `mod` | `[fn [a b] [call $- $a [call $* [call $quot $a $b] $b]]]` | Algebraic identity |
+| `quot` | `[fn [a b] [call $trunc [call $builtin-div $a $b]]]` | Truncation toward zero |
+| `mod` | `[fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]` | Algebraic identity |
 | `ceil` | `[fn [x] [call $- 0 [call $floor [call $- 0 $x]]]]` | `ceil(x) = -floor(-x)` |
 | `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
 | `words` | `[call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]` | `split` + `filter` |
@@ -222,13 +222,13 @@ The Tinct stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `inc
 3. User code's environment inherits from the stdlib environment
 
 ```
-Rust primitives ($lt, $eq, $add, $builtin-if, $builtin-filter, $proxy, ...)
+Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-filter, $proxy, ...)
   └── Tinct prelude (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
         └── User code / domain stdlib ($include "stdlib/sql.llt" shadows filter, map, <, =, ...)
               └── User predicates and programs
 ```
 
-## Stdlib Function Reference (62 functions)
+## Stdlib Function Reference (~98 total: 46 Rust builtins + 52 LLT functions)
 
 Functions available to all user code. Most are implemented in Tinct in `stdlib/prelude.llt`. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`) are omitted.
 
@@ -252,7 +252,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `not` | `[fn [x] ...]` | Boolean negation |
 | `and` | `[fn [a b] ...]` | Short-circuit AND: returns `$b` if `$a` is true, else `false` |
-| `or` | `[fn [a b] ...]` | Short-circuit OR: returns `true` if `$a` is true, else `$b` |
+| `or` | `[fn [a b] ...]` | Short-circuit OR: returns first arg unchanged when truthy, otherwise evaluates and returns second arg |
 
 **Comparison (derived from `<` and `=`):**
 
@@ -290,6 +290,12 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `when` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is true, else `[]` |
 | `unless` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is false, else `[]` |
 | `cond` | `[fn [pairs] ...]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
+
+**Field Interception:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `proxy` | `[fn [handler] ...]` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)` |
 
 **Dict Utilities:**
 

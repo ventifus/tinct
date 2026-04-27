@@ -386,7 +386,7 @@ The iterative evaluator (§Iterative Evaluator) subsumes PendingBuiltin and Pend
 
 ## Selective Materialization — Formal Specification
 
-Specifies which arguments each Rust-native builtin forces (materializes) before execution and how the result is constructed. This is a two-tier specification: a **strictness signature table** covering all 44 builtins (auditable summary), plus **delta rules** for builtins whose forcing behavior cannot be captured by a flat per-argument annotation.
+Specifies which arguments each Rust-native builtin forces (materializes) before execution and how the result is constructed. This is a two-tier specification: a **strictness signature table** covering all 46 builtins (auditable summary), plus **delta rules** for builtins whose forcing behavior cannot be captured by a flat per-argument annotation.
 
 The signature notation draws on Mycroft's (1981) abstract interpretation framework for strictness analysis. The delta rules follow Plotkin's (1981) structural operational semantics, using the same judgment style as §Thunk Lifecycle — Formal Specification.
 
@@ -422,7 +422,7 @@ For dual-dispatch builtins, the result classification refers to the more interes
 
 ### Part 2: Strictness Signature Table
 
-All 44 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Seq (delta rule required). Builtins marked `‡` have non-trivial forcing patterns (delta rule required).
+All 46 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Seq (delta rule required). Builtins marked `‡` have non-trivial forcing patterns (delta rule required).
 
 **Arithmetic** (all materializing):
 
@@ -839,7 +839,6 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$include` | Evaluates file; returns cached thunk on re-include | Include memoization |
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
-| `eval_as_dict` (access chains) | Materializes target for access | Must know dict structure to access |
 | `builtin_keys` | Materializes dict | Keys are never thunks |
 
 **Error reporting impact:** Operations that shift from eager to lazy (e.g., `$if`, `$merge`, `$map`) will report errors at access time rather than construction time. This provides more accurate source locations (pointing to where materialization failed) but changes error timing. Inherently materializing operations continue to produce errors at call time.

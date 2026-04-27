@@ -606,6 +606,11 @@ fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     }
 
+    // Fast-path: if there are no matches, return the input unchanged
+    if match_count == 0 {
+        return ok_val(Value::String(input.into()));
+    }
+
     ok_val(Value::String(input.replace(pattern.as_str(), &replacement)))
 }
 
@@ -2532,6 +2537,29 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 let val = materialize(value_thunk, None, &ctx, depth)?;
                 parts.push(stringify(&val));
             }
+
+            // Early return for empty collection
+            if parts.is_empty() {
+                return ok_val(Value::String(String::new()));
+            }
+
+            // Check output size before joining
+            let total_parts_len: usize = parts.iter().map(|p| p.len()).sum();
+            let sep_contribution = sep_str.len().saturating_mul(parts.len().saturating_sub(1));
+            let total_output_len = total_parts_len.saturating_add(sep_contribution);
+
+            if total_output_len > MAX_STRING_SIZE {
+                return Err(EvalError::internal(
+                    format!(
+                        "join: output would exceed {} MB limit ({} bytes)",
+                        MAX_STRING_SIZE / (1024 * 1024),
+                        total_output_len
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+
             ok_val(Value::String(parts.join(&sep_str)))
         }
         Value::Seq { head, tail } => {
@@ -2573,6 +2601,28 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         .into());
                     }
                 }
+            }
+
+            // Early return for empty collection
+            if parts.is_empty() {
+                return ok_val(Value::String(String::new()));
+            }
+
+            // Check output size before joining
+            let total_parts_len: usize = parts.iter().map(|p| p.len()).sum();
+            let sep_contribution = sep_str.len().saturating_mul(parts.len().saturating_sub(1));
+            let total_output_len = total_parts_len.saturating_add(sep_contribution);
+
+            if total_output_len > MAX_STRING_SIZE {
+                return Err(EvalError::internal(
+                    format!(
+                        "join: output would exceed {} MB limit ({} bytes)",
+                        MAX_STRING_SIZE / (1024 * 1024),
+                        total_output_len
+                    ),
+                    call_span,
+                )
+                .into());
             }
 
             ok_val(Value::String(parts.join(&sep_str)))
@@ -2643,13 +2693,17 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     // Add all values from xs
                     for (_key, value_thunk) in xs_map {
                         result.insert(Key::Int(idx), Rc::clone(value_thunk));
-                        idx += 1;
+                        idx = idx.checked_add(1).ok_or_else(|| {
+                            EvalError::integer_overflow("concat".to_string(), call_span)
+                        })?;
                     }
 
                     // Add all values from ys
                     for (_key, value_thunk) in ys_map {
                         result.insert(Key::Int(idx), Rc::clone(value_thunk));
-                        idx += 1;
+                        idx = idx.checked_add(1).ok_or_else(|| {
+                            EvalError::integer_overflow("concat".to_string(), call_span)
+                        })?;
                     }
 
                     ok_val(Value::Dict(result))
@@ -10573,5 +10627,67 @@ mod tests {
             "expected depth or size limit error, got: {}",
             err.message()
         );
+    }
+
+    #[test]
+    fn join_empty_dict() {
+        // Task 3: Test $join with empty Dict to verify the parts.is_empty() guard
+        // prevents saturating_sub(1) wraparound
+        let result = mat(builtin_join(BuiltinArgs {
+            args: &[
+                thunk(Value::String(",".to_string())),
+                thunk(Value::Dict(IndexMap::new())),
+            ],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        assert_eq!(result, Value::String(String::new()));
+    }
+
+    #[test]
+    fn concat_dict_basic() {
+        // Task 4: Test $concat with two small dicts to verify correct behavior
+        // This exercises the checked_add call site that prevents integer overflow
+        let mut dict1 = IndexMap::new();
+        dict1.insert(Key::String("a".into()), thunk(Value::Int(1)));
+        dict1.insert(Key::String("b".into()), thunk(Value::Int(2)));
+
+        let mut dict2 = IndexMap::new();
+        dict2.insert(Key::String("c".into()), thunk(Value::Int(3)));
+        dict2.insert(Key::String("d".into()), thunk(Value::Int(4)));
+
+        let result = mat(builtin_concat(BuiltinArgs {
+            args: &[thunk(Value::Dict(dict1)), thunk(Value::Dict(dict2))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+
+        match result {
+            Value::Dict(map) => {
+                assert_eq!(map.len(), 4);
+                // All values should be reindexed with integer keys 0, 1, 2, 3
+                assert_eq!(
+                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
+                    Value::Int(1)
+                );
+                assert_eq!(
+                    materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap(),
+                    Value::Int(2)
+                );
+                assert_eq!(
+                    materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap(),
+                    Value::Int(3)
+                );
+                assert_eq!(
+                    materialize(map.get(&Key::Int(3)).unwrap(), None, &test_ctx(), 0).unwrap(),
+                    Value::Int(4)
+                );
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
     }
 }

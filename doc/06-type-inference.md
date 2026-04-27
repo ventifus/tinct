@@ -231,12 +231,22 @@ Named arguments are synthesized but not checked against parameter types — `Typ
 S = unify(α ≐ Record({k: β}, RowVar(ρ)))
 ────────────────────────────────── [DOT-VAR]
 Γ ⊢ e.k ⇒ β
+```
 
+After unification, α is bound in S — references to α in the conclusion denote its resolved image S(α), not the original variable. The occurs check and level lowering for α, β, and ρ are handled internally by `unify()`.
+
+```
 Γ ⊢ e : Record(F, RowVar(ρ)),  k ∉ F,  β fresh,  ρ' fresh
+Precondition: ρ ∉ FRV(Row({k: β}, RowVar(ρ')))    (occurs check)
+Side-effect: ∀v ∈ FV(Row({k: β}, RowVar(ρ'))). level(v) ← min(level(v), level(ρ))
 S[ρ ↦ Row({k: β}, RowVar(ρ'))]
 ────────────────────────────────── [DOT-ROWVAR]
 Γ ⊢ e.k ⇒ β
+```
 
+**[DOT-VAR] vs [DOT-ROWVAR] asymmetry.** [DOT-VAR] delegates to `unify()`, which handles the occurs check and level lowering internally as part of Robinson unification. [DOT-ROWVAR] performs explicit row-variable binding with its own occurs check (`row_var_occurs_pub`) and level lowering (`lower_row_var_levels_pub`), because the binding is inserted directly into `state.subst.row_map` without going through `unify()`. Both paths maintain the same invariants (no infinite types, level monotonicity) but through different mechanisms.
+
+```
 Γ ⊢ e : Record(F, ρ),  Γ ⊢ key : StringLiteral(k),  F(k) = τ
 ────────────────────────────────── [BRACKET-LIT]
 Γ ⊢ e[key] : τ
@@ -347,6 +357,8 @@ unify(σ, τ, S) where ¬has_type_vars(σ) ∧ ¬has_type_vars(τ):
 
 **Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] is bidirectional because it operates within unification where the original directionality is lost after structural decomposition. This is sound because the substitution is not modified — the bidirectional check only determines compatibility, not binding direction.
 
+**Dual-path promotion design.** `unify()` also implements bidirectional promotion arms for 6 type pairs (`IntLiteral` with `Int`, `Number`, `Float`; `Int` with `Number`; `Float` with `Number`; `StringLiteral` with `Str`) plus literal identity checks, directly as Robinson unification match cases. These are symmetric (either direction succeeds) and fire before [U-SUBSUME]. The dual-path design is intentional: promotions in `unify()` handle CALL-POLY argument matching where type variables have been resolved to concrete types by substitution, while [U-SUBSUME] via `is_subtype` handles the general fallback for concrete type pairs not covered by explicit arms. Both paths produce the same result for overlapping cases — neither modifies the substitution — but the explicit arms avoid the `has_type_vars` guard and `is_subtype` call overhead for the most common promotion patterns.
+
 All other non-structural, non-subsumable combinations: error [U-FAIL]
 
 **Interaction with CALL-POLY:** Polymorphic call checking synthesizes all argument types, then unifies each against the corresponding instantiated parameter type. Type variable binding comes from [U-VAR]; concrete type compatibility (after substitution resolves variables) comes from [U-SUBSUME]. The bidirectional subsumption in [U-SUBSUME] ensures confluence — argument order does not affect whether type checking succeeds, only the precision of the resulting binding.
@@ -366,15 +378,14 @@ Seq(τ) <: Seq(σ)  if τ <: σ                      [S-SEQ]
 
 Record(F₁,ρ₁) <: Record(F₂,ρ₂) if:
     ∀(k:σ) ∈ F₂, ∃(k:τ) ∈ F₁ with τ <: σ       (width+depth)
-    If ρ₂ = Closed:
-        If ρ₁ = Closed: keys(F₁) ⊆ keys(F₂)
+    If ρ₂ = Empty:
+        If ρ₁ = Empty: keys(F₁) ⊆ keys(F₂)
             (with width condition above this enforces keys(F₁) = keys(F₂))
-        If ρ₁ = RowVar: false (Rémy 1994 — an open record with a RowVar tail
-            cannot satisfy a closed supertype. The row variable may be
-            instantiated with additional fields that the closed record rejects.
-            This is the sound pre-unification behavior; post-unification (after
-            the RowVar is bound to Empty by unify()), the types are concrete and
-            subtyping holds — see
+        If ρ₁ = RowVar: false
+            (Rémy 1994 — a RowVar tail may be instantiated with additional
+            fields that the closed supertype rejects. This is the sound
+            pre-unification behavior; post-unification, the RowVar is bound
+            to Empty by unify() and the (Empty, Empty) arm applies. See
             test_is_subtype_consistency_open_sub_closed_sup_exact_known_fields.)
     If ρ₂ = RowVar: always ok                     [S-REC]
 
@@ -457,6 +468,8 @@ pub struct InferState {
     pub subst: Substitution, // global constraint accumulator for access-chain bindings
 }
 ```
+
+`InferState.subst` accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution via `or_insert` — local letrec bindings take precedence on collision. Known limitation: colliding bindings should be unified rather than silently dropped (see row-unification-h).
 
 When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `TypeVar(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
 

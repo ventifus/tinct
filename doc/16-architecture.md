@@ -20,7 +20,7 @@
        │
        ▼
 ┌─────────────┐
-│  Type Check │  Infer & verify types
+│  Type Check │  Infer & verify types (advisory)
 └──────┬──────┘
        │
        ▼
@@ -121,6 +121,8 @@ enum ThunkState {
     PendingCall(func, args),      // deferred function application (lazy $map, $update, etc.)
     InProgress,                   // cycle detection — hitting this during materialization means circular dep
     Materialized(Value),
+    Failed(Box<EvalError>),       // error memoization — cached so re-access returns same error
+    Guarded { inner, expected, field_path, guard_span },  // TypeAssert proxy contract — validates field types on access
 }
 
 struct SourceLocation {

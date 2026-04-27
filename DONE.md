@@ -992,6 +992,19 @@ Overflow from row-unification-g-b plus new findings from the C55 panel review. R
 - [x] Fix `test_dot_access_typevar_generates_constraint_verified` dual-accept assertion — collapsed from dual-accept (StringLiteral OR TypeVar) to single assertion: TypeVar type + registered in state.levels. Removed the subsumed older `test_dot_access_typevar_generates_constraint`. (`src/typecheck.rs:1793-1805, 1661`) [Major, test-crafter C56]
 - [x] Fix `resolve_type_assert` panic! → debug_assert! — the write-once invariant guard at `src/typecheck.rs:1065-1069` uses `if prev.is_some() { panic!(...) }` which fires in production builds; the type checker is advisory and should not panic. Change to `debug_assert!(prev.is_none(), "resolved_type written twice — elaboration invariant violated (span: {:?})", annotation.span)` so the invariant is enforced in debug/test builds but stripped in release. (`src/typecheck.rs:1065-1069`) [Minor, type-theorist C56] — done in test-crafter-c62 (DONE.md line 1060)
 
+### cycle-findings-c33-a: Major Findings (Cycle #33)
+
+Major findings from Cycle #33 codebase review. All items independent unless noted.
+
+- [x] Fix `eval_range_access` Proxy and wildcard error paths bypass `push_frame` — wrapped both error paths through `push_frame(...)` for consistent stack frames. (`src/eval.rs:1116-1129`) [Major, grammar-architect C33]
+- [x] Fix `$join` output string size unbounded — added `MAX_STRING_SIZE` guard with saturating arithmetic before `.join()` calls on both Dict and Seq paths, plus empty-collection arithmetic guard. (`src/builtins.rs:2535, 2578`) [Major, security-expert C33]
+- [x] Add no-match fast-path to `builtin_replace` — added `if match_count == 0` early return to skip redundant second string traversal. (`src/builtins.rs:596-609`) [Major, performance-expert C33]
+- [x] Fix `$concat` dict path uses unchecked `idx += 1` arithmetic — replaced with `checked_add(1).ok_or_else(|| EvalError::integer_overflow(...))`. (`src/builtins.rs:2646, 2651`) [Major, security-expert C33]
+- [x] Fix `check_range_access` missing `Type::Proxy` arm — added `Type::Proxy => Err(...)` with "range access is not supported on Proxy values" error, matching runtime behavior. (`src/typecheck.rs:837`) [Major, computer-scientist C33]
+- [x] Fix `eval_dot_access` allocates `Key::String` on every field lookup — implemented `StrKey` wrapper with `Hash` + `Equivalent<Key>` for zero-allocation dot-access lookups. (`src/eval.rs:1037`, `src/value.rs`) [Major, performance-expert C33]
+- [x] Fix `doc/03-data-model.md` stale `eval_as_dict` references — updated Property 4 proof, FORCE-DICT row, ACCESS-* line numbers. (`doc/03-data-model.md:355, 389-392`) [Major, grammar-architect C33]
+- [x] Fix `doc/08-evaluation.md` dead `eval_as_dict` row in Laziness Design table — removed stale row. (`doc/08-evaluation.md:842`) [Major, grammar-architect C33]
+
 ## eval-sandbox-flags: Adversarial Evaluation Flags
 
 Extend `llt eval` with `--no-fs`, `--timeout`, and structured exit codes for adversarial/sandboxed use. See `doc/12-tooling.md` §Adversarial Evaluation.
@@ -1308,3 +1321,52 @@ Missing rules, misleading claims, and undocumented behaviors in type inference d
 - [x] Fix `doc/04-functions.md` incorrect claim defaults evaluated eagerly — corrected to lazy thunks [Minor, eval-engine C49]
 - [x] Rename `ret` to `inst_ret` in `check_call_with_scheme` [Nit, type-theorist C49]
 - [x] Fix `typecheck_document` non-dict path — added LIMITATION comment [Minor, type-theorist C49]
+
+## doc-11-stdlib: doc/11-stdlib.md Accuracy Overhaul (C47)
+
+Stale snippets, misclassifications, and missing documentation in doc/11-stdlib.md. Found by stdlib-author C47. Full workflow (build gate + panel review, 5×APPROVE).
+
+- [x] Fix `doc/11-stdlib.md` stale `empty?` implementation snippet [Minor, stdlib-author C47]
+- [x] Fix `doc/11-stdlib.md:96` `length` and `empty?` misclassified as "Structural" [Nit, stdlib-author C47]
+- [x] Fix `doc/11-stdlib.md:277` `words` description omits that it returns Seq [Nit, stdlib-author C47]
+- [x] Fix `doc/11-stdlib.md` `reduce` and `fold` misclassified as Lazy — reclassified as "Selective" (Dict path lazy, Seq path materializing) [Nit, stdlib-author C49]
+- [x] Fix `doc/08-evaluation.md:768` `$merge` Laziness Design table — restored accurate eager-materialization description with note re merge-lazy-overlay sprint [Major, laziness-auditor C47]
+- [x] Add `any?`/`all?` Seq guard at `stdlib/prelude.llt:60,71` + corpus error tests with [E080] [Minor, stdlib-author C47]
+- [x] Add `flatten_mixed.llt-eval` corpus test for mixed scalar/nested flatten [Nit, stdlib-author C47]
+- [x] Document `from-entries` accepting Seq inputs + `from_entries_seq.llt-eval` corpus test [Nit, stdlib-author C47]
+
+### doc-rowunification-retrospective: Row Unification Doc Retrospective (Parts 1–2)
+
+Consolidated from doc-rowunification-retrospective and doc-rowunification-retrospective-b. Docs-only sprint (no build gate or panel review).
+
+- [x] Fix doc/07 Part 4 stale "must be split" — already correct [Major, grammar-architect C53]
+- [x] Rewrite doc/07 Part 8 as "Migration Reference (Complete)" in past tense [Major, grammar-architect C53]
+- [x] Fix doc/07 Roadmap stale binding claim → "complete as of row-unification-e" [Major, grammar-architect C53]
+- [x] Fix README.md RowRest → RowTail, updated types.rs description [Major, grammar-architect C53]
+- [x] Fix doc/07 Part 9 §P8 disjointness qualified with "at unification time" [Minor, type-theorist C53]
+- [x] Fix $or doc return-value description — pass-through, not literal true [Minor, stdlib-author C53]
+- [x] Add Wand (1987) to doc/17 — already present [Minor, grammar-architect C53]
+- [x] Reduce doc/07 Part 10 to cross-references to doc/17 [Nit, grammar-architect C57]
+- [x] Fix doc/07 Cases 2/3 tautological when guards removed [Nit, computer-scientist C63]
+- [x] Add Bernstein (2024) to doc/17; Gaster & Jones, Harper & Pierce already present [Major, grammar-architect C54]
+- [x] Fix doc/11-stdlib.md overridable-ops: builtin-* prefixes, count 46, proxy entry, ~98 total functions [Major, stdlib-author C54]
+- [x] Fix doc/07 unify_rows pseudocode — added Steps 3.5/3.6 [Minor, integration-verifier C54]
+- [x] Fix doc/06 S-REC — rewrote using RowTail::Empty/RowVar, removed Open variant [Minor, computer-scientist C54]
+- [x] Fix Moggi (1991) DOI in doc/17 [Minor, sprint-reviewer C57]
+- [x] Fix doc/07 Part 5 qualifier → "complete as of row-unification-e" [Minor, grammar-architect C57]
+
+### doc-rowunification-retrospective-c: Inference Rule Doc Correctness (C55 Overflow)
+
+Docs-only sprint (no build gate or panel review).
+
+- [x] Add occurs-check/level-lowering note to [DOT-ROWVAR] — preconditions + side-effects documented [Minor, grammar-architect C55]
+- [x] Disambiguate α in [DOT-VAR] — S(α) resolution note added [Minor, grammar-architect C55]
+- [x] Align notation between [DOT-VAR] and [DOT-ROWVAR] — asymmetry prose added [Minor, grammar-architect C55]
+- [x] Document InferState.subst merge strategy — or_insert semantics + known limitation noted [Minor, grammar-architect C55]
+- [x] Note [U-SUBSUME] divergence from unify() promotion arms — dual-path design documented [Minor, computer-scientist C55]
+- [x] Fix doc/11-stdlib.md $sort compile-time claim → runtime detection [Minor, stdlib-author C55]
+- [x] Fix phantom semicolon rule — already resolved by doc-type-polish (opposite direction: removed from doc) [Minor, grammar-architect C59]
+- [x] Add manual PartialEq note to RowTail in doc/07 [Nit, integration-verifier C59]
+- [x] Add Failed and Guarded variants to ThunkState sketch in doc/16 [Nit, grammar-architect C56]
+- [x] Label Type Check as advisory in doc/16 pipeline diagram [Nit, integration-verifier C56]
+- [x] Update check_expr pseudocode — already done by doc-type-polish sprint [Minor, computer-scientist C60]
