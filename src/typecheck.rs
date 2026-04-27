@@ -220,7 +220,7 @@ fn infer_expr(
         } => {
             // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
             // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
-            // For monomorphic schemes, use the normal path which handles TypeVar correctly.
+            // For monomorphic schemes, use the normal path which handles TypeVar during letrec.
             if let Expr::VarRef(name) = &func.node {
                 match env.get(name) {
                     Some(scheme) if !scheme.type_vars.is_empty() || !scheme.row_vars.is_empty() => {
@@ -233,7 +233,21 @@ fn infer_expr(
                         // Monomorphic scheme: use normal path which handles TypeVar during letrec
                         check_call(func, args, named_args, env, expr.span, state, type_map)
                     }
-                    None => Err(vec![TypeError::undefined_variable(name, func.span)]),
+                    None => {
+                        // Special handling for $proxy builtin: produces Type::Proxy
+                        if name == "proxy" {
+                            // Infer arguments for type map population
+                            for arg in args {
+                                let _ = infer_expr(arg, env, state, type_map)?;
+                            }
+                            for na in named_args {
+                                let _ = infer_expr(&na.node.value, env, state, type_map)?;
+                            }
+                            Ok(Type::Proxy)
+                        } else {
+                            Err(vec![TypeError::undefined_variable(name, func.span)])
+                        }
+                    }
                 }
             } else {
                 check_call(func, args, named_args, env, expr.span, state, type_map)
@@ -1347,17 +1361,33 @@ fn resolve_type_name(
                 // If we have an annotation mapping (within a function), check if this
                 // annotation name has already been mapped to a fresh variable
                 if let Some(ref mut mapping) = ann_mapping {
-                    let fresh_name = mapping.entry(name.to_string()).or_insert_with(|| {
+                    // Check if this annotation name already has a mapping
+                    if let Some(existing_var) = mapping.get(name) {
+                        // Already mapped: return the existing TypeVar with its current level
+                        // from state.levels. DO NOT reset the level - unification may have
+                        // lowered it, and level lowering must be monotone (Kiselyov 2013).
+                        let current_level = *state
+                            .levels
+                            .get(existing_var)
+                            .expect("invariant: annotation var registered in mapping must be in state.levels");
+                        Ok(Type::TypeVar(existing_var.clone(), current_level))
+                    } else {
+                        // First time seeing this annotation: create fresh var and register level
                         let fresh = format!("_t{}", state.name_counter);
                         state.name_counter += 1;
-                        fresh
-                    });
-                    state.levels.insert(fresh_name.clone(), state.level);
-                    Ok(Type::TypeVar(fresh_name.clone(), state.level))
+                        state.levels.insert(fresh.clone(), state.level);
+                        mapping.insert(name.to_string(), fresh.clone());
+                        Ok(Type::TypeVar(fresh, state.level))
+                    }
                 } else {
                     // Outside of function scope, use the annotation name directly
-                    state.levels.insert(name.to_string(), state.level);
-                    Ok(Type::TypeVar(name.to_string(), state.level))
+                    // Check if already exists to avoid resetting level
+                    if let Some(&existing_level) = state.levels.get(name) {
+                        Ok(Type::TypeVar(name.to_string(), existing_level))
+                    } else {
+                        state.levels.insert(name.to_string(), state.level);
+                        Ok(Type::TypeVar(name.to_string(), state.level))
+                    }
                 }
             } else {
                 env.get_type_alias(name)
@@ -3817,6 +3847,68 @@ mod tests {
             }
             other => panic!("expected Record type, got {other}"),
         }
+    }
+
+    #[test]
+    fn test_annotation_level_monotonicity() {
+        // Test that resolve_type_name respects level lowering monotonicity (Kiselyov 2013).
+        // When the same annotation name is used multiple times in a function and unification
+        // lowers the level between references, the level must not be reset.
+        //
+        // Pattern: [fn [x@a y@a] body] where x and y share the same annotation name @a.
+        // Both should map to the same fresh TypeVar (e.g., _t0), and subsequent references
+        // to @a within type annotations should return the TypeVar with its current level
+        // from state.levels, NOT reset it to state.level.
+        //
+        // This test verifies the function type-checks correctly. If level monotonicity
+        // were violated, generalization might fail or produce incorrect types.
+
+        // Case 1: Two params share the same annotation name
+        let ty = infer("[f: [fn [x@a y@a] $x]]");
+        match ty {
+            Type::Record(Row { fields, .. }) => {
+                match fields.get("f") {
+                    Some(Type::Function { params, .. }) => {
+                        // Both params should unify to the same type variable
+                        assert_eq!(params.len(), 2, "function should have 2 params");
+                        // They should be the same TypeVar (same name after unification)
+                        assert_eq!(
+                            params[0], params[1],
+                            "both params should have same type (unified via shared annotation)"
+                        );
+                    }
+                    other => panic!("expected f to be Function type, got {:?}", other),
+                }
+            }
+            other => panic!("expected Record type, got {other}"),
+        }
+
+        // Case 2: Return annotation reuses param annotation
+        let ty = infer("[f: [fn@a [x@a] $x]]");
+        match ty {
+            Type::Record(Row { fields, .. }) => {
+                match fields.get("f") {
+                    Some(Type::Function { params, ret }) => {
+                        // Param and return should unify to the same type variable
+                        assert_eq!(
+                            params[0], **ret,
+                            "param and return should have same type (unified via shared annotation)"
+                        );
+                    }
+                    other => panic!("expected f to be Function type, got {:?}", other),
+                }
+            }
+            other => panic!("expected Record type, got {other}"),
+        }
+
+        // Case 3: Generalization should succeed despite multiple uses of same annotation
+        let env = doc_env("[f: [fn [x@a y@a] $x]]");
+        let f_scheme = env.get("f").expect("f should be in env");
+        assert!(
+            !f_scheme.type_vars.is_empty(),
+            "f should be polymorphic (generalized despite multiple @a uses), got scheme: {:?}",
+            f_scheme
+        );
     }
 
     #[test]

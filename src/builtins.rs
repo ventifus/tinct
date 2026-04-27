@@ -56,7 +56,7 @@ fn expect_one_arg(
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     if !named.is_empty() {
-        return Err(EvalError::named_arg_rejected(name, call_span).into());
+        return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
     materialize(&args[0], None, ctx, depth)
 }
@@ -65,10 +65,10 @@ fn expect_one_arg(
 /// before casting. Returns an error if the value is non-finite or would saturate.
 fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> EvalResult<i64> {
     if !f.is_finite() {
-        return Err(EvalError::float_not_finite(name, f, call_span).into());
+        return Err(EvalError::float_not_finite(name.to_string(), f, call_span).into());
     }
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
-        return Err(EvalError::new(format!("{name}: {f} is out of Int range"), call_span).into());
+        return Err(EvalError::integer_overflow(name.to_string(), call_span).into());
     }
     Ok(f as i64)
 }
@@ -129,9 +129,13 @@ fn stringify(value: &Value) -> String {
 fn require_dict(name: &str, value: Value, call_span: Span) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
-        other => {
-            Err(EvalError::type_mismatch_ctx(name, "Dict", other.type_name(), call_span).into())
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            name.to_string(),
+            "Dict",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -139,9 +143,13 @@ fn require_dict(name: &str, value: Value, call_span: Span) -> EvalResult<IndexMa
 fn require_string(name: &str, value: Value, call_span: Span) -> EvalResult<String> {
     match value {
         Value::String(s) => Ok(s),
-        other => {
-            Err(EvalError::type_mismatch_ctx(name, "String", other.type_name(), call_span).into())
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            name.to_string(),
+            "String",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -152,7 +160,7 @@ fn reject_named(
     call_span: Span,
 ) -> EvalResult<()> {
     if !named.is_empty() {
-        return Err(EvalError::named_arg_rejected(name, call_span).into());
+        return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
     Ok(())
 }
@@ -172,7 +180,7 @@ fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_add(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::integer_overflow("+", call_span).into())),
+            .unwrap_or_else(|| Err(EvalError::integer_overflow("+".to_string(), call_span).into())),
         NumPair::Floats(a, b) => ok_val(Value::Float(a + b)),
     }
 }
@@ -192,7 +200,7 @@ fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::integer_overflow("-", call_span).into())),
+            .unwrap_or_else(|| Err(EvalError::integer_overflow("-".to_string(), call_span).into())),
         NumPair::Floats(a, b) => ok_val(Value::Float(a - b)),
     }
 }
@@ -212,7 +220,7 @@ fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::integer_overflow("*", call_span).into())),
+            .unwrap_or_else(|| Err(EvalError::integer_overflow("*".to_string(), call_span).into())),
         NumPair::Floats(a, b) => ok_val(Value::Float(a * b)),
     }
 }
@@ -231,14 +239,14 @@ fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match extract_num_pair(args, &ctx, depth, call_span)? {
         NumPair::Ints(a, b) => {
             if b == 0 {
-                Err(EvalError::division_by_zero("/", call_span).into())
+                Err(EvalError::division_by_zero("/".to_string(), call_span).into())
             } else {
                 ok_val(Value::Float(a as f64 / b as f64))
             }
         }
         NumPair::Floats(a, b) => {
             if b == 0.0 {
-                Err(EvalError::division_by_zero("/", call_span).into())
+                Err(EvalError::division_by_zero("/".to_string(), call_span).into())
             } else {
                 ok_val(Value::Float(a / b))
             }
@@ -469,7 +477,7 @@ fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .max()
         .map(|max| {
             max.checked_add(1)
-                .ok_or_else(|| EvalError::integer_overflow("append", call_span))
+                .ok_or_else(|| EvalError::integer_overflow("append".to_string(), call_span))
         })
         .transpose()?
         .unwrap_or(0);
@@ -632,7 +640,7 @@ fn float_to_int_builtin(
         Value::Int(n) => ok_val(Value::Int(n)),
         Value::Float(f) => {
             if !f.is_finite() {
-                return Err(EvalError::float_not_finite(name, f, call_span).into());
+                return Err(EvalError::float_not_finite(name.to_string(), f, call_span).into());
             }
             ok_val(Value::Int(checked_f64_to_i64(name, op(f), call_span)?))
         }
@@ -693,7 +701,12 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let s = require_string("to-int", val, call_span)?;
     match s.parse::<i64>() {
         Ok(n) => ok_val(Value::Int(n)),
-        Err(_) => Err(EvalError::parse_conversion("to-int", s.clone(), "Int", call_span).into()),
+        Err(_) => {
+            Err(
+                EvalError::parse_conversion("to-int".to_string(), s.clone(), "Int", call_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -714,9 +727,12 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let s = require_string("to-float", val, call_span)?;
     match s.parse::<f64>() {
         Ok(f) if f.is_finite() => ok_val(Value::Float(f)),
-        Ok(f) => Err(EvalError::float_not_finite("to-float", f, call_span).into()),
+        Ok(f) => Err(EvalError::float_not_finite("to-float".to_string(), f, call_span).into()),
         Err(_) => {
-            Err(EvalError::parse_conversion("to-float", s.clone(), "Float", call_span).into())
+            Err(
+                EvalError::parse_conversion("to-float".to_string(), s.clone(), "Float", call_span)
+                    .into(),
+            )
         }
     }
 }
@@ -751,7 +767,7 @@ fn builtin_error(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = expect_one_arg("error", args, named, &ctx, depth, call_span)?;
     let msg = require_string("error", val, call_span)?;
-    Err(EvalError::user_error(msg, call_span).into())
+    Err(EvalError::user_error(msg.to_string(), call_span).into())
 }
 
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[ok: value]`
@@ -1104,7 +1120,8 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     return Err(e);
                 }
             };
-            let result_thunk = ok_val(val)?;
+            // Preserve the span from the included file's root expression
+            let result_thunk = Rc::new(Thunk::new_materialized(val, thunk.span));
 
             // Cache the result thunk for future includes of this file.
             ctx.state
@@ -1161,11 +1178,15 @@ fn builtin_head(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match val {
         Value::Seq { head, .. } => Ok(Rc::clone(&head)),
         Value::Dict(ref map) if map.is_empty() => {
-            Err(EvalError::empty_collection("head", call_span).into())
+            Err(EvalError::empty_collection("head".to_string(), call_span).into())
         }
-        other => {
-            Err(EvalError::type_mismatch_ctx("head", "Seq", other.type_name(), call_span).into())
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "head".to_string(),
+            "Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -1186,11 +1207,15 @@ fn builtin_tail(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match val {
         Value::Seq { tail, .. } => Ok(Rc::clone(&tail)),
         Value::Dict(ref map) if map.is_empty() => {
-            Err(EvalError::empty_collection("tail", call_span).into())
+            Err(EvalError::empty_collection("tail".to_string(), call_span).into())
         }
-        other => {
-            Err(EvalError::type_mismatch_ctx("tail", "Seq", other.type_name(), call_span).into())
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "tail".to_string(),
+            "Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -1219,9 +1244,13 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     if !matches!(val, Value::Seq { .. }) {
-        return Err(
-            EvalError::type_mismatch_ctx("collect", "Seq", val.type_name(), call_span).into(),
-        );
+        return Err(EvalError::type_mismatch_ctx(
+            "collect".to_string(),
+            "Seq",
+            val.type_name(),
+            call_span,
+        )
+        .into());
     }
 
     let mut map = IndexMap::new();
@@ -1235,7 +1264,7 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 map.insert(Key::Int(index), Rc::clone(&head));
                 index = index
                     .checked_add(1)
-                    .ok_or_else(|| EvalError::integer_overflow("collect", call_span))?;
+                    .ok_or_else(|| EvalError::integer_overflow("collect".to_string(), call_span))?;
 
                 // Check collection size limit
                 if index as usize >= MAX_COLLECT_SIZE {
@@ -1255,7 +1284,7 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "collect",
+                    "collect".to_string(),
                     "Seq or empty dict",
                     other.type_name(),
                     call_span,
@@ -1316,9 +1345,13 @@ fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let start_int = match start {
         Value::Int(n) => n,
         other => {
-            return Err(
-                EvalError::type_mismatch_ctx("range", "Int", other.type_name(), call_span).into(),
+            return Err(EvalError::type_mismatch_ctx(
+                "range".to_string(),
+                "Int",
+                other.type_name(),
+                call_span,
             )
+            .into())
         }
     };
 
@@ -1326,7 +1359,7 @@ fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         // Infinite range: [start, start+1, start+2, ...]
         let next_start = start_int
             .checked_add(1)
-            .ok_or_else(|| EvalError::integer_overflow("range", call_span))?;
+            .ok_or_else(|| EvalError::integer_overflow("range".to_string(), call_span))?;
         let head = ok_val(Value::Int(start_int))?;
         let tail_args = vec![ok_val(Value::Int(next_start))?];
         let tail = Rc::new(Thunk::new_pending_builtin(
@@ -1346,7 +1379,7 @@ fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Value::Int(n) => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "range",
+                    "range".to_string(),
                     "Int",
                     other.type_name(),
                     call_span,
@@ -1361,7 +1394,7 @@ fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         } else {
             let next_start = start_int
                 .checked_add(1)
-                .ok_or_else(|| EvalError::integer_overflow("range", call_span))?;
+                .ok_or_else(|| EvalError::integer_overflow("range".to_string(), call_span))?;
             let head = ok_val(Value::Int(start_int))?;
             let tail_args = vec![
                 ok_val(Value::Int(next_start))?,
@@ -1436,7 +1469,7 @@ fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(m) => m,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "cycle_step",
+                "cycle_step".to_string(),
                 "Dict",
                 other.type_name(),
                 call_span,
@@ -1450,7 +1483,7 @@ fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Int(i) => i,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "cycle_step",
+                "cycle_step".to_string(),
                 "Int",
                 other.type_name(),
                 call_span,
@@ -1460,7 +1493,7 @@ fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     if map.is_empty() {
-        return Err(EvalError::empty_collection("cycle", call_span).into());
+        return Err(EvalError::empty_collection("cycle".to_string(), call_span).into());
     }
 
     let len = map.len() as i64;
@@ -1513,7 +1546,7 @@ fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match val {
         Value::Dict(ref map) => {
             if map.is_empty() {
-                return Err(EvalError::empty_collection("cycle", call_span).into());
+                return Err(EvalError::empty_collection("cycle".to_string(), call_span).into());
             }
             // Start cycling from index 0
             builtin_cycle_step(BuiltinArgs {
@@ -1524,9 +1557,13 @@ fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 ctx: Rc::clone(&ctx),
             })
         }
-        other => {
-            Err(EvalError::type_mismatch_ctx("cycle", "Dict", other.type_name(), call_span).into())
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "cycle".to_string(),
+            "Dict",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -1651,7 +1688,7 @@ fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         )
         .into()),
         other => Err(
-            EvalError::type_mismatch_ctx("unfold", "Dict", other.type_name(), call_span).into(),
+            EvalError::type_mismatch_ctx("unfold".to_string(), "Dict", other.type_name(), call_span).into(),
         ),
     }
 }
@@ -1755,12 +1792,13 @@ fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 tail: new_tail,
             })
         }
-        other => {
-            Err(
-                EvalError::type_mismatch_ctx("map", "Dict or Seq", other.type_name(), call_span)
-                    .into(),
-            )
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "map".to_string(),
+            "Dict or Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -1840,12 +1878,13 @@ fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ));
             Ok(result_thunk)
         }
-        other => {
-            Err(
-                EvalError::type_mismatch_ctx("filter", "Dict or Seq", other.type_name(), call_span)
-                    .into(),
-            )
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "filter".to_string(),
+            "Dict or Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -1869,7 +1908,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Int(i) => i,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "filter-dict-step",
+                "filter-dict-step".to_string(),
                 "Int",
                 other.type_name(),
                 call_span,
@@ -1883,7 +1922,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref m) => m,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "filter-dict-step",
+                "filter-dict-step".to_string(),
                 "Dict",
                 other.type_name(),
                 call_span,
@@ -1914,7 +1953,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::String(s) => Key::String(s),
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "filter-dict-step",
+                "filter-dict-step".to_string(),
                 "Int or String",
                 other.type_name(),
                 call_span,
@@ -1929,7 +1968,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref m) => m,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "filter-dict-step",
+                "filter-dict-step".to_string(),
                 "Dict",
                 other.type_name(),
                 call_span,
@@ -1965,7 +2004,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Bool(b) => b,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "filter",
+                "filter".to_string(),
                 "Bool",
                 other.type_name(),
                 call_span,
@@ -2040,11 +2079,10 @@ fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let passes = match pred_result {
                 Value::Bool(b) => b,
                 other => {
-                    return Err(EvalError::new(
-                        format!(
-                            "filter: predicate must return Bool, got {}",
-                            other.type_name()
-                        ),
+                    return Err(EvalError::type_mismatch_ctx(
+                        "filter".to_string(),
+                        "Bool",
+                        other.type_name(),
                         call_span,
                     )
                     .into())
@@ -2083,7 +2121,7 @@ fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
         }
         other => Err(EvalError::type_mismatch_ctx(
-            "filter-seq-step",
+            "filter-seq-step".to_string(),
             "Dict or Seq",
             other.type_name(),
             call_span,
@@ -2114,9 +2152,13 @@ fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let n_int = match n {
         Value::Int(i) => i,
         other => {
-            return Err(
-                EvalError::type_mismatch_ctx("take", "Int", other.type_name(), call_span).into(),
+            return Err(EvalError::type_mismatch_ctx(
+                "take".to_string(),
+                "Int",
+                other.type_name(),
+                call_span,
             )
+            .into())
         }
     };
 
@@ -2154,12 +2196,13 @@ fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 tail: new_tail,
             })
         }
-        other => {
-            Err(
-                EvalError::type_mismatch_ctx("take", "Dict or Seq", other.type_name(), call_span)
-                    .into(),
-            )
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "take".to_string(),
+            "Dict or Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -2186,9 +2229,13 @@ fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let n_int = match n {
         Value::Int(i) => i,
         other => {
-            return Err(
-                EvalError::type_mismatch_ctx("drop", "Int", other.type_name(), call_span).into(),
+            return Err(EvalError::type_mismatch_ctx(
+                "drop".to_string(),
+                "Int",
+                other.type_name(),
+                call_span,
             )
+            .into())
         }
     };
 
@@ -2222,12 +2269,13 @@ fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Rc::clone(&ctx),
             )))
         }
-        other => {
-            Err(
-                EvalError::type_mismatch_ctx("drop", "Dict or Seq", other.type_name(), call_span)
-                    .into(),
-            )
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "drop".to_string(),
+            "Dict or Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -2341,12 +2389,13 @@ fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Rc::clone(&ctx),
             )))
         }
-        other => {
-            Err(
-                EvalError::type_mismatch_ctx("reduce", "Dict or Seq", other.type_name(), call_span)
-                    .into(),
-            )
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "reduce".to_string(),
+            "Dict or Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -2492,12 +2541,13 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             ok_val(Value::String(parts.join(&sep_str)))
         }
-        other => {
-            Err(
-                EvalError::type_mismatch_ctx("join", "Dict or Seq", other.type_name(), call_span)
-                    .into(),
-            )
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "join".to_string(),
+            "Dict or Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -2578,12 +2628,13 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into()),
             }
         }
-        other => {
-            Err(
-                EvalError::type_mismatch_ctx("concat", "Dict or Seq", other.type_name(), call_span)
-                    .into(),
-            )
-        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "concat".to_string(),
+            "Dict or Seq",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -2625,7 +2676,7 @@ fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             })
         }
         other => Err(EvalError::type_mismatch_ctx(
-            "concat-seq-step",
+            "concat-seq-step".to_string(),
             "Dict or Seq",
             other.type_name(),
             call_span,
@@ -3115,7 +3166,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("out of Int range"),
+            err.message().contains("integer overflow"),
             "got: {}",
             err.message()
         );
@@ -3132,7 +3183,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("out of Int range"),
+            err.message().contains("integer overflow"),
             "got: {}",
             err.message()
         );
@@ -3400,7 +3451,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("out of Int range"),
+            err.message().contains("integer overflow"),
             "got: {}",
             err.message()
         );
@@ -3417,7 +3468,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("out of Int range"),
+            err.message().contains("integer overflow"),
             "got: {}",
             err.message()
         );

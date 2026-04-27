@@ -21,6 +21,12 @@ use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 pub const MAX_EVAL_DEPTH: usize = 256;
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
+thread_local! {
+    /// Shared empty IndexMap for named arguments when none are provided.
+    /// Avoids per-call allocation in invoke_proxy_handler.
+    static EMPTY_NAMED_ARGS: IndexMap<String, Rc<Thunk>> = IndexMap::new();
+}
+
 /// Immutable session configuration shared across evaluation.
 #[derive(Debug)]
 pub struct EvalConfig {
@@ -132,6 +138,7 @@ fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Seq(_) => matches!(value, Value::Seq { .. }),
         Type::TypeVar(_, _) => true,
         Type::Record(_) => true, // Records handled separately via proxy wrapping
+        Type::Proxy => matches!(value, Value::Proxy { .. }),
     }
 }
 
@@ -621,9 +628,9 @@ fn eval_dict(
             Some(key_expr) => eval_key(key_expr, parent_env, ctx, depth)?,
             None => {
                 let k = Key::Int(auto_index);
-                auto_index = auto_index
-                    .checked_add(1)
-                    .ok_or_else(|| EvalError::integer_overflow("dict auto-index", entry.span))?;
+                auto_index = auto_index.checked_add(1).ok_or_else(|| {
+                    EvalError::integer_overflow("dict auto-index".to_string(), entry.span)
+                })?;
                 k
             }
         };
@@ -765,7 +772,7 @@ fn eval_call(
             ctx,
         })
         .map_err(|mut e| {
-            e.push_frame(label, *call_span);
+            e.push_frame(label.to_string(), *call_span);
             e
         }),
         Value::Builtin { func, .. } => Ok(Rc::new(Thunk::new_pending_builtin(
@@ -976,45 +983,46 @@ fn eval_as_dict(
     }
 }
 
-/// Invoke a proxy handler with a string key, returning the result thunk.
+/// Invoke a proxy handler with a key value, returning the result thunk.
 fn invoke_proxy_handler(
     handler: &Rc<Thunk>,
-    key_str: &str,
+    key_val: Value,
     ctx: &Rc<EvalContext>,
     access_span: &Span,
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     let handler_val = materialize(handler, Some(access_span), ctx, depth + 1)?;
-    let key_arg = Rc::new(Thunk::new_materialized(
-        Value::String(key_str.to_string()),
-        *access_span,
-    ));
+    let key_arg = Rc::new(Thunk::new_materialized(key_val, *access_span));
     match handler_val {
         Value::Function {
             params,
             body,
             env: closure_env,
-        } => invoke_function(&CallContext {
-            params: &params,
-            body: &body,
-            closure_env: &closure_env,
-            positional: &[key_arg],
-            named: &IndexMap::new(),
-            default_env: &closure_env,
-            call_span: *access_span,
-            depth: depth + 1,
-            origin: Cow::Borrowed("proxy field access"),
-            ctx,
+        } => EMPTY_NAMED_ARGS.with(|empty| {
+            invoke_function(&CallContext {
+                params: &params,
+                body: &body,
+                closure_env: &closure_env,
+                positional: &[key_arg],
+                named: empty,
+                default_env: &closure_env,
+                call_span: *access_span,
+                depth: depth + 1,
+                origin: Cow::Borrowed("proxy field access"),
+                ctx,
+            })
         }),
-        Value::Builtin { func, .. } => Ok(Rc::new(Thunk::new_pending_builtin(
-            func,
-            vec![key_arg],
-            IndexMap::new(),
-            depth + 1,
-            *access_span,
-            Cow::Borrowed("proxy field access"),
-            Rc::clone(ctx),
-        ))),
+        Value::Builtin { func, .. } => EMPTY_NAMED_ARGS.with(|empty| {
+            Ok(Rc::new(Thunk::new_pending_builtin(
+                func,
+                vec![key_arg],
+                empty.clone(),
+                depth + 1,
+                *access_span,
+                Cow::Borrowed("proxy field access"),
+                Rc::clone(ctx),
+            )))
+        }),
         _ => Err(EvalError::type_mismatch(
             "Function or Builtin",
             handler_val.type_name(),
@@ -1048,7 +1056,13 @@ fn eval_dot_access(
                 None => Err(EvalError::key_not_found(field, *access_span).into()),
             }
         }
-        Value::Proxy { handler } => invoke_proxy_handler(&handler, field, ctx, access_span, depth),
+        Value::Proxy { handler } => invoke_proxy_handler(
+            &handler,
+            Value::String(field.to_string()),
+            ctx,
+            access_span,
+            depth,
+        ),
         _ => Err(
             EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), *access_span).into(),
         ),
@@ -1065,7 +1079,7 @@ fn eval_bracket_access(
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     let push_frame = |mut e: Box<EvalError>| -> Box<EvalError> {
-        e.push_frame("accessing [..]", *access_span);
+        e.push_frame("accessing [..]".to_string(), *access_span);
         e
     };
     let target_thunk = eval(target, Rc::clone(env), ctx, depth + 1).map_err(&push_frame)?;
@@ -1081,8 +1095,11 @@ fn eval_bracket_access(
         }
         Value::Proxy { handler } => {
             let key = eval_key(key_expr, env, ctx, depth)?;
-            let key_str = key.to_string();
-            invoke_proxy_handler(&handler, &key_str, ctx, access_span, depth)
+            let key_val = match key {
+                Key::Int(n) => Value::Int(n),
+                Key::String(s) => Value::String(s),
+            };
+            invoke_proxy_handler(&handler, key_val, ctx, access_span, depth)
         }
         _ => Err(
             EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), *access_span).into(),
@@ -1103,7 +1120,7 @@ fn eval_range_access(
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     let map = eval_as_dict(target, env, ctx, access_span, depth).map_err(|mut e| {
-        e.push_frame("accessing [..:..]", *access_span);
+        e.push_frame("accessing [..:..]".to_string(), *access_span);
         e
     })?;
     let start_key = start.map(|e| eval_key(e, env, ctx, depth)).transpose()?;
@@ -1143,7 +1160,7 @@ fn attach_materialization_context(
             // materialization span and isn't already in the stack (avoids
             // duplicate frames when the same span propagates through
             // nested materialize calls).
-            err.push_frame("materialized", *span);
+            err.push_frame("materialized".to_string(), *span);
         }
     }
     if !origin.is_empty()
@@ -1152,7 +1169,7 @@ fn attach_materialization_context(
             .iter()
             .any(|f| f.span == thunk_span && f.label == origin)
     {
-        err.push_frame(origin, thunk_span);
+        err.push_frame(origin.to_string(), thunk_span);
     }
     err
 }
@@ -1218,7 +1235,7 @@ pub fn materialize(
                         && !cloned.stack.iter().any(|f| f.span == *span)
                     {
                         // Different access site: add as stack frame, preserve original mat_span
-                        cloned.push_frame("materialized", *span);
+                        cloned.push_frame("materialized".to_string(), *span);
                         should_update_cache = true;
                     }
                 }
@@ -1288,6 +1305,9 @@ pub fn materialize(
             call_span,
             ctx: Rc::clone(&thunk_ctx),
         };
+        // Note: errors are decorated with mat_span here and again at line 1298-1299
+        // for nested materialize calls. The attach_materialization_context function
+        // has deduplication logic (lines 1139-1147) to prevent duplicate span entries.
         match func(builtin_args).map_err(&decorate) {
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion.
@@ -1631,6 +1651,13 @@ fn deep_materialize_impl(
             Ok(Value::Seq {
                 head: deep_head,
                 tail: deep_tail,
+            })
+        }
+        Value::Proxy { handler } => {
+            // Deep-materialize the handler thunk and return the proxy with the deep handler
+            let deep_handler = deep_materialize_thunk(handler, ctx, depth, cache)?;
+            Ok(Value::Proxy {
+                handler: deep_handler,
             })
         }
         // Primitives and functions are already fully materialized
@@ -3593,9 +3620,9 @@ mod tests {
         // the depth exceeded error rather than a Rust stack overflow.
         //
         // Strategy: create a proxy value and access it via a DotAccess expression
-        // at depth = MAX_EVAL_DEPTH. eval_dot_access calls invoke_proxy_handler
-        // at that depth, which immediately tries to materialize the handler at
-        // depth + 1 = MAX_EVAL_DEPTH + 1, hitting the depth check.
+        // at depth = MAX_EVAL_DEPTH. The depth check fires during eval(target, ...)
+        // when resolving the VarRef $p at depth + 1 = MAX_EVAL_DEPTH + 1, before
+        // invoke_proxy_handler is ever reached.
         let span = test_span(1, 1, 1, 5);
 
         // A simple handler thunk (value doesn't matter — depth check fires before it's invoked)
@@ -5521,8 +5548,8 @@ mod tests {
         // Integration test: verify the Display output includes all stack frames
         let err = EvalError::new("something broke".to_string(), test_span(1, 5, 1, 12))
             .with_materialization_span(test_span(10, 1, 10, 5))
-            .with_frame("call $inner", test_span(5, 1, 5, 20))
-            .with_frame("call $outer", test_span(8, 1, 8, 25));
+            .with_frame("call $inner".to_string(), test_span(5, 1, 5, 20))
+            .with_frame("call $outer".to_string(), test_span(8, 1, 8, 25));
         let display = format!("{err}");
         assert!(display.contains("something broke"));
         assert!(display.contains("defined at 1:5-1:12"));

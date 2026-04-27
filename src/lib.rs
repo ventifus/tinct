@@ -145,24 +145,16 @@ pub fn value_to_json(
     use value::{Key, Value};
 
     if depth > eval::MAX_EVAL_DEPTH {
-        return Err(error::EvalError::new(
-            format!(
-                "maximum serialization depth exceeded ({})",
-                eval::MAX_EVAL_DEPTH
-            ),
-            ast::Span::origin(),
-        )
-        .into());
+        return Err(
+            error::EvalError::depth_exceeded(eval::MAX_EVAL_DEPTH, ast::Span::origin()).into(),
+        );
     }
 
     match val {
         Value::Int(n) => Ok(JV::Number((*n).into())),
         Value::Float(f) => {
             let n = serde_json::Number::from_f64(*f).ok_or_else(|| {
-                error::EvalError::new(
-                    format!("cannot serialize {f} to JSON: NaN and Infinity are not allowed"),
-                    ast::Span::origin(),
-                )
+                error::EvalError::float_not_finite("to-json".to_string(), *f, ast::Span::origin())
             })?;
             Ok(JV::Number(n))
         }
@@ -196,18 +188,21 @@ pub fn value_to_json(
                 Ok(JV::Object(obj))
             }
         }
-        Value::Function { .. } | Value::Builtin { .. } => Err(error::EvalError::new(
-            "cannot serialize Function to JSON".to_string(),
+        Value::Function { .. } => Err(error::EvalError::value_not_serializable(
+            "Function".to_string(),
             ast::Span::origin(),
         )
         .into()),
-        Value::Seq { head, .. } => Err(error::EvalError::new(
-            "cannot serialize Seq to JSON: use $collect first".to_string(),
-            head.span,
+        Value::Builtin { .. } => Err(error::EvalError::value_not_serializable(
+            "Builtin".to_string(),
+            ast::Span::origin(),
         )
         .into()),
-        Value::Proxy { .. } => Err(error::EvalError::new(
-            "cannot serialize Proxy to JSON".to_string(),
+        Value::Seq { head, .. } => {
+            Err(error::EvalError::value_not_serializable("Seq".to_string(), head.span).into())
+        }
+        Value::Proxy { .. } => Err(error::EvalError::value_not_serializable(
+            "Proxy".to_string(),
             ast::Span::origin(),
         )
         .into()),
@@ -338,13 +333,13 @@ mod tests {
     #[test]
     fn test_json_float_infinity_error() {
         let err = value_to_json(&Value::Float(f64::INFINITY), &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("Infinity"));
+        assert!(err.message().contains("is not a finite number"));
     }
 
     #[test]
     fn test_json_float_neg_infinity_error() {
         let err = value_to_json(&Value::Float(f64::NEG_INFINITY), &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("Infinity"));
+        assert!(err.message().contains("is not a finite number"));
     }
 
     #[test]
@@ -497,7 +492,12 @@ mod tests {
             env: Rc::new(RefCell::new(Environment::new())),
         };
         let err = value_to_json(&f, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("cannot serialize Function to JSON"));
+        assert!(
+            err.message().contains("cannot serialize Function to JSON"),
+            "got: {}",
+            err.message()
+        );
+        assert_eq!(err.kind.code(), "E035");
     }
 
     #[test]
@@ -513,7 +513,12 @@ mod tests {
             )),
         };
         let err = value_to_json(&seq, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("cannot serialize Seq"));
+        assert!(
+            err.message().contains("cannot serialize Seq to JSON"),
+            "got: {}",
+            err.message()
+        );
+        assert_eq!(err.kind.code(), "E035");
     }
 
     #[test]
@@ -529,7 +534,12 @@ mod tests {
             func: dummy,
         };
         let err = value_to_json(&b, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("cannot serialize Function to JSON"));
+        assert!(
+            err.message().contains("cannot serialize Builtin to JSON"),
+            "got: {}",
+            err.message()
+        );
+        assert_eq!(err.kind.code(), "E035");
     }
 
     #[test]
@@ -542,14 +552,13 @@ mod tests {
             "got: {}",
             err.message()
         );
+        assert_eq!(err.kind.code(), "E035");
     }
 
     #[test]
     fn test_json_depth_limit() {
         let err = value_to_json(&Value::Int(1), &test_ctx(), eval::MAX_EVAL_DEPTH + 1).unwrap_err();
-        assert!(err
-            .message()
-            .contains("maximum serialization depth exceeded"));
+        assert!(err.message().contains("maximum evaluation depth exceeded"));
     }
 
     #[test]

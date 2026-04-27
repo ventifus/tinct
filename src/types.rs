@@ -55,6 +55,7 @@ pub enum Type {
         ret: Box<Type>,
     },
     Seq(Box<Type>),
+    Proxy,
     #[allow(clippy::enum_variant_names)]
     TypeVar(String, u32),
     Any,
@@ -83,6 +84,7 @@ impl PartialEq for Type {
                 },
             ) => p1 == p2 && r1 == r2,
             (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
+            (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             (Type::Any, Type::Any) => true,
             _ => false,
@@ -198,6 +200,7 @@ impl Type {
                 params.iter().any(|p| p.has_type_vars()) || ret.has_type_vars()
             }
             Type::Seq(elem) => elem.has_type_vars(),
+            Type::Proxy => false,
             _ => false,
         }
     }
@@ -1039,6 +1042,8 @@ pub fn unify(
 
         (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, state, span),
 
+        (Type::Proxy, Type::Proxy) => Ok(()),
+
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
 
@@ -1259,6 +1264,7 @@ impl fmt::Display for Type {
                 write!(f, "]")
             }
             Type::Seq(elem) => write!(f, "Seq[{elem}]"),
+            Type::Proxy => write!(f, "Proxy"),
         }
     }
 }

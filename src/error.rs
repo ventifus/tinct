@@ -103,6 +103,11 @@ pub enum ErrorKind {
     EmptyCollection {
         op: String,
     },
+    /// Runtime value type cannot be serialized to JSON (Function, Builtin, Seq, Proxy).
+    /// `value_type` is the user-facing type name (e.g., "Function", "Proxy").
+    ValueNotSerializable {
+        value_type: String,
+    },
 
     // --- Limit errors (E040-E049) ---
     /// Evaluation depth limit (recursive thunk forcing).
@@ -183,6 +188,7 @@ impl ErrorKind {
             Self::IntegerOverflow { .. } => "E032",
             Self::FloatNotFinite { .. } => "E033",
             Self::EmptyCollection { .. } => "E034",
+            Self::ValueNotSerializable { .. } => "E035",
             Self::DepthExceeded { .. } => "E040",
             Self::JsonDepthExceeded { .. } => "E041",
             Self::IncludeForbidden => "E042",
@@ -255,6 +261,9 @@ impl fmt::Display for ErrorKind {
                 write!(f, "{builtin}: {value} is not a finite number")
             }
             Self::EmptyCollection { op } => write!(f, "{op} on empty collection"),
+            Self::ValueNotSerializable { value_type } => {
+                write!(f, "cannot serialize {value_type} to JSON")
+            }
             Self::DepthExceeded { limit } => {
                 write!(f, "maximum evaluation depth exceeded ({limit})")
             }
@@ -355,6 +364,10 @@ impl PartialEq for ErrorKind {
                 },
             ) => b1 == b2 && v1.to_bits() == v2.to_bits(),
             (Self::EmptyCollection { op: o1 }, Self::EmptyCollection { op: o2 }) => o1 == o2,
+            (
+                Self::ValueNotSerializable { value_type: v1 },
+                Self::ValueNotSerializable { value_type: v2 },
+            ) => v1 == v2,
             (Self::DepthExceeded { limit: l1 }, Self::DepthExceeded { limit: l2 }) => l1 == l2,
             (Self::JsonDepthExceeded { limit: l1 }, Self::JsonDepthExceeded { limit: l2 }) => {
                 l1 == l2
@@ -465,20 +478,14 @@ impl EvalError {
     }
 
     /// Builder for stack frame attachment.
-    pub fn with_frame(mut self, label: impl Into<String>, span: Span) -> Self {
-        self.stack.push(StackFrame {
-            label: label.into(),
-            span,
-        });
+    pub fn with_frame(mut self, label: String, span: Span) -> Self {
+        self.stack.push(StackFrame { label, span });
         self
     }
 
     /// Mutable stack frame push.
-    pub fn push_frame(&mut self, label: impl Into<String>, span: Span) {
-        self.stack.push(StackFrame {
-            label: label.into(),
-            span,
-        });
+    pub fn push_frame(&mut self, label: String, span: Span) {
+        self.stack.push(StackFrame { label, span });
     }
 
     pub fn key_not_found(key: &str, definition_span: Span) -> Self {
@@ -537,31 +544,27 @@ impl EvalError {
         }
     }
 
-    pub fn user_error(message: impl Into<String>, definition_span: Span) -> Self {
+    pub fn user_error(message: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::UserError {
-                message: message.into(),
-            },
+            kind: ErrorKind::UserError { message },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
         }
     }
 
-    pub fn named_arg_rejected(builtin: impl Into<String>, definition_span: Span) -> Self {
+    pub fn named_arg_rejected(builtin: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::NamedArgRejected {
-                builtin: builtin.into(),
-            },
+            kind: ErrorKind::NamedArgRejected { builtin },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
         }
     }
 
-    pub fn integer_overflow(op: impl Into<String>, definition_span: Span) -> Self {
+    pub fn integer_overflow(op: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::IntegerOverflow { op: op.into() },
+            kind: ErrorKind::IntegerOverflow { op },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -569,14 +572,14 @@ impl EvalError {
     }
 
     pub fn type_mismatch_ctx(
-        context: impl Into<String>,
+        context: String,
         expected: &str,
         got: &str,
         definition_span: Span,
     ) -> Self {
         Self {
             kind: ErrorKind::TypeMismatch {
-                context: Some(context.into()),
+                context: Some(context),
                 expected: expected.to_string(),
                 got: got.to_string(),
             },
@@ -586,39 +589,45 @@ impl EvalError {
         }
     }
 
-    pub fn division_by_zero(op: impl Into<String>, definition_span: Span) -> Self {
+    pub fn division_by_zero(op: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::DivisionByZero { op: op.into() },
+            kind: ErrorKind::DivisionByZero { op },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
         }
     }
 
-    pub fn float_not_finite(builtin: impl Into<String>, value: f64, definition_span: Span) -> Self {
+    pub fn float_not_finite(builtin: String, value: f64, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::FloatNotFinite {
-                builtin: builtin.into(),
-                value,
-            },
+            kind: ErrorKind::FloatNotFinite { builtin, value },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
         }
     }
 
-    pub fn empty_collection(op: impl Into<String>, definition_span: Span) -> Self {
+    pub fn empty_collection(op: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::EmptyCollection { op: op.into() },
+            kind: ErrorKind::EmptyCollection { op },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
         }
     }
 
-    pub fn undefined_variable(name: impl Into<String>, definition_span: Span) -> Self {
+    pub fn value_not_serializable(value_type: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::UndefinedVariable { name: name.into() },
+            kind: ErrorKind::ValueNotSerializable { value_type },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn undefined_variable(name: String, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::UndefinedVariable { name },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -637,20 +646,18 @@ impl EvalError {
         }
     }
 
-    pub fn named_arg_conflict(param: impl Into<String>, definition_span: Span) -> Self {
+    pub fn named_arg_conflict(param: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::NamedArgConflict {
-                param: param.into(),
-            },
+            kind: ErrorKind::NamedArgConflict { param },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
         }
     }
 
-    pub fn unknown_named_arg(name: impl Into<String>, definition_span: Span) -> Self {
+    pub fn unknown_named_arg(name: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::UnknownNamedArg { name: name.into() },
+            kind: ErrorKind::UnknownNamedArg { name },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -695,41 +702,27 @@ impl EvalError {
         }
     }
 
-    pub fn include_io_error(
-        path: impl Into<String>,
-        detail: impl Into<String>,
-        definition_span: Span,
-    ) -> Self {
+    pub fn include_io_error(path: String, detail: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::IncludeIoError {
-                path: path.into(),
-                detail: detail.into(),
-            },
+            kind: ErrorKind::IncludeIoError { path, detail },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
         }
     }
 
-    pub fn include_cycle(path: impl Into<String>, definition_span: Span) -> Self {
+    pub fn include_cycle(path: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::IncludeCycle { path: path.into() },
+            kind: ErrorKind::IncludeCycle { path },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
         }
     }
 
-    pub fn include_parse_failed(
-        path: impl Into<String>,
-        detail: impl Into<String>,
-        definition_span: Span,
-    ) -> Self {
+    pub fn include_parse_failed(path: String, detail: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::IncludeParseFailed {
-                path: path.into(),
-                detail: detail.into(),
-            },
+            kind: ErrorKind::IncludeParseFailed { path, detail },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -737,17 +730,13 @@ impl EvalError {
     }
 
     pub fn include_file_too_large(
-        path: impl Into<String>,
+        path: String,
         size: u64,
         limit: u64,
         definition_span: Span,
     ) -> Self {
         Self {
-            kind: ErrorKind::IncludeFileTooLarge {
-                path: path.into(),
-                size,
-                limit,
-            },
+            kind: ErrorKind::IncludeFileTooLarge { path, size, limit },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -755,15 +744,15 @@ impl EvalError {
     }
 
     pub fn parse_conversion(
-        builtin: impl Into<String>,
-        input: impl Into<String>,
+        builtin: String,
+        input: String,
         target: &str,
         definition_span: Span,
     ) -> Self {
         Self {
             kind: ErrorKind::ParseConversion {
-                builtin: builtin.into(),
-                input: input.into(),
+                builtin,
+                input,
                 target: target.to_string(),
             },
             definition_span,
@@ -772,11 +761,9 @@ impl EvalError {
         }
     }
 
-    pub fn json_parse(detail: impl Into<String>, definition_span: Span) -> Self {
+    pub fn json_parse(detail: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::JsonParse {
-                detail: detail.into(),
-            },
+            kind: ErrorKind::JsonParse { detail },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -842,7 +829,8 @@ mod tests {
     fn test_eval_error_with_frame() {
         let span = test_span(1, 1, 1, 5);
         let frame_span = test_span(5, 1, 5, 10);
-        let err = EvalError::new("err".to_string(), span).with_frame("my_function", frame_span);
+        let err = EvalError::new("err".to_string(), span)
+            .with_frame("my_function".to_string(), frame_span);
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "my_function");
         assert_eq!(err.stack[0].span, frame_span);
@@ -895,8 +883,8 @@ mod tests {
         let frame2_span = test_span(15, 1, 15, 12);
         let err = EvalError::new("bad value".to_string(), def_span)
             .with_materialization_span(mat_span)
-            .with_frame("outer", frame1_span)
-            .with_frame("inner", frame2_span);
+            .with_frame("outer".to_string(), frame1_span)
+            .with_frame("inner".to_string(), frame2_span);
         let display = format!("{err}");
         let expected = "\
 [E099] bad value (defined at 3:5-3:10) (materialized at 20:1-20:5)
@@ -914,7 +902,7 @@ mod tests {
 
         // Push a frame directly
         let frame_span = test_span(5, 1, 5, 10);
-        err.push_frame("first_function", frame_span);
+        err.push_frame("first_function".to_string(), frame_span);
 
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "first_function");
@@ -922,7 +910,7 @@ mod tests {
 
         // Push a second frame
         let frame2_span = test_span(10, 3, 10, 15);
-        err.push_frame("second_function", frame2_span);
+        err.push_frame("second_function".to_string(), frame2_span);
 
         assert_eq!(err.stack.len(), 2);
         assert_eq!(err.stack[1].label, "second_function");
@@ -993,16 +981,10 @@ mod tests {
         assert_ne!(err1, err4);
     }
 
-    #[test]
-    fn test_partialeq_all_variants_covered() {
-        // Verify that all ErrorKind variants are covered by the PartialEq impl
-        // by checking that each variant equals itself. This ensures the match
-        // is exhaustive and doesn't rely solely on the catch-all `_ => false` arm.
-        //
-        // If a new variant is added without updating PartialEq, this test will
-        // fail (since the catch-all would incorrectly return false for self-comparison).
-
-        let variants: Vec<ErrorKind> = vec![
+    /// Compile-time exhaustive match helper for ErrorKind variants.
+    /// Adding a new ErrorKind variant without updating this function will cause a compile error.
+    fn all_error_kind_variants() -> Vec<ErrorKind> {
+        vec![
             ErrorKind::KeyNotFound {
                 key: "x".to_string(),
             },
@@ -1050,6 +1032,9 @@ mod tests {
             ErrorKind::EmptyCollection {
                 op: "head".to_string(),
             },
+            ErrorKind::ValueNotSerializable {
+                value_type: "Function".to_string(),
+            },
             ErrorKind::DepthExceeded { limit: 256 },
             ErrorKind::JsonDepthExceeded { limit: 128 },
             ErrorKind::IncludeForbidden,
@@ -1088,10 +1073,22 @@ mod tests {
             ErrorKind::Internal {
                 message: "test".to_string(),
             },
-        ];
+        ]
+    }
 
-        // Verify we have all 28 variants
-        assert_eq!(variants.len(), 28, "Expected 28 ErrorKind variants");
+    #[test]
+    fn test_partialeq_all_variants_covered() {
+        // Verify that all ErrorKind variants are covered by the PartialEq impl
+        // by checking that each variant equals itself. This ensures the match
+        // is exhaustive and doesn't rely solely on the catch-all `_ => false` arm.
+        //
+        // If a new variant is added without updating PartialEq, this test will
+        // fail (since the catch-all would incorrectly return false for self-comparison).
+
+        let variants = all_error_kind_variants();
+
+        // Verify we have all 29 variants
+        assert_eq!(variants.len(), 29, "Expected 29 ErrorKind variants");
 
         // Each variant should equal itself
         for variant in &variants {
@@ -1216,6 +1213,16 @@ mod tests {
             format!(
                 "{}",
                 ErrorKind::ArityMismatch {
+                    expected: ArityBound::Exact(1),
+                    got: 0
+                }
+            ),
+            "arity mismatch: expected 1 argument, got 0"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::ArityMismatch {
                     expected: ArityBound::Exact(2),
                     got: 3
                 }
@@ -1241,6 +1248,15 @@ mod tests {
                 }
             ),
             "arity mismatch: expected 1 to 3 arguments, got 5"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::MissingRequiredParam {
+                    param: "name".to_string()
+                }
+            ),
+            "missing argument for required parameter 'name'"
         );
         assert_eq!(
             format!(
@@ -1326,6 +1342,24 @@ mod tests {
                 }
             ),
             "head on empty collection"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::ValueNotSerializable {
+                    value_type: "Function".to_string()
+                }
+            ),
+            "cannot serialize Function to JSON"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::ValueNotSerializable {
+                    value_type: "Proxy".to_string()
+                }
+            ),
+            "cannot serialize Proxy to JSON"
         );
 
         // Limit errors (E040-E049)
@@ -1454,96 +1488,10 @@ mod tests {
         // all codes are unique. This catches silent breakage when new
         // variants are added without updating code().
 
-        let variants: Vec<ErrorKind> = vec![
-            ErrorKind::KeyNotFound {
-                key: "x".to_string(),
-            },
-            ErrorKind::UndefinedVariable {
-                name: "x".to_string(),
-            },
-            ErrorKind::TypeMismatch {
-                context: None,
-                expected: "Int".to_string(),
-                got: "String".to_string(),
-            },
-            ErrorKind::TypeAssertFailed {
-                expected: "Int".to_string(),
-                got: "String".to_string(),
-            },
-            ErrorKind::ArityMismatch {
-                expected: ArityBound::Exact(1),
-                got: 2,
-            },
-            ErrorKind::MissingRequiredParam {
-                param: "x".to_string(),
-            },
-            ErrorKind::NamedArgConflict {
-                param: "x".to_string(),
-            },
-            ErrorKind::UnknownNamedArg {
-                name: "x".to_string(),
-            },
-            ErrorKind::NamedArgRejected {
-                builtin: "test".to_string(),
-            },
-            ErrorKind::DuplicateKey {
-                key: "x".to_string(),
-            },
-            ErrorKind::DivisionByZero {
-                op: "/".to_string(),
-            },
-            ErrorKind::IntegerOverflow {
-                op: "+".to_string(),
-            },
-            ErrorKind::FloatNotFinite {
-                builtin: "test".to_string(),
-                value: f64::NAN,
-            },
-            ErrorKind::EmptyCollection {
-                op: "head".to_string(),
-            },
-            ErrorKind::DepthExceeded { limit: 256 },
-            ErrorKind::JsonDepthExceeded { limit: 128 },
-            ErrorKind::IncludeForbidden,
-            ErrorKind::IncludeNotAvailable,
-            ErrorKind::IncludeIoError {
-                path: "x".to_string(),
-                detail: "error".to_string(),
-            },
-            ErrorKind::IncludeCycle {
-                path: "x".to_string(),
-            },
-            ErrorKind::IncludeParseFailed {
-                path: "x".to_string(),
-                detail: "error".to_string(),
-            },
-            ErrorKind::IncludeFileTooLarge {
-                path: "x".to_string(),
-                size: 1000,
-                limit: 100,
-            },
-            ErrorKind::ParseConversion {
-                builtin: "to-int".to_string(),
-                input: "x".to_string(),
-                target: "Int".to_string(),
-            },
-            ErrorKind::JsonParse {
-                detail: "error".to_string(),
-            },
-            ErrorKind::JsonRange,
-            ErrorKind::CircularDependency {
-                name: "$x".to_string(),
-            },
-            ErrorKind::UserError {
-                message: "test".to_string(),
-            },
-            ErrorKind::Internal {
-                message: "test".to_string(),
-            },
-        ];
+        let variants = all_error_kind_variants();
 
-        // Verify we have all 28 variants
-        assert_eq!(variants.len(), 28, "Expected 28 ErrorKind variants");
+        // Verify we have all 29 variants
+        assert_eq!(variants.len(), 29, "Expected 29 ErrorKind variants");
 
         let mut codes = std::collections::HashSet::new();
 
@@ -1580,8 +1528,8 @@ mod tests {
             );
         }
 
-        // Verify we collected 28 unique codes
-        assert_eq!(codes.len(), 28, "Expected 28 unique error codes");
+        // Verify we collected 29 unique codes
+        assert_eq!(codes.len(), 29, "Expected 29 unique error codes");
     }
 
     #[test]
@@ -1596,9 +1544,9 @@ mod tests {
         // Simulate error propagating through dict -> thunk -> builtin chain
         let err = EvalError::type_mismatch("Int", "String", def_span)
             .with_materialization_span(mat_span)
-            .with_frame("dict entry 'inner'", frame1_span)
-            .with_frame("dict entry 'outer'", frame2_span)
-            .with_frame("materialized", frame3_span);
+            .with_frame("dict entry 'inner'".to_string(), frame1_span)
+            .with_frame("dict entry 'outer'".to_string(), frame2_span)
+            .with_frame("materialized".to_string(), frame3_span);
 
         assert_eq!(err.definition_span, def_span);
         assert_eq!(err.materialization_span, Some(mat_span));
@@ -1621,8 +1569,8 @@ mod tests {
 
         let err = EvalError::key_not_found("missing_key", def_span)
             .with_materialization_span(mat_span)
-            .with_frame("dict entry 'a'", frame1_span)
-            .with_frame("dict entry 'b'", frame2_span);
+            .with_frame("dict entry 'a'".to_string(), frame1_span)
+            .with_frame("dict entry 'b'".to_string(), frame2_span);
 
         let display = format!("{err}");
 
@@ -1656,7 +1604,7 @@ mod tests {
 
         // Manually simulate what attach_materialization_context does
         if !err.stack.iter().any(|f| f.span == second_access_span) {
-            err.push_frame("materialized", second_access_span);
+            err.push_frame("materialized".to_string(), second_access_span);
         }
 
         assert_eq!(err.materialization_span, Some(first_mat_span));
@@ -1672,12 +1620,12 @@ mod tests {
 
         let mut err = EvalError::key_not_found("key", def_span);
 
-        err.push_frame("first", frame_span);
+        err.push_frame("first".to_string(), frame_span);
         assert_eq!(err.stack.len(), 1);
 
         // Manually check for duplicate before adding (this is what attach_materialization_context does)
         if !err.stack.iter().any(|f| f.span == frame_span) {
-            err.push_frame("second", frame_span);
+            err.push_frame("second".to_string(), frame_span);
         }
 
         // Should still be 1 frame (duplicate was avoided)
@@ -1724,7 +1672,7 @@ mod tests {
                 "[E070]",
             ),
             (
-                EvalError::user_error("test", test_span(1, 1, 1, 5)),
+                EvalError::user_error("test".to_string(), test_span(1, 1, 1, 5)),
                 "[E080]",
             ),
         ];
