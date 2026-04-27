@@ -82,6 +82,7 @@ fn check_expr(
 | Function arguments (CALL-MONO) | Parameter type | `check_expr` |
 | Function body with return annotation | Declared return type | `check_expr` |
 | TypeAssert inner expression | Annotated type | `check_expr` |
+| Lambda body (CHECK-FN mode) | Expected return type | `check_expr` |
 
 **Unification positions** (type variables present, uses `unify` with [U-SUBSUME]):
 
@@ -153,6 +154,28 @@ Else:
     Γ' ⊢ body ⇒ τᵣ                                   [synthesis mode]
 ────────────────────────────────── [FN]
 Γ ⊢ [fn@σᵣ [p₁@σ₁ ... pₙ@σₙ] body] : Fn(σ₁...σₙ → σᵣ)
+```
+
+**Lambda checking mode (bidirectional):**
+
+```
+Γ ⊢ [fn@σᵣ [p₁@τ₁ ... pₙ@τₙ] body] ⇐ Fn(σ₁...σₙ → σ_exp)
+    where ¬has_type_vars(Fn(σ₁...σₙ → σ_exp))       (expected type fully concrete)
+For each param pᵢ:
+    if variadic: use Record([], Closed)
+    else if annotated pᵢ@τᵢ:
+        if has_type_vars(τᵢ): unify(σᵢ, τᵢ, S)       (annotation with TypeVars)
+        else: check σᵢ <: τᵢ                         (contravariant check)
+        use τᵢ
+    else: use σᵢ                                     (propagate expected type)
+Γ' = Γ, p₁:τ₁, ..., pₙ:τₙ
+If return annotation @σᵣ given:
+    if has_type_vars(σᵣ): unify(σᵣ, σ_exp, S)       (annotation with TypeVars)
+    else: check σᵣ <: σ_exp                          (covariant check)
+    Γ' ⊢ body ⇐ σᵣ
+Else:
+    Γ' ⊢ body ⇐ σ_exp                                (check against expected return)
+────────────────────────────────── [CHECK-FN]
 ```
 
 Unannotated non-variadic params get type Any. This is the source of the "Any escape hatch" — without annotations, functions have monomorphic type Fn(Any...Any → τᵣ). Polymorphism requires explicit type variable annotations (e.g., `x@a`).
@@ -245,6 +268,8 @@ resolve(ann) = σ,  Γ ⊢ e ⇐ σ fails,  default ∈ ann
 
 Type assertions use checking mode: the inner expression is checked against the annotated type via [SUB]. When checking fails and a `default:` property is present, the assertion succeeds silently (no type error). The default value provides a fallback at runtime.
 
+**Limitation:** When the annotation resolves to a bare type variable (e.g., `[@a $x]`), the static subtype check always fails because `is_subtype` only matches type variables reflexively. Such assertions require a `default:` clause or will produce a type error. To narrow to a polymorphic type, use unification-based checking within a function parameter or return annotation context.
+
 **Type alias:**
 
 ```
@@ -267,7 +292,7 @@ When name = "Fn": interpret as function type constructor.
 
 ## Unification: unify(τ₁, τ₂, S) → S'
 
-Unification finds a most general substitution S such that S(τ₁) = S(τ₂). Before matching, both types are normalized via S (substitution applied). Unification is **pure Robinson** — it handles type variable binding and structural decomposition only. Subtyping (literal promotion, numeric widening) is handled by `check_expr` via the `[SUB]` rule and `is_subtype`. This separation follows Pierce & Turner (2000) and Dunfield & Krishnaswami (2021).
+Unification finds a most general substitution S such that S(τ₁) = S(τ₂). Before matching, both types are normalized via S (substitution applied). Unification follows **Robinson (1965)** for structural decomposition and variable binding, extended with pragmatic promotion rules (see bidirectional literal-to-parent promotions in the implementation below). Subtyping is handled by `check_expr` via the `[SUB]` rule and `is_subtype` for directional checks, and by `[U-SUBSUME]` for bidirectional compatibility within unification. This separation follows Pierce & Turner (2000) and Dunfield & Krishnaswami (2021).
 
 ```
 unify(τ, τ, S) = S                              [U-REFL]
@@ -289,7 +314,7 @@ unify(StringLiteral(s), StringLiteral(t), S) =
     error       if s ≠ t                         [U-STRLIT-NEQ]
 ```
 
-No explicit literal-to-parent promotion rules in unification. Subtyping relationships between concrete types are handled by [U-SUBSUME] below.
+Bidirectional literal-to-parent promotions are implemented as explicit match arms in `unify()` (e.g., `IntLiteral(_)` with `Int`, `Float` with `Number`). The [U-SUBSUME] rule below describes the fallback for concrete types not covered by these arms.
 
 Structural:
 
@@ -314,7 +339,7 @@ unify(σ, τ, S) where ¬has_type_vars(σ) ∧ ¬has_type_vars(τ):
     else: error                                  [U-FAIL]
 ```
 
-[U-SUBSUME] is the bridge between unification and subtyping. It fires after all other rules (structural decomposition, type variable binding) have been tried. When two concrete types remain and they are in a subtype relationship in either direction, unification succeeds without modifying the substitution. This is essential for **confluence in CALL-POLY**: when a type variable α is bound to `IntLiteral(42)` by one argument and later compared against `Int` by another (via substitution resolution), [U-SUBSUME] recognizes `IntLiteral(42) <: Int` and succeeds regardless of argument order.
+[U-SUBSUME] is the bridge between unification and subtyping. It fires after all other rules (structural decomposition, type variable binding) have been tried — it is ordered last as a fallback, not a catch-all. Structural rules ([U-FN], [U-SEQ], [U-REC], literal identity) take priority over subsumptive matching. When two concrete types remain and they are in a subtype relationship in either direction, unification succeeds without modifying the substitution. This is essential for **confluence in CALL-POLY**: when a type variable α is bound to `IntLiteral(42)` by one argument and later compared against `Int` by another (via substitution resolution), [U-SUBSUME] recognizes `IntLiteral(42) <: Int` and succeeds regardless of argument order.
 
 **Relationship to Robinson unification.** Robinson (1965) is purely syntactic — it has no notion of subtyping, so `unify(IntLiteral(42), Int)` would simply fail (different constructors). [U-SUBSUME] extends Robinson with a ground-type compatibility check: when both sides are concrete and in a subtype relationship, unification succeeds without modifying the substitution. This is a pragmatic middle ground — Robinson handles structural decomposition and variable binding; [U-SUBSUME] handles the subtype lattice at ground types. The substitution is not modified by [U-SUBSUME], so existing variable bindings (which may carry literal precision) are preserved. This is the same approach Rust's type inference uses: subtyping constraints between concrete types are resolved as compatibility checks rather than LUB computation (Dolan & Mycroft 2017 describe the full alternative — algebraic subtyping — which tinct intentionally does not adopt; see `doc/whatif/algebraic-subtypes.md`).
 
@@ -371,11 +396,12 @@ instantiate(τ) = (S(τ), S)
     from a monotonic per-file counter.
 
 FTV(τ) includes both type variables (α) and row variables
-(RowVar(r)). Tinct conflates these into a single namespace —
-both are collected by collect_type_vars() and renamed by
-instantiate(). In Rémy (1994), row variables inhabit a
-distinct kind from type variables; tinct does not enforce
-this distinction.
+(RowVar(r)). Type variables are collected via collect_type_vars()
+and row variables via collect_row_vars() (or both in a single
+pass via collect_all_vars()). Both are renamed by instantiate().
+In Rémy (1994), row variables inhabit a distinct kind from type
+variables; tinct maintains separate quantifier lists in TypeScheme
+but shares a common variable namespace.
 ```
 
 This is alpha-renaming for call-site freshening. Each polymorphic call site gets independent type variables so unification at one site does not constrain another. With let-generalization (below), instantiation also handles let-bound polymorphic type schemes.
@@ -395,18 +421,23 @@ Implementation: `TypeEnv.bindings` changes from `IndexMap<String, Type>` to `Ind
 ```rust
 #[derive(Debug, Clone)]
 pub struct TypeScheme {
-    pub vars: Vec<String>,  // quantified variable names
+    pub type_vars: Vec<String>,  // quantified type variable names
+    pub row_vars: Vec<String>,   // quantified row variable names
     pub body: Type,
 }
 
 impl TypeScheme {
     pub fn mono(ty: Type) -> Self {
-        Self { vars: vec![], body: ty }
+        Self {
+            type_vars: vec![],
+            row_vars: vec![],
+            body: ty,
+        }
     }
 }
 ```
 
-`PartialEq` for `TypeScheme` compares structurally (vars + body). `Display` shows `∀a b. Fn(a → b)` for polymorphic schemes, or the bare type for monomorphic ones. Located in `types.rs`.
+`PartialEq` for `TypeScheme` compares structurally (type_vars + row_vars + body). `Display` shows `∀a b. Fn(a → b)` for polymorphic schemes, or the bare type for monomorphic ones. Located in `types.rs`.
 
 **Levels.** Every type variable α carries an integer level ℓ(α). The type checker maintains a current level counter ℓ_current, incremented at each dict boundary (every `infer_dict` call):
 
@@ -468,7 +499,7 @@ Implementation signature:
 pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme
 ```
 
-Collects FTV(ty) via a level-aware traversal returning `Vec<(String, u32)>` pairs, filters by `current_level > level`, returns `TypeScheme { vars, body: ty.clone() }`.
+Collects type variables and row variables from ty via level-aware traversals (collect_type_vars and collect_row_vars, or combined via collect_all_vars), filters by `current_level > level`, returns `TypeScheme { type_vars, row_vars, body: ty.clone() }`.
 
 **[VAR-POLY] rule:** See §Inference Judgments: Γ ⊢ e ⇒ τ above. Variable references instantiate the type scheme stored in Γ at ℓ_current.
 
@@ -562,7 +593,9 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
 | `InferState` | `{ name_counter: u32, level: u32, levels: HashMap<String, u32>, subst: Substitution }` |
 | `InferState.subst` | Accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR]; merged into letrec substitution in Pass 3b |
-| `collect_type_vars()` | `fn(&self, &mut BTreeSet<String>)` — out-param, no level |
+| `collect_type_vars()` | `fn(&self, &mut BTreeSet<String>)` — collects type variables, no level |
+| `collect_row_vars()` | `fn(&self, &mut BTreeSet<String>)` — collects row variables, no level |
+| `collect_all_vars()` | `fn(&self, &mut BTreeSet<String>, &mut BTreeSet<String>)` — collects both in one pass |
 | `Type::Display` | Shows `TypeVar` name only (level hidden) |
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).

@@ -1,0 +1,9 @@
+# proxy : bracket access passes Int key as Int (not stringified) to handler
+[
+  handler: [fn [key] [call $if [call $= [call $type-of $key] "Int"] "got-int" "got-str"]]
+  p: [call $proxy $handler]
+  a: $p[0]
+  b: $p["0"]
+]
+===
+Dict({"handler": Function(key), "p": Proxy, "a": String("got-int"), "b": String("got-str")})

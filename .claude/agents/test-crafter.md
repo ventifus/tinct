@@ -45,7 +45,9 @@ tests/corpus/
 
 ## Corpus Test Format
 
-**Valid parse test** (ALWAYS requires `===` + expected AST Display output):
+**ALL corpus tests require the `===` delimiter followed by expected output.** There are no parse-only tests without expected output.
+
+**Valid parse test** (in `tests/corpus/valid/`) — ALWAYS requires `===` + expected AST Display output:
 ```
 [x: 1 y: 2]
 ===
@@ -53,21 +55,21 @@ tests/corpus/
 ```
 The expected output is `parse_expression(input).node.to_string()` — run the parser to get it.
 
-**Eval test** (input `===` expected output string):
+**Eval test** (in `tests/corpus/eval/`) — input `===` expected eval output as string:
 ```
 [call $+ 1 2]
 ===
 3
 ```
 
-**Error test** (input `===` expected error substring, MUST include [EXXX] error code):
+**Error test** (in `tests/corpus/invalid/` or `tests/corpus/eval/errors/`) — input `===` expected error substring, MUST include [EXXX] error code:
 ```
 [call $+ 1]
 ===
 [E005]
 ```
 
-**Laziness proof test** (use `$error` in unused positions to prove non-evaluation):
+**Laziness proof test** (in `tests/corpus/eval/laziness/`) — use `$error` in unused positions to prove non-evaluation:
 ```
 [x: [call $error "should not fire"]  y: 42]
 ===

@@ -1,7 +1,7 @@
 // LLT Grammar -- pest PEG
 // See doc/02-syntax.md for the formal specification.
 
-// === Implicit whitespace and comments ===
+// === Implicit Whitespace and Comments ===
 // Skipped automatically between tokens in non-atomic rules.
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
@@ -76,7 +76,7 @@ keyword_type    = @{ "type"    ~ !ident_char ~ !colon_ahead }
 colon_ahead = _{ ws_chars* ~ ":" }
 ws_chars    = _{ " " | "\t" }
 
-// Used for keyword lookaheads: "call" must not be followed by ident_char.
+// Used for keyword lookaheads and bool_lit word-boundary check.
 // Matches bare_word_char so that e.g. "call!" is a bare word, not keyword + "!".
 ident_char = _{
     !(

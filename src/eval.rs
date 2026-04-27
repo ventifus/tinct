@@ -997,6 +997,8 @@ fn invoke_proxy_handler(
             })
         }),
         Value::Builtin { func, .. } => EMPTY_NAMED_ARGS.with(|empty| {
+            // Clone is necessary: new_pending_builtin requires owned IndexMap
+            // (PendingBuiltin state must own its args). For empty maps, clone is O(1).
             Ok(Rc::new(Thunk::new_pending_builtin(
                 func,
                 vec![key_arg],
@@ -5131,6 +5133,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_deep_materialize_proxy() {
+        // Test that deep_materialize traverses into the proxy handler thunk
+        // and returns a new Proxy with the deep-materialized handler.
+        let span = test_span(1, 1, 1, 5);
+        let expr = Rc::new(Spanned::new(Expr::Int(42), span));
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let ctx = test_ctx();
+
+        // Create an unevaluated handler thunk
+        let handler = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+        let proxy_val = Value::Proxy {
+            handler: Rc::clone(&handler),
+        };
+
+        // Deep materialize the proxy
+        let result = deep_materialize(&proxy_val, &ctx, 0).unwrap();
+
+        match result {
+            Value::Proxy {
+                handler: deep_handler,
+            } => {
+                // Verify the handler was deep-materialized
+                let handler_val = materialize(&deep_handler, None, &ctx, 0).unwrap();
+                assert_eq!(handler_val, Value::Int(42));
+            }
+            other => panic!("expected Proxy, got {other:?}"),
+        }
+    }
+
     // ── Stack trace / call stack reconstruction tests ──────────────────
 
     #[test]
@@ -7394,6 +7426,18 @@ mod tests {
             &Value::Dict(IndexMap::new()),
             &record_type
         ));
+    }
+
+    #[test]
+    fn test_value_matches_type_proxy() {
+        // Type::Proxy should match Value::Proxy and reject other value kinds
+        let span = test_span(1, 1, 1, 5);
+        let handler = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let proxy_val = Value::Proxy { handler };
+
+        assert!(value_matches_type(&proxy_val, &Type::Proxy));
+        assert!(!value_matches_type(&proxy_val, &Type::Int));
+        assert!(value_matches_type(&proxy_val, &Type::Any));
     }
 
     // ── validate_and_wrap_record unit tests ──────────────────────────────────

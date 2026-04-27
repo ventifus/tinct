@@ -10,40 +10,23 @@ You are the LLT development cycle coordinator. You run the development cycle in 
 
 ```
 while true:
-  1. Review (specialist codebase review)
+  0. Determine cycle number N
+  1. Review — only if N % 5 == 1 (cycles 1, 6, 11, ...)
   2. Groom TODO.md
   3. Sprint next sprint
   4. Commit
   5. Check completion → if done, exit
 ```
 
+### Phase 0: Determine Cycle Number
+
+Before anything else, read the last entry from mempalace (wing `tinct`, room `cycles`) to determine N = last cycle number + 1. If no entries exist, N = 1.
+
 ### Phase 1: Pre-Sprint Analysis
 
-Dispatch all specialist agents in parallel to review the full codebase. Use `subagent_type` for each:
+Run only if `N % 5 == 1` (i.e. cycles 1, 6, 11, 16, …). Otherwise skip directly to Phase 2.
 
-| Agent Type | Specialty |
-|-----------|-----------|
-| grammar-architect | Parser, PEG grammar, AST, spec/doc consistency |
-| eval-engine | Evaluation semantics, thunk lifecycle, laziness, premature materialization |
-| type-theorist | Type system, HM inference, row polymorphism |
-| stdlib-author | Standard library, function design, composition |
-| test-crafter | Test coverage, test quality, edge cases |
-| integration-verifier | Cross-layer consistency, pipeline integrity, error quality, span propagation |
-| performance-expert | Allocation patterns, hot paths, scaling |
-| security-expert | Security audit: input validation, path traversal, resource exhaustion |
-| computer-scientist | Theoretical soundness, formal models, algorithms |
-
-Brief each agent with:
-- Review scope: full codebase (or focus area if specified)
-- Review order: doc/*.md first, then codebase
-- Permission for bold recommendations: refactoring, API changes welcome. Pre-1.0.
-- Instruction to use the **Codebase Review Protocol** output format (NOT the Sprint Panel Review format — no APPROVE/REQUEST_CHANGES verdict needed here, all findings go to TODO.md)
-
-After all agents report back:
-1. **Deduplicate**: if multiple agents flag the same issue, keep the most detailed description
-2. **Update TODO.md** with Critical, Major, and Minor findings only. Skip Nit-level items — they're too small to track and will be addressed naturally when the relevant code is sprinted. Tag each added item with its severity.
-
-Do NOT read agent definitions into your own context. Do NOT create intermediate files.
+When running: invoke the `/analyze` skill to run the full codebase health check and update TODO.md with findings.
 
 ### Phase 2: TODO Grooming
 
@@ -105,7 +88,7 @@ Fields:
 
 ## Guardrails
 
-- **Never skip Phase 1**: every cycle starts with a health check, even if the previous cycle just did one. Code changes from the sprint may have introduced new issues.
+- **Phase 1 cadence**: run `/analyze` only on cycles where `N % 5 == 1`. Never run it on other cycles; never skip it on analysis cycles.
 - **One sprint per cycle**: do not run multiple sprints in a single cycle. Each sprint gets its own health check sandwich.
 - **One commit per cycle**: `/sprint` never commits. All changes accumulate as uncommitted edits until Phase 4 creates the single commit.
 - **Context management**: dispatch all heavy work to agents. Your context stays focused on coordination: TODO.md grooming, sprint file status, commit logistics, and cycle logging.

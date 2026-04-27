@@ -91,6 +91,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let _ = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
     // Create evaluation context (current directory, configurable sandbox)
+    // Note: PathBuf::from(".") is a relative path. $include resolves relative to the test
+    // runner's working directory, not to an absolute path. The CLI (main.rs) canonicalizes
+    // to an absolute path before calling eval_file.
     let ctx = eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&env), no_fs);
     let thunk =
         eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(|e| format!("{e}"))?;

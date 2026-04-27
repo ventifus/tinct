@@ -45,7 +45,7 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 1. Read `TODO.md` to find the target sprint (first unchecked sprint, or the specified sprint-slug)
 2. Read relevant chapters of `doc/*.md` for design context
 3. **Design readiness check**: scan the sprint's tasks for unchecked design items — lines matching `- [ ] Design ...`, `- [ ] Decide ...`, or `- [ ] Document ... design`. Also check whether the sprint introduces new language constructs, runtime concepts, or user-facing semantics that lack corresponding coverage in doc/*.md. If any unresolved design work exists, **stop immediately** and report: `"NEEDS_DESIGN: [slug] — [list of unresolved design items]"`. Do not proceed to implementation.
-4. **Validate sprint scope**: is this sprint appropriately sized? If > 8 tasks, consider splitting by updating TODO.md with new sprints and proceeding with the first one
+4. **Validate sprint scope**: is this sprint appropriately sized? If > 25 tasks, consider splitting by updating TODO.md with new sprints and proceeding with the first one
 5. **Check dependencies**: are all prerequisites for this sprint actually complete? Are inter-sprint dependencies accurate?
 6. **Scan for scope gaps**: does the TODO.md sprint capture all work needed? Look for missing tasks implied by doc/*.md that aren't tracked
 7. Break the sprint's tasks into work items
