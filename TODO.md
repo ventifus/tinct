@@ -2,6 +2,31 @@
 
 Extracted from DESIGN.md. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
+### eval-engine-c68: Evaluation Semantics Findings (Cycle #68)
+
+New findings from Cycle #68 full codebase health review (eval-engine). All items independent.
+
+- [ ] Fix `builtin_take` Seq recursive tail stores `depth` not `depth+1` — `builtin_take`'s Seq path at `src/builtins.rs:2144` constructs a recursive `PendingBuiltin(builtin_take, ...)` whose stored `depth` is the current depth, not `depth+1`. Every recursive take step runs with the same internal budget, allowing a large `$take` to bypass the depth budget across all tail steps (same class as tracked `filter_dict_step` depth bug at TODO.md line 1065). Fix: change `depth` to `depth+1` at line 2144. Add unit test verifying `take(MAX_EVAL_DEPTH + 5, range(0))` produces `DepthExceeded`. (`src/builtins.rs:2144`) [Minor, eval-engine C68]
+
+### type-theorist-c68: Type System Findings (Cycle #68)
+
+New findings from Cycle #68 full codebase health review (type-theorist). All items independent.
+
+- [ ] Fix `resolve_type_assert` returns pre-substitution `expected` — the `let expected = state.subst.apply(&expected)` at `src/typecheck.rs:1156` is a local rebinding inside the `if let Some(default_expr)` block (scope ends at line 1171). The `Ok(expected)` at line 1174 returns the outer `expected` from line 1125, which is pre-`state.subst`. For TypeVar annotations (`[@a $x]`), this means LSP hover shows `_t5` instead of the resolved type. Fix: add `let expected = state.subst.apply(&expected);` immediately before the final `Ok(expected)` at line 1174. (`src/typecheck.rs:1174`) [Nit, type-theorist C68]
+
+### stdlib-author-c68: Stdlib Doc Findings (Cycle #68)
+
+New findings from Cycle #68 full codebase health review (stdlib-author). All items independent.
+
+- [ ] Fix doc/11-stdlib.md:393 threading `->` code block shows shadowable `$reduce` but implementation uses `$builtin-reduce` — the "Threading `->` in Stdlib" section at line 393 shows `[call $reduce ...]` in the example, but `stdlib/prelude.llt:474` uses `$builtin-reduce` (bypass-shadow). A DSL author who shadows `$reduce` would incorrectly assume `$->` runs through their shadow — it does not. Fix: update the code block at doc/11-stdlib.md:393 to use `$builtin-reduce`. (`doc/11-stdlib.md:393`, `stdlib/prelude.llt:474`) [Nit, stdlib-author C68]
+
+### performance-expert-c68: Performance Findings (Cycle #68)
+
+New findings from Cycle #68 full codebase health review (performance-expert). All items independent.
+
+- [ ] Add capacity hint to `builtin_keys` result dict — `let mut result = IndexMap::new()` at `src/builtins.rs:372` allocates with default capacity before iterating `map.len()` entries into it. Fix: change to `IndexMap::with_capacity(map.len())`. (`src/builtins.rs:372`) [Nit, performance-expert C68]
+- [ ] Add capacity hint to `builtin_try` result dicts — both the success path (`[ok: value]` at line 815) and error path (`[err: message]` at line 828) allocate `IndexMap::new()` then insert exactly one entry. Fix: change both to `IndexMap::with_capacity(1)`. (`src/builtins.rs:815, 828`) [Nit, performance-expert C68]
+
 ### type-theorist-c67: Type System Doc Findings (Cycle #67)
 
 New findings from Cycle #67 full codebase health review (type-theorist). All items are doc accuracy items from C65/C66 changes. All independent.
@@ -46,7 +71,7 @@ New findings from Cycle #67 full codebase health review (performance-expert). Al
 New findings from Cycle #66 full codebase health review (grammar-architect). All items independent.
 
 - [ ] Fix `Expr::TypeAssert` derives `PartialEq` via `resolved_type: RefCell<Option<Type>>` — `#[derive(PartialEq)]` on `Expr` at `src/ast.rs:67` means pre-typecheck and post-typecheck `TypeAssert` nodes compare unequal even when structurally identical (the `resolved_type` RefCell changes after typechecking). A test comparing a pre-check AST against a post-check one will fail with a confusing message. Either implement manual `PartialEq` for `Expr` that delegates to all fields except `resolved_type` in the `TypeAssert` arm, or add a comment documenting the asymmetry. (`src/ast.rs:67, 123-130`) [Minor, grammar-architect C66]
-- [ ] Fix stale line reference in `src/ast.rs:128` comment — the write-once invariant comment says `"typecheck.rs:941"` but the actual `debug_assert!` is at `src/typecheck.rs:1103`. Update to `typecheck.rs:1103`. (`src/ast.rs:128`) [Nit, grammar-architect C66]
+- [ ] Fix stale line reference in `src/ast.rs:128` comment — the write-once invariant comment says `"typecheck.rs:941"` but the actual `debug_assert!` is at `src/typecheck.rs:1131` (verified C68). Update to `typecheck.rs:1131`. (`src/ast.rs:128`) [Nit, grammar-architect C66; corrected by grammar-architect C68]
 - [ ] Add `call@Type` / `fn@Type` to doc/02 disambiguation table — `call@Type` as first token in `[]` silently falls through keyword dispatch to produce `Annotated { name: "call", ... }` (not a call keyword). This is correct behavior but entirely absent from §7 Token Disambiguation table. Add row: "`call@Type` (first in `[]`) → `Annotated { name: "call", ... }` (NOT keyword) — `@` after bare word converts keyword candidate to annotated value." (`doc/02-syntax.md`) [Nit, grammar-architect C66]
 - [ ] Add cross-references to three grammar rules with identical character class patterns — `param_name`, `annotation_word`, `access_field` at `src/grammar.pest:101-103, 113-115, 147-149` all expand to `(ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?`. A future change to one should be applied to all three. Add `// Same character class as annotation_word and access_field — update all three together` above `param_name`; equivalent above the other two. (`src/grammar.pest:101, 113, 147`) [Nit, grammar-architect C66]
 - [ ] Fix Display tests for `Annotation::PropertyDict` use `Expr::VarRef` keys instead of `Expr::Str` — `test_display_type_assert_with_property_dict` and `test_display_annotation_property_dict_with_entries` at `src/ast.rs:395-406, 599-611` construct annotation entries with `Expr::VarRef("type")` as keys. The parser always produces `Expr::Str("type")` for bare-word annotation keys. Replace `Expr::VarRef("type")` / `Expr::VarRef("Number")` with `Expr::Str("type")` / `Expr::Str("Number")` and add comment: "Annotation keys from the parser are always `Expr::Str` (bare words); `Expr::VarRef` keys are structurally valid but never produced by the parser." (`src/ast.rs:395-406, 599-611`) [Nit, grammar-architect C66]
@@ -97,6 +122,12 @@ New findings from Cycle #65 full codebase health review (test-crafter). All item
 - [ ] Add corpus test for variadic parameter collecting named args into Dict — `fn_variadic.llt-eval` tests variadic with positional args. Variadic params also bind unused named args into a Dict. No corpus test for `[fn [x ...rest] $rest]` called with named args: `[call $f 1 y: 2 z: 3]` → `rest` should be `{y: 2, z: 3}`. Unit tests exist (`test_bind_args_variadic_collects_excess`, `src/eval.rs:5028`) but no corpus coverage. Add `tests/corpus/eval/fn_variadic_named_args.llt-eval`. (`tests/corpus/eval/`) [Minor, test-crafter C65]
 - [ ] Alphabetize `test_corpus_structure` required_dirs list — array at `tests/corpus_tests.rs:244-261` has 16 entries in partial alphabetical order but not fully sorted. Sort with comment separators (`// Valid corpus`, `// Invalid corpus`, `// Eval corpus`) to reduce merge conflict risk. (`tests/corpus_tests.rs:244-261`) [Nit, test-crafter C65]
 - [ ] Fix eval corpus test comment claiming "FIRST document" does not match implementation — comment at `tests/corpus_tests.rs:46` says "expected output is compared against the LAST expression from the FIRST document" but `eval_source()` at line 308 evaluates the full file (all documents) and returns the last value of the last document. Update comment: "Valid corpus: compares first expression's AST. Eval corpus: compares full file evaluation (last expression of last document)." (`tests/corpus_tests.rs:46`) [Nit, test-crafter C65]
+
+### stdlib-author-c68: Stdlib Doc Findings (Cycle #68)
+
+New findings from Cycle #68 full codebase health review (stdlib-author). One new item.
+
+- [ ] Fix `doc/11-stdlib.md:393` `->` Threading section code block uses `$reduce` but implementation uses `$builtin-reduce` — the code block in "Threading `->` in Stdlib" shows `[call $reduce ...]` but `stdlib/prelude.llt:474` uses `[call $builtin-reduce $f $init $xs]`. The derivation table fix at lines 188-210 is tracked (TODO.md:330/549 covers that range), but line 393 is outside that range and untracked. Fix: update the code block to `[call $builtin-reduce [fn [acc f] [call $f $acc]] $data $stages]` to match the actual implementation and avoid the implication that `->` calls the shadowable `$reduce` wrapper. (`doc/11-stdlib.md:393`, `stdlib/prelude.llt:474`) [Nit, stdlib-author C68]
 
 ### stdlib-author-c65: Stdlib Doc Findings (Cycle #65)
 

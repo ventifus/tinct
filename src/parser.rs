@@ -546,11 +546,12 @@ fn build_param_list(
                     });
                 }
                 saw_variadic = Some(p_span);
-                let name_pair = child
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::param_name)
-                    .expect("grammar guarantees variadic_param has param_name");
-                let name = name_pair.as_str().to_string();
+                // variadic_param is atomic (@{}), so extract name from raw text
+                let raw = child.as_str();
+                let name = raw
+                    .strip_prefix("...")
+                    .expect("grammar guarantees variadic_param starts with ...")
+                    .to_string();
 
                 params.push(Spanned::new(
                     Param {

@@ -74,7 +74,7 @@ param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
 
 param_annotation = ${ "@" ~ annotation_value }
 
-variadic_param = !{ "..." ~ param_name }
+variadic_param = @{ "..." ~ param_name }
 ```
 
 Examples:
