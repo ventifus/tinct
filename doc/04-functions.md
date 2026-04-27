@@ -38,6 +38,8 @@ named_arg = { named_arg_key ~ ":" ~ value }
 named_arg_key = @{ "$" ~ var_ident | bare_word }
 ```
 
+**Note:** Both `$timeout: 60` and `timeout: 60` create a named argument with name `"timeout"`. The `$` prefix is syntactic sugar for readability (mirroring the `$var` variable reference syntax) — the parser strips the `$` prefix, storing only `"timeout"` in the AST's `NamedArg.name` field. This ensures the argument name matches the parameter name directly during binding without prefix-stripping at evaluation time.
+
 Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See [Call Convention — Formal Specification](#call-convention--formal-specification) for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
 
 Examples:

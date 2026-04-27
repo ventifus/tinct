@@ -3141,6 +3141,182 @@ mod tests {
     }
 
     #[test]
+    fn test_check_dot_access_lowers_row_var_levels() {
+        // Test that check_dot_access correctly lowers inner type variable levels when
+        // accessing an unknown field on an open record with a RowVar tail.
+        //
+        // SCENARIO:
+        //   When check_dot_access handles a RowVar tail (typecheck.rs:695-761), it creates
+        //   fresh type var β and fresh row var ρ_fresh at the current state.level, then
+        //   calls lower_row_var_levels_pub(&binding, rho_level, state) at line 755.
+        //
+        //   ρ must be at an OUTER level (lower number) than β and ρ_fresh for the lowering
+        //   to be non-trivial. We achieve this by placing ρ (via the Open type annotation) in
+        //   the outer dict (level 1) and performing $p.unknown inside a nested inner dict
+        //   (level 2). This forces β and ρ_fresh to be created at level 2, then lowered to
+        //   ρ's level (1). Without the lowering call, the assertions below fail (2 ≤ 1 is false).
+        //
+        // TEST CASE (single document, one top-level dict with a nested inner dict):
+        //   [
+        //     Open: [type [name: String ...]]     -- Open record type; RowVar ρ created at level 1
+        //     p: [@Open [name: Alice]]             -- p : Open = Record({name: String}, RowVar(ρ))
+        //     result: [inner: $p.unknown]          -- nested dict forces $p.unknown at level 2
+        //   ]
+        //
+        //   When we access $p.unknown at level 2:
+        //   1. $p has type Open = Record({name: String}, RowVar(ρ, level=1))
+        //   2. check_dot_access sees "unknown" not in {name}, tail is RowVar(ρ) at level 1
+        //   3. It creates fresh β at level 2 and ρ_fresh at level 2
+        //   4. It calls lower_row_var_levels_pub to lower β and ρ_fresh to ρ's level (1)
+        //   5. It binds ρ → Row({unknown: β}, RowVar(ρ_fresh)) in state.subst
+        //   6. After lowering: beta_level = 1, rho_fresh_level = 1
+        //
+        //   The assertions `beta_level <= rho_level` and `rho_fresh_level <= rho_level` are
+        //   non-trivial: they pass only because lowering reduced the levels from 2 to 1.
+        //   Deleting the lower_row_var_levels_pub call would leave them at 2, failing 2 ≤ 1.
+        let code = r#"
+            [
+                Open: [type [name: String ...]]
+                p: [@Open [name: Alice]]
+                result: [inner: $p.unknown]
+            ]
+        "#;
+
+        let result = check(code);
+        assert!(
+            result.is_ok(),
+            "type check should succeed with dot access on open record inside nested dict: {:?}",
+            result
+        );
+
+        // Verify that the `inner` field of `result` has type TypeVar (the fresh β from
+        // constraint generation). result : Record({inner: TypeVar(β)}) after inference.
+        let result_ty = result_field(code, "result");
+        let inner_ty = match result_ty {
+            Type::Record(Row { ref fields, .. }) => fields
+                .get("inner")
+                .cloned()
+                .expect("result record should have 'inner' field"),
+            other => panic!("expected result to be a Record type, got {other}"),
+        };
+        match inner_ty {
+            Type::TypeVar(name, _level) => {
+                assert!(
+                    name.starts_with("_t"),
+                    "expected fresh type var name to start with _t, got {}",
+                    name
+                );
+            }
+            other => panic!("expected TypeVar for $p.unknown inside nested dict, got {other}"),
+        }
+
+        // Core verification: inspect InferState to confirm level lowering occurred.
+        //
+        // ρ is created at level 1 (outer dict) when the Open alias is registered.
+        // β and ρ_fresh are created at level 2 (inner dict) when $p.unknown is checked.
+        // lower_row_var_levels_pub must lower them to level 1 (ρ's current level).
+        //
+        // NON-VACUOUSNESS: if lower_row_var_levels_pub is deleted, β and ρ_fresh stay at
+        // level 2 and the assertions below become "2 ≤ 1", which is false → test fails.
+        let file = crate::parse(code).unwrap();
+        let env = Rc::new(TypeEnv::new());
+        let mut state = InferState::new();
+
+        let doc_env =
+            typecheck_document(&file.node.documents[0], &env, &mut state, &mut None).unwrap();
+
+        // Find the row variable ρ from the Open type alias
+        let open_ty = match doc_env.get_type_alias("Open") {
+            Some(ty) => ty,
+            None => panic!("Open type alias not found in doc_env"),
+        };
+
+        let rho_name = match open_ty {
+            Type::Record(Row {
+                tail: RowTail::RowVar(name, _),
+                ..
+            }) => name.clone(),
+            other => panic!("expected Open to be an open record type, got {other}"),
+        };
+
+        // ρ must be bound in state.subst.row_map after dot access on the open record
+        let bound_row = state
+            .subst
+            .row_map
+            .get(&rho_name)
+            .expect("ρ must be bound in subst after unknown-field dot access on open record");
+
+        assert!(
+            bound_row.fields.contains_key("unknown"),
+            "bound row should contain 'unknown' field"
+        );
+
+        // ρ's current level (from state.levels, authoritative after any lowering)
+        let rho_level = state
+            .levels
+            .get(&rho_name)
+            .copied()
+            .expect("ρ should be in state.levels after dot access");
+
+        // ρ was created inside the outer dict (infer_dict increments level to 1), so level = 1.
+        // Confirm this expectation so the non-vacuousness of the assertion is explicit.
+        assert_eq!(
+            rho_level, 1,
+            "ρ (Open's row var) should be at level 1 (created inside the outer dict)"
+        );
+
+        // Check β's level — must be TypeVar; panic if not
+        let Type::TypeVar(beta_name, _) = bound_row
+            .fields
+            .get("unknown")
+            .expect("β must be present in bound row for 'unknown' field")
+        else {
+            panic!(
+                "expected TypeVar for 'unknown' field in bound row, got {:?}",
+                bound_row.fields.get("unknown")
+            )
+        };
+        let beta_level = state
+            .levels
+            .get(beta_name)
+            .copied()
+            .expect("β should be in state.levels after dot access");
+
+        // β was originally created at level 2 (inside the nested inner dict) and lowered to 1.
+        // Without lowering: beta_level = 2, assertion 2 ≤ 1 would fail.
+        assert!(
+            beta_level <= rho_level,
+            "β level ({}) should be ≤ ρ level ({}) after lower_row_var_levels_pub; \
+             β is created at the inner dict level (2) and must be lowered to ρ's level (1)",
+            beta_level,
+            rho_level
+        );
+
+        // Check ρ_fresh's level — must be RowVar; panic if not
+        let RowTail::RowVar(rho_fresh_name, _) = &bound_row.tail else {
+            panic!(
+                "expected RowVar tail in bound row, got {:?}",
+                bound_row.tail
+            )
+        };
+        let rho_fresh_level = state
+            .levels
+            .get(rho_fresh_name)
+            .copied()
+            .expect("ρ_fresh should be in state.levels after dot access");
+
+        // ρ_fresh was originally created at level 2 and lowered to 1.
+        // Without lowering: rho_fresh_level = 2, assertion 2 ≤ 1 would fail.
+        assert!(
+            rho_fresh_level <= rho_level,
+            "ρ_fresh level ({}) should be ≤ ρ level ({}) after lower_row_var_levels_pub; \
+             ρ_fresh is created at the inner dict level (2) and must be lowered to ρ's level (1)",
+            rho_fresh_level,
+            rho_level
+        );
+    }
+
+    #[test]
     fn test_type_assert_open_record_accepts_extra_fields() {
         check("[@[name: String ...] [name: Alice  age: 30]]").unwrap();
     }

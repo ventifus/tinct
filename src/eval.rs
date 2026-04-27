@@ -1204,16 +1204,22 @@ fn attach_materialization_context(
 /// Mutates the thunk's internal state via `RefCell`. On success, transitions to
 /// `Materialized`. On failure, transitions to `Failed` (caching the error).
 ///
-/// `mat_span` is the span of the expression that triggered materialization
-/// (e.g., an access chain). Attached to errors so users can see both where
-/// a value was defined and where it was forced.
+/// # Parameters
+///
+/// - `mat_span`: the span of the expression that triggered materialization
+///   (e.g., an access chain). Attached to errors so users can see both where
+///   a value was defined and where it was forced.
+/// - `_ctx`: intentionally unused. Each thunk captures its creation-time
+///   `EvalContext` in its `ThunkState` variant (`Unevaluated`, `PendingBuiltin`,
+///   `PendingCall`), and evaluates in that context rather than the caller's.
+///   This follows Launchbury (1993): thunks are closures over their birth
+///   environment, so forcing a thunk must use the context in which it was
+///   allocated, not the context of the demand site. The parameter exists for
+///   API symmetry with `eval()` and will be removed during the CEK machine
+///   migration (iterative-eval milestone).
 pub fn materialize(
     thunk: &Thunk,
     mat_span: Option<&Span>,
-    // Intentionally unused. Thunks evaluate in their creation-time context (captured in
-    // `ThunkState::{Unevaluated,PendingBuiltin,PendingCall}::ctx`), not the caller's context,
-    // per Launchbury (1993) natural semantics. Maintains API consistency with `eval()`;
-    // will be removed during CEK machine migration (iterative-eval milestone).
     _ctx: &Rc<EvalContext>,
     depth: usize,
 ) -> EvalResult<Value> {

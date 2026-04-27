@@ -67,8 +67,9 @@ pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
 /// Parse a single expression from the first document, for convenience in tests and simple cases.
 ///
 /// When the input contains multiple sequential expressions within a single document,
-/// this function returns only the **last** expression (mirroring LLT's scope-chain
-/// semantics where each expression in a document can shadow the previous one).
+/// this function returns only the **last** expression, discarding earlier ones entirely.
+/// No scope chain is built and no bindings from earlier expressions are preserved —
+/// this is a parse-level convenience, not an evaluator.
 pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
     let file = parse(input)?;
     let doc = &file.node.documents[0];
@@ -680,6 +681,9 @@ fn build_dict_entries(
 
 /// Extract a comparable string from a key expression for duplicate detection.
 /// Returns None for complex expressions (bracket exprs) where comparison isn't meaningful.
+///
+/// Parse-time duplicate detection is literal-keys-only; computed keys (DotAccess,
+/// BracketAccess, Call) return None here and are checked at eval-time by eval_dict.
 fn key_to_string(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Str(s) => Some(s.clone()),
@@ -1171,6 +1175,58 @@ mod tests {
                 assert_eq!(named_args.len(), 1);
                 assert_eq!(named_args[0].node.name, "timeout");
                 assert!(matches!(&named_args[0].node.value.node, Expr::Int(60)));
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_named_arg_with_dollar_key() {
+        // Named arg binding at eval-time uses the bare parameter name (e.g. "timeout"),
+        // so the `$` prefix in `$timeout:` must be stripped at parse time.
+        // Both `[call $f $timeout: 60]` and `[call $f timeout: 60]` must produce
+        // identical named-arg ASTs — same name ("timeout") and same value (Int(60)).
+        let dollar_form = parse_ok("[call $f $timeout: 60]");
+        let bare_form = parse_ok("[call $f timeout: 60]");
+
+        fn extract_named_arg(ast: &Spanned<Expr>) -> (&str, &Expr) {
+            match &ast.node {
+                Expr::Call { named_args, .. } => {
+                    assert_eq!(named_args.len(), 1);
+                    (
+                        named_args[0].node.name.as_str(),
+                        &named_args[0].node.value.node,
+                    )
+                }
+                other => panic!("expected Call, got {other:?}"),
+            }
+        }
+
+        let (dollar_name, dollar_val) = extract_named_arg(&dollar_form);
+        let (bare_name, bare_val) = extract_named_arg(&bare_form);
+
+        // Both forms must produce the same bare name
+        assert_eq!(dollar_name, "timeout");
+        assert_eq!(bare_name, "timeout");
+
+        // And the same value
+        assert!(matches!(dollar_val, Expr::Int(60)));
+        assert!(matches!(bare_val, Expr::Int(60)));
+    }
+
+    #[test]
+    fn test_named_arg_dollar_numeric_key() {
+        // $123: is valid per the grammar: var_ident_char accepts digits, so "$" ~ var_ident
+        // matches "$123" and strips the "$" to produce name "123".
+        // This is a deliberate consequence of the denylist approach — var_ident_char
+        // excludes only structural delimiters (whitespace, brackets, colon, etc.), not digits.
+        // No invalid corpus test for $123: — it parses successfully with key "123".
+        let ast = parse_ok("[call $f $123: 42]");
+        match &ast.node {
+            Expr::Call { named_args, .. } => {
+                assert_eq!(named_args.len(), 1);
+                assert_eq!(named_args[0].node.name, "123");
+                assert!(matches!(&named_args[0].node.value.node, Expr::Int(42)));
             }
             other => panic!("expected Call, got {other:?}"),
         }

@@ -1,0 +1,11 @@
+# proxy : bracket access passes Int key to handler
+# Verifies that $p[0] calls handler with Value::Int(0), not Value::String("0"), and likewise for $p[999]
+[
+  handler: [fn [key] [call $type-of $key]]
+  p: [call $proxy $handler]
+  int-key: $p[0]
+  int-key-large: $p[999]
+  string-key: $p["foo"]
+]
+===
+Dict({"handler": Function(key), "p": Proxy, "int-key": String("Int"), "int-key-large": String("Int"), "string-key": String("String")})

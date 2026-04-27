@@ -1,0 +1,6 @@
+# Bracket access with integer key
+[data: [0: "zero"  1: "one"  2: "two"]]
+
+$data[1]
+===
+String("one")

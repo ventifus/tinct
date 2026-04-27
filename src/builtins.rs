@@ -35,8 +35,8 @@ use crate::value::{BuiltinArgs, BuiltinFn, Environment, Key, Thunk, Value};
 /// Prevents memory exhaustion from infinite sequences without $take.
 const MAX_COLLECT_SIZE: usize = 1_000_000;
 
-/// Maximum string output size for $replace (64 MB).
-/// Prevents memory exhaustion from adversarial replacement patterns.
+/// Maximum string output size for string output builtins (`$replace`, `$upper`, `$lower`, `$join`) (64 MB).
+/// Prevents memory exhaustion from adversarial inputs or replacement patterns.
 const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
 
 fn ok_val(v: Value) -> EvalResult<Rc<Thunk>> {
@@ -594,6 +594,7 @@ fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .saturating_sub(removed_bytes)
         .saturating_add(added_bytes);
 
+    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
     if output_len > MAX_STRING_SIZE {
         return Err(EvalError::internal(
             format!(
@@ -626,7 +627,35 @@ fn builtin_upper(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = expect_one_arg("upper", args, named, &ctx, depth, call_span)?;
     let s = require_string("upper", val, call_span)?;
-    ok_val(Value::String(s.to_uppercase()))
+    // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
+    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
+    if s.len() > MAX_STRING_SIZE {
+        return Err(EvalError::internal(
+            format!(
+                "upper: input exceeds {} MB limit ({} bytes)",
+                MAX_STRING_SIZE / (1024 * 1024),
+                s.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+    let result = s.to_uppercase();
+    // Post-conversion guard for Unicode expansion (e.g., ß → SS).
+    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
+    if result.len() > MAX_STRING_SIZE {
+        return Err(EvalError::internal(
+            format!(
+                "upper: output would exceed {} MB limit ({} bytes)",
+                MAX_STRING_SIZE / (1024 * 1024),
+                result.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    ok_val(Value::String(result))
 }
 
 /// `lower`: Convert a string to lowercase. Takes 1 arg (String).
@@ -641,7 +670,35 @@ fn builtin_lower(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = expect_one_arg("lower", args, named, &ctx, depth, call_span)?;
     let s = require_string("lower", val, call_span)?;
-    ok_val(Value::String(s.to_lowercase()))
+    // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
+    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
+    if s.len() > MAX_STRING_SIZE {
+        return Err(EvalError::internal(
+            format!(
+                "lower: input exceeds {} MB limit ({} bytes)",
+                MAX_STRING_SIZE / (1024 * 1024),
+                s.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+    let result = s.to_lowercase();
+    // Post-conversion guard for Unicode expansion (e.g., İ → i\u{307}).
+    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
+    if result.len() > MAX_STRING_SIZE {
+        return Err(EvalError::internal(
+            format!(
+                "lower: output would exceed {} MB limit ({} bytes)",
+                MAX_STRING_SIZE / (1024 * 1024),
+                result.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    ok_val(Value::String(result))
 }
 
 /// `trim`: Remove leading and trailing whitespace from a string.
@@ -2548,6 +2605,7 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let sep_contribution = sep_str.len().saturating_mul(parts.len().saturating_sub(1));
             let total_output_len = total_parts_len.saturating_add(sep_contribution);
 
+            // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
             if total_output_len > MAX_STRING_SIZE {
                 return Err(EvalError::internal(
                     format!(
@@ -2613,6 +2671,7 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let sep_contribution = sep_str.len().saturating_mul(parts.len().saturating_sub(1));
             let total_output_len = total_parts_len.saturating_add(sep_contribution);
 
+            // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
             if total_output_len > MAX_STRING_SIZE {
                 return Err(EvalError::internal(
                     format!(

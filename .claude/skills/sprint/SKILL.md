@@ -78,11 +78,11 @@ loop:
 
 #### 2a: Implement Tasks
 
-Dispatch all implementation work to agents to keep your own context clean. You are a coordinator — you update SPRINT.md and run tests, agents write code.
+Dispatch all implementation work to agents to keep your own context clean. You are a coordinator — you update `.tmp/sprint-{slug}.md` and run tests, agents write code.
 
 For each task (or batch of parallel tasks):
 
-1. Update task status in SPRINT.md to `IN PROGRESS`
+1. Update task status in `.tmp/sprint-{slug}.md` to `IN PROGRESS`
 2. Dispatch the agent using the `subagent_type` parameter (e.g., `eval-engine`, `grammar-architect`) — this loads the agent's expertise automatically. Do NOT read agent definition files into your own context.
 3. Brief the agent with a self-contained prompt:
    - The specific task to implement (ONE task per agent)
@@ -91,7 +91,7 @@ For each task (or batch of parallel tasks):
    - Instruction to run `just test` after making changes and fix any failures
 4. Tasks touching different files can be dispatched in parallel (single message, multiple Agent calls)
 5. After agent(s) complete, run `just test` to confirm. If tests fail, dispatch the same agent to fix.
-6. Update task status in SPRINT.md to `DONE`
+6. Update task status in `.tmp/sprint-{slug}.md` to `DONE`
 
 On re-entry (after build gate or sprint-reviewer failure), only implement fixes for the specific issues identified — do not re-implement completed tasks.
 
@@ -114,7 +114,7 @@ All three must pass with zero issues before proceeding.
 - **APPROVE**: exit the inner loop, proceed to Step 3 (panel review)
 - **REQUEST_CHANGES**: dispatch a `fix-reviewer` agent, briefing it to read `.tmp/sprint-review-{slug}.md` for findings and remediation plan. After fix-reviewer completes, delete `.tmp/sprint-review-{slug}.md` so the next sprint-review iteration reviews fresh code. Loop back to 2b.
 
-**Stuck detection**: if the sprint-reviewer issues REQUEST_CHANGES 3 times on the same finding, record it as `KNOWN ISSUE` in SPRINT.md, add it to TODO.md, and proceed as if APPROVE. Never halt the sprint.
+**Stuck detection**: if the sprint-reviewer issues REQUEST_CHANGES 3 times on the same finding, record it as `KNOWN ISSUE` in `.tmp/sprint-{slug}.md`, add it to TODO.md, and proceed as if APPROVE. Never halt the sprint.
 
 ### Step 3: Specialist Panel Review
 
@@ -153,10 +153,10 @@ Do NOT read agent definitions, diffs, or sprint-review output into your own cont
 #### 3b: Triage and Record
 
 Each agent's findings are already classified as **fix-now** or **fix-later**:
-- **fix-now** (sprint-scope) → record in SPRINT.md under `## Review Findings`
+- **fix-now** (sprint-scope) → record in `.tmp/sprint-{slug}.md` under `## Review Findings`
 - **fix-later** (future work) → add to TODO.md under the appropriate phase
 
-Record each fix-now finding's status in SPRINT.md (`TODO` or `FIXED`):
+Record each fix-now finding's status in `.tmp/sprint-{slug}.md` (`TODO` or `FIXED`):
 
 ```markdown
 ## Review Findings

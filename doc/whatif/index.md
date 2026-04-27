@@ -82,7 +82,7 @@ removes structural friction in every multi-step function. The nested-fn workarou
 sequential scoping model to `[fn ...]` bodies. Also a prerequisite for pattern
 matching arm bodies (Phase 3+).
 
-**[Structural Contracts](structural-contracts.md) Phase 1 only** — DESIGN.md has
+**[Structural Contracts](structural-contracts.md) Phase 1 only** — doc/*.md has
 three open questions with no corresponding TODO sprints: shape/contract system,
 OpenAPI integration, lazy vs. eager validation. Phase 1 (`$$@Type` pipeline
 boundary annotation) answers all three in a principled way without committing to

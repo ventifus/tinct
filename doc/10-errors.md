@@ -174,6 +174,8 @@ materialize(thunk, mat_span, d) ⇒ Err(ε')
 
 **PendingCall coverage:** PendingCall thunks have four error paths (function materialization, invoke_function, result materialization, type mismatch). All follow the same DECORATE + conditional-cache pattern: function materialization failures and type mismatches are decorated inline; result materialization follows PROP-RESULT; invoke_function failures are decorated and conditionally cached. PendingCall restoration requires cloning `func`, `args`, and `named` before evaluation (all `Rc::clone` — no materialization) since `take_pending_call()` consumes ownership.
 
+**Nested forcing materialization span:** When a PendingCall handler forces `func_thunk` and that forcing fails, the error's `materialization_span` is set to `call_span` (the site where the function call was written), not the span of the inner expression that actually failed. This follows from passing `Some(&call_span)` as the `mat_span` parameter to `materialize(&func_thunk, ...)`. The same behavior applies to PendingBuiltin when materializing arguments — the builtin's `call_span` becomes the materialization site for nested errors. This ensures that error reports consistently attribute forcing to the call site, even when the actual failure occurs in a deeply nested thunk chain.
+
 **[PROP-CYCLE]** — Circular dependency:
 
 ```

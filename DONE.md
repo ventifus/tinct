@@ -1277,7 +1277,7 @@ Major findings from Cycle #32 full codebase health review. All items independent
 - [x] Fix `$replace` output size amplification — `builtin_replace` at `src/builtins.rs:577` calls `input.replace(pattern, &replacement)` with no output size guard. An empty-string pattern inserts `replacement` between every character: for a 10MB input and 10MB replacement string, the requested allocation is ~100 TB. Fix: add `const MAX_STRING_SIZE: usize = 64 * 1024 * 1024` alongside `MAX_COLLECT_SIZE`; compute `match_count` (via `str::matches` or `input.chars().count() + 1` for empty pattern), check that output_len ≤ MAX_STRING_SIZE before calling `str::replace`. Return `EvalError::internal(...)` if exceeded. (`src/builtins.rs:557-578`) [Major, security-expert C32]
 - [x] Fix `eval_range_access` doesn't handle `Proxy` values — `eval_dot_access` and `eval_bracket_access` both call `invoke_proxy_handler` when the target materializes to `Value::Proxy`. `eval_range_access` calls `eval_as_dict` instead, producing a confusing "type mismatch: expected Dict, got Proxy" error with no indication that range access is unsupported on proxies. Fix: add a `Value::Proxy` arm in `eval_range_access` that either invokes the proxy handler with a range representation, or returns a clear "range access is not supported on Proxy" error. (`src/eval.rs:1121-1125`) [Major, integration-verifier C32]
 - [x] Add corpus test for `MissingRequiredParam` (E024) — added `tests/corpus/eval/errors/missing_required_param.llt-eval` asserting `[E024]`. (`tests/corpus/eval/errors/`) [Major, test-crafter C32]
-- [x] Add corpus test for `ValueNotSerializable` (E035) — added `tests/corpus/eval/errors/proxy_to_json.llt-eval` with architectural limitation documented: E035 only emitted via CLI JSON path. (`tests/corpus/eval/errors/`) [Major, test-crafter C32]
+- [x] Add corpus test for `ValueNotSerializable` (E035) — added `tests/corpus/eval/errors/proxy_handler_error.llt-eval` with architectural limitation documented: E035 only emitted via CLI JSON path. (`tests/corpus/eval/errors/`) [Major, test-crafter C32]
 - [x] Fuse `unify()` U-VAR arms to use single tree walk — added `collect_all_vars` helper; replaced both call pairs in U-VAR-L and U-VAR-SYM with single traversal; also used in `lower_row_var_levels`. (`src/types.rs:945-984`) [Major, performance-expert C32]
 - [x] Fix `infer_dict` allocates fresh `Substitution` — investigated: false premise; `IndexMap::new()` already has zero-cap; added doc comment to `Substitution::new()` confirming this. (`src/types.rs`) [Major, performance-expert C32]
 - [x] Fix `doc/08-evaluation.md` `$apply` Laziness Design table — updated row to match strictness table ("Materializes function + arg dict; splits by key type; invokes"). (`doc/08-evaluation.md:828`) [Major, eval-engine C32]
@@ -1355,6 +1355,39 @@ Consolidated from doc-rowunification-retrospective and doc-rowunification-retros
 - [x] Fix Moggi (1991) DOI in doc/17 [Minor, sprint-reviewer C57]
 - [x] Fix doc/07 Part 5 qualifier → "complete as of row-unification-e" [Minor, grammar-architect C57]
 
+### parser-doc-fixes: Parser and Syntax Doc Accuracy Fixes
+
+Consolidated from parser-spec-fixes, parser-docs, doc-treesitter-fixes, doc-syntax-fixes. Full workflow (4-agent panel, 3 fix cycles on annotated_bare clarification).
+
+- [x] Fix doc/02-syntax.md semicolon named-rule drift — already resolved by doc-type-polish [Minor, grammar-architect C52]
+- [x] Document and test `$var`-prefixed named arg key stripping — doc/04 note, test_named_arg_with_dollar_key (equivalence + numeric), corpus test [Minor, grammar-architect C52]
+- [x] Fix doc/04-functions.md self-reference — already correct [Nit, grammar-architect C60]
+- [x] Fix tree-sitter fn_annotation to use token.immediate("@") [Major, grammar-architect C39]
+- [x] Document tree-sitter bare_word `-` exclusion with comment [Minor, grammar-architect C39]
+- [x] Fix doc/02-syntax.md semicolon rule divergence — already resolved by doc-type-polish [Major, grammar-architect C42]
+- [x] Add annotated_bare to Token Precedence section — with atom-level context note [Minor, grammar-architect C42]
+- [x] Fix parse_expression docstring — no scope chain built, parse-level only [Minor, computer-scientist]
+- [x] Document key_to_string computed key detection as literal-keys-only [Minor, computer-scientist]
+
+### docs-restructuring-refs: Documentation Cross-Reference Update
+
+Bulk update of stale DESIGN.md/SPEC.md references after doc split. Full workflow (sprint-reviewer approved cycle 2).
+
+- [x] Update systemic DESIGN.md/SPEC.md cross-references — bulk update across TODO.md (~50 refs), doc/whatif/ (43 refs), source comments (4 files) — verified complete [Major]
+- [x] Fix doc/02-syntax.md:3 broken links [Minor, computer-scientist]
+- [x] Fix doc/16-architecture.md EvalContext threading description [Major, computer-scientist + integration-verifier]
+- [x] Fix doc/16-architecture.md Value sketch LinkedHashMap → IndexMap [Nit, computer-scientist]
+- [x] Fix materialize() _ctx doc comment — Launchbury 1993 thunk-context invariant explained [Minor, computer-scientist]
+
+### doc-eval-gaps: doc/*.md documentation gaps (eval-engine review)
+
+Docs-only sprint (no build gate or panel review).
+
+- [x] Letrec key parent scope justification — documented two-environment pattern, parent_env for keys, effectful expression context [Minor, eval-engine]
+- [x] Cycle detection recovery strategy — documented InProgress→Failed transition, cache_failure() before propagation, thunk not restored [Minor, eval-engine]
+- [x] deep_materialize cache semantics — documented dual-purpose HashMap (None=blackhole, Some=sharing), stack-local lifecycle, global per-call scope [Minor, eval-engine]
+- [x] Materialization span semantics for PendingCall func error — documented call_span as mat_span for nested forcing, consistent with PendingBuiltin [Minor, eval-engine]
+
 ### doc-rowunification-retrospective-c: Inference Rule Doc Correctness (C55 Overflow)
 
 Docs-only sprint (no build gate or panel review).
@@ -1370,3 +1403,15 @@ Docs-only sprint (no build gate or panel review).
 - [x] Add Failed and Guarded variants to ThunkState sketch in doc/16 [Nit, grammar-architect C56]
 - [x] Label Type Check as advisory in doc/16 pipeline diagram [Nit, integration-verifier C56]
 - [x] Update check_expr pseudocode — already done by doc-type-polish sprint [Minor, computer-scientist C60]
+
+### cycle-findings-c33-b: Minor Findings (Cycle #33)
+
+Minor findings from Cycle #33 codebase review. All items independent.
+
+- [x] Rename `proxy_to_json.llt-eval` to a non-misleading name — the file tests E080 (proxy handler error), not E035 (ValueNotSerializable), but the filename implies E035 corpus coverage. Fix: rename to `proxy_handler_error.llt-eval` or `proxy_field_access_error.llt-eval`. (`tests/corpus/eval/errors/proxy_handler_error.llt-eval`) [Minor, grammar-architect C33]
+- [x] Add `MAX_STRING_SIZE` check to `$upper` and `$lower` — `src/builtins.rs:624` (`$upper`) and `src/builtins.rs:639` (`$lower`) call `s.to_uppercase()`/`s.to_lowercase()` with no output size guard; Unicode case conversion can produce longer UTF-8 than the input. Fix: after conversion, check `result.len() > MAX_STRING_SIZE` and return resource limit error. (`src/builtins.rs:624, 639`) [Minor, security-expert C33]
+- [x] Fix `doc/09-documents.md:586-588` "Known defect" paragraph is stale — states that the include guard and `base_dir` are not restored on materialization failure; the implementation at `builtins.rs:1144-1158` already handles both branches via an explicit `match` with `cleanup()` in both arms. Fix: rewrite to "Previously known defect: resolved — `cleanup()` is called in both Ok and Err branches; see `builtins.rs:1144-1158`." (`doc/09-documents.md:586-588`) [Minor, security-expert C33]
+- [x] Add `const` and `until` to `doc/11-stdlib.md` reference table — both are public prelude functions (`prelude.llt:44` and `prelude.llt:155`) accessible to user code but absent from the reference table (line 231 claims "62 functions"). Fix: add `const` to the Identity section and `until` to the Control Flow section; update function count. (`doc/11-stdlib.md:231,247,292`) [Minor, integration-verifier C33]
+- [x] Add corpus tests for Proxy dot and bracket access — `eval_dot_access` and `eval_bracket_access` dispatch to `invoke_proxy_handler` for Proxy values but there are no end-to-end corpus tests verifying handler receives the correct key type. Fix: add `tests/corpus/eval/builtins/proxy_access_dot.llt-eval` (String key from dot access) and `proxy_access_bracket.llt-eval` (Int key from bracket access). (`tests/corpus/eval/builtins/`) [Minor, eval-engine C33]
+- [x] Add `check_dot_access` / `lower_row_var_levels_pub` callsite unit test — the public wrapper `lower_row_var_levels_pub` at `src/types.rs:700-702` is called from `check_dot_access` at `typecheck.rs:718` in the RowVar arm; a regression in the callsite (wrong `max_level` arg) would not be caught by the types.rs unit tests. Fix: add `test_check_dot_access_lowers_row_var_levels` verifying inner variable levels are lowered to `min(inner, rho_level)`. (`src/typecheck.rs:718`) [Minor, test-crafter C33]
+- [x] Expand `tests/corpus/eval/access/` with range and bracket-int-key tests — 3 files exist (dot access, bracket string key, bracket access); still absent: range access and bracket access with integer key. Fix: add `range_access_simple.llt-eval` and `bracket_access_int_key.llt-eval`. (`tests/corpus/eval/access/`) [Minor, test-crafter C33]
