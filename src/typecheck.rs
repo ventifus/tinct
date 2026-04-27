@@ -752,6 +752,7 @@ fn check_dot_access(
             Ok(beta)
         }
         Type::Any => Ok(Type::Any),
+        Type::Proxy => Ok(Type::Any),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -796,6 +797,7 @@ fn check_bracket_access(
             }
         }
         Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
+        Type::Proxy => Ok(Type::Any),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -1466,16 +1468,32 @@ fn resolve_type_dict(
                 Some(n) => {
                     // Row variables in type expressions also need fresh names per function
                     if let Some(ref mut mapping) = ann_mapping {
-                        let fresh_name = mapping.entry(n.clone()).or_insert_with(|| {
+                        // Check if this row variable name already has a mapping
+                        if let Some(existing_var) = mapping.get(n) {
+                            // Already mapped: return the existing RowVar with its current level
+                            // from state.levels. DO NOT reset the level - unification may have
+                            // lowered it, and level lowering must be monotone (Kiselyov 2013).
+                            let current_level = *state.levels.get(existing_var).expect(
+                                "invariant: row var registered in mapping must be in state.levels",
+                            );
+                            RowTail::RowVar(existing_var.clone(), current_level)
+                        } else {
+                            // First time seeing this row variable: create fresh var and register level
                             let fresh = format!("_t{}", state.name_counter);
                             state.name_counter += 1;
-                            fresh
-                        });
-                        state.levels.insert(fresh_name.clone(), state.level);
-                        RowTail::RowVar(fresh_name.clone(), state.level)
+                            state.levels.insert(fresh.clone(), state.level);
+                            mapping.insert(n.clone(), fresh.clone());
+                            RowTail::RowVar(fresh, state.level)
+                        }
                     } else {
-                        state.levels.insert(n.clone(), state.level);
-                        RowTail::RowVar(n.clone(), state.level)
+                        // Outside of function scope, use the row variable name directly
+                        // Check if already exists to avoid resetting level
+                        if let Some(&existing_level) = state.levels.get(n) {
+                            RowTail::RowVar(n.clone(), existing_level)
+                        } else {
+                            state.levels.insert(n.clone(), state.level);
+                            RowTail::RowVar(n.clone(), state.level)
+                        }
                     }
                 }
             };
@@ -3023,6 +3041,65 @@ mod tests {
             "expected row var name to start with _open, got {}",
             row_var_g
         );
+    }
+
+    #[test]
+    fn test_named_row_var_level_monotonicity() {
+        // Test for the row variable level monotonicity bug fix (computer-scientist-c31).
+        // When a function has multiple parameters sharing a named row variable tail
+        // (e.g., [fn [x@[a: Int ...r] y@[b: Str ...r]] body]), the second reference
+        // to ...r should NOT reset r's level in state.levels. This mirrors the
+        // resolve_type_name monotonicity fix from C71.
+        //
+        // Before the fix, state.levels.insert(fresh_name.clone(), state.level) ran
+        // unconditionally on every ...r reference, resetting the level even if
+        // unification had lowered it. After the fix, we check if the row variable
+        // is already mapped and preserve its current level from state.levels.
+        let code = r#"
+            [f: [fn [x@[a: Int ...r]  y@[b: String ...r]]
+                 [x: $x  y: $y]]]
+        "#;
+        let result = check(code);
+        assert!(
+            result.is_ok(),
+            "type check should succeed with shared named row variable: {:?}",
+            result
+        );
+
+        // Verify both parameters share the same row variable
+        let ty = result_field(code, "f");
+        match ty {
+            Type::Function { params, .. } => {
+                let (row_var_x, row_var_y) = match (&params[0], &params[1]) {
+                    (
+                        Type::Record(Row {
+                            tail: RowTail::RowVar(name_x, _),
+                            ..
+                        }),
+                        Type::Record(Row {
+                            tail: RowTail::RowVar(name_y, _),
+                            ..
+                        }),
+                    ) => (name_x, name_y),
+                    other => panic!("expected both params to be open records, got {:?}", other),
+                };
+
+                // Both parameters should share the same row variable name
+                // (both map to the same fresh variable _tN through the ann_mapping)
+                assert_eq!(
+                    row_var_x, row_var_y,
+                    "named row variable ...r should be shared between parameters"
+                );
+
+                // The shared row variable should have a fresh name (from ann_mapping)
+                assert!(
+                    row_var_x.starts_with("_t"),
+                    "expected fresh row var name to start with _t, got {}",
+                    row_var_x
+                );
+            }
+            other => panic!("expected function type, got {other}"),
+        }
     }
 
     #[test]
