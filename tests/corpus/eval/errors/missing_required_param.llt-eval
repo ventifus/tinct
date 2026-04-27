@@ -1,0 +1,6 @@
+# E024: MissingRequiredParam - function expects 2 params, called with 1
+[f: [fn [x y] [call $+ $x $y]]]
+
+[call $f 10]
+===
+[E024] missing argument for required parameter 'y'

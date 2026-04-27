@@ -35,6 +35,10 @@ use crate::value::{BuiltinArgs, BuiltinFn, Environment, Key, Thunk, Value};
 /// Prevents memory exhaustion from infinite sequences without $take.
 const MAX_COLLECT_SIZE: usize = 1_000_000;
 
+/// Maximum string output size for $replace (64 MB).
+/// Prevents memory exhaustion from adversarial replacement patterns.
+const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
+
 fn ok_val(v: Value) -> EvalResult<Rc<Thunk>> {
     Ok(Rc::new(Thunk::new_materialized(v, Span::origin())))
 }
@@ -68,7 +72,11 @@ fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> EvalResult<i64> {
         return Err(EvalError::float_not_finite(name.to_string(), f, call_span).into());
     }
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
-        return Err(EvalError::integer_overflow(name.to_string(), call_span).into());
+        return Err(EvalError::integer_overflow(
+            format!("{name}: {f} is out of i64 range"),
+            call_span,
+        )
+        .into());
     }
     Ok(f as i64)
 }
@@ -569,6 +577,34 @@ fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let pattern = require_string("replace", pattern_val, call_span)?;
     let replacement = require_string("replace", replacement_val, call_span)?;
     let input = require_string("replace", input_val, call_span)?;
+
+    // Pre-check output size to prevent memory exhaustion.
+    // Empty pattern inserts replacement between every character.
+    let match_count = if pattern.is_empty() {
+        input.chars().count() + 1
+    } else {
+        input.matches(pattern.as_str()).count()
+    };
+
+    // output_len = input.len() - (match_count * pattern.len()) + (match_count * replacement.len())
+    let removed_bytes = match_count.saturating_mul(pattern.len());
+    let added_bytes = match_count.saturating_mul(replacement.len());
+    let output_len = input
+        .len()
+        .saturating_sub(removed_bytes)
+        .saturating_add(added_bytes);
+
+    if output_len > MAX_STRING_SIZE {
+        return Err(EvalError::internal(
+            format!(
+                "replace: output would exceed {} MB limit ({} bytes)",
+                MAX_STRING_SIZE / (1024 * 1024),
+                output_len
+            ),
+            call_span,
+        )
+        .into());
+    }
 
     ok_val(Value::String(input.replace(pattern.as_str(), &replacement)))
 }
@@ -6187,6 +6223,47 @@ mod tests {
     }
 
     #[test]
+    fn replace_output_size_limit_empty_pattern() {
+        // Empty pattern with large replacement should error.
+        // 1000 chars input, 100k chars replacement -> output would be ~100MB.
+        let input = "a".repeat(1000);
+        let replacement = "x".repeat(100_000);
+        let result = builtin_replace(BuiltinArgs {
+            args: &[
+                thunk(Value::String("".into())),
+                thunk(Value::String(replacement)),
+                thunk(Value::String(input)),
+            ],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("replace: output would exceed"));
+    }
+
+    #[test]
+    fn replace_output_size_ok_normal_pattern() {
+        // Normal pattern replacement should succeed even with moderate sizes.
+        let input = "a".repeat(1000);
+        let result = mat(builtin_replace(BuiltinArgs {
+            args: &[
+                thunk(Value::String("a".into())),
+                thunk(Value::String("bb".into())),
+                thunk(Value::String(input)),
+            ],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        // 1000 'a' replaced with 'bb' -> 2000 'b'
+        assert_eq!(result, Value::String("b".repeat(2000)));
+    }
+
+    #[test]
     fn upper_basic() {
         let result = mat(builtin_upper(BuiltinArgs {
             args: &[thunk(Value::String("hello".into()))],
@@ -10274,7 +10351,7 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_concat_seq() {
+    fn concat_seq() {
         // Build two 2-element sequences and concat them
         // xs = Seq(1, Seq(2, {}))
         let xs = thunk(Value::Seq {
@@ -10354,7 +10431,7 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_concat_seq_empty_xs() {
+    fn concat_seq_empty_xs() {
         // concat({}, ys) should return ys
         let xs = thunk(Value::Dict(IndexMap::new()));
         let ys = thunk(Value::Seq {
@@ -10376,7 +10453,7 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_concat_seq_empty_ys() {
+    fn concat_seq_empty_ys() {
         // concat(xs, {}) should return xs's elements followed by empty dict
         let xs = thunk(Value::Seq {
             head: thunk(Value::Int(1)),
@@ -10412,7 +10489,7 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_concat_dict() {
+    fn concat_dict() {
         // concat([1, 2], [3, 4]) -> [1, 2, 3, 4] with integer reindexing
         let mut xs_map = IndexMap::new();
         xs_map.insert(Key::Int(0), thunk(Value::Int(1)));
@@ -10457,7 +10534,7 @@ mod tests {
     }
 
     #[test]
-    fn test_join_seq_size_limit() {
+    fn join_seq_size_limit() {
         // Test that join enforces MAX_COLLECT_SIZE on sequence iteration.
         // Similar to collect_max_size_limit_enforced, we verify that attempting to join
         // an unbounded sequence will hit either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE.

@@ -226,6 +226,36 @@ impl Type {
             _ => {}
         }
     }
+
+    /// Collect both type variables and row variables in a single tree walk.
+    /// Performance optimization: avoids allocating two BTreeSets and traversing the type tree twice.
+    pub fn collect_all_vars(
+        &self,
+        type_vars: &mut BTreeSet<String>,
+        row_vars: &mut BTreeSet<String>,
+    ) {
+        match self {
+            Type::TypeVar(name, _) => {
+                type_vars.insert(name.clone());
+            }
+            Type::Record(row) => {
+                for ty in row.fields.values() {
+                    ty.collect_all_vars(type_vars, row_vars);
+                }
+                if let RowTail::RowVar(name, _) = &row.tail {
+                    row_vars.insert(name.clone());
+                }
+            }
+            Type::Function { params, ret } => {
+                for p in params {
+                    p.collect_all_vars(type_vars, row_vars);
+                }
+                ret.collect_all_vars(type_vars, row_vars);
+            }
+            Type::Seq(elem) => elem.collect_all_vars(type_vars, row_vars),
+            _ => {}
+        }
+    }
 }
 
 /// Type scheme for let-generalization (∀α₁...αₙ. τ)
@@ -323,6 +353,11 @@ pub struct Substitution {
 const MAX_APPLY_DEPTH: usize = 256;
 
 impl Substitution {
+    /// Create a new empty substitution.
+    ///
+    /// Performance note: `IndexMap::new()` creates a map with zero capacity
+    /// and performs no heap allocation until the first insert. This is optimal
+    /// for fully-concrete dicts that generate no unification constraints.
     pub fn new() -> Self {
         Self {
             type_map: IndexMap::new(),
@@ -632,24 +667,22 @@ fn unify_tails(
 /// Lower the level of all type vars and row vars appearing in a row to min(their level, max_level).
 /// Called after a row-variable binding to prevent unsound generalization of inner vars.
 fn lower_row_var_levels(row: &Row, max_level: u32, state: &mut InferState) {
-    // Lower type vars in field types
+    // Collect both type vars and row vars in a single pass over field types
     let mut type_vars = BTreeSet::new();
+    let mut row_vars = BTreeSet::new();
     for ty in row.fields.values() {
-        ty.collect_type_vars(&mut type_vars);
+        ty.collect_all_vars(&mut type_vars, &mut row_vars);
     }
+    // Also collect the tail row var if present
+    if let RowTail::RowVar(name, _) = &row.tail {
+        row_vars.insert(name.clone());
+    }
+    // Lower all collected type vars
     for tv in type_vars {
         let current = state.levels.get(&tv).copied().unwrap_or(0);
         state.levels.insert(tv, current.min(max_level));
     }
-    // Lower row vars in field types and the tail
-    let mut row_vars = BTreeSet::new();
-    // Collect from a temporary Type wrapper to reuse collect_row_vars
-    for ty in row.fields.values() {
-        ty.collect_row_vars(&mut row_vars);
-    }
-    if let RowTail::RowVar(name, _) = &row.tail {
-        row_vars.insert(name.clone());
-    }
+    // Lower all collected row vars
     for rv in row_vars {
         let current = state.levels.get(&rv).copied().unwrap_or(0);
         state.levels.insert(rv, current.min(max_level));
@@ -941,16 +974,14 @@ pub fn unify(
                 ));
             }
             let alpha_level = state.levels.get(name).copied().unwrap_or(0);
-            // Lower all type vars in b to min(their level, α's level)
-            let mut vars_in_b = BTreeSet::new();
-            b.collect_type_vars(&mut vars_in_b);
-            for beta in vars_in_b {
+            // Lower all type vars and row vars in b to min(their level, α's level) — single tree walk
+            let mut type_vars_in_b = BTreeSet::new();
+            let mut row_vars_in_b = BTreeSet::new();
+            b.collect_all_vars(&mut type_vars_in_b, &mut row_vars_in_b);
+            for beta in type_vars_in_b {
                 let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
                 state.levels.insert(beta, beta_level.min(alpha_level));
             }
-            // Lower all row vars in b to min(their level, α's level) — prevents unsound generalization
-            let mut row_vars_in_b = BTreeSet::new();
-            b.collect_row_vars(&mut row_vars_in_b);
             for rho in row_vars_in_b {
                 let rho_level = state.levels.get(&rho).copied().unwrap_or(0);
                 state.levels.insert(rho, rho_level.min(alpha_level));
@@ -967,16 +998,14 @@ pub fn unify(
                 ));
             }
             let alpha_level = state.levels.get(name).copied().unwrap_or(0);
-            // Lower all type vars in a to min(their level, α's level)
-            let mut vars_in_a = BTreeSet::new();
-            a.collect_type_vars(&mut vars_in_a);
-            for beta in vars_in_a {
+            // Lower all type vars and row vars in a to min(their level, α's level) — single tree walk
+            let mut type_vars_in_a = BTreeSet::new();
+            let mut row_vars_in_a = BTreeSet::new();
+            a.collect_all_vars(&mut type_vars_in_a, &mut row_vars_in_a);
+            for beta in type_vars_in_a {
                 let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
                 state.levels.insert(beta, beta_level.min(alpha_level));
             }
-            // Lower all row vars in a to min(their level, α's level) — prevents unsound generalization
-            let mut row_vars_in_a = BTreeSet::new();
-            a.collect_row_vars(&mut row_vars_in_a);
             for rho in row_vars_in_a {
                 let rho_level = state.levels.get(&rho).copied().unwrap_or(0);
                 state.levels.insert(rho, rho_level.min(alpha_level));

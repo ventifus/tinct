@@ -825,7 +825,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$join` | Materializes separator + all list elements | Must concatenate all strings |
 | `$words` | Materializes string, filters empty | Depends on `$split` |
 | **Composition** | | |
-| `$apply` | Returns invoke_function thunk directly (no extra materialization) | Avoids unnecessary materialize+rewrap |
+| `$apply` | Materializes function + arg dict; splits by key type; invokes. Result laziness depends on applied function | Materializing |
 | `$identity` | Returns argument thunk (structural) | Already lazy |
 | `$compose` | Returns function thunk | Functions are always thunks |
 | `$->` (threading) | Threads thunk through functions (structural) | Already lazy |

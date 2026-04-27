@@ -1,0 +1,20 @@
+# E035: ValueNotSerializable - proxy cannot be serialized to JSON
+# NOTE: This error CANNOT be triggered via corpus tests because E035 is only
+# raised in value_to_json (lib.rs:207), which is called by the CLI for JSON
+# output (main.rs:280), not during evaluation. Corpus tests only test eval_source,
+# which does not perform JSON serialization.
+#
+# This test would need to trigger value_to_json during evaluation, but there is
+# no builtin that does this. Possible solutions:
+# 1. Add a `to-json` builtin that wraps value_to_json
+# 2. Extend corpus test infrastructure to support post-eval JSON serialization
+# 3. Accept that E035 can only be tested via unit tests in lib.rs (currently done)
+#
+# COVERAGE STATUS: E035 is tested via unit tests in src/lib.rs:
+# - test_json_proxy_error (line 552): validates E035 message and code
+
+# This placeholder test demonstrates proxy behavior but does NOT test E035.
+# It tests E080 (UserError from $error builtin) instead.
+[p: [call $proxy [fn [key] [call $error "handler called"]]]  result: $p.test]
+===
+[E080] handler called
