@@ -54,9 +54,18 @@ fn check_expr(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<(), Vec<TypeError>> {
+    // Special case: lambda checking mode (when expr is Fn and expected is Function
+    // with no type vars, propagate expected param types to unannotated params).
+    // See src/typecheck.rs:308-452 for full implementation.
+    
+    // Default: synthesize then check subsumption
     let actual = infer_expr(expr, env, state, type_map)?;
-    if !Type::is_subtype(&actual, expected) {
-        Err(vec![TypeError::type_mismatch(expected, &actual, expr.span)])
+    // Apply state.subst to both types — access-chain constraints may have bound
+    // TypeVars in state.subst. Without substitution, comparison uses stale TypeVars.
+    let actual = state.subst.apply(&actual);
+    let expected_resolved = state.subst.apply(expected);
+    if !Type::is_subtype(&actual, &expected_resolved) {
+        Err(vec![TypeError::type_mismatch(&expected_resolved, &actual, expr.span)])
     } else {
         Ok(())
     }

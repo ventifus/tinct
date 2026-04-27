@@ -1132,6 +1132,29 @@ Simple Nit-level source code fixes: comment corrections, dead code removal, patt
 - [x] Fix redundant `use std::collections::HashMap` inside `deep_materialize` body at `src/eval.rs:1208` — leftover artifact from HashSet→HashMap refactor; already imported at module level (line 6). Remove the local `use`. [Nit, eval-engine C43]
 - [x] Add inline comment to `deep_materialize_thunk` explaining depth/depth+1 asymmetry — `materialize(thunk, None, ctx, depth)` uses current depth while `deep_materialize_impl(&v, ctx, depth + 1, cache)` increments; asymmetry is correct because `materialize` guards itself, but confusing next to the `+1`. (`src/eval.rs:1274-1275`) [Nit, eval-engine C43]
 
+### error-infra-nits: Error Nits
+
+Nit-level error infrastructure cleanup.
+
+- [x] Fix `ArityBound::Exact(1)` displaying "1 arguments" — grammatically incorrect singular; add singular/plural logic to ArityBound Display (`src/error.rs:21`) [Minor, computer-scientist]
+- [x] Fix materialize depth check message duplicating constant (`src/eval.rs:812-820`) [Nit, eval-engine] — already fixed, no change needed
+- [x] Simplify `EvalError::new` parameter from `impl Into<String>` to `String` (`src/error.rs:56-79`) [Nit, span-integrity-checker]
+- [x] Standardize error category names (`src/error.rs:56+`) [Nit, span-integrity-checker] — already consistent, no change needed
+- [x] Fix `from_json` inconsistent `.into()` usage — some error paths use `.into()` for boxing while adjacent paths use explicit `Box::new()`; standardize for consistency (`src/builtins.rs:984`) [Nit, computer-scientist] — already consistent, no change needed
+
+### error-infra-nits-b: Error Nits (Part 2)
+
+Nit-level error infrastructure cleanup continued.
+
+- [x] Fix `ErrorKind` variant count assertion fragility — added `all_error_kind_variants()` helper to centralize variant list; eliminated hardcoded count assertions. (`src/error.rs`) [Nit, span-integrity-checker T4]
+- [x] Standardize all error constructor parameter signatures — converted `new`, `internal`, `with_frame`, `push_frame` and 14+ other constructors from `impl Into<String>` to `String`; updated ~70 call sites. (`src/error.rs:540+, src/builtins.rs`) [Nit, integration-verifier C70 panel]
+- [x] Add singular ArityMismatch case to `test_error_kind_display_all_variants` — added `Exact(1)` test case producing "expected 1 argument, got 0". (`src/error.rs`) [Nit, test-crafter C70 panel]
+- [x] Review PendingBuiltin error path span handling — reviewed and added clarifying comment; behavior is correct (dedup logic in attach_materialization_context). (`src/eval.rs`) [Nit, span-integrity-checker]
+- [x] Fix `checked_f64_to_i64` out-of-range branch still using `EvalError::new` — migrated to `EvalError::integer_overflow` (E032 instead of E099). (`src/builtins.rs:71`) [Nit, span-integrity-checker C31]
+- [x] Fix `builtin_filter_seq_step` predicate mismatch error using `EvalError::new` → E099 — migrated to `EvalError::type_mismatch_ctx("filter", "Bool", ...)` (E010 instead of E099). (`src/builtins.rs:2082`) [Minor, span-integrity-checker C39]
+- [x] Fix `value_to_json` float NaN/Infinity using `EvalError::new` → E099 — migrated Float path to `EvalError::float_not_finite` (E033) and depth path to `EvalError::depth_exceeded` (E040). (`src/lib.rs:148-157`) [Minor, eval-engine C39]
+- [x] Fix `builtin_include` wrapping result with `Span::origin()` — now uses `thunk.span` from eval_file result (included file's root expression span). (`src/builtins.rs:1124`) [Minor, eval-engine + span-integrity-checker C39]
+
 ### cycle-findings-c70-a: Critical, Major, and Code Findings (Cycle #70)
 
 Critical and major bugs plus code quality issues from Cycle #70 full codebase health review. All items independent unless noted.
@@ -1144,3 +1167,10 @@ Critical and major bugs plus code quality issues from Cycle #70 full codebase he
 - [x] Fix `func_label`/`func_path` allocates owned String on every call — `src/eval.rs:685-694`: `func_label()` unconditionally calls `func_path()` which returns `Cow::Owned(format!(...))` for every VarRef arm (the dominant `[call $f ...]` pattern); the label is then cloned into `CallContext.origin`. Fix: in `func_label`, match `Expr::VarRef(name)` first and return `Cow::Owned(format!("call ${name}"))` to skip `func_path()` for the common case; defer `label.clone()` at `eval.rs:757` to inside the `map_err` closure (only needed on error path). (`src/eval.rs:685-694, 757`) [Major, performance-expert C70] — fixed in cycle-findings-c70-a sprint
 - [x] Fix `json_to_value` Array and Object paths missing capacity hints — `let mut map = IndexMap::new()` at `src/builtins.rs:956` (Array path) and line 967 (Object path) allocate without size hints; array/object lengths are known before the loop. Fix: change to `IndexMap::with_capacity(arr.len())` and `IndexMap::with_capacity(obj.len())`. (`src/builtins.rs:956, 967`) [Major, performance-expert C70] — fixed in cycle-findings-c70-a sprint
 - [x] Fix `check_call` and `check_call_with_scheme` skip positional arg inference when `func_ty` is `Type::Any` — `src/typecheck.rs:1043, 903`: when the callee is untyped, named args ARE inferred (before the match) but positional args bypass `infer_expr` entirely, leaving the type_map empty for their spans. LSP hover on positional args in calls to untyped functions shows nothing. Fix: add `for a in args { let _ = infer_expr(a, env, state)?; }` before the `match &func_ty` block in both functions. (`src/typecheck.rs:903, 1043`) [Major, computer-scientist C70] — fixed in cycle-findings-c70-a sprint; positional-arg loop now correctly scoped to Type::Any arm only
+
+### computer-scientist-c71: Theoretical Soundness Findings (Cycle #71)
+
+New findings from Cycle #71 full codebase health review (computer-scientist). Focus: Kiselyov (2013) levels invariants, Algorithm W substitution threading, doc/06 spec accuracy.
+
+- [x] Fix `resolve_type_name` unconditionally resets annotation TypeVar level — Kiselyov (2013) monotonicity violation — `src/typecheck.rs:1355` executes `state.levels.insert(fresh_name.clone(), state.level)` on EVERY call for a previously-mapped annotation name, not just on first creation. If unification lowered the level of the TypeVar between two references to the same annotation name (e.g., via U-VAR-LEVEL during lambda checking mode at line 365), the second call resets the level to `state.level`, potentially un-lowering it. This violates Kiselyov's invariant that level lowering is monotone (levels can only decrease, never increase). A level reset could cause a TypeVar to be spuriously generalized, producing a polymorphic scheme where monomorphism is required. Fix: only set level on first creation — split into `if let Some(existing) = mapping.get(name)` (return existing with current level from `state.levels`) vs `else` (call `state.fresh_type_var()` and insert into mapping). (`src/typecheck.rs:1349-1356`) [Major, computer-scientist C71]
+- [x] Fix `doc/06-type-inference.md` check_expr pseudocode (lines 57-62) diverges from implementation — pseudocode shows bare `is_subtype(&actual, expected)` but implementation (`src/typecheck.rs:459-461`) applies `state.subst.apply()` to both types before comparison; also omits lambda checking mode dispatch. Partially tracked in C60 and type-theorist-c67 items; consolidated here for completeness. (`doc/06-type-inference.md:57-62`) [Minor, computer-scientist C71]
