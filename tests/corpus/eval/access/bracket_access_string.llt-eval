@@ -1,0 +1,6 @@
+# Bracket access with string key
+[data: [name: "world"]]
+
+$data["name"]
+===
+String("world")

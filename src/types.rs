@@ -565,20 +565,42 @@ fn row_var_occurs(var_name: &str, row: &Row, subst: &Substitution) -> bool {
 /// bulk row-compatibility check), revisit by collecting `FRV(row)` once before the loop via
 /// `ty.collect_row_vars(&mut frv_set)` and replacing per-field tree walks with `frv_set.contains`.
 fn row_var_occurs_in_type(var_name: &str, ty: &Type, subst: &Substitution) -> bool {
+    let mut visited = HashSet::new();
+    row_var_occurs_in_type_impl(var_name, ty, subst, &mut visited)
+}
+
+/// Implementation of `row_var_occurs_in_type` with cycle detection.
+/// Defense-in-depth: tracks visited TypeVars to prevent unbounded recursion
+/// on cyclic type_map bindings (should be impossible under correct occurs-check
+/// invariants, but defended against for robustness).
+fn row_var_occurs_in_type_impl(
+    var_name: &str,
+    ty: &Type,
+    subst: &Substitution,
+    visited: &mut HashSet<String>,
+) -> bool {
     match ty {
         Type::Record(row) => row_var_occurs(var_name, row, subst),
         Type::Function { params, ret } => {
             params
                 .iter()
-                .any(|p| row_var_occurs_in_type(var_name, p, subst))
-                || row_var_occurs_in_type(var_name, ret, subst)
+                .any(|p| row_var_occurs_in_type_impl(var_name, p, subst, visited))
+                || row_var_occurs_in_type_impl(var_name, ret, subst, visited)
         }
-        Type::Seq(elem) => row_var_occurs_in_type(var_name, elem, subst),
+        Type::Seq(elem) => row_var_occurs_in_type_impl(var_name, elem, subst, visited),
         Type::TypeVar(name, _) => {
             // Chase TypeVar binding: if α is bound to τ in subst, check τ for ρ
-            // Chase terminates without visited-set: unify() checks type_var_occurs(name, &b) before binding α→b, so cyclic chains cannot exist
+            // Cycle detection: if we've already visited this TypeVar, return false
+            // to prevent infinite recursion on cyclic bindings (impossible under
+            // correct occurs-check invariants, but defended against for robustness).
+            if visited.contains(name) {
+                return false;
+            }
             if let Some(bound) = subst.type_map.get(name) {
-                row_var_occurs_in_type(var_name, bound, subst)
+                visited.insert(name.clone());
+                let result = row_var_occurs_in_type_impl(var_name, bound, subst, visited);
+                visited.remove(name);
+                result
             } else {
                 false
             }

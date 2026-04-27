@@ -1,0 +1,4 @@
+# $proxy requires exactly 1 argument; calling with 2 args is an arity error
+[call $proxy [fn [field] hello] [fn [field] world]]
+===
+[E020] arity mismatch

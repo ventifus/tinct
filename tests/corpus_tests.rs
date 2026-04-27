@@ -30,6 +30,8 @@ struct TestFile<'a> {
     expected: Option<&'a str>,
     /// Whether to enable `--no-fs` mode (from `# no_fs` directive).
     no_fs: bool,
+    /// Whether this is an error test with substring matching (from `=== ERROR:` prefix).
+    is_error_substring: bool,
 }
 
 /// Split a test file on `===` delimiter. Returns (input, Option<expected>).
@@ -50,6 +52,7 @@ fn split_test_file(content: &str) -> TestFile {
     const DELIM: &str = "===";
     const NEWLINE_DELIM_NEWLINE: &str = "\n===\n";
     const NEWLINE_DELIM: &str = "\n===";
+    const ERROR_PREFIX: &str = "ERROR:";
 
     // Check for directives on the first line
     let (directives_line, rest) = if let Some(newline_pos) = content.find('\n') {
@@ -74,30 +77,52 @@ fn split_test_file(content: &str) -> TestFile {
     if let Some(pos) = content.find(NEWLINE_DELIM_NEWLINE) {
         let (input, rest) = content.split_at(pos + 1); // include trailing newline before delimiter
         let expected = &rest[DELIM.len() + 1..]; // skip "===\n"
+        let trimmed = expected.trim();
+
+        // Check if expected output starts with "ERROR:" prefix
+        let (is_error_substring, final_expected) =
+            if let Some(stripped) = trimmed.strip_prefix(ERROR_PREFIX) {
+                (true, stripped.trim())
+            } else {
+                (false, trimmed)
+            };
+
         TestFile {
             input,
-            expected: Some(expected.trim()),
+            expected: Some(final_expected),
             no_fs,
+            is_error_substring,
         }
     } else if let Some(pos) = content.find(NEWLINE_DELIM) {
         // === at end of file with no trailing newline
         let (input, rest) = content.split_at(pos + 1);
         let expected = &rest[DELIM.len()..];
         let trimmed = expected.trim();
+
+        // Check if expected output starts with "ERROR:" prefix
+        let (is_error_substring, final_expected) =
+            if let Some(stripped) = trimmed.strip_prefix(ERROR_PREFIX) {
+                (true, stripped.trim())
+            } else {
+                (false, trimmed)
+            };
+
         TestFile {
             input,
-            expected: if trimmed.is_empty() {
+            expected: if final_expected.is_empty() {
                 None
             } else {
-                Some(trimmed)
+                Some(final_expected)
             },
             no_fs,
+            is_error_substring,
         }
     } else {
         TestFile {
             input: content,
             expected: None,
             no_fs,
+            is_error_substring: false,
         }
     }
 }
@@ -215,12 +240,19 @@ fn test_invalid_corpus() {
             )),
             Err(e) => {
                 let error_msg = format!("{}", e);
+                // Both ERROR: prefix and non-prefix tests use substring matching.
+                // The is_error_substring field is available for future extensions.
                 if !error_msg.contains(expected_substr) {
+                    let match_type = if test.is_error_substring {
+                        "expected substring (ERROR: prefix)"
+                    } else {
+                        "expected substring"
+                    };
                     failed.push((
                         relative_path.to_path_buf(),
                         format!(
-                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
-                            expected_substr, error_msg
+                            "Error message mismatch\n--- {} ---\n{}\n--- actual error ---\n{}",
+                            match_type, expected_substr, error_msg
                         ),
                     ));
                 }
@@ -244,12 +276,17 @@ fn test_corpus_structure() {
     let required_dirs = [
         // Eval corpus
         "tests/corpus/eval",
+        "tests/corpus/eval/access",
         "tests/corpus/eval/builtins",
+        "tests/corpus/eval/cross_feature",
         "tests/corpus/eval/errors",
+        "tests/corpus/eval/functions",
         "tests/corpus/eval/laziness",
+        "tests/corpus/eval/regressions",
         "tests/corpus/eval/stdlib",
         "tests/corpus/eval/type_assertions",
         "tests/corpus/eval/typecheck",
+        "tests/corpus/eval/underscore",
         // Invalid corpus
         "tests/corpus/invalid/syntax_errors",
         // Valid corpus
@@ -380,12 +417,20 @@ fn test_eval_error_corpus() {
             }
             Err(e) => {
                 let error_msg = format!("{}", e);
+                // Both ERROR: prefix and non-prefix tests use substring matching.
+                // The is_error_substring field is available for future extensions
+                // (e.g., exact error code validation, span checking).
                 if !error_msg.contains(expected_substr) {
+                    let match_type = if test.is_error_substring {
+                        "expected substring (ERROR: prefix)"
+                    } else {
+                        "expected substring"
+                    };
                     failed.push((
                         relative_path.to_path_buf(),
                         format!(
-                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
-                            expected_substr, error_msg
+                            "Error message mismatch\n--- {} ---\n{}\n--- actual error ---\n{}",
+                            match_type, expected_substr, error_msg
                         ),
                     ));
                 }
@@ -465,8 +510,12 @@ fn test_eval_error_corpus_has_error_codes() {
 }
 
 /// Check if error message contains an error code pattern like [E001], [E099], etc.
+///
+/// IMPORTANT: This function matches exactly 3 digits ([E\d\d\d]).
+/// All LLT error codes use the 3-digit format (E001-E999).
+/// If the error code format changes, update this function.
 fn has_error_code_prefix(error_msg: &str) -> bool {
-    // Look for pattern [EXXX] where XXX are three digits
+    // Look for pattern [EXXX] where XXX are exactly three digits
     error_msg.chars().collect::<Vec<_>>().windows(6).any(|w| {
         w[0] == '['
             && w[1] == 'E'
@@ -683,4 +732,129 @@ fn test_split_test_file_delimiter_in_expected() {
     assert_eq!(test.input, "[x: 1]\n");
     assert_eq!(test.expected, Some("[\"x\": 1]  # comment with === in it"));
     assert!(!test.no_fs);
+}
+
+#[test]
+fn test_split_test_file_error_prefix() {
+    let content = "[call $error \"boom\"]\n===\nERROR: [E024]";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[call $error \"boom\"]\n");
+    assert_eq!(test.expected, Some("[E024]"));
+    assert!(test.is_error_substring, "ERROR: prefix should be detected");
+    assert!(!test.no_fs);
+}
+
+#[test]
+fn test_split_test_file_error_prefix_with_whitespace() {
+    let content = "[call $error \"boom\"]\n===\n  ERROR:   [E024] something  ";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "[call $error \"boom\"]\n");
+    assert_eq!(test.expected, Some("[E024] something"));
+    assert!(test.is_error_substring, "ERROR: prefix should be detected");
+}
+
+#[test]
+fn test_split_test_file_empty_content() {
+    let content = "";
+    let test = split_test_file(content);
+    assert_eq!(test.input, "");
+    assert_eq!(test.expected, None);
+    assert!(!test.no_fs);
+    assert!(!test.is_error_substring);
+}
+
+#[test]
+fn test_split_test_file_whitespace_around_delimiter() {
+    // Delimiter must be exactly "\n===\n" or "\n===" (no surrounding whitespace).
+    // If there's whitespace, the delimiter is not recognized.
+    let content = "[x: 1]  \n  ===  \n  [\"x\": 1]  ";
+    let test = split_test_file(content);
+    // Since "  ===" doesn't match "\n===", the entire content is treated as input
+    assert_eq!(test.input, "[x: 1]  \n  ===  \n  [\"x\": 1]  ");
+    assert_eq!(test.expected, None);
+    assert!(!test.no_fs);
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for has_error_code_prefix()
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_has_error_code_prefix_valid_e001() {
+    assert!(
+        has_error_code_prefix("[E001] some error"),
+        "[E001] should be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_valid_e999() {
+    assert!(
+        has_error_code_prefix("[E999] another error"),
+        "[E999] should be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_valid_in_middle() {
+    assert!(
+        has_error_code_prefix("Error: [E042] invalid operation"),
+        "[E042] in the middle should be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_invalid_no_brackets() {
+    assert!(
+        !has_error_code_prefix("E001 no brackets"),
+        "E001 without brackets should NOT be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_invalid_two_digits() {
+    assert!(
+        !has_error_code_prefix("[E01] two digits only"),
+        "[E01] with only 2 digits should NOT be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_invalid_four_digits() {
+    assert!(
+        !has_error_code_prefix("[E0001] four digits"),
+        "[E0001] with 4 digits should NOT be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_invalid_empty_string() {
+    assert!(
+        !has_error_code_prefix(""),
+        "empty string should NOT be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_invalid_no_code() {
+    assert!(
+        !has_error_code_prefix("no error code here"),
+        "string without error code should NOT be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_invalid_lowercase_e() {
+    assert!(
+        !has_error_code_prefix("[e001] lowercase e"),
+        "[e001] with lowercase 'e' should NOT be detected"
+    );
+}
+
+#[test]
+fn test_has_error_code_prefix_invalid_letters_in_number() {
+    assert!(
+        !has_error_code_prefix("[E0A1] letter in number"),
+        "[E0A1] with letter in number should NOT be detected"
+    );
 }

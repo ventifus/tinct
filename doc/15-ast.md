@@ -152,6 +152,8 @@ enum Annotation {
 | `TypeAlias` | `[type expr]` | Type alias declaration |
 | `TypeAssert` | `[@T $expr]` | Type assertion |
 | `Annotated` | `Fn@Number` | Annotated bare word |
+| `Rest(None)` | `...` | Open record marker |
+| `Rest(Some("r"))` | `...r` | Named row variable |
 
 ---
 

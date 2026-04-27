@@ -901,11 +901,7 @@ fn unescape(s: &str) -> String {
                 Some('r') => result.push('\r'),
                 Some('\\') => result.push('\\'),
                 Some('"') => result.push('"'),
-                // unreachable: grammar only accepts \n, \t, \r, \\, \"
-                Some(other) => {
-                    result.push('\\');
-                    result.push(other);
-                }
+                Some(_) => unreachable!("grammar enforces valid escape sequences"),
                 None => result.push('\\'),
             }
         } else {

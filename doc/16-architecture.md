@@ -83,7 +83,7 @@ struct EvalContext {
 **Per-caller patterns:**
 - **CLI (main.rs):** Constructs EvalContext from CLI args (file path → base_dir), passes to eval_file.
 - **LSP:** Each DocumentState gets its own EvalContext. DocumentStore extracts base_dir from document URI. Config (stdlib_env) is shared across documents; state is per-document.
-- **REPL:** Fresh EvalContext per eval_input() call. Session env persists (accumulates bindings), but include state resets per input. Config (stdlib_env, base_dir) is shared via Rc across commands.
+- **REPL:** Single EvalContext per session. Include state (guard, cache) persists across eval_input() calls. Session env accumulates bindings across commands.
 
 **Precedent:** Nix's `EvalState`, Nickel's `VirtualMachine`, Dhall's normalization context. Standard pattern in mature language implementations for separating evaluation infrastructure from variable bindings.
 

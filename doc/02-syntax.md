@@ -1,6 +1,6 @@
 # Syntax
 
-This document describes the tinct language syntax: its design rationale, formal grammar, tokenization rules, and quick reference. For the complete language documentation see [doc/index.md](index.md).
+This document describes the tinct language syntax: its design rationale, formal grammar, tokenization rules, and quick reference. For evaluation semantics (how these constructs execute), see [Evaluation](08-evaluation.md). For the complete language documentation see [doc/index.md](index.md).
 
 ---
 
@@ -62,6 +62,8 @@ Everything else can be a regular function in the stdlib:
 [call: something]     # Dict — "call" followed by ":" is a key, not a keyword
 [$call $x $y]         # Dict — $call is a variable reference, not the keyword
 [mycall $f $x]        # Dict — "mycall" is not a recognized keyword
+[call
+: value]              # CallExpr — ":" is not on the same line, colon_ahead only matches horizontal whitespace
 ```
 
 **Why parser-level:** The distinction between special forms and data must be unambiguous before evaluation. If deferred to the evaluator, `[call $f $x]` would first be constructed as a dict `[0: call  1: $f  2: $x]`, then the evaluator would need to inspect key 0 — but at that point the dict is already a thunk and the string `"call"` is indistinguishable from user data that happens to contain the word "call". Parser-level recognition avoids this ambiguity entirely.
@@ -95,7 +97,7 @@ The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the l
 - `$a[0]` — bracket access (no whitespace before `[`)
 - `$a [0]` — VarRef `$a` followed by nested expression `[0]`
 
-This is handled by making access chain rules atomic (see section 3.4).
+This is handled by making access chain rules atomic (see section 3.4). The hand-written lexer at `src/lexer.rs:120-129` provides an alternative implementation using `last_significant_token` tracking for O(1) whitespace-sensitive access detection, avoiding the compound-atomic mechanism.
 
 ### 2.2 Brackets and Punctuation
 
@@ -105,7 +107,8 @@ The following punctuation characters are used as inline literals throughout the 
 |-----------|---------|
 | `[`, `]` | Bracket expressions, param lists, access chains |
 | `:` | Key-value separator |
-| `;` | Entry separator (via `semicolon = _{ ";" }`) |
+| `;` | Entry separator |
+| `@` | Annotation separator |
 | `...` | Variadic parameter prefix |
 | `..` | Range operator (inside bracket access) |
 | `---` | Document separator (via `doc_separator` rule) |
@@ -114,11 +117,11 @@ The following punctuation characters are used as inline literals throughout the 
 
 #### Literal Recognition
 
-**The tokenizer recognizes literals by pattern, not the evaluator.** This is consistent with parser-level special form recognition — the distinction between literal types is made at tokenization time, before any evaluation occurs.
+**The lexer recognizes literals by pattern, not the evaluator.** This is consistent with parser-level special form recognition — the distinction between literal types is made at lexing/parsing time, before any evaluation occurs. Both `src/grammar.pest` (pest parser) and `src/lexer.rs` (hand-written lexer) implement this recognition.
 
 **Quoting forces string interpretation.** `"true"` is the string `"true"`, `"42"` is the string `"42"`. Quoting is the escape hatch from literal recognition.
 
-**Why tokenizer-level:** If `true` and `42` were bare-word strings that the evaluator later reinterpreted, it would break the "bare words are always strings" rule in confusing ways — `hello` would be a string but `true` would secretly be a boolean. By having the tokenizer recognize these patterns first, the rule becomes precise: bare words that don't match any prior pattern (sigil, numeric, boolean) are strings.
+**Why lexer-level:** If `true` and `42` were bare-word strings that the evaluator later reinterpreted, it would break the "bare words are always strings" rule in confusing ways — `hello` would be a string but `true` would secretly be a boolean. By having the lexer recognize these patterns first, the rule becomes precise: bare words that don't match any prior pattern (sigil, numeric, boolean) are strings.
 
 Literals are recognized in precedence order. The first matching rule wins.
 
@@ -176,7 +179,7 @@ $data.name               # Tokens: VarRef("data"), Dot, BareWord("name")
 $data[0]                 # Tokens: VarRef("data"), BracketAccess, Int(0), CloseBracket
 ```
 
-A bare `$` not followed by any valid identifier character is a tokenizer error.
+A bare `$` not followed by any valid identifier character is a parse error.
 
 #### 2.3.2 Numeric Literals
 
@@ -252,8 +255,8 @@ bare_word_char = _{
 
 **Bare word terminators** — a bare word ends at:
 
-| Character | Effect |
-|-----------|--------|
+| Character | Purpose |
+|-----------|---------|
 | Whitespace | Ends the bare word |
 | `[` | Ends the bare word (starts bracket access or new expression) |
 | `]` | Ends the bare word (closes enclosing expression) |
@@ -280,7 +283,7 @@ $name                    # Variable reference (starts with $)
 
 Examples: `hello`, `some.file.txt`, `path/to/file`, `my-key`, `config..bak`
 
-**Note:** The tree-sitter grammar excludes `.` from `bare_word_char` to simplify access chain parsing. This is a divergence from the pest grammar, which allows `.` in bare words (requiring compound-atomic rules to disambiguate `$a.b` from `$a .b`). The tree-sitter grammar uses `token.immediate()` for access chains instead.
+**Pest vs tree-sitter divergence on dot in bare words:** The pest grammar (`src/grammar.pest:223-229`) allows `.` in `bare_word_char`, enabling filenames like `file.txt` as bare words. It uses compound-atomic rules (`${}`) to disambiguate `$a.b` (access) from `$a .b` (two tokens). The tree-sitter grammar (`tree-sitter-llt/grammar.js`) excludes `.` from `bare_word_char` entirely, requiring such values to be quoted: `"file.txt"`. This divergence is intentional: tree-sitter's incremental parsing model makes compound-atomic lookahead expensive, and excluding `.` from bare words simplifies the access chain tokenization by using `token.immediate()` instead. This is a confirmed design decision: pest prioritizes ergonomics (unquoted filenames), tree-sitter prioritizes incremental parsing performance.
 
 ### 2.4 Token Precedence
 
@@ -417,7 +420,7 @@ doc_separator = @{ "---" ~ !bare_word_char }
 
 **File:** The outermost unit. Contains documents separated by `---`.
 
-**Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — the only connection is `$$`, which carries the previous document's output as a lazy value. For the first document, `$$` is `[]`.
+**Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — the only connection is `$$`, which carries the previous document's output as a lazy value. For the first document, `$$` is `[]`. For evaluation semantics of `$$` binding, `$include` cycle detection, and document pipeline caching, see [Documents](09-documents.md).
 
 **Expression:** A single value (bracket expression, atom, access expression, etc.). The `!doc_separator` negative lookahead prevents `---` from being consumed as a bare word.
 
@@ -512,6 +515,8 @@ Examples:
 
 Access chains attach to variable references and bracket accesses. Whitespace-sensitivity is achieved by making the chain atomic — no implicit whitespace skipping between the variable reference and the `.` or `[`.
 
+**Implementation note:** Both a pest grammar (`src/grammar.pest`) and a hand-written lexer (`src/lexer.rs`) exist. The pest grammar uses compound-atomic rules (`${}`) for whitespace sensitivity; the lexer uses `last_significant_token` tracking.
+
 ```pest
 access_expr = ${ var_ref ~ access_chain+ }
 
@@ -535,7 +540,7 @@ range_value = { float_lit | int_lit | var_ref }
 
 Range values are limited to numeric literals and variable references.
 
-Because `access_expr` is compound-atomic (`$`), `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word.
+Because `access_expr` is compound-atomic (`$`), `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word. Note that `.` is excluded from `var_ident_char` (see `grammar.pest:167-173`), which is what allows `$a.b` to parse as access rather than as a single identifier ending in `.b`.
 
 Similarly, `$a[0]` is bracket access, but `$a [0]` is a VarRef followed by a nested bracket expression.
 
@@ -554,9 +559,7 @@ Similarly, `$a[0]` is bracket access, but `$a [0]` is a VarRef followed by a nes
 ### 3.5 Dict Entries
 
 ```pest
-dict_entries = { (entry ~ semicolon?)* }
-
-semicolon = _{ ";" }
+dict_entries = { (entry ~ ";"?)* }
 
 entry = { keyed_entry | rest_entry | auto_entry }
 
@@ -712,6 +715,8 @@ doc_separator = @{ "---" ~ !bare_word_char }
 
 The full pest grammar, consolidated from all sections above. This is the normative grammar definition.
 
+**Implementation note:** Both a pest grammar (`src/grammar.pest`) and a hand-written lexer (`src/lexer.rs`) exist. The pest grammar uses compound-atomic rules (`${}`) for whitespace sensitivity; the lexer uses `last_significant_token` tracking.
+
 ```pest
 // === Whitespace and Comments ===
 
@@ -750,6 +755,8 @@ keyword_call    = @{ "call" ~ !ident_char ~ !colon_ahead }
 keyword_fn      = @{ "fn" ~ !ident_char ~ !colon_ahead }
 keyword_type    = @{ "type" ~ !ident_char ~ !colon_ahead }
 
+// Lookahead: optional horizontal whitespace then colon.
+// ws_chars matches only spaces and tabs (not newlines), so "call\n:" is a CallExpr, not a Dict entry.
 colon_ahead     = _{ ws_chars* ~ ":" }
 ws_chars        = _{ " " | "\t" }
 
@@ -781,15 +788,15 @@ param_annotation = ${ "@" ~ annotation_value }
 
 variadic_param = @{ "..." ~ param_name }
 
+// Non-atomic (!{}) breaks compound-atomic inheritance, enabling whitespace inside [type: Number default: 30]
+// Used by param_annotation and fn_annotation.
 annotation_value = !{ bracket_expr | annotation_word }
 
 annotation_word = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
 
 // === Dict Entries ===
 
-dict_entries = { (entry ~ semicolon?)* }
-
-semicolon = _{ ";" }
+dict_entries = { (entry ~ ";"?)* }
 
 entry = { keyed_entry | rest_entry | auto_entry }
 

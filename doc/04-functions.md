@@ -456,7 +456,7 @@ bind_positional(P, pos, named, env_d, env_c) ⇒ env_{|P|}
 
 Parameters are bound left-to-right. For each parameter, the priority chain determines the source: positional arg first, then named arg, then default. This phase consumes named args that fill gaps beyond the positional args — BIND-NAMED handles only the unconsumed remainder.
 
-The `env_d` parameter controls where default expressions are evaluated — this is the Garrigue (1995) separation. Defaults are evaluated eagerly at call time (not wrapped as thunks), so default-evaluation errors surface at the call site. This is consistent with Garrigue's system and with Kotlin/Scala.
+The `env_d` parameter controls where default expressions are evaluated — this is the Garrigue (1995) separation. Defaults are wrapped as lazy thunks; errors surface at the parameter's first use in the body, not at the call site.
 
 **[BIND-NAMED]** (validation only)
 

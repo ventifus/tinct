@@ -81,7 +81,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `get`, `get-or`, `has?` | Structural — key lookup, returns thunk |
 | `get-in`, `get-in-or` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. `get-in-or` returns a default on missing keys instead of erroring. |
 | `set`, `remove` | Structural — add/remove entries |
-| `merge` | Lazy overlay — right dict's keys shadow left, O(1) construction, values stay thunks. |
+| `merge` | Materializing — builds new IndexMap from both dicts (O(n)); values remain as thunk Rc-clones. |
 | `keys` | Structural — keys are always evaluated, not thunks |
 | `values`, `entries` | Structural — returns thunks |
 | `update` | Lazy-transforming — produces thunk `[call $f $old-value]` |
@@ -93,10 +93,10 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `nth`, `last`, `slice` | Structural — positional access, returns thunks |
 | `take`, `drop` | Structural — positional subsequence, thunks preserved |
 | `zip` | Structural — pairs entries, values stay thunks |
-| `length`, `empty?` | Materializing — counts entries by materializing the collection |
+| `length`, `empty?` | Materializing — materializes collection structure to count entries (values remain as thunks) |
 | `map`, `map-entries` | Lazy-transforming — on dicts, returns dict with PendingCall thunks; on seqs, returns lazy seq |
 | `filter` | On dicts, returns Seq (must evaluate predicates); on seqs, returns lazy seq |
-| `reduce`, `fold` | **Materializing** — accumulates, materializes each step |
+| `reduce`, `fold` | **Selective** — Dict path builds lazy PendingCall chain; Seq path materializes tail at each step |
 | `find-deep` | **Materializing** — must traverse structure looking for keys |
 | `flatten` | **Materializing** — must inspect values to check if they are lists |
 
@@ -306,6 +306,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `update` | `[fn [xs k f] ...]` | Apply function `$f` to the value at key `$k` |
 | `values` | `[fn [xs] ...]` | Get all values as an integer-indexed list |
 | `entries` | `[fn [xs] ...]` | Get all entries as a list of `[key: k value: v]` dicts |
+| `from-entries` | `[fn [pairs] ...]` | Reconstruct a dict from a list or Seq of `[key: k value: v]` pairs |
 
 **List Operations (integer keys, dense 0..n output):**
 
@@ -389,8 +390,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 Not language syntax. Implemented in stdlib:
 
 ```tinct
-->: [fn [data ...stages]
-    [call $reduce [fn [acc f] [call $f $acc]] $data $stages]]
+->: [fn [x ...stages]
+    [call $builtin-reduce [fn [acc f] [call $f $acc]] $x $stages]]
 ```
 
 ## Equality and Comparison — Formal Specification

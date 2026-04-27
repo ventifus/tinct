@@ -765,7 +765,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$when`, `$unless` | Materializes condition; body returned as thunk | Body returned lazy via `$if` |
 | `$cond` | Materializes conditions left-to-right; first matching branch returned as thunk | Delegates to `$if`; no code change needed |
 | **Dict Operations** | | |
-| `$merge` | Lazy overlay: right shadows left, O(1) construction, O(k) per key for k chained merges | Lazy overlay is O(1) construction vs O(n) clone; values stay thunks |
+| `$merge` | Eagerly materializes both dicts; values pass through as thunks (Rc::clone) | See merge-lazy-overlay sprint in TODO.md for planned lazy overlay upgrade |
 | `$get`, `$get-or` | Returns value thunk (structural) | Already lazy |
 | `$keys` | Keys always evaluated | Keys are never thunks |
 | `$values` | Returns list of thunks | Already lazy |
@@ -781,7 +781,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$map` on seq | Returns seq applying function to each element (lazy) | Enables infinite sequence transforms |
 | `$filter` on dict | Returns Seq (must evaluate predicates) | Predicates must run to know which keys to keep |
 | `$filter` on seq | Returns seq filtering elements (lazy) | Lazy sequence filtering |
-| `$reduce`, `$fold` | Materializes accumulator at each step | Accumulator pattern requires sequential forcing |
+| `$reduce`, `$fold` | Dict path builds lazy PendingCall chain; Seq path materializes tail at each step | Dual-dispatch: Dict is lazy, Seq materializes |
 | `$map-entries` | Returns dict with PendingCall thunks on transformed entries | Same as `$map` on dicts |
 | `$from-entries` | Eagerly reduces entry pairs into dict | Must construct concrete dict |
 | `$any?`, `$all?` | Short-circuit: materializes elements until condition met/failed | Predicates must run |

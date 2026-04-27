@@ -5,16 +5,17 @@
 # A single top-level dict containing all stdlib functions implementable in LLT.
 #
 # These functions depend on the following Rust-native builtins being available
-# in the parent environment:
+# in the parent environment (using their internal builtin-* names):
 #
-#   Arithmetic:  +  -  *  /
-#   Comparison:  <  =
-#   Control:     if
+#   Arithmetic:  builtin-add  builtin-sub  builtin-mul  builtin-div
+#   Comparison:  builtin-lt  builtin-eq
+#   Control:     builtin-if
 #   Dict:        keys  length  merge  append
 #   String:      str  split  replace  upper  lower  trim
 #   Numeric:     floor  round
 #   Parsing:     to-int  to-float  (string-to-number only)
 #   Runtime:     eval  error  try  apply  type-of  from-json
+#   Sequences:   builtin-reduce  builtin-filter  seq?
 #
 # Helper functions use a -impl suffix to distinguish them from public API.
 # All functions in this dict can reference each other (letrec semantics).
@@ -57,7 +58,10 @@ or: [fn [a b] [call $builtin-if $a $a $b]]
 
 # Short-circuit predicate test: returns true if any element satisfies pred.
 # Inherently materializing: short-circuits but materializes elements until condition met.
-any?: [fn [pred xs] [call $any?-impl $pred $xs [call $keys $xs] 0]]
+any?: [fn [pred xs]
+    [call $builtin-if [call $seq? $xs]
+        [call $error "any?: expected Dict, got Seq -- collect the Seq first"]
+        [call $any?-impl $pred $xs [call $keys $xs] 0]]]
 
 any?-impl: [fn [pred xs ks i]
     [call $builtin-if [call $>= $i [call $length $ks]]
@@ -68,7 +72,10 @@ any?-impl: [fn [pred xs ks i]
 
 # Short-circuit predicate test: returns true if all elements satisfy pred.
 # Inherently materializing: short-circuits but materializes elements until condition failed.
-all?: [fn [pred xs] [call $all?-impl $pred $xs [call $keys $xs] 0]]
+all?: [fn [pred xs]
+    [call $builtin-if [call $seq? $xs]
+        [call $error "all?: expected Dict, got Seq -- collect the Seq first"]
+        [call $all?-impl $pred $xs [call $keys $xs] 0]]]
 
 all?-impl: [fn [pred xs ks i]
     [call $builtin-if [call $>= $i [call $length $ks]]
@@ -88,7 +95,7 @@ all?-impl: [fn [pred xs ks i]
 >=: [fn [a b] [call $not [call $builtin-lt $a $b]]]
 
 # ============================================================================
-# Arithmetic (derived from +, -, *, /)
+# Arithmetic (derived from builtin-add, builtin-sub, builtin-mul, builtin-div)
 # ============================================================================
 
 # Integer quotient: truncates toward zero (like Clojure's quot).
@@ -100,7 +107,7 @@ quot: [fn [a b] [call $trunc [call $builtin-div $a $b]]]
 mod: [fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]
 
 # ============================================================================
-# Numeric Conversion (derived from floor, round, +)
+# Numeric Conversion (derived from floor, round, builtin-add, builtin-sub)
 # ============================================================================
 
 # Inherently materializing: derived from arithmetic operations.
@@ -111,7 +118,7 @@ ceil: [fn [x] [call $builtin-sub 0 [call $floor [call $builtin-sub 0 $x]]]]
 trunc: [fn [x] [call $builtin-if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]
 
 # ============================================================================
-# String (derived from str, split, filter)
+# String (derived from str, split, builtin-filter, builtin-eq)
 # ============================================================================
 
 # join is a Rust-native builtin (O(n) performance, dual-dispatch on Dict/Seq).
@@ -386,23 +393,23 @@ slice-step: [fn [xs ks start end i acc current-key]
 
 # Pair entries from two collections by position. Returns a list of pairs.
 # If both xs and ys are Seq: lazy Seq of pairs.
-# Otherwise: collect Seqs to Dicts, then use eager zip-dict.
+# Otherwise: collect Seqs to Dicts, then use eager zip-dict-impl.
 zip: [fn [xs ys]
     [call $builtin-if [call $and [call $seq? $xs] [call $seq? $ys]]
-        [call $zip-seq $xs $ys]
-        [call $zip-dict
+        [call $zip-seq-impl $xs $ys]
+        [call $zip-dict-impl
             [call $builtin-if [call $seq? $xs] [call $collect $xs] $xs]
             [call $builtin-if [call $seq? $ys] [call $collect $ys] $ys]]]]
 
 # Lazy zip for two Seqs: produces a Seq of pairs until either input terminates.
-zip-seq: [fn [xs ys]
+zip-seq-impl: [fn [xs ys]
     [call $builtin-if [call $and [call $seq? $xs] [call $seq? $ys]]
         [call $seq [[call $head $xs] [call $head $ys]]
-            [call $zip-seq [call $tail $xs] [call $tail $ys]]]
+            [call $zip-seq-impl [call $tail $xs] [call $tail $ys]]]
         []]]
 
 # Eager zip for Dicts: iterates over keys and builds pairs.
-zip-dict: [fn [xs ys]
+zip-dict-impl: [fn [xs ys]
     [call $zip-impl $xs $ys [call $keys $xs] [call $keys $ys] 0 []]]
 
 zip-impl: [fn [xs ys xks yks i acc]

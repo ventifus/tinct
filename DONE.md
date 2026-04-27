@@ -980,6 +980,18 @@ Overflow from row-unification-g plus nit fixes from the row-unification-f panel 
 - [x] Add CALL-POLY state.subst constraint test — add a test where a forward-reference dot-access binds a TypeVar in state.subst before a polymorphic call whose return type references that same TypeVar, verifying `state.subst.apply()` in the CALL-POLY arm changes the result. Without this, removing `state.subst.apply()` from `check_call`/`check_call_with_scheme` would not break any test. (`src/typecheck.rs:837, 958`) [Minor, test-crafter C53]
 - [x] Add typecheck corpus runner — `tests/corpus/eval/typecheck/` is executed by the eval runner which discards type errors (`let _ = typecheck::typecheck_file(...)` at corpus_tests.rs:81); type-checker regressions that don't change runtime output are invisible. Add a dedicated `test_typecheck_corpus()` that calls `typecheck_file()` and validates Ok/Err. (`tests/corpus_tests.rs:81`, `tests/corpus/eval/typecheck/`) [Major, test-crafter C54]
 
+### row-unification-g-c: Test Coverage and Security Hardening (C55 Overflow)
+
+Overflow from row-unification-g-b plus new findings from the C55 panel review. Requires row-unification-g-b.
+
+- [x] Add `unify_rows` recursion depth counter — `unify_rows` is called recursively in Step 3.6 (via `unify()` on shared fields); adversarial nested row types can produce call stacks proportional to nesting depth; add a `depth: usize` parameter with a `MAX_UNIFY_DEPTH` guard (e.g. 256) returning `TypeError` on overflow, consistent with `MAX_EVAL_DEPTH` in the evaluator. (`src/types.rs`) [Minor, security-expert C55] — decided: depth counter not implemented; parser's MAX_PARSE_DEPTH=256 bounds unification recursion structurally. Visited-set defense-in-depth added instead.
+- [x] Add visited set to `row_var_occurs_in_type` — the TypeVar-chase branch added in row-unification-c follows `subst.type_map[α]` recursively; a cyclic type_map (impossible under correct occurs-check invariants but not defended against) causes unbounded recursion. Add a `&mut HashSet<&str>` visited parameter and return `false` on re-visit, consistent with the defense-in-depth pattern used elsewhere in the type system. (`src/types.rs:460-481`) [Minor, security-expert C55]
+- [x] Add `check_call` CALL-MONO `state.subst.apply` regression test — no test verifies that removing `state.subst.apply()` from the CALL-MONO return in `check_call_with_scheme` (line 835) changes any result; the KNOWN ISSUE from row-unification-f-b requires a future scenario where CALL-MONO fires with a TypeVar in state.subst. Add a documentation test or pending placeholder with a comment explaining the condition under which it will become observable. (`src/typecheck.rs:835`) [Major, test-crafter C55]
+- [x] Add `check_range_access` TypeVar arm coverage test — `check_range_access` handles `Type::Record`, `Type::Any`, and `_` (error); no test exercises the TypeVar fall-through (which would produce a spurious "expected record type" error on an inferred TypeVar target); add `test_range_access_typevar_target` that calls range access on an open-record-typed dict and verifies the error message or result. (`src/typecheck.rs:677`) [Minor, test-crafter C55]
+- [x] Rename `test_dot_access_open_record_infinite_row_cycle` and document occurs-check invariant — test name promises "infinite row cycle" but the body documents "the error path is likely unreachable" and tests a different code path (TypeVar forward-ref). Renamed to `test_dot_access_constraint_generation_on_open_record_with_known_field`. Added formal proof-sketch comment and `debug_assert!(false, "unreachable: fresh row var occurs in its own binding")` + `Err(...)` for defense-in-depth. (`src/typecheck.rs:1707-1758, 657-661`) [Major, test-crafter C56]
+- [x] Fix `test_dot_access_typevar_generates_constraint_verified` dual-accept assertion — collapsed from dual-accept (StringLiteral OR TypeVar) to single assertion: TypeVar type + registered in state.levels. Removed the subsumed older `test_dot_access_typevar_generates_constraint`. (`src/typecheck.rs:1793-1805, 1661`) [Major, test-crafter C56]
+- [x] Fix `resolve_type_assert` panic! → debug_assert! — the write-once invariant guard at `src/typecheck.rs:1065-1069` uses `if prev.is_some() { panic!(...) }` which fires in production builds; the type checker is advisory and should not panic. Change to `debug_assert!(prev.is_none(), "resolved_type written twice — elaboration invariant violated (span: {:?})", annotation.span)` so the invariant is enforced in debug/test builds but stripped in release. (`src/typecheck.rs:1065-1069`) [Minor, type-theorist C56] — done in test-crafter-c62 (DONE.md line 1060)
+
 ## eval-sandbox-flags: Adversarial Evaluation Flags
 
 Extend `llt eval` with `--no-fs`, `--timeout`, and structured exit codes for adversarial/sandboxed use. See `doc/12-tooling.md` §Adversarial Evaluation.
@@ -1233,6 +1245,18 @@ Simple code comment/doc nits from codebase reviews.
 - [x] Move flat-root eval corpus tests into subdirectories (functions/, underscore/)
 - [x] Update valid corpus test format documentation
 
+### misc-nits-d: Miscellaneous Nits (Part 4)
+
+- [x] Fix `resolve_type_assert` pre-substitution return — used `expected_resolved` for default validation; fixed `infer_dict` Pass 3a subst initialization
+- [x] Fix `doc/11-stdlib.md` threading code block `$reduce` → `$builtin-reduce`
+- [x] Fix prelude header comment: primary operators → `builtin-*` aliases
+- [x] Fix `doc/11-stdlib.md` `$merge` "Lazy overlay" → "Materializing"
+- [x] Removed hardcoded variant count assertions in error.rs tests
+- [x] Fix `check_dot_access` debug_assert redundant `state.levels` lookup
+- [x] Add `test_value_matches_type_proxy` unit test
+- [x] Add `test_deep_materialize_proxy` unit test
+- [x] Document `invoke_proxy_handler` Builtin path `empty.clone()` necessity
+
 ### cycle-findings-c32-a: Major Findings (Cycle #32)
 
 Major findings from Cycle #32 full codebase health review. All items independent.
@@ -1244,3 +1268,43 @@ Major findings from Cycle #32 full codebase health review. All items independent
 - [x] Fuse `unify()` U-VAR arms to use single tree walk — added `collect_all_vars` helper; replaced both call pairs in U-VAR-L and U-VAR-SYM with single traversal; also used in `lower_row_var_levels`. (`src/types.rs:945-984`) [Major, performance-expert C32]
 - [x] Fix `infer_dict` allocates fresh `Substitution` — investigated: false premise; `IndexMap::new()` already has zero-cap; added doc comment to `Substitution::new()` confirming this. (`src/types.rs`) [Major, performance-expert C32]
 - [x] Fix `doc/08-evaluation.md` `$apply` Laziness Design table — updated row to match strictness table ("Materializes function + arg dict; splits by key type; invokes"). (`doc/08-evaluation.md:828`) [Major, eval-engine C32]
+
+### docs-vs-code-syntax: doc/02-syntax.md vs Code Accuracy
+
+Split from docs-vs-code. All items target doc/02-syntax.md. Docs-only sprint (no build gate or panel review).
+
+- [x] **doc/02-syntax.md `bare_word_char` prose terminator list missing `$`** [Nit, grammar-architect]
+- [x] **doc/02-syntax.md §access chains missing dot exclusion clarity** [Major, grammar-architect]
+- [x] **doc/02-syntax.md `annotation_value` comment doesn't reference parent rule** [Nit, grammar-architect]
+- [x] **doc/02-syntax.md intro describes parser only, not eval semantics** [Nit, integration-verifier]
+- [x] **doc/02-syntax.md call/dict disambiguation colon lookahead only matches horizontal whitespace** [Major, grammar-architect]
+- [x] **doc/02-syntax.md or doc/03-data-model.md duplicate key detection contradicts parser** — already accurate [Major, grammar-architect]
+- [x] **doc/02-syntax.md tree-sitter divergence note references nonexistent grammar** — tree-sitter-llt/grammar.js exists; finding was incorrect [Major, grammar-architect]
+- [x] **doc/02-syntax.md token precedence section missing structural punctuation** [Minor, grammar-architect]
+- [x] **doc/02-syntax.md whitespace significance section lacks lexer cross-reference** [Minor, grammar-architect]
+- [x] **doc/02-syntax.md access chains and complete grammar sections need dual parser/lexer implementation notes** [Minor, grammar-architect]
+- [x] **doc/02-syntax.md `---` syntax section missing cross-reference to evaluation semantics** [Minor, integration-verifier]
+- [x] **doc/02-syntax.md dot-in-bare-word pest/tree-sitter divergence lacks rationale** [Critical, grammar-architect]
+- [x] **doc/02-syntax.md unrecorded decision: dot excluded from `bare_word_char` in tree-sitter** [Critical, grammar-architect]
+- [x] **doc/02-syntax.md Tokenization Rules section missing `---` document separator** — already present [Major, grammar-architect]
+- [x] **doc/02-syntax.md Tokenization Rules tables have inconsistent column headers** [Nit, grammar-architect]
+- [x] **doc/02-syntax.md "Bare Word Character Set" header doesn't follow section naming pattern** — already correct [Nit, grammar-architect]
+- [x] **doc/02-syntax.md §Literal Recognition references "tokenizer" but should reference "lexer"** [Major, grammar-architect]
+
+## doc-type-polish: Type Inference Documentation Accuracy (C47)
+
+Missing rules, misleading claims, and undocumented behaviors in type inference docs. Found by type-theorist, span-integrity-checker, and computer-scientist C47. Full workflow (build gate + panel review).
+
+- [x] Add [CHECK-FN] rule to `doc/06-type-inference.md` — fourth checking position now documented; checking positions table updated [Major, type-theorist C47]
+- [x] Document `TypeVar` in TypeAssert expected type always failing `is_subtype` — added as Limitation in doc/06 [Major, type-theorist C47]
+- [x] Fix `doc/16-architecture.md` REPL EvalContext description — single context per session, include state persists [Major, integration-verifier C47]
+- [x] Fix `doc/06-type-inference.md` "pure Robinson" claim — "extended with pragmatic promotion rules"; line 317 contradiction also fixed [Minor, computer-scientist C47]
+- [x] Fix stale `TypeScheme` struct block — updated to type_vars/row_vars split throughout doc/06 [Major, type-theorist + computer-scientist C49]
+- [x] Fix variadic param type inconsistency in `infer_fn` — param_types[i] now matches env binding (Record({}, Empty)) [Major, type-theorist C49]
+- [x] Add precedence note to `[U-SUBSUME]` rule — fires after structural rules, not as catch-all [Nit, type-theorist C52]
+- [x] Fix `doc/15-ast.md` Node Semantics table missing `Rest` variant [Major, grammar-architect C49]
+- [x] Document `semicolon` rule discrepancy — phantom named rule removed from doc/02-syntax.md [Major, grammar-architect C49]
+- [x] Document `colon_ahead` horizontal-whitespace-only behavior — already done in docs-vs-code-syntax sprint [Minor, grammar-architect C49]
+- [x] Fix `doc/04-functions.md` incorrect claim defaults evaluated eagerly — corrected to lazy thunks [Minor, eval-engine C49]
+- [x] Rename `ret` to `inst_ret` in `check_call_with_scheme` [Nit, type-theorist C49]
+- [x] Fix `typecheck_document` non-dict path — added LIMITATION comment [Minor, type-theorist C49]

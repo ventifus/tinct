@@ -1,0 +1,6 @@
+# Simple dot access on dictionary
+[data: [name: "hello"]]
+
+$data.name
+===
+String("hello")
