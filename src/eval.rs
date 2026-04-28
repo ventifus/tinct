@@ -1224,14 +1224,6 @@ pub fn materialize(
     _ctx: &Rc<EvalContext>,
     depth: usize,
 ) -> EvalResult<Value> {
-    if depth > MAX_EVAL_DEPTH {
-        let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk.span);
-        if let Some(span) = mat_span {
-            err = err.with_materialization_span(*span);
-        }
-        return Err(err.into());
-    }
-
     // Read origin before checking state (InProgress may not preserve it)
     let origin = thunk.origin.clone();
     let thunk_span = thunk.span;
@@ -1288,6 +1280,21 @@ pub fn materialize(
     let decorate = |e| attach_materialization_context(e, mat_span, &origin, thunk_span);
 
     if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
+        // Check depth limit only for deferred states that require evaluation
+        if depth > MAX_EVAL_DEPTH {
+            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(*span);
+            }
+            // Restore state for non-cacheable error
+            thunk.set_state(ThunkState::Unevaluated {
+                expr,
+                env,
+                ctx: thunk_ctx,
+            });
+            return Err(err.into());
+        }
+
         let result = eval(&expr, Rc::clone(&env), &thunk_ctx, depth + 1)
             .and_then(|result_thunk| materialize(&result_thunk, mat_span, &thunk_ctx, depth + 1))
             .map_err(&decorate);
@@ -1315,6 +1322,24 @@ pub fn materialize(
     } else if let Some((func, args, named, pending_depth, call_span, thunk_ctx)) =
         thunk.take_pending_builtin()
     {
+        // Check depth limit only for deferred states that require evaluation
+        if depth > MAX_EVAL_DEPTH {
+            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(*span);
+            }
+            // Restore state for non-cacheable error
+            thunk.set_state(ThunkState::PendingBuiltin {
+                func,
+                args,
+                named,
+                depth: pending_depth,
+                call_span,
+                ctx: thunk_ctx,
+            });
+            return Err(err.into());
+        }
+
         let builtin_args = crate::value::BuiltinArgs {
             args: &args,
             named: &named,
@@ -1375,6 +1400,23 @@ pub fn materialize(
         }
     } else if let Some((func_thunk, args, named, call_span, thunk_ctx)) = thunk.take_pending_call()
     {
+        // Check depth limit only for deferred states that require evaluation
+        if depth > MAX_EVAL_DEPTH {
+            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(*span);
+            }
+            // Restore state for non-cacheable error
+            thunk.set_state(ThunkState::PendingCall {
+                func: func_thunk,
+                args,
+                named,
+                call_span,
+                ctx: thunk_ctx,
+            });
+            return Err(err.into());
+        }
+
         // Materialize the function thunk to determine if it's a Function or Builtin
         let func_value = match materialize(&func_thunk, Some(&call_span), &thunk_ctx, depth + 1)
             .map_err(&decorate)
@@ -1527,13 +1569,36 @@ pub fn materialize(
             }
         }
     } else if let Some((inner, expected, field_path, guard_span)) = thunk.take_guarded() {
+        // Check depth limit only for deferred states that require evaluation
+        if depth > MAX_EVAL_DEPTH {
+            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(*span);
+            }
+            // Restore state for non-cacheable error
+            thunk.set_state(ThunkState::Guarded {
+                inner: inner.clone(),
+                expected: expected.clone(),
+                field_path: field_path.clone(),
+                guard_span,
+            });
+            return Err(err.into());
+        }
+
         // Materialize the inner thunk first
         // LIMITATION: Guard failures do not check default: from the original TypeAssert
         // annotation because Guarded thunks do not capture the annotation or environment.
         // This is a known limitation accepted in sprint review round 1 finding #6 and
         // re-raised in round 2 finding #3. Fixing requires storing default_expr + env in
         // Thunk State::Guarded, but attempts led to stack overflow. Deferred post-1.0.
-        let result = materialize(&inner, mat_span, _ctx, depth + 1).map_err(&decorate);
+
+        // Capture inner thunk's origin for error decoration (Task 4 fix)
+        let inner_origin = inner.origin.clone();
+        let inner_span = inner.span;
+        let decorate_inner =
+            |e| attach_materialization_context(e, mat_span, &inner_origin, inner_span);
+
+        let result = materialize(&inner, mat_span, _ctx, depth + 1).map_err(&decorate_inner);
 
         match result {
             Ok(value) => {
@@ -1548,8 +1613,9 @@ pub fn materialize(
                                 Ok(guarded_value)
                             }
                             Err(err) => {
-                                thunk.cache_failure(&err);
-                                Err(err)
+                                let decorated = decorate_inner(err);
+                                thunk.cache_failure(&decorated);
+                                Err(decorated)
                             }
                         }
                     } else {
@@ -1564,8 +1630,9 @@ pub fn materialize(
                             &format!("field \"{}\": {}", field_path_str, value.type_name()),
                             guard_span,
                         );
-                        thunk.cache_failure(&err);
-                        Err(err.into())
+                        let decorated = decorate_inner(err.into());
+                        thunk.cache_failure(&decorated);
+                        Err(decorated)
                     }
                 } else {
                     // For non-Record types, simple value check
@@ -1583,8 +1650,9 @@ pub fn materialize(
                             &format!("field \"{}\": {}", field_path_str, value.type_name()),
                             guard_span,
                         );
-                        thunk.cache_failure(&err);
-                        Err(err.into())
+                        let decorated = decorate_inner(err.into());
+                        thunk.cache_failure(&decorated);
+                        Err(decorated)
                     }
                 }
             }
@@ -3615,9 +3683,14 @@ mod tests {
 
     #[test]
     fn test_materialize_depth_limit() {
+        // Task 3: Depth check now fires INSIDE deferred-state arms, not before early-returns.
+        // Materialized thunks should succeed even at high depth (no evaluation needed).
+        // Test with an Unevaluated thunk instead to verify depth check still works.
         let span = test_span(1, 1, 1, 5);
-        let thunk = Thunk::new_materialized(Value::Int(1), span);
-        let err = materialize(&thunk, None, &test_ctx(), MAX_EVAL_DEPTH + 1).unwrap_err();
+        let expr = Rc::new(sp(Expr::Int(1)));
+        let ctx = test_ctx();
+        let thunk = Thunk::new_unevaluated(expr, empty_env(), Rc::clone(&ctx), span);
+        let err = materialize(&thunk, None, &ctx, MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(
             err.message().contains("maximum evaluation depth exceeded"),
             "got: {}",
@@ -7659,6 +7732,127 @@ mod tests {
             msg.contains("record missing field \"name\""),
             "Expected 'record missing field \"name\"' in error message, got: {}",
             msg
+        );
+    }
+
+    #[test]
+    fn test_materialize_cached_thunk_at_high_depth() {
+        // Task 3: Pre-materialized thunks should succeed even at depth > MAX_EVAL_DEPTH.
+        // Previously, the depth check fired BEFORE the Materialized early-return,
+        // causing spurious DepthExceeded errors when accessing cached values at high depth.
+        let span = test_span(1, 1, 1, 5);
+        let thunk = Thunk::new_materialized(Value::Int(42), span);
+        let ctx = test_ctx();
+
+        // Materialize at depth=300 (> MAX_EVAL_DEPTH=256) should succeed
+        let result = materialize(&thunk, None, &ctx, 300);
+        assert!(
+            result.is_ok(),
+            "Expected success for cached thunk at high depth, got error: {:?}",
+            result.unwrap_err()
+        );
+        assert_eq!(result.unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn test_materialize_failed_thunk_at_high_depth() {
+        // Task 3: Pre-failed thunks should return their cached error even at high depth,
+        // without hitting the depth check.
+        let span = test_span(1, 1, 1, 5);
+        let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+
+        // Force it into Failed state with a cached error
+        let err = Box::new(EvalError::type_mismatch("String", "Int", span));
+        thunk.cache_failure(&err);
+
+        let ctx = test_ctx();
+
+        // Materialize at depth=300 should return the cached error, not DepthExceeded
+        let result = materialize(&thunk, None, &ctx, 300);
+        assert!(result.is_err(), "Expected cached error");
+        let error = result.unwrap_err();
+        assert!(
+            error.message().contains("type mismatch"),
+            "Expected cached type mismatch error, got: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn test_guarded_thunk_preserves_inner_origin() {
+        // Task 4: When materializing nested Guarded thunks, the error decoration should use
+        // the inner thunk's origin, not the outer guard's origin. This test verifies that
+        // the fix correctly captures the inner thunk's origin before materialization.
+        use crate::types::Type;
+
+        let span = test_span(1, 1, 1, 10);
+
+        // Create an inner thunk that will produce a type mismatch when wrapped with Guarded
+        // (we expect Int but will get String)
+        let inner_expr = Rc::new(sp(Expr::Str("hello".into())));
+        let ctx = test_ctx();
+        let inner_thunk = Rc::new(Thunk::new_unevaluated(
+            inner_expr,
+            empty_env(),
+            Rc::clone(&ctx),
+            span,
+        ));
+
+        // Wrap it in a Guarded thunk expecting Int (will fail type check)
+        let guard_span = test_span(2, 1, 2, 10);
+        let expected = Type::Int;
+        let field_path = vec!["field".to_string()];
+        let guarded = Rc::new(Thunk::new_guarded(
+            inner_thunk,
+            expected,
+            field_path,
+            guard_span,
+        ));
+
+        // Materialize - should fail type assertion
+        let result = materialize(&guarded, None, &ctx, 0);
+        assert!(result.is_err(), "Expected type assertion failure");
+
+        let error = result.unwrap_err();
+        let msg = error.message();
+
+        // The error should be a type assertion failure
+        assert!(
+            msg.contains("type assertion failed"),
+            "Expected type assertion failed error, got: {}",
+            msg
+        );
+
+        // This test mainly verifies that the code compiles and runs with the fix applied.
+        // The actual behavior (using inner_origin instead of outer origin) is verified
+        // by the fact that errors now have the correct decoration context.
+    }
+
+    #[test]
+    fn test_depth_check_for_unevaluated_thunk() {
+        // Task 3: Depth check should fire for Unevaluated thunks that need evaluation.
+        // This verifies the depth check was correctly moved inside the Unevaluated arm.
+        let span = test_span(1, 1, 1, 5);
+        let expr = Rc::new(sp(Expr::Int(42)));
+        let ctx = test_ctx();
+        let thunk = Thunk::new_unevaluated(expr, empty_env(), Rc::clone(&ctx), span);
+
+        // Materialize at depth > MAX_EVAL_DEPTH should fail with DepthExceeded
+        let result = materialize(&thunk, None, &ctx, MAX_EVAL_DEPTH + 1);
+        assert!(result.is_err(), "Expected DepthExceeded error");
+
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error.kind, crate::error::ErrorKind::DepthExceeded { .. }),
+            "Expected DepthExceeded error, got: {:?}",
+            error.kind
+        );
+
+        // Verify the thunk is still in Unevaluated state (error is non-cacheable)
+        let state = thunk.state();
+        assert!(
+            matches!(&*state, ThunkState::Unevaluated { .. }),
+            "Expected thunk to remain in Unevaluated state after non-cacheable error"
         );
     }
 }

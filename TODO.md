@@ -2,6 +2,21 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
+### cycle-findings-c41-b: Deferred from cycle-findings-c41-a panel
+
+- [ ] Fix `check_call` non-scheme CALL-POLY path has same substitution leak as `check_call_with_scheme` — at `src/typecheck.rs:1112`, `check_call` also creates a fresh `Substitution::new()` for CALL-POLY without seeding from `state.subst` or merging back. Apply the same fix as `check_call_with_scheme`: seed from `state.subst` before the unification loop, merge back after. (`src/typecheck.rs:1112`) [Major, computer-scientist C41 panel]
+
+### cycle-findings-c41-a: Major Findings (Cycle #41)
+
+Major findings from Cycle #41 full codebase health review. All items independent unless noted.
+
+- [x] Fix `check_call_with_scheme` leaks local substitution — seeded from state.subst (Pass 3a pattern) and merged back after unification loop (Pass 3d pattern). (`src/typecheck.rs:945-970`) [Critical, computer-scientist C41]
+- [x] Fix `check_call_with_scheme` local substitution not seeded from `state.subst` — combined with above fix. (`src/typecheck.rs:945`) [Major, computer-scientist C41]
+- [x] Fix `materialize()` depth check fires before `Materialized` early-return — moved into each deferred-state arm with proper state restoration. (`src/eval.rs`) [Major, eval-engine C41]
+- [x] Fix `Guarded` thunk error decoration uses guard origin instead of inner origin — captured inner origin and applied to all 5 error paths in Guarded arm. (`src/eval.rs`) [Major, eval-engine C41]
+- [x] Fix `doc/11-stdlib.md:231` function count wrong again — updated to ~117. (`doc/11-stdlib.md:231`) [Major, stdlib-author C41]
+- [x] Fix parser error messages expose internal Rule enum debug output — added `rule_to_display()` helper, updated 9 error sites. (`src/parser.rs`) [Major, grammar-architect C41]
+
 ### cycle-findings-c32-docs: Doc Fixes (Cycle #32)
 
 Documentation-only fixes from Cycle #32. All items independent.

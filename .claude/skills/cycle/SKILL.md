@@ -93,3 +93,4 @@ Fields:
 - **One commit per cycle**: `/sprint` never commits. All changes accumulate as uncommitted edits until Phase 4 creates the single commit.
 - **Context management**: dispatch all heavy work to agents. Your context stays focused on coordination: TODO.md grooming, sprint file status, commit logistics, and cycle logging.
 - **No ralph-loop**: this skill loops internally. Do not use ralph-loop — its stop hook conflicts with background agent polling.
+- **Never pause or ask the user**: the cycle is fully autonomous. Do not stop to ask whether to continue, whether the session is too long, or whether context pressure is a concern. Keep looping until TODO.md is empty. If you feel the urge to ask the user a question mid-cycle, don't — just keep going.
