@@ -210,6 +210,20 @@ Polymorphic path with unification: arguments are **synthesized** (not checked), 
 
 Note: CALL-POLY does NOT use `check_expr` because type variables require binding via unification. `check_expr` is reserved for fully concrete expected types (CALL-MONO, TypeAssert, return annotations).
 
+**CALL-MONO/CALL-POLY literal type divergence.** CALL-POLY is strictly more permissive than CALL-MONO for literal types. The divergence arises because `unify()` has bidirectional literal promotion rules (6 type pairs × 2 directions = 12 match alternatives in `src/types.rs`), while `check_expr` uses directional `is_subtype(actual, expected)`. The affected cases where CALL-POLY accepts but CALL-MONO would reject:
+
+| Argument type | Parameter type | `is_subtype` (CALL-MONO) | `unify` (CALL-POLY) |
+|---------------|---------------|--------------------------|---------------------|
+| `Int` | `IntLiteral(n)` | false (Int is wider) | succeeds (bidirectional promotion) |
+| `Number` | `IntLiteral(n)` | false | succeeds |
+| `Number` | `Int` | false | succeeds |
+| `Number` | `Float` | false | succeeds |
+| `Str` | `StringLiteral(s)` | false | succeeds |
+| `IntLiteral(n)` | `Float` | false (no subtype relation) | succeeds |
+| `Float` | `IntLiteral(n)` | false | succeeds |
+
+In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. Planned fix: the [U-SUBSUME] migration (see Unification section) will remove bidirectional promotions from `unify()` and replace them with a directional `is_subtype` fallback, eliminating the divergence.
+
 ```
 Γ ⊢ f ⇒ Any
 ────────────────────────────────── [CALL-ANY]

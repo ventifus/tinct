@@ -1433,6 +1433,16 @@ Split from docs-vs-code. Docs-only sprint (no build gate or panel review). 15 it
 - [x] Add deep_materialize_impl proxy test — already done [Nit, test-crafter C70]
 - [x] Optimize invoke_proxy_handler Builtin path — empty.clone() → IndexMap::new() [Nit, performance-expert C70]
 
+### cycle-findings-c34-b: Minor Findings (Cycle #34)
+
+Minor findings from Cycle #34 full codebase health review. All items independent.
+
+- [x] Fix `stdlib/prelude.llt:7-17` header comment outdated — replaced with accurate 3-category taxonomy: shadowable wrappers (lines 527-544), stable builtin-* aliases, non-shadowed Rust builtins. (`stdlib/prelude.llt:7-21`) [Minor, stdlib-author C34]
+- [x] Add `doc/02-syntax.md:714` canonical source declaration for Complete Grammar — added bidirectional cross-reference with `src/grammar.pest:2`. (`doc/02-syntax.md:717`, `src/grammar.pest:2`) [Minor, grammar-architect C34]
+- [x] Add missing corpus tests for `concat`, `words`, `flatten` edge cases — added 8 new test files: `concat_dict_both_empty`, `concat_dict_empty`, `concat_seq_empty`, `flatten_deep_nesting`, `words_empty`, `words_only_spaces`, `words_leading_trailing`, `words_multiple_spaces`. (`tests/corpus/eval/stdlib/`) [Minor, stdlib-author C34]
+- [x] Add `tests/corpus/eval/typecheck_advisory.llt-eval` proving type errors are advisory — demonstrates Int-annotated function called with String still evaluates successfully. (`tests/corpus/eval/`) [Minor, test-crafter C34]
+- [x] Document CALL-MONO/CALL-POLY literal type divergence in `doc/06-type-inference.md` — added table of 7 divergent type pairs, explanation of bidirectional unify vs directional is_subtype, forward reference to U-SUBSUME migration. (`doc/06-type-inference.md:213-225`) [Minor, computer-scientist C34]
+
 ## readme-polish: README and CLAUDE.md Accuracy Fixes (C47)
 
 - [x] Fix src/parser.rs:15 "Phase 6" → "Parser Rewrite milestone (iterative-parser sprint)" [Major]

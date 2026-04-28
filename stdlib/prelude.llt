@@ -5,17 +5,21 @@
 # A single top-level dict containing all stdlib functions implementable in LLT.
 #
 # These functions depend on the following Rust-native builtins being available
-# in the parent environment (using their internal builtin-* names):
+# in the parent environment:
 #
-#   Arithmetic:  builtin-add  builtin-sub  builtin-mul  builtin-div
-#   Comparison:  builtin-lt  builtin-eq
-#   Control:     builtin-if
-#   Dict:        keys  length  merge  append
-#   String:      str  split  replace  upper  lower  trim
-#   Numeric:     floor  round
-#   Parsing:     to-int  to-float  (string-to-number only)
-#   Runtime:     eval  error  try  apply  type-of  from-json
-#   Sequences:   builtin-reduce  builtin-filter  seq?
+#   Shadowable wrappers (lines 527-544) defined in this file for user override:
+#     <  =  +  -  *  /  if  filter  map  reduce  take  drop
+#
+#   Stable builtin-* aliases used internally (cannot be shadowed):
+#     builtin-lt  builtin-eq  builtin-add  builtin-sub  builtin-mul  builtin-div
+#     builtin-if  builtin-filter  builtin-map  builtin-reduce  builtin-take  builtin-drop
+#
+#   Non-shadowed Rust builtins (commonly used, partial list — see src/builtins.rs):
+#     Dict:        keys  length  merge  append
+#     String:      str  split
+#     Numeric:     floor
+#     Runtime:     error  try  type-of
+#     Sequences:   seq?  seq  head  tail  collect  concat
 #
 # Helper functions use a -impl suffix to distinguish them from public API.
 # All functions in this dict can reference each other (letrec semantics).
