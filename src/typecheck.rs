@@ -1109,16 +1109,33 @@ fn check_call(
                 // to constraint generation would happen here. The current approach is
                 // intentionally pragmatic.
                 //
-                let mut subst = Substitution::new();
+                // Seed local subst from state.subst so that unification sees access-chain
+                // constraints and letrec bindings accumulated by prior inference steps.
+                // This mirrors check_call_with_scheme (lines 952-955) and infer_dict Pass 3a:
+                // Algorithm W threads a single substitution through inference; the two-substitution
+                // model is a borrow-checker workaround. Without seeding, param_ty is unified
+                // against arg_ty in an empty substitution context, missing bindings for TypeVars
+                // that state.subst already resolved (Damas & Milner 1982, Theorem 2).
+                let mut subst = Substitution {
+                    type_map: state.subst.type_map.clone(),
+                    row_map: state.subst.row_map.clone(),
+                };
                 for (param_ty, arg_ty) in inst_params.iter().zip(arg_types.iter()) {
-                    // Apply state.subst to arg_ty before unification (Algorithm W substitution threading).
-                    // arg_ty may contain TypeVars bound in state.subst from access-chain inference
-                    // (e.g., check_dot_access). Per Damas & Milner 1982, accumulated constraints must
-                    // be applied before each unification step to prevent treating bound vars as free.
-                    let resolved_arg = state.subst.apply(arg_ty);
-                    unify(param_ty, &resolved_arg, &mut subst, state, span).map_err(|e| vec![e])?;
+                    unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
                 }
-                Ok(state.subst.apply(&subst.apply(inst_ret)))
+                // Merge local subst back into state.subst so that constraints from this
+                // polymorphic call site are visible to subsequent inference steps. Without
+                // this merge, bindings accumulated during argument unification (e.g., a
+                // TypeVar constrained to Int) are lost for downstream entries in the same
+                // letrec group. This mirrors check_call_with_scheme (lines 964-969) and
+                // infer_dict Pass 3d (lines 632-641).
+                for (k, v) in &subst.type_map {
+                    state.subst.type_map.insert(k.clone(), v.clone());
+                }
+                for (k, row) in &subst.row_map {
+                    state.subst.row_map.insert(k.clone(), row.clone());
+                }
+                Ok(subst.apply(inst_ret))
             } else {
                 // Zero-param polymorphic function: return the instantiated return type
                 // (not the original `ret` which contains the scheme-internal variable names)
@@ -4845,6 +4862,78 @@ mod tests {
             ty,
             Type::StringLiteral("hello".to_string()),
             "CALL-POLY with access-chain arg should resolve through seeded subst"
+        );
+    }
+
+    // -- check_call (non-scheme) CALL-POLY substitution threading (Algorithm W) --
+
+    #[test]
+    fn test_check_call_nonscheme_poly_subst_seeded_and_merged() {
+        // Mirror of test_call_poly_subst_seeded_and_merged for check_call's CALL-POLY path.
+        //
+        // check_call_with_scheme handles [call $varref ...] when $varref is a polymorphic
+        // scheme. check_call handles all other callees, including lambda literals. To trigger
+        // check_call's CALL-POLY path, we call a lambda literal directly:
+        //   [call [fn [x@a] $x] $data]
+        // Since the callee is Expr::Fn (not Expr::VarRef), it routes to check_call (line 263).
+        // The lambda infers as Fn(_tN -> _tN) with type vars, so CALL-POLY fires.
+        //
+        // TEST SCENARIO (merge):
+        //   Entry 1: defines `data` as a concrete record.
+        //   Entry 2: calls [call [fn [x@a] $x] $data] — CALL-POLY unification binds fresh
+        //     TypeVar _tN to Record({name: "hello"}). Without merge, this binding is lost.
+        //   Entry 3: accesses $result.name — requires the binding from Entry 2 in state.subst.
+        let ty = result_field(
+            "[data: [name: hello]]\n[result: [call [fn [x@a] $x] $data]]\n[n: $result.name]",
+            "n",
+        );
+        assert_eq!(
+            ty,
+            Type::StringLiteral("hello".to_string()),
+            "check_call CALL-POLY merge: cross-entry dot-access on lambda-call result should resolve"
+        );
+
+        // Verify that `result` itself resolves to a record with the right field type.
+        let ty = result_field(
+            "[data: [name: hello]]\n[result: [call [fn [x@a] $x] $data]]",
+            "result",
+        );
+        match ty {
+            Type::Record(Row { ref fields, .. }) => {
+                assert_eq!(
+                    fields.get("name"),
+                    Some(&Type::StringLiteral("hello".to_string())),
+                    "result should be Record with name: StringLiteral(\"hello\")"
+                );
+            }
+            _ => panic!("expected Record for result, got {ty}"),
+        }
+    }
+
+    #[test]
+    fn test_check_call_nonscheme_poly_subst_seed_resolves_access_chain() {
+        // Mirror of test_call_poly_subst_seed_resolves_access_chain for check_call's
+        // CALL-POLY path.
+        //
+        // TEST SCENARIO (seed):
+        //   Entry 1: defines `data` as a concrete record.
+        //   Entry 2: defines `name` via $data.name — check_dot_access writes a constraint
+        //     into state.subst binding the TypeVar for $name to StringLiteral("hello").
+        //   Entry 3: calls [call [fn [x@a] $x] $name] — the lambda literal callee routes
+        //     to check_call (not check_call_with_scheme). CALL-POLY unifies the param type
+        //     with arg $name's type. Without seeding from state.subst, the TypeVar for $name
+        //     is unresolved during unification.
+        //
+        // With seeding, the seeded subst resolves $name's TypeVar to StringLiteral("hello")
+        // during unification, producing the correct return type.
+        let ty = result_field(
+            "[data: [name: hello]]\n[name: $data.name]\n[result: [call [fn [x@a] $x] $name]]",
+            "result",
+        );
+        assert_eq!(
+            ty,
+            Type::StringLiteral("hello".to_string()),
+            "check_call CALL-POLY seed: access-chain arg should resolve through seeded subst"
         );
     }
 }
