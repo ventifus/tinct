@@ -355,6 +355,10 @@ pub struct Substitution {
 
 const MAX_APPLY_DEPTH: usize = 256;
 
+/// Maximum size of the substitution map (combined type_map + row_map entries).
+/// Prevents resource exhaustion from quadratic growth in pathological cases.
+pub const MAX_SUBST_SIZE: usize = 10_000;
+
 impl Substitution {
     /// Create a new empty substitution.
     ///
@@ -365,6 +369,23 @@ impl Substitution {
         Self {
             type_map: IndexMap::new(),
             row_map: IndexMap::new(),
+        }
+    }
+
+    /// Check if the substitution has exceeded the maximum allowed size.
+    /// Returns an error if the combined size of type_map and row_map exceeds MAX_SUBST_SIZE.
+    pub(crate) fn check_size(&self, span: Span) -> Result<(), TypeError> {
+        let total_size = self.type_map.len() + self.row_map.len();
+        if total_size > MAX_SUBST_SIZE {
+            Err(TypeError::new(
+                format!(
+                    "type inference exceeded maximum substitution size ({} > {})",
+                    total_size, MAX_SUBST_SIZE
+                ),
+                span,
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -649,6 +670,7 @@ fn unify_tails(
     t2: &RowTail,
     subst: &mut Substitution,
     state: &mut InferState,
+    span: Span,
 ) -> Result<(), TypeError> {
     match (t1, t2) {
         (RowTail::Empty, RowTail::Empty) => Ok(()),
@@ -672,6 +694,7 @@ fn unify_tails(
                         tail: RowTail::RowVar(rho2.clone(), rho2_level.min(rho1_level)),
                     },
                 );
+                subst.check_size(span)?;
                 Ok(())
             }
         }
@@ -684,6 +707,7 @@ fn unify_tails(
                     tail: RowTail::Empty,
                 },
             );
+            subst.check_size(span)?;
             Ok(())
         }
     }
@@ -746,7 +770,7 @@ fn unify_remainders(
     // NOTE: Case 4 must be matched BEFORE Cases 2/3 to prevent shadowing
     match (&tail1, &tail2) {
         // Case 1: No unique fields on either side — unify tails directly
-        (_, _) if u1_empty && u2_empty => unify_tails(&tail1, &tail2, subst, state),
+        (_, _) if u1_empty && u2_empty => unify_tails(&tail1, &tail2, subst, state, span),
 
         // Case 4: Both have unique fields and both have RowVar tails — create fresh row variable
         (RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _))
@@ -789,8 +813,10 @@ fn unify_remainders(
 
             // Bind ρ₁ → Row { fields: U₂, tail: ρ_fresh }
             subst.row_map.insert(rho1.clone(), row2_with_fresh);
+            subst.check_size(span)?;
             // Bind ρ₂ → Row { fields: U₁, tail: ρ_fresh }
             subst.row_map.insert(rho2.clone(), row1_with_fresh);
+            subst.check_size(span)?;
 
             Ok(())
         }
@@ -812,6 +838,7 @@ fn unify_remainders(
             let rho2_level = state.levels.get(rho2).copied().unwrap_or(0);
             lower_row_var_levels(&row_to_bind, rho2_level, state);
             subst.row_map.insert(rho2.clone(), row_to_bind);
+            subst.check_size(span)?;
             Ok(())
         }
 
@@ -832,6 +859,7 @@ fn unify_remainders(
             let rho1_level = state.levels.get(rho1).copied().unwrap_or(0);
             lower_row_var_levels(&row_to_bind, rho1_level, state);
             subst.row_map.insert(rho1.clone(), row_to_bind);
+            subst.check_size(span)?;
             Ok(())
         }
 
@@ -1012,6 +1040,7 @@ pub fn unify(
                 state.levels.insert(rho, rho_level.min(alpha_level));
             }
             subst.type_map.insert(name.clone(), b);
+            subst.check_size(span)?;
             Ok(())
         }
         // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
@@ -1036,6 +1065,7 @@ pub fn unify(
                 state.levels.insert(rho, rho_level.min(alpha_level));
             }
             subst.type_map.insert(name.clone(), a);
+            subst.check_size(span)?;
             Ok(())
         }
 
@@ -5088,5 +5118,141 @@ mod tests {
             row_var_occurs_in_type("rho", &tv_alpha, &subst),
             "should detect rho through multi-hop TypeVar chase: alpha → beta → rho"
         );
+    }
+
+    #[test]
+    fn test_max_subst_size_limit_type_vars() {
+        // Create enough type variable bindings to exceed MAX_SUBST_SIZE
+        let mut state = InferState::new();
+        let mut subst = Substitution::new();
+        let span = Span::origin();
+
+        // Create MAX_SUBST_SIZE + 1 type variables and try to unify them
+        // This should trigger the size limit
+        for i in 0..=MAX_SUBST_SIZE {
+            let var = Type::TypeVar(format!("t{}", i), 0);
+            let concrete = Type::Int;
+            let result = unify(&var, &concrete, &mut subst, &mut state, span);
+
+            if i <= MAX_SUBST_SIZE - 1 {
+                // Should succeed for bindings within the limit
+                assert!(result.is_ok(), "unify should succeed for binding {}", i);
+            } else {
+                // Should fail when exceeding the limit
+                assert!(
+                    result.is_err(),
+                    "unify should fail when exceeding MAX_SUBST_SIZE"
+                );
+                if let Err(e) = result {
+                    assert!(
+                        e.message.contains("exceeded maximum substitution size"),
+                        "error message should mention size limit, got: {}",
+                        e.message
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_max_subst_size_limit_row_vars() {
+        // Create enough row variable bindings to exceed MAX_SUBST_SIZE
+        let mut state = InferState::new();
+        let mut subst = Substitution::new();
+        let span = Span::origin();
+
+        // Create MAX_SUBST_SIZE + 1 row variables and try to unify them
+        for i in 0..=MAX_SUBST_SIZE {
+            let row1 = Row {
+                fields: HashMap::new(),
+                tail: RowTail::RowVar(format!("rho{}", i), 0),
+            };
+            let row2 = Row {
+                fields: HashMap::new(),
+                tail: RowTail::Empty,
+            };
+            let rec1 = Type::Record(row1);
+            let rec2 = Type::Record(row2);
+            let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
+
+            if i <= MAX_SUBST_SIZE - 1 {
+                // Should succeed for bindings within the limit
+                assert!(result.is_ok(), "unify should succeed for row binding {}", i);
+            } else {
+                // Should fail when exceeding the limit
+                assert!(
+                    result.is_err(),
+                    "unify should fail when exceeding MAX_SUBST_SIZE"
+                );
+                if let Err(e) = result {
+                    assert!(
+                        e.message.contains("exceeded maximum substitution size"),
+                        "error message should mention size limit, got: {}",
+                        e.message
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_max_subst_size_combined_types_and_rows() {
+        // Test that the limit applies to the combined size of type_map and row_map
+        let mut state = InferState::new();
+        let mut subst = Substitution::new();
+        let span = Span::origin();
+
+        // Add half the limit in type variables
+        let halfway = MAX_SUBST_SIZE / 2;
+        for i in 0..halfway {
+            let var = Type::TypeVar(format!("t{}", i), 0);
+            let concrete = Type::Int;
+            let result = unify(&var, &concrete, &mut subst, &mut state, span);
+            assert!(
+                result.is_ok(),
+                "type var unify should succeed for binding {}",
+                i
+            );
+        }
+
+        // Now add row variables until we exceed the combined limit
+        for i in 0..=MAX_SUBST_SIZE {
+            let row1 = Row {
+                fields: HashMap::new(),
+                tail: RowTail::RowVar(format!("rho{}", i), 0),
+            };
+            let row2 = Row {
+                fields: HashMap::new(),
+                tail: RowTail::Empty,
+            };
+            let rec1 = Type::Record(row1);
+            let rec2 = Type::Record(row2);
+            let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
+
+            let total_size = halfway + i + 1;
+            if total_size <= MAX_SUBST_SIZE {
+                // Should succeed while under the combined limit
+                assert!(
+                    result.is_ok(),
+                    "unify should succeed at total size {}",
+                    total_size
+                );
+            } else {
+                // Should fail when combined size exceeds limit
+                assert!(
+                    result.is_err(),
+                    "unify should fail when combined size {} exceeds MAX_SUBST_SIZE",
+                    total_size
+                );
+                if let Err(e) = result {
+                    assert!(
+                        e.message.contains("exceeded maximum substitution size"),
+                        "error message should mention size limit, got: {}",
+                        e.message
+                    );
+                }
+                break;
+            }
+        }
     }
 }

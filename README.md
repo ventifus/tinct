@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phases 0-4 and 6a complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 28 Rust-native builtins, Tinct standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, comprehensive test suite (975 tests: 921 unit + 49 CLI integration + 5 corpus). Phase 6b (LSP) is next.
+**Status:** Phases 0-4 and 6a complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 46 Rust-native builtins, Tinct standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, comprehensive test suite (1425+ tests). Phase 6b (LSP) is next.
 
 ## Syntax at a Glance
 
@@ -53,7 +53,7 @@ A **unified data representation and transformation language** that combines JSON
 - **Type system** -- `Type` enum (Int, IntLiteral, Float, Str, StringLiteral, Bool, Number, Record, Function, TypeVar, Any), `TypeEnv` scope chain, `TypeError` reporting (Phase 2a)
 - **Type checker** -- `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion (Phase 2a)
 - **Polymorphism** -- Hindley-Milner unification, `Fn@Return [Params]` function type expressions, row polymorphism (open/closed/row-var records), type variable instantiation per call site (Phase 2b)
-- **Rust-native builtins** -- 28 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O) with `standard_builtins()` registry (Phase 3a + 3c)
+- **Rust-native builtins** -- 46 builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy) with `standard_builtins()` registry (Phase 3a + 3c)
 - **Standard library** -- `stdlib/prelude.llt` with stdlib functions written in Tinct itself, loaded via `create_stdlib_env()` (Phase 3a-llt)
 - **Error reporting** -- `EvalError` with definition-site span, materialization-site span, and `StackFrame` traces
 - **Interactive REPL** -- `tinct repl` with line editing, history, bracket matching, scope chains, and error recovery (Phase 6a)
@@ -141,7 +141,7 @@ cargo run --features repl -- repl               # Start interactive REPL
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/parser.rs` | pest pairs to AST conversion + comprehensive unit tests |
 | `src/eval.rs` | Evaluator: `eval()`, `materialize()` (call-site span attachment, stack frame propagation), dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, TypeAssert `default:` fallback, depth limit (256) |
-| `src/builtins.rs` | 28 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O), `IncludeContext` + thread-local for `$include`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
+| `src/builtins.rs` | 46 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy), `IncludeContext` + thread-local for `$include`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces |
 | `src/types.rs` | Type system: `Type` enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any, IntLiteral, StringLiteral, Seq, Proxy), `Row` struct with `RowTail` (Empty, RowVar), `Substitution` (kinded unification with `type_map` and `row_map`), `TypeEnv` (Rc-based scope chain), `TypeError`, `InferState` (levels-based let-generalization) |
@@ -162,11 +162,11 @@ cargo run --features repl -- repl               # Start interactive REPL
 
 ### Unit Tests
 
-975 tests (921 unit + 49 CLI integration + 5 corpus) across multiple modules covering:
+1425+ tests across multiple modules covering:
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
 - **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `$_` implicit lambda desugaring, TypeAlias), depth limiting, and materialization span propagation
-- **builtins.rs** -- all 28 Rust-native builtins (arithmetic auto-promotion, division by zero, comparison cross-type, `if` selective materialization, dict operations, string operations, numeric floor/round with NaN/infinity guards, string parsing, eval/error/try/apply, type-of, from-json, include with cycle detection/path resolution/nested includes/stdlib access), stdlib env loading (root env + prelude)
+- **builtins.rs** -- all 46 Rust-native builtins (arithmetic auto-promotion, division by zero, comparison cross-type, `if` selective materialization, dict operations, string operations, numeric floor/round with NaN/infinity guards, string parsing, eval/error/try/apply, type-of, from-json, include with cycle detection/path resolution/nested includes/stdlib access, sequences, proxy), stdlib env loading (root env + prelude)
 - **value.rs** -- Value, Thunk, and Environment types (evaluator foundation)
 - **error.rs** -- `EvalError` and `StackFrame` formatting with definition-site and materialization-site spans
 - **types.rs** -- Type enum, TypeEnv scope chain, subtyping (Number, structural records, function variance, open/closed/row-var records), unification (Hindley-Milner, type variable instantiation, substitution application, literal promotions, occurs check)

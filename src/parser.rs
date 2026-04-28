@@ -1,6 +1,7 @@
 //! Pest PEG parser: converts source text into a fully-spanned AST.
 
 use std::cell::RefCell;
+use std::num::NonZeroUsize;
 
 use pest::Parser;
 use pest_derive::Parser;
@@ -78,6 +79,18 @@ fn rule_to_display(r: &Rule) -> String {
 /// Parse LLT source text into a spanned File AST.
 /// No input length limit is enforced; callers should validate input size if needed.
 pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
+    // Set pest's global call limit to prevent stack overflow from deeply nested input.
+    // Without this, adversarial input with 500+ nested brackets can overflow the Rust
+    // call stack before MAX_PARSE_DEPTH fires (which only checks during AST construction).
+    //
+    // 500_000 allows stdlib/prelude.llt (547 lines, ~55k calls) and large real-world
+    // files to parse without false positives, while still terminating adversarial
+    // deeply-nested input (~2500-level nesting at ~200 calls/level) before stack
+    // exhaustion. Pest's fuzz tests use 5000-8000 for minimal adversarial inputs;
+    // we use a much higher limit because our primary guard is MAX_PARSE_DEPTH=256 at
+    // AST construction time — this call limit is a backstop for the PEG matching phase.
+    pest::set_call_limit(Some(NonZeroUsize::new(500_000).unwrap()));
+
     let pairs = LltParser::parse(Rule::file, input).map_err(|e| ParseError {
         message: format!("{e}"),
         span: None,

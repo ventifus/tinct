@@ -147,10 +147,6 @@ fmt-llt-check FILE:
 fmt-llt-fix FILE:
     {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- fmt --in-place {{FILE}}
 
-# Interactive shell in container (for debugging)
-shell:
-    {{container}} run -it {{run_flags}} {{rust_image}} /bin/bash
-
 # Show Rust version
 version:
     {{container}} run {{run_flags}} {{rust_image}} rustc --version
