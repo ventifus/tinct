@@ -2,24 +2,18 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c31: Findings (Cycle #31)
+### cycle-findings-c31-major: Major Code Fixes (Cycle #31)
 
-Consolidated from: cycle-findings-c31-a, cycle-findings-c31-b, cycle-findings-c31-c
-
-- [ ] Fix CLI `run_eval` never calls typecheck — `src/main.rs::run_eval` calls `desugar_file` then immediately calls `eval_file_with_input` without calling `typecheck::typecheck_file`. `TypeAssert.resolved_type` is always `None` in production CLI runs, so all `TypeAssert` nodes hit the `--no-typecheck FALLBACK` at `eval.rs:409`, which only recognises `Simple` annotation names. Record type assertions (`[@{name: Str, age: Int} $x]`) are silently skipped with no validation or error. `eval_source()` in `lib.rs:91` correctly calls typecheck. Fix: add `let _ = tinct::typecheck::typecheck_file(&ast.node);` in `src/main.rs` between the `desugar_file` call and `eval_file_with_input`. (`src/main.rs:234-265`) [Critical, integration-verifier C31]
-- [ ] Fix `doc/10-errors.md` omits `ValueNotSerializable`/E035 — the error-codes table (doc lines 477-506) and the full-variant table (doc lines 778-807) both omit `ValueNotSerializable`/E035. Line 809 states "The 28 variants above are exhaustive" but `error.rs` defines 29 variants and `all_error_kind_variants()` correctly includes `ValueNotSerializable` and asserts 29. Fix: insert E035 row in the codes table and variant table; change both "28" occurrences to "29". (`doc/10-errors.md:477-506, 776, 778-809`) [Critical, integration-verifier C31]
-- [ ] Add corpus regression test for Guarded thunk `DepthExceeded` state-restoration fix — the C63 critical fix (Guarded thunk stuck in `InProgress` after non-cacheable error) was fixed at `eval.rs:1585-1592` with a unit test, but no corpus test exists; a revert would be invisible to the corpus runner. Fix: add `tests/corpus/eval/errors/typeassert_depth_exceeded_not_circular.llt-eval` — a `TypeAssert`-annotated entry triggering a deep recursive call, verifying the error is E060 (depth exceeded) not E070 (circular dependency). (`tests/corpus/eval/errors/`) [Critical, test-crafter C31]
-- [ ] Fix lambda checking mode emits backwards type error — `check_expr` at `src/typecheck.rs:382` calls `TypeError::type_mismatch(&resolved, expected_ty, ann.span)` where `type_mismatch(expected, got)` formats "expected {param_annotation}, got {outer_expected_type}"; the message is reversed — `param_annotation` is the user-written type, not what is expected. Same issue at line 437 for the return type. Fix: swap arguments to `TypeError::type_mismatch(expected_ty, &resolved, ann.span)` at both lines 382 and 437. (`src/typecheck.rs:382, 437`) [Major, type-theorist C31]
-- [ ] Fix `value_to_display_string` depth-limit error is catchable via `$try` — `src/lib.rs:229-234` constructs `EvalError::new("maximum display depth exceeded (256)", ...)` which produces `ErrorKind::Internal` (E099), and `is_catchable()` returns `true` for `Internal`. A deeply-nested display depth error could be swallowed by user `$try` that should treat resource limits as uncatchable. Fix: replace with `EvalError::depth_exceeded(eval::MAX_EVAL_DEPTH, ast::Span::origin())` (E040, not catchable). (`src/lib.rs:229-234`) [Major, integration-verifier C31]
-- [ ] Fix `MEMO-REACCESS` cache update in `materialize()` missing `is_cacheable()` guard — `src/eval.rs:1242-1246` calls `thunk.set_state(ThunkState::Failed(...))` unconditionally when `should_update_cache = true`; the formal spec specifies cache updates only occur when `is_cacheable()` is true. Safe today because `DepthExceeded` never reaches `Failed`, but diverges from spec and would break if a future non-cacheable error reached `Failed`. Fix: add `if e.kind.is_cacheable()` guard before the `set_state` call at `eval.rs:1244`. (`src/eval.rs:1242-1246`) [Major, integration-verifier C31]
 - [ ] Fix `resolve_type_expr_value` only handles bare type names, not composite types — `src/typecheck.rs:1401-1415` only handles `Expr::Str` and `Expr::VarRef`; any composite type in a `@[type: X default: Y]` annotation (e.g., `@[type: [Fn@Number [Int]] default: 0]` or `@[type: [name: String] default: ...]`) returns an error "invalid type in annotation", silently rejecting expressions doc/05 shows as valid. Fix: replace body with a call to `resolve_type_expr(expr, env, state, ann_mapping)` which already handles `Dict` and `Annotated` nodes. Add tests for the composite-type patterns. (`src/typecheck.rs:1401-1415`) [Major, type-theorist C31]
+- [ ] Fix `infer_fn` allocates `HashMap<String, String>` for every function literal including unannotated lambdas — `src/typecheck.rs:1090` allocates `HashMap::new()` for `ann_mapping` on every `[fn ...]` expression; the most frequent case (`[fn [x] $x]` passed to `$map`/`$filter`) has no annotations and never populates the map. Fix: add a guard — if all params have `annotation.is_none()` and `return_ann.is_none()`, skip the allocation (use `None` for `ann_mapping_opt`). (`src/typecheck.rs:1090`) [Major, performance-expert C31]
+- [ ] Fix `resolve_type_dict` loses polymorphic schemes at non-Dict document boundaries — `src/typecheck.rs:118-122` in `typecheck_document` inserts non-last expressions into the environment as `TypeScheme::mono` via `new_env.insert(...)`. The Dict literal path correctly calls `insert_scheme()` to preserve generalized schemes. Any non-literal-dict expression returning a Record (e.g., `[call $make-record args]`) will have its fields deschemified at the document boundary. Fix: call `insert_scheme()` or extract schemes from the record type for non-Dict paths. (`src/typecheck.rs:118-122`) [Major, type-theorist C31]
+
+### cycle-findings-c31-minor: Minor Fixes and Docs (Cycle #31)
+
 - [ ] Fix `doc/10-errors.md` `ArityBound::Display` code sample missing `Exact(1)` singular arm — the spec sample shows only `Self::Exact(n) => write!(f, "{n} arguments")`, which would render `ArityBound::Exact(1)` as "1 arguments". The real implementation at `error.rs:20-33` correctly includes `Self::Exact(1) => write!(f, "1 argument")` before the general case. Fix: update the code sample to add `Self::Exact(1) => write!(f, "1 argument"),` before the general `Exact(n)` arm. (`doc/10-errors.md:656-663`) [Major, integration-verifier C31]
 - [ ] Fix `doc/08-evaluation.md` `$merge` Laziness Design table describes aspirational future behavior as current — the table row at doc/08 line 768 reads "Lazy overlay: right shadows left, O(1) construction, O(k) per key for k chained merges" but actual `builtin_merge` at `src/builtins.rs:429-445` eagerly materializes both dicts and clones all entries (strictness signature: `S × S → D`). The Laziness Design table contradicts the strictness table in the same document. Fix: update the `$merge` row to reflect current eager behavior ("Materializes both dicts; clones entries; values stay as thunks"); add a future-work annotation for the planned lazy-overlay implementation. (`doc/08-evaluation.md:768`) [Major, eval-engine C31]
-- [ ] Fix `infer_fn` allocates `HashMap<String, String>` for every function literal including unannotated lambdas — `src/typecheck.rs:1090` allocates `HashMap::new()` for `ann_mapping` on every `[fn ...]` expression; the most frequent case (`[fn [x] $x]` passed to `$map`/`$filter`) has no annotations and never populates the map. Fix: add a guard — if all params have `annotation.is_none()` and `return_ann.is_none()`, skip the allocation (use `None` for `ann_mapping_opt`). (`src/typecheck.rs:1090`) [Major, performance-expert C31]
 - [ ] Fix `doc/16-architecture.md` `BuiltinArgs` sketch stale — comment at line 108 shows `BuiltinArgs { positional: Vec<Rc<Thunk>>, named: IndexMap<String, Rc<Thunk>> }` but the actual struct at `value.rs:16-22` has fields `args: &'a [Rc<Thunk>]`, `named`, `depth`, `call_span`, and `ctx: Rc<EvalContext>`. Three fields are missing and one has the wrong name. Fix: update comment to reflect actual struct shape. (`doc/16-architecture.md:108`, `src/value.rs:16-22`) [Major, integration-verifier C31]
-- [ ] Add element count limit in `json_to_value` array/object arms — `src/builtins.rs:972` calls `IndexMap::with_capacity(arr.len())` where a 10MB JSON array `[0,0,0,...]` yields ~5M elements (~400MB allocation — 40x amplification). The depth check guards nesting depth but not breadth. Fix: add `if arr.len() > MAX_COLLECT_SIZE { return Err(...) }` before `with_capacity` for both Array and Object arms. (`src/builtins.rs:972, 983`) [Major, security-expert C31]
-- [ ] Fix `resolve_type_dict` loses polymorphic schemes at non-Dict document boundaries — `src/typecheck.rs:118-122` in `typecheck_document` inserts non-last expressions into the environment as `TypeScheme::mono` via `new_env.insert(...)`. The Dict literal path correctly calls `insert_scheme()` to preserve generalized schemes. Any non-literal-dict expression returning a Record (e.g., `[call $make-record args]`) will have its fields deschemified at the document boundary. Fix: call `insert_scheme()` or extract schemes from the record type for non-Dict paths. (`src/typecheck.rs:118-122`) [Major, type-theorist C31]
-- [ ] Fuse `instantiate_at_level` triple type-tree walk into two — `src/types.rs:1101-1130` calls `collect_type_vars` (walk 1, allocates `BTreeSet`), `collect_row_vars` (walk 2, allocates second `BTreeSet`), then `renaming.apply(ty)` (walk 3, allocates 2 more `HashSet`s). Fix: create a shared `collect_all_vars(ty, &mut type_vars: BTreeSet, &mut row_vars: BTreeSet)` helper that iterates once, collecting both in a single pass. (`src/types.rs:1101-1130`) [Minor, performance-expert C31]
+- [x] Fuse `instantiate_at_level` triple type-tree walk into two — completed in cycle-findings-c32-code (Cycle #40): `collect_all_vars` created and all three functions migrated. (`src/types.rs`) [Minor, performance-expert C31]
 - [ ] Fix `resolve_row` unconditionally clones `Row` for the `RowTail::Empty` case — `src/types.rs:582` does `RowTail::Empty => row.clone()` even for the common closed-record case that requires no field merging. `resolve_row` is called twice per `unify_rows` invocation plus after re-resolution steps. Fix: return `Cow<'_, Row>` — borrow in the `Empty` case (`Cow::Borrowed(row)`), own only when merging resolved fields. (`src/types.rs:582`) [Minor, performance-expert C31]
 - [ ] Add capacity hint to `builtin_collect` initial dict — `src/builtins.rs:1256` uses `IndexMap::new()` for collecting a sequence; sequence length is not known in advance (lazy), but a reasonable starting capacity (e.g., `IndexMap::with_capacity(64)`) reduces reallocation frequency for common finite sequences. (`src/builtins.rs:1256`) [Minor, performance-expert C31]
 - [ ] Rewrite `tests/corpus/README.md` — the file documents only `valid/simple/`, `valid/complex/`, `valid/edge_cases/`, and `invalid/syntax_errors/`; missing all directories added since Cycle 4 (`valid/access/`, `valid/annotations/`, `valid/documents/`, `eval/builtins/`, `eval/stdlib/`, `eval/errors/`, `eval/laziness/`, `eval/typecheck/`, etc.); the "Test Output" section documents a now-obsolete emoji format (`✅`/`❌`) no longer matching actual test runner output. Fix: rewrite the directory structure table, remove obsolete output format, add `Directives` section for `# no_fs`. (`tests/corpus/README.md`) [Minor, test-crafter C31]
@@ -122,6 +116,82 @@ Consolidated from: computer-scientist-c63, computer-scientist-c62
 - [ ] Document `Value::Proxy` interaction with TypeAssert — when a Proxy value is asserted against a Record type (`[@[name: String] proxy_val]`), the Guarded thunk path at `src/eval.rs:1509` checks `if let Value::Dict(ref entries) = value`, which fails for Proxy, producing "expected Record, got Proxy". This may be surprising since Proxy supports the same access operations as Dict. Either (a) document that TypeAssert Record assertions require Dict values (Proxy not supported), or (b) add a Proxy arm that creates a guarded proxy where field access invokes the handler then validates the result. Option (a) is simpler; option (b) requires careful interaction with Findler & Felleisen (2002) contract composition. (`src/eval.rs:1509-1537`, `doc/07-type-extensions.md`) [Minor, computer-scientist C62]
 - [ ] Fix doc/07 Part 8 stale "migration replaces" present-tense prose — section reads as forward-looking guide for a completed migration: "the migration replaces...", "must be routed..."; all changes described were done in row-unification-b. Retitle as "Migration Reference (Complete)", rewrite in past tense. [Supersedes doc-rowunification-retrospective Major] (`doc/07-type-extensions.md:627-654`) [Minor, computer-scientist C62]
 - [ ] Fix doc/07 Type System Extension Roadmap stale row binding claim — line 704 says "row variable binding is arguably more impactful... without it, row variables are never bound during inference"; binding is fully implemented through row-unification-a to -e. Replace with: "Row variable binding is complete as of row-unification-e." [Supersedes doc-rowunification-retrospective Major] (`doc/07-type-extensions.md:704`) [Minor, computer-scientist C62]
+
+## row-unification-h: Letrec Completeness and Kind Safety
+
+Correctness gaps in letrec forward-reference inference and annotation kind safety. Requires row-unification-g.
+
+- [ ] Add TypeVar arm in `check_call` for letrec forward references — when a letrec entry calls a forward-referenced function, Pass 1 binds the callee to `TypeScheme::mono(TypeVar("_t0", 1))`; during Pass 3, `check_call` receives `func_ty = TypeVar("_t0", 1)`, which matches neither `Type::Function` nor `Type::Any`, falling through to "expected function type" error. Fix: add a TypeVar arm that generates a constraint `TypeVar(alpha) = Fn(arg_types → beta)` and returns `beta`. Conservative alternative: return `Any`. (`src/typecheck.rs:864-966`) [Major, computer-scientist C54]
+- [ ] Fix `ann_mapping` cross-kind collision in annotation freshening — both `resolve_type_name` (line 1240) and the Rest row-variable handler (line 1329) share one `ann_mapping: HashMap<String, String>`; a user annotation name can be registered as both a TypeVar and a RowVar (e.g., `[fn [x@a y@[name: a ...a]] ...]`), violating the Rémy (1994) sort separation invariant. Fix: use separate `type_ann_mapping` and `row_ann_mapping`, or detect cross-kind collision and emit a TypeError. (`src/typecheck.rs:1239-1251, 1328-1339`) [Major, computer-scientist C54]
+- [ ] Fix `Pass 3b or_insert` discards state.subst binding when both maps have the same variable — when local subst has `_t0 → Record({name: Str}, Empty)` and state.subst has `_t0 → Record({name: beta}, rho)`, `or_insert` keeps the local binding and beta is orphaned (never unified with Str). Fix: when both substitutions bind the same variable, unify the two bindings instead of discarding the state.subst one. Model: Algorithm W substitution composition (Damas & Milner 1982). (`src/typecheck.rs:538-541`) [Minor, computer-scientist C54]
+- [ ] Fix `test_corpus_structure` hardcoded directory list — `required_dirs` at tests/corpus_tests.rs:198-205 omits `tests/corpus/eval/typecheck/` and `tests/corpus/eval/laziness/`; deleting either directory would not fail the structure test. Expand `required_dirs` to cover all directories that have test files. (`tests/corpus_tests.rs:198-205`) [Minor, test-crafter C54]
+- [ ] Fix `unify_remainders` Case 2 guard comment inaccuracy — comment says "Guard requires u2_empty to prevent silently dropping unique2 when both sides have unique fields" but u2_empty=true means unique2 IS empty so nothing is dropped. The real purpose is to prevent Case 2 from shadowing Case 4. Rewrite: "Guard: u2_empty required — when both sides have unique fields with different RowVars, Case 4 applies; this guard ensures Case 2 only fires when unique2 is genuinely empty." (`src/types.rs:740-741`) [Nit, type-theorist C54]
+- [ ] Add `resolve_type_assert` state.subst.apply regression test — no test verifies that removing `state.subst.apply()` at lines 1076-1077 changes the result; existing `test_typeassert_default_wrong_type_emits_error` uses concrete types that don't go through TypeVar resolution. Add a test where `default_ty` or `expected` contains a TypeVar bound in state.subst. (`src/typecheck.rs:1076-1077`) [Minor, test-crafter C54]
+- [ ] Apply `state.subst.apply(&func_ty)` before `check_call` match — `check_call` at `src/typecheck.rs:878` matches on `func_ty` directly; when `func_ty` is `TypeVar(α)` bound in `state.subst` to a `Function`, the match falls through to "expected function type" error. Apply `state.subst.apply(&func_ty)` before the match to resolve bound TypeVars; this is an alternative to the TypeVar arm fix in the task above and may subsume it. (`src/typecheck.rs:878`) [Minor, type-theorist C55]
+- [ ] Fix `check_call_with_scheme` not recording func span in `type_map` — after `infer_expr` resolves the function expression's type, the func span is not inserted into `state.type_map`; LSP hover over the function name in a polymorphic call shows blank. Fix: add `state.type_map.insert(func.span.into(), func_ty.clone())` after the func type is resolved, consistent with how `check_dot_access` records the target span. (`src/typecheck.rs`) [Minor, integration-verifier C55]
+## row-unification-h-b: Bracket Access Constraint Generation and CALL-MONO Soundness (C56 Overflow)
+
+Overflow from row-unification-h plus new type inference completeness findings from C56 review. Requires row-unification-h.
+
+- [ ] Fix `check_bracket_access` not generating row constraints for open records — when target type is `Record({...}, RowVar(ρ, _))` and the string-literal key is not in known fields, returns `Type::Any` (line 726) instead of generating the constraint `ρ → Row({key: β}, ρ')` as `check_dot_access` does (lines 641-671). This means `$x["name"]` infers less precisely than `$x.name` — the bracket form does not propagate field-presence constraints through the row variable. Fix: mirror `check_dot_access`'s RowVar arm — create fresh β, fresh ρ', do occurs check + level lowering, bind ρ in `state.subst`. Model: Rémy (1994) row constraint generation must be uniform across all record access forms. (`src/typecheck.rs:721-731`) [Minor, computer-scientist C56]
+- [ ] Fix `check_bracket_access` not generating constraints for TypeVar targets — when target type is `TypeVar(α, _)`, returns `Type::Any` (line 746) instead of generating `unify(α, Record({key: β}, RowVar(ρ)))` as `check_dot_access` does (lines 679-700). This means `$x["name"]` on an unknown-type target does not constrain α to be a record at all. Fix: for string-literal and int-literal keys, mirror `check_dot_access`'s TypeVar arm; for dynamic keys (non-literal expressions), `Type::Any` remains correct since the field name is unknown at inference time. (`src/typecheck.rs:746`) [Minor, computer-scientist C56]
+- [ ] Fix `check_call` CALL-MONO returns `*ret.clone()` without `state.subst.apply` — the CALL-MONO arm at `src/typecheck.rs:903` returns `Ok(*ret.clone())` while `check_call_with_scheme` CALL-MONO at line 835 correctly returns `Ok(state.subst.apply(ret))`; the invariant that CALL-MONO only fires when `!func_ty.has_type_vars()` makes this safe today but is fragile — if the guard is ever relaxed for RowVar-only polymorphism, `check_call` silently becomes wrong. Fix: change line 903 to `return Ok(state.subst.apply(ret))` for defensive consistency. (`src/typecheck.rs:903`) [Minor, type-theorist C56]
+- [ ] Make `infer_expr` match exhaustive by adding `#[deny(unreachable_patterns)]` before the match — current wildcard/final arm means adding a new `Expr` variant silently falls through to the error case without a compiler error. Audit all 13 `Expr` variants are explicitly handled. (`src/typecheck.rs:143`) [Minor, integration-verifier C60]
+- [x] Fix `check_range_access` TypeVar arm — `check_range_access` match at `src/typecheck.rs:784` already handles `Type::TypeVar(_, _)` in pattern `Type::Record(..) | Type::Any | Type::TypeVar(_, _) => Ok(target_ty)`. Fixed during row-unification-g sprint. (`src/typecheck.rs:784`) [Minor, type-theorist C56, verified C57]
+
+## iterative-eval: Iterative Evaluator
+
+Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. Tinct's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
+
+- [x] Design `Frame` enum for explicit continuation stack — see doc/16-architecture.md §Iterative Evaluator — Defunctionalized CPS (CEK Machine). Uses `Action` enum (Eval/Materialize/Continue) + `Cont` enum (~18-20 defunctionalized continuation variants, boxed large fields for ≤96B frames) in an iterative two-register loop. Agent-reviewed: eval-engine, laziness-auditor, performance-expert.
+- [x] Research safe Rust arena patterns for thunks/environments — see doc/whatif/arena-patterns.md. Recommends hand-rolled `Vec<Thunk>` + `ThunkId(u32)` with RefCell (cranelift entity pattern). typed-arena/bumpalo can't handle cyclic graphs; GhostCell ergonomic cost prohibitive; slotmap/thunderdome add unnecessary deletion overhead. 4-step adoption: variable resolution → arena types → CEK machine → selective migration
+- [x] Design arena lifetime policy for REPL/LSP — arena lifetime = one document section (between `---` boundaries). At `---`, selectively migrate `$$`-reachable thunks from arena to Rc-backed storage (preserves laziness, closures, infinite sequences), bind as `$$`, drop arena. See doc/16-architecture.md §Allocation Strategy.
+- [ ] Environment reuse in bind_args_thunks — safe with flat environments (each call writes to own activation frame). Deferred from perf-foundations where it was unsafe with shared `Rc<RefCell<Environment>>`. (`src/eval.rs:527-529`)
+- [ ] Fix doc/16-architecture.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (doc/16-architecture.md §Iterative Evaluator) [Minor, computer-scientist]
+- [ ] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
+- [ ] Convert `materialize()` from recursive to iterative with `Vec<Frame>` work stack
+- [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative
+- [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame
+- [ ] TCO for recursive stdlib functions (`fold`, `map`, `filter`, `sort-merge`) to avoid stack overflow on large inputs
+- [ ] Benchmark: compare recursive vs iterative on deep chains and large collections
+- [ ] Remove 64MB worker thread stack workaround once iterative eval eliminates deep recursion
+- [ ] Verify thunk lifecycle invariants after CEK migration — sharing preservation (thunk identity via `Rc<Thunk>` must be maintained through continuation dispatch), ThunkState simplification (PendingBuiltin/PendingCall subsumed by Cont variants), MAX_EVAL_DEPTH removal (replace with configurable `--max-depth`), monotonicity proof carries over. See doc/08-evaluation.md §Thunk Lifecycle — Relationship to CEK Machine Migration. [Major, computer-scientist]
+- [ ] Fix eval_call eagerly materializing function value — `eval_call` at `src/eval.rs:462-463` calls `materialize(&func_thunk, ...)` before creating argument thunks, forcing the function-position expression immediately even when the entire call result is never used. Launchbury (1993) call-by-need requires the application itself to be lazy. PendingCall exists for exactly this deferral but is only used by builtins ($map, $filter), not by eval_call. CEK machine migration naturally resolves this: the CALL continuation defers function forcing until the call result is demanded. (`src/eval.rs:462-463`) [Major, computer-scientist C35]
+- [ ] Fix `$apply` eagerly materializing function and args dict — `builtin_apply` at `src/builtins.rs:858-859` calls `materialize` on both the function thunk and the args dict thunk before spreading and invoking; if the result of `[call $apply $f $args]` is never accessed, both operands are still forced. Spec: return invoke_function thunk directly (no extra materialization). CEK machine migration resolves this via the CALL continuation deferral, same as eval_call. (`src/builtins.rs:858-859`) [Major, eval-engine]
+
+## parser-rewrite: Parser Rewrite (E2)
+
+Replace pest's recursive descent with a hand-written lexer + iterative parser using an explicit stack. The pest parser stays as a reference implementation for comparison until the new parser graduates.
+
+**Goal:** Identical AST output from both parsers, selectable at parse time. Once the new parser passes the full test suite and matches pest output on all corpus files, it becomes the default and pest is removed.
+
+
+### iterative-parser: Iterative parser (`src/parser2.rs`)
+
+Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed without recursion.
+
+- [ ] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert (one variant per bracket form)
+- [ ] On `[`: push frame, determine form from first token (keyword detection)
+- [ ] On `]`: pop frame, construct AST node
+- [ ] Between brackets: parse atoms, access chains, annotations (all non-recursive)
+- [ ] Add BracketAccess token to lexer for whitespace-sensitive bracket access detection — currently the lexer emits plain OpenBracket for both `$a[0]` (bracket access) and `$a [0]` (new expression); iterative parser needs lexer-level disambiguation matching pest's compound-atomic ($) rule for bracket_access_chain (`src/lexer.rs`) [Major, computer-scientist]
+- [ ] MAX_DEPTH check on `stack.len()` (policy, not safety)
+- [ ] Static constraints: duplicate keys, variadic rules
+- [ ] Error messages with precise context ("expected value after `:`", "unclosed bracket at line 5")
+
+### parser-integration: Integration
+
+- [ ] `parse()` API accepts parser selection (enum or feature flag)
+- [ ] Both parsers produce identical `Spanned<File>` output
+- [ ] Comparison test: parse every corpus file with both parsers, assert AST equality
+- [ ] Benchmark: compare parse time on large inputs
+
+### parser-graduation: Graduation criteria
+
+- [ ] Full test suite passes (all unit + corpus tests)
+- [ ] AST output matches pest parser on every corpus file
+- [ ] Error messages are equal or better quality
+- [ ] No stack overflow on any nesting depth up to MAX_DEPTH
 
 ## include-fd-hardening: fd-Based $include with cap-std
 
@@ -247,28 +317,6 @@ Allocation hotspots introduced by the f-b bilateral apply additions. Requires ro
 - [x] Add capacity hint to `eval_range_access` result `IndexMap` — `IndexMap::new()` at `src/eval.rs:1111` builds the range-slice output without a size hint; the upper bound is `map.len()`. Change to `IndexMap::with_capacity(map.len())`. (`src/eval.rs:1111`) [Nit, performance-expert C64]
 
 
-
-### row-unification-h: Letrec Completeness and Kind Safety
-
-Correctness gaps in letrec forward-reference inference and annotation kind safety. Requires row-unification-g.
-
-- [ ] Add TypeVar arm in `check_call` for letrec forward references — when a letrec entry calls a forward-referenced function, Pass 1 binds the callee to `TypeScheme::mono(TypeVar("_t0", 1))`; during Pass 3, `check_call` receives `func_ty = TypeVar("_t0", 1)`, which matches neither `Type::Function` nor `Type::Any`, falling through to "expected function type" error. Fix: add a TypeVar arm that generates a constraint `TypeVar(alpha) = Fn(arg_types → beta)` and returns `beta`. Conservative alternative: return `Any`. (`src/typecheck.rs:864-966`) [Major, computer-scientist C54]
-- [ ] Fix `ann_mapping` cross-kind collision in annotation freshening — both `resolve_type_name` (line 1240) and the Rest row-variable handler (line 1329) share one `ann_mapping: HashMap<String, String>`; a user annotation name can be registered as both a TypeVar and a RowVar (e.g., `[fn [x@a y@[name: a ...a]] ...]`), violating the Rémy (1994) sort separation invariant. Fix: use separate `type_ann_mapping` and `row_ann_mapping`, or detect cross-kind collision and emit a TypeError. (`src/typecheck.rs:1239-1251, 1328-1339`) [Major, computer-scientist C54]
-- [ ] Fix `Pass 3b or_insert` discards state.subst binding when both maps have the same variable — when local subst has `_t0 → Record({name: Str}, Empty)` and state.subst has `_t0 → Record({name: beta}, rho)`, `or_insert` keeps the local binding and beta is orphaned (never unified with Str). Fix: when both substitutions bind the same variable, unify the two bindings instead of discarding the state.subst one. Model: Algorithm W substitution composition (Damas & Milner 1982). (`src/typecheck.rs:538-541`) [Minor, computer-scientist C54]
-- [ ] Fix `test_corpus_structure` hardcoded directory list — `required_dirs` at tests/corpus_tests.rs:198-205 omits `tests/corpus/eval/typecheck/` and `tests/corpus/eval/laziness/`; deleting either directory would not fail the structure test. Expand `required_dirs` to cover all directories that have test files. (`tests/corpus_tests.rs:198-205`) [Minor, test-crafter C54]
-- [ ] Fix `unify_remainders` Case 2 guard comment inaccuracy — comment says "Guard requires u2_empty to prevent silently dropping unique2 when both sides have unique fields" but u2_empty=true means unique2 IS empty so nothing is dropped. The real purpose is to prevent Case 2 from shadowing Case 4. Rewrite: "Guard: u2_empty required — when both sides have unique fields with different RowVars, Case 4 applies; this guard ensures Case 2 only fires when unique2 is genuinely empty." (`src/types.rs:740-741`) [Nit, type-theorist C54]
-- [ ] Add `resolve_type_assert` state.subst.apply regression test — no test verifies that removing `state.subst.apply()` at lines 1076-1077 changes the result; existing `test_typeassert_default_wrong_type_emits_error` uses concrete types that don't go through TypeVar resolution. Add a test where `default_ty` or `expected` contains a TypeVar bound in state.subst. (`src/typecheck.rs:1076-1077`) [Minor, test-crafter C54]
-- [ ] Apply `state.subst.apply(&func_ty)` before `check_call` match — `check_call` at `src/typecheck.rs:878` matches on `func_ty` directly; when `func_ty` is `TypeVar(α)` bound in `state.subst` to a `Function`, the match falls through to "expected function type" error. Apply `state.subst.apply(&func_ty)` before the match to resolve bound TypeVars; this is an alternative to the TypeVar arm fix in the task above and may subsume it. (`src/typecheck.rs:878`) [Minor, type-theorist C55]
-- [ ] Fix `check_call_with_scheme` not recording func span in `type_map` — after `infer_expr` resolves the function expression's type, the func span is not inserted into `state.type_map`; LSP hover over the function name in a polymorphic call shows blank. Fix: add `state.type_map.insert(func.span.into(), func_ty.clone())` after the func type is resolved, consistent with how `check_dot_access` records the target span. (`src/typecheck.rs`) [Minor, integration-verifier C55]
-### row-unification-h-b: Bracket Access Constraint Generation and CALL-MONO Soundness (C56 Overflow)
-
-Overflow from row-unification-h plus new type inference completeness findings from C56 review. Requires row-unification-h.
-
-- [ ] Fix `check_bracket_access` not generating row constraints for open records — when target type is `Record({...}, RowVar(ρ, _))` and the string-literal key is not in known fields, returns `Type::Any` (line 726) instead of generating the constraint `ρ → Row({key: β}, ρ')` as `check_dot_access` does (lines 641-671). This means `$x["name"]` infers less precisely than `$x.name` — the bracket form does not propagate field-presence constraints through the row variable. Fix: mirror `check_dot_access`'s RowVar arm — create fresh β, fresh ρ', do occurs check + level lowering, bind ρ in `state.subst`. Model: Rémy (1994) row constraint generation must be uniform across all record access forms. (`src/typecheck.rs:721-731`) [Minor, computer-scientist C56]
-- [ ] Fix `check_bracket_access` not generating constraints for TypeVar targets — when target type is `TypeVar(α, _)`, returns `Type::Any` (line 746) instead of generating `unify(α, Record({key: β}, RowVar(ρ)))` as `check_dot_access` does (lines 679-700). This means `$x["name"]` on an unknown-type target does not constrain α to be a record at all. Fix: for string-literal and int-literal keys, mirror `check_dot_access`'s TypeVar arm; for dynamic keys (non-literal expressions), `Type::Any` remains correct since the field name is unknown at inference time. (`src/typecheck.rs:746`) [Minor, computer-scientist C56]
-- [ ] Fix `check_call` CALL-MONO returns `*ret.clone()` without `state.subst.apply` — the CALL-MONO arm at `src/typecheck.rs:903` returns `Ok(*ret.clone())` while `check_call_with_scheme` CALL-MONO at line 835 correctly returns `Ok(state.subst.apply(ret))`; the invariant that CALL-MONO only fires when `!func_ty.has_type_vars()` makes this safe today but is fragile — if the guard is ever relaxed for RowVar-only polymorphism, `check_call` silently becomes wrong. Fix: change line 903 to `return Ok(state.subst.apply(ret))` for defensive consistency. (`src/typecheck.rs:903`) [Minor, type-theorist C56]
-- [ ] Make `infer_expr` match exhaustive by adding `#[deny(unreachable_patterns)]` before the match — current wildcard/final arm means adding a new `Expr` variant silently falls through to the error case without a compiler error. Audit all 13 `Expr` variants are explicitly handled. (`src/typecheck.rs:143`) [Minor, integration-verifier C60]
-- [x] Fix `check_range_access` TypeVar arm — `check_range_access` match at `src/typecheck.rs:784` already handles `Type::TypeVar(_, _)` in pattern `Type::Record(..) | Type::Any | Type::TypeVar(_, _) => Ok(target_ty)`. Fixed during row-unification-g sprint. (`src/typecheck.rs:784`) [Minor, type-theorist C56, verified C57]
 
 ## type-extensions: Type System Extensions
 
@@ -439,7 +487,7 @@ Replace eager dict merge with lazy overlay representation. See doc/08-evaluation
 - [ ] Verify behavioral equivalence: same values, same iteration order, same errors, same sharing
 - [ ] Benchmark: compare eager merge vs lazy overlay on large dicts
 
-## Sequences and Fully Lazy Operations (remaining)
+## sequences-remaining: Sequences and Fully Lazy Operations (remaining)
 
 ### seq-cycle-fix: Seq Cycle Detection Asymmetry
 
@@ -485,51 +533,7 @@ Float arithmetic can silently produce NaN or Infinity values that propagate thro
 - [ ] Add shared `check_float_result(f64, &str, Span)` helper returning error on `is_nan()` or `is_infinite()` (`src/builtins.rs`)
 - [ ] Reject NaN/Infinity in `$from-json` parse path — add `is_finite()` check after `as_f64()` in `json_to_value` Number arm (`src/builtins.rs` json_to_value)
 
-## Parser Rewrite (E2)
-
-Replace pest's recursive descent with a hand-written lexer + iterative parser using an explicit stack. The pest parser stays as a reference implementation for comparison until the new parser graduates.
-
-**Goal:** Identical AST output from both parsers, selectable at parse time. Once the new parser passes the full test suite and matches pest output on all corpus files, it becomes the default and pest is removed.
-
-
-### iterative-parser: Iterative parser (`src/parser2.rs`)
-
-Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed without recursion.
-
-- [ ] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert (one variant per bracket form)
-- [ ] On `[`: push frame, determine form from first token (keyword detection)
-- [ ] On `]`: pop frame, construct AST node
-- [ ] Between brackets: parse atoms, access chains, annotations (all non-recursive)
-- [ ] Add BracketAccess token to lexer for whitespace-sensitive bracket access detection — currently the lexer emits plain OpenBracket for both `$a[0]` (bracket access) and `$a [0]` (new expression); iterative parser needs lexer-level disambiguation matching pest's compound-atomic ($) rule for bracket_access_chain (`src/lexer.rs`) [Major, computer-scientist]
-- [ ] MAX_DEPTH check on `stack.len()` (policy, not safety)
-- [ ] Static constraints: duplicate keys, variadic rules
-- [ ] Error messages with precise context ("expected value after `:`", "unclosed bracket at line 5")
-
-### parser-integration: Integration
-
-- [ ] `parse()` API accepts parser selection (enum or feature flag)
-- [ ] Both parsers produce identical `Spanned<File>` output
-- [ ] Comparison test: parse every corpus file with both parsers, assert AST equality
-- [ ] Benchmark: compare parse time on large inputs
-
-### parser-graduation: Graduation criteria
-
-- [ ] Full test suite passes (all unit + corpus tests)
-- [ ] AST output matches pest parser on every corpus file
-- [ ] Error messages are equal or better quality
-- [ ] No stack overflow on any nesting depth up to MAX_DEPTH
-
-### parser-cleanup: Cleanup (post-graduation)
-
-- [ ] Remove `pest` and `pest_derive` dependencies from Cargo.toml
-- [ ] Remove `src/grammar.pest`
-- [ ] Remove pest-specific code from `src/parser.rs`
-- [ ] Remove pest-specific test code and helpers from `src/parser.rs`
-- [ ] Rename `src/parser2.rs` to `src/parser.rs`
-- [ ] Update CLAUDE.md, README.md, SPEC.md references (remove pest notation, update grammar description)
-- [ ] Full pest removal audit: verify no remaining pest references in docs, tests, or comments
-
-## Performance: Stdlib Rust Reimplementations
+## perf-stdlib: Performance: Stdlib Rust Reimplementations
 
 Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append` materializing and cloning the growing accumulator IndexMap on every iteration. Sort is O(n^2 log n) because `sort-merge` uses `cons` (O(n)) per element.
 
@@ -623,26 +627,6 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Eliminate redundant param-exists scan in `bind_args_thunks` BIND-NAMED — `iter().position()` (scan 1) already determines existence; `iter().any()` (scan 2) at line 909 is always redundant. Replace two-scan pattern with single `match position()` arm covering both None→error and Some(idx<positional)→error cases. (`src/eval.rs:891-918`) [Minor, performance-expert C50]
 - [ ] Fuse `collect_type_vars` + `collect_row_vars` in `instantiate_at_level` — performs 3 full type walks + 3 allocations per CALL-POLY invocation. Same fusion fix as TODO.md:281 applied to this function. Also applies to `instantiate_scheme` which takes pre-collected lists from TypeScheme but still builds a Substitution for a single-variable rename. (`src/types.rs:949-980`) [Major, performance-expert C50]
 
-## iterative-eval: Iterative Evaluator
-
-Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. Tinct's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
-
-- [x] Design `Frame` enum for explicit continuation stack — see doc/16-architecture.md §Iterative Evaluator — Defunctionalized CPS (CEK Machine). Uses `Action` enum (Eval/Materialize/Continue) + `Cont` enum (~18-20 defunctionalized continuation variants, boxed large fields for ≤96B frames) in an iterative two-register loop. Agent-reviewed: eval-engine, laziness-auditor, performance-expert.
-- [x] Research safe Rust arena patterns for thunks/environments — see doc/whatif/arena-patterns.md. Recommends hand-rolled `Vec<Thunk>` + `ThunkId(u32)` with RefCell (cranelift entity pattern). typed-arena/bumpalo can't handle cyclic graphs; GhostCell ergonomic cost prohibitive; slotmap/thunderdome add unnecessary deletion overhead. 4-step adoption: variable resolution → arena types → CEK machine → selective migration
-- [x] Design arena lifetime policy for REPL/LSP — arena lifetime = one document section (between `---` boundaries). At `---`, selectively migrate `$$`-reachable thunks from arena to Rc-backed storage (preserves laziness, closures, infinite sequences), bind as `$$`, drop arena. See doc/16-architecture.md §Allocation Strategy.
-- [ ] Environment reuse in bind_args_thunks — safe with flat environments (each call writes to own activation frame). Deferred from perf-foundations where it was unsafe with shared `Rc<RefCell<Environment>>`. (`src/eval.rs:527-529`)
-- [ ] Fix doc/16-architecture.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (doc/16-architecture.md §Iterative Evaluator) [Minor, computer-scientist]
-- [ ] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
-- [ ] Convert `materialize()` from recursive to iterative with `Vec<Frame>` work stack
-- [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative
-- [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame
-- [ ] TCO for recursive stdlib functions (`fold`, `map`, `filter`, `sort-merge`) to avoid stack overflow on large inputs
-- [ ] Benchmark: compare recursive vs iterative on deep chains and large collections
-- [ ] Remove 64MB worker thread stack workaround once iterative eval eliminates deep recursion
-- [ ] Verify thunk lifecycle invariants after CEK migration — sharing preservation (thunk identity via `Rc<Thunk>` must be maintained through continuation dispatch), ThunkState simplification (PendingBuiltin/PendingCall subsumed by Cont variants), MAX_EVAL_DEPTH removal (replace with configurable `--max-depth`), monotonicity proof carries over. See doc/08-evaluation.md §Thunk Lifecycle — Relationship to CEK Machine Migration. [Major, computer-scientist]
-- [ ] Fix eval_call eagerly materializing function value — `eval_call` at `src/eval.rs:462-463` calls `materialize(&func_thunk, ...)` before creating argument thunks, forcing the function-position expression immediately even when the entire call result is never used. Launchbury (1993) call-by-need requires the application itself to be lazy. PendingCall exists for exactly this deferral but is only used by builtins ($map, $filter), not by eval_call. CEK machine migration naturally resolves this: the CALL continuation defers function forcing until the call result is demanded. (`src/eval.rs:462-463`) [Major, computer-scientist C35]
-- [ ] Fix `$apply` eagerly materializing function and args dict — `builtin_apply` at `src/builtins.rs:858-859` calls `materialize` on both the function thunk and the args dict thunk before spreading and invoking; if the result of `[call $apply $f $args]` is never accessed, both operands are still forced. Spec: return invoke_function thunk directly (no extra materialization). CEK machine migration resolves this via the CALL continuation deferral, same as eval_call. (`src/builtins.rs:858-859`) [Major, eval-engine]
-
 ## sandbox: Sandboxing & Security
 
 Design and implement four unprivileged sandboxing layers. See doc/12-tooling.md §Sandboxing & Security for full design.
@@ -705,7 +689,7 @@ Findings from formal audit of doc/*.md theoretical claims (2026-04-21). Covers t
 - [x] Fix `check_call` zero-arity CALL-POLY returning original `ret` not `inst_ret` — verified sound in current code: in `check_call_with_scheme` (line 746), `ret` comes from `instantiate_scheme` at line 694 and is already instantiated; in `check_call` (line 868), `inst_ret` comes from `instantiate_at_level` and is also correctly instantiated; both paths are sound for zero-param functions. (`src/typecheck.rs:538`) [Minor, computer-scientist C40] — re-verified C52: sound in current code, was fixed during check_call_with_scheme split
 - [ ] Fix doc/06-type-inference.md false claim about per-entry freshening in Pass 3 — line 497 states "Within a single letrec group during Pass 3, each entry's annotation-derived variables are instantiated independently, preventing collision." This is false: `resolve_type_name` creates `TypeVar("a", L)` for every `@a` annotation across all entries within the same letrec group, sharing the name in `state.levels`. Per-entry freshening only occurs after Pass 4 generalization + subsequent `instantiate_scheme`. This shared naming interacts with the `instantiate()` level-0 bug above to cause incorrect level lowering. Fix: correct the doc paragraph to describe the actual behavior. (`doc/06-type-inference.md:497`) [Minor, computer-scientist C40]
 
-## Stdlib Expansion
+## stdlib-expansion: Stdlib Expansion
 
 Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall). All implementable in Tinct unless noted.
 
@@ -750,7 +734,7 @@ Consolidated from: stdlib-convenience-b, stdlib-type-predicates, stdlib-numeric,
 - [ ] `chars` — string to character sequence
 - [ ] `join` — sequence/dict of strings to single string with separator
 
-## Error Context Enrichment
+## error-context: Error Context Enrichment
 
 Enhance error reporting with richer context types inspired by Elm, Nickel, and rustc patterns.
 
@@ -901,7 +885,7 @@ Evaluation correctness bugs where values are forced prematurely or depth trackin
 - [ ] Fix `deep_materialize_impl` using `Span::origin()` on depth exceeded — line 1613 constructs `EvalError::depth_exceeded(MAX_EVAL_DEPTH, Span::origin())`; no span is attached even though the depth limit fires inside `deep_materialize_impl` which has access to the current thunk's span via `thunk.borrow().span`. Use the thunk span to give users a useful error location. (`src/eval.rs:1613`) [Minor, eval-engine C63]
 - [ ] Fix `validate_and_wrap_record` field path quoting format — `field_path_prefix` at `src/eval.rs:178-193` builds `"field \"x\": "` using escaped quotes for each segment; error messages read `field "x": record missing field "y"` which is inconsistent with `EvalError::Display` which uses unquoted names for field references in other contexts. Standardize to backtick-quoting: `field \`x\`: record missing field \`y\`` matching the doc/10-errors.md Error Message Style Guidelines. (`src/eval.rs:178-193`) [Nit, integration-verifier C63]
 
-## Test Infrastructure
+## test-infra: Test Infrastructure
 
 Improvements to test infrastructure identified by cross-language analysis and test-crafter review (2026-04-19).
 
@@ -1088,7 +1072,7 @@ Documentation and code quality fixes following the call-convention-kotlin sprint
 - [ ] Replace raw `EvalError` struct literals with named constructors in `bind_args_thunks` — three sites at `src/eval.rs:622, 666, 681` bypass the constructor API. Replace with `EvalError::missing_required_param`, `EvalError::unknown_named_arg`, or equivalent named constructors. (`src/eval.rs:622, 666, 681`) [Minor, eval-engine C48]
 
 
-## Documentation Divergences (doc/*.md / Code)
+## doc-divergences: Documentation Divergences (doc/*.md / Code)
 
 Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-18). DESIGN.md and SPEC.md archived to .tmp/; all references updated to doc/*.md.
 
@@ -1275,7 +1259,7 @@ Doc and behavior nits from codebase reviews. Requires misc-nits-b.
 - [ ] Fix `doc/15-ast.md:211-223` Annotation Bracket Restriction incomplete — §Annotation Brackets restriction table says special forms (`call`, `fn`, `type`) are parse errors inside annotation brackets, but does not address `type_assert_body` (which is also rejected inside annotation brackets yet is not categorized as a 'special form'); add `type_assert_body` to the restriction table with a clarifying note. (`doc/15-ast.md:211-223`) [Nit, grammar-architect C57]
 - [ ] Add TODO citation to `test_bracket_access_forward_ref_resolves_correctly` `#[ignore]` — test at `src/typecheck.rs:3595` is `#[ignore]` with no comment explaining why or citing the tracking sprint; add `// TODO: enable when check_bracket_access generates row constraints for open records — see row-unification-h-b`. (`src/typecheck.rs:3595`) [Nit, test-crafter C57]
 
-## Integration / Pipeline
+## integration: Integration / Pipeline
 
 Cross-cutting integration gaps identified by integration-verifier agent (2026-04-24). Items span pipeline boundaries, circular dependencies, and serialization contracts.
 
@@ -1289,7 +1273,7 @@ Cross-cutting integration gaps identified by integration-verifier agent (2026-04
 - [ ] Add builtin signature macro to prevent duplication across BuiltinFn registrations — `standard_builtins()` at `src/builtins.rs:2619-2676` repeats the same `(name, arity, fn)` tuple structure for 45 entries; extract a `builtin!` macro or builder that enforces consistent arity/name/fn-pointer registration and prevents name/arity drift
 - [ ] Split `Type::Any` into `Type::AnyGradual` (escape hatch) and `Type::AnyPoly` (polymorphic placeholder) for gradual typing correctness — current `Type::Any` serves two conflicting roles: dynamic escape hatch (gradual typing, Siek & Taha 2006) and polymorphic placeholder (pre-generalization TypeVar stand-in); splitting prevents `Any`-poisoning of let-generalization level zeroing and aligns with `doc/whatif/gradual-typing.md` three-phase recommendation (`src/types.rs`)
 
-## Future Features
+## future-features: Future Features
 
 Deferred features moved from DESIGN.md. Evaluate when triggered.
 
@@ -1305,6 +1289,8 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [x] Research width-specific numeric types — see doc/whatif/numeric-types.md. Recommends range contracts with automatic internal representation sizing (Approach B): `@[min: 0 max: 65535]` → runtime chooses u16 internally. 4-phase: range annotations (validation only) → Decimal type → auto representation sizing → BigInt. Ada range types as precedent
 - [x] Research typeclasses — see doc/whatif/typeclasses.md. Two-phase adoption (constrained type vars → full Haskell-style classes). Gated on Any typing for dual-dispatch causing false positives or user-defined types needing protocols
 - [x] Research union types — see doc/whatif/union-types.md. Three-phase path: type classes → annotation-only unions → inferred unions via Simple-sub. Gated on nullable types or tagged union patterns becoming common
+- [x] Research nominal variants — see doc/whatif/nominal-variants.md. Nominal (constructor-based) variants layered on top of structural ADTs. Uppercase entries in [union ...] = nominal constructors; lowercase = structural. New Value::Variant runtime type. Construction via [call Ok $v], unit constructors as bare uppercase words. Pattern syntax [Ok $v] vs structural [ok: $v] distinguished by case and colon. Serializes as tagged dicts. Builds on algebraic-data-types.md (Type::Union prerequisite) and pattern-matching.md (Phase 2+)
+- [x] Research algebraic data types (ADTs) — see doc/whatif/algebraic-data-types.md. Structural tagged records: ADTs are unions of closed record types discriminated by key set, using `[union ...]` special form. Dicts-are-fundamental means no new Value variant; $try already implements the pattern. Tag-only variants are StringLiteral types (bare words). Recursive ADTs deferred to Phase 4 (requires parameterized-type-aliases + equi-recursive unfolding). Builds on union-types.md (Type::Union prerequisite), pattern-matching.md (Phase 3 destructuring + Phase 5 exhaustiveness), algebraic-subtypes.md (Simple-sub makes unions inferred in Phase 3)
 - [x] Research algebraic subtyping — see doc/whatif/algebraic-subtypes.md. Simple-sub (Parreaux 2020) replacement for [U-SUBSUME] + Robinson. 4-step migration path. Gated on union types being insufficient without inferred unions or Any-as-top-and-bottom causing soundness problems
 - [x] Research macros — see doc/whatif/macros.md. Recommends procedural AST macros (Approach B). Laziness reduces need; gated on second syntactic desugaring or user-requested domain-specific syntax
 - [x] Research templating — see doc/whatif/templating.md. Three-part design: (1) data-first formatters (`$emit`, multi-file pipeline, stdlib/fmt/), (2) literate tinct (code blocks in Markdown, tangle/weave/eval), (3) template-polarity embedding (Jinja-style, deferred Phase 5). tinct's bracket syntax creates friction in template delimiters; `i"..."` + formatters + literate mode cover the design space without template embedding
@@ -1315,3 +1301,13 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [x] Research tinct-to-SQL translation — see doc/whatif/sql-translation.md. Lazy SQL source model: `$sql-open` returns `Value::SqlQuery`; `$filter`/`$map`/`$take`/`$reduce` detect `SqlQuery` and accumulate SQL ops via proxy row translation; dispatch at first observation (`$collect`, `$take`, `$head`, `$reduce`); results as cursor-backed lazy `Seq`. Untranslatable predicates fall back to tinct-side evaluation. Phase 1: SQLite + basic filter/map/take. Phase 2: multi-driver + `$reduce` aggregation + joins. Phase 3: row-type schema annotation. Phase 4: write operations.
 - [x] Research general I/O model (file, network, stdin, env) — see doc/whatif/io.md. Capability-based I/O: `Value::DirCap` (wraps cap_std::fs::Dir, RESOLVE_BENEATH enforced), `Value::NetCap` (host/CIDR allowlist), `Value::Handle` (opened file/socket — IS the capability). `$open`, `$connect`, `$tls`, `$narrow`, `$revocable` produce caps/handles. `$slurp`, `$write` (returns handle for data-dependency chaining), `$lines` (lazy coinductive Seq). `$env` gated under `--no-caps`/`--allow-env`. CLI injects caps via `--cap-fs`, `--cap-net`. IO monad, algebraic effects, linear types rejected. Phase 1: full handle+cap layer. Phase 2: `$connect`/`$tls` + `stdlib/net.llt`. Phase 3: atomic writes + streaming fetch. Phase 4: cap types in type checker.
 - [x] Research TLS/PKI/HTTP configuration — see `doc/whatif/tls.md`. `$tls` extended with optional opts dict: `ca-bundle` (Handle to PEM, DirCap-gated), `client-cert`/`client-key` (mTLS, Handle-based), `pin-sha256` (SPKI hash list), `alpn` (protocol negotiation). Default: compiled-in `webpki-roots`. `$tls-peer-cert handle` exposes cert metadata. HTTP/2 and HTTP/3 require Rust-level `$fetch` builtin (Phase 3); Handle byte-stream model is insufficient for multiplexed protocols. HTTP/3/QUIC (Phase 4) via reqwest+quinn. Cert+key Handles flow through DirCap for auditability.
+## parser-cleanup: Cleanup (post-graduation)
+
+- [ ] Remove `pest` and `pest_derive` dependencies from Cargo.toml
+- [ ] Remove `src/grammar.pest`
+- [ ] Remove pest-specific code from `src/parser.rs`
+- [ ] Remove pest-specific test code and helpers from `src/parser.rs`
+- [ ] Rename `src/parser2.rs` to `src/parser.rs`
+- [ ] Update CLAUDE.md, README.md, SPEC.md references (remove pest notation, update grammar description)
+- [ ] Full pest removal audit: verify no remaining pest references in docs, tests, or comments
+

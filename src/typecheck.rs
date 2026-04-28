@@ -396,13 +396,13 @@ fn check_expr(
                                     unify(expected_ty, &resolved, &mut subst, state, ann.span);
                                 state.subst = subst;
                                 result.map_err(|_e| {
-                                    TypeError::type_mismatch(&resolved, expected_ty, ann.span)
+                                    TypeError::type_mismatch(expected_ty, &resolved, ann.span)
                                 })?;
                             } else {
                                 if !Type::is_subtype(expected_ty, &resolved) {
                                     return Err(TypeError::type_mismatch(
-                                        &resolved,
                                         expected_ty,
+                                        &resolved,
                                         ann.span,
                                     ));
                                 }
@@ -3952,6 +3952,21 @@ mod tests {
             }
             other => panic!("expected Function type, got {other}"),
         }
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_param_annotation_error_message() {
+        // Verify that parameter annotation type mismatch error messages are correctly ordered.
+        // When checking [@[Fn@Number [Int]] [fn [x@String] $x]], the expected param type is Int
+        // (from the function type annotation) but the parameter annotation says String.
+        // The error should say "expected Int, got String" (not "expected String, got Int").
+        let errors = check_err("[f: [@[Fn@Number [Int]] [fn [x@String] $x]]]");
+        assert_eq!(errors.len(), 1, "should have exactly one error");
+        let msg = &errors[0].message;
+        assert!(
+            msg.contains("expected Int") && msg.contains("got String"),
+            "Error message should say 'expected Int, got String' but got: {msg}"
+        );
     }
 
     #[test]

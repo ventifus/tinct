@@ -1,0 +1,9 @@
+# Regression test for Guarded thunk state-restoration fix.
+# A TypeAssert-annotated recursive function should produce E040 (DepthExceeded)
+# not E070 (CircularDependency). With the old bug, the Guarded thunk would get
+# stuck in InProgress after DepthExceeded, causing the next access to see a
+# spurious CircularDependency error.
+[f: [fn [x] [@Int [call $f [call $+ $x 1]]]]
+ result: [call $f 0]]
+===
+=== ERROR: [E040]

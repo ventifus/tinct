@@ -1062,6 +1062,16 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
         }
         serde_json::Value::String(s) => ok_val(Value::String(s.clone())),
         serde_json::Value::Array(arr) => {
+            if arr.len() > MAX_COLLECT_SIZE {
+                return Err(EvalError::resource_limit_exceeded(
+                    format!(
+                        "from-json: array exceeds maximum collection size ({})",
+                        MAX_COLLECT_SIZE
+                    ),
+                    span,
+                )
+                .into());
+            }
             let mut map = IndexMap::with_capacity(arr.len());
             for (i, item) in arr.iter().enumerate() {
                 let thunk = json_to_value(item, depth + 1, span)?;
@@ -1073,6 +1083,16 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
             ok_val(Value::Dict(map))
         }
         serde_json::Value::Object(obj) => {
+            if obj.len() > MAX_COLLECT_SIZE {
+                return Err(EvalError::resource_limit_exceeded(
+                    format!(
+                        "from-json: object exceeds maximum collection size ({})",
+                        MAX_COLLECT_SIZE
+                    ),
+                    span,
+                )
+                .into());
+            }
             let mut map = IndexMap::with_capacity(obj.len());
             for (k, v) in obj {
                 let thunk = json_to_value(v, depth + 1, span)?;

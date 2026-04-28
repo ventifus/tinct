@@ -494,9 +494,11 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E032 | `IntegerOverflow` | Value |
 | E033 | `FloatNotFinite` | Value |
 | E034 | `EmptyCollection` | Value |
+| E035 | `ValueNotSerializable` | Value |
 | E040 | `DepthExceeded` | Limit |
 | E041 | `JsonDepthExceeded` | Limit |
 | E042 | `IncludeForbidden` | Limit |
+| E043 | `ResourceLimitExceeded` | Limit |
 | E050 | `IncludeNotAvailable` | Include |
 | E051 | `IncludeIoError` | Include |
 | E052 | `IncludeCycle` | Include |
@@ -777,7 +779,7 @@ Builtin error messages are prefixed with the builtin name when the error origina
 
 ## Error Categories — Complete Reference
 
-All 28 `ErrorKind` variants map to stable error codes and human-readable messages:
+All 30 `ErrorKind` variants map to stable error codes and human-readable messages:
 
 | ErrorKind Variant | Error Code | Message Pattern | Definition Site |
 |-------------------|------------|----------------|-----------------|
@@ -795,9 +797,11 @@ All 28 `ErrorKind` variants map to stable error codes and human-readable message
 | **IntegerOverflow** | E032 | `"{op}: integer overflow"` | Arithmetic call expression |
 | **FloatNotFinite** | E033 | `"{builtin}: {value} is not a finite number"` | Builtin call expression |
 | **EmptyCollection** | E034 | `"{op} on empty collection"` | Builtin call expression |
+| **ValueNotSerializable** | E035 | `"cannot serialize {value_type} to JSON"` | Value being serialized |
 | **DepthExceeded** | E040 | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
 | **JsonDepthExceeded** | E041 | `"maximum JSON nesting depth exceeded ({limit})"` | `$from-json` call expression |
 | **IncludeForbidden** | E042 | `"filesystem access is disabled (--no-fs)"` | `$include` call expression |
+| **ResourceLimitExceeded** | E043 | `"{message}"` (implementation-defined) | Context-dependent |
 | **IncludeNotAvailable** | E050 | `"include: not available in this context"` | `$include` call expression |
 | **IncludeIoError** | E051 | `"include: cannot access \"{path}\": {detail}"` | `$include` call expression |
 | **IncludeCycle** | E052 | `"circular include detected: \"{path}\""` | `$include` call expression |
@@ -810,7 +814,7 @@ All 28 `ErrorKind` variants map to stable error codes and human-readable message
 | **UserError** | E080 | `"{message}"` (user-provided) | `$error` call expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
-The 28 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
+The 30 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
 
 ## Span Assignment Corrections
 
