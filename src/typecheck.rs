@@ -347,9 +347,16 @@ fn check_expr(
             // Only use lambda checking mode if expected type is fully concrete
             if !expected.has_type_vars() {
                 // Create a fresh annotation mapping for this lambda to prevent
-                // cross-contamination of type variables
-                let mut ann_mapping = HashMap::new();
-                let mut ann_mapping_opt = Some(&mut ann_mapping);
+                // cross-contamination of type variables.
+                // Only allocate if any param has an annotation or there's a return annotation.
+                let has_annotations =
+                    params.iter().any(|p| p.node.annotation.is_some()) || return_ann.is_some();
+                let mut ann_mapping = if has_annotations {
+                    Some(HashMap::new())
+                } else {
+                    None
+                };
+                let mut ann_mapping_opt = ann_mapping.as_mut();
 
                 // Arity check
                 if params.len() != expected_params.len() {
@@ -634,7 +641,7 @@ fn infer_dict(
     }
 
     // Pass 4: Generalize - create TypeSchemes for each entry
-    let mut schemes = IndexMap::new();
+    let mut schemes = IndexMap::with_capacity(field_types.len());
     for (name, ty) in &field_types {
         let scheme = generalize(enclosing_level, ty, state);
         schemes.insert(name.clone(), scheme);

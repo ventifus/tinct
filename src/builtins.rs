@@ -594,9 +594,8 @@ fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .saturating_sub(removed_bytes)
         .saturating_add(added_bytes);
 
-    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
     if output_len > MAX_STRING_SIZE {
-        return Err(EvalError::internal(
+        return Err(EvalError::resource_limit_exceeded(
             format!(
                 "replace: output would exceed {} MB limit ({} bytes)",
                 MAX_STRING_SIZE / (1024 * 1024),
@@ -628,9 +627,8 @@ fn builtin_upper(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("upper", args, named, &ctx, depth, call_span)?;
     let s = require_string("upper", val, call_span)?;
     // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
-    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
     if s.len() > MAX_STRING_SIZE {
-        return Err(EvalError::internal(
+        return Err(EvalError::resource_limit_exceeded(
             format!(
                 "upper: input exceeds {} MB limit ({} bytes)",
                 MAX_STRING_SIZE / (1024 * 1024),
@@ -642,9 +640,8 @@ fn builtin_upper(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     let result = s.to_uppercase();
     // Post-conversion guard for Unicode expansion (e.g., ß → SS).
-    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
     if result.len() > MAX_STRING_SIZE {
-        return Err(EvalError::internal(
+        return Err(EvalError::resource_limit_exceeded(
             format!(
                 "upper: output would exceed {} MB limit ({} bytes)",
                 MAX_STRING_SIZE / (1024 * 1024),
@@ -671,9 +668,8 @@ fn builtin_lower(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("lower", args, named, &ctx, depth, call_span)?;
     let s = require_string("lower", val, call_span)?;
     // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
-    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
     if s.len() > MAX_STRING_SIZE {
-        return Err(EvalError::internal(
+        return Err(EvalError::resource_limit_exceeded(
             format!(
                 "lower: input exceeds {} MB limit ({} bytes)",
                 MAX_STRING_SIZE / (1024 * 1024),
@@ -685,9 +681,8 @@ fn builtin_lower(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     let result = s.to_lowercase();
     // Post-conversion guard for Unicode expansion (e.g., İ → i\u{307}).
-    // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
     if result.len() > MAX_STRING_SIZE {
-        return Err(EvalError::internal(
+        return Err(EvalError::resource_limit_exceeded(
             format!(
                 "lower: output would exceed {} MB limit ({} bytes)",
                 MAX_STRING_SIZE / (1024 * 1024),
@@ -934,7 +929,7 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Dict(result))
         }
         Err(e) => {
-            // Resource limit errors (DepthExceeded) must not be catchable by user code.
+            // Resource limit errors (DepthExceeded, ResourceLimitExceeded) must not be catchable by user code.
             // Re-raise instead of converting to err dict.
             if !e.kind.is_catchable() {
                 return Err(e);
@@ -1369,8 +1364,11 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                 // Check collection size limit
                 if index as usize >= MAX_COLLECT_SIZE {
-                    return Err(EvalError::internal(
-                        "collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting.".to_string(),
+                    return Err(EvalError::resource_limit_exceeded(
+                        format!(
+                            "collect: exceeded maximum collection size ({}). Use $take to limit infinite sequences before collecting.",
+                            MAX_COLLECT_SIZE
+                        ),
                         call_span,
                     )
                     .into());
@@ -2608,9 +2606,8 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let sep_contribution = sep_str.len().saturating_mul(parts.len().saturating_sub(1));
             let total_output_len = total_parts_len.saturating_add(sep_contribution);
 
-            // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
             if total_output_len > MAX_STRING_SIZE {
-                return Err(EvalError::internal(
+                return Err(EvalError::resource_limit_exceeded(
                     format!(
                         "join: output would exceed {} MB limit ({} bytes)",
                         MAX_STRING_SIZE / (1024 * 1024),
@@ -2636,7 +2633,7 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                 // Check collection size limit
                 if parts.len() >= MAX_COLLECT_SIZE {
-                    return Err(EvalError::internal(
+                    return Err(EvalError::resource_limit_exceeded(
                         format!("join: sequence exceeds {} elements", MAX_COLLECT_SIZE),
                         call_span,
                     )
@@ -2674,9 +2671,8 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let sep_contribution = sep_str.len().saturating_mul(parts.len().saturating_sub(1));
             let total_output_len = total_parts_len.saturating_add(sep_contribution);
 
-            // TODO: cycle-findings-c32 — migrate to ErrorKind::ResourceLimitExceeded (non-catchable)
             if total_output_len > MAX_STRING_SIZE {
-                return Err(EvalError::internal(
+                return Err(EvalError::resource_limit_exceeded(
                     format!(
                         "join: output would exceed {} MB limit ({} bytes)",
                         MAX_STRING_SIZE / (1024 * 1024),
@@ -4604,6 +4600,38 @@ mod tests {
             err.message()
         );
         assert_eq!(err.kind.code(), "E040");
+    }
+
+    #[test]
+    fn try_resource_limit_exceeded_not_catchable() {
+        // ResourceLimitExceeded errors should NOT be caught by $try - they should propagate
+        fn resource_limit_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            let BuiltinArgs { call_span, .. } = ctx;
+            Err(EvalError::resource_limit_exceeded(
+                "test: exceeded resource limit (1000000)".to_string(),
+                call_span,
+            )
+            .into())
+        }
+        let b = Value::Builtin {
+            name: "resource_fail",
+            func: resource_limit_builtin,
+        };
+        let err = builtin_try(BuiltinArgs {
+            args: &[thunk(b)],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        // Should propagate as error, not return err dict
+        assert!(
+            err.message().contains("exceeded resource limit"),
+            "expected resource limit error to propagate, got: {}",
+            err.message()
+        );
+        assert_eq!(err.kind.code(), "E043");
     }
 
     #[test]
