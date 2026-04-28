@@ -2,10 +2,6 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c34-b-deferred: Deferred from cycle-findings-c34-b
-
-- [ ] Fix U-SUBSUME migration claim imprecision in `doc/06-type-inference.md:225` — the note says "[U-SUBSUME] migration removes promotions from unify()" but bidirectional U-SUBSUME (`is_subtype(σ, τ) ∨ is_subtype(τ, σ)`) would replicate the same leniency. To truly eliminate the CALL-MONO/CALL-POLY divergence, U-SUBSUME itself would need to become directional, which requires threading actual/expected directionality through unification (Pierce & Turner 2000). Fix: update the forward reference to acknowledge the design tension. (`doc/06-type-inference.md:225`) [Minor, computer-scientist C34 panel]
-
 ### cycle-findings-c33-b-deferred: Deferred from cycle-findings-c33-b
 
 - [ ] Add doc note to `doc/06-type-inference.md` [DICT-GEN] rule explaining Pass 3b/3c — the spec shows a single Pass 3 (infer+unify) but the implementation has three sub-passes: 3 (infer+unify into local subst), 3b (merge state.subst into local subst), and 3c (apply merged subst to field types). Fix: add an "Implementation note" callout explaining the two-substitution model at lines 498-503. (`doc/06-type-inference.md:498-503`) [Minor, type-theorist C33]
