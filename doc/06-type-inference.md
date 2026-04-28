@@ -222,7 +222,7 @@ Note: CALL-POLY does NOT use `check_expr` because type variables require binding
 | `IntLiteral(n)` | `Float` | false (no subtype relation) | succeeds |
 | `Float` | `IntLiteral(n)` | false | succeeds |
 
-In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. Planned fix: the [U-SUBSUME] migration (see Unification section) will remove bidirectional promotions from `unify()` and replace them with a directional `is_subtype` fallback, eliminating the divergence.
+In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. Planned refinement: the [U-SUBSUME] migration (see Unification section) will replace explicit promotion arms with a subsumption fallback. Note: a bidirectional [U-SUBSUME] (`is_subtype(σ, τ) ∨ is_subtype(τ, σ)`) preserves the same permissiveness as the current promotion arms; full divergence elimination requires directional [U-SUBSUME] — threading actual/expected roles through unification (Pierce & Turner 2000, local type inference), which is a more substantial change.
 
 ```
 Γ ⊢ f ⇒ Any

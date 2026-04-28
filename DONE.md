@@ -1532,3 +1532,7 @@ Minor findings from Cycle #36 full codebase health review. All items independent
 - [x] Fix `src/types.rs:96` `is_subtype` depth-safety comment — updated to cite structural recursion on finite ADT as direct termination argument and occurs-check (Robinson 1965) as supporting invariant for acyclicity. (`src/types.rs:96-99`) [Minor, computer-scientist C36]
 - [x] Fix `src/eval.rs:914,925` bind_args_thunks double scan — replaced `position()` + `any()` with single `position()` + match; eliminates redundant O(params) scan per named arg. (`src/eval.rs:912-934`) [Minor, performance-expert C36]
 - [x] Fix `src/main.rs:236` desugar comment — updated from misleading "pre-typecheck" to "mandatory pre-eval transformation; typecheck intentionally skipped in CLI". (`src/main.rs:236`) [Minor, integration-verifier C36]
+
+### cycle-findings-c34-b-deferred: Deferred from cycle-findings-c34-b
+
+- [x] Fix U-SUBSUME migration claim imprecision in `doc/06-type-inference.md:225` — updated forward reference to acknowledge design tension: bidirectional U-SUBSUME preserves same permissiveness; full divergence elimination requires directional U-SUBSUME (Pierce & Turner 2000). (`doc/06-type-inference.md:225`) [Minor, computer-scientist C34 panel]
