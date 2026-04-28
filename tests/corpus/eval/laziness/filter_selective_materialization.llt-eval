@@ -1,0 +1,8 @@
+# Lazy evaluation: $filter doesn't force tail elements beyond what's needed
+# Take 1 element from filtered Seq - the error in the tail shouldn't fire
+[call $collect [call $take 1
+    [call $filter
+     [fn [x] [call $< $x 10]]
+     [call $seq 5 [call $seq [call $error "should not evaluate"] []]]]]]
+===
+Dict({0: Int(5)})

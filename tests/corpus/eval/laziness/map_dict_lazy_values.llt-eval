@@ -1,0 +1,7 @@
+# Lazy evaluation: $map on Dict preserves thunks for unmapped values
+# Map a function over a dict but only access one key - the $error in other key should not fire
+[call $map [fn [x] [call $+ $x 10]] [a: 1  b: [call $error "should not evaluate"]]]
+---
+$$[a]
+===
+Int(11)
