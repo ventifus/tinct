@@ -1559,3 +1559,7 @@ Minor findings from Cycle #36 full codebase health review. All items independent
 - [x] Fix `Guarded` thunk error decoration — inner origin threaded through all 5 error paths. (`src/eval.rs`) [Major, eval-engine C41]
 - [x] Fix `doc/11-stdlib.md:231` function count (122→117). (`doc/11-stdlib.md:231`) [Major, stdlib-author C41]
 - [x] Fix parser error messages expose internal Rule enum — added `rule_to_display()` helper. (`src/parser.rs`) [Major, grammar-architect C41]
+
+### cycle-findings-c41-b: Deferred from cycle-findings-c41-a panel
+
+- [x] Fix `check_call` non-scheme CALL-POLY substitution leak — applied same seed+merge pattern as `check_call_with_scheme`. (`src/typecheck.rs:1112-1138`) [Major, computer-scientist C41 panel]

@@ -2,10 +2,6 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c41-b: Deferred from cycle-findings-c41-a panel
-
-- [ ] Fix `check_call` non-scheme CALL-POLY path has same substitution leak as `check_call_with_scheme` — at `src/typecheck.rs:1112`, `check_call` also creates a fresh `Substitution::new()` for CALL-POLY without seeding from `state.subst` or merging back. Apply the same fix as `check_call_with_scheme`: seed from `state.subst` before the unification loop, merge back after. (`src/typecheck.rs:1112`) [Major, computer-scientist C41 panel]
-
 ### cycle-findings-c41-a: Major Findings (Cycle #41)
 
 Major findings from Cycle #41 full codebase health review. All items independent unless noted.
