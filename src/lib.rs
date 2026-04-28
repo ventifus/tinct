@@ -24,7 +24,7 @@ pub mod lexer;
 pub mod parser;
 #[cfg(test)]
 pub(crate) mod test_util;
-pub(crate) mod typecheck;
+pub mod typecheck;
 pub(crate) mod types;
 pub(crate) mod value;
 // Rust-native builtin functions (stdlib-1 sprint).
@@ -230,8 +230,8 @@ pub fn value_to_display_string(
     depth: usize,
 ) -> Result<String, Box<error::EvalError>> {
     if depth > eval::MAX_EVAL_DEPTH {
-        return Err(error::EvalError::new(
-            format!("maximum display depth exceeded ({})", eval::MAX_EVAL_DEPTH),
+        return Err(error::EvalError::resource_limit_exceeded(
+            format!("display depth exceeded: maximum depth is {}", eval::MAX_EVAL_DEPTH),
             ast::Span::origin(),
         )
         .into());

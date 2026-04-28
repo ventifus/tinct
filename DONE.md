@@ -1569,3 +1569,13 @@ Minor findings from Cycle #36 full codebase health review. All items independent
 - [x] Fix `doc/10-errors.md` variant catalog missing `IncludeForbidden` — added to Limit errors (E040-E049) section. (`doc/10-errors.md:425`) [Minor, integration-verifier C32]
 - [x] Fix `doc/06-type-inference.md` [U-VAR-LEVEL] rule omits row variable lowering — updated to "FTV(τ) ∪ FRV(τ)". (`doc/06-type-inference.md:492-506`) [Minor, type-theorist C32]
 - [x] Fix `doc/08-evaluation.md` `$reduce`/`$fold` laziness table — split into Dict (fully lazy PendingCall chain) vs Seq (tail materialized per step). (`doc/08-evaluation.md:798-799`) [Minor, eval-engine C32]
+
+### cycle-findings-c31-critical: Critical Fixes (Cycle #31)
+
+- [x] Fix CLI `run_eval` never calls typecheck — added `typecheck_file` call in `src/main.rs`. (`src/main.rs`) [Critical, integration-verifier C31]
+- [x] Fix `doc/10-errors.md` omits E035/E043 — inserted ValueNotSerializable and ResourceLimitExceeded in codes table and variant table; updated count to 30. (`doc/10-errors.md`) [Critical, integration-verifier C31]
+- [x] Add corpus regression test for Guarded thunk DepthExceeded — `tests/corpus/eval/errors/typeassert_depth_exceeded_not_circular.llt-eval`. [Critical, test-crafter C31]
+- [x] Fix lambda checking mode backwards type error — swapped arguments in two `type_mismatch` calls. (`src/typecheck.rs:399,403`) [Major, type-theorist C31]
+- [x] Fix `value_to_display_string` depth-limit catchable — replaced with `resource_limit_exceeded` (E043, uncatchable). (`src/lib.rs`) [Major, integration-verifier C31]
+- [x] Fix MEMO-REACCESS missing `is_cacheable()` guard — added guard before `set_state(Failed)`. (`src/eval.rs:1252`) [Major, integration-verifier C31]
+- [x] Add element count limit in `json_to_value` — added `MAX_COLLECT_SIZE` check for both Array and Object arms. (`src/builtins.rs`) [Major, security-expert C31]

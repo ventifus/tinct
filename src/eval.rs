@@ -1249,7 +1249,7 @@ pub fn materialize(
                     }
                 }
                 // Update cached error if we modified it
-                if should_update_cache {
+                if should_update_cache && cloned.kind.is_cacheable() {
                     drop(state);
                     thunk.set_state(ThunkState::Failed(Box::new(cloned.clone())));
                 }
