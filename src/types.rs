@@ -93,7 +93,10 @@ impl PartialEq for Type {
 }
 
 impl Type {
-    /// Recursive without a depth guard; safe because type nesting is bounded by the parser's MAX_DEPTH (256).
+    /// Recursive without a depth guard; safe because `Type` is a finite tree (structural recursion
+    /// on an algebraic data type — each recursive call descends into a strict sub-term). The
+    /// occurs-check invariant (Robinson 1965) additionally ensures that substitution-applied types
+    /// are acyclic.
     pub fn is_subtype(sub: &Type, sup: &Type) -> bool {
         if matches!(sub, Type::Any) || matches!(sup, Type::Any) {
             return true;

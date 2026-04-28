@@ -910,24 +910,26 @@ fn bind_args_thunks(
 
     // BIND-NAMED: Validation only (all bindings were already done in BIND-POSITIONAL)
     for (name, _) in named {
-        // C-NO-OVERLAP: named arg must not target a positionally-bound parameter
-        if let Some(idx) = regular_params.iter().position(|p| &p.name == name) {
-            if idx < positional.len() {
+        // Single scan: C-NO-OVERLAP and C-NAMED-VALID in one position() call
+        match regular_params.iter().position(|p| &p.name == name) {
+            Some(idx) if idx < positional.len() => {
+                // C-NO-OVERLAP: named arg targets a positionally-bound parameter
                 return Err(Box::new(EvalError::named_arg_conflict(
                     name.clone(),
                     *call_span,
                 )));
             }
-        }
-
-        // C-NAMED-VALID: named arg must target an existing parameter
-        // (Kotlin model: ANY param can be named, not just optional params)
-        let param_exists = regular_params.iter().any(|p| &p.name == name);
-        if !param_exists {
-            return Err(Box::new(EvalError::unknown_named_arg(
-                name.clone(),
-                *call_span,
-            )));
+            None => {
+                // C-NAMED-VALID: named arg must target an existing parameter
+                // (Kotlin model: ANY param can be named, not just optional params)
+                return Err(Box::new(EvalError::unknown_named_arg(
+                    name.clone(),
+                    *call_span,
+                )));
+            }
+            Some(_) => {
+                // Valid: named arg targets an existing param that wasn't positionally bound
+            }
         }
     }
 

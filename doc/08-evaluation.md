@@ -183,7 +183,7 @@ Violating these produces a runtime error (cycle detection or depth limit) for th
 | Dict | Dict (lazy values via PendingCall thunks) | Seq (must evaluate predicates) |
 | Seq | Seq (lazy) | Seq (lazy) |
 
-`$map` on a dict is the key insight: it returns a dict with the **same keys** but each value wrapped in a `PendingCall` thunk. No computation happens until a specific value is accessed. This makes `[call $map $f $big-dict]` O(n) to construct and O(1) per element access, compared to the current O(n^2) eager implementation.
+`$map` on a dict is the key insight: it returns a dict with the **same keys** but each value wrapped in a `PendingCall` thunk. No computation happens until a specific value is accessed. This gives `[call $map $f $big-dict]` O(n) construction and O(1) per-element access.
 
 `$filter` on a dict must return a Seq because the output keys are unknown without evaluating predicates. Use `$collect` to get a dict back.
 

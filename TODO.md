@@ -2,16 +2,6 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c36-b: Minor Findings (Cycle #36)
-
-Minor findings from Cycle #36 full codebase health review. All items independent.
-
-- [ ] Fix `doc/08-evaluation.md:186` stale "current O(n²) eager implementation" comment for `$map` on dicts — `builtin_map` at `src/builtins.rs:1853-1868` already implements the lazy PendingCall thunk pattern described. Fix: delete the phrase "compared to the current O(n²) eager implementation"; replace with "enabling O(n) construction and O(1) per-element access". (`doc/08-evaluation.md:186`) [Minor, eval-engine C36]
-- [ ] Fix `doc/11-stdlib.md:286` `$join` has fake LLT-style signature — `$join` is a Rust native builtin with no LLT wrapper; its documentation should not show a `[fn ...]` expression as its definition. Fix: remove the fake LLT signature, add note "Rust native builtin — no LLT wrapper". (`doc/11-stdlib.md:286`) [Minor, stdlib-author C36]
-- [ ] Fix `src/types.rs:96` `is_subtype` depth-safety comment references wrong invariant AND fix stale `[x]` in TODO.md — comment says "safe because type nesting is bounded by the parser's MAX_DEPTH (256)" but the actual soundness guarantee is the HM occurs-check invariant: no type variable appears in its own binding (Robinson 1965), so type structure is acyclic. The TODO.md entry at line 356 marks the fix as `[x]` (done) but the code comment was never updated. Fix: update the comment to reference the occurs-check invariant; remove the incorrect `[x]` mark from TODO.md:356. (`src/types.rs:96`, `TODO.md`) [Minor, computer-scientist C36]
-- [ ] Fix `src/eval.rs:914,925` bind_args_thunks BIND-NAMED does two O(params) linear scans per named arg — `iter().position()` (line 914) then redundant `iter().any()` (line 925) on the same params slice. Fix: single `if let Some(idx) = regular_params.iter().position(|p| &p.name == name)` covers both overlap (idx < positional.len()) and existence checks; delete the second scan. (`src/eval.rs:914,925`) [Minor, performance-expert C36]
-- [ ] Fix `src/main.rs:236-237` desugar comment implies typecheck runs after — comment "pre-typecheck AST transformation" implies the typecheck step follows in CLI, but `run_eval` never calls typecheck (tracked at TODO.md cycle-findings-c31). Fix: update comment to say "Desugar $_ implicit lambdas (mandatory pre-eval transformation; typecheck intentionally skipped in CLI — see cycle-findings-c31)". (`src/main.rs:236-237`) [Minor, integration-verifier C36]
-
 ### cycle-findings-c34-b-deferred: Deferred from cycle-findings-c34-b
 
 - [ ] Fix U-SUBSUME migration claim imprecision in `doc/06-type-inference.md:225` — the note says "[U-SUBSUME] migration removes promotions from unify()" but bidirectional U-SUBSUME (`is_subtype(σ, τ) ∨ is_subtype(τ, σ)`) would replicate the same leniency. To truly eliminate the CALL-MONO/CALL-POLY divergence, U-SUBSUME itself would need to become directional, which requires threading actual/expected directionality through unification (Pierce & Turner 2000). Fix: update the forward reference to acknowledge the design tension. (`doc/06-type-inference.md:225`) [Minor, computer-scientist C34 panel]

@@ -233,7 +233,7 @@ fn run_eval(
     // Parse
     let mut ast = parse(&source).map_err(|e| format!("{e}"))?;
 
-    // Desugar $_ implicit lambdas (pre-typecheck AST transformation)
+    // Desugar $_ implicit lambdas (mandatory pre-eval transformation; typecheck intentionally skipped in CLI — see TODO.md: Fix CLI run_eval never calls typecheck)
     tinct::desugar::desugar_file(&mut ast.node);
 
     // Create stdlib environment
