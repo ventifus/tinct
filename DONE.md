@@ -1540,3 +1540,13 @@ Minor findings from Cycle #36 full codebase health review. All items independent
 ### cycle-findings-c33-b-deferred: Deferred from cycle-findings-c33-b
 
 - [x] Add doc note to `doc/06-type-inference.md` [DICT-GEN] rule explaining Pass 3b/3c — added implementation note at lines 561-564 explaining the three sub-passes (3a: clone state.subst, 3: unify into local, 3b: merge state.subst updates, 3c: apply merged subst to field types). (`doc/06-type-inference.md:561-564`) [Minor, type-theorist C33]
+
+### cycle-findings-c32-code: Code Fixes (Cycle #32)
+
+- [x] Add `ErrorKind::ResourceLimitExceeded` variant (E043, non-catchable) — replaces catchable `Internal` for 9 resource limit sites in builtins.rs ($replace, $upper, $lower, $collect, $join). (`src/error.rs`, `src/builtins.rs`) [Minor, security-expert + computer-scientist C32]
+- [x] Add `test_collect_all_vars` unit test — covers TypeVar, Record+RowVar, Function, Seq, ground types. (`src/types.rs`) [Minor, test-crafter C32]
+- [x] Migrate `instantiate_at_level`, `instantiate`, `generalize` to `collect_all_vars` — fused single-pass replaces two separate tree walks + two BTreeSet allocations. (`src/types.rs`) [Minor, performance-expert C32]
+- [x] Fix REPL `eval_input` never calls typecheck — added `typecheck_file` call after desugar in repl.rs. (`src/repl.rs`) [Minor, integration-verifier C32]
+- [x] Fix `src/ast.rs:128` stale line reference — updated to `typecheck.rs:1224`. (`src/ast.rs`) [Minor, grammar-architect C32]
+- [x] Fix `check_expr` ann_mapping unconditional HashMap allocation — added annotation-presence guard. (`src/typecheck.rs`) [Minor, performance-expert C32]
+- [x] Add capacity hint to `infer_dict` Pass 4 `schemes` map — `IndexMap::with_capacity(field_types.len())`. (`src/typecheck.rs`) [Minor, performance-expert C32]

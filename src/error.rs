@@ -121,6 +121,12 @@ pub enum ErrorKind {
     },
     /// Filesystem access is disabled (--no-fs sandbox flag).
     IncludeForbidden,
+    /// Resource limit exceeded (collection size, string size, etc.).
+    /// Like `DepthExceeded`, this is non-catchable — resource limits are
+    /// safety boundaries, not application-level errors.
+    ResourceLimitExceeded {
+        message: String,
+    },
 
     // --- Include errors (E050-E059) ---
     IncludeNotAvailable,
@@ -192,6 +198,7 @@ impl ErrorKind {
             Self::DepthExceeded { .. } => "E040",
             Self::JsonDepthExceeded { .. } => "E041",
             Self::IncludeForbidden => "E042",
+            Self::ResourceLimitExceeded { .. } => "E043",
             Self::IncludeNotAvailable => "E050",
             Self::IncludeIoError { .. } => "E051",
             Self::IncludeCycle { .. } => "E052",
@@ -214,11 +221,14 @@ impl ErrorKind {
     }
 
     /// Returns `false` for errors that must not be caught by `$try`.
-    /// Currently only `DepthExceeded` — resource limit errors like stack overflow
-    /// should propagate to the runtime, not be suppressible by user code.
+    /// Resource limit errors (`DepthExceeded`, `ResourceLimitExceeded`) should
+    /// propagate to the runtime, not be suppressible by user code.
     /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
     pub fn is_catchable(&self) -> bool {
-        !matches!(self, Self::DepthExceeded { .. })
+        !matches!(
+            self,
+            Self::DepthExceeded { .. } | Self::ResourceLimitExceeded { .. }
+        )
     }
 }
 
@@ -271,6 +281,7 @@ impl fmt::Display for ErrorKind {
                 write!(f, "maximum JSON nesting depth exceeded ({limit})")
             }
             Self::IncludeForbidden => write!(f, "filesystem access is disabled (--no-fs)"),
+            Self::ResourceLimitExceeded { message } => write!(f, "{}", message),
             Self::IncludeNotAvailable => write!(f, "include: not available in this context"),
             Self::IncludeIoError { path, detail } => {
                 write!(f, "include: cannot access \"{path}\": {detail}")
@@ -373,6 +384,10 @@ impl PartialEq for ErrorKind {
                 l1 == l2
             }
             (Self::IncludeForbidden, Self::IncludeForbidden) => true,
+            (
+                Self::ResourceLimitExceeded { message: m1 },
+                Self::ResourceLimitExceeded { message: m2 },
+            ) => m1 == m2,
             (Self::IncludeNotAvailable, Self::IncludeNotAvailable) => true,
             (
                 Self::IncludeIoError {
@@ -693,6 +708,15 @@ impl EvalError {
         }
     }
 
+    pub fn resource_limit_exceeded(message: String, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::ResourceLimitExceeded { message },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
     pub fn include_not_available(definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::IncludeNotAvailable,
@@ -922,9 +946,14 @@ mod tests {
 
     #[test]
     fn test_is_catchable() {
-        // DepthExceeded is NOT catchable
+        // DepthExceeded and ResourceLimitExceeded are NOT catchable
         let depth_err = ErrorKind::DepthExceeded { limit: 256 };
         assert!(!depth_err.is_catchable());
+
+        let resource_err = ErrorKind::ResourceLimitExceeded {
+            message: "collect: exceeded maximum collection size (1000000)".to_string(),
+        };
+        assert!(!resource_err.is_catchable());
 
         // All other errors ARE catchable
         assert!(ErrorKind::KeyNotFound {
@@ -1041,6 +1070,9 @@ mod tests {
             ErrorKind::DepthExceeded { limit: 256 },
             ErrorKind::JsonDepthExceeded { limit: 128 },
             ErrorKind::IncludeForbidden,
+            ErrorKind::ResourceLimitExceeded {
+                message: "test: resource limit exceeded (1000)".to_string(),
+            },
             ErrorKind::IncludeNotAvailable,
             ErrorKind::IncludeIoError {
                 path: "x".to_string(),
@@ -1117,6 +1149,14 @@ mod tests {
         // DepthExceeded is NOT cacheable (must retry at different depth)
         let depth_err = ErrorKind::DepthExceeded { limit: 256 };
         assert!(!depth_err.is_cacheable());
+
+        // ResourceLimitExceeded IS cacheable (unlike DepthExceeded, resource limits
+        // are not context-dependent on call depth — a failed resource limit check
+        // will fail consistently regardless of when it's retried)
+        assert!(ErrorKind::ResourceLimitExceeded {
+            message: "collect: exceeded maximum collection size (1000000)".to_string(),
+        }
+        .is_cacheable());
 
         // All other errors ARE cacheable (can be stored in Failed thunk state)
         assert!(ErrorKind::KeyNotFound {
@@ -1375,6 +1415,15 @@ mod tests {
             format!("{}", ErrorKind::IncludeForbidden),
             "filesystem access is disabled (--no-fs)"
         );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::ResourceLimitExceeded {
+                    message: "upper: output would exceed 64 MB limit (67108864 bytes)".to_string(),
+                }
+            ),
+            "upper: output would exceed 64 MB limit (67108864 bytes)"
+        );
 
         // Include errors (E050-E059)
         assert_eq!(
@@ -1625,6 +1674,47 @@ mod tests {
         // Should still be 1 frame (duplicate was avoided)
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "first");
+    }
+
+    #[test]
+    fn test_resource_limit_exceeded_not_catchable() {
+        // Verify that ResourceLimitExceeded is non-catchable like DepthExceeded
+        let err = ErrorKind::ResourceLimitExceeded {
+            message: "collect: exceeded maximum collection size (1000000)".to_string(),
+        };
+        assert!(
+            !err.is_catchable(),
+            "ResourceLimitExceeded must not be catchable by $try"
+        );
+    }
+
+    #[test]
+    fn test_resource_limit_exceeded_is_cacheable() {
+        // Unlike DepthExceeded, ResourceLimitExceeded IS cacheable
+        // (resource limits are absolute, not context-dependent)
+        let err = ErrorKind::ResourceLimitExceeded {
+            message: "upper: output would exceed 64 MB limit".to_string(),
+        };
+        assert!(
+            err.is_cacheable(),
+            "ResourceLimitExceeded should be cacheable"
+        );
+    }
+
+    #[test]
+    fn test_resource_limit_exceeded_display() {
+        let err = EvalError::resource_limit_exceeded(
+            "collect: exceeded maximum collection size (1000000)".to_string(),
+            test_span(5, 10, 5, 20),
+        );
+        let display = format!("{err}");
+
+        // Should contain error code E043
+        assert!(display.contains("[E043]"));
+        // Should contain the full message
+        assert!(display.contains("collect: exceeded maximum collection size"));
+        // Should contain the limit value
+        assert!(display.contains("1000000"));
     }
 
     #[test]

@@ -1117,10 +1117,8 @@ pub fn unify(
 #[cfg(test)]
 pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
     let mut type_vars = BTreeSet::new();
-    ty.collect_type_vars(&mut type_vars);
-
     let mut row_vars = BTreeSet::new();
-    ty.collect_row_vars(&mut row_vars);
+    ty.collect_all_vars(&mut type_vars, &mut row_vars);
 
     let mut renaming = Substitution::new();
     for var in type_vars {
@@ -1153,10 +1151,8 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
 /// default to level 0 and are permanently excluded from generalization by [U-VAR-LEVEL].
 pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     let mut type_vars = BTreeSet::new();
-    ty.collect_type_vars(&mut type_vars);
-
     let mut row_vars = BTreeSet::new();
-    ty.collect_row_vars(&mut row_vars);
+    ty.collect_all_vars(&mut type_vars, &mut row_vars);
 
     let mut renaming = Substitution::new();
     for var in type_vars {
@@ -1239,10 +1235,8 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
     }
 
     let mut all_type_vars = BTreeSet::new();
-    ty.collect_type_vars(&mut all_type_vars);
-
     let mut all_row_vars = BTreeSet::new();
-    ty.collect_row_vars(&mut all_row_vars);
+    ty.collect_all_vars(&mut all_type_vars, &mut all_row_vars);
 
     // Filter: keep only vars where levels[var] > level
     let generalizable_type_vars: Vec<String> = all_type_vars
@@ -2012,6 +2006,71 @@ mod tests {
         assert!(vars.contains("a"));
         assert!(vars.contains("b"));
         assert_eq!(vars.len(), 2);
+    }
+
+    #[test]
+    fn test_collect_all_vars() {
+        // TypeVar produces type_vars only
+        let ty = Type::TypeVar("a".into(), 0);
+        let mut type_vars = BTreeSet::new();
+        let mut row_vars = BTreeSet::new();
+        ty.collect_all_vars(&mut type_vars, &mut row_vars);
+        assert!(type_vars.contains("a"));
+        assert!(row_vars.is_empty());
+
+        // Record with RowVar tail produces both type_vars and row_vars
+        let mut fields = HashMap::new();
+        fields.insert("x".into(), Type::TypeVar("t1".into(), 0));
+        fields.insert("y".into(), Type::Int);
+        let ty = Type::Record(Row {
+            fields,
+            tail: RowTail::RowVar("r1".into(), 0),
+        });
+        let mut type_vars = BTreeSet::new();
+        let mut row_vars = BTreeSet::new();
+        ty.collect_all_vars(&mut type_vars, &mut row_vars);
+        assert!(type_vars.contains("t1"));
+        assert!(row_vars.contains("r1"));
+        assert_eq!(type_vars.len(), 1);
+        assert_eq!(row_vars.len(), 1);
+
+        // Function type produces type_vars from params and return
+        let ty = Type::Function {
+            params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+            ret: Box::new(Type::TypeVar("c".into(), 0)),
+        };
+        let mut type_vars = BTreeSet::new();
+        let mut row_vars = BTreeSet::new();
+        ty.collect_all_vars(&mut type_vars, &mut row_vars);
+        assert!(type_vars.contains("a"));
+        assert!(type_vars.contains("b"));
+        assert!(type_vars.contains("c"));
+        assert!(row_vars.is_empty());
+        assert_eq!(type_vars.len(), 3);
+
+        // Seq type produces type_vars from element type
+        let ty = Type::Seq(Box::new(Type::TypeVar("elem".into(), 0)));
+        let mut type_vars = BTreeSet::new();
+        let mut row_vars = BTreeSet::new();
+        ty.collect_all_vars(&mut type_vars, &mut row_vars);
+        assert!(type_vars.contains("elem"));
+        assert!(row_vars.is_empty());
+
+        // Ground types produce empty sets
+        for ty in [
+            Type::Int,
+            Type::Str,
+            Type::Bool,
+            Type::Float,
+            Type::Number,
+            Type::Any,
+        ] {
+            let mut type_vars = BTreeSet::new();
+            let mut row_vars = BTreeSet::new();
+            ty.collect_all_vars(&mut type_vars, &mut row_vars);
+            assert!(type_vars.is_empty());
+            assert!(row_vars.is_empty());
+        }
     }
 
     #[test]
