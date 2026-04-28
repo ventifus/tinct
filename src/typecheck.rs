@@ -689,6 +689,10 @@ fn infer_dict(
     for (k, row) in &subst.row_map {
         state.subst.row_map.insert(k.clone(), row.clone());
     }
+    state
+        .subst
+        .check_size(Span::origin())
+        .map_err(|e| vec![e])?;
 
     // Pass 4: Generalize - create TypeSchemes for each entry
     let mut schemes = IndexMap::with_capacity(field_types.len());
@@ -822,6 +826,7 @@ fn check_dot_access(
 
                     // Bind ρ → binding in the global substitution
                     state.subst.row_map.insert(rho.clone(), binding);
+                    state.subst.check_size(span).map_err(|e| vec![e])?;
 
                     Ok(beta)
                 }
@@ -1017,6 +1022,7 @@ fn check_call_with_scheme(
                 for (k, row) in &subst.row_map {
                     state.subst.row_map.insert(k.clone(), row.clone());
                 }
+                state.subst.check_size(span).map_err(|e| vec![e])?;
                 Ok(subst.apply(ret))
             } else {
                 // Zero-param function: return the return type
@@ -1185,6 +1191,7 @@ fn check_call(
                 for (k, row) in &subst.row_map {
                     state.subst.row_map.insert(k.clone(), row.clone());
                 }
+                state.subst.check_size(span).map_err(|e| vec![e])?;
                 Ok(subst.apply(inst_ret))
             } else {
                 // Zero-param polymorphic function: return the instantiated return type

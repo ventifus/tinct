@@ -80,6 +80,9 @@ enum Expr {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<Param>>,
         body: Box<Spanned<Expr>>,
+        // True if created by `$_` underscore desugaring (src/desugar.rs), false if user-written.
+        // Used for origin tracking (Pombrio & Krishnamurthi 2014) — tooling can distinguish
+        // sugar-generated from explicit lambdas.
         desugared: bool,
     },
     TypeAlias(Box<Spanned<Expr>>),
@@ -88,7 +91,9 @@ enum Expr {
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Box<Spanned<Expr>>,
-        // Filled by type checker (write-once elaboration).
+        // Filled by type checker (write-once elaboration). RefCell provides interior mutability
+        // so the type checker can write the resolved type through a shared reference (&Spanned<Expr>)
+        // without changing function signatures throughout the pipeline. Parser initializes to None.
         resolved_type: RefCell<Option<Type>>,
     },
 
