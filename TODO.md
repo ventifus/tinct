@@ -2,15 +2,9 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c34-b: Minor Findings (Cycle #34)
+### cycle-findings-c34-b-deferred: Deferred from cycle-findings-c34-b
 
-Minor findings from Cycle #34 full codebase health review. All items independent.
-
-- [ ] Fix `stdlib/prelude.llt:7-17` header comment outdated — comment lists primary names (`+`, `-`, `*`, etc.) that the prelude now defines internally as shadowable wrappers (lines 523-533); the actual internal dependencies are the `$builtin-*` names. Fix: replace lines 7-17 with the actual builtin-* names that internal functions call. (`stdlib/prelude.llt:7-17`) [Minor, stdlib-author C34]
-- [ ] Add `doc/02-syntax.md:714` canonical source declaration for Complete Grammar — the section duplicates `src/grammar.pest` (229 lines) creating dual source-of-truth risk. Fix: add header: "The canonical grammar is `src/grammar.pest`. This section reproduces it for reference with inline commentary." (`doc/02-syntax.md:714`) [Minor, grammar-architect C34]
-- [ ] Add missing corpus tests for `concat`, `words`, `flatten` edge cases — `concat` has no Dict+Dict or Seq+Seq empty tests; `words` has no empty/only-spaces/leading-trailing/multiple-spaces tests; `flatten` has no depth>2 nesting test. Fix: add `concat_dict_dict.llt-eval`, `concat_seq_seq.llt-eval`, `words_empty.llt-eval`, `words_only_spaces.llt-eval`, `words_leading_trailing.llt-eval`, `words_multiple_spaces.llt-eval`, `flatten_deep_nesting.llt-eval`. (`tests/corpus/eval/stdlib/`) [Minor, stdlib-author C34]
-- [ ] Add `tests/corpus/eval/typecheck_advisory.llt-eval` proving type errors are advisory — no corpus test proves end-to-end that a file with a type error still evaluates successfully. Fix: add file with a deliberate type error (e.g., `[x@Int: "string"]`) that evaluates to a valid result, proving eval proceeds despite typecheck failure. (`tests/corpus/eval/`) [Minor, test-crafter C34]
-- [ ] Document CALL-MONO/CALL-POLY literal type divergence in `doc/06-type-inference.md` — `unify()` at `src/types.rs:1040-1066` has 8 bidirectional literal promotion rules making CALL-POLY (which uses `unify()`) strictly more permissive than CALL-MONO (which uses `is_subtype()`) for literal types. Fix: add note: "CALL-POLY is strictly more permissive than CALL-MONO for literal types due to bidirectional promotion in unify(). Planned fix: [U-SUBSUME] migration removes promotions from unify()." (`doc/06-type-inference.md`, `src/types.rs:1040-1066`) [Minor, computer-scientist C34]
+- [ ] Fix U-SUBSUME migration claim imprecision in `doc/06-type-inference.md:225` — the note says "[U-SUBSUME] migration removes promotions from unify()" but bidirectional U-SUBSUME (`is_subtype(σ, τ) ∨ is_subtype(τ, σ)`) would replicate the same leniency. To truly eliminate the CALL-MONO/CALL-POLY divergence, U-SUBSUME itself would need to become directional, which requires threading actual/expected directionality through unification (Pierce & Turner 2000). Fix: update the forward reference to acknowledge the design tension. (`doc/06-type-inference.md:225`) [Minor, computer-scientist C34 panel]
 
 ### cycle-findings-c33-b-deferred: Deferred from cycle-findings-c33-b
 

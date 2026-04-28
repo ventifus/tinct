@@ -1,0 +1,4 @@
+# concat: two empty dicts
+[call $concat [] []]
+===
+Dict({})

@@ -714,7 +714,9 @@ doc_separator = @{ "---" ~ !bare_word_char }
 
 ## 6. Complete Grammar
 
-The full pest grammar, consolidated from all sections above. This is the normative grammar definition.
+**Canonical Source:** The authoritative grammar is `src/grammar.pest`. This section reproduces it for reference with inline commentary. When the two diverge, the implementation in `src/grammar.pest` is correct and this documentation should be updated.
+
+The full pest grammar, consolidated from all sections above.
 
 **Implementation note:** Both a pest grammar (`src/grammar.pest`) and a hand-written lexer (`src/lexer.rs`) exist. The pest grammar uses compound-atomic rules (`${}`) for whitespace sensitivity; the lexer uses `last_significant_token` tracking.
 

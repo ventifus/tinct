@@ -1,5 +1,5 @@
 // LLT Grammar -- pest PEG
-// See doc/02-syntax.md for the formal specification.
+// This is the canonical grammar definition. doc/02-syntax.md §6 reproduces it for reference.
 
 // === Implicit Whitespace and Comments ===
 // Skipped automatically between tokens in non-atomic rules.
