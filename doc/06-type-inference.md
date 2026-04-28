@@ -557,6 +557,12 @@ Pass 2 — Type aliases: unchanged. Aliases remain monomorphic
 Pass 3 — Infer values: at level ℓ+1, for each non-alias
          entry kᵢ, infer Γ' ⊢ eᵢ : τᵢ, then unify(αᵢ, τᵢ).
          Apply resulting substitution S.
+         
+         Implementation note: Pass 3 splits into sub-passes 3a/3b/3c
+         to handle the two-substitution model (local + state.subst).
+         3a: clone state.subst → local subst; 3: unify into local;
+         3b: merge state.subst updates → local; 3c: apply merged → fields.
+         
 Pass 4 — Generalize (NEW): for each entry kᵢ,
          σᵢ = generalize(ℓ, S(αᵢ), state)
          Update Γ'(kᵢ) = σᵢ

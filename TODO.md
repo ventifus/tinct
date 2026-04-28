@@ -2,10 +2,6 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c33-b-deferred: Deferred from cycle-findings-c33-b
-
-- [ ] Add doc note to `doc/06-type-inference.md` [DICT-GEN] rule explaining Pass 3b/3c — the spec shows a single Pass 3 (infer+unify) but the implementation has three sub-passes: 3 (infer+unify into local subst), 3b (merge state.subst into local subst), and 3c (apply merged subst to field types). Fix: add an "Implementation note" callout explaining the two-substitution model at lines 498-503. (`doc/06-type-inference.md:498-503`) [Minor, type-theorist C33]
-
 ### cycle-findings-c32: Findings (Cycle #32)
 
 Consolidated from: cycle-findings-c32-a-panel, cycle-findings-c32-b
