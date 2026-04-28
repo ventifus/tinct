@@ -1563,3 +1563,9 @@ Minor findings from Cycle #36 full codebase health review. All items independent
 ### cycle-findings-c41-b: Deferred from cycle-findings-c41-a panel
 
 - [x] Fix `check_call` non-scheme CALL-POLY substitution leak — applied same seed+merge pattern as `check_call_with_scheme`. (`src/typecheck.rs:1112-1138`) [Major, computer-scientist C41 panel]
+
+### cycle-findings-c32-docs: Doc Fixes (Cycle #32)
+
+- [x] Fix `doc/10-errors.md` variant catalog missing `IncludeForbidden` — added to Limit errors (E040-E049) section. (`doc/10-errors.md:425`) [Minor, integration-verifier C32]
+- [x] Fix `doc/06-type-inference.md` [U-VAR-LEVEL] rule omits row variable lowering — updated to "FTV(τ) ∪ FRV(τ)". (`doc/06-type-inference.md:492-506`) [Minor, type-theorist C32]
+- [x] Fix `doc/08-evaluation.md` `$reduce`/`$fold` laziness table — split into Dict (fully lazy PendingCall chain) vs Seq (tail materialized per step). (`doc/08-evaluation.md:798-799`) [Minor, eval-engine C32]

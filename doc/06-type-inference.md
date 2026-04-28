@@ -495,15 +495,15 @@ When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During
 unify(α, τ, S) = S[α ↦ τ]
     if α ∉ FV(τ)                                   [occurs check]
     and set ℓ(β) = min(ℓ(β), ℓ(α))
-        for all β ∈ FTV(τ)                         [U-VAR-LEVEL]
+        for all β ∈ FTV(τ) ∪ FRV(τ)                [U-VAR-LEVEL]
 
 unify(τ, α, S) = S[α ↦ τ]
     if α ∉ FV(τ)                                   [occurs check]
     and set ℓ(β) = min(ℓ(β), ℓ(α))
-        for all β ∈ FTV(τ)                         [U-VAR-LEVEL-SYM]
+        for all β ∈ FTV(τ) ∪ FRV(τ)                [U-VAR-LEVEL-SYM]
 ```
 
-Both rules lower levels symmetrically: when binding α to τ, every type variable β inside τ has its level lowered to `min(ℓ(β), ℓ(α))`. This prevents variables from escaping their scope through either side of a unification.
+Both rules lower levels symmetrically: when binding α to τ, every type variable β and every row variable ρ inside τ has its level lowered to `min(ℓ(β or ρ), ℓ(α))`. This prevents variables from escaping their scope through either side of a unification. Row variables must be lowered because τ may contain row variables through Record nesting (e.g., τ = Record({x: Int, ...ρ})).
 
 **Any-unification and generalization.** When a type variable α is unified with `Any`, the current [U-ANY] rules succeed without binding α. To prevent incorrect generalization of the unbound α, `unify(α, Any)` sets `ℓ(α) = 0` (below all binding levels):
 

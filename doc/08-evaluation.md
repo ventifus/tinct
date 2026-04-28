@@ -795,7 +795,8 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$map` on seq | Returns seq applying function to each element (lazy) | Enables infinite sequence transforms |
 | `$filter` on dict | Returns Seq (must evaluate predicates) | Predicates must run to know which keys to keep |
 | `$filter` on seq | Returns seq filtering elements (lazy) | Lazy sequence filtering |
-| `$reduce`, `$fold` | Dict path builds lazy PendingCall chain; Seq path materializes tail at each step | Dual-dispatch: Dict is lazy, Seq materializes |
+| `$reduce`, `$fold` on dict | Builds lazy PendingCall chain (acc₀=init, acc₁=PendingCall(f,[acc₀,v₀]), ...) | Fully lazy — no materialization during chain construction |
+| `$reduce`, `$fold` on seq | Accumulator stays lazy via PendingCall chain; materializes tail at each step for control flow | Must check tail to detect sequence end, but accumulator builds same lazy chain as Dict path |
 | `$map-entries` | Returns dict with PendingCall thunks on transformed entries | Same as `$map` on dicts |
 | `$from-entries` | Eagerly reduces entry pairs into dict | Must construct concrete dict |
 | `$any?`, `$all?` | Short-circuit: materializes elements until condition met/failed | Predicates must run |

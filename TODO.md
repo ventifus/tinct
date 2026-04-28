@@ -2,25 +2,6 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c41-a: Major Findings (Cycle #41)
-
-Major findings from Cycle #41 full codebase health review. All items independent unless noted.
-
-- [x] Fix `check_call_with_scheme` leaks local substitution — seeded from state.subst (Pass 3a pattern) and merged back after unification loop (Pass 3d pattern). (`src/typecheck.rs:945-970`) [Critical, computer-scientist C41]
-- [x] Fix `check_call_with_scheme` local substitution not seeded from `state.subst` — combined with above fix. (`src/typecheck.rs:945`) [Major, computer-scientist C41]
-- [x] Fix `materialize()` depth check fires before `Materialized` early-return — moved into each deferred-state arm with proper state restoration. (`src/eval.rs`) [Major, eval-engine C41]
-- [x] Fix `Guarded` thunk error decoration uses guard origin instead of inner origin — captured inner origin and applied to all 5 error paths in Guarded arm. (`src/eval.rs`) [Major, eval-engine C41]
-- [x] Fix `doc/11-stdlib.md:231` function count wrong again — updated to ~117. (`doc/11-stdlib.md:231`) [Major, stdlib-author C41]
-- [x] Fix parser error messages expose internal Rule enum debug output — added `rule_to_display()` helper, updated 9 error sites. (`src/parser.rs`) [Major, grammar-architect C41]
-
-### cycle-findings-c32-docs: Doc Fixes (Cycle #32)
-
-Documentation-only fixes from Cycle #32. All items independent.
-
-- [ ] Fix `doc/10-errors.md` variant catalog (lines 378-446) missing `IncludeForbidden` — the pseudocode catalog lists 27 variants; `IncludeForbidden` is absent from the `// Limit errors (E040-E049)` section despite being in the codes table (line 495) and the full variant table (line 796). The C31-tracked fix adds E035 but will not add IncludeForbidden. Fix: insert `IncludeForbidden` between `JsonDepthExceeded` and the Include errors comment. (`doc/10-errors.md:416-421`) [Minor, integration-verifier C32]
-- [ ] Fix `doc/06-type-inference.md` [U-VAR-LEVEL] rule omits row variable lowering — the rules at lines 437-443 say "for all β ∈ FTV(τ)" but `types.rs:951-957` also collects row variables via `collect_row_vars` and lowers all free row variables identically. Anyone implementing from the spec would miss the row variable extension. Fix: update both rules to "for all β ∈ FTV(τ) ∪ FRV(τ)" and add a sentence: "Row variables reachable through Record nesting must also be lowered; `collect_row_vars` performs this traversal." (`doc/06-type-inference.md:437-443`) [Minor, type-theorist C32]
-- [ ] Fix `doc/08-evaluation.md` `$reduce`/`$fold` Laziness Design table misleading for Dict path — line 784 says "Materializes accumulator at each step" but the Dict path at `builtins.rs:2362-2375` builds a lazy PendingCall chain without forcing any values. Fix: split into two rows: "Dict: builds lazy PendingCall chain (nothing forced until result accessed); Seq: forces tail at each step, accumulator deferred as PendingCall". (`doc/08-evaluation.md:784`) [Minor, eval-engine C32]
-
 ### cycle-findings-c31: Findings (Cycle #31)
 
 Consolidated from: cycle-findings-c31-a, cycle-findings-c31-b, cycle-findings-c31-c
