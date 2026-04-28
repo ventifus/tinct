@@ -1,0 +1,8 @@
+# Composite type annotation: function type via [Fn@ReturnType [ParamType]] syntax.
+# A higher-order function annotated to accept Fn(Int -> Number).
+# The composite annotation [type: [Fn@Number [Int]] default: [fn [x] 0]] resolves
+# the parameter type to Function(Int -> Number) via resolve_type_expr_value.
+[apply: [fn [f@[type: [Fn@Number [Int]] default: [fn [x] 0]]] [call $f 1]]
+ result: [call $apply [fn [x] 2]]]
+===
+Dict({"apply": Function(f), "result": Int(2)})

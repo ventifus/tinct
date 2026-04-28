@@ -66,6 +66,15 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 **Parsing:**
 - Ford, B. (2004). Parsing expression grammars: a recognition-based syntactic foundation. In *POPL '04*, pp. 111–122. ACM. — Proves O(n) parsing with packrat memoization. tinct's pest grammar (`src/grammar.pest`) implements a PEG with ordered choice, no left recursion, and finite lookahead.
 
+**Algebraic data types and variants:**
+- Rémy, D. (1989). "Typechecking records and variants in a natural extension of ML." In *POPL '89*, pp. 77–88. ACM. — Row polymorphism covers records *and* variants from the start using the same presence/absence flag machinery. Foundation for tinct's structural ADT model. [ADTs, nominal variants, `doc/whatif/algebraic-data-types.md`]
+- Garrigue, J. (1998). "Programming with polymorphic variants." In *ML Workshop '98*. — OCaml's structural variant types (`` `Foo value ``): 25+ years of production validation of structural discrimination. Principal types proven for polymorphic variants with row polymorphism. [ADTs, `doc/whatif/algebraic-data-types.md`]
+- Blume, M., Acar, U.A. & Chae, W. (2006). "Extensible programming with first-class cases." In *ICFP '06*, pp. 239–250. ACM. — Extends row polymorphism to variant types, enabling functions polymorphic over open variant sets. Template for a future `Type::Variant(Row)` if tinct adds dedicated variant rows. [ADTs, `doc/whatif/algebraic-data-types.md`]
+- Tobin-Hochstadt, S. & Felleisen, M. (2010). "Logical types for untyped languages." In *ICFP '10*, pp. 117–128. ACM. — Occurrence typing: narrows the type of a variable inside each `[match]` arm based on the matched pattern. Foundation for type narrowing in ADT discrimination. [ADTs, pattern matching, `doc/whatif/algebraic-data-types.md`]
+- Amadio, R.M. & Cardelli, L. (1993). "Subtyping recursive types." *ACM TOPLAS*, 15(4), 575–631. — Decidability of type equality for equi-recursive types with a depth guard. Foundation for Phase 4 recursive ADT unfolding. [ADTs, `doc/whatif/algebraic-data-types.md`]
+- Kennedy, A. & Russo, C. (2005). "Generalized algebraic data types and object-oriented programming." In *OOPSLA '05*, pp. 21–40. ACM. — GADT constructors as the general case of nominal variants. tinct's nominal variants are the monomorphic / non-GADT case. [nominal variants, `doc/whatif/nominal-variants.md`]
+- Wadler, P. (1989). "Theorems for free!" In *FPCA '89*, pp. 347–359. ACM. — Parametricity: a polymorphic function cannot inspect a nominal payload without pattern matching. Motivates nominal variants with opaque payloads paired with polymorphic type parameters. [nominal variants, `doc/whatif/nominal-variants.md`]
+
 ## Resources
 
 - [Crafting Interpreters](https://craftinginterpreters.com/) — evaluator implementation
