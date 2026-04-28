@@ -181,7 +181,7 @@ pub fn diagnostics_for(doc: &DocumentState) -> Vec<Diagnostic> {
         diagnostics.push(type_error_to_diagnostic(err, source));
     }
 
-    // Eval errors -> Information severity
+    // Eval errors -> Error severity
     for err in &doc.eval_errors {
         diagnostics.push(eval_error_to_diagnostic(err, source));
     }
@@ -241,7 +241,7 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str) -> Diag
 
     Diagnostic {
         range,
-        severity: Some(DiagnosticSeverity::INFORMATION),
+        severity: Some(DiagnosticSeverity::ERROR),
         code: None,
         code_description: None,
         source: Some("tinct-eval".to_string()),
@@ -361,7 +361,7 @@ mod tests {
             .iter()
             .find(|d| d.source.as_deref() == Some("tinct-eval"))
             .unwrap();
-        assert_eq!(eval_diag.severity, Some(DiagnosticSeverity::INFORMATION));
+        assert_eq!(eval_diag.severity, Some(DiagnosticSeverity::ERROR));
     }
 
     #[test]
