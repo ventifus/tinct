@@ -1,0 +1,8 @@
+# Composite type annotation: record type via dict literal annotation syntax.
+# A function annotated to accept a record with name: String, age: Number.
+# The composite annotation resolves the dict literal [name: String age: Number]
+# as a Record type via resolve_type_expr_value → resolve_type_expr → resolve_type_dict.
+[describe: [fn [p@[type: [name: String age: Number] default: [name: Alice age: 30]]] $p.name]
+ result: [call $describe [name: Bob age: 25]]]
+===
+Dict({"describe": Function(p), "result": String("Bob")})

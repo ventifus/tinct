@@ -84,6 +84,9 @@ fn typecheck_document(
     }
 
     let mut last_dict_schemes: Option<IndexMap<String, TypeScheme>> = None;
+    // Carries the inferred Record type and the enclosing_level saved before inference,
+    // so that generalization in the block below the loop uses the correct level explicitly.
+    let mut last_record_type: Option<(Type, u32)> = None;
     let mut last_expr: Option<&Spanned<Expr>> = None;
 
     for (i, expr) in exprs.iter().enumerate() {
@@ -111,17 +114,47 @@ fn typecheck_document(
                 Err(mut errs) => errors.append(&mut errs),
             }
         } else {
-            match infer_expr(expr, &env, state, type_map) {
-                Ok(ty) => {
-                    if is_last {
-                        result_type = ty;
-                    } else {
+            if is_last {
+                // Last expression: always infer at an incremented level so that any type
+                // variables introduced during inference are at a higher level than the
+                // document boundary, making them generalizable when threading field schemes.
+                // The level is restored immediately after inference (line 127).
+                let enclosing_level = state.level;
+                state.level += 1;
+
+                match infer_expr(expr, &env, state, type_map) {
+                    Ok(ty) => {
+                        state.level = enclosing_level;
+                        result_type = ty.clone();
+                        // Track last non-Dict Record type and its enclosing_level for scheme
+                        // threading. Storing enclosing_level here makes it available explicitly
+                        // at the generalization site below (defense-in-depth per Kiselyov 2013).
+                        if matches!(&ty, Type::Record(_)) {
+                            last_record_type = Some((ty, enclosing_level));
+                        }
+                        last_expr = Some(expr);
+                    }
+                    Err(mut errs) => {
+                        state.level = enclosing_level;
+                        errors.append(&mut errs);
+                    }
+                }
+            } else {
+                // Non-last expression: infer at incremented level (mirroring Dict's level
+                // management) so that type variables can be properly generalized when
+                // threading Record fields as schemes into the environment.
+                let enclosing_level = state.level;
+                state.level += 1;
+
+                match infer_expr(expr, &env, state, type_map) {
+                    Ok(ty) => {
+                        state.level = enclosing_level; // Restore before generalization
                         match &ty {
                             Type::Record(Row { fields, .. }) => {
-                                // LIMITATION: non-Dict intermediate results lose polymorphism — fields inserted as monomorphic schemes
                                 let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
                                 for (name, field_ty) in fields {
-                                    new_env.insert(name.clone(), field_ty.clone());
+                                    let scheme = generalize(enclosing_level, field_ty, state);
+                                    new_env.insert_scheme(name.clone(), scheme);
                                 }
                                 let mut alias_errs =
                                     register_type_aliases(expr, &mut new_env, &env, state);
@@ -132,8 +165,11 @@ fn typecheck_document(
                             _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
                         }
                     }
+                    Err(mut errs) => {
+                        state.level = enclosing_level; // Restore even on error
+                        errors.append(&mut errs);
+                    }
                 }
-                Err(mut errs) => errors.append(&mut errs),
             }
         }
     }
@@ -143,6 +179,20 @@ fn typecheck_document(
     // If the last expression was a dict, thread its schemes into the result environment
     if let Some(schemes) = last_dict_schemes {
         for (name, scheme) in schemes {
+            result_env.insert_scheme(name, scheme);
+        }
+    }
+
+    // If the last expression was a non-Dict Record, generalize and thread its fields.
+    // enclosing_level is the level that was active before inference of the last expression.
+    // At this point state.level has been restored to enclosing_level (line 127 above), so
+    // `enclosing_level == state.level`, but we use the named variable stored in
+    // last_record_type for explicitness and defense-in-depth (Kiselyov 2013): any type
+    // variable with ℓ(α) > enclosing_level is generalizable, exactly mirroring infer_dict
+    // Pass 4 which generalizes at the enclosing level it saved before incrementing.
+    if let Some((Type::Record(Row { fields, .. }), enclosing_level)) = last_record_type {
+        for (name, field_ty) in fields {
+            let scheme = generalize(enclosing_level, &field_ty, state);
             result_env.insert_scheme(name, scheme);
         }
     }
@@ -1167,9 +1217,19 @@ fn infer_fn(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Create a fresh annotation mapping for this function to prevent
-    // cross-contamination of type variables between sibling functions
-    let mut ann_mapping = HashMap::new();
-    let mut ann_mapping_opt = Some(&mut ann_mapping);
+    // cross-contamination of type variables.
+    // Only allocate if any param has an annotation or there's a return annotation.
+    // This guard is a performance optimization only: if there are no annotations,
+    // resolve_annotation is never called (it receives Type::Any directly), so an empty
+    // HashMap would never be consulted. Skipping allocation has no behavior impact.
+    let has_annotations =
+        params.iter().any(|p| p.node.annotation.is_some()) || return_ann.is_some();
+    let mut ann_mapping = if has_annotations {
+        Some(HashMap::new())
+    } else {
+        None
+    };
+    let mut ann_mapping_opt = ann_mapping.as_mut();
 
     let mut param_types: Vec<Type> = params
         .iter()
@@ -1490,15 +1550,7 @@ fn resolve_type_expr_value(
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    match &expr.node {
-        Expr::Str(name) | Expr::VarRef(name) => {
-            resolve_type_name(name, env, expr.span, state, ann_mapping)
-        }
-        _ => Err(TypeError::new(
-            format!("invalid type in annotation: {}", expr.node),
-            expr.span,
-        )),
-    }
+    resolve_type_expr(expr, env, state, ann_mapping)
 }
 
 fn resolve_type_expr(
@@ -2612,7 +2664,170 @@ mod tests {
         let errors = check_err("[fn [x@[type: 42]] $x]");
         assert!(errors
             .iter()
-            .any(|e| e.message.contains("invalid type in annotation")));
+            .any(|e| e.message.contains("invalid type expression")));
+    }
+
+    #[test]
+    fn test_annotation_composite_function_type() {
+        let ty =
+            infer("[fn [f@[type: [Fn@Number [Int]] default: [fn [x] $x]]] [@Number [call $f 42]]]");
+        match ty {
+            Type::Function { params, ret } => {
+                assert_eq!(params.len(), 1);
+                match &params[0] {
+                    Type::Function {
+                        params: inner_params,
+                        ret: inner_ret,
+                    } => {
+                        assert_eq!(*inner_params, vec![Type::Int]);
+                        assert_eq!(**inner_ret, Type::Number);
+                    }
+                    other => panic!("expected Function param, got {other}"),
+                }
+                assert_eq!(*ret, Type::Number);
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_annotation_composite_record_type() {
+        let ty = infer(
+            "[fn [p@[type: [name: String  age: Number] default: [name: Alice  age: 30]]] $p.name]",
+        );
+        match ty {
+            Type::Function { params, ret } => {
+                assert_eq!(params.len(), 1);
+                match &params[0] {
+                    Type::Record(row) => {
+                        assert_eq!(row.fields.get("name"), Some(&Type::Str));
+                        assert_eq!(row.fields.get("age"), Some(&Type::Number));
+                    }
+                    other => panic!("expected Record param, got {other}"),
+                }
+                assert_eq!(*ret, Type::Str);
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_annotation_composite_type_in_type_assert() {
+        let ty =
+            infer("[f: [fn [x] $x]  result: [@[type: [Fn@Number [Int]] default: [fn [x] 0]] $f]]");
+        let result_ty = match ty {
+            Type::Record(row) => row.fields.get("result").cloned(),
+            other => panic!("expected Record, got {other}"),
+        };
+        match result_ty {
+            Some(Type::Function { params, ret }) => {
+                assert_eq!(params, vec![Type::Int]);
+                assert_eq!(*ret, Type::Number);
+            }
+            other => panic!("expected Function for result field, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_annotation_nested_composite_higher_order_function() {
+        // Nested composite type: [type: [Fn@[Fn@Int [Int]] [Int]]]
+        // Resolves to Fn(Int -> Fn(Int -> Int)) — a curried function.
+        // Exercises recursive resolve_type_expr: the return type [Fn@Int [Int]] is
+        // itself a Fn type expression that must be recursively resolved.
+        let ty = infer(
+            "[fn [f@[type: [Fn@[Fn@Int [Int]] [Int]] default: [fn [x] [fn [y] $y]]]] [call $f 0]]",
+        );
+        // f has type Fn(Int -> Fn(Int -> Int))
+        // [call $f 0] has return type Fn(Int -> Int)
+        match ty {
+            Type::Function { params, ret } => {
+                assert_eq!(params.len(), 1);
+                // param type: Fn(Int -> Fn(Int -> Int))
+                match &params[0] {
+                    Type::Function {
+                        params: outer_params,
+                        ret: outer_ret,
+                    } => {
+                        assert_eq!(*outer_params, vec![Type::Int]);
+                        // return type: Fn(Int -> Int)
+                        match outer_ret.as_ref() {
+                            Type::Function {
+                                params: inner_params,
+                                ret: inner_ret,
+                            } => {
+                                assert_eq!(*inner_params, vec![Type::Int]);
+                                assert_eq!(**inner_ret, Type::Int);
+                            }
+                            other => panic!("expected Fn(Int -> Int) as outer return, got {other}"),
+                        }
+                    }
+                    other => panic!("expected Fn(Int -> Fn(Int -> Int)) param, got {other}"),
+                }
+                // [call $f 0] return type: Fn(Int -> Int)
+                match ret.as_ref() {
+                    Type::Function {
+                        params: ret_params,
+                        ret: ret_ret,
+                    } => {
+                        assert_eq!(*ret_params, vec![Type::Int]);
+                        assert_eq!(**ret_ret, Type::Int);
+                    }
+                    other => panic!("expected Fn(Int -> Int) return, got {other}"),
+                }
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_non_dict_record_open_row_scheme_preservation() {
+        // Row polymorphism in non-Dict Record scheme preservation.
+        // The make-record function returns a record containing a function `project`
+        // that is polymorphic over the row tail (open record annotation `...`).
+        // When [call $make-record] appears at a document boundary, typecheck_document
+        // must preserve the row-polymorphic scheme for `project`, not monomorphize it.
+        //
+        // project: [fn [r@[x: Int ...]] $r.x] has type ∀ρ. Fn(Record{x: Int | ρ} → Int)
+        // It can be called with different record shapes (open row tail).
+        let input = r#"
+            [make-record: [fn [] [project: [fn [r@[x: Int ...]] $r.x]]]]
+            ---
+            [call $make-record]
+            ---
+            [r1: [call $project [x: 1  y: hello]]
+             r2: [call $project [x: 2  z: true]]]
+        "#;
+        // Both r1 and r2 should typecheck successfully with different extra fields.
+        // If project were monomorphized, the row tail would be fixed and the second
+        // call with different extra fields might fail.
+        check(input).expect("row-polymorphic non-Dict Record scheme should be preserved");
+
+        // Additionally verify the scheme is not monomorphized by calling doc_env
+        // on just the first two documents and checking the `project` scheme.
+        let two_doc_input = r#"
+            [make-record: [fn [] [project: [fn [r@[x: Int ...]] $r.x]]]]
+            ---
+            [call $make-record]
+        "#;
+        let env = {
+            let mut file = crate::parse(two_doc_input).unwrap();
+            crate::desugar::desugar_file(&mut file.node);
+            let mut env = Rc::new(TypeEnv::new());
+            let mut state = InferState::new();
+            for doc in &file.node.documents {
+                env = typecheck_document(doc, &env, &mut state, &mut None).unwrap();
+            }
+            env
+        };
+        // project should be in scope as a polymorphic scheme (has_bound_vars)
+        let project_scheme = env
+            .get("project")
+            .expect("project should be threaded into env from non-Dict Record");
+        assert!(
+            !project_scheme.type_vars.is_empty() || !project_scheme.row_vars.is_empty(),
+            "project scheme should be polymorphic (open row tail), got monomorphic: {:?}",
+            project_scheme
+        );
     }
 
     #[test]
@@ -4950,5 +5165,38 @@ mod tests {
             Type::StringLiteral("hello".to_string()),
             "check_call CALL-POLY seed: access-chain arg should resolve through seeded subst"
         );
+    }
+
+    #[test]
+    fn test_non_dict_record_preserves_polymorphic_schemes() {
+        let input = r#"
+            [make-record: [fn [] [id: [fn [x@a] $x]]]]
+            ---
+            [call $make-record]
+            ---
+            [result: [call $id 42]]
+        "#;
+
+        check(input).expect("should type-check successfully");
+    }
+
+    #[test]
+    fn test_dict_vs_non_dict_scheme_preservation_parity() {
+        let dict_input = r#"
+            [id: [fn [x@a] $x]]
+            ---
+            [result: [call $id 42]]
+        "#;
+
+        let non_dict_input = r#"
+            [make-record: [fn [] [id: [fn [x@a] $x]]]]
+            ---
+            [call $make-record]
+            ---
+            [result: [call $id 42]]
+        "#;
+
+        check(dict_input).expect("dict case should type-check");
+        check(non_dict_input).expect("non-dict case should type-check");
     }
 }

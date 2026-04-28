@@ -1,0 +1,13 @@
+# Non-Dict Record polymorphic scheme preservation at document boundaries.
+# Doc 1: make-record returns a record with a polymorphic identity function.
+# Doc 2: [call $make-record] is a non-Dict expression at document boundary;
+#         typecheck_document increments level before inference and generalizes
+#         the Record fields as polymorphic schemes (Fix #3, Cycle #31).
+# Doc 3: $$.id accesses the identity function from the previous document's result.
+[make-record: [fn [] [id: [fn [x@a] $x]]]]
+---
+[call $make-record]
+---
+[result: [call $$.id 42]]
+===
+Dict({"result": Int(42)})

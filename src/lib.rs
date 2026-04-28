@@ -231,7 +231,10 @@ pub fn value_to_display_string(
 ) -> Result<String, Box<error::EvalError>> {
     if depth > eval::MAX_EVAL_DEPTH {
         return Err(error::EvalError::resource_limit_exceeded(
-            format!("display depth exceeded: maximum depth is {}", eval::MAX_EVAL_DEPTH),
+            format!(
+                "display depth exceeded: maximum depth is {}",
+                eval::MAX_EVAL_DEPTH
+            ),
             ast::Span::origin(),
         )
         .into());

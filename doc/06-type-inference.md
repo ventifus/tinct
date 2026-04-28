@@ -570,9 +570,22 @@ Build Record(k₁:S(α₁)...kₙ:S(αₙ), Closed).
 ────────────────────────────────── [DICT-GEN]
 ```
 
+Non-Dict Record expressions at document boundaries follow the same level-increment + generalize protocol as [DICT-GEN]:
+
+```
+Γ, ℓ ⊢ save ℓ_enc = ℓ; increment ℓ to ℓ+1
+Γ, ℓ+1 ⊢ e : Record(k₁:τ₁ … kₙ:τₙ, tail)
+         restore ℓ to ℓ_enc
+         for each kᵢ: σᵢ = generalize(ℓ_enc, τᵢ, state)
+         Γ' = Γ[k₁ ↦ σ₁, …, kₙ ↦ σₙ]
+──────────────────────────────────────────── [NON-DICT-GEN]
+```
+
+This rule applies when `typecheck_document` processes a non-Dict expression (e.g., a `[call ...]`) that produces a `Record` type. The level increment ensures type variables introduced during inference are at ℓ+1 and therefore generalizable at ℓ_enc. The restore before generalization guarantees ℓ_current is in its correct state for subsequent expressions.
+
 The Record type uses monomorphic (substitution-applied) types for the type map and downstream structural checks. The type schemes σᵢ live in Γ and are instantiated at each reference via [VAR-POLY].
 
-**Nested dicts increment levels.** Each `infer_dict` call increments ℓ_current. For `[a: [b: 42]]`, the outer dict runs at ℓ+1 and the inner dict at ℓ+2. This matches standard HM let-nesting: each `let` increments the level.
+**Level increments at document boundaries.** Each `infer_dict` call increments ℓ_current, and `typecheck_document` also increments ℓ_current before inferring any non-Dict expression at a document boundary (both last and non-last positions). For `[a: [b: 42]]`, the outer dict runs at ℓ+1 and the inner dict at ℓ+2. For a non-Dict Record expression at a document boundary, ℓ_current is incremented to ℓ+1 before inference and restored to ℓ afterward, following the same protocol as `infer_dict`. This matches standard HM let-nesting: each binding scope increments the level.
 
 **Forward references within letrec.** Within a single dict (letrec group), all entries share level ℓ+1 during Pass 3 inference. Forward references see the monomorphic αᵢ from Pass 1 — these are fresh type variables that participate in unification, producing binding constraints. This is more precise than the previous behavior (binding to `Any`): forward references now produce real type constraints rather than silently succeeding. After Pass 4, downstream consumers of the dict see polymorphic schemes.
 
