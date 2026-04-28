@@ -1536,3 +1536,7 @@ Minor findings from Cycle #36 full codebase health review. All items independent
 ### cycle-findings-c34-b-deferred: Deferred from cycle-findings-c34-b
 
 - [x] Fix U-SUBSUME migration claim imprecision in `doc/06-type-inference.md:225` — updated forward reference to acknowledge design tension: bidirectional U-SUBSUME preserves same permissiveness; full divergence elimination requires directional U-SUBSUME (Pierce & Turner 2000). (`doc/06-type-inference.md:225`) [Minor, computer-scientist C34 panel]
+
+### cycle-findings-c33-b-deferred: Deferred from cycle-findings-c33-b
+
+- [x] Add doc note to `doc/06-type-inference.md` [DICT-GEN] rule explaining Pass 3b/3c — added implementation note at lines 561-564 explaining the three sub-passes (3a: clone state.subst, 3: unify into local, 3b: merge state.subst updates, 3c: apply merged subst to field types). (`doc/06-type-inference.md:561-564`) [Minor, type-theorist C33]
