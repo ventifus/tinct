@@ -17,6 +17,64 @@ pub(crate) struct LltParser;
 /// overflow before this check fires. See the Parser Rewrite milestone (`iterative-parser` sprint).
 const MAX_PARSE_DEPTH: usize = 256;
 
+/// Convert a Rule enum variant to a user-friendly display name for error messages.
+/// Falls back to Debug formatting for unmapped rules (defense-in-depth).
+fn rule_to_display(r: &Rule) -> String {
+    match r {
+        Rule::file => "file".to_string(),
+        Rule::document => "document".to_string(),
+        Rule::expression => "expression".to_string(),
+        Rule::doc_separator => "document separator (---)".to_string(),
+        Rule::value => "value".to_string(),
+        Rule::atom => "atom".to_string(),
+        Rule::annotated_bare => "annotated bare word".to_string(),
+        Rule::bracket_expr => "bracket expression".to_string(),
+        Rule::special_form => "special form".to_string(),
+        Rule::call_form => "function call".to_string(),
+        Rule::fn_form => "function definition".to_string(),
+        Rule::type_form => "type alias definition".to_string(),
+        Rule::keyword_call => "keyword 'call'".to_string(),
+        Rule::keyword_fn => "keyword 'fn'".to_string(),
+        Rule::keyword_type => "keyword 'type'".to_string(),
+        Rule::type_assert_body => "type assertion".to_string(),
+        Rule::fn_annotation => "function annotation".to_string(),
+        Rule::param_list => "parameter list".to_string(),
+        Rule::param => "parameter".to_string(),
+        Rule::param_name => "parameter name".to_string(),
+        Rule::param_annotation => "parameter annotation".to_string(),
+        Rule::variadic_param => "variadic parameter".to_string(),
+        Rule::annotation_value => "annotation value".to_string(),
+        Rule::annotation_word => "annotation word".to_string(),
+        Rule::dict_entries => "dict entries".to_string(),
+        Rule::entry => "dict entry".to_string(),
+        Rule::keyed_entry => "keyed entry".to_string(),
+        Rule::rest_entry => "rest entry (...)".to_string(),
+        Rule::auto_entry => "auto entry".to_string(),
+        Rule::key => "key".to_string(),
+        Rule::bare_token => "bare token".to_string(),
+        Rule::access_expr => "access expression".to_string(),
+        Rule::access_chain => "access chain".to_string(),
+        Rule::dot_access => "dot access".to_string(),
+        Rule::access_field => "access field".to_string(),
+        Rule::bracket_access_chain => "bracket access".to_string(),
+        Rule::bracket_access_inner => "bracket access inner".to_string(),
+        Rule::range_expr => "range expression".to_string(),
+        Rule::range_value => "range value".to_string(),
+        Rule::var_ref => "variable reference".to_string(),
+        Rule::float_lit => "float literal".to_string(),
+        Rule::int_lit => "integer literal".to_string(),
+        Rule::bool_lit => "boolean literal".to_string(),
+        Rule::quoted_string => "quoted string".to_string(),
+        Rule::inner_string => "string content".to_string(),
+        Rule::bare_word => "bare word".to_string(),
+        Rule::call_args => "call arguments".to_string(),
+        Rule::named_arg => "named argument".to_string(),
+        Rule::named_arg_key => "named argument key".to_string(),
+        // Fallback for any unmapped rules (defense-in-depth)
+        _ => format!("{:?}", r),
+    }
+}
+
 /// Parse LLT source text into a spanned File AST.
 /// No input length limit is enforced; callers should validate input size if needed.
 pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
@@ -40,7 +98,7 @@ pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
                 documents.push(build_document(pair, &lines)?);
             }
             Rule::doc_separator | Rule::EOI => {}
-            other => unreachable!("unexpected rule in file: {other:?}"),
+            other => unreachable!("unexpected rule in file: {}", rule_to_display(&other)),
         }
     }
 
@@ -259,7 +317,10 @@ fn build_value(
             build_value(inner, lines, depth)
         }
         rule => Err(ParseError {
-            message: format!("unexpected rule in value position: {rule:?}"),
+            message: format!(
+                "unexpected rule in value position: {}",
+                rule_to_display(&rule)
+            ),
             span: Some(make_span(&pair, lines)),
         }),
     }
@@ -298,7 +359,10 @@ fn build_bracket_expr(
             Ok(Spanned::new(Expr::Dict(entries), span))
         }
         rule => Err(ParseError {
-            message: format!("unexpected rule inside bracket_expr: {rule:?}"),
+            message: format!(
+                "unexpected rule inside bracket_expr: {}",
+                rule_to_display(&rule)
+            ),
             span: Some(span),
         }),
     }
@@ -362,7 +426,7 @@ fn build_special_form(
         Rule::fn_form => build_fn(pair, span, lines, depth),
         Rule::type_form => build_type_alias(pair, span, lines, depth),
         rule => Err(ParseError {
-            message: format!("unexpected special form: {rule:?}"),
+            message: format!("unexpected special form: {}", rule_to_display(&rule)),
             span: Some(span),
         }),
     }
@@ -560,7 +624,7 @@ fn build_param_list(
                     p_span,
                 ));
             }
-            other => unreachable!("unexpected rule in param_list: {other:?}"),
+            other => unreachable!("unexpected rule in param_list: {}", rule_to_display(&other)),
         }
     }
     Ok(params)
@@ -615,7 +679,8 @@ fn build_annotation_value(
                 Some(rule) => Err(ParseError {
                     message: format!(
                         "annotation bracket expression must contain key-value entries, \
-                             found {rule:?}"
+                             found {}",
+                        rule_to_display(&rule)
                     ),
                     span: Some(bracket_span),
                 }),
@@ -626,7 +691,10 @@ fn build_annotation_value(
             span,
         )),
         rule => Err(ParseError {
-            message: format!("unexpected annotation value type: {rule:?}"),
+            message: format!(
+                "unexpected annotation value type: {}",
+                rule_to_display(&rule)
+            ),
             span: Some(span),
         }),
     }
@@ -747,7 +815,7 @@ fn build_entry(
             Ok(Spanned::new(Entry { key: None, value }, span))
         }
         rule => Err(ParseError {
-            message: format!("unexpected rule in entry: {rule:?}"),
+            message: format!("unexpected rule in entry: {}", rule_to_display(&rule)),
             span: Some(span),
         }),
     }
@@ -843,7 +911,10 @@ fn build_access_expr(
             }
             rule => {
                 return Err(ParseError {
-                    message: format!("unexpected rule in access_chain: {rule:?}"),
+                    message: format!(
+                        "unexpected rule in access_chain: {}",
+                        rule_to_display(&rule)
+                    ),
                     span: Some(span),
                 });
             }

@@ -1550,3 +1550,12 @@ Minor findings from Cycle #36 full codebase health review. All items independent
 - [x] Fix `src/ast.rs:128` stale line reference — updated to `typecheck.rs:1224`. (`src/ast.rs`) [Minor, grammar-architect C32]
 - [x] Fix `check_expr` ann_mapping unconditional HashMap allocation — added annotation-presence guard. (`src/typecheck.rs`) [Minor, performance-expert C32]
 - [x] Add capacity hint to `infer_dict` Pass 4 `schemes` map — `IndexMap::with_capacity(field_types.len())`. (`src/typecheck.rs`) [Minor, performance-expert C32]
+
+### cycle-findings-c41-a: Major Findings (Cycle #41)
+
+- [x] Fix `check_call_with_scheme` leaks local substitution — seeded from state.subst and merged back after unification loop (Algorithm W threading). (`src/typecheck.rs:945-970`) [Critical, computer-scientist C41]
+- [x] Fix `check_call_with_scheme` local substitution not seeded from `state.subst` — combined with above. (`src/typecheck.rs:945`) [Major, computer-scientist C41]
+- [x] Fix `materialize()` depth check fires before `Materialized` early-return — moved into deferred-state arms. (`src/eval.rs`) [Major, eval-engine C41]
+- [x] Fix `Guarded` thunk error decoration — inner origin threaded through all 5 error paths. (`src/eval.rs`) [Major, eval-engine C41]
+- [x] Fix `doc/11-stdlib.md:231` function count (122→117). (`doc/11-stdlib.md:231`) [Major, stdlib-author C41]
+- [x] Fix parser error messages expose internal Rule enum — added `rule_to_display()` helper. (`src/parser.rs`) [Major, grammar-architect C41]
