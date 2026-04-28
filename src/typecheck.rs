@@ -922,25 +922,12 @@ fn check_call_with_scheme(
                 )]);
             }
 
-            // After instantiation, the function type may be monomorphic or still polymorphic
-            // CALL-MONO: function type is fully concrete (no type variables)
-            // Use bidirectional checking for arguments via [SUB] rule (doc/06 line 152-157)
-            if !func_ty.has_type_vars() {
-                let mut errors = Vec::new();
-                for (arg, param_ty) in args.iter().zip(params.iter()) {
-                    if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
-                        errors.append(&mut errs);
-                    }
-                }
-                if !errors.is_empty() {
-                    return Err(errors);
-                }
-                // Apply state.subst to return type (mirrors CALL-POLY path at line 837)
-                return Ok(state.subst.apply(ret));
-            }
-
-            // CALL-POLY: function type still has type variables after instantiation
-            // (This can happen with nested polymorphism or type annotations)
+            // CALL-POLY: After instantiation, the function type always has type variables.
+            // This is guaranteed by the guard at line 236: check_call_with_scheme is only called
+            // for polymorphic schemes (non-empty type_vars or row_vars), and instantiate_scheme
+            // produces fresh TypeVars/RowVars for each quantified variable. Since generalize only
+            // quantifies variables that appear in the body, the instantiated type must contain
+            // those fresh variables, so has_type_vars() is always true.
             // Synthesize arguments and unify (doc/06 line 162-170)
             let mut arg_types = Vec::with_capacity(args.len());
             for a in args {
@@ -967,7 +954,7 @@ fn check_call_with_scheme(
         Type::Any => {
             // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
             // This loop runs only for Any-typed callees — for Type::Function arms, positional args are
-            // already inferred exactly once inside CALL-MONO (check_expr) and CALL-POLY (infer_expr).
+            // already inferred exactly once in CALL-POLY (infer_expr at line 934).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
             // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             for arg in args {
@@ -1030,9 +1017,9 @@ fn check_call(
                 }
                 // Direct clone is correct: the CALL-MONO guard (!func_ty.has_type_vars()) proves
                 // ret is fully concrete — no TypeVar or RowVar nodes — so apply() would be a no-op
-                // that wastes 2 HashSet allocations. (check_call_with_scheme CALL-MONO at ~line 836
-                // uses apply() because it is entered after instantiate_scheme, which may produce
-                // TypeVars in row-tail positions that are still live in state.subst.)
+                // that wastes 2 HashSet allocations. (check_call_with_scheme always takes CALL-POLY
+                // and uses apply() at line 947 because it is entered after instantiate_scheme, which
+                // produces fresh TypeVars/RowVars that are resolved by substitution threading.)
                 return Ok(*ret.clone());
             }
 
@@ -1117,7 +1104,7 @@ fn check_call(
         Type::Any => {
             // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
             // This loop runs only for Any-typed callees — for Type::Function arms, positional args are
-            // already inferred exactly once inside CALL-MONO (check_expr) and CALL-POLY (infer_expr).
+            // already inferred exactly once in CALL-MONO (check_expr at line 1011) or CALL-POLY (infer_expr).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
             // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             for arg in args {
@@ -4485,27 +4472,27 @@ mod tests {
     #[test]
     fn test_check_call_mono_skip_subst_apply_documented() {
         // Task 3: Document why CALL-MONO in check_call can safely skip state.subst.apply()
-        // while CALL-MONO in check_call_with_scheme must use it.
+        // while check_call_with_scheme (which always takes the CALL-POLY path) must use it.
         //
-        // BACKGROUND (from typecheck.rs comments at lines 980-985):
-        //   check_call CALL-MONO (line 985): returns `*ret.clone()` (direct clone, no apply)
-        //   check_call_with_scheme CALL-MONO (line 889): returns `state.subst.apply(ret)`
+        // BACKGROUND: check_call_with_scheme no longer has a CALL-MONO branch. The CALL-MONO
+        // branch was deleted (cycle-findings-c36-a Task 2) because it was provably unreachable:
+        // check_call_with_scheme is only called for polymorphic schemes (guard at line 236 ensures
+        // non-empty type_vars or row_vars), and instantiate_scheme always produces fresh TypeVars
+        // or RowVars for each quantified variable, so has_type_vars() is always true after
+        // instantiation. The function now always takes the CALL-POLY path.
         //
-        // WHY THE DIFFERENCE?
-        //   check_call: func_ty comes from infer_expr (line 940), which never produces
-        //     TypeVars/RowVars in the return type unless the function itself is polymorphic.
-        //     The CALL-MONO guard (!func_ty.has_type_vars()) proves `ret` is fully concrete —
-        //     no TypeVar or RowVar nodes — so state.subst.apply() would be a no-op that
-        //     wastes 2 HashSet allocations.
+        // CALL-MONO in check_call (line 1023): returns `*ret.clone()` (direct clone, no apply)
         //
-        //   check_call_with_scheme: func_ty comes from instantiate_scheme (line 855), which
-        //     ALWAYS produces fresh TypeVars/RowVars (even for closed schemes like ∀∅. Fn@Int [Int],
-        //     instantiate_scheme can produce fresh RowVars in row-tail positions if the scheme
-        //     has open records). The CALL-MONO guard only checks that the top-level Function
-        //     variant has no type vars in params/ret visible after instantiation, but there
-        //     MAY BE RowVars in nested record tail positions that were bound in state.subst
-        //     by prior access-chain constraints. Therefore, state.subst.apply() is REQUIRED
-        //     to resolve those nested bindings.
+        // WHY check_call CALL-MONO CAN SKIP state.subst.apply():
+        //   check_call: func_ty comes from infer_expr (line 978), then apply() is performed at
+        //     line 985 before the CALL-MONO guard. The CALL-MONO guard (!func_ty.has_type_vars())
+        //     proves `ret` is fully concrete — no TypeVar or RowVar nodes in any position —
+        //     so an additional state.subst.apply() would be a no-op that wastes allocations.
+        //
+        // WHY check_call_with_scheme (CALL-POLY) uses state.subst.apply():
+        //   func_ty comes from instantiate_scheme (line 905), which ALWAYS produces fresh
+        //   TypeVars/RowVars. After unifying arguments with parameters, subst.apply() at
+        //   line 947 is required to resolve the accumulated substitution into the return type.
         //
         // WHEN WOULD REMOVING state.subst.apply() FROM check_call BREAK?
         //   Only if check_call received a func_ty that:
@@ -4515,15 +4502,14 @@ mod tests {
         //   This is currently IMPOSSIBLE because check_call only receives func_ty from:
         //     1. infer_expr for non-VarRef callees (e.g., inline [fn [x] $x]) — these produce
         //        fully concrete types with no TypeVars in any position if !has_type_vars().
-        //     2. The state.subst.apply() at line 947 already resolved any nested TypeVars
+        //     2. The state.subst.apply() at line 985 already resolved any nested TypeVars
         //        before the CALL-MONO guard.
         //
         // FUTURE SCENARIO (tracked as row-unification-f-b in TODO.md):
         //   If check_call were modified to accept a pre-instantiated polymorphic function
-        //   type with nested RowVars (similar to check_call_with_scheme's instantiate_scheme
-        //   path), AND those RowVars were bound in state.subst by prior constraints, THEN
-        //   skipping state.subst.apply() would produce a type with unresolved RowVar references
-        //   instead of the fully resolved concrete type.
+        //   type with nested RowVars, AND those RowVars were bound in state.subst by prior
+        //   constraints, THEN skipping state.subst.apply() would produce a type with unresolved
+        //   RowVar references instead of the fully resolved concrete type.
         //
         // This test is a PLACEHOLDER for that future scenario. Currently, no test can
         // demonstrate the difference because check_call doesn't enter that code path.
@@ -4538,12 +4524,14 @@ mod tests {
             "CALL-MONO should return concrete type"
         );
 
-        // Verify check_call_with_scheme behavior: polymorphic function still returns correct type
+        // Verify check_call_with_scheme behavior: polymorphic function takes CALL-POLY path
+        // (CALL-MONO was deleted from check_call_with_scheme in cycle-findings-c36-a Task 2,
+        // since instantiate_scheme always produces fresh TypeVars making CALL-MONO unreachable)
         let ty = result_field("[id: [fn [x@a] $x]]\n[result: [call $id 42]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(42),
-            "check_call_with_scheme CALL-MONO should apply state.subst"
+            "check_call_with_scheme CALL-POLY path should unify and apply state.subst"
         );
 
         // TODO(row-unification-f-b): Add a test that creates a scenario where:

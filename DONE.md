@@ -1511,3 +1511,14 @@ Major findings from Cycle #34 full codebase health review. All items independent
 - [x] Fix `doc/11-stdlib.md:231` function count understated — corrected to "~110 total: 46 Rust builtins + 64 LLT functions (52 public API + 12 shadowable wrappers)" based on actual verification. (`doc/11-stdlib.md:231`) [Major, stdlib-author C34]
 - [x] Add `state.subst.apply(ty)` at the start of `generalize()` for defense-in-depth — Damas & Milner (1982) gen() requires generalization over the image of the current substitution, not the raw type. Fix: add `let ty = &state.subst.apply(ty);` as first line of `generalize()`. (`src/types.rs:1224`) [Major, computer-scientist C34]
 - [x] Audit desugar ordering across all eval entry points — added desugar call to `$include` builtin in `src/builtins.rs` and to all `typecheck.rs` test helpers; all entry points now correctly call `desugar_file` before `typecheck_file`/`eval_file`. (`src/builtins.rs:1180`, `src/typecheck.rs`) [Major, integration-verifier C34]
+
+### cycle-findings-c36-a: Major Findings (Cycle #36)
+
+Major findings from Cycle #36 full codebase health review. All items independent.
+
+- [x] Fix `PendingCall` materialization pre-clones 4 values unconditionally on hot path — moved all four clone calls inside non-cacheable error branches; hot path (99%+ successful calls) now pays zero clone cost. (`src/eval.rs:1376-1380`) [Major, performance-expert C36]
+- [x] Delete unreachable CALL-MONO branch in `check_call_with_scheme` — `!func_ty.has_type_vars()` guard was always false after `instantiate_scheme()`; deleted dead code, added invariant comment. (`src/typecheck.rs:928-935`) [Major, performance-expert C36]
+- [x] Fix LSP eval errors shown as `INFORMATION` severity — changed `DiagnosticSeverity::INFORMATION` to `DiagnosticSeverity::ERROR`; updated test assertion to match. (`src/lsp/analysis.rs:244, 364`) [Major, integration-verifier C36]
+- [x] Fix `doc/11-stdlib.md:231` total function count wrong — updated from "~110" to "~122" (46 Rust builtins + 12 stable aliases + 64 LLT functions). (`doc/11-stdlib.md:231`) [Major, stdlib-author C36]
+- [x] Fix `doc/11-stdlib.md` `$concat` and `$merge` lazy-overlay descriptions — updated to show eager materialization as current; marked lazy-overlay as "(Planned Future Design)". (`doc/11-stdlib.md:74, 84, 632, 717-721`) [Major, stdlib-author C36]
+- [x] Fix `doc/11-stdlib.md:107` structural equality phrasing — changed from "not currently implemented" to "intentionally not provided" with rationale (lazy evaluation + value semantics). (`doc/11-stdlib.md:107`) [Major, stdlib-author C36]

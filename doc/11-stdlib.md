@@ -70,7 +70,8 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | Function | Materialization behavior |
 |----------|------------------------|
 | `first`, `rest` | Structural — returns thunks in new positions |
-| `cons`, `conj`, `concat` | Structural — combines thunks into new structure |
+| `cons`, `conj` | Structural — combines thunks into new structure |
+| `concat` | **Dual-dispatch** — Seq path is lazy (O(1) chain); Dict path is **Materializing** (eagerly reindexes both dicts to 0..n) |
 | `reverse`, `reindex` | Structural — reorders/renumbers, values untouched |
 | `sort`, `sort-by` | **Materializing** — must compare values to determine order. `$sort` uses lexicographic comparison for strings, numeric comparison for numbers. `$sort` errors at runtime when called on a collection containing incompatible types for comparison; no compile-time detection. |
 
@@ -81,7 +82,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `get`, `get-or`, `has?` | Structural — key lookup, returns thunk |
 | `get-in`, `get-in-or` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. `get-in-or` returns a default on missing keys instead of erroring. |
 | `set`, `remove` | Structural — add/remove entries |
-| `merge` | Materializing — builds new IndexMap from both dicts (O(n)); values remain as thunk Rc-clones. |
+| `merge` | **Materializing** — eagerly materializes both dicts, builds new IndexMap (O(n)); values remain as thunk Rc-clones. |
 | `keys` | Structural — keys are always evaluated, not thunks |
 | `values`, `entries` | Structural — returns thunks |
 | `update` | Lazy-transforming — produces thunk `[call $f $old-value]` |
@@ -103,7 +104,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Arithmetic & comparison** (materializing — must evaluate operands):
 - `+`, `-`, `*` (auto-promote: Int op Int → Int, mixed → Float)
 - `/` (always returns Float), `quot`, `mod` (Int only, return Int; both are prelude functions)
-- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values — there is no structural/deep equality. Structural equality checking for nested dicts is not currently implemented.
+- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values — there is no structural/deep equality. Structural/deep equality of dicts is intentionally not provided (forcing nested fields would violate lazy evaluation, and pointer equality would be inconsistent with value semantics).
 - `to-int`, `to-float`, `floor`, `ceil`, `round` (numeric conversions)
 
 **Strings** (materializing — must evaluate arguments):
@@ -228,7 +229,7 @@ Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-f
               └── User predicates and programs
 ```
 
-## Stdlib Function Reference (~110 total: 46 Rust builtins + 64 LLT functions (52 public API + 12 shadowable wrappers))
+## Stdlib Function Reference (~122 total: 46 Rust builtins + 12 stable builtin-* aliases + 64 LLT functions (52 public API + 12 shadowable wrappers))
 
 Functions available to all user code. Most are implemented in Tinct in `stdlib/prelude.llt`. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`) are omitted.
 
@@ -629,7 +630,7 @@ order(D) = order_L(L, R) ++ new(R, L)  where
 
 Left keys retain their positions. Right keys that collide replace the value at the left key's position. Right keys that are new are appended in their original order.
 
-**Strictness:** `L × L → D` (§Selective Materialization). The lazy overlay representation defers materialization of both operands until access or iteration. Values are `Rc::clone` (thunk pointers copied, not forced). See Part 5 for the overlay semantics.
+**Strictness:** `S × S → D` (§Selective Materialization). Both operands are materialized eagerly to produce the result dict. Values are `Rc::clone` (thunk pointers copied, not forced). See Part 5 for a planned lazy overlay optimization.
 
 When both operands are list-dicts (integer keys `0..n`), `$merge` performs positional override, not concatenation: `merge([a b c], [x y])` produces `{0:x, 1:y, 2:c}`. Use `$concat` for list concatenation.
 
@@ -716,9 +717,11 @@ Iteration-order proof: In `L ⊕ R`, the result order is `[keys from L in L's or
 
 **P8 — Value preservation:** `$merge` never materializes, transforms, or copies values. It copies thunk pointers (`Rc::clone`). After `D = L ⊕ R`, for any key k, `D(k)` is the exact same `Rc<Thunk>` as `R(k)` or `L(k)` — not a new thunk wrapping the old one. This preserves sharing (§Thunk Lifecycle: evaluate-at-most-once).
 
-### Part 5: Lazy Overlay Compatibility
+### Part 5: Lazy Overlay Compatibility (Planned Future Design)
 
-The lazy overlay representation defers the merge operation itself:
+**Current implementation:** `$merge` eagerly materializes both operands (lines 437-438 in `builtins.rs`). The specification below describes a planned lazy overlay optimization that would defer materialization.
+
+The lazy overlay representation would defer the merge operation itself:
 
 ```
 Overlay(L, R) — O(1) construction

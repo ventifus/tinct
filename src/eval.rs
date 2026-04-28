@@ -1373,12 +1373,6 @@ pub fn materialize(
         }
     } else if let Some((func_thunk, args, named, call_span, thunk_ctx)) = thunk.take_pending_call()
     {
-        // Save clones for potential state restoration on non-cacheable errors
-        let func_thunk_clone = func_thunk.clone();
-        let args_clone = args.clone();
-        let named_clone = named.clone();
-        let thunk_ctx_clone = thunk_ctx.clone();
-
         // Materialize the function thunk to determine if it's a Function or Builtin
         let func_value = match materialize(&func_thunk, Some(&call_span), &thunk_ctx, depth + 1)
             .map_err(&decorate)
@@ -1431,11 +1425,11 @@ pub fn materialize(
                                     thunk.cache_failure(&e);
                                 } else {
                                     thunk.set_state(ThunkState::PendingCall {
-                                        func: Rc::clone(&func_thunk_clone),
-                                        args: args_clone.clone(),
-                                        named: named_clone.clone(),
+                                        func: func_thunk.clone(),
+                                        args: args.clone(),
+                                        named: named.clone(),
                                         call_span,
-                                        ctx: Rc::clone(&thunk_ctx_clone),
+                                        ctx: thunk_ctx.clone(),
                                     });
                                 }
                                 Err(e)
@@ -1447,11 +1441,11 @@ pub fn materialize(
                             thunk.cache_failure(&e);
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
-                                func: Rc::clone(&func_thunk_clone),
-                                args: args_clone.clone(),
-                                named: named_clone.clone(),
+                                func: func_thunk.clone(),
+                                args: args.clone(),
+                                named: named.clone(),
                                 call_span,
-                                ctx: Rc::clone(&thunk_ctx_clone),
+                                ctx: thunk_ctx.clone(),
                             });
                         }
                         Err(e)
@@ -1484,11 +1478,11 @@ pub fn materialize(
                                         thunk.cache_failure(&e);
                                     } else {
                                         thunk.set_state(ThunkState::PendingCall {
-                                            func: Rc::clone(&func_thunk_clone),
-                                            args: args_clone.clone(),
-                                            named: named_clone.clone(),
+                                            func: func_thunk.clone(),
+                                            args: args.clone(),
+                                            named: named.clone(),
                                             call_span,
-                                            ctx: Rc::clone(&thunk_ctx_clone),
+                                            ctx: thunk_ctx.clone(),
                                         });
                                     }
                                     Err(e)
@@ -1501,11 +1495,11 @@ pub fn materialize(
                             thunk.cache_failure(&e);
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
-                                func: Rc::clone(&func_thunk_clone),
-                                args: args_clone.clone(),
-                                named: named_clone.clone(),
+                                func: func_thunk.clone(),
+                                args: args.clone(),
+                                named: named.clone(),
                                 call_span,
-                                ctx: Rc::clone(&thunk_ctx_clone),
+                                ctx: thunk_ctx.clone(),
                             });
                         }
                         Err(e)
@@ -1520,11 +1514,11 @@ pub fn materialize(
                     thunk.cache_failure(&decorated);
                 } else {
                     thunk.set_state(ThunkState::PendingCall {
-                        func: func_thunk_clone,
-                        args: args_clone,
-                        named: named_clone,
+                        func: func_thunk,
+                        args,
+                        named,
                         call_span,
-                        ctx: thunk_ctx_clone,
+                        ctx: thunk_ctx,
                     });
                 }
                 Err(decorated)
