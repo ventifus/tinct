@@ -1522,3 +1522,13 @@ Major findings from Cycle #36 full codebase health review. All items independent
 - [x] Fix `doc/11-stdlib.md:231` total function count wrong — updated from "~110" to "~122" (46 Rust builtins + 12 stable aliases + 64 LLT functions). (`doc/11-stdlib.md:231`) [Major, stdlib-author C36]
 - [x] Fix `doc/11-stdlib.md` `$concat` and `$merge` lazy-overlay descriptions — updated to show eager materialization as current; marked lazy-overlay as "(Planned Future Design)". (`doc/11-stdlib.md:74, 84, 632, 717-721`) [Major, stdlib-author C36]
 - [x] Fix `doc/11-stdlib.md:107` structural equality phrasing — changed from "not currently implemented" to "intentionally not provided" with rationale (lazy evaluation + value semantics). (`doc/11-stdlib.md:107`) [Major, stdlib-author C36]
+
+### cycle-findings-c36-b: Minor Findings (Cycle #36)
+
+Minor findings from Cycle #36 full codebase health review. All items independent.
+
+- [x] Fix `doc/08-evaluation.md:186` stale O(n²) comment — removed stale "compared to the current O(n²) eager implementation"; updated to "This gives `[call $map $f $big-dict]` O(n) construction and O(1) per-element access". (`doc/08-evaluation.md:186`) [Minor, eval-engine C36]
+- [x] Fix `doc/11-stdlib.md:286` `$join` fake LLT-style signature — removed `[fn ...]` expression; added "Rust native builtin — no LLT wrapper" note. (`doc/11-stdlib.md:287`) [Minor, stdlib-author C36]
+- [x] Fix `src/types.rs:96` `is_subtype` depth-safety comment — updated to cite structural recursion on finite ADT as direct termination argument and occurs-check (Robinson 1965) as supporting invariant for acyclicity. (`src/types.rs:96-99`) [Minor, computer-scientist C36]
+- [x] Fix `src/eval.rs:914,925` bind_args_thunks double scan — replaced `position()` + `any()` with single `position()` + match; eliminates redundant O(params) scan per named arg. (`src/eval.rs:912-934`) [Minor, performance-expert C36]
+- [x] Fix `src/main.rs:236` desugar comment — updated from misleading "pre-typecheck" to "mandatory pre-eval transformation; typecheck intentionally skipped in CLI". (`src/main.rs:236`) [Minor, integration-verifier C36]

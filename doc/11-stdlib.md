@@ -284,7 +284,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `join` | `[fn [sep xs] ...]` | Join values as strings with separator (Rust builtin, O(n); dual-dispatch Dict/Seq) |
+| `join` | Rust native builtin — no LLT wrapper | Join values as strings with separator (O(n); dual-dispatch Dict/Seq) |
 | `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq) |
 
 **Control Flow:**
