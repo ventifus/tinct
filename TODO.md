@@ -2,15 +2,6 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c41-c: Doc and Test Fixes (Cycle #41)
-
-- [ ] Add corpus tests for resource limit boundaries — no corpus tests exercise MAX_EVAL_DEPTH, MAX_PARSE_DEPTH, or MAX_COLLECT_SIZE boundaries; add: `tests/corpus/eval/errors/depth_exceeded_eval.llt-eval` (257-level nesting triggers E040), `tests/corpus/valid/edge_cases/parse_depth_max.llt-eval` (256 levels succeeds), `tests/corpus/invalid/syntax_errors/parse_depth_exceeded.llt-eval` (257 levels fails). (`tests/corpus/`) [Major, test-crafter C41]
-- [ ] Add laziness proof corpus tests for selective materialization contracts — add: `tests/corpus/eval/laziness/map_dict_lazy_values.llt-eval` (prove $map on Dict returns PendingCall thunks — access only one key), `tests/corpus/eval/laziness/filter_selective_materialization.llt-eval` (prove $filter only forces predicate), `tests/corpus/eval/laziness/and_or_short_circuit.llt-eval` (prove $and/$or don't evaluate second arg when first determines result, use $error in unused branch). (`tests/corpus/eval/laziness/`) [Major, test-crafter C41]
-- [ ] Fix `doc/10-errors.md:820-830` Span Assignment Corrections table is aspirational, not implemented — table documents five span assignment bugs with "Correct behavior" specs but no corresponding code changes; either implement fixes or retitle section "Known Issues". (`doc/10-errors.md:820-830`, `src/eval.rs`, `src/builtins.rs`) [Major, integration-verifier C41]
-- [ ] Document Display suppression of duplicate materialization span in spec — `error.rs:817-820` omits `(materialized at ...)` when `mat_span == definition_span`, but `doc/10-errors.md` §Part 4 never specifies this suppression rule. Add spec: "When materialization_span == definition_span, Display omits the (materialized at ...) clause". (`doc/10-errors.md`, `src/error.rs:817-820`) [Major, integration-verifier C41]
-- [ ] Fix `doc/11-stdlib.md:232` public API count — says "47 public API" functions but manual count of prelude.llt gives 52 (excluding -impl/-step/-check/-try helpers). Update to "52 public API + 12 shadowable wrappers = 64 LLT functions". (`doc/11-stdlib.md:232`, `stdlib/prelude.llt`) [Major, stdlib-author C41]
-- [ ] Fix `doc/11-stdlib.md:211` `words` derivation shows shadowable names but implementation uses builtin-* aliases — table shows `[call $filter ...]` but `prelude.llt:132-133` uses `$builtin-filter` and `$builtin-eq`; add note distinguishing "conceptual derivation (shadowable names)" from "actual implementation (stable aliases)". (`doc/11-stdlib.md:211`, `stdlib/prelude.llt:132-133`) [Major, stdlib-author C41]
-
 ### cycle-findings-c41-b: Minor Findings (Cycle #41)
 
 - [ ] Add `$split` parts-count limit — splitting a 10MB string by empty separator produces ~10M Thunk allocations (~400MB, 40× amplification); add `const MAX_SPLIT_PARTS: usize = 1_000_000` check before result map construction; also change `expect("collection too large")` at line 546 to `EvalError::resource_limit_exceeded`. (`src/builtins.rs:542-553`) [Minor, security-expert C41]
@@ -30,6 +21,7 @@ Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Comple
 - [ ] Replace `NonZeroUsize::new(500_000).unwrap()` in parser.rs with a `const` — `const CALL_LIMIT: NonZeroUsize = ...` is cleaner and the `unwrap()` on a literal is safe but style-inconsistent. (`src/parser.rs:92`) [Nit, security-expert C41 panel]
 - [ ] Add MAX_SUBST_SIZE corpus end-to-end test — no `tests/corpus/eval/errors/` test exercises the substitution size limit through `eval_source`; add one so error code plumbing (error code, surfacing through typecheck_file) is regression-tested. (`tests/corpus/eval/errors/`) [Minor, test-crafter C41 panel]
 - [ ] Add LSP-layer $include corpus test for no_fs — add a document.rs test that passes `[call $include "some_file.llt"]` as document text and asserts an eval error is produced, so a future `true → false` revert is caught. (`src/lsp/document.rs`) [Minor, test-crafter C41 panel]
+- [ ] Fix test infrastructure to support depth limit corpus tests — the eval error corpus test runner (`test_eval_error_corpus_has_error_codes`) triggers Rust stack overflow when evaluating depth-exceeded tests; fix by increasing runner stack size (`RUST_MIN_STACK` env) or using a worker thread with larger stack. Blocked `tests/corpus/eval/errors/depth_exceeded_eval.llt-eval` creation. (`tests/corpus_tests.rs`) [Minor, test-crafter C41 panel]
 
 ### cycle-findings-c31-minor: Minor Fixes and Docs (Cycle #31)
 

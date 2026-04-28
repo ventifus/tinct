@@ -208,7 +208,7 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `mod` | `[fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]` | Algebraic identity |
 | `ceil` | `[fn [x] [call $builtin-sub 0 [call $floor [call $builtin-sub 0 $x]]]]` | `ceil(x) = -floor(-x)` |
 | `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
-| `words` | `[call $filter [fn [w] [call $not [call $= $w ""]]] [call $split " " $s]]` | `split` + `filter` |
+| `words` | `[call $builtin-filter [fn [w] [call $not [call $builtin-eq $w ""]]] [call $split " " $s]]` | Uses stable `$builtin-filter`, `$builtin-eq` |
 
 **Why shadowable wrappers matter:**
 
@@ -229,7 +229,7 @@ Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-f
               └── User predicates and programs
 ```
 
-## Stdlib Function Reference (~117 total: 46 Rust builtins + 12 stable builtin-* aliases + 59 LLT functions (47 public API + 12 shadowable wrappers))
+## Stdlib Function Reference (~122 total: 46 Rust builtins + 12 stable builtin-* aliases + 64 LLT functions (52 public API + 12 shadowable wrappers))
 
 Functions available to all user code. About half are implemented in Tinct in `stdlib/prelude.llt`. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`) are omitted.
 

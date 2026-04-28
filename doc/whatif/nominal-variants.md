@@ -5,7 +5,7 @@ top of the structural ADT system?
 
 ## Current State
 
-tinct's structural ADT system (`doc/whatif/algebraic-data-types.md`) provides
+tinct's structural ADT proposal (`doc/whatif/algebraic-data-types.md`) describes
 sum types via `[union ...]` where variants are discriminated by key set. A dict
 `[ok: 42]` satisfies the `Ok` variant of `Result` because its key set matches.
 This structural approach is appropriate for the majority of config-language use

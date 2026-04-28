@@ -677,8 +677,11 @@ impl fmt::Display for ArityBound {
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}] {} (defined at {})", self.kind.code(), self.kind, self.definition_span)?;
+        // Omit materialization span when it equals definition_span (reduces noise for immediate expressions)
         if let Some(ref mat_span) = self.materialization_span {
-            write!(f, " (materialized at {mat_span})")?;
+            if mat_span != &self.definition_span {
+                write!(f, " (materialized at {mat_span})")?;
+            }
         }
         for frame in &self.stack {
             write!(f, "\n  in {} at {}", frame.label, frame.span)?;
@@ -693,13 +696,12 @@ Example output: `[E001] key not found: name (defined at 3:5-3:10) (materialized 
 The display format is:
 
 ```
-[E0XX] {message} (defined at {file}:{line}:{col}-{line}:{col})
-  (materialized at {file}:{line}:{col}-{line}:{col})
-  in {label} at {file}:{line}:{col}-{line}:{col}
-  in {label} at {file}:{line}:{col}-{line}:{col}
+[E0XX] {message} (defined at {line}:{col}-{line}:{col}) (materialized at {line}:{col}-{line}:{col})
+  in {label} at {line}:{col}-{line}:{col}
+  in {label} at {line}:{col}-{line}:{col}
 ```
 
-The materialization line is omitted when it equals the definition site or is absent. Stack frames are printed in the order they were added during propagation — innermost (closest to the error source) first, outermost (closest to the output root) last.
+The materialization clause is omitted when it equals the definition site or is absent. Stack frames are printed in the order they were added during propagation — innermost (closest to the error source) first, outermost (closest to the output root) last.
 
 ### Part 5: Constructor Migration
 
@@ -816,15 +818,16 @@ All 30 `ErrorKind` variants map to stable error codes and human-readable message
 
 The 30 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
 
-## Span Assignment Corrections
+## Known Span Assignment Issues
 
-The following span assignments are normative:
+**Note:** These corrections are not yet implemented. The table below describes current behavior and the correct future behavior.
+
+The following span assignments should be implemented:
 
 | Finding | Current behavior | Correct behavior |
 |---------|-----------------|------------------|
 | Builtin errors use `call_span` for definition site | Error points to `[call $merge ...]` for both spans | `def_span` should be the operand that caused the error; `call_span` becomes `mat_span` |
 | Access chain errors lack materialization site | `$dict.key` errors show only definition site | Should include materialization site when access is in a different expression than the dict |
 | Builtin name missing from stack frames | Stack traces show generic `"materialized"` for builtin-originating errors | Should include the builtin name as the stack frame label (e.g., `"in $merge at ..."`) |
-| Duplicate spans shown | `"defined at X (materialized at X)"` when sites match | Suppress materialization site when it equals definition site |
 | Depth limit errors lack call-site context | `def_span` points to the thunk being forced | Should also include `mat_span` pointing to the call site that triggered the depth limit |
 | Access vs. call span attribution | Access expression errors (`$d.k`) and call expression errors (`[call $f ...]`) use the same span logic | Access chains should attribute `def_span` to the access target; call expressions should attribute `def_span` to the call site |
