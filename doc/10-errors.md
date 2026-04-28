@@ -421,6 +421,8 @@ pub enum ErrorKind {
     /// JSON nesting depth limit (distinct from eval depth — applies during
     /// `$from-json` parsing of deeply nested JSON structures).
     JsonDepthExceeded { limit: usize },
+    /// Filesystem access forbidden in `--no-fs` mode.
+    IncludeForbidden,
 
     // --- Include errors (E050-E059) ---
     IncludeNotAvailable,
