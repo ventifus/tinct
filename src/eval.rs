@@ -179,6 +179,7 @@ fn validate_and_wrap_record(
     row: &Row,
     field_path: Vec<String>,
     guard_span: Span,
+    data_span: Span,
 ) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
@@ -203,7 +204,7 @@ fn validate_and_wrap_record(
                     "{}record missing field \"{}\"",
                     field_path_prefix, field_name
                 ),
-                guard_span,
+                data_span,
             )
             .into());
         }
@@ -227,7 +228,7 @@ fn validate_and_wrap_record(
                             "{}record with unexpected field \"{}\"",
                             field_path_prefix, s
                         ),
-                        guard_span,
+                        data_span,
                     )
                     .into());
                 }
@@ -356,7 +357,13 @@ pub fn eval(
                                 .get_property(DEFAULT_ANNOTATION_KEY)
                                 .map(|expr| (expr.clone(), Rc::clone(&env)));
 
-                            match validate_and_wrap_record(entries, row, vec![], expr.span) {
+                            match validate_and_wrap_record(
+                                entries,
+                                row,
+                                vec![],
+                                expr.span,
+                                thunk.span,
+                            ) {
                                 Ok(new_entries) => Ok(Rc::new(Thunk::new_materialized(
                                     Value::Dict(new_entries),
                                     expr.span,
@@ -434,15 +441,9 @@ pub fn eval(
                         {
                             return eval(default_expr, env, ctx, depth + 1);
                         }
-                        return Err(Box::new(EvalError {
-                            kind: crate::error::ErrorKind::TypeAssertFailed {
-                                expected: expected.to_string(),
-                                got: actual.to_string(),
-                            },
-                            definition_span: expr.span,
-                            materialization_span: None,
-                            stack: Vec::new(),
-                        }));
+                        return Err(EvalError::type_assert_failed(expected, actual, thunk.span)
+                            .with_materialization_span(expr.span)
+                            .into());
                     }
                 }
 
@@ -1098,9 +1099,11 @@ fn eval_bracket_access(
             let key = eval_key(key_expr, env, ctx, depth)?;
             match map.get(&key) {
                 Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(EvalError::key_not_found(&key.to_string(), target_thunk.span)
-                    .with_materialization_span(*access_span)
-                    .into()),
+                None => Err(
+                    EvalError::key_not_found(&key.to_string(), target_thunk.span)
+                        .with_materialization_span(*access_span)
+                        .into(),
+                ),
             }
         }
         Value::Proxy { handler } => {
@@ -1628,13 +1631,10 @@ pub fn materialize(
         // re-raised in round 2 finding #3. Fixing requires storing default_expr + env in
         // Thunk State::Guarded, but attempts led to stack overflow. Deferred post-1.0.
 
-        // Capture inner thunk's origin for error decoration (Task 4 fix)
-        let inner_origin = inner.origin.clone();
+        // Capture inner thunk's span before materializing (Task 2: use as data_span)
         let inner_span = inner.span;
-        let decorate_inner =
-            |e| attach_materialization_context(e, mat_span, &inner_origin, inner_span);
 
-        let result = materialize(&inner, mat_span, _ctx, depth + 1).map_err(&decorate_inner);
+        let result = materialize(&inner, mat_span, _ctx, depth + 1);
 
         match result {
             Ok(value) => {
@@ -1642,33 +1642,42 @@ pub fn materialize(
                 if let Type::Record(ref row) = expected {
                     if let Value::Dict(ref entries) = value {
                         // Use helper to validate and wrap record
-                        match validate_and_wrap_record(entries, row, field_path, guard_span) {
+                        match validate_and_wrap_record(
+                            entries, row, field_path, guard_span, inner_span,
+                        ) {
                             Ok(new_entries) => {
                                 let guarded_value = Value::Dict(new_entries);
                                 thunk.set_state(ThunkState::Materialized(guarded_value.clone()));
                                 Ok(guarded_value)
                             }
                             Err(err) => {
-                                let decorated = decorate_inner(err);
-                                thunk.cache_failure(&decorated);
-                                Err(decorated)
+                                let err = if let Some(span) = mat_span {
+                                    Box::new((*err).clone().with_materialization_span(*span))
+                                } else {
+                                    err
+                                };
+                                thunk.cache_failure(&err);
+                                Err(err)
                             }
                         }
                     } else {
                         // Expected Record but got non-Dict
-                        let field_path_str = field_path.join(".");
-                        let err = EvalError::type_assert_failed(
-                            &format!(
-                                "field \"{}\": {}",
-                                field_path_str,
-                                format_type_for_assert(&expected)
-                            ),
-                            &format!("field \"{}\": {}", field_path_str, value.type_name()),
-                            guard_span,
+                        let field_path_prefix = if field_path.is_empty() {
+                            String::new()
+                        } else {
+                            format!("field \"{}\": ", field_path.join("."))
+                        };
+                        let mut err = EvalError::type_assert_failed(
+                            &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
+                            &value.type_name(),
+                            inner_span,
                         );
-                        let decorated = decorate_inner(err.into());
-                        thunk.cache_failure(&decorated);
-                        Err(decorated)
+                        if let Some(span) = mat_span {
+                            err = err.with_materialization_span(*span);
+                        }
+                        let err: Box<EvalError> = err.into();
+                        thunk.cache_failure(&err);
+                        Err(err)
                     }
                 } else {
                     // For non-Record types, simple value check
@@ -1676,19 +1685,22 @@ pub fn materialize(
                         thunk.set_state(ThunkState::Materialized(value.clone()));
                         Ok(value)
                     } else {
-                        let field_path_str = field_path.join(".");
-                        let err = EvalError::type_assert_failed(
-                            &format!(
-                                "field \"{}\": {}",
-                                field_path_str,
-                                format_type_for_assert(&expected)
-                            ),
-                            &format!("field \"{}\": {}", field_path_str, value.type_name()),
-                            guard_span,
+                        let field_path_prefix = if field_path.is_empty() {
+                            String::new()
+                        } else {
+                            format!("field \"{}\": ", field_path.join("."))
+                        };
+                        let mut err = EvalError::type_assert_failed(
+                            &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
+                            &value.type_name(),
+                            inner_span,
                         );
-                        let decorated = decorate_inner(err.into());
-                        thunk.cache_failure(&decorated);
-                        Err(decorated)
+                        if let Some(span) = mat_span {
+                            err = err.with_materialization_span(*span);
+                        }
+                        let err: Box<EvalError> = err.into();
+                        thunk.cache_failure(&err);
+                        Err(err)
                     }
                 }
             }
@@ -7654,13 +7666,18 @@ mod tests {
         // Call validate_and_wrap_record with nested field_path ["outer", "inner"]
         let field_path = vec!["outer".to_string(), "inner".to_string()];
         let guard_span = test_span(1, 1, 1, 10);
+        let data_span = test_span(2, 1, 2, 5);
 
-        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span);
+        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span, data_span);
 
         // Should error with field path prefix in the message
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
         let msg = err.message();
+        assert_eq!(
+            err.definition_span, data_span,
+            "definition_span should be data_span, not guard_span"
+        );
 
         // Verify the error message contains the field path prefix
         assert!(
@@ -7708,8 +7725,9 @@ mod tests {
         // Call validate_and_wrap_record with nested field_path ["config"]
         let field_path = vec!["config".to_string()];
         let guard_span = test_span(1, 1, 1, 10);
+        let data_span = test_span(2, 1, 2, 5);
 
-        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span);
+        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span, data_span);
 
         // Should error with field path prefix in the message
         assert!(
@@ -7718,6 +7736,10 @@ mod tests {
         );
         let err = result.unwrap_err();
         let msg = err.message();
+        assert_eq!(
+            err.definition_span, data_span,
+            "definition_span should be data_span, not guard_span"
+        );
 
         // Verify the error message contains the field path prefix
         assert!(
@@ -7753,12 +7775,17 @@ mod tests {
         // Call with empty field_path
         let field_path = vec![];
         let guard_span = test_span(1, 1, 1, 10);
+        let data_span = test_span(2, 1, 2, 5);
 
-        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span);
+        let result = validate_and_wrap_record(&entries, &row, field_path, guard_span, data_span);
 
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
         let msg = err.message();
+        assert_eq!(
+            err.definition_span, data_span,
+            "definition_span should be data_span, not guard_span"
+        );
 
         // Should NOT contain the empty-path prefix `field "": ` that would be inserted
         // if the `field_path.is_empty()` guard were absent (i.e., format!("field \"{}\": ",
