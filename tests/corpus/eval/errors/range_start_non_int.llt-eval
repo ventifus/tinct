@@ -1,0 +1,4 @@
+# range: error when start argument is a non-Int (quoted string)
+[call $range "not a number" 10]
+===
+ERROR: [E010]

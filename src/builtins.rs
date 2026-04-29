@@ -5112,6 +5112,23 @@ mod tests {
     }
 
     #[test]
+    fn type_of_seq() {
+        // Seq values should report type name "Seq" from $type-of
+        let seq = Value::Seq {
+            head: thunk(Value::Int(1)),
+            tail: thunk(Value::Dict(IndexMap::new())),
+        };
+        let result = mat(builtin_type_of(BuiltinArgs {
+            args: &[thunk(seq)],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        assert_eq!(result, Value::String("Seq".into()));
+    }
+
+    #[test]
     fn type_of_arity_check() {
         let err = builtin_type_of(BuiltinArgs {
             args: &[],
