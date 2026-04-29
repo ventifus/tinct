@@ -112,6 +112,8 @@ Note on type-level variables: `TypeVar(α)` and `RowVar(r)` are both "variables"
 
 **Function and sequence types are opaque at runtime.** `[@[Fn@Int [String]] $f]` verifies that `$f` is callable but cannot verify parameter or return types without executing the function. `[@[Seq Int] $s]` verifies that `$s` is a sequence but cannot verify element types without consuming it (which may diverge for infinite sequences). Both degenerate to tag checks. Full higher-order contract monitoring (Findler & Felleisen 2002) — wrapping functions to check arguments on each call and return values on each return — is outside this design; tinct's proxy contracts apply at record field boundaries, not at function call boundaries.
 
+**Proxy values and TypeAssert.** TypeAssert Record assertions require Dict values. Proxy values produce "expected Record, got Proxy" even though Proxy supports the same dot/bracket access operations as Dict. This is by design — TypeAssert validates structural type identity, not access protocol. A Proxy is a handler function wrapped in a value constructor; it does not have a static field set and cannot satisfy shape validation ([VM-RECORD-PROXY] requires enumerating `string_keys(entries)`). To validate a Proxy's output, assert the result of individual field accesses rather than the Proxy itself.
+
 **Closed record cardinality.** `[@[name: String age: Int] $expr]` (no `...` rest) is a closed record check: the dict must have exactly the string-keyed fields `name` and `age`, no more, no less. Positional entries (`Key::Int`) are invisible to the Record type (see §Type-theoretic implication) and are excluded from the cardinality check. `[@[name: String ...] $expr]` is an open record check: requires `name: String` but allows additional fields. `RowVar(r)` is resolved by the type checker before elaboration; if a row variable remains unresolved at elaboration time, it is treated as `Open`.
 
 **Key type handling.** Record field names are strings, but `Value::Dict` entries use `Key::Int` for positional entries and `Key::String` for named entries. Field lookup during [VM-RECORD-PROXY] shape checking tries `Key::String(fᵢ)` first, then `Key::Int(fᵢ.parse())` as fallback, matching the type checker's Pass 0 key resolution which converts integer literals to strings via `to_string()`.
@@ -664,20 +666,20 @@ Examples:
 
 The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and changed `Record(IndexMap, RowRest)` to `Record(Row)`:
 
-| Current | New |
-|---------|-----|
+| Before | After |
+|--------|-------|
 | `RowRest::Closed` | `RowTail::Empty` |
-| `RowRest::Open` | `RowTail::RowVar(fresh)` (anonymous open becomes named) |
+| `RowRest::Open` | `RowTail::RowVar(fresh)` (anonymous open became named) |
 | `RowRest::RowVar(name)` | `RowTail::RowVar(name)` |
 | `Record(fields, rest)` | `Record(Row { fields, tail })` |
 | `Substitution { map }` | `Substitution { type_map, row_map }` |
 | `collect_type_vars` (single set) | `collect_type_vars` + `collect_row_vars` (two sets) |
 
-**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) became `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` as today; the type checker owns the fresh-name counter and generates `_t{n}` names during type resolution. This made all openness explicit and eliminated the `Open` variant entirely.
+**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) became `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` for the source syntax; the type checker owns the fresh-name counter and generates `_t{n}` names during type resolution. This made all openness explicit and eliminated the `Open` variant entirely.
 
 **Structural similarity.** The dict+tail representation was structurally close to the prior `Record(IndexMap<String, Type>, RowRest)` — the field map was preserved as-is, and `RowRest` became `RowTail` with `Closed` → `Empty` and `Open` eliminated. This minimized the migration surface compared to a cons-list representation. Pattern matches on `Record(fields, rest)` became `Record(Row { fields, tail })` — a mechanical transformation.
 
-**Substitution split.** The unification function now routes variable bindings to the correct map based on the variable's kind (inferred from context: `TypeVar(α)` → `type_map`, `RowTail::RowVar(ρ)` → `row_map`). Type variables and row variables use separate namespaces enforced by the `Substitution` structure.
+**Substitution split.** The unification function routes variable bindings to the correct map based on the variable's kind (inferred from context: `TypeVar(α)` → `type_map`, `RowTail::RowVar(ρ)` → `row_map`). Type variables and row variables occupy separate namespaces enforced by the `Substitution` structure.
 
 **Construction.** Inline struct construction is used in the implementation (e.g., `Row { fields: HashMap::new(), tail: RowTail::Empty }`). Helper functions like `Row::closed()` or `Row::var()` were not added.
 
