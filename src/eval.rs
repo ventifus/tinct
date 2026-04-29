@@ -1066,9 +1066,14 @@ fn eval_dot_access(
             depth,
         )
         .map_err(&push_frame),
-        _ => Err(EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), target_thunk.span)
-            .with_materialization_span(*access_span)
-            .into()),
+        _ => Err(EvalError::type_mismatch_ctx(
+            "dot access".to_string(),
+            "Dict or Proxy",
+            target_val.type_name(),
+            target_thunk.span,
+        )
+        .with_materialization_span(*access_span)
+        .into()),
     }
 }
 
@@ -1106,9 +1111,14 @@ fn eval_bracket_access(
             };
             invoke_proxy_handler(&handler, key_val, ctx, access_span, depth).map_err(&push_frame)
         }
-        _ => Err(EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), target_thunk.span)
-            .with_materialization_span(*access_span)
-            .into()),
+        _ => Err(EvalError::type_mismatch_ctx(
+            "bracket access".to_string(),
+            "Dict or Proxy",
+            target_val.type_name(),
+            target_thunk.span,
+        )
+        .with_materialization_span(*access_span)
+        .into()),
     }
 }
 
@@ -1148,9 +1158,14 @@ fn eval_range_access(
         }
         _ => {
             return Err(push_frame(
-                EvalError::type_mismatch("Dict", target_val.type_name(), target_thunk.span)
-                    .with_materialization_span(*access_span)
-                    .into(),
+                EvalError::type_mismatch_ctx(
+                    "range access".to_string(),
+                    "Dict",
+                    target_val.type_name(),
+                    target_thunk.span,
+                )
+                .with_materialization_span(*access_span)
+                .into(),
             ));
         }
     };

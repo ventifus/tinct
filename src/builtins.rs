@@ -850,7 +850,7 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("to-int", args, named, &ctx, depth, call_span)?;
-    let s = require_string("to-int", val, call_span)?;
+    let s = require_string("to-int", val, args[0].span)?;
     match s.parse::<i64>() {
         Ok(n) => ok_val(Value::Int(n)),
         Err(_) => {
@@ -876,7 +876,7 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("to-float", args, named, &ctx, depth, call_span)?;
-    let s = require_string("to-float", val, call_span)?;
+    let s = require_string("to-float", val, args[0].span)?;
     match s.parse::<f64>() {
         Ok(f) if f.is_finite() => ok_val(Value::Float(f)),
         Ok(f) => Err(EvalError::float_not_finite("to-float".to_string(), f, call_span).into()),
@@ -918,7 +918,7 @@ fn builtin_error(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("error", args, named, &ctx, depth, call_span)?;
-    let msg = require_string("error", val, call_span)?;
+    let msg = require_string("error", val, args[0].span)?;
     Err(EvalError::user_error(msg.to_string(), call_span).into())
 }
 
@@ -972,9 +972,13 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
         }
         _ => {
-            return Err(
-                EvalError::type_mismatch("Function", func_val.type_name(), call_span).into(),
+            return Err(EvalError::type_mismatch_ctx(
+                "try".to_string(),
+                "Function",
+                func_val.type_name(),
+                call_span,
             )
+            .into())
         }
     };
 
@@ -1028,7 +1032,15 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let arg_dict = match args_val {
         Value::Dict(map) => map,
-        _ => return Err(EvalError::type_mismatch("Dict", args_val.type_name(), call_span).into()),
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                "apply".to_string(),
+                "Dict",
+                args_val.type_name(),
+                call_span,
+            )
+            .into())
+        }
     };
 
     // Split dict entries: integer-keyed → positional, string-keyed → named
@@ -1073,7 +1085,13 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             };
             func(builtin_args)
         }
-        _ => Err(EvalError::type_mismatch("Function", func_val.type_name(), call_span).into()),
+        _ => Err(EvalError::type_mismatch_ctx(
+            "apply".to_string(),
+            "Function",
+            func_val.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 
@@ -1180,7 +1198,7 @@ fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("from-json", args, named, &ctx, depth, call_span)?;
-    let json_str = require_string("from-json", val, call_span)?;
+    let json_str = require_string("from-json", val, args[0].span)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| EvalError::json_parse(e.to_string(), call_span))?;
     json_to_value(&parsed, depth, call_span)
@@ -1207,7 +1225,7 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     let val = expect_one_arg("include", args, named, &ctx, depth, call_span)?;
-    let file_path_str = require_string("include", val, call_span)?;
+    let file_path_str = require_string("include", val, args[0].span)?;
 
     // Resolve the path: relative to base_dir, or absolute as-is.
     let raw_path = std::path::Path::new(&file_path_str);
@@ -2689,7 +2707,7 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     let sep = materialize(&args[0], None, &ctx, depth)?;
-    let sep_str = require_string("join", sep, call_span)?;
+    let sep_str = require_string("join", sep, args[0].span)?;
 
     let xs = materialize(&args[1], None, &ctx, depth)?;
     match xs {
