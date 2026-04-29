@@ -2,6 +2,8 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
+- [ ] Update agent files to remove pest PEG grammar references — `.claude/agents/grammar-architect.md`, `test-crafter.md`, `computer-scientist.md`, `security-expert.md`, `performance-expert.md`, `integration-verifier.md` and `.claude/skills/sprint/SKILL.md` all reference pest PEG grammar, compound-atomic rules, grammar.pest — concepts removed in parser-core-c3. Update to reference hand-written iterative parser (src/parser.rs + src/lexer.rs). [Major, grammar-architect C76]
+
 ## iterative-eval: Iterative Evaluator
 
 Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. Tinct's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
@@ -655,6 +657,9 @@ Consolidated from: test-critical-c, test-critical-d
 
 - [ ] Add error corpus tests for drop/reduce/join type/arity mismatches — `drop_wrong_type.txt`, `reduce_wrong_type.txt`, `join_wrong_type.txt` (`tests/corpus/eval/errors/`) [Major, test-crafter]
 - [ ] Add unit tests for builtin_drop, builtin_reduce, builtin_join (PendingCall chain construction, thunk state, span propagation) (`src/builtins.rs`) [Major, test-crafter]
+- [ ] Add KeyNotFound "did you mean" corpus tests — no corpus coverage for the strsim suggestion feature added in error-context sprint. Add: `typo_suggestion.llt-eval` (e.g., `$data.nme` where dict has `name`), `no_match_shows_keys.llt-eval` (key with no close match, shows available keys), `empty_dict_no_suggestion.llt-eval`. (`tests/corpus/eval/errors/`) [Critical, test-crafter C76]
+- [ ] Add parser depth limit corpus test — 257 nested brackets expecting parse error "maximum nesting depth exceeded". Unit test exists but no corpus coverage. (`tests/corpus/invalid/syntax_errors/excessive_nesting.llt-eval`) [Major, test-crafter C76]
+- [ ] Add stdlib internal frame filtering corpus test — call `$map` with error in mapped function; verify stack trace excludes `-impl`/`-step`/`-check` frames. Unit test exists but no end-to-end validation. (`tests/corpus/eval/errors/stdlib_internal_frames_hidden.llt-eval`) [Major, test-crafter C76]
 - [ ] Add include caching corpus tests — same file included twice returns identical result, nested includes share cache, verify cache interaction with cycle detection (`tests/corpus/eval/builtins/`) [Major, test-crafter]
 - [ ] Add corpus test for `$_` + let-generalization interaction — desugared `[fn [_] expr]` gets unannotated param → monomorphic `Fn(Any → Any)` under let-gen, never `∀a. Fn(a → a)`. Add `tests/corpus/eval/underscore_typecheck_monomorphic.llt-eval` verifying `[call $map $_.age $users]` evaluates correctly and desugared lambda is not polymorphically generalized. (`tests/corpus/eval/`) [Minor, test-crafter C41]
 - [ ] Add parser-level unit tests for `$_` exclusion positions — verify parsed AST shows `$_` as VarRef (not desugared) in bracket key `$data[$_]`, range bounds `$data[$_..5]`, dict key `[$_: value]` positions (`src/parser.rs`) [Minor, test-crafter C31]
