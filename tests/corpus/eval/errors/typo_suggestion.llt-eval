@@ -1,0 +1,4 @@
+[data: [username: "alice"]]
+$data.usernme
+===
+[E001] did you mean: 'username'
