@@ -952,7 +952,13 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ..
         } => {
             if !params.is_empty() {
-                return Err(EvalError::arity_mismatch(0, params.len(), call_span).into());
+                return Err(EvalError::type_mismatch_ctx(
+                    "try".to_string(),
+                    "zero-argument function",
+                    &format!("{}-parameter function", params.len()),
+                    call_span,
+                )
+                .into());
             }
             // Evaluate the body in the closure's environment
             let body_thunk = Rc::new(Thunk::new_unevaluated(
@@ -961,7 +967,7 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Rc::clone(&ctx),
                 body.span,
             ));
-            materialize(&body_thunk, None, &ctx, depth)
+            materialize(&body_thunk, Some(&call_span), &ctx, depth)
         }
         Value::Builtin { func, .. } => {
             let builtin_args = BuiltinArgs {
@@ -972,7 +978,7 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 ctx: Rc::clone(&ctx),
             };
             match func(builtin_args) {
-                Ok(result_thunk) => materialize(&result_thunk, None, &ctx, depth),
+                Ok(result_thunk) => materialize(&result_thunk, Some(&call_span), &ctx, depth),
                 Err(e) => Err(e),
             }
         }
@@ -4693,7 +4699,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected 0 arguments"),
+            err.message().contains("zero-argument function"),
             "got: {}",
             err.message()
         );
