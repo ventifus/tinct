@@ -478,6 +478,156 @@ find-deep-try-check: [fn [result parent target ks i]
         [call $find-deep-impl $parent $target $ks [call $builtin-add $i 1]]]]
 
 # ============================================================================
+# Higher-Order Dict/List Utilities
+# ============================================================================
+
+# Transform a dict via entries: entries → map(f) → from-entries.
+# Each entry passed to f has the shape [key: k value: v].
+with-entries: [fn [xs f] [call $from-entries [call $builtin-map $f [call $entries $xs]]]]
+
+# Split a collection into two groups: elements satisfying pred and those that do not.
+# Returns a dict with keys `x` (matching) and `not-x` (non-matching).
+# Both groups are integer-keyed dicts (eager, not Seqs) for predictable downstream use.
+partition: [fn [pred xs]
+    [call $builtin-reduce
+        [fn [acc e]
+            [call $partition-step $acc $e [call $pred $e]]]
+        [x: []  not-x: []]
+        $xs]]
+
+partition-step: [fn [acc e passes]
+    [call $builtin-if $passes
+        [x:     [call $append $acc.x $e]
+         not-x: $acc.not-x]
+        [x:     $acc.x
+         not-x: [call $append $acc.not-x $e]]]]
+
+# Map a function over a collection and flatten (concatenate) the results.
+# Uses concat to accumulate the results of f, avoiding Seq/Dict flush issues.
+# Inherently materializing: f must return collections that can be concatenated.
+flat-map: [fn [f xs]
+    [call $builtin-reduce [fn [acc x] [call $concat $acc [call $f $x]]] [] $xs]]
+
+# Return the first element satisfying pred, or error if none found.
+# filter on Dict returns a Seq; $head gets the first element (errors if Seq is empty).
+find-first: [fn [pred xs] [call $head [call $builtin-filter $pred $xs]]]
+
+# Return the first element satisfying pred, or default if none found.
+find-first-or: [fn [pred default xs]
+    [call $try-or [fn [] [call $find-first $pred $xs]] $default]]
+
+# Group elements of xs into a dict of lists, keyed by the result of applying f.
+# Elements with the same key are collected together (insertion order preserved).
+# Inherently materializing: must inspect all elements.
+group-by: [fn [f xs]
+    [call $builtin-reduce
+        [fn [acc x]
+            [call $group-by-step $acc $x [call $f $x]]]
+        []
+        $xs]]
+
+group-by-step: [fn [acc x k]
+    [call $merge $acc
+        [call $make-entry $k
+            [call $append [call $get-or $acc $k []] $x]]]]
+
+# Merge two dicts recursively. Sub-dicts are merged depth-first;
+# all other values from b override a (right-biased at each level).
+# Inherently materializing: must inspect values to determine if they are dicts.
+deep-merge: [fn [a b]
+    [call $builtin-reduce
+        [fn [acc k]
+            [call $deep-merge-step $acc $a $b $k]]
+        $a
+        [call $keys $b]]]
+
+deep-merge-step: [fn [acc a b k]
+    [call $merge $acc
+        [call $make-entry $k
+            [call $builtin-if
+                [call $and
+                    [call $has? $a $k]
+                    [call $and
+                        [call $builtin-eq [call $type-of $a[$k]] Dict]
+                        [call $builtin-eq [call $type-of $b[$k]] Dict]]]
+                [call $deep-merge $a[$k] $b[$k]]
+                $b[$k]]]]]
+
+# Apply a function bottom-up to every node in a nested dict structure.
+# For dicts: recursively transform all values first, then apply f to the resulting dict.
+# For non-dicts: apply f directly to the value.
+# Inherently materializing: must traverse entire structure.
+walk: [fn [f xs]
+    [call $builtin-if [call $builtin-eq [call $type-of $xs] Dict]
+        [call $f [call $walk-dict $f $xs]]
+        [call $f $xs]]]
+
+walk-dict: [fn [f xs]
+    [call $builtin-reduce
+        [fn [acc k]
+            [call $merge $acc [call $make-entry $k [call $walk $f $xs[$k]]]]]
+        []
+        [call $keys $xs]]]
+
+# ============================================================================
+# Aggregates
+# ============================================================================
+
+# Sum all elements of a numeric collection.
+# Inherently materializing: must reduce all elements.
+sum: [fn [xs] [call $builtin-reduce [fn [a b] [call $builtin-add $a $b]] 0 $xs]]
+
+# Return the minimum element of a collection.
+# Errors on empty collection (no sensible default for polymorphic min).
+min: [fn [xs]
+    [call $builtin-reduce
+        [fn [a b] [call $builtin-if [call $builtin-lt $a $b] $a $b]]
+        [call $first $xs]
+        [call $rest $xs]]]
+
+# Return the maximum element of a collection.
+# Errors on empty collection (no sensible default for polymorphic max).
+max: [fn [xs]
+    [call $builtin-reduce
+        [fn [a b] [call $builtin-if [call $builtin-lt $a $b] $b $a]]
+        [call $first $xs]
+        [call $rest $xs]]]
+
+# Count elements satisfying pred.
+# Uses reduce to count, avoiding the Seq→length issue (filter on Dict returns Seq).
+count: [fn [pred xs]
+    [call $builtin-reduce
+        [fn [acc x] [call $builtin-if [call $pred $x] [call $builtin-add $acc 1] $acc]]
+        0
+        $xs]]
+
+# Check if a collection contains val (using structural equality).
+# Handles both Dict input (uses any?) and Seq input (uses filter then seq? to check non-empty).
+contains?: [fn [xs val]
+    [call $builtin-if [call $seq? $xs]
+        [call $seq? [call $builtin-filter [fn [e] [call $builtin-eq $e $val]] $xs]]
+        [call $any? [fn [e] [call $builtin-eq $e $val]] $xs]]]
+
+# Remove duplicate elements, keeping the first occurrence of each.
+# Inherently materializing: O(n²) due to sequential contains? checks.
+uniq: [fn [xs]
+    [call $uniq-impl [call $keys $xs] $xs [] [] 0]]
+
+uniq-impl: [fn [ks xs acc seen i]
+    [call $builtin-if [call $>= $i [call $length $ks]]
+        $acc
+        [call $uniq-step $ks $xs $acc $seen $i $xs[$ks[$i]]]]]
+
+uniq-step: [fn [ks xs acc seen i v]
+    [call $builtin-if [call $contains? $seen $v]
+        [call $uniq-impl $ks $xs $acc $seen [call $builtin-add $i 1]]
+        [call $uniq-impl $ks $xs [call $append $acc $v] [call $append $seen $v] [call $builtin-add $i 1]]]]
+
+# Right fold: fold f over xs from the right, starting with acc.
+# Equivalent to fold(f, acc, reverse(xs)).
+foldr: [fn [f acc xs] [call $builtin-reduce $f $acc [call $reverse $xs]]]
+
+# ============================================================================
 # Composition
 # ============================================================================
 

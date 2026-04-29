@@ -1,0 +1,4 @@
+# uniq: empty input returns empty
+[call $uniq []]
+===
+Dict({})

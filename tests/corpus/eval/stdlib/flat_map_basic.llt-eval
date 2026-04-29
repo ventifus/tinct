@@ -1,0 +1,4 @@
+# flat-map: map a function returning lists, then flatten one level
+[call $flat-map [fn [x] [$x [call $* $x $x]]] [1 2 3]]
+===
+Dict({0: Int(1), 1: Int(1), 2: Int(2), 3: Int(4), 4: Int(3), 5: Int(9)})

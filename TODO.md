@@ -494,26 +494,6 @@ Findings from formal audit of doc/*.md theoretical claims (2026-04-21). Covers t
 
 Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall). All implementable in Tinct unless noted.
 
-### stdlib-additions-a: Core and Convenience Functions (Part 1)
-
-Consolidated from: stdlib-missing-core, stdlib-convenience
-
-- [ ] `with-entries` — `entries | map(f) | from-entries` pipeline (jq pattern; depends on `from-entries` from stdlib-pre-seq)
-- [ ] `partition` — single-pass split into matching/non-matching dicts (Nix + Dhall)
-- [ ] `flat-map` / `concat-map` — `flatten (map f xs)`, monadic bind for collections (Jsonnet + jq)
-- [ ] `find-first` / `find-first-or` — first element matching predicate, with default (Nix)
-- [ ] `group-by` — group elements by key function, returning dict of lists (Nix)
-- [ ] `deep-merge` — recursive merge for configuration overlays (Jsonnet, RFC 7396)
-- [ ] `walk` — recursive bottom-up transform of all sub-values (jq)
-- [ ] `sum`, `min`, `max`, `count` — aggregate functions (one-liners over fold)
-- [ ] `contains?` / `elem?` — membership test
-- [ ] `uniq` / `unique` — deduplicate collection
-- [ ] `foldr` — right fold (Tinct only has left fold currently)
-- [ ] `zip-with` — generalized zip with combining function; define `zip` as special case (Nix)
-- [ ] `map-indexed` / `map-keys` — indexed mapping and key transformation (Jsonnet)
-- [ ] `sort-on` — sort by key-extraction function instead of comparator (Jsonnet + Nix)
-- [ ] `flip`, `abs`, `sign`, `clamp` — small composable primitives (Nix + Jsonnet; `const` moved to stdlib-pre-seq)
-
 ### stdlib-additions-b: Convenience Functions and Utilities (Part 2)
 
 Consolidated from: stdlib-convenience-b, stdlib-type-predicates, stdlib-numeric, stdlib-primitives, stdlib-string-ops

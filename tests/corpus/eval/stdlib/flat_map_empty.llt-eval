@@ -1,0 +1,4 @@
+# flat-map: empty collection returns empty
+[call $flat-map [fn [x] [$x]] []]
+===
+Dict({})

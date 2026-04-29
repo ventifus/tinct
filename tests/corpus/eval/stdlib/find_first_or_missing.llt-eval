@@ -1,0 +1,4 @@
+# find-first-or: not found - returns default
+[call $find-first-or [fn [x] [call $> $x 100]] 99 [1 2 3 4 5]]
+===
+Int(99)

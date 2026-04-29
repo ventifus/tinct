@@ -1,0 +1,4 @@
+# deep-merge: recursively merge two dicts (b wins at leaf level)
+[call $deep-merge [a: 1  b: [x: 10  y: 20]] [b: [y: 99  z: 30]  c: 3]]
+===
+Dict({"a": Int(1), "b": Dict({"x": Int(10), "y": Int(99), "z": Int(30)}), "c": Int(3)})

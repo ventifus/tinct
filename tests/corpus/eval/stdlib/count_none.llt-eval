@@ -1,0 +1,4 @@
+# count: zero matches returns 0
+[call $count [fn [x] [call $> $x 100]] [1 2 3]]
+===
+Int(0)

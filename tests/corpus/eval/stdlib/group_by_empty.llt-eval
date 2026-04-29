@@ -1,0 +1,4 @@
+# group-by: empty collection returns empty dict
+[call $group-by [fn [x] $x] []]
+===
+Dict({})
