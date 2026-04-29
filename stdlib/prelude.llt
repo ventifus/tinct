@@ -7,8 +7,11 @@
 # These functions depend on the following Rust-native builtins being available
 # in the parent environment:
 #
-#   Shadowable wrappers (lines 527-544) defined in this file for user override:
+#   Primary-name operators defined as shadowable wrappers (lines 527-544):
 #     <  =  +  -  *  /  if  filter  map  reduce  take  drop
+#   These delegate to stable builtin-* aliases, allowing domain modules
+#   to shadow the primary names via $include while the prelude continues
+#   to work correctly via builtin-lt, builtin-eq, etc.
 #
 #   Stable builtin-* aliases used internally (cannot be shadowed):
 #     builtin-lt  builtin-eq  builtin-add  builtin-sub  builtin-mul  builtin-div

@@ -210,19 +210,19 @@ Polymorphic path with unification: arguments are **synthesized** (not checked), 
 
 Note: CALL-POLY does NOT use `check_expr` because type variables require binding via unification. `check_expr` is reserved for fully concrete expected types (CALL-MONO, TypeAssert, return annotations).
 
-**CALL-MONO/CALL-POLY literal type divergence.** CALL-POLY is strictly more permissive than CALL-MONO for literal types. The divergence arises because `unify()` has bidirectional literal promotion rules (6 type pairs × 2 directions = 12 match alternatives in `src/types.rs`), while `check_expr` uses directional `is_subtype(actual, expected)`. The affected cases where CALL-POLY accepts but CALL-MONO would reject:
+**CALL-MONO/CALL-POLY literal type divergence.** CALL-POLY is more permissive than CALL-MONO for most literal type pairs. The divergence arises because `unify()` has bidirectional literal promotion rules (5 type pairs × 2 directions = 10 match alternatives in `src/types.rs`), while `check_expr` uses directional `is_subtype(actual, expected)`. Concrete-type pair behavior across both paths (rows marked **fails** reject under both CALL-MONO and CALL-POLY; the `IntLiteral`/`Float` pair is documented here because [U-SUBSUME] correctly rejects it after removal of the former unsound promotion arm):
 
 | Argument type | Parameter type | `is_subtype` (CALL-MONO) | `unify` (CALL-POLY) |
 |---------------|---------------|--------------------------|---------------------|
-| `Int` | `IntLiteral(n)` | false (Int is wider) | succeeds (bidirectional promotion) |
-| `Number` | `IntLiteral(n)` | false | succeeds |
-| `Number` | `Int` | false | succeeds |
-| `Number` | `Float` | false | succeeds |
-| `Str` | `StringLiteral(s)` | false | succeeds |
-| `IntLiteral(n)` | `Float` | false (no subtype relation) | succeeds |
-| `Float` | `IntLiteral(n)` | false | succeeds |
+| `Int` | `IntLiteral(n)` | false (Int is wider) | succeeds (explicit arm: IntLiteral ↔ Int) |
+| `Number` | `IntLiteral(n)` | false | succeeds (explicit arm: IntLiteral ↔ Number) |
+| `Number` | `Int` | false | succeeds (explicit arm: Int ↔ Number) |
+| `Number` | `Float` | false | succeeds (explicit arm: Float ↔ Number) |
+| `Str` | `StringLiteral(s)` | false | succeeds (explicit arm: StringLiteral ↔ Str) |
+| `IntLiteral(n)` | `Float` | false (no subtype relation) | **fails** (no subtype relation in either direction) |
+| `Float` | `IntLiteral(n)` | false | **fails** (no subtype relation in either direction) |
 
-In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. Planned refinement: the [U-SUBSUME] migration (see Unification section) will replace explicit promotion arms with a subsumption fallback. Note: a bidirectional [U-SUBSUME] (`is_subtype(σ, τ) ∨ is_subtype(τ, σ)`) preserves the same permissiveness as the current promotion arms; full divergence elimination requires directional [U-SUBSUME] — threading actual/expected roles through unification (Pierce & Turner 2000, local type inference), which is a more substantial change.
+In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. The [U-SUBSUME] fallback in `unify()` checks `is_subtype` in both directions for concrete type pairs, producing the same result as the explicit promotion arms for all valid subtype relationships. The `IntLiteral`/`Float` pair correctly fails under [U-SUBSUME] because they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`, but no `IntLiteral <: Float` rule exists). Full divergence elimination (making CALL-MONO and CALL-POLY agree on all cases) requires directional [U-SUBSUME] — threading actual/expected roles through unification (Pierce & Turner 2000, local type inference), which is a more substantial change.
 
 ```
 Γ ⊢ f ⇒ Any
@@ -340,7 +340,7 @@ unify(StringLiteral(s), StringLiteral(t), S) =
     error       if s ≠ t                         [U-STRLIT-NEQ]
 ```
 
-Bidirectional literal-to-parent promotions are implemented as explicit match arms in `unify()` (e.g., `IntLiteral(_)` with `Int`, `Float` with `Number`). The [U-SUBSUME] rule below describes the fallback for concrete types not covered by these arms.
+Bidirectional literal-to-parent promotions are implemented as explicit match arms in `unify()` (e.g., `IntLiteral(_)` with `Int`, `Float` with `Number`). These are fast-path optimizations for common subtype pairs that avoid the `has_type_vars` guard and `is_subtype` call in [U-SUBSUME]. The [U-SUBSUME] rule below provides the general fallback for any concrete type pair.
 
 Structural:
 
@@ -373,7 +373,7 @@ unify(σ, τ, S) where ¬has_type_vars(σ) ∧ ¬has_type_vars(τ):
 
 **Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] is bidirectional because it operates within unification where the original directionality is lost after structural decomposition. This is sound because the substitution is not modified — the bidirectional check only determines compatibility, not binding direction.
 
-**Dual-path promotion design.** `unify()` also implements bidirectional promotion arms for 6 type pairs (`IntLiteral` with `Int`, `Number`, `Float`; `Int` with `Number`; `Float` with `Number`; `StringLiteral` with `Str`) plus literal identity checks, directly as Robinson unification match cases. These are symmetric (either direction succeeds) and fire before [U-SUBSUME]. The dual-path design is intentional: promotions in `unify()` handle CALL-POLY argument matching where type variables have been resolved to concrete types by substitution, while [U-SUBSUME] via `is_subtype` handles the general fallback for concrete type pairs not covered by explicit arms. Both paths produce the same result for overlapping cases — neither modifies the substitution — but the explicit arms avoid the `has_type_vars` guard and `is_subtype` call overhead for the most common promotion patterns.
+**Dual-path promotion design.** `unify()` also implements bidirectional promotion arms for 5 type pairs (`IntLiteral` with `Int` and `Number`; `Int` with `Number`; `Float` with `Number`; `StringLiteral` with `Str`) plus literal identity checks, directly as Robinson unification match cases. These are symmetric (either direction succeeds) and fire before [U-SUBSUME]. The dual-path design is intentional: promotions in `unify()` handle CALL-POLY argument matching where type variables have been resolved to concrete types by substitution, while [U-SUBSUME] via `is_subtype` handles the general fallback for concrete type pairs not covered by explicit arms. Both paths produce the same result for overlapping cases — neither modifies the substitution — but the explicit arms avoid the `has_type_vars` guard and `is_subtype` call overhead for the most common promotion patterns. Note: `IntLiteral` with `Float` is intentionally NOT a promotion arm because `IntLiteral` is not a subtype of `Float` — they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`).
 
 All other non-structural, non-subsumable combinations: error [U-FAIL]
 

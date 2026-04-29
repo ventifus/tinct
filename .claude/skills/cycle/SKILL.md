@@ -36,7 +36,10 @@ After the review may have added new findings to TODO.md, groom the backlog befor
 2. **Categorize**: ensure every item is in the correct phase. Move misplaced items
 3. **Dependency order**: verify milestones and sprints are ordered so foundational work comes before dependent work
 4. **Dedup**: merge duplicate or overlapping items that may have been added by different review agents
-5. **Split oversized sprints**: if any unchecked sprint has more than 8 tasks, split it into smaller sprints (use new kebab-case slugs)
+5. **Right-size sprints**: target approximately 25 non-nit, non-doc (implementation) items per sprint.
+   - **Split** any sprint exceeding 30 non-nit items into smaller sprints (use new kebab-case slugs)
+   - **Combine** adjacent sprints of compatible concern when individually under 10 non-nit items — merge them into one sprint
+   - **Tack** nit and doc items onto the first available impl sprint rather than creating separate nit-only or doc-only sprints
 
 Only edit TODO.md — do not create other files. If no changes are needed, move on.
 
