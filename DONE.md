@@ -1892,3 +1892,11 @@ Add whitespace-sensitive tokens to `src/lexer.rs`. See doc/whatif/parser-rewrite
 - [x] Add `Token::ImmediateAt` — emitted when `@` follows an `Identifier` with no whitespace gap; same detection mechanism (`src/lexer.rs`)
 - [x] Replace four `has_whitespace_between` call sites in formatter with `Token::BracketAccess` match (`src/formatter.rs`)
 - [x] Update all `Token::OpenBracket` match sites to handle `BracketAccess` where needed (`src/formatter.rs`, `src/parser.rs`)
+
+### parser-core-a: Phase 2a — Core Data Structures
+
+Foundation types for the iterative parser. See doc/whatif/parser-rewrite.md §Phase 2. **Depends on:** `parser-lexer`.
+
+- [x] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert, BracketAccessKey — one variant per bracket/access form (`src/parser.rs`)
+- [x] Add `ParseOutput { file: Spanned<File>, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String> }` (`src/parser.rs`)
+- [x] Implement `Vec<StackFrame>` main loop skeleton — token iteration, push/pop mechanics, depth tracking (without full form dispatch) (`src/parser.rs`)
