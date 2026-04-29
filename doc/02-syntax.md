@@ -81,11 +81,11 @@ Everything else can be a regular function in the stdlib:
 [x: 5  y: 10]  # Inline comment
 ```
 
-Whitespace and comments are implicitly skipped between tokens in non-atomic rules.
+Whitespace and comments are implicitly skipped between tokens.
 
-```pest
-WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }
+```ebnf
+WHITESPACE = " " | "\t" | "\r" | "\n"
+COMMENT    = "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI)
 ```
 
 The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the line (or end of input if the comment is on the last line). `NEWLINE` is a pest built-in rule matching line endings (`\n`, `\r\n`, `\r`).
@@ -97,7 +97,7 @@ The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the l
 - `$a[0]` — bracket access (no whitespace before `[`)
 - `$a [0]` — VarRef `$a` followed by nested expression `[0]`
 
-This is handled by making access chain rules atomic (see section 3.4). The hand-written lexer at `src/lexer.rs:120-129` provides an alternative implementation using `last_significant_token` tracking for O(1) whitespace-sensitive access detection, avoiding the compound-atomic mechanism.
+This is handled by the hand-written lexer at `src/lexer.rs:120-129` using `last_significant_token` tracking for O(1) whitespace-sensitive access detection.
 
 ### 2.2 Brackets and Punctuation
 
@@ -117,7 +117,7 @@ The following punctuation characters are used as inline literals throughout the 
 
 #### Literal Recognition
 
-**The lexer recognizes literals by pattern, not the evaluator.** This is consistent with parser-level special form recognition — the distinction between literal types is made at lexing/parsing time, before any evaluation occurs. Both `src/grammar.pest` (pest parser) and `src/lexer.rs` (hand-written lexer) implement this recognition.
+**The lexer recognizes literals by pattern, not the evaluator.** This is consistent with parser-level special form recognition — the distinction between literal types is made at lexing/parsing time, before any evaluation occurs. The hand-written lexer at `src/lexer.rs` implements this recognition.
 
 **Quoting forces string interpretation.** `"true"` is the string `"true"`, `"42"` is the string `"42"`. Quoting is the escape hatch from literal recognition.
 
@@ -148,7 +148,7 @@ Literals are recognized in precedence order. The first matching rule wins.
 
 `$` starts a variable reference. The identifier after `$` follows these character rules:
 
-```pest
+```ebnf
 var_ref = @{ "$" ~ var_ident }
 var_ident = @{ var_ident_char+ }
 var_ident_char = _{
@@ -183,7 +183,7 @@ A bare `$` not followed by any valid identifier character is a parse error.
 
 #### 2.3.2 Numeric Literals
 
-```pest
+```ebnf
 float_lit = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 int_lit   = @{ "-"? ~ ASCII_DIGIT+ }
 ```
@@ -194,13 +194,13 @@ Examples: `42`, `-1`, `3.14`, `-0.5`
 
 #### 2.3.3 Boolean Literals
 
-```pest
+```ebnf
 bool_lit = @{ ("true" | "false") ~ !ident_char }
 ```
 
 The `!ident_char` lookahead ensures `truename` is a bare word, not `true` followed by `name`.
 
-```pest
+```ebnf
 ident_char = _{
     !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$")
     ~ ANY
@@ -211,13 +211,13 @@ ident_char = _{
 
 #### 2.3.4 Quoted Strings
 
-```pest
+```ebnf
 quoted_string = ${ "\"" ~ inner_string ~ "\"" }
 inner_string  = @{ (escape_seq | !("\"" | "\\") ~ ANY)* }
 escape_seq    = @{ "\\" ~ ("\"" | "\\" | "n" | "t" | "r") }
 ```
 
-`quoted_string` uses compound-atomic (`${}`) so that its sub-rules (`inner_string`, `escape_seq`) produce pairs in the parse tree while still preventing implicit whitespace skipping between the quotes and content.
+The parser handles quoted strings as atomic units — no implicit whitespace skipping between the quotes and content.
 
 Quoting forces string interpretation: `"true"` is the string `"true"`, `"42"` is the string `"42"`.
 
@@ -225,7 +225,7 @@ Quoting forces string interpretation: `"true"` is the string `"true"`, `"42"` is
 
 Bare words are the fallback — any token that doesn't match a prior rule. They are unquoted string literals.
 
-```pest
+```ebnf
 bare_word = @{ bare_word_start ~ bare_word_cont* }
 
 bare_word_start = _{
@@ -283,7 +283,7 @@ $name                    # Variable reference (starts with $)
 
 Examples: `hello`, `some.file.txt`, `path/to/file`, `my-key`, `config..bak`
 
-**Pest vs tree-sitter divergence on dot in bare words:** The pest grammar (`src/grammar.pest:223-229`) allows `.` in `bare_word_char`, enabling filenames like `file.txt` as bare words. It uses compound-atomic rules (`${}`) to disambiguate `$a.b` (access) from `$a .b` (two tokens). The tree-sitter grammar (`tree-sitter-llt/grammar.js`) excludes `.` from `bare_word_char` entirely, requiring such values to be quoted: `"file.txt"`. This divergence is intentional: tree-sitter's incremental parsing model makes compound-atomic lookahead expensive, and excluding `.` from bare words simplifies the access chain tokenization by using `token.immediate()` instead. This is a confirmed design decision: pest prioritizes ergonomics (unquoted filenames), tree-sitter prioritizes incremental parsing performance.
+**Tree-sitter divergence on dot in bare words:** The tinct parser allows `.` in `bare_word_char`, enabling filenames like `file.txt` as bare words. It uses whitespace-sensitive lexing to disambiguate `$a.b` (access) from `$a .b` (two tokens). The tree-sitter grammar (`tree-sitter-llt/grammar.js`) excludes `.` from `bare_word_char` entirely, requiring such values to be quoted: `"file.txt"`. This divergence is intentional: tree-sitter's incremental parsing model makes whitespace-sensitive lookahead expensive, and excluding `.` from bare words simplifies the access chain tokenization by using `token.immediate()` instead. This is a confirmed design decision: the main parser prioritizes ergonomics (unquoted filenames), tree-sitter prioritizes incremental parsing performance.
 
 ### 2.4 Token Precedence
 
@@ -412,7 +412,7 @@ Fn@[Fn@c [b]]           # nested: function returning a function type
 
 A tinct file contains one or more documents separated by `---`. Each document contains one or more expressions. This is the top-level grammar:
 
-```pest
+```ebnf
 file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
 document      = { expression* }
 expression    = { !doc_separator ~ value }
@@ -425,7 +425,7 @@ doc_separator = @{ "---" ~ !bare_word_char }
 
 **Expression:** A single value (bracket expression, atom, access expression, etc.). The `!doc_separator` negative lookahead prevents `---` from being consumed as a bare word.
 
-**`doc_separator`:** Three hyphens `---` not followed by a `bare_word_char`. This prevents `----` or `---foo` from matching as a separator. The rule is atomic (`@{}`) so that whitespace is not skipped between the hyphens and the lookahead.
+**`doc_separator`:** Three hyphens `---` not followed by a `bare_word_char`. This prevents `----` or `---foo` from matching as a separator. The parser treats this as atomic so that whitespace is not skipped between the hyphens and the lookahead.
 
 An empty file (or one containing only whitespace/comments) is valid and produces a file with one document containing zero expressions. An empty document produces an empty Dict `[]`.
 
@@ -433,7 +433,7 @@ An empty file (or one containing only whitespace/comments) is valid and produces
 
 A bracket expression is the fundamental syntactic unit. The parser examines the first entry to determine whether it is a special form or a dict:
 
-```pest
+```ebnf
 bracket_expr = {
     "[" ~ "]"                           // empty: []
     | "[" ~ type_assert_body ~ "]"      // type assertion: [@Type expr]
@@ -446,7 +446,7 @@ bracket_expr = {
 
 Special forms are recognized when the first token in a `[]` is a bare keyword (not followed by `:`). PEG ordered choice tries each form before falling back to `dict_entries`.
 
-```pest
+```ebnf
 special_form = {
     call_form
     | fn_form
@@ -456,7 +456,7 @@ special_form = {
 
 #### 3.3.1 `call` — Function Application
 
-```pest
+```ebnf
 call_form = { keyword_call ~ value ~ call_args }
 
 call_args = { (named_arg | value)* }
@@ -476,7 +476,7 @@ Examples:
 
 #### 3.3.2 `fn` — Function Definition
 
-```pest
+```ebnf
 fn_form = { keyword_fn ~ fn_annotation? ~ param_list ~ value }
 
 fn_annotation = ${ "@" ~ annotation_value }
@@ -502,7 +502,7 @@ Examples:
 
 #### 3.3.3 `type` — Type Alias
 
-```pest
+```ebnf
 type_form = { keyword_type ~ value }
 ```
 
@@ -514,11 +514,9 @@ Examples:
 
 ### 3.4 Access Chains
 
-Access chains attach to variable references and bracket accesses. Whitespace-sensitivity is achieved by making the chain atomic — no implicit whitespace skipping between the variable reference and the `.` or `[`.
+Access chains attach to variable references and bracket accesses. Whitespace-sensitivity is achieved by the hand-written lexer using `last_significant_token` tracking — no implicit whitespace skipping between the variable reference and the `.` or `[`.
 
-**Implementation note:** Both a pest grammar (`src/grammar.pest`) and a hand-written lexer (`src/lexer.rs`) exist. The pest grammar uses compound-atomic rules (`${}`) for whitespace sensitivity; the lexer uses `last_significant_token` tracking.
-
-```pest
+```ebnf
 access_expr = ${ var_ref ~ access_chain+ }
 
 access_chain = ${ dot_access | bracket_access_chain }
@@ -541,7 +539,7 @@ range_value = { int_lit | var_ref }
 
 Range values are limited to integer literals and variable references.
 
-Because `access_expr` is compound-atomic (`$`), `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word. Note that `.` is excluded from `var_ident_char` (see `grammar.pest:170-176`), which is what allows `$a.b` to parse as access rather than as a single identifier ending in `.b`.
+The lexer handles whitespace-sensitivity so that `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word. Note that `.` is excluded from `var_ident_char`, which is what allows `$a.b` to parse as access rather than as a single identifier ending in `.b`.
 
 Similarly, `$a[0]` is bracket access, but `$a [0]` is a VarRef followed by a nested bracket expression.
 
@@ -559,7 +557,7 @@ Similarly, `$a[0]` is bracket access, but `$a [0]` is a VarRef followed by a nes
 
 ### 3.5 Dict Entries
 
-```pest
+```ebnf
 dict_entries = { (entry ~ ";"?)* }
 
 entry = { keyed_entry | rest_entry | auto_entry }
@@ -575,7 +573,7 @@ key = { bracket_expr | var_ref | quoted_string | bare_token }
 bare_token = { float_lit | int_lit | bool_lit | bare_word }
 ```
 
-The `rest_entry` rule is atomic (`@`) to prevent whitespace between `...` and the optional name. `...` alone produces `Expr::Rest(None)` (anonymous open record marker). `...name` produces `Expr::Rest(Some("name"))` (named row variable). Rest entries are used in type expressions to indicate open records and row polymorphism.
+The parser treats `rest_entry` as atomic to prevent whitespace between `...` and the optional name. `...` alone produces `Expr::Rest(None)` (anonymous open record marker). `...name` produces `Expr::Rest(Some("name"))` (named row variable). Rest entries are used in type expressions to indicate open records and row polymorphism.
 
 Quoted strings are valid as keys, allowing keys that contain spaces, colons, or other special characters: `["my key": value]`.
 
@@ -595,7 +593,7 @@ Quoted strings are valid as keys, allowing keys that contain spaces, colons, or 
 
 A value is a single expression — one atom, one access expression, or one bracket expression:
 
-```pest
+```ebnf
 value = { access_expr | bracket_expr | atom }
 
 atom = { float_lit | int_lit | bool_lit | quoted_string | var_ref | annotated_bare | bare_word }
@@ -610,25 +608,25 @@ The ordering in `atom` enforces literal precedence (section 2.4). `float_lit` be
 **`@` is always a structural separator.** It is not a valid bare word character. Wherever `@` appears immediately after a bare word (no whitespace), it separates the word from an annotation value. Strings containing `@` must be quoted: `"email@example.com"`.
 
 **In parameter position** (inside a `param_list`):
-```pest
+```ebnf
 param_annotation = ${ "@" ~ annotation_value }
 ```
 `x@Number` splits into param `x` with annotation `Number`.
 
 **On `fn` keyword** (return type):
-```pest
+```ebnf
 fn_annotation = ${ "@" ~ annotation_value }
 ```
 `fn@Number` means the function returns `Number`.
 
 **In value position** (generalized annotation):
-```pest
+```ebnf
 annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
 ```
 `Fn@Number` produces an `Annotated` node with name `"Fn"` and annotation `Number`. This is used for function type constructors (`Fn@Return [Params]`) and is available for future use on any bare word.
 
 **As type assertion** (first token inside `[]`):
-```pest
+```ebnf
 type_assert_body = { "@" ~ annotation_value ~ value }
 ```
 `[@Number $expr]` asserts `$expr` has type `Number`. When a `default:` is provided (e.g., `[@[type: Number  default: 0] $expr]`), the default value is evaluated in the same environment as the asserted expression.
@@ -703,7 +701,7 @@ The parser treats `[key: value1 value2 value3]` such that `key` has value `value
 
 The `---` separator is recognized at the file level only. It must appear on its own (not as part of a bare word like `----` or `---foo`):
 
-```pest
+```ebnf
 file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
 document      = { expression* }
 expression    = { !doc_separator ~ value }
@@ -714,181 +712,153 @@ doc_separator = @{ "---" ~ !bare_word_char }
 
 ## 6. Complete Grammar
 
-**Canonical Source:** The authoritative grammar is `src/grammar.pest`. This section reproduces it for reference with inline commentary. When the two diverge, the implementation in `src/grammar.pest` is correct and this documentation should be updated.
+**Canonical Source:** The authoritative parser implementation is in `src/parser.rs` (hand-written iterative descent parser) and `src/lexer.rs` (hand-written tokenizer). The EBNF notation in this chapter is illustrative and documents the language grammar — it is not executable.
 
-The full pest grammar, consolidated from all sections above.
+The grammar rules below consolidate all syntax rules from the sections above. The actual parser implementation in `src/parser.rs` + `src/lexer.rs` follows these rules but uses Rust code rather than a parser generator.
 
-**Implementation note:** Both a pest grammar (`src/grammar.pest`) and a hand-written lexer (`src/lexer.rs`) exist. The pest grammar uses compound-atomic rules (`${}`) for whitespace sensitivity; the lexer uses `last_significant_token` tracking.
+**Historical note:** Tinct originally used a pest PEG grammar, which was removed in sprint parser-core-c3 (commit cc8333c) and replaced with the current hand-written iterative parser.
 
-```pest
+```ebnf
 // === Whitespace and Comments ===
 
-WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }
+WHITESPACE = " " | "\t" | "\r" | "\n"
+COMMENT    = "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI)
 
 // === File and Document Structure ===
 
-file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
-document      = { expression* }
-expression    = { !doc_separator ~ value }
-doc_separator = @{ "---" ~ !bare_word_char }
+file          = SOI ~ document ~ (doc_separator ~ document)* ~ EOI
+document      = expression*
+expression    = !doc_separator ~ value
+doc_separator = "---" ~ !bare_word_char
 
 // === Bracket Expressions ===
 
-bracket_expr = {
-    "[" ~ "]"
-    | "[" ~ type_assert_body ~ "]"
-    | "[" ~ special_form ~ "]"
-    | "[" ~ dict_entries ~ "]"
-}
+bracket_expr = "[" ~ "]"
+             | "[" ~ type_assert_body ~ "]"
+             | "[" ~ special_form ~ "]"
+             | "[" ~ dict_entries ~ "]"
 
 // === Special Forms ===
 
-special_form = {
-    call_form
-    | fn_form
-    | type_form
-}
+special_form = call_form | fn_form | type_form
 
-call_form    = { keyword_call ~ value ~ call_args }
-fn_form      = { keyword_fn ~ fn_annotation? ~ param_list ~ value }
-type_form    = { keyword_type ~ value }
+call_form    = keyword_call ~ value ~ call_args
+fn_form      = keyword_fn ~ fn_annotation? ~ param_list ~ value
+type_form    = keyword_type ~ value
 
-keyword_call    = @{ "call" ~ !ident_char ~ !colon_ahead }
-keyword_fn      = @{ "fn" ~ !ident_char ~ !colon_ahead }
-keyword_type    = @{ "type" ~ !ident_char ~ !colon_ahead }
+keyword_call = "call" ~ !ident_char ~ !colon_ahead
+keyword_fn   = "fn" ~ !ident_char ~ !colon_ahead
+keyword_type = "type" ~ !ident_char ~ !colon_ahead
 
 // Lookahead: optional horizontal whitespace then colon.
 // ws_chars matches only spaces and tabs (not newlines), so "call\n:" is a CallExpr, not a Dict entry.
-colon_ahead     = _{ ws_chars* ~ ":" }
-ws_chars        = _{ " " | "\t" }
+colon_ahead = ws_chars* ~ ":"
+ws_chars    = " " | "\t"
 
-ident_char = _{
-    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$")
-    ~ ANY
-}
+ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") ~ ANY
 
-call_args = { (named_arg | value)* }
+call_args = (named_arg | value)*
 
-named_arg = { named_arg_key ~ ":" ~ value }
-named_arg_key = @{ "$" ~ var_ident | bare_word }
+named_arg     = named_arg_key ~ ":" ~ value
+named_arg_key = "$" ~ var_ident | bare_word
 
 // === Type Assertions ===
 
-type_assert_body = { "@" ~ annotation_value ~ value }
+type_assert_body = "@" ~ annotation_value ~ value
 
 // === Functions ===
 
-fn_annotation = ${ "@" ~ annotation_value }
+fn_annotation = "@" ~ annotation_value
 
-param_list = { "[" ~ (variadic_param | param)* ~ "]" }
+param_list = "[" ~ (variadic_param | param)* ~ "]"
 
-param = ${ param_name ~ param_annotation? }
+param = param_name ~ param_annotation?
 
-param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
+param_name = (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
 
-param_annotation = ${ "@" ~ annotation_value }
+param_annotation = "@" ~ annotation_value
 
-variadic_param = @{ "..." ~ param_name }
+variadic_param = "..." ~ param_name
 
-// Non-atomic (!{}) breaks compound-atomic inheritance, enabling whitespace inside [type: Number default: 30]
-// Used by param_annotation and fn_annotation.
-annotation_value = !{ bracket_expr | annotation_word }
+// Annotation value allows whitespace inside property dicts like [type: Number default: 30]
+annotation_value = bracket_expr | annotation_word
 
-annotation_word = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
+annotation_word = (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
 
 // === Dict Entries ===
 
-dict_entries = { (entry ~ ";"?)* }
+dict_entries = (entry ~ ";"?)*
 
-entry = { keyed_entry | rest_entry | auto_entry }
+entry = keyed_entry | rest_entry | auto_entry
 
-rest_entry = @{ "..." ~ annotation_word? }
+rest_entry = "..." ~ annotation_word?
 
-keyed_entry = { key ~ ":" ~ value }
-auto_entry  = { value }
+keyed_entry = key ~ ":" ~ value
+auto_entry  = value
 
-key = { bracket_expr | var_ref | quoted_string | bare_token }
+key = bracket_expr | var_ref | quoted_string | bare_token
 
-bare_token = { float_lit | int_lit | bool_lit | bare_word }
+bare_token = float_lit | int_lit | bool_lit | bare_word
 
 // === Values ===
 
-value = { access_expr | bracket_expr | atom }
+value = access_expr | bracket_expr | atom
 
-atom = { float_lit | int_lit | bool_lit | quoted_string | var_ref | annotated_bare | bare_word }
+atom = float_lit | int_lit | bool_lit | quoted_string | var_ref | annotated_bare | bare_word
 
 // === Generalized Annotations ===
 
-annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
+annotated_bare = bare_word ~ "@" ~ annotation_value
 
 // === Access Chains ===
 
-access_expr = ${ var_ref ~ access_chain+ }
+access_expr = var_ref ~ access_chain+
 
-access_chain = ${ dot_access | bracket_access_chain }
+access_chain = dot_access | bracket_access_chain
 
-dot_access = ${ "." ~ access_field }
+dot_access = "." ~ access_field
 
-access_field = @{
-    (ASCII_ALPHA | "_")
-    ~ (ASCII_ALPHANUMERIC | "_" | "-")*
-    ~ "?"?
-}
+access_field = (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
 
-bracket_access_chain = ${
-    "[" ~ bracket_access_inner ~ "]"
-}
+bracket_access_chain = "[" ~ bracket_access_inner ~ "]"
 
-bracket_access_inner = {
-    range_expr | value
-}
+bracket_access_inner = range_expr | value
 
-range_expr = { range_value? ~ ".." ~ range_value? }
+range_expr = range_value? ~ ".." ~ range_value?
 
 // Values inside range expressions — limited to atoms (no nested brackets in ranges)
-range_value = { int_lit | var_ref }
+range_value = int_lit | var_ref
 
 // === Literals ===
 
-var_ref = @{ "$" ~ var_ident }
+var_ref = "$" ~ var_ident
 
-var_ident = @{ var_ident_char+ }
+var_ident = var_ident_char+
 
-var_ident_char = _{
-    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".")
-    ~ ANY
-}
+var_ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".") ~ ANY
 
-float_lit = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+float_lit = "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+
 
-int_lit = @{ "-"? ~ ASCII_DIGIT+ }
+int_lit = "-"? ~ ASCII_DIGIT+
 
-bool_lit = @{ ("true" | "false") ~ !ident_char }
+bool_lit = ("true" | "false") ~ !ident_char
 
-quoted_string = ${ "\"" ~ inner_string ~ "\"" }
-inner_string  = @{ (escape_seq | !("\"" | "\\") ~ ANY)* }
-escape_seq    = @{ "\\" ~ ("\"" | "\\" | "n" | "t" | "r") }
+quoted_string = "\"" ~ inner_string ~ "\""
+inner_string  = (escape_seq | !("\"" | "\\") ~ ANY)*
+escape_seq    = "\\" ~ ("\"" | "\\" | "n" | "t" | "r")
 
-bare_word = @{ bare_word_start ~ bare_word_cont* }
+bare_word = bare_word_start ~ bare_word_cont*
 
-bare_word_start = _{
-    !( "$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@"
-     | " " | "\t" | "\r" | "\n"
-     | "..." )
-    ~ bare_word_char
-}
+bare_word_start = !( "$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@"
+                   | " " | "\t" | "\r" | "\n"
+                   | "..." )
+                  ~ bare_word_char
 
-bare_word_cont = _{
-    !( " " | "\t" | "\r" | "\n"
-     | "[" | "]" | ":" | ";" | "#" | "\"" | "@" )
-    ~ bare_word_char
-}
+bare_word_cont = !( " " | "\t" | "\r" | "\n"
+                  | "[" | "]" | ":" | ";" | "#" | "\"" | "@" )
+                 ~ bare_word_char
 
-bare_word_char = _{
-    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$")
-    ~ ANY
-}
+bare_word_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") ~ ANY
 ```
 
 ---

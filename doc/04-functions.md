@@ -28,7 +28,7 @@ Syntactically, `[call $f $x]` is a bracket expression with unkeyed entries (the 
 
 ### Formal Grammar
 
-```pest
+```ebnf
 call_form = { keyword_call ~ value ~ call_args }
 
 call_args = { (named_arg | value)* }
@@ -63,7 +63,7 @@ Examples:
 
 ### Formal Grammar
 
-```pest
+```ebnf
 fn_form = { keyword_fn ~ fn_annotation? ~ param_list ~ value }
 
 fn_annotation = ${ "@" ~ annotation_value }

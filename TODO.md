@@ -24,9 +24,7 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 
 ## parser-rewrite: Parser Rewrite (E2)
 
-Replace pest's recursive descent with a hand-written lexer + iterative parser using an explicit stack. The pest parser stays as a reference implementation for comparison until the new parser graduates.
-
-**Goal:** Identical AST output from both parsers, selectable at parse time. Once the new parser passes the full test suite and matches pest output on all corpus files, it becomes the default and pest is removed.
+**Status:** Phase 1-2 complete (sprints parser-core-a through parser-core-c3). The hand-written iterative parser (`src/parser.rs` + `src/lexer.rs`) is now the production parser. The pest PEG parser was removed in sprint parser-core-c3 (commit cc8333c). Phases 3 (AST formatter) and 4 (error recovery) remain.
 
 ### Design
 
@@ -843,14 +841,14 @@ Documentation and code quality fixes following the call-convention-kotlin sprint
 
 Update all documentation that still references the pest parser. The iterative parser (parser-core-c3, 2026-04-29) replaced pest entirely — grammar.pest deleted, pest dep removed.
 
-- [ ] Remove §6 "Complete Grammar" pest code block from doc/02-syntax.md (lines 723-892) — update "Canonical Source" paragraph to point to `src/parser.rs` + `src/lexer.rs`; change all pest code fences to `ebnf` (`doc/02-syntax.md:100,120,286,520,715-892`) [Major, grammar-architect C71]
-- [ ] Update CLAUDE.md:3 — "Parser: pest PEG grammar" → "Parser: hand-written iterative descent (`src/parser.rs` + `src/lexer.rs`)" [Major, grammar-architect C71]
-- [ ] Update README.md — remove pest references at lines 7, 46, 140-142; remove `src/grammar.pest` row from Project Structure table (`README.md`) [Major, grammar-architect C71]
-- [ ] Update doc/15-ast.md:221-235 — change "planned" language for iterative parser to present tense (it's done, not planned) (`doc/15-ast.md:221-235`) [Major, grammar-architect C71]
-- [ ] Update doc/17-references.md:67 — note pest is historical ("as of parser-core-c3, replaced by hand-written iterative descent"); move pest.rs resource to "Historical References" section (`doc/17-references.md:67,82`) [Major, grammar-architect C71]
-- [ ] Update doc/04-functions.md, doc/09-documents.md — change ```pest code fences to ```ebnf (`doc/04-functions.md:31,66`, `doc/09-documents.md:392`) [Minor, grammar-architect C71]
-- [ ] Update STATUS.md:34-38 — move Parser Rewrite from "Not Started" to "Completed" [Minor, grammar-architect C71]
-- [ ] Update TODO.md parser-rewrite section header (lines 25-29) to note Phase 1-2 complete, only formatter and error recovery remain [Minor, grammar-architect C71]
+- [x] Remove §6 "Complete Grammar" pest code block from doc/02-syntax.md — updated to EBNF, canonical source → parser.rs + lexer.rs [Major, grammar-architect C71]
+- [x] Update CLAUDE.md:3 — "pest PEG grammar" → "hand-written iterative descent" [Major, grammar-architect C71]
+- [x] Update README.md — removed pest references, grammar.pest table row [Major, grammar-architect C71]
+- [x] Update doc/15-ast.md — "planned" → present tense for iterative parser [Major, grammar-architect C71]
+- [x] Update doc/17-references.md — pest marked historical [Major, grammar-architect C71]
+- [x] Update doc/04-functions.md, doc/09-documents.md — pest → ebnf code fences [Minor, grammar-architect C71]
+- [x] Update STATUS.md — Parser Rewrite moved to Completed [Minor, grammar-architect C71]
+- [x] Update TODO.md parser-rewrite section header — Phase 1-2 complete noted [Minor, grammar-architect C71]
 
 ## doc-divergences: Documentation Divergences (doc/*.md / Code)
 

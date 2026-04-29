@@ -3,7 +3,7 @@
 ## Language
 
 1. [Introduction](01-introduction.md) — Vision, core principles, design philosophy
-2. [Syntax](02-syntax.md) — Lexical grammar, syntactic grammar, pest rules, tokenization
+2. [Syntax](02-syntax.md) — Lexical grammar, syntactic grammar, parser rules, tokenization
 3. [Data Model](03-data-model.md) — Dicts, lists, keys, numeric types, data access
 4. [Functions](04-functions.md) — `call`, `fn`, arguments, variadic, `$_` desugaring, call convention
 5. [Type Annotations](05-type-annotations.md) — `@` annotations, type assertions, type expressions, literal types

@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phases 0-4, 6a, and 6b complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 46 Rust-native builtins, Tinct standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, LSP server with textDocument/didOpen, didChange, and publishDiagnostics, comprehensive test suite (1425+ tests).
+**Status:** Phases 0-4, 6a, and 6b complete -- hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 46 Rust-native builtins, Tinct standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, LSP server with textDocument/didOpen, didChange, and publishDiagnostics, comprehensive test suite (1425+ tests).
 
 ## Syntax at a Glance
 
@@ -43,7 +43,7 @@ A **unified data representation and transformation language** that combines JSON
 
 ### Implemented
 
-- **Parser** -- pest PEG grammar with whitespace-sensitive access chains
+- **Parser** -- hand-written iterative descent parser with whitespace-sensitive access chains
 - **AST** -- `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, and `Spanned<T>` node types
 - **Evaluator foundation** -- `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain) types (Phase 1a)
 - **Core evaluation** -- literals, VarRef, dict construction with letrec semantics, cycle detection, depth limit (256) (Phase 1b)
@@ -137,9 +137,9 @@ cargo run --features repl -- repl               # Start interactive REPL
 
 | File | Purpose |
 |------|---------|
-| `src/grammar.pest` | PEG grammar (lexical + syntactic rules) |
+| `src/lexer.rs` | Hand-written tokenizer with whitespace-sensitive access detection |
+| `src/parser.rs` | Hand-written iterative descent parser + comprehensive unit tests |
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
-| `src/parser.rs` | pest pairs to AST conversion + comprehensive unit tests |
 | `src/eval.rs` | Evaluator: `eval()`, `materialize()` (call-site span attachment, stack frame propagation), dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), `$_` implicit lambda desugaring, named args, variadics, arity checking, TypeAssert `default:` fallback, depth limit (256) |
 | `src/builtins.rs` | 46 Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy), `IncludeContext` + thread-local for `$include`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
@@ -155,7 +155,7 @@ cargo run --features repl -- repl               # Start interactive REPL
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
 | `tests/cli_tests.rs` | CLI integration tests: file eval, format flags, stdin JSON, error handling |
 | `test_input.llt` | Example input demonstrating syntax |
-| `Cargo.toml` | Dependencies: pest, indexmap, serde_json, clap, rustyline (optional) |
+| `Cargo.toml` | Dependencies: indexmap, serde_json, clap, rustyline (optional) |
 | `justfile` | Containerized build commands |
 
 ## Testing

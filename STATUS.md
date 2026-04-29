@@ -33,9 +33,9 @@ resource caps. Prerequisite for the `doc/whatif/io.md` capability model.
 
 ### Parser Rewrite (`Parser Rewrite E2`)
 
-Design: complete — hand-written lexer + iterative `Vec<StackFrame>` parser replacing pest.
-Implementation: zero. Pest stays as reference until the new parser matches its output on
-all corpus files, then is removed.
+Status: **Completed** (sprints parser-core-a through parser-core-c3). The hand-written iterative parser (`src/parser.rs` + `src/lexer.rs`) is now the production parser. The pest PEG parser was removed in sprint parser-core-c3 (commit cc8333c).
+
+Remaining work: Phase 3 (AST-based formatter, blocked on bare-word vs quoted-string preservation) and Phase 4 (error recovery).
 
 ---
 

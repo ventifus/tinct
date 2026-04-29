@@ -389,7 +389,7 @@ The `---` boundary does **not** materialize the previous document. `$$` is a laz
 
 A tinct file contains one or more documents separated by `---`. Each document contains one or more expressions. This is the top-level grammar:
 
-```pest
+```ebnf
 file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
 document      = { expression* }
 expression    = { !doc_separator ~ value }
