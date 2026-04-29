@@ -663,7 +663,10 @@ fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return ok_val(Value::String(input.into()), call_span);
     }
 
-    ok_val(Value::String(input.replace(pattern.as_str(), &replacement)), call_span)
+    ok_val(
+        Value::String(input.replace(pattern.as_str(), &replacement)),
+        call_span,
+    )
 }
 
 /// `upper`: Convert a string to uppercase. Takes 1 arg (String).
@@ -787,7 +790,10 @@ fn float_to_int_builtin(
             if !f.is_finite() {
                 return Err(EvalError::float_not_finite(name.to_string(), f, args[0].span).into());
             }
-            ok_val(Value::Int(checked_f64_to_i64(name, op(f), call_span)?), call_span)
+            ok_val(
+                Value::Int(checked_f64_to_i64(name, op(f), call_span)?),
+                call_span,
+            )
         }
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
@@ -1354,10 +1360,13 @@ fn builtin_seq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    ok_val(Value::Seq {
-        head: Rc::clone(&args[0]),
-        tail: Rc::clone(&args[1]),
-    }, call_span)
+    ok_val(
+        Value::Seq {
+            head: Rc::clone(&args[0]),
+            tail: Rc::clone(&args[1]),
+        },
+        call_span,
+    )
 }
 
 /// `head`: Extract the first element of a sequence.
@@ -1715,7 +1724,10 @@ fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         })?;
 
     // Create tail as PendingBuiltin for next step
-    let tail_args = vec![Rc::clone(&args[0]), ok_val(Value::Int(next_idx), call_span)?];
+    let tail_args = vec![
+        Rc::clone(&args[0]),
+        ok_val(Value::Int(next_idx), call_span)?,
+    ];
     let tail = Rc::new(Thunk::new_pending_builtin(
         builtin_cycle_step,
         tail_args,
@@ -2000,10 +2012,13 @@ fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $map"),
                 Rc::clone(&ctx),
             ));
-            ok_val(Value::Seq {
-                head: new_head,
-                tail: new_tail,
-            }, call_span)
+            ok_val(
+                Value::Seq {
+                    head: new_head,
+                    tail: new_tail,
+                },
+                call_span,
+            )
         }
         other => Err(EvalError::type_mismatch_ctx(
             "map".to_string(),
@@ -2250,10 +2265,13 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     if passes {
         // Include this value in the result
-        ok_val(Value::Seq {
-            head: value_thunk,
-            tail,
-        }, call_span)
+        ok_val(
+            Value::Seq {
+                head: value_thunk,
+                tail,
+            },
+            call_span,
+        )
     } else {
         // Skip this value, continue to next
         Ok(tail)
@@ -2329,10 +2347,13 @@ fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         Cow::Borrowed("call $filter"),
                         Rc::clone(&ctx),
                     ));
-                    return ok_val(Value::Seq {
-                        head,
-                        tail: new_tail,
-                    }, call_span);
+                    return ok_val(
+                        Value::Seq {
+                            head,
+                            tail: new_tail,
+                        },
+                        call_span,
+                    );
                 } else {
                     // Skip this element: advance the loop without extra depth
                     current = materialize(&tail, None, &ctx, depth)?;
@@ -2412,10 +2433,13 @@ fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $take"),
                 Rc::clone(&ctx),
             ));
-            ok_val(Value::Seq {
-                head: new_head,
-                tail: new_tail,
-            }, call_span)
+            ok_val(
+                Value::Seq {
+                    head: new_head,
+                    tail: new_tail,
+                },
+                call_span,
+            )
         }
         other => Err(EvalError::type_mismatch_ctx(
             "take".to_string(),
@@ -2872,10 +2896,13 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $concat"),
                 Rc::clone(&ctx),
             ));
-            ok_val(Value::Seq {
-                head,
-                tail: result_thunk,
-            }, call_span)
+            ok_val(
+                Value::Seq {
+                    head,
+                    tail: result_thunk,
+                },
+                call_span,
+            )
         }
         Value::Dict(ref xs_map) => {
             // Dict path: eagerly merge both dicts with integer reindexing
@@ -2978,10 +3005,13 @@ fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $concat"),
                 Rc::clone(&ctx),
             ));
-            ok_val(Value::Seq {
-                head,
-                tail: new_tail,
-            }, call_span)
+            ok_val(
+                Value::Seq {
+                    head,
+                    tail: new_tail,
+                },
+                call_span,
+            )
         }
         other => Err(EvalError::type_mismatch_ctx(
             "concat-seq-step".to_string(),
