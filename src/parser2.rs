@@ -1,7 +1,9 @@
 //! Iterative parser for tinct — will replace the pest-based parser.
 //!
-//! This is Phase 2b of the parser rewrite: form classification and access chain handling.
-//! Implements call/fn/type-alias forms, keyed entries, bracket access, and annotated bare words.
+//! This is Phase 2c-1 (complete feature set) of the parser rewrite.
+//! Implements all language constructs: call/fn/type-alias/type-assert forms, keyed entries,
+//! bracket access, range access, dot access chains, document separators, comment collection,
+//! and fn param list parsing (simple, annotated, variadic).
 //!
 //! See `doc/whatif/parser-rewrite.md` for the complete design.
 
@@ -109,6 +111,148 @@ fn parse_annotation(
     }
 }
 
+/// Parse a function parameter list: `[param1 param2@Type ...rest]`
+/// Expects the current token to be OpenBracket. Advances index past CloseBracket.
+/// Returns (Vec<Param>, next_index) on success.
+fn parse_param_list(
+    tokens: &[Spanned<Token>],
+    i: &mut usize,
+) -> Result<Vec<Spanned<Param>>, ParseError> {
+    let _param_list_start = *i;
+
+    // Consume OpenBracket
+    if !matches!(&tokens[*i].node, Token::OpenBracket) {
+        return Err(ParseError {
+            message: "expected '[' to start param list".to_string(),
+            span: Some(tokens[*i].span),
+        });
+    }
+    *i += 1;
+
+    let mut params = Vec::new();
+    let mut saw_variadic = false;
+
+    loop {
+        *i += skip_whitespace_tokens(tokens, *i);
+
+        if *i >= tokens.len() {
+            return Err(ParseError {
+                message: "unexpected end of input in param list".to_string(),
+                span: None,
+            });
+        }
+
+        match &tokens[*i].node {
+            Token::CloseBracket => {
+                *i += 1; // Consume CloseBracket
+                break;
+            }
+            Token::Ellipsis => {
+                // Variadic param: ...name
+                if saw_variadic {
+                    return Err(ParseError {
+                        message: "multiple variadic parameters".to_string(),
+                        span: Some(tokens[*i].span),
+                    });
+                }
+                saw_variadic = true;
+                let ellipsis_span = tokens[*i].span;
+                *i += 1;
+
+                *i += skip_whitespace_tokens(tokens, *i);
+
+                if *i >= tokens.len() {
+                    return Err(ParseError {
+                        message: "expected parameter name after '...'".to_string(),
+                        span: Some(ellipsis_span),
+                    });
+                }
+
+                match &tokens[*i].node {
+                    Token::BareWord(name) => {
+                        let param_span = Span {
+                            start: ellipsis_span.start,
+                            end: tokens[*i].span.end,
+                        };
+                        params.push(Spanned::new(
+                            Param {
+                                name: name.clone(),
+                                annotation: None,
+                                variadic: true,
+                            },
+                            param_span,
+                        ));
+                        *i += 1;
+
+                        // Check for illegal annotation on variadic param
+                        if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
+                            return Err(ParseError {
+                                message: "annotations on variadic parameters are not allowed"
+                                    .to_string(),
+                                span: Some(tokens[*i].span),
+                            });
+                        }
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            message: "expected parameter name after '...'".to_string(),
+                            span: Some(tokens[*i].span),
+                        });
+                    }
+                }
+            }
+            Token::BareWord(name) => {
+                if saw_variadic {
+                    return Err(ParseError {
+                        message: "parameter after variadic parameter".to_string(),
+                        span: Some(tokens[*i].span),
+                    });
+                }
+
+                let param_start_span = tokens[*i].span;
+                let param_name = name.clone();
+                *i += 1;
+
+                // Check for annotation: param@Type
+                let annotation =
+                    if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
+                        let (ann, next_i) = parse_annotation(tokens, *i)?;
+                        *i = next_i;
+                        Some(ann)
+                    } else {
+                        None
+                    };
+
+                let param_span = if let Some(ref ann) = annotation {
+                    Span {
+                        start: param_start_span.start,
+                        end: ann.span.end,
+                    }
+                } else {
+                    param_start_span
+                };
+
+                params.push(Spanned::new(
+                    Param {
+                        name: param_name,
+                        annotation,
+                        variadic: false,
+                    },
+                    param_span,
+                ));
+            }
+            _ => {
+                return Err(ParseError {
+                    message: format!("unexpected token in param list: {:?}", tokens[*i].node),
+                    span: Some(tokens[*i].span),
+                });
+            }
+        }
+    }
+
+    Ok(params)
+}
+
 /// Stack frame types for the iterative parser.
 ///
 /// Each variant corresponds to a bracket-form being parsed. The parser pushes
@@ -132,10 +276,8 @@ enum StackFrame {
     },
     /// Function definition: `[fn [params] body]` or `[fn@Type [params] body]`
     Fn {
-        /// Parameter list — always empty until param list parsing is implemented (parser-core-c).
-        /// This field exists for future use when parsing `[fn [x y] body]` syntax.
-        #[allow(dead_code)]
-        params: Vec<Param>,
+        /// Parameter list — parsed from `[fn [x y] body]` syntax
+        params: Vec<Spanned<Param>>,
         body: Option<Spanned<Expr>>,
         return_ann: Option<Spanned<Annotation>>,
         span_start: usize,
@@ -152,9 +294,15 @@ enum StackFrame {
         span_start: usize,
     },
     /// Bracket access key: `$a[key_expr]` where `key_expr` may contain nested brackets
+    /// Also handles range access: `$a[2..5]`
     BracketAccessKey {
         target: Spanned<Expr>,
+        /// The first expression before `..` (if range) or the full key (if not range)
         key_expr: Option<Spanned<Expr>>,
+        /// Set to true if we've seen a `..` token, making this a range access
+        is_range: bool,
+        /// The expression after `..` (only for range access)
+        range_end: Option<Spanned<Expr>>,
         span_start: usize,
     },
 }
@@ -186,25 +334,24 @@ pub struct ParseOutput {
 
 /// Parse tinct source text using the iterative parser.
 ///
-/// This is the main entry point for Phase 2b. The parser handles:
+/// This is the main entry point for Phase 2c-1 (complete feature set). The parser handles:
 /// - Basic literals: `Int`, `Float`, `BoolLit`, `QuotedString`, `BareWord`, `VarRef`
 /// - Dicts: `[]`, `[42]`, `[a: 1 b: 2]`, keyed and auto-indexed entries
 /// - Call forms: `[call $f arg1 arg2 name: val]`
-/// - Fn forms: `[fn [params] body]`, `[fn@Type [params] body]` (simplified: no params parsing yet)
+/// - Fn forms: `[fn [x y@Int ...rest] body]`, `[fn@Type [params] body]` with full param parsing
 /// - Type-alias: `[type expr]`
-/// - Type-assert: `[@Annotation expr]` (deferred)
-/// - Bracket access: `$a[0]`, `$a[$key]` (deferred)
-/// - Annotated bare words: `word@Annotation` (deferred)
+/// - Type-assert: `[@Annotation expr]`
+/// - Bracket access: `$a[0]`, `$a[$key]`
+/// - Dot access chains: `$a.b.c`, `$a.b[0]`
+/// - Range access: `$a[2..5]`, `$a[..5]`, `$a[2..]`, `$a[..]`
+/// - Document separators: `---` between document sections
+/// - Comment collection: leading and trailing comments attached by span offset
 ///
-/// Not yet implemented (deferred to later sprints):
-/// - Dot access chains (`.`)
-/// - Range operators (`..`)
-/// - Document separators (`---`)
-/// - Comment collection for formatter
-/// - Fn param list parsing
-/// - Annotations (simple and property dict)
+/// Not yet implemented (deferred to parser-core-c2):
+/// - Annotated bare words as dict values (`word@SimpleType`)
+/// - Corpus parity tests with pest parser
 ///
-/// NOTE: When parser-core-c lands, `parse()` in parser.rs will be replaced by this function.
+/// NOTE: When parser-core-c2 lands, `parse()` in parser.rs will be replaced by this function.
 /// All pipeline entry points (eval_source, typecheck_source, REPL, LSP) will unwrap `.file`
 /// from `ParseOutput`.
 pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
@@ -223,9 +370,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     // All documents in the file
     let mut documents: Vec<Spanned<Document>> = Vec::new();
 
-    // Comment maps (empty for now; filled in by future sprints)
-    let leading_comments: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    let trailing_comments: BTreeMap<usize, String> = BTreeMap::new();
+    // Comment maps
+    let mut leading_comments: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut trailing_comments: BTreeMap<usize, String> = BTreeMap::new();
+
+    // Track the span of the last significant token for trailing comment detection
+    let mut last_significant_span: Option<Span> = None;
 
     // Convert to index-based iteration for peeking
     let token_vec = tokens;
@@ -280,19 +430,41 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // Fn form: [fn [params] body]
+                        // Fn form: [fn [params] body] or [fn@RetType [params] body]
                         // (Not a fn form if the keyword is followed by colon: [fn: x] is a dict.)
                         // (depth already checked above)
+
+                        i += 1; // Consume the OpenBracket
+                        i += skip_whitespace_tokens(&token_vec, i);
+                        i += 1; // Consume the "fn" token
+
+                        // Check for return annotation: fn@RetType
+                        let return_ann = if i < token_vec.len()
+                            && matches!(&token_vec[i].node, Token::ImmediateAt)
+                        {
+                            let (ann, next_i) = parse_annotation(&token_vec, i)?;
+                            i = next_i;
+                            Some(ann)
+                        } else {
+                            None
+                        };
+
+                        // Parse param list if present: [fn [params] body]
+                        i += skip_whitespace_tokens(&token_vec, i);
+                        let params = if i < token_vec.len()
+                            && matches!(&token_vec[i].node, Token::OpenBracket)
+                        {
+                            parse_param_list(&token_vec, &mut i)?
+                        } else {
+                            Vec::new()
+                        };
+
                         stack.push(StackFrame::Fn {
-                            params: Vec::new(),
+                            params,
                             body: None,
-                            return_ann: None,
+                            return_ann,
                             span_start: span.start.offset,
                         });
-                        i += 1; // Consume the OpenBracket
-                                // Skip whitespace and consume the "fn" token
-                        i += skip_whitespace_tokens(&token_vec, i);
-                        i += 1;
                         continue;
                     }
                     Some((Token::BareWord(s), keyword_idx))
@@ -351,22 +523,25 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     });
                 }
 
-                // BracketAccess at document level: pop from current_document_expressions
-                // TODO(parser-core-c): Handle BracketAccess inside Dict/Call frames by tracking
-                // the last pushed expression per frame
-                let target = if !current_document_expressions.is_empty() {
+                // Pop the target expression from the current context (document or frame)
+                let target = if stack.is_empty() {
+                    if current_document_expressions.is_empty() {
+                        return Err(ParseError {
+                            message: "bracket access requires a target expression before '['"
+                                .to_string(),
+                            span: Some(span),
+                        });
+                    }
                     current_document_expressions.pop().unwrap()
                 } else {
-                    return Err(ParseError {
-                        message: "bracket access inside dict/call contexts not yet supported"
-                            .to_string(),
-                        span: Some(span),
-                    });
+                    pop_last_value_from_frame(&mut stack, span)?
                 };
 
                 stack.push(StackFrame::BracketAccessKey {
                     target,
                     key_expr: None,
+                    is_range: false,
+                    range_end: None,
                     span_start: span.start.offset,
                 });
                 i += 1;
@@ -490,13 +665,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     }
 
                     StackFrame::Fn {
-                        params: _,
+                        params,
                         body,
                         return_ann,
                         span_start,
                     } => {
                         // Fn form: [fn [params] body]
-                        // For now, simplified: body is required
                         let body = body.ok_or_else(|| ParseError {
                             message: "fn form requires a body expression".to_string(),
                             span: Some(span),
@@ -504,7 +678,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                         let fn_expr = Expr::Fn {
                             return_ann,
-                            params: Vec::new(), // Param list parsing deferred to parser-core-c
+                            params,
                             body: Box::new(body),
                             desugared: false,
                         };
@@ -560,28 +734,49 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     StackFrame::BracketAccessKey {
                         target,
                         key_expr,
+                        is_range,
+                        range_end,
                         span_start,
                     } => {
-                        let key = key_expr.ok_or_else(|| ParseError {
-                            message: "bracket access requires a key expression".to_string(),
-                            span: Some(span),
-                        })?;
+                        if is_range {
+                            // Range access: $a[start..end]
+                            let range_access_expr = Expr::RangeAccess {
+                                expr: Box::new(target),
+                                start: key_expr.map(Box::new),
+                                end: range_end.map(Box::new),
+                            };
 
-                        let bracket_access_expr = Expr::BracketAccess {
-                            expr: Box::new(target),
-                            key: Box::new(key),
-                        };
+                            let spanned_access =
+                                Spanned::new(range_access_expr, dict_span(span_start));
+                            push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_access,
+                            )?;
+                        } else {
+                            // Regular bracket access: $a[key]
+                            let key = key_expr.ok_or_else(|| ParseError {
+                                message: "bracket access requires a key expression".to_string(),
+                                span: Some(span),
+                            })?;
 
-                        let spanned_access =
-                            Spanned::new(bracket_access_expr, dict_span(span_start));
-                        push_value(
-                            &mut stack,
-                            &mut current_document_expressions,
-                            spanned_access,
-                        )?;
+                            let bracket_access_expr = Expr::BracketAccess {
+                                expr: Box::new(target),
+                                key: Box::new(key),
+                            };
+
+                            let spanned_access =
+                                Spanned::new(bracket_access_expr, dict_span(span_start));
+                            push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_access,
+                            )?;
+                        }
                     }
                 }
 
+                last_significant_span = Some(span);
                 i += 1;
                 continue;
             }
@@ -628,6 +823,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             Token::Int(n) => {
                 let expr = Spanned::new(Expr::Int(*n), span);
                 push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
                 i += 1;
                 continue;
             }
@@ -635,6 +831,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             Token::Float(f) => {
                 let expr = Spanned::new(Expr::Float(*f), span);
                 push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
                 i += 1;
                 continue;
             }
@@ -642,6 +839,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             Token::BoolLit(b) => {
                 let expr = Spanned::new(Expr::Bool(*b), span);
                 push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
                 i += 1;
                 continue;
             }
@@ -649,6 +847,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             Token::QuotedString(s) => {
                 let expr = Spanned::new(Expr::Str(s.clone()), span);
                 push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
                 i += 1;
                 continue;
             }
@@ -664,6 +863,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             *pending_key = Some(expr.clone());
+                            last_significant_span = Some(span);
                             i += 1;
                             continue;
                         }
@@ -674,12 +874,14 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }) => {
                             // Named arg key — store the string name
                             *pending_key = Some((s.clone(), span));
+                            last_significant_span = Some(span);
                             i += 1;
                             continue;
                         }
                         _ => {
                             // Not in dict/call context; treat as normal value
                             push_value(&mut stack, &mut current_document_expressions, expr)?;
+                            last_significant_span = Some(span);
                             i += 1;
                             continue;
                         }
@@ -687,6 +889,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 } else {
                     // Not followed by colon; regular value
                     push_value(&mut stack, &mut current_document_expressions, expr)?;
+                    last_significant_span = Some(span);
                     i += 1;
                     continue;
                 }
@@ -695,13 +898,41 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             Token::VarRef(name) => {
                 let expr = Spanned::new(Expr::VarRef(name.clone()), span);
                 push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
                 i += 1;
                 continue;
             }
 
             // Other tokens: deferred to later sprints or ignored
-            Token::Comment(_) => {
-                // Comment collection for formatter comes later
+            Token::Comment(comment_text) => {
+                // Determine if this is a trailing or leading comment based on line position
+                // Trailing: comment on the same line as the previous significant token
+                // Leading: comment on a different line (or no previous token)
+                if let Some(prev_span) = last_significant_span {
+                    if prev_span.start.line == span.start.line {
+                        // Same line as previous token → trailing comment
+                        trailing_comments.insert(prev_span.start.offset, comment_text.clone());
+                    } else {
+                        // Different line → leading comment for next token
+                        if let Some((_, next_idx)) = peek_next_significant(&token_vec, i) {
+                            let next_offset = token_vec[next_idx].span.start.offset;
+                            leading_comments
+                                .entry(next_offset)
+                                .or_insert_with(Vec::new)
+                                .push(comment_text.clone());
+                        }
+                    }
+                } else {
+                    // No previous token → leading comment for next token
+                    if let Some((_, next_idx)) = peek_next_significant(&token_vec, i) {
+                        let next_offset = token_vec[next_idx].span.start.offset;
+                        leading_comments
+                            .entry(next_offset)
+                            .or_insert_with(Vec::new)
+                            .push(comment_text.clone());
+                    }
+                }
+
                 i += 1;
                 continue;
             }
@@ -713,24 +944,118 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::DocSeparator => {
-                return Err(ParseError {
-                    message: "document separators not yet supported".to_string(),
-                    span: Some(span),
-                });
+                // Document separator: finalize current document and start a new one
+                if !stack.is_empty() {
+                    return Err(ParseError {
+                        message: "document separator cannot appear inside bracket expressions"
+                            .to_string(),
+                        span: Some(span),
+                    });
+                }
+
+                // Finalize current document
+                if !current_document_expressions.is_empty() {
+                    let exprs = std::mem::take(&mut current_document_expressions);
+                    let doc_span = Span {
+                        start: exprs.first().unwrap().span.start,
+                        end: exprs.last().unwrap().span.end,
+                    };
+                    documents.push(Spanned::new(Document { expressions: exprs }, doc_span));
+                }
+
+                i += 1;
+                continue;
             }
 
             Token::Dot => {
-                return Err(ParseError {
-                    message: "dot access not yet supported".to_string(),
-                    span: Some(span),
-                });
+                // Dot access: pop the preceding expression and create DotAccess
+                // Pop from the current context (document or frame)
+                let target = if stack.is_empty() {
+                    if current_document_expressions.is_empty() {
+                        return Err(ParseError {
+                            message: "dot access requires a target expression before '.'"
+                                .to_string(),
+                            span: Some(span),
+                        });
+                    }
+                    current_document_expressions.pop().unwrap()
+                } else {
+                    // Inside a frame — pop the last value from the current frame
+                    pop_last_value_from_frame(&mut stack, span)?
+                };
+
+                i += 1; // Consume the Dot
+
+                // Skip whitespace
+                i += skip_whitespace_tokens(&token_vec, i);
+
+                if i >= token_vec.len() {
+                    return Err(ParseError {
+                        message: "expected field name after '.'".to_string(),
+                        span: Some(span),
+                    });
+                }
+
+                // Next token must be a BareWord for the field name
+                match &token_vec[i].node {
+                    Token::BareWord(field) => {
+                        let field_name = field.clone();
+                        let dot_access_span = Span {
+                            start: target.span.start,
+                            end: token_vec[i].span.end,
+                        };
+
+                        let dot_access_expr = Expr::DotAccess {
+                            expr: Box::new(target),
+                            field: field_name,
+                        };
+
+                        let spanned_access = Spanned::new(dot_access_expr, dot_access_span);
+
+                        if stack.is_empty() {
+                            current_document_expressions.push(spanned_access);
+                        } else {
+                            push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_access,
+                            )?;
+                        }
+
+                        i += 1;
+                        continue;
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            message: format!(
+                                "expected field name (bare word) after '.', found {:?}",
+                                token_vec[i].node
+                            ),
+                            span: Some(token_vec[i].span),
+                        });
+                    }
+                }
             }
 
             Token::Range => {
-                return Err(ParseError {
-                    message: "range operator not yet supported".to_string(),
-                    span: Some(span),
-                });
+                // Range operator: must be inside a BracketAccessKey frame
+                match stack.last_mut() {
+                    Some(StackFrame::BracketAccessKey {
+                        ref mut is_range, ..
+                    }) => {
+                        *is_range = true;
+                        i += 1;
+                        continue;
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            message:
+                                "range operator '..' can only appear in bracket access context"
+                                    .to_string(),
+                            span: Some(span),
+                        });
+                    }
+                }
             }
 
             Token::At | Token::ImmediateAt => {
@@ -831,6 +1156,125 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     })
 }
 
+/// Helper: pop the last value from the current frame for postfix operator transformation.
+/// This is used by dot access and other postfix operators that need to retroactively
+/// transform the previously-pushed expression.
+///
+/// Note: For Dict frames, this pops the entire entry and returns just the value. The caller
+/// must re-push the transformed value, which will create a new entry (either keyed or auto-indexed
+/// depending on whether there was a pending_key).
+fn pop_last_value_from_frame(
+    stack: &mut Vec<StackFrame>,
+    span: Span,
+) -> Result<Spanned<Expr>, ParseError> {
+    match stack.last_mut() {
+        Some(StackFrame::Dict {
+            ref mut entries,
+            ref mut pending_key,
+            ..
+        }) => {
+            // Check if there's a pending key first - if so, we haven't pushed the value yet
+            // and there's nothing to pop
+            if pending_key.is_some() {
+                return Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                });
+            }
+            if entries.is_empty() {
+                return Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                });
+            }
+            let last_entry = entries.pop().unwrap();
+            // Restore the key as pending_key if it existed, so the transformed value
+            // will be re-associated with the same key
+            *pending_key = last_entry.key;
+            Ok(last_entry.value)
+        }
+        Some(StackFrame::Call { ref mut args, .. }) => {
+            if args.is_empty() {
+                return Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                });
+            }
+            match args.pop().unwrap() {
+                CallArg::Positional(expr) => Ok(expr),
+                CallArg::Named(name, _expr) => Err(ParseError {
+                    message: format!("dot access cannot operate on named argument '{}'", name),
+                    span: Some(span),
+                }),
+            }
+        }
+        Some(StackFrame::Fn { ref mut body, .. }) => {
+            if let Some(b) = body.take() {
+                Ok(b)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
+        Some(StackFrame::BracketAccessKey {
+            ref mut key_expr,
+            ref mut range_end,
+            ref is_range,
+            ..
+        }) => {
+            if *is_range {
+                if let Some(end) = range_end.take() {
+                    Ok(end)
+                } else if let Some(start) = key_expr.take() {
+                    Ok(start)
+                } else {
+                    Err(ParseError {
+                        message: "dot access requires a target before '.'".to_string(),
+                        span: Some(span),
+                    })
+                }
+            } else {
+                if let Some(key) = key_expr.take() {
+                    Ok(key)
+                } else {
+                    Err(ParseError {
+                        message: "dot access requires a target before '.'".to_string(),
+                        span: Some(span),
+                    })
+                }
+            }
+        }
+        Some(StackFrame::TypeAlias {
+            ref mut type_expr, ..
+        }) => {
+            if let Some(expr) = type_expr.take() {
+                Ok(expr)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
+        Some(StackFrame::TypeAssert { ref mut expr, .. }) => {
+            if let Some(e) = expr.take() {
+                Ok(e)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
+        None => Err(ParseError {
+            message: "dot access requires a target before '.'".to_string(),
+            span: Some(span),
+        }),
+    }
+}
+
 /// Helper: push an expression to the parent frame or current document.
 fn push_expr_to_parent(
     stack: &mut Vec<StackFrame>,
@@ -891,15 +1335,33 @@ fn push_expr_to_parent(
                 Ok(())
             }
             Some(StackFrame::BracketAccessKey {
-                ref mut key_expr, ..
+                ref mut key_expr,
+                ref is_range,
+                ref mut range_end,
+                ..
             }) => {
-                if key_expr.is_some() {
-                    return Err(ParseError {
-                        message: "bracket access can only have one key expression".to_string(),
-                        span: Some(expr.span),
-                    });
+                if *is_range {
+                    // We've seen .., so this expression is the end of the range
+                    if range_end.is_some() {
+                        return Err(ParseError {
+                            message: "range access can only have one expression after '..'"
+                                .to_string(),
+                            span: Some(expr.span),
+                        });
+                    }
+                    *range_end = Some(expr);
+                } else {
+                    // No .. yet, so this is the key or range start
+                    if key_expr.is_some() {
+                        return Err(ParseError {
+                            message:
+                                "bracket access can only have one key expression before '..' or ']'"
+                                    .to_string(),
+                            span: Some(expr.span),
+                        });
+                    }
+                    *key_expr = Some(expr);
                 }
-                *key_expr = Some(expr);
                 Ok(())
             }
             None => unreachable!("stack.is_empty() was false but last_mut returned None"),
@@ -1535,15 +1997,30 @@ mod tests {
     }
 
     #[test]
-    fn test_bracket_access_inside_dict_errors() {
-        // [a: $x[0]] — BracketAccess token arrives when current_document_expressions is empty
-        // (we're inside a Dict frame), so bracket access is not supported in that context.
-        let err = parse2("[a: $x[0]]").unwrap_err();
-        assert!(
-            err.message.contains("bracket access inside"),
-            "expected error about bracket access inside dict/call context, got: {}",
-            err.message
-        );
+    fn test_bracket_access_inside_dict() {
+        // [a: $x[0]] — bracket access works as dict value (BracketAccess pops from frame)
+        let output = parse2("[a: $x[0]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a', got {other:?}"),
+                }
+                match &entries[0].node.value.node {
+                    Expr::BracketAccess { expr, key } => {
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "x"),
+                            other => panic!("expected VarRef('x'), got {other:?}"),
+                        }
+                        assert!(matches!(&key.node, Expr::Int(0)));
+                    }
+                    other => panic!("expected BracketAccess as value, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1640,6 +2117,679 @@ mod tests {
                 assert!(matches!(&entries[2].node.value.node, Expr::Int(3)));
             }
             other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    // --- New tests for parser-core-c features ---
+
+    #[test]
+    fn test_fn_params_simple() {
+        let output = parse2("[fn [x y] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn {
+                params,
+                body,
+                return_ann,
+                desugared,
+            } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_none());
+                assert!(!params[0].node.variadic);
+                assert_eq!(params[1].node.name, "y");
+                assert!(params[1].node.annotation.is_none());
+                assert!(!params[1].node.variadic);
+                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
+                assert!(return_ann.is_none());
+                assert!(!desugared);
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_params_annotated() {
+        let output = parse2("[fn [x@Int] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_some());
+                match &params[0].node.annotation.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Int"),
+                    other => panic!("expected Simple annotation, got {other:?}"),
+                }
+                assert!(!params[0].node.variadic);
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_return_annotation() {
+        let output = parse2("[fn@Number [x] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn {
+                return_ann, params, ..
+            } => {
+                assert!(return_ann.is_some());
+                match &return_ann.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Number"),
+                    other => panic!("expected Simple annotation, got {other:?}"),
+                }
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "x");
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_variadic() {
+        let output = parse2("[fn [...args] $args]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "args");
+                assert!(params[0].node.variadic);
+                assert!(params[0].node.annotation.is_none());
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_simple() {
+        let output = parse2("$a.b").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::DotAccess { expr, field } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert_eq!(field, "b");
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_chain() {
+        let output = parse2("$a.b.c").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::DotAccess {
+                expr: outer_expr,
+                field: outer_field,
+            } => {
+                assert_eq!(outer_field, "c");
+                match &outer_expr.node {
+                    Expr::DotAccess {
+                        expr: inner_expr,
+                        field: inner_field,
+                    } => {
+                        assert_eq!(inner_field, "b");
+                        match &inner_expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "a"),
+                            other => panic!("expected VarRef at base, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected inner DotAccess, got {other:?}"),
+                }
+            }
+            other => panic!("expected outer DotAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_inside_call() {
+        // [call $fn $a.b]
+        let output = parse2("[call $fn $a.b]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Call {
+                func,
+                args,
+                named_args,
+            } => {
+                match &func.node {
+                    Expr::VarRef(name) => assert_eq!(name, "fn"),
+                    other => panic!("expected VarRef for func, got {other:?}"),
+                }
+                assert_eq!(args.len(), 1);
+                match &args[0].node {
+                    Expr::DotAccess { expr, field } => {
+                        assert_eq!(field, "b");
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "a"),
+                            other => panic!("expected VarRef, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected DotAccess, got {other:?}"),
+                }
+                assert_eq!(named_args.len(), 0);
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_inside_dict() {
+        // [x: $y.z]
+        let output = parse2("[x: $y.z]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert!(entries[0].node.key.is_some());
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "x"),
+                    other => panic!("expected key 'x', got {other:?}"),
+                }
+                match &entries[0].node.value.node {
+                    Expr::DotAccess { expr, field } => {
+                        assert_eq!(field, "z");
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "y"),
+                            other => panic!("expected VarRef, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected DotAccess, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_range_access_both() {
+        let output = parse2("$a[2..5]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::RangeAccess { expr, start, end } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(start.is_some());
+                match &start.as_ref().unwrap().node {
+                    Expr::Int(n) => assert_eq!(*n, 2),
+                    other => panic!("expected Int(2) for start, got {other:?}"),
+                }
+                assert!(end.is_some());
+                match &end.as_ref().unwrap().node {
+                    Expr::Int(n) => assert_eq!(*n, 5),
+                    other => panic!("expected Int(5) for end, got {other:?}"),
+                }
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_range_access_unbounded() {
+        let output = parse2("$a[..]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::RangeAccess { expr, start, end } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(start.is_none());
+                assert!(end.is_none());
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_range_access_start_only() {
+        let output = parse2("$a[2..]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::RangeAccess { expr, start, end } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(start.is_some());
+                match &start.as_ref().unwrap().node {
+                    Expr::Int(n) => assert_eq!(*n, 2),
+                    other => panic!("expected Int(2) for start, got {other:?}"),
+                }
+                assert!(end.is_none());
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_range_access_end_only() {
+        let output = parse2("$a[..5]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::RangeAccess { expr, start, end } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(start.is_none());
+                assert!(end.is_some());
+                match &end.as_ref().unwrap().node {
+                    Expr::Int(n) => assert_eq!(*n, 5),
+                    other => panic!("expected Int(5) for end, got {other:?}"),
+                }
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_doc_separator() {
+        let output = parse2("[a: 1]\n---\n[b: 2]").expect("parse failed");
+        assert_eq!(output.file.node.documents.len(), 2);
+
+        // First document
+        let doc1 = &output.file.node.documents[0].node;
+        assert_eq!(doc1.expressions.len(), 1);
+        match &doc1.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a', got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc1, got {other:?}"),
+        }
+
+        // Second document
+        let doc2 = &output.file.node.documents[1].node;
+        assert_eq!(doc2.expressions.len(), 1);
+        match &doc2.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "b"),
+                    other => panic!("expected key 'b', got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comment_leading() {
+        let output = parse2("# comment\n[a: 1]").expect("parse failed");
+        assert!(!output.leading_comments.is_empty());
+        // Comments are attached by offset of next significant token
+        // We just verify that we have at least one comment collected
+        let has_comment = output
+            .leading_comments
+            .values()
+            .any(|v| v.iter().any(|c| c.contains("comment")));
+        assert!(
+            has_comment,
+            "expected to find 'comment' in leading_comments"
+        );
+    }
+
+    #[test]
+    fn test_fn_param_variadic_not_last() {
+        // [...args x] — variadic param not last
+        let err = parse2("[fn [...args x] $x]").unwrap_err();
+        assert!(
+            err.message.contains("parameter after variadic"),
+            "expected error about param after variadic, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_fn_multiple_variadic() {
+        // [...args ...rest] — multiple variadic params
+        let err = parse2("[fn [...args ...rest] $x]").unwrap_err();
+        assert!(
+            err.message.contains("multiple variadic"),
+            "expected error about multiple variadic params, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_fn_variadic_with_annotation_errors() {
+        // [...args@Int] — annotation on variadic param
+        let err = parse2("[fn [...args@Int] $args]").unwrap_err();
+        assert!(
+            err.message
+                .contains("annotations on variadic parameters are not allowed"),
+            "expected error about variadic annotation, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_range_outside_bracket_access() {
+        // .. outside brackets is a bare word per lexer rules (Range only emitted inside brackets)
+        let output = parse2("1..5").expect("should parse (.. is bare word outside brackets)");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 2); // Int(1) and BareWord("..5")
+    }
+
+    #[test]
+    fn test_doc_separator_inside_bracket() {
+        // --- inside a bracket expression
+        let err = parse2("[---]").unwrap_err();
+        assert!(
+            err.message
+                .contains("document separator cannot appear inside"),
+            "expected error about doc separator inside bracket, got: {}",
+            err.message
+        );
+    }
+
+    // --- Tests added for review findings (parser-core-c1) ---
+
+    #[test]
+    fn test_whitespace_prevents_dot_access() {
+        // "$a .b" has whitespace before dot; lexer emits Dot as non-access-context bare word ".b"
+        let output = parse2("$a .b").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(
+            doc.expressions.len(),
+            2,
+            "expected 2 expressions (VarRef 'a' + BareWord '.b'), got {}",
+            doc.expressions.len()
+        );
+        match &doc.expressions[0].node {
+            Expr::VarRef(name) => assert_eq!(name, "a"),
+            other => panic!("expected VarRef('a') as first expr, got {other:?}"),
+        }
+        // Second expression: the ".b" bare word (not a DotAccess)
+        assert!(
+            !matches!(&doc.expressions[1].node, Expr::DotAccess { .. }),
+            "second expression should not be DotAccess — whitespace prevents dot access"
+        );
+    }
+
+    #[test]
+    fn test_whitespace_prevents_bracket_access() {
+        // "$a [0]" has whitespace before "["; lexer emits OpenBracket (not BracketAccess)
+        let output = parse2("$a [0]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(
+            doc.expressions.len(),
+            2,
+            "expected 2 expressions (VarRef 'a' + Dict containing Int(0)), got {}",
+            doc.expressions.len()
+        );
+        match &doc.expressions[0].node {
+            Expr::VarRef(name) => assert_eq!(name, "a"),
+            other => panic!("expected VarRef('a') as first expr, got {other:?}"),
+        }
+        match &doc.expressions[1].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert!(matches!(&entries[0].node.value.node, Expr::Int(0)));
+            }
+            other => panic!("expected Dict([Int(0)]) as second expr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_params_mixed() {
+        // [fn [x y@Int ...rest] $x] — simple + annotated + variadic
+        let output = parse2("[fn [x y@Int ...rest] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, body, .. } => {
+                assert_eq!(params.len(), 3);
+                // param 0: simple "x"
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_none());
+                assert!(!params[0].node.variadic);
+                // param 1: annotated "y@Int"
+                assert_eq!(params[1].node.name, "y");
+                assert!(params[1].node.annotation.is_some());
+                match &params[1].node.annotation.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Int"),
+                    other => panic!("expected Simple(Int) annotation, got {other:?}"),
+                }
+                assert!(!params[1].node.variadic);
+                // param 2: variadic "...rest"
+                assert_eq!(params[2].node.name, "rest");
+                assert!(params[2].node.variadic);
+                assert!(params[2].node.annotation.is_none());
+                // body
+                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_both_annotations() {
+        // [fn@Number [x@Int] $x] — return annotation + annotated param
+        let output = parse2("[fn@Number [x@Int] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn {
+                params,
+                return_ann,
+                body,
+                ..
+            } => {
+                // Return annotation
+                assert!(return_ann.is_some());
+                match &return_ann.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Number"),
+                    other => panic!("expected Simple(Number) return annotation, got {other:?}"),
+                }
+                // Param
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_some());
+                match &params[0].node.annotation.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Int"),
+                    other => panic!("expected Simple(Int) param annotation, got {other:?}"),
+                }
+                assert!(!params[0].node.variadic);
+                // Body
+                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_on_dict_literal() {
+        // "[x: 1].x" — dot access immediately after closing bracket (no whitespace)
+        // The lexer emits Dot (not BareWord) after ']' since CloseBracket is in is_access_context.
+        let output = parse2("[x: 1].x").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(
+            doc.expressions.len(),
+            1,
+            "expected 1 expression (DotAccess)"
+        );
+        match &doc.expressions[0].node {
+            Expr::DotAccess { expr, field } => {
+                assert_eq!(field, "x");
+                match &expr.node {
+                    Expr::Dict(entries) => {
+                        assert_eq!(entries.len(), 1);
+                        match &entries[0].node.key.as_ref().unwrap().node {
+                            Expr::Str(s) => assert_eq!(s, "x"),
+                            other => panic!("expected key 'x', got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Dict as DotAccess target, got {other:?}"),
+                }
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comment_trailing() {
+        // "[a: 1] # trailing comment" — comment on same line as dict → trailing
+        let output = parse2("[a: 1] # trailing comment").expect("parse failed");
+        assert!(
+            !output.trailing_comments.is_empty(),
+            "expected at least one trailing comment"
+        );
+        let has_comment = output
+            .trailing_comments
+            .values()
+            .any(|c| c.contains("trailing comment"));
+        assert!(
+            has_comment,
+            "expected to find 'trailing comment' in trailing_comments, got: {:?}",
+            output.trailing_comments
+        );
+    }
+
+    #[test]
+    fn test_range_in_nested_context() {
+        // "[x: $y[2..5]]" — range access as dict value
+        let output = parse2("[x: $y[2..5]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "x"),
+                    other => panic!("expected key 'x', got {other:?}"),
+                }
+                match &entries[0].node.value.node {
+                    Expr::RangeAccess { expr, start, end } => {
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "y"),
+                            other => panic!("expected VarRef('y'), got {other:?}"),
+                        }
+                        assert!(start.is_some());
+                        match &start.as_ref().unwrap().node {
+                            Expr::Int(n) => assert_eq!(*n, 2),
+                            other => panic!("expected Int(2) for start, got {other:?}"),
+                        }
+                        assert!(end.is_some());
+                        match &end.as_ref().unwrap().node {
+                            Expr::Int(n) => assert_eq!(*n, 5),
+                            other => panic!("expected Int(5) for end, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected RangeAccess as dict value, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_doc_separators() {
+        // Three documents separated by two ---
+        let output = parse2("[a: 1]\n---\n[b: 2]\n---\n[c: 3]").expect("parse failed");
+        assert_eq!(
+            output.file.node.documents.len(),
+            3,
+            "expected 3 documents, got {}",
+            output.file.node.documents.len()
+        );
+
+        // Document 1: [a: 1]
+        let doc1 = &output.file.node.documents[0].node;
+        assert_eq!(doc1.expressions.len(), 1);
+        match &doc1.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a' in doc1, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc1, got {other:?}"),
+        }
+
+        // Document 2: [b: 2]
+        let doc2 = &output.file.node.documents[1].node;
+        assert_eq!(doc2.expressions.len(), 1);
+        match &doc2.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "b"),
+                    other => panic!("expected key 'b' in doc2, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc2, got {other:?}"),
+        }
+
+        // Document 3: [c: 3]
+        let doc3 = &output.file.node.documents[2].node;
+        assert_eq!(doc3.expressions.len(), 1);
+        match &doc3.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "c"),
+                    other => panic!("expected key 'c' in doc3, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_empty_params() {
+        // [fn [] 42] — fn with explicit empty param list, body Int(42)
+        let output = parse2("[fn [] 42]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn {
+                params,
+                body,
+                return_ann,
+                desugared,
+            } => {
+                assert_eq!(params.len(), 0, "expected empty param list");
+                assert!(matches!(&body.node, Expr::Int(42)));
+                assert!(return_ann.is_none());
+                assert!(!desugared);
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_param_span() {
+        // [fn [x@Int] $x] — verify param[0] span covers "x@Int"
+        // "[fn [x@Int] $x]"
+        //  0123456789...
+        //  offset 5 = 'x', offset 6 = '@', offset 7..9 = "Int"
+        let output = parse2("[fn [x@Int] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, .. } => {
+                assert_eq!(params.len(), 1);
+                let param_span = params[0].span;
+                assert_eq!(
+                    param_span.start.offset, 5,
+                    "expected param span to start at offset 5 ('x'), got {}",
+                    param_span.start.offset
+                );
+                assert!(
+                    param_span.end.offset > 9,
+                    "expected param span end > 9 (includes '@Int'), got {}",
+                    param_span.end.offset
+                );
+            }
+            other => panic!("expected Fn, got {other:?}"),
         }
     }
 }
