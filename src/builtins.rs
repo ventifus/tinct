@@ -1372,6 +1372,8 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         ctx,
     } = ctx_arg;
+    // Capture arg span before expect_one_arg consumes args.
+    let arg_span = args.first().map(|a| a.span).unwrap_or(call_span);
     let val = expect_one_arg("collect", args, named, &ctx, depth, call_span)?;
 
     // Handle empty dict (terminal value) as input
@@ -1386,8 +1388,9 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             "collect".to_string(),
             "Seq",
             val.type_name(),
-            call_span,
+            arg_span,
         )
+        .with_materialization_span(call_span)
         .into());
     }
 
@@ -1428,8 +1431,9 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     "collect".to_string(),
                     "Seq or empty dict",
                     other.type_name(),
-                    call_span,
+                    arg_span,
                 )
+                .with_materialization_span(call_span)
                 .into());
             }
         }
@@ -2771,12 +2775,32 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
+    let xs_span = args[0].span;
+    let ys_span = args[1].span;
     let xs = materialize(&args[0], None, &ctx, depth)?;
     let ys_thunk = Rc::clone(&args[1]);
 
     match xs {
         Value::Seq { head, tail } => {
-            // Seq path: lazy chaining via step function
+            // Seq path: validate ys type eagerly before building the lazy chain.
+            // This catches concat(seq(1, 2, 3), 42) at call time rather than
+            // deferring the error until the consumer exhausts xs — which would
+            // only manifest deep in the PendingBuiltin chain at high stack depth.
+            let ys_val = materialize(&ys_thunk, None, &ctx, depth)?;
+            match ys_val {
+                Value::Dict(_) | Value::Seq { .. } => {}
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "concat".to_string(),
+                        "Dict or Seq",
+                        other.type_name(),
+                        ys_span,
+                    )
+                    .with_materialization_span(call_span)
+                    .into())
+                }
+            }
+            // ys_thunk is now Materialized (memoized). Build the lazy step chain.
             let step_args = vec![tail, ys_thunk];
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
                 builtin_concat_seq_step,
@@ -2805,8 +2829,9 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                             "concat".to_string(),
                             "Dict or Seq",
                             other.type_name(),
-                            call_span,
+                            ys_span,
                         )
+                        .with_materialization_span(call_span)
                         .into())
                     }
                 }
@@ -2837,13 +2862,13 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                     ok_val(Value::Dict(result))
                 }
-                other => Err(EvalError::internal(
-                    format!(
-                        "concat: both arguments must be the same collection type, got Dict and {}",
-                        other.type_name()
-                    ),
-                    call_span,
+                other => Err(EvalError::type_mismatch_ctx(
+                    "concat".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    ys_span,
                 )
+                .with_materialization_span(call_span)
                 .into()),
             }
         }
@@ -2851,8 +2876,9 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             "concat".to_string(),
             "Dict or Seq",
             other.type_name(),
-            call_span,
+            xs_span,
         )
+        .with_materialization_span(call_span)
         .into()),
     }
 }
@@ -2874,7 +2900,9 @@ fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     match xs_tail {
         Value::Dict(_) => {
-            // End of xs sequence: return ys
+            // End of xs sequence: return ys.
+            // Type validation for ys happens eagerly in builtin_concat at call time
+            // (for the Seq xs path), so we know ys is a Dict or Seq by this point.
             Ok(ys_thunk)
         }
         Value::Seq { head, tail } => {
@@ -10813,6 +10841,55 @@ mod tests {
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn concat_seq_non_collection_ys_is_type_error() {
+        // concat(seq(1, 2, 3), 42) should produce a type error, not silently succeed.
+        // Before the fix, ys=42 was returned as-is when xs was exhausted, so the
+        // consumer would see `42` as the tail of the last Seq node — a silent
+        // correctness failure. After the fix, builtin_concat validates ys eagerly
+        // when xs is a Seq, so the error fires at call time.
+        //
+        // Eager validation is a deliberate strictness point (parallels the Dict xs
+        // path) and avoids the alternative of adding a materialize call deep in the
+        // PendingBuiltin chain where Rust stack depth is highest.
+        //
+        // xs = Seq(1, Seq(2, Seq(3, {})))
+        let xs = thunk(Value::Seq {
+            head: thunk(Value::Int(1)),
+            tail: thunk(Value::Seq {
+                head: thunk(Value::Int(2)),
+                tail: thunk(Value::Seq {
+                    head: thunk(Value::Int(3)),
+                    tail: thunk(Value::Dict(IndexMap::new())),
+                }),
+            }),
+        });
+        let ys = thunk(Value::Int(42));
+
+        // builtin_concat itself fails immediately because ys=42 is not a collection.
+        let err = builtin_concat(BuiltinArgs {
+            args: &[xs, ys],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+
+        match err.kind {
+            crate::error::ErrorKind::TypeMismatch {
+                context,
+                expected,
+                got,
+            } => {
+                assert_eq!(context.as_deref(), Some("concat"));
+                assert_eq!(expected, "Dict or Seq");
+                assert_eq!(got, "Int");
+            }
+            other => panic!("expected TypeMismatch, got {:?}", other),
         }
     }
 
