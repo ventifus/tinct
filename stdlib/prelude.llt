@@ -367,15 +367,19 @@ reindex-step: [fn [xs ks i acc current-key]
 
 # Sort a list using natural ordering. Inherently materializing: must compare values to determine order.
 sort: [fn [xs]
-    [call $sort-by [fn [a b] [call $builtin-lt $a $b]] $xs]]
+    [call $builtin-if [call $seq? $xs]
+        [call $error "sort: expected Dict, got Seq -- collect the Seq first"]
+        [call $sort-by [fn [a b] [call $builtin-lt $a $b]] $xs]]]
 
 # Sort a list using a custom comparator. Inherently materializing: must compare values to determine order.
 sort-by: [fn [cmp xs]
-    [call $builtin-if [call $<= [call $length $xs] 1]
-        $xs
-        [call $sort-merge $cmp
-            [call $sort-by $cmp [call $builtin-take [call $quot [call $length $xs] 2] $xs]]
-            [call $sort-by $cmp [call $reindex [call $builtin-drop [call $quot [call $length $xs] 2] $xs]]]]]]
+    [call $builtin-if [call $seq? $xs]
+        [call $error "sort-by: expected Dict, got Seq -- collect the Seq first"]
+        [call $builtin-if [call $<= [call $length $xs] 1]
+            $xs
+            [call $sort-merge $cmp
+                [call $sort-by $cmp [call $builtin-take [call $quot [call $length $xs] 2] $xs]]
+                [call $sort-by $cmp [call $reindex [call $builtin-drop [call $quot [call $length $xs] 2] $xs]]]]]]]
 
 sort-merge: [fn [cmp left right]
     [call $builtin-if [call $empty? $left]
