@@ -4,7 +4,7 @@ A **unified data representation and transformation language** that combines JSON
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** Phases 0-4 and 6a complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 46 Rust-native builtins, Tinct standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, comprehensive test suite (1425+ tests). Phase 6b (LSP) is next.
+**Status:** Phases 0-4, 6a, and 6b complete -- pest PEG grammar, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, 46 Rust-native builtins, Tinct standard library (79 corpus tests covering all public functions), interactive REPL with line editing and history, LSP server with textDocument/didOpen, didChange, and publishDiagnostics, comprehensive test suite (1425+ tests).
 
 ## Syntax at a Glance
 
@@ -223,7 +223,7 @@ Features move through these stages in order:
 
 1. **Design** — explore the problem, evaluate alternatives
 2. **Whatif doc** (`doc/whatif/`) — write a proposal covering current state, what the feature provides, design, phased adoption, and references
-3. **Accept & update spec** — accepted whatifs are incorporated into the relevant `doc/` chapters; the spec describes tinct *as it will be*, including features pending implementation
+3. **Accept & update spec** — mark the whatif `State: Accepted`, verify prerequisites are met or scheduled, run a design review for proposals touching formal semantics, incorporate the design into the relevant `doc/` chapters (present tense; the spec describes tinct as it will be), and create TODO.md sprints for each adoption phase
 4. **Sprint** — one or more TODO.md sprints tracking implementation tasks
 5. **Complete** — sprint checked off; spec was already accurate
 

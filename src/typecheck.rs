@@ -94,7 +94,7 @@ fn typecheck_document(
 
         // Special handling for Dict expressions at document level to preserve schemes
         if let Expr::Dict(entries) = &expr.node {
-            match infer_dict(entries, &env, state, type_map) {
+            match infer_dict(entries, &env, state, type_map, expr.span) {
                 Ok((ty, schemes)) => {
                     if is_last {
                         result_type = ty;
@@ -256,7 +256,9 @@ fn infer_expr(
             .map(|scheme| instantiate_scheme(scheme, state.level, state))
             .ok_or_else(|| vec![TypeError::undefined_variable(name, expr.span)]),
 
-        Expr::Dict(entries) => infer_dict(entries, env, state, type_map).map(|(ty, _schemes)| ty),
+        Expr::Dict(entries) => {
+            infer_dict(entries, env, state, type_map, expr.span).map(|(ty, _schemes)| ty)
+        }
 
         Expr::DotAccess {
             expr: target,
@@ -381,7 +383,8 @@ fn check_expr(
 ) -> Result<(), Vec<TypeError>> {
     // Lambda checking mode: when checking a function expression against a function type,
     // propagate expected parameter types into the lambda.
-    // Only applies when expected type is fully concrete (no type variables) per doc/06 line 66.
+    // Only applies when expected type is fully concrete after applying state.subst
+    // (no unbound type variables) per doc/06 line 66.
     if let Expr::Fn {
         return_ann,
         params,
@@ -389,160 +392,181 @@ fn check_expr(
         ..
     } = &expr.node
     {
-        if let Type::Function {
-            params: expected_params,
-            ret: expected_ret,
-        } = expected
-        {
-            // Only use lambda checking mode if expected type is fully concrete
-            if !expected.has_type_vars() {
-                // Create a fresh annotation mapping for this lambda to prevent
-                // cross-contamination of type variables.
-                // Only allocate if any param has an annotation or there's a return annotation.
-                let has_annotations =
-                    params.iter().any(|p| p.node.annotation.is_some()) || return_ann.is_some();
-                let mut ann_mapping = if has_annotations {
-                    Some(HashMap::new())
+        if let Type::Function { .. } = expected {
+            // Apply current substitution before checking for TypeVars — TypeVars that are
+            // already bound in state.subst are effectively resolved. Without this, lambda
+            // checking mode is blocked by TypeVars that have known types, falling through
+            // to the less precise synthesize+subsume path.
+            // Per Algorithm W (Damas & Milner, 1982): substitutions must be applied before
+            // inspecting types, maintaining the substitution threading invariant.
+            let resolved_expected =
+                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                    expected.clone()
                 } else {
-                    None
+                    state.subst.apply(expected)
                 };
-                let mut ann_mapping_opt = ann_mapping.as_mut();
+            // Only use lambda checking mode if expected type is fully concrete after applying subst
+            if let Type::Function {
+                params: ref expected_params,
+                ret: ref expected_ret,
+            } = resolved_expected
+            {
+                if !resolved_expected.has_type_vars() {
+                    // Create a fresh annotation mapping for this lambda to prevent
+                    // cross-contamination of type variables.
+                    // Only allocate if any param has an annotation or there's a return annotation.
+                    let has_annotations =
+                        params.iter().any(|p| p.node.annotation.is_some()) || return_ann.is_some();
+                    let mut ann_mapping = if has_annotations {
+                        Some(HashMap::new())
+                    } else {
+                        None
+                    };
+                    let mut ann_mapping_opt = ann_mapping.as_mut();
 
-                // Arity check
-                if params.len() != expected_params.len() {
-                    return Err(vec![TypeError::new(
-                        format!(
-                            "function arity mismatch: expected {} params, got {}",
-                            expected_params.len(),
-                            params.len()
-                        ),
-                        expr.span,
-                    )]);
-                }
+                    // Arity check
+                    if params.len() != expected_params.len() {
+                        return Err(vec![TypeError::new(
+                            format!(
+                                "function arity mismatch: expected {} params, got {}",
+                                expected_params.len(),
+                                params.len()
+                            ),
+                            expr.span,
+                        )]);
+                    }
 
-                // Build parameter types: use expected types for unannotated params.
-                // For annotated params, verify the annotation is compatible with the expected
-                // type: expected_ty must be a subtype of the annotation (contravariant check).
-                // Example: expected Fn(Int→...) but param declared @String → Int <: String is
-                // false → error, because callers will pass Int but the body expects String.
-                let param_types: Vec<Type> = params
-                    .iter()
-                    .zip(expected_params.iter())
-                    .map(|(p, expected_ty)| match &p.node.annotation {
+                    // Build parameter types: use expected types for unannotated params.
+                    // For annotated params, verify the annotation is compatible with the expected
+                    // type: expected_ty must be a subtype of the annotation (contravariant check).
+                    // Example: expected Fn(Int→...) but param declared @String → Int <: String is
+                    // false → error, because callers will pass Int but the body expects String.
+                    let param_types: Vec<Type> = params
+                        .iter()
+                        .zip(expected_params.iter())
+                        .map(|(p, expected_ty)| match &p.node.annotation {
+                            Some(ann) => {
+                                let resolved = resolve_annotation(
+                                    &ann.node,
+                                    env,
+                                    ann.span,
+                                    state,
+                                    &mut ann_mapping_opt,
+                                )?;
+                                // Contravariant check: expected param type must be subtype of annotation.
+                                // When annotation contains type variables, use unification mode instead of
+                                // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
+                                if resolved.has_type_vars() {
+                                    let mut subst = std::mem::take(&mut state.subst);
+                                    let result =
+                                        unify(expected_ty, &resolved, &mut subst, state, ann.span);
+                                    state.subst = subst;
+                                    result.map_err(|_e| {
+                                        TypeError::type_mismatch(expected_ty, &resolved, ann.span)
+                                    })?;
+                                } else {
+                                    if !Type::is_subtype(expected_ty, &resolved) {
+                                        return Err(TypeError::type_mismatch(
+                                            expected_ty,
+                                            &resolved,
+                                            ann.span,
+                                        ));
+                                    }
+                                }
+                                Ok(resolved)
+                            }
+                            None => Ok(expected_ty.clone()),
+                        })
+                        .collect::<Result<_, _>>()
+                        .map_err(|e| vec![e])?;
+
+                    // Build function environment with parameter bindings
+                    let mut fn_env = TypeEnv::with_parent(Rc::clone(env));
+                    for (param, ty) in params.iter().zip(param_types.iter()) {
+                        if param.node.variadic {
+                            fn_env.insert(
+                                param.node.name.clone(),
+                                Type::Record(Row {
+                                    fields: HashMap::new(),
+                                    tail: RowTail::Empty,
+                                }),
+                            );
+                        } else {
+                            fn_env.insert(param.node.name.clone(), ty.clone());
+                        }
+                    }
+                    let fn_env = Rc::new(fn_env);
+
+                    // Check body against expected return type (or infer if no return annotation)
+                    match return_ann {
                         Some(ann) => {
-                            let resolved = resolve_annotation(
+                            let declared = resolve_annotation(
                                 &ann.node,
                                 env,
                                 ann.span,
                                 state,
                                 &mut ann_mapping_opt,
-                            )?;
-                            // Contravariant check: expected param type must be subtype of annotation.
-                            // When annotation contains type variables, use unification mode instead of
+                            )
+                            .map_err(|e| vec![e])?;
+                            // Check that declared return type is compatible with expected.
+                            // When declared contains type variables, use unification mode instead of
                             // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
-                            if resolved.has_type_vars() {
+                            if declared.has_type_vars() {
                                 let mut subst = std::mem::take(&mut state.subst);
                                 let result =
-                                    unify(expected_ty, &resolved, &mut subst, state, ann.span);
+                                    unify(&declared, expected_ret, &mut subst, state, ann.span);
                                 state.subst = subst;
                                 result.map_err(|_e| {
-                                    TypeError::type_mismatch(expected_ty, &resolved, ann.span)
+                                    vec![TypeError::type_mismatch(
+                                        expected_ret,
+                                        &declared,
+                                        expr.span,
+                                    )]
                                 })?;
                             } else {
-                                if !Type::is_subtype(expected_ty, &resolved) {
-                                    return Err(TypeError::type_mismatch(
-                                        expected_ty,
-                                        &resolved,
-                                        ann.span,
-                                    ));
+                                if !Type::is_subtype(&declared, expected_ret) {
+                                    return Err(vec![TypeError::type_mismatch(
+                                        expected_ret,
+                                        &declared,
+                                        expr.span,
+                                    )]);
                                 }
                             }
-                            Ok(resolved)
+                            // Check body against declared return type
+                            check_expr(body, &declared, &fn_env, state, type_map)?;
                         }
-                        None => Ok(expected_ty.clone()),
-                    })
-                    .collect::<Result<_, _>>()
-                    .map_err(|e| vec![e])?;
-
-                // Build function environment with parameter bindings
-                let mut fn_env = TypeEnv::with_parent(Rc::clone(env));
-                for (param, ty) in params.iter().zip(param_types.iter()) {
-                    if param.node.variadic {
-                        fn_env.insert(
-                            param.node.name.clone(),
-                            Type::Record(Row {
-                                fields: HashMap::new(),
-                                tail: RowTail::Empty,
-                            }),
-                        );
-                    } else {
-                        fn_env.insert(param.node.name.clone(), ty.clone());
-                    }
-                }
-                let fn_env = Rc::new(fn_env);
-
-                // Check body against expected return type (or infer if no return annotation)
-                match return_ann {
-                    Some(ann) => {
-                        let declared = resolve_annotation(
-                            &ann.node,
-                            env,
-                            ann.span,
-                            state,
-                            &mut ann_mapping_opt,
-                        )
-                        .map_err(|e| vec![e])?;
-                        // Check that declared return type is compatible with expected.
-                        // When declared contains type variables, use unification mode instead of
-                        // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
-                        if declared.has_type_vars() {
-                            let mut subst = std::mem::take(&mut state.subst);
-                            let result =
-                                unify(&declared, expected_ret, &mut subst, state, ann.span);
-                            state.subst = subst;
-                            result.map_err(|_e| {
-                                vec![TypeError::type_mismatch(expected_ret, &declared, expr.span)]
-                            })?;
-                        } else {
-                            if !Type::is_subtype(&declared, expected_ret) {
-                                return Err(vec![TypeError::type_mismatch(
-                                    expected_ret,
-                                    &declared,
-                                    expr.span,
-                                )]);
-                            }
-                        }
-                        // Check body against declared return type
-                        check_expr(body, &declared, &fn_env, state, type_map)?;
-                    }
-                    None => {
-                        // No return annotation: check body against expected return type.
-                        // Apply state.subst to expected_ret before passing — parameter
-                        // inference (annotation unification above) may have bound TypeVars
-                        // in state.subst that appear in expected_ret. Without this, the
-                        // body check uses stale TypeVars. Mirrors the default path (below)
-                        // which applies state.subst to both types before comparison.
-                        //
-                        // This apply is a no-op today because the !has_type_vars() guard above
-                        // guarantees expected_ret is concrete. It becomes load-bearing if that
-                        // guard is relaxed to support partial checking mode.
-                        let applied_ret =
-                            if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                        None => {
+                            // No return annotation: check body against expected return type.
+                            // Apply state.subst to expected_ret — parameter inference
+                            // (annotation unification above) may have added NEW bindings to
+                            // state.subst that target TypeVars in expected_ret. The initial
+                            // state.subst.apply at the guard resolved pre-existing bindings,
+                            // but annotation unification can create new ones.
+                            //
+                            // Currently a no-op: the !has_type_vars() guard ensures expected_ret
+                            // (from the resolved type) has no TypeVars. Annotation unification
+                            // binds annotation-fresh TypeVars, not expected_ret TypeVars. Retained
+                            // as a safety net per Algorithm W substitution threading invariant.
+                            let applied_ret = if state.subst.type_map.is_empty()
+                                && state.subst.row_map.is_empty()
+                            {
                                 *expected_ret.clone()
                             } else {
                                 state.subst.apply(expected_ret)
                             };
-                        check_expr(body, &applied_ret, &fn_env, state, type_map)?;
+                            check_expr(body, &applied_ret, &fn_env, state, type_map)?;
+                        }
                     }
-                }
 
-                // Record the function type in the type map
-                if let Some(ref mut map) = type_map {
-                    let key = (expr.span.start.offset, expr.span.end.offset);
-                    map.insert(key, expected.clone());
-                }
+                    // Record the function type in the type map — use the resolved
+                    // (subst-applied) type so the map contains concrete types
+                    if let Some(ref mut map) = type_map {
+                        let key = (expr.span.start.offset, expr.span.end.offset);
+                        map.insert(key, resolved_expected.clone());
+                    }
 
-                return Ok(());
+                    return Ok(());
+                }
             }
         }
     }
@@ -570,6 +594,7 @@ fn infer_dict(
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
+    span: Span,
 ) -> Result<(Type, IndexMap<String, TypeScheme>), Vec<TypeError>> {
     // Level management: save enclosing level, increment for dict body
     let enclosing_level = state.level;
@@ -704,10 +729,7 @@ fn infer_dict(
     for (k, row) in &subst.row_map {
         state.subst.row_map.insert(k.clone(), row.clone());
     }
-    state
-        .subst
-        .check_size(Span::origin())
-        .map_err(|e| vec![e])?;
+    state.subst.check_size(span).map_err(|e| vec![e])?;
 
     // Pass 4: Generalize - create TypeSchemes for each entry
     let mut schemes = IndexMap::with_capacity(field_types.len());
@@ -4211,21 +4233,20 @@ mod tests {
         // Forward-compatibility guard: check_expr lambda checking mode applies
         // state.subst to expected_ret before checking the body.
         //
-        // This test is intentionally a no-op regression test: the !has_type_vars() guard
-        // at the lambda checking mode entry point (typecheck.rs line 398) ensures that
-        // expected has no TypeVars when this code path fires. Since expected_ret is a
-        // component of expected, it also has no TypeVars, making state.subst.apply()
-        // always a no-op under the current guard. This test passes identically with or
-        // without the fix in place.
+        // The guard at lambda checking mode entry applies state.subst to the expected
+        // type before checking for TypeVars. TypeVars that are already bound in
+        // state.subst are resolved, allowing lambda checking mode to fire for types
+        // that are "effectively concrete" after substitution.
         //
-        // This test would be load-bearing if the !has_type_vars() guard is ever relaxed
-        // to support partial checking mode (where expected may contain some TypeVars).
-        // Until then, the test documents the correct code path and confirms it does not
-        // panic.
+        // In practice, no current call path produces an expected type with
+        // bound-but-unapplied TypeVars (CALL-MONO resolves them before calling
+        // check_expr; TypeAssert creates fresh annotation TypeVars not yet in subst).
+        // This test exercises the concrete-type path and confirms the subst.apply
+        // does not cause regressions.
         //
         // Pattern: [data: [x: 42]] entry creates state.subst bindings, then
         // [f: [@[Fn@Int [Int]] [fn [n] $n]]] triggers lambda checking mode with
-        // concrete expected type Fn(Int → Int). The body check uses expected_ret = Int
+        // concrete expected type Fn(Int -> Int). The body check uses expected_ret = Int
         // (subst applied, though it's a no-op for concrete types).
         let ty = result_field("[data: [x: 42]]\n[f: [@[Fn@Int [Int]] [fn [n] $n]]]", "f");
         match ty {
@@ -4243,6 +4264,53 @@ mod tests {
             "Lambda body returning IntLiteral(42) should satisfy expected return type Int: {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_subst_applied_to_expected() {
+        // Verify that the lambda checking mode guard applies state.subst to the
+        // expected type before inspecting it for TypeVars.
+        //
+        // This test validates the Algorithm W substitution threading invariant
+        // (Damas & Milner, 1982): substitutions must be applied before inspecting
+        // types. The guard uses state.subst.apply(expected) so that bound TypeVars
+        // are resolved before the has_type_vars() check.
+        //
+        // Scenario: A polymorphic type annotation @[Fn@a [a]] on a lambda creates
+        // fresh TypeVars. These TypeVars are NOT in state.subst, so lambda checking
+        // mode is correctly skipped (falls through to synthesize + subsume).
+        // The synthesize path handles this correctly by inferring the lambda's type
+        // and checking it against the expected type via subsumption.
+        let result = check("[f: [@[Fn@a [a]] [fn [x] $x]]]");
+        assert!(
+            result.is_ok(),
+            "Polymorphic type annotation on lambda should succeed via synthesis: {:?}",
+            result.err()
+        );
+
+        // With concrete expected type, lambda checking mode fires as before
+        let ty = result_field("[f: [@[Fn@Int [Int]] [fn [x] $x]]]", "f");
+        match ty {
+            Type::Function { params, ret } => {
+                assert_eq!(params, vec![Type::Int], "concrete param propagated");
+                assert_eq!(*ret, Type::Int, "concrete ret propagated");
+            }
+            other => panic!("expected Function type, got {other}"),
+        }
+
+        // Verify that prior dict entries creating state.subst bindings don't
+        // interfere with lambda checking mode on concrete expected types
+        let ty = result_field(
+            "[id: [fn [x@a] $x]]\n[n: [call $id 42]]\n[f: [@[Fn@Int [Int]] [fn [x] $x]]]",
+            "f",
+        );
+        match ty {
+            Type::Function { params, ret } => {
+                assert_eq!(params, vec![Type::Int], "param from expected type");
+                assert_eq!(*ret, Type::Int, "ret from expected type");
+            }
+            other => panic!("expected Function type, got {other}"),
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@ use lsp_types::Url;
 use crate::ast::{File, Spanned};
 use crate::builtins::create_stdlib_env;
 use crate::error::EvalError;
-use crate::eval::eval_file;
+use crate::eval::{eval_file, materialize};
 use crate::parser::{parse, ParseError};
 use crate::typecheck::{typecheck_file_with_types, TypeMap};
 use crate::types::TypeError;
@@ -59,8 +59,15 @@ impl DocumentState {
             type_map = map;
 
             // Attempt evaluation to catch runtime errors early (child scope of cached stdlib env).
-            if let Err(err) = eval_file(&file.node, Rc::clone(stdlib_env), eval_ctx, 0) {
-                eval_errors.push(*err);
+            // Materialize the result to force lazy thunks — errors like IncludeForbidden only
+            // surface when the thunk is forced, not during the initial (lazy) eval_file call.
+            match eval_file(&file.node, Rc::clone(stdlib_env), eval_ctx, 0) {
+                Err(err) => eval_errors.push(*err),
+                Ok(thunk) => {
+                    if let Err(err) = materialize(&thunk, None, eval_ctx, 0) {
+                        eval_errors.push(*err);
+                    }
+                }
             }
         }
 
@@ -245,5 +252,27 @@ mod tests {
 
         assert_eq!(store.get(&url1).unwrap().text, "[a: 1]");
         assert_eq!(store.get(&url2).unwrap().text, "[b: 2]");
+    }
+
+    #[test]
+    fn test_lsp_include_forbidden_with_no_fs() {
+        // Regression test: LSP context has no_fs=true (line 102) to prevent path traversal
+        // when opening malicious .llt files. This test ensures that a future revert of
+        // true → false is caught by verifying $include produces an eval error.
+        let env = test_env();
+        let ctx = test_ctx();
+        let state = DocumentState::new("[call $include \"some_file.llt\"]".to_string(), &env, &ctx);
+        assert!(state.ast.is_ok(), "parse should succeed");
+        assert!(
+            !state.eval_errors.is_empty(),
+            "eval should produce IncludeForbidden error when no_fs=true; got no errors"
+        );
+        // Verify it's specifically the include-forbidden error
+        let error_msg = format!("{}", state.eval_errors[0]);
+        assert!(
+            error_msg.contains("E042") || error_msg.contains("filesystem access is disabled"),
+            "expected IncludeForbidden error (E042), got: {}",
+            error_msg
+        );
     }
 }

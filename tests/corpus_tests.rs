@@ -408,7 +408,19 @@ fn test_eval_error_corpus() {
             }
         };
 
-        match eval_source_with_config(test.input, test.no_fs) {
+        // Evaluate in a thread with larger stack to handle depth-exceeded tests
+        // (e.g., typeassert_depth_exceeded_not_circular.llt-eval) which can overflow
+        // Rust's default test thread stack when evaluating deeply recursive code.
+        let input = test.input.to_string();
+        let no_fs = test.no_fs;
+        let eval_result = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024) // 16MB stack
+            .spawn(move || eval_source_with_config(&input, no_fs))
+            .unwrap()
+            .join()
+            .unwrap();
+
+        match eval_result {
             Ok(actual) => {
                 failed.push((
                     relative_path.to_path_buf(),
@@ -470,8 +482,19 @@ fn test_eval_error_corpus_has_error_codes() {
 
         let test = split_test_file(&content);
 
-        // Evaluate and check if error contains an error code
-        match eval_source_with_config(test.input, test.no_fs) {
+        // Evaluate in a thread with larger stack to handle depth-exceeded tests
+        // (e.g., typeassert_depth_exceeded_not_circular.llt-eval) which can overflow
+        // Rust's default test thread stack when evaluating deeply recursive code.
+        let input = test.input.to_string();
+        let no_fs = test.no_fs;
+        let eval_result = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024) // 16MB stack
+            .spawn(move || eval_source_with_config(&input, no_fs))
+            .unwrap()
+            .join()
+            .unwrap();
+
+        match eval_result {
             Ok(actual) => {
                 failed.push((
                     relative_path.to_path_buf(),

@@ -9784,41 +9784,52 @@ mod tests {
         // This test verifies the error message is correct for the MAX_COLLECT_SIZE path.
         // The actual limit boundary (1M vs 1M+1) is tested by the corpus test
         // concat_large_seq.llt-eval which creates 300-element sequences.
+        //
+        // Run in a thread with larger stack to avoid Rust stack overflow when testing
+        // depth-exceeded behavior (same pattern as corpus test runners and join_seq_size_limit).
+        let result = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024) // 16MB stack
+            .spawn(|| {
+                let range_result = builtin_range(BuiltinArgs {
+                    args: &[thunk(Value::Int(0))],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                })
+                .unwrap();
 
-        let range_result = builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(0))],
-            named: &no_named(),
-            depth: 0,
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap();
+                // Attempt to collect infinite range without take
+                // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
+                // due to depth accumulation in the PendingBuiltin chain.
+                let collect_result = builtin_collect(BuiltinArgs {
+                    args: &[range_result],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                });
 
-        // Attempt to collect infinite range without take
-        // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
-        // due to depth accumulation in the PendingBuiltin chain.
-        let collect_result = builtin_collect(BuiltinArgs {
-            args: &[range_result],
-            named: &no_named(),
-            depth: 0,
-            call_span: call_span(),
-            ctx: test_ctx(),
-        });
+                // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
+                assert!(
+                    collect_result.is_err(),
+                    "collect should fail on infinite sequence"
+                );
+                let err = collect_result.unwrap_err();
+                // Accept either error - both are valid protections
+                let is_depth_error = err.message().contains("maximum evaluation depth");
+                let is_size_error = err.message().contains("exceeded maximum collection size");
+                assert!(
+                    is_depth_error || is_size_error,
+                    "expected depth or size limit error, got: {}",
+                    err.message()
+                );
+            })
+            .unwrap()
+            .join();
 
-        // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
-        assert!(
-            collect_result.is_err(),
-            "collect should fail on infinite sequence"
-        );
-        let err = collect_result.unwrap_err();
-        // Accept either error - both are valid protections
-        let is_depth_error = err.message().contains("maximum evaluation depth");
-        let is_size_error = err.message().contains("exceeded maximum collection size");
-        assert!(
-            is_depth_error || is_size_error,
-            "expected depth or size limit error, got: {}",
-            err.message()
-        );
+        // Propagate any panic from the spawned thread
+        result.unwrap();
     }
 
     #[test]
@@ -10773,41 +10784,52 @@ mod tests {
         // Test that join enforces MAX_COLLECT_SIZE on sequence iteration.
         // Similar to collect_max_size_limit_enforced, we verify that attempting to join
         // an unbounded sequence will hit either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE.
+        //
+        // Run in a thread with larger stack to avoid Rust stack overflow when testing
+        // depth-exceeded behavior (same pattern as corpus test runners).
+        let result = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024) // 16MB stack
+            .spawn(|| {
+                let range_result = builtin_range(BuiltinArgs {
+                    args: &[thunk(Value::Int(0))],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                })
+                .unwrap();
 
-        let range_result = builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(0))],
-            named: &no_named(),
-            depth: 0,
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap();
+                // Attempt to join infinite range without take
+                // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
+                // due to depth accumulation in the sequence traversal.
+                let join_result = builtin_join(BuiltinArgs {
+                    args: &[thunk(Value::String(",".to_string())), range_result],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                });
 
-        // Attempt to join infinite range without take
-        // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
-        // due to depth accumulation in the sequence traversal.
-        let join_result = builtin_join(BuiltinArgs {
-            args: &[thunk(Value::String(",".to_string())), range_result],
-            named: &no_named(),
-            depth: 0,
-            call_span: call_span(),
-            ctx: test_ctx(),
-        });
+                // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
+                assert!(
+                    join_result.is_err(),
+                    "join should fail on infinite sequence"
+                );
+                let err = join_result.unwrap_err();
+                // Accept either error - both are valid protections
+                let is_depth_error = err.message().contains("maximum evaluation depth");
+                let is_size_error = err.message().contains("sequence exceeds");
+                assert!(
+                    is_depth_error || is_size_error,
+                    "expected depth or size limit error, got: {}",
+                    err.message()
+                );
+            })
+            .unwrap()
+            .join();
 
-        // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
-        assert!(
-            join_result.is_err(),
-            "join should fail on infinite sequence"
-        );
-        let err = join_result.unwrap_err();
-        // Accept either error - both are valid protections
-        let is_depth_error = err.message().contains("maximum evaluation depth");
-        let is_size_error = err.message().contains("sequence exceeds");
-        assert!(
-            is_depth_error || is_size_error,
-            "expected depth or size limit error, got: {}",
-            err.message()
-        );
+        // Propagate any panic from the spawned thread
+        result.unwrap();
     }
 
     #[test]

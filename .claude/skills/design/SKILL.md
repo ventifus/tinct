@@ -260,13 +260,72 @@ No agent review — the proposal is exploratory, not a commitment.
 
 Proceed to the next unchecked item automatically. If no items remain, report completion.
 
+### Step 5: Accept Path (accepting a whatif into the project)
+
+The Accept path takes a completed `doc/whatif/*.md` proposal and formally integrates it into the project. Trigger this path when the user wants to accept a specific whatif doc. This is not tied to TODO.md items — invoke it directly when the user says "accept [name]" or "let's accept [whatif]".
+
+#### 5a: Readiness Check
+
+Before accepting, verify the proposal is ready:
+
+1. Read the target whatif doc in full
+2. Confirm the **Phased Adoption** section exists with phases that are each independently useful
+3. Confirm the **Trigger** section has concrete starting conditions (not vague "when needed")
+4. Check whether listed **Prerequisites** are either complete (checked off in TODO.md) or have scheduled sprints
+5. If anything is missing, report the gap and ask the user whether to address it first or proceed anyway
+
+#### 5b: Mark State
+
+Add `**State:** Accepted — YYYY-MM-DD` (use today's date) as the second line of the whatif doc, immediately after the `# What If:` title and before the opening question:
+
+```markdown
+# What If: [Feature Name] for tinct
+
+**State:** Accepted — YYYY-MM-DD
+
+What would it take to...?
+```
+
+#### 5c: Design Review (optional)
+
+For proposals that touch formal semantics, multiple subsystems, or introduce new runtime or type system behavior, dispatch specialist agents to review soundness before writing to `doc/*.md`. Use the same agent panel as Design items (§2e). For simple or already-vetted proposals, skip — whatif docs are advocates, not vetted designs, so complex ones warrant a soundness pass.
+
+#### 5d: Integrate into Spec
+
+Update the relevant `doc/*.md` chapters:
+
+1. For each subsystem the proposal affects, add or update the appropriate section
+2. Write in **present tense** — final-end-state principle: no "planned", "will be", "when X is implemented", or TODO references
+3. Add citations inline for formal sources; update `doc/17-references.md` for new entries
+
+#### 5e: Create Implementation Sprints
+
+For each phase in the **Phased Adoption** section, create a sprint in TODO.md:
+
+1. **Sprint slug**: `[whatif-name]-phase[N]` (e.g., `string-interp-phase1`)
+2. **Description sentence**: reference the relevant `doc/*.md` chapter and section
+3. **Tasks**: derive from the phase description — source file changes, type/struct changes, test coverage, migration steps. ≤12 tasks per sprint.
+4. **Dependencies**: add `**Depends on:** \`other-slug\`` between phases if they must be ordered
+5. Place new sprints at the top of TODO.md (after the file header), unless the work clearly belongs inside an existing sprint
+
+#### 5f: Update Index
+
+In `doc/whatif/index.md`:
+
+1. Move the proposal's entry from its current adoption bucket (Adopt Now, Wait for Trigger, etc.) to the **Accepted** section at the top of the Adoption Analysis
+2. Add the acceptance date as a third column: `| [Name](file.md) | Summary | YYYY-MM-DD |`
+
+#### 5g: Save to Mempalace
+
+Record the acceptance decision: what was accepted, why now, what doc/*.md sections were updated, and what sprints were created.
+
 ## Key Principles
 
 - **User drives**: you propose, they decide. Never write to `doc/*.md` or `doc/whatif/` without explicit approval.
 - **Match weight to scope**: Design items get full analysis + agent review. Decide items get concise options + inline resolution. Research items get thorough exploration + proposal doc. Don't over-engineer small decisions or under-analyze big ones.
 - **Depth over speed**: spend time understanding the design space. A bad design costs more than a slow design.
 - **Concrete alternatives**: don't present vague options. Each alternative should be specific enough to implement (Design/Decide) or evaluate (Research).
-- **Cross-reference everything**: Design → `doc/[chapter].md §section`. Decide → inline in TODO.md. Research → `doc/whatif/[name].md`. All checked-off items include the cross-reference.
+- **Cross-reference everything**: Design → `doc/[chapter].md §section`. Decide → inline in TODO.md. Research → `doc/whatif/[name].md`. Accept → state marker + index entry + TODO sprints. All checked-off items include the cross-reference.
 - **Respect existing decisions**: read doc/*.md thoroughly. Don't propose things that contradict confirmed decisions without flagging the conflict.
 - **One item at a time**: finish one item completely before moving to the next.
 - **No implementation**: this skill designs, decides, and researches — it doesn't implement. Implementation happens in /sprint.
