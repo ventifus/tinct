@@ -1934,3 +1934,13 @@ Complete remaining language constructs so parser2 can parse all valid tinct sour
 Remove pest and complete the migration. **Depends on:** `parser-core-c2` (all corpus tests passing).
 
 - [x] Remove `src/grammar.pest`; remove `pest` and `pest_derive` from `Cargo.toml` — pest parser replaced by iterative parser (parser2 renamed to parser.rs). Compatibility wrappers `parse()` and `parse_expression()` preserve API. All callers unchanged.
+
+### error-typeassert: TypeAssert Error Reporting (Post typeassert-structural Sprint)
+
+Span and message quality gaps in TypeAssert/Guarded error paths. Corpus tests blocked on parser (property dict annotations not yet supported).
+
+- [x] Fix Guarded thunk type-check errors bypassing `decorate` — mat_span now propagated through all 3 Guarded failure paths (`src/eval.rs`)
+- [x] Fix `validate_and_wrap_record` using `guard_span` as definition-site — now uses `data_span` (inner thunk span) as definition_span
+- [x] Fix Guarded thunk field errors using `guard_span` — now uses `inner.span` as definition_span for field errors
+- [x] Fix nominal TypeAssert fallback — uses `EvalError::type_assert_failed()` constructor with dual-span
+- [x] Normalize TypeAssertFailed message format — fieldpath-prefix scheme applied consistently
