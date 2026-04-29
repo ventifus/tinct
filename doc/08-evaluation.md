@@ -787,7 +787,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$values` | Returns list of thunks | Already lazy |
 | `$entries` | Returns list of entry dicts (values stay as thunks) | Already lazy |
 | `$set`, `$remove` | Values stay as thunks | Already lazy on values |
-| `$update` | Returns dict with PendingCall thunk on updated value | Defers function application until value accessed |
+| `$update` | *Planned:* PendingCall thunk. *Current:* calls `$set` → `$merge` (eager materialization) | Wrapper around $set → $merge; same eager semantics as $merge. Lazy overlay planned. See merge-lazy-overlay sprint in TODO.md. |
 | `$has?` | Wraps `$try` around access (structural) | Already optimal |
 | `$get-in`, `$get-in-or` | Materializes each step of path | Must traverse nested dicts |
 | `$length` | Materializes dict to count entries | Must count entries |

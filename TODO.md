@@ -4,15 +4,6 @@ Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Comple
 
 ### bug-fixes: Active Findings and Technical Debt (Cycles #46–70)
 
-#### cycle-findings-c46-b: Minor Findings (Cycle #46)
-
-- [ ] Fix doc/06-type-inference.md missing FTV/FRV disjointness specification — §Let-Generalization at line ~520 says "generalize ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ" but doesn't specify that FTV collects ONLY TypeVars (not RowVars); add: "FTV(τ) collects type variables only (TypeVar nodes). FRV(τ) collects row variables only (RowVar nodes in RowTail positions). The two sets are disjoint by construction." (`doc/06-type-inference.md:520`) [Minor, type-theorist C46]
-- [ ] Fix doc/06-type-inference.md CHECK-FN rule missing substitution application note — the rule at lines 160-178 doesn't mention that both σᵣ and σ_exp are substitution-applied (S(σᵣ) and S(σ_exp)) before checks, per Algorithm W; add this to the rule description. (`doc/06-type-inference.md:177`) [Minor, type-theorist C46]
-- [ ] Fix doc/07-type-extensions.md "separate namespaces" claims could be misread — line 574 says type and row vars use "separate namespaces" which could be misread as "separate naming counters"; clarify that both share the `_t{n}` counter but are separated by the kinded `type_map` vs `row_map` in `Substitution`. (`doc/07-type-extensions.md:574`) [Minor, type-theorist C46]
-- [ ] Add test for `unify_remainders` Case 7 (same row var with incompatible unique fields) — `{x: Int, ...rho} ~ {y: Str, ...rho}` should error because rho cannot simultaneously provide both x and y; no test currently exercises this path. Add `test_unify_rows_case7_same_rowvar_incompatible_unique_fields`. (`src/types.rs`) [Minor, type-theorist C46]
-- [ ] Fix doc/08-evaluation.md `$update` laziness description wrong — the Laziness Design table row for `$update` says "Returns dict with PendingCall thunk on updated value" but current stdlib at `stdlib/prelude.llt` calls `$set` which calls `$merge` (eager); add `*Planned:*` qualifier. (`doc/08-evaluation.md:790`) [Minor, eval-engine C46]
-- [ ] Fix doc/11-stdlib.md function reference table missing `any?` and `all?` — implemented at `stdlib/prelude.llt:65, 79` but absent from the reference table at doc/11-stdlib.md; add to Logic section. (`doc/11-stdlib.md:258`) [Minor, stdlib-author C46]
-
 #### cycle-findings-c70-b: Code Fixes (Cycle #70)
 
 Code fix findings from Cycle #70 full codebase health review. All items independent.

@@ -4969,6 +4969,44 @@ mod tests {
         );
     }
 
+    /// Same row variable with asymmetric unique-field counts should fail.
+    /// This tests: {x: Int, z: Bool, ...rho} ~ {y: Str, ...rho}
+    /// The left side has TWO unique fields (x, z) and the right has ONE (y).
+    /// All three fields are exclusive to one side, so rho cannot simultaneously
+    /// provide x, y, and z — the error arm must fire even with mismatched cardinalities.
+    #[test]
+    fn test_unify_same_rowvar_asymmetric_unique_field_counts_errors() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = HashMap::new();
+        f1.insert("x".into(), Type::Int);
+        f1.insert("z".into(), Type::Bool);
+        let mut f2 = HashMap::new();
+        f2.insert("y".into(), Type::Str);
+
+        // Left has two unique fields, right has one — all three are side-exclusive
+        let result = unify(
+            &row_var_record(f1, "rho", 0),
+            &row_var_record(f2, "rho", 0),
+            &mut subst,
+            &mut state,
+            span,
+        );
+
+        assert!(
+            result.is_err(),
+            "should fail: same row variable with asymmetric unique fields (2 vs 1) is unsound"
+        );
+        let err_msg = result.unwrap_err().message;
+        assert!(
+            err_msg.contains("incompatible fields") && err_msg.contains("rho"),
+            "error should mention incompatible fields and the row variable name, got: {}",
+            err_msg
+        );
+    }
+
     /// Test that lower_row_var_levels in unify_remainders Case 2 prevents over-generalization.
     /// This verifies the Kiselyov (2013) level-based let-polymorphism mechanism: inner row vars
     /// at level 3 should have their level lowered to the outer row var's level when bound,
