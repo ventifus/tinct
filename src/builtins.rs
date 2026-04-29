@@ -2013,13 +2013,17 @@ fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Ok(result_thunk)
         }
         Value::Seq { head: _, tail: _ } => {
-            // Seq path: lazy filter
+            // Seq path: lazy filter. Use `depth` (not `depth + 1`) for the
+            // initial PendingBuiltin, matching the Dict path and the convention
+            // for all other initial-dispatch step functions (unfold, drop, etc.).
+            // Depth increments happen inside builtin_filter_seq_step on the
+            // recursive tail PendingBuiltins.
             let filter_args = vec![Rc::clone(&pred_thunk), Rc::clone(&args[1])];
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
                 builtin_filter_seq_step,
                 filter_args,
                 IndexMap::new(),
-                depth + 1,
+                depth,
                 call_span,
                 Cow::Borrowed("call $filter"),
                 Rc::clone(&ctx),
@@ -2194,6 +2198,13 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper for filter on Seq: lazily filters sequence elements.
 ///
 /// Args: (pred, seq)
+///
+/// Consecutive predicate failures are handled by an internal loop rather than
+/// chaining PendingBuiltin thunks. A PendingBuiltin-per-failure would consume
+/// one depth unit per rejected element (N failures → ~2N depth units total),
+/// hitting MAX_EVAL_DEPTH far earlier than expected on sparse sequences. The
+/// loop short-circuits skips at zero extra depth cost, then defers lazily on
+/// the first pass.
 fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -2204,77 +2215,74 @@ fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let pred_thunk = Rc::clone(&args[0]);
     let seq_thunk = Rc::clone(&args[1]);
-    let seq = materialize(&seq_thunk, None, &ctx, depth)?;
 
-    match seq {
-        Value::Dict(_) => {
-            // End of sequence
-            ok_val(Value::Dict(IndexMap::new()))
-        }
-        Value::Seq { head, tail } => {
-            // Apply predicate to head
-            let pred_call = Rc::new(Thunk::new_pending_call(
-                Rc::clone(&pred_thunk),
-                vec![Rc::clone(&head)],
-                IndexMap::new(),
-                call_span,
-                head.span,
-                Cow::Borrowed("filter-seq pred"),
-                Rc::clone(&ctx),
-            ));
-            let pred_result = materialize(&pred_call, None, &ctx, depth)?;
+    // Loop over consecutive failing elements without consuming extra depth.
+    // We only defer via PendingBuiltin when we find a passing element (the tail
+    // of the emitted Seq node) so depth counts emitted elements, not rejections.
+    let mut current = materialize(&seq_thunk, None, &ctx, depth)?;
+    loop {
+        match current {
+            Value::Dict(_) => {
+                // End of sequence
+                return ok_val(Value::Dict(IndexMap::new()));
+            }
+            Value::Seq { head, tail } => {
+                // Apply predicate to head
+                let pred_call = Rc::new(Thunk::new_pending_call(
+                    Rc::clone(&pred_thunk),
+                    vec![Rc::clone(&head)],
+                    IndexMap::new(),
+                    call_span,
+                    head.span,
+                    Cow::Borrowed("filter-seq pred"),
+                    Rc::clone(&ctx),
+                ));
+                let pred_result = materialize(&pred_call, None, &ctx, depth)?;
 
-            let passes = match pred_result {
-                Value::Bool(b) => b,
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "filter".to_string(),
-                        "Bool",
-                        other.type_name(),
+                let passes = match pred_result {
+                    Value::Bool(b) => b,
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "filter".to_string(),
+                            "Bool",
+                            other.type_name(),
+                            call_span,
+                        )
+                        .into())
+                    }
+                };
+
+                if passes {
+                    // Include this element; defer the rest lazily
+                    let tail_args = vec![Rc::clone(&pred_thunk), tail];
+                    let new_tail = Rc::new(Thunk::new_pending_builtin(
+                        builtin_filter_seq_step,
+                        tail_args,
+                        IndexMap::new(),
+                        depth + 1,
                         call_span,
-                    )
-                    .into())
+                        Cow::Borrowed("call $filter"),
+                        Rc::clone(&ctx),
+                    ));
+                    return ok_val(Value::Seq {
+                        head,
+                        tail: new_tail,
+                    });
+                } else {
+                    // Skip this element: advance the loop without extra depth
+                    current = materialize(&tail, None, &ctx, depth)?;
                 }
-            };
-
-            if passes {
-                // Include this element
-                let tail_args = vec![Rc::clone(&pred_thunk), tail];
-                let new_tail = Rc::new(Thunk::new_pending_builtin(
-                    builtin_filter_seq_step,
-                    tail_args,
-                    IndexMap::new(),
-                    depth + 1,
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "filter-seq-step".to_string(),
+                    "Dict or Seq",
+                    other.type_name(),
                     call_span,
-                    Cow::Borrowed("call $filter"),
-                    Rc::clone(&ctx),
-                ));
-                ok_val(Value::Seq {
-                    head,
-                    tail: new_tail,
-                })
-            } else {
-                // Skip this element, recurse to next
-                let tail_args = vec![Rc::clone(&pred_thunk), tail];
-                let next_thunk = Rc::new(Thunk::new_pending_builtin(
-                    builtin_filter_seq_step,
-                    tail_args,
-                    IndexMap::new(),
-                    depth + 1,
-                    call_span,
-                    Cow::Borrowed("call $filter"),
-                    Rc::clone(&ctx),
-                ));
-                Ok(next_thunk)
+                )
+                .into())
             }
         }
-        other => Err(EvalError::type_mismatch_ctx(
-            "filter-seq-step".to_string(),
-            "Dict or Seq",
-            other.type_name(),
-            call_span,
-        )
-        .into()),
     }
 }
 
@@ -2787,7 +2795,21 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref xs_map) => {
             // Dict path: eagerly merge both dicts with integer reindexing
             if xs_map.is_empty() {
-                // Empty xs: return ys directly
+                // Empty xs: validate ys type before returning it directly.
+                // Without this check, concat([], 42) would silently succeed.
+                let ys = materialize(&ys_thunk, None, &ctx, depth)?;
+                match ys {
+                    Value::Dict(_) | Value::Seq { .. } => {}
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "concat".to_string(),
+                            "Dict or Seq",
+                            other.type_name(),
+                            call_span,
+                        )
+                        .into())
+                    }
+                }
                 return Ok(ys_thunk);
             }
 
@@ -10903,6 +10925,147 @@ mod tests {
                 assert_eq!(
                     materialize(map.get(&Key::Int(3)).unwrap(), None, &test_ctx(), 0).unwrap(),
                     Value::Int(4)
+                );
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn filter_seq_step_no_depth_accumulation_on_consecutive_failures() {
+        // Task 1: Verify that consecutive predicate failures in builtin_filter_seq_step
+        // do NOT accumulate depth. Before the fix, each skipped element created a
+        // PendingBuiltin at depth+1, so N failures consumed ~2N depth units and would
+        // hit MAX_EVAL_DEPTH (256) after ~128 consecutive failing elements. After the
+        // fix, the skip branch uses an internal loop, so N failures cost zero extra depth.
+        //
+        // Test: filter range(0, 300) with a predicate that only passes x == 299.
+        // This triggers 299 consecutive failures. With the old PendingBuiltin-per-failure
+        // approach, this would hit MAX_EVAL_DEPTH (~128 failures × 2 depth units each).
+        // With the fix (internal loop for failures), all 299 failures are handled at
+        // constant depth, and the result is Seq(Int(299), ...).
+        //
+        // The predicate is implemented as a Rust builtin (not an LLT function) to avoid
+        // needing a closure env with stdlib builtins.
+        fn pred_eq_299(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            let val = crate::eval::materialize(&ctx.args[0], None, &ctx.ctx, ctx.depth)?;
+            ok_val(Value::Bool(matches!(val, Value::Int(299))))
+        }
+
+        let result = std::thread::Builder::new()
+            .stack_size(TEST_STACK_SIZE)
+            .spawn(|| {
+                // Create range(0, 300): lazy Seq(0, 1, ..., 299) via PendingBuiltin chain
+                let range_result = builtin_range(BuiltinArgs {
+                    args: &[thunk(Value::Int(0)), thunk(Value::Int(300))],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                })
+                .unwrap();
+
+                let pred = thunk(Value::Builtin {
+                    name: "pred_eq_299",
+                    func: pred_eq_299,
+                });
+
+                let filter_result = builtin_filter(BuiltinArgs {
+                    args: &[pred, range_result],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                })
+                .unwrap();
+
+                // Force the filter result. Before the fix this would fail with depth
+                // exceeded after ~128 consecutive failures. After the fix the internal
+                // loop handles all 299 failures at constant depth.
+                let val = crate::eval::materialize(&filter_result, None, &test_ctx(), 0).unwrap();
+                match val {
+                    Value::Seq { head, .. } => {
+                        let head_val =
+                            crate::eval::materialize(&head, None, &test_ctx(), 0).unwrap();
+                        assert_eq!(
+                            head_val,
+                            Value::Int(299),
+                            "expected Int(299) as first passing element"
+                        );
+                    }
+                    other => panic!(
+                        "expected Seq from filter with one passing element, got {:?}",
+                        other
+                    ),
+                }
+            })
+            .unwrap()
+            .join();
+
+        assert!(result.is_ok(), "test thread panicked: {:?}", result);
+    }
+
+    #[test]
+    fn concat_empty_xs_dict_ys_non_collection_returns_type_error() {
+        // Task 2: When xs is an empty Dict, concat must validate that ys is also a
+        // collection (Dict or Seq). Before the fix, concat([], 42) would silently
+        // return the integer thunk. After the fix, a type error is returned.
+        let xs = thunk(Value::Dict(IndexMap::new())); // empty dict
+        let ys = thunk(Value::Int(42)); // not a collection
+
+        let err = builtin_concat(BuiltinArgs {
+            args: &[xs, ys],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+
+        // type_mismatch_ctx with a context produces "concat: expected ..., got ..."
+        assert!(
+            err.message().contains("concat"),
+            "expected 'concat' in error, got: {}",
+            err.message()
+        );
+        assert!(
+            err.message().contains("Dict or Seq"),
+            "expected 'Dict or Seq' in error, got: {}",
+            err.message()
+        );
+        assert!(
+            err.message().contains("Int"),
+            "expected 'Int' in error (got type name), got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn concat_empty_xs_dict_ys_valid_dict_succeeds() {
+        // Task 2: When xs is empty Dict and ys is a valid Dict, concat should succeed.
+        let xs = thunk(Value::Dict(IndexMap::new())); // empty dict
+        let mut ys_map = IndexMap::new();
+        ys_map.insert(Key::Int(0), thunk(Value::Int(99)));
+        let ys = thunk(Value::Dict(ys_map));
+
+        // Should succeed and return ys (the same thunk or an equivalent materialized form)
+        let result = builtin_concat(BuiltinArgs {
+            args: &[xs, ys],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let val = mat(result);
+        match val {
+            Value::Dict(ref m) => {
+                assert_eq!(m.len(), 1);
+                assert_eq!(
+                    crate::eval::materialize(m.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0)
+                        .unwrap(),
+                    Value::Int(99)
                 );
             }
             other => panic!("expected Dict, got {:?}", other),

@@ -594,10 +594,17 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
 
 ### seq-resource-safety: Sequence Resource Safety
 
+Resource safety gaps in sequence combinators. Found by computer-scientist codebase review (2026-04-22).
+
 - [x] Add `MAX_COLLECT_SIZE` limit to `builtin_collect` — added 1,000,000 element limit with helpful error suggesting `$take`. [Critical, computer-scientist]
 - [x] Fix `builtin_iterate` passing `depth: 0` to PendingBuiltin tail — captured depth from BuiltinArgs, passes `depth + 1`. [Major, computer-scientist]
 - [x] Increment depth in sequence combinator PendingBuiltin chains — incremented depth in 11 PendingBuiltin creation sites (range, repeat, cycle, iterate, unfold, map, filter, drop, reduce). [Major, computer-scientist]
 - [x] Migrate `concat` Seq path from stdlib to Rust builtin — implemented as PendingBuiltin chain with dual Seq/Dict dispatch. [Major, computer-scientist]
+- [x] Fix `builtin_filter_seq_step` depth accumulation on consecutive predicate failures — converted skip branch to internal loop like `builtin_collect`. (`src/builtins.rs:2055-2067`) [Major, eval-engine C39]
+- [x] Add type validation to concat empty-xs path — added materialize+match guard so `concat([], 42)` errors correctly. (`src/builtins.rs`) [Minor, computer-scientist + eval-engine panel]
+- [x] Add `checked_add` to concat Dict path index arithmetic — `idx += 1` changed to `checked_add` for consistency with `builtin_collect` and `builtin_append`. (`src/builtins.rs`) [Nit, eval-engine + performance-expert panel]
+- [x] Fix `$take` PendingBuiltin depth to use `depth + 1` — already done. (`src/builtins.rs:2166`) [Minor, computer-scientist panel]
+- [x] Fix `$filter` Seq initial PB depth inconsistency — already done. (`src/builtins.rs:1844,1857`) [Nit, computer-scientist panel]
 
 ## error-structured: Structured Error Model Implementation
 
