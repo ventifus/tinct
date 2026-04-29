@@ -434,6 +434,8 @@ For dual-dispatch builtins, the result classification refers to the more interes
 - **Lazy-transforming** — result is `→ LT` (contains new PendingCall/PendingBuiltin thunks)
 - **Selective** — any arg is `Sc`
 
+**eval_call strictness:** The function expression in `[call ...]` is materialized at the call-site to determine dispatch (Function vs Builtin). Arguments are wrapped as Unevaluated thunks (call-by-need per Launchbury 1993). This is eager function dispatch with lazy arguments.
+
 ### Part 2: Strictness Signature Table
 
 All 46 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Seq (delta rule required). Builtins marked `‡` have non-trivial forcing patterns (delta rule required).
@@ -855,6 +857,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |
+| `TypeAssert` | Materializes during eval() (annotation-time), not materialize() (access-time) | The annotated expression is forced when the TypeAssert is evaluated, not when the result is accessed |
 
 **Error reporting impact:** Operations that shift from eager to lazy (e.g., `$if`, `$merge`, `$map`) will report errors at access time rather than construction time. This provides more accurate source locations (pointing to where materialization failed) but changes error timing. Inherently materializing operations continue to produce errors at call time.
 

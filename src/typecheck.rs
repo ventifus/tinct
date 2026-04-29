@@ -516,8 +516,23 @@ fn check_expr(
                         check_expr(body, &declared, &fn_env, state, type_map)?;
                     }
                     None => {
-                        // No return annotation: check body against expected return type
-                        check_expr(body, expected_ret, &fn_env, state, type_map)?;
+                        // No return annotation: check body against expected return type.
+                        // Apply state.subst to expected_ret before passing — parameter
+                        // inference (annotation unification above) may have bound TypeVars
+                        // in state.subst that appear in expected_ret. Without this, the
+                        // body check uses stale TypeVars. Mirrors the default path (below)
+                        // which applies state.subst to both types before comparison.
+                        //
+                        // This apply is a no-op today because the !has_type_vars() guard above
+                        // guarantees expected_ret is concrete. It becomes load-bearing if that
+                        // guard is relaxed to support partial checking mode.
+                        let applied_ret =
+                            if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                                *expected_ret.clone()
+                            } else {
+                                state.subst.apply(expected_ret)
+                            };
+                        check_expr(body, &applied_ret, &fn_env, state, type_map)?;
                     }
                 }
 
@@ -4188,6 +4203,45 @@ mod tests {
         assert!(
             msg.contains("expected Int") && msg.contains("got String"),
             "Error message should say 'expected Int, got String' but got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_lambda_checking_mode_subst_apply_forward_compat_guard() {
+        // Forward-compatibility guard: check_expr lambda checking mode applies
+        // state.subst to expected_ret before checking the body.
+        //
+        // This test is intentionally a no-op regression test: the !has_type_vars() guard
+        // at the lambda checking mode entry point (typecheck.rs line 398) ensures that
+        // expected has no TypeVars when this code path fires. Since expected_ret is a
+        // component of expected, it also has no TypeVars, making state.subst.apply()
+        // always a no-op under the current guard. This test passes identically with or
+        // without the fix in place.
+        //
+        // This test would be load-bearing if the !has_type_vars() guard is ever relaxed
+        // to support partial checking mode (where expected may contain some TypeVars).
+        // Until then, the test documents the correct code path and confirms it does not
+        // panic.
+        //
+        // Pattern: [data: [x: 42]] entry creates state.subst bindings, then
+        // [f: [@[Fn@Int [Int]] [fn [n] $n]]] triggers lambda checking mode with
+        // concrete expected type Fn(Int → Int). The body check uses expected_ret = Int
+        // (subst applied, though it's a no-op for concrete types).
+        let ty = result_field("[data: [x: 42]]\n[f: [@[Fn@Int [Int]] [fn [n] $n]]]", "f");
+        match ty {
+            Type::Function { params, ret } => {
+                assert_eq!(params, vec![Type::Int], "param from expected type");
+                assert_eq!(*ret, Type::Int, "return from expected type");
+            }
+            other => panic!("expected Function type, got {other}"),
+        }
+
+        // Also verify with a body that returns a literal subtype of the expected return type
+        let result = check("[f: [@[Fn@Int [Int]] [fn [n] 42]]]");
+        assert!(
+            result.is_ok(),
+            "Lambda body returning IntLiteral(42) should satisfy expected return type Int: {:?}",
+            result.err()
         );
     }
 

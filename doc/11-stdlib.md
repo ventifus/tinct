@@ -51,7 +51,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 
 - **Structural** — rearranges entries without inspecting values. Thunks pass through untouched.
 - **Lazy-transforming** — applies a function to values but produces new thunks. No computation until the result is materialized.
-- **Materializing** — must compute values to determine the result.
+- **Materializing** — must compute values to determine the result. Some operations like `$length` and `$empty?` materialize only the collection structure (to count entries), not the values themselves — values remain as thunks.
 - **Selective** — materializes some arguments, leaves others as thunks (e.g., short-circuit evaluation).
 
 **Control flow** (selective):

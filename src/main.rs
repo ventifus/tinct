@@ -233,6 +233,8 @@ fn run_eval(
     // Parse
     let mut ast = parse(&source).map_err(|e| format!("{e}"))?;
 
+    // PIPELINE INVARIANT: Desugar must run after parse and before typecheck.
+    // See also: src/lib.rs:87-91 (eval_source_with_config pipeline)
     // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
     tinct::desugar::desugar_file(&mut ast.node);
 
