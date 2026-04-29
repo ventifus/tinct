@@ -18,6 +18,16 @@ pub(crate) struct LltParser;
 /// overflow before this check fires. See the Parser Rewrite milestone (`iterative-parser` sprint).
 const MAX_PARSE_DEPTH: usize = 256;
 
+/// Pest parser call limit (global static, set before each parse).
+/// Prevents stack overflow from deeply nested input during the PEG matching phase.
+/// 500,000 allows stdlib/prelude.llt (~55k calls) and large real-world files to parse
+/// without false positives, while terminating adversarial input (~2500-level nesting)
+/// before stack exhaustion. Primary guard is MAX_PARSE_DEPTH=256; this is a backstop.
+const PARSER_CALL_LIMIT: NonZeroUsize = match NonZeroUsize::new(500_000) {
+    Some(n) => n,
+    None => unreachable!(),
+};
+
 /// Convert a Rule enum variant to a user-friendly display name for error messages.
 /// Falls back to Debug formatting for unmapped rules (defense-in-depth).
 fn rule_to_display(r: &Rule) -> String {
@@ -82,14 +92,7 @@ pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
     // Set pest's global call limit to prevent stack overflow from deeply nested input.
     // Without this, adversarial input with 500+ nested brackets can overflow the Rust
     // call stack before MAX_PARSE_DEPTH fires (which only checks during AST construction).
-    //
-    // 500_000 allows stdlib/prelude.llt (547 lines, ~55k calls) and large real-world
-    // files to parse without false positives, while still terminating adversarial
-    // deeply-nested input (~2500-level nesting at ~200 calls/level) before stack
-    // exhaustion. Pest's fuzz tests use 5000-8000 for minimal adversarial inputs;
-    // we use a much higher limit because our primary guard is MAX_PARSE_DEPTH=256 at
-    // AST construction time — this call limit is a backstop for the PEG matching phase.
-    pest::set_call_limit(Some(NonZeroUsize::new(500_000).unwrap()));
+    pest::set_call_limit(Some(PARSER_CALL_LIMIT));
 
     let pairs = LltParser::parse(Rule::file, input).map_err(|e| ParseError {
         message: format!("{e}"),

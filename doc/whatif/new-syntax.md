@@ -544,10 +544,12 @@ invoked with the same syntax. No conflict with implied call.
 
 ### Interaction with the Formatter
 
-The formatter needs to track whether calls used explicit `call` or
-implied form. Recommendation: preserve source form. The formatter
-should not add or remove `call` keywords — that's a style choice,
-not a formatting concern.
+The AST-based formatter introduced in `doc/whatif/parser-rewrite.md`
+handles explicit/implied call preservation via the `implied: bool`
+flag on `Call` AST nodes. No special tracking is needed — the
+formatter reads the flag directly and emits `[call f x]` when
+`implied` is false and `[f x]` when true. The author's choice is
+preserved without inspecting the token stream.
 
 ### Interaction with Structural Contracts
 
@@ -773,14 +775,18 @@ consumer's `expects:` declaration.
 
 ### Formatter (src/formatter.rs)
 
-**Current:** Formats bare words without quotes, `$`-references
-with `$` prefix.
+**Current:** Token-stream formatter, to be replaced by the
+AST-based formatter from `doc/whatif/parser-rewrite.md`.
 
-**Proposed:** Formats identifiers as bare words, strings with
-quotes. Distinguishes keys (bare) from string values (quoted).
-Preserves explicit/implied call form via AST flag.
+**Proposed:** The AST-based formatter (prerequisite: parser-rewrite
+Phase 3) gains these rendering rules: identifiers emitted as bare
+words without `$` prefix; string literals emitted with `"` delimiters;
+dict keys emitted unquoted; explicit/implied call form preserved via
+the `Call.implied` AST flag.
 
-**Impact:** Moderate.
+**Impact:** Minor — the AST-based formatter already walks
+`Annotated<File>`; new-syntax adds straightforward rendering rules
+for the reformed token types on top of the parser-rewrite base.
 
 ### Error Messages (src/error.rs)
 
@@ -800,7 +806,7 @@ string literals.
 for application, `$$` for pipeline.
 
 **Proposed:** Every `.llt` file must be migrated. Migration
-tooling (Phase 3) automates this.
+tooling (Phase 2) automates this.
 
 **Impact:** Fundamental. Every tinct file breaks.
 
@@ -830,77 +836,39 @@ Implementation:
 - Evaluator: accumulate named bindings in pipeline scope
 - Type checker: validate `expects:` contracts and `@Type` output
   annotations
-- `$$` remains valid as an alias for `%` during transition
 
 This phase provides immediate value — named pipeline sections
 are useful regardless of whether the other syntax changes are
 adopted. No breaking changes.
 
-### Phase 2: Dual-Mode Parser
+### Phase 2: New Syntax + Migration
 
-Add a `#! bare-refs` pragma (or CLI flag `--bare-refs`) that
-switches to the reformed syntax. Both modes coexist — files
-without the pragma use current `$`-sigil semantics.
+The reformed syntax replaces the current syntax entirely. All
+existing `.llt` files — including the stdlib and test corpus —
+must be migrated. `tinct migrate` automates the transformation:
 
-In the new mode:
-- Bare words are references
-- `[word ...]` in head position is a call
-- `$` is the head/key disambiguator
-- `call` remains valid but optional
-- Strings must be quoted
-
-```lisp
-#! bare-refs
---- %defaults
-[
-  host: "localhost"
-  port: 8080
-]
-
---- %overrides
-[
-  host: "prod.example.com"
-  tls: true
-]
-
----
-[merge %defaults %overrides]
-```
-
-### Phase 3: Migration Tooling
-
-`tinct migrate --bare-refs` automatically transforms files:
 - Remove `$` from variable references
 - Remove `call` keywords (optionally preserve with `--keep-call`)
 - Add quotes to all bare-word string values
 - Replace `$$` with `%`
 - Convert `[$x $y $z]` data sequences to `[$x y z]` form
-- Add `#! bare-refs` pragma
 
-### Phase 4: Default Flip
-
-Bare-word references become the default syntax. Legacy files opt
-in with `#! sigil-refs`.
-
-### Phase 5: Remove Legacy Mode
-
-Drop `$`-sigil mode. All files use the reformed syntax.
+After migration, the old `$`-sigil syntax and `call` keyword form
+are parse errors. There is no dual-mode period.
 
 ### Prerequisites
 
 - **Phase 1:** No dependencies. Pipeline naming is self-contained.
-- **Phase 2:** Phase 1 stable. String interpolation design
-  finalized (to confirm `$` inside `i"..."` is the interpolation
-  marker).
-- **Phase 3:** Phase 2 stable.
-- **Phase 4:** Consensus that the reformed syntax is preferred.
-- **Phase 5:** Migration period complete.
+- **Phase 2:** Phase 1 stable. String interpolation design finalized
+  (to confirm `$` inside `i"..."` is the interpolation marker).
+  Parser-rewrite Phase 3 (AST-based formatter) shipped — the
+  new-syntax formatter rendering rules require it as a base.
 
 ### Trigger
 
 - Phase 1 (`%` pipeline) can be adopted immediately — no
   preconditions, no breaking changes.
-- Phases 2-5 trigger when tinct shifts from primarily-configuration
+- Phase 2 triggers when tinct shifts from primarily-configuration
   to primarily-programming use cases, tipping the data/code balance
   toward code.
 - When LLM generation accuracy with `$` sigils and `call` keywords

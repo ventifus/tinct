@@ -1,5 +1,7 @@
 # What If: [Feature Name] for tinct
 
+**State:** Proposal
+
 What would it take to [add/adopt/implement feature] in tinct?
 
 ## Current State

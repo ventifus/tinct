@@ -65,6 +65,14 @@ makes the best case for its feature: "What would it take to do this well?"
 
 Cross-reference of each proposal against open TODO items and gating conditions.
 
+### Accepted
+
+These proposals have been formally accepted: `State: Accepted` marked, spec integrated, implementation sprints created in TODO.md.
+
+| Proposal | Summary | Accepted |
+|----------|---------|---------|
+| _(none yet)_ | | |
+
 ### Adopt Now
 
 These proposals have no gating conditions, accepted designs, and either

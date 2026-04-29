@@ -379,7 +379,9 @@ impl Substitution {
         if total_size > MAX_SUBST_SIZE {
             Err(TypeError::new(
                 format!(
-                    "type inference exceeded maximum substitution size ({} > {})",
+                    "type inference limit reached: too many open record constraints \
+                     — use fewer chained dot-accesses or add explicit type annotations \
+                     to break constraint chains ({} bindings > {} max)",
                     total_size, MAX_SUBST_SIZE
                 ),
                 span,
@@ -5145,8 +5147,8 @@ mod tests {
                 );
                 if let Err(e) = result {
                     assert!(
-                        e.message.contains("exceeded maximum substitution size"),
-                        "error message should mention size limit, got: {}",
+                        e.message.contains("type inference limit reached"),
+                        "error message should mention inference limit, got: {}",
                         e.message
                     );
                 }
@@ -5186,8 +5188,8 @@ mod tests {
                 );
                 if let Err(e) = result {
                     assert!(
-                        e.message.contains("exceeded maximum substitution size"),
-                        "error message should mention size limit, got: {}",
+                        e.message.contains("type inference limit reached"),
+                        "error message should mention inference limit, got: {}",
                         e.message
                     );
                 }
@@ -5246,8 +5248,8 @@ mod tests {
                 );
                 if let Err(e) = result {
                     assert!(
-                        e.message.contains("exceeded maximum substitution size"),
-                        "error message should mention size limit, got: {}",
+                        e.message.contains("type inference limit reached"),
+                        "error message should mention inference limit, got: {}",
                         e.message
                     );
                 }

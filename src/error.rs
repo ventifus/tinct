@@ -1013,6 +1013,10 @@ mod tests {
         assert_ne!(err1, err4);
     }
 
+    // Exhaustiveness enforcement: Rust's #[deny(non_exhaustive_omitted_patterns)] only works
+    // for enums from external crates. For same-crate ErrorKind, this test helper + the
+    // self-equality assertion below enforce that every variant is covered in code(), Display,
+    // is_catchable(), and is_cacheable().
     /// Centralized variant list for test coverage. Adding a new ErrorKind variant
     /// without updating this list will cause test failures (runtime, not compile-time).
     fn all_error_kind_variants() -> Vec<ErrorKind> {
