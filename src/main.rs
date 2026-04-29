@@ -9,6 +9,8 @@ use tinct::{
     materialize, parse, value_to_display_string, value_to_json, Span, Thunk, MAX_FILE_SIZE,
 };
 
+// Parser is now iterative (no stack risk); this workaround remains for eval.rs deep recursion
+// until the iterative-eval sprint.
 const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 // Exit codes for llt eval

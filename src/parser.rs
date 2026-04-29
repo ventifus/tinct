@@ -1,186 +1,18 @@
-//! Pest PEG parser: converts source text into a fully-spanned AST.
+//! Iterative parser for tinct.
+//!
+//! Hand-written recursive-descent parser that replaced the pest-based parser in sprint parser-core-c3.
+//! Implements all language constructs: call/fn/type-alias/type-assert forms, keyed entries,
+//! bracket access, range access, dot access chains, document separators, comment collection,
+//! and fn param list parsing (simple, annotated, variadic).
+//!
+//! The parser enforces a maximum nesting depth of 256 brackets to prevent stack overflow.
+//! Unlike the previous pest parser (which recursed on Rust's call stack), this implementation
+//! uses an explicit stack for bracket nesting, making it safe for deeply nested inputs.
 
-use std::cell::RefCell;
-use std::num::NonZeroUsize;
-
-use pest::Parser;
-use pest_derive::Parser;
+use std::collections::BTreeMap;
 
 use crate::ast::*;
-
-#[derive(Parser)]
-#[grammar = "grammar.pest"]
-pub(crate) struct LltParser;
-
-/// Maximum nesting depth for bracket expressions.
-/// Enforced during AST construction, not during pest's parse phase.
-/// Pest recurses on Rust's call stack, so ~500+ nested brackets can
-/// overflow before this check fires. See the Parser Rewrite milestone (`iterative-parser` sprint).
-const MAX_PARSE_DEPTH: usize = 256;
-
-/// Pest parser call limit (global static, set before each parse).
-/// Prevents stack overflow from deeply nested input during the PEG matching phase.
-/// 500,000 allows stdlib/prelude.llt (~55k calls) and large real-world files to parse
-/// without false positives, while terminating adversarial input (~2500-level nesting)
-/// before stack exhaustion. Primary guard is MAX_PARSE_DEPTH=256; this is a backstop.
-const PARSER_CALL_LIMIT: NonZeroUsize = match NonZeroUsize::new(500_000) {
-    Some(n) => n,
-    None => unreachable!(),
-};
-
-/// Convert a Rule enum variant to a user-friendly display name for error messages.
-/// Falls back to Debug formatting for unmapped rules (defense-in-depth).
-fn rule_to_display(r: &Rule) -> String {
-    match r {
-        Rule::file => "file".to_string(),
-        Rule::document => "document".to_string(),
-        Rule::expression => "expression".to_string(),
-        Rule::doc_separator => "document separator (---)".to_string(),
-        Rule::value => "value".to_string(),
-        Rule::atom => "atom".to_string(),
-        Rule::annotated_bare => "annotated bare word".to_string(),
-        Rule::bracket_expr => "bracket expression".to_string(),
-        Rule::special_form => "special form".to_string(),
-        Rule::call_form => "function call".to_string(),
-        Rule::fn_form => "function definition".to_string(),
-        Rule::type_form => "type alias definition".to_string(),
-        Rule::keyword_call => "keyword 'call'".to_string(),
-        Rule::keyword_fn => "keyword 'fn'".to_string(),
-        Rule::keyword_type => "keyword 'type'".to_string(),
-        Rule::type_assert_body => "type assertion".to_string(),
-        Rule::fn_annotation => "function annotation".to_string(),
-        Rule::param_list => "parameter list".to_string(),
-        Rule::param => "parameter".to_string(),
-        Rule::param_name => "parameter name".to_string(),
-        Rule::param_annotation => "parameter annotation".to_string(),
-        Rule::variadic_param => "variadic parameter".to_string(),
-        Rule::annotation_value => "annotation value".to_string(),
-        Rule::annotation_word => "annotation word".to_string(),
-        Rule::dict_entries => "dict entries".to_string(),
-        Rule::entry => "dict entry".to_string(),
-        Rule::keyed_entry => "keyed entry".to_string(),
-        Rule::rest_entry => "rest entry (...)".to_string(),
-        Rule::auto_entry => "auto entry".to_string(),
-        Rule::key => "key".to_string(),
-        Rule::bare_token => "bare token".to_string(),
-        Rule::access_expr => "access expression".to_string(),
-        Rule::access_chain => "access chain".to_string(),
-        Rule::dot_access => "dot access".to_string(),
-        Rule::access_field => "access field".to_string(),
-        Rule::bracket_access_chain => "bracket access".to_string(),
-        Rule::bracket_access_inner => "bracket access inner".to_string(),
-        Rule::range_expr => "range expression".to_string(),
-        Rule::range_value => "range value".to_string(),
-        Rule::var_ref => "variable reference".to_string(),
-        Rule::float_lit => "float literal".to_string(),
-        Rule::int_lit => "integer literal".to_string(),
-        Rule::bool_lit => "boolean literal".to_string(),
-        Rule::quoted_string => "quoted string".to_string(),
-        Rule::inner_string => "string content".to_string(),
-        Rule::bare_word => "bare word".to_string(),
-        Rule::call_args => "call arguments".to_string(),
-        Rule::named_arg => "named argument".to_string(),
-        Rule::named_arg_key => "named argument key".to_string(),
-        // Fallback for any unmapped rules (defense-in-depth)
-        _ => format!("{:?}", r),
-    }
-}
-
-/// Parse LLT source text into a spanned File AST.
-/// No input length limit is enforced; callers should validate input size if needed.
-pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
-    // Set pest's global call limit to prevent stack overflow from deeply nested input.
-    // Without this, adversarial input with 500+ nested brackets can overflow the Rust
-    // call stack before MAX_PARSE_DEPTH fires (which only checks during AST construction).
-    pest::set_call_limit(Some(PARSER_CALL_LIMIT));
-
-    let pairs = LltParser::parse(Rule::file, input).map_err(|e| ParseError {
-        message: format!("{e}"),
-        span: None,
-    })?;
-
-    let file_pair = pairs
-        .into_iter()
-        .next()
-        .expect("grammar guarantees file rule produces a pair");
-    let lines = LineTable::new(input);
-    let file_span = make_span(&file_pair, &lines);
-
-    let mut documents = Vec::new();
-
-    for pair in file_pair.into_inner() {
-        match pair.as_rule() {
-            Rule::document => {
-                documents.push(build_document(pair, &lines)?);
-            }
-            Rule::doc_separator | Rule::EOI => {}
-            other => unreachable!("unexpected rule in file: {}", rule_to_display(&other)),
-        }
-    }
-
-    // Empty file → one document with no expressions
-    if documents.is_empty() {
-        documents.push(Spanned::new(
-            Document {
-                expressions: vec![],
-            },
-            Span {
-                start: Position {
-                    offset: 0,
-                    line: 1,
-                    column: 1,
-                },
-                end: lines.offset_to_position(input.len()),
-            },
-        ));
-    }
-
-    Ok(Spanned::new(File { documents }, file_span))
-}
-
-/// Parse a single expression from the first document, for convenience in tests and simple cases.
-///
-/// When the input contains multiple sequential expressions within a single document,
-/// this function returns only the **last** expression, discarding earlier ones entirely.
-/// No scope chain is built and no bindings from earlier expressions are preserved —
-/// this is a parse-level convenience, not an evaluator.
-pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
-    let file = parse(input)?;
-    let doc = &file.node.documents[0];
-    if doc.node.expressions.is_empty() {
-        Ok(Spanned::new(Expr::Dict(vec![]), doc.span))
-    } else if doc.node.expressions.len() == 1 {
-        Ok(doc.node.expressions[0].clone())
-    } else {
-        // Multiple expressions: return the last one
-        Ok(doc
-            .node
-            .expressions
-            .last()
-            .expect("len > 1 so last() is Some")
-            .clone())
-    }
-}
-
-fn build_document(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-) -> Result<Spanned<Document>, ParseError> {
-    let span = make_span(&pair, lines);
-    let mut expressions = Vec::new();
-
-    for inner in pair.into_inner() {
-        if inner.as_rule() == Rule::expression {
-            let expr_pair = inner
-                .into_inner()
-                .next()
-                .expect("grammar guarantees expression has inner value");
-            expressions.push(build_value(expr_pair, lines, 0)?);
-        }
-    }
-
-    Ok(Spanned::new(Document { expressions }, span))
-}
+use crate::lexer::{self, Token};
 
 /// Error returned when parsing fails, including message and optional source location.
 #[derive(Debug, Clone, PartialEq)]
@@ -205,569 +37,31 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-fn make_span(pair: &pest::iterators::Pair<'_, Rule>, lines: &LineTable) -> Span {
-    let pest_span = pair.as_span();
-    Span {
-        start: lines.offset_to_position(pest_span.start()),
-        end: lines.offset_to_position(pest_span.end()),
-    }
-}
+/// Maximum nesting depth for bracket expressions (enforced before allocation).
+const MAX_PARSE_DEPTH: usize = 256;
 
-/// Pre-computed line-offset table for O(log n) offset-to-position lookups.
-#[derive(Debug)]
-struct LineTable {
-    /// Byte offset of the start of each line (line 1 = index 0).
-    line_starts: Vec<usize>,
-}
-
-impl LineTable {
-    fn new(input: &str) -> Self {
-        let mut line_starts = vec![0];
-        let bytes = input.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                line_starts.push(i + 2);
-                i += 2;
-            } else if bytes[i] == b'\n' {
-                line_starts.push(i + 1);
-                i += 1;
-            } else {
-                i += 1;
+/// Helper: peek at the next significant (non-whitespace, non-newline, non-comment) token.
+fn peek_next_significant<'a>(
+    tokens: &'a [Spanned<Token>],
+    current_index: usize,
+) -> Option<(&'a Token, usize)> {
+    let mut idx = current_index + 1;
+    while idx < tokens.len() {
+        match &tokens[idx].node {
+            Token::Newline | Token::Semicolon | Token::Comment(_) => {
+                idx += 1;
             }
-        }
-        LineTable { line_starts }
-    }
-
-    fn offset_to_position(&self, offset: usize) -> Position {
-        let line_index = match self.line_starts.binary_search(&offset) {
-            Ok(i) => i,
-            Err(i) => i - 1,
-        };
-        Position {
-            offset,
-            line: line_index + 1,
-            column: offset - self.line_starts[line_index] + 1,
+            token => return Some((token, idx)),
         }
     }
-}
-
-fn build_value(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    if depth >= MAX_PARSE_DEPTH {
-        return Err(ParseError {
-            message: format!("maximum nesting depth exceeded ({MAX_PARSE_DEPTH})"),
-            span: Some(make_span(&pair, lines)),
-        });
-    }
-
-    match pair.as_rule() {
-        Rule::value => {
-            let inner = pair
-                .into_inner()
-                .next()
-                .expect("grammar guarantees value has inner pair");
-            build_value(inner, lines, depth)
-        }
-        Rule::atom => {
-            let inner = pair
-                .into_inner()
-                .next()
-                .expect("grammar guarantees atom has inner pair");
-            build_value(inner, lines, depth)
-        }
-        Rule::int_lit => {
-            let span = make_span(&pair, lines);
-            let n: i64 = pair.as_str().parse().map_err(|e| ParseError {
-                message: format!("invalid integer: {e}"),
-                span: Some(span),
-            })?;
-            Ok(Spanned::new(Expr::Int(n), span))
-        }
-        Rule::float_lit => {
-            let span = make_span(&pair, lines);
-            let n: f64 = pair.as_str().parse().map_err(|e| ParseError {
-                message: format!("invalid float: {e}"),
-                span: Some(span),
-            })?;
-            Ok(Spanned::new(Expr::Float(n), span))
-        }
-        Rule::bool_lit => {
-            let span = make_span(&pair, lines);
-            let b = pair.as_str() == "true";
-            Ok(Spanned::new(Expr::Bool(b), span))
-        }
-        Rule::quoted_string => {
-            let span = make_span(&pair, lines);
-            let inner = pair
-                .into_inner()
-                .find(|p| p.as_rule() == Rule::inner_string)
-                .map(|p| unescape(p.as_str()))
-                .unwrap_or_default();
-            Ok(Spanned::new(Expr::Str(inner), span))
-        }
-        Rule::var_ref => {
-            let span = make_span(&pair, lines);
-            let name = pair
-                .as_str()
-                .strip_prefix('$')
-                .expect("grammar guarantees var_ref starts with $")
-                .to_string();
-            Ok(Spanned::new(Expr::VarRef(name), span))
-        }
-        Rule::bare_word => {
-            let span = make_span(&pair, lines);
-            Ok(Spanned::new(Expr::Str(pair.as_str().to_string()), span))
-        }
-        Rule::annotated_bare => build_annotated_bare(pair, lines, depth),
-        Rule::bracket_expr => build_bracket_expr(pair, lines, depth + 1),
-        Rule::access_expr => build_access_expr(pair, lines, depth),
-        Rule::bare_token => {
-            let inner = pair
-                .into_inner()
-                .next()
-                .expect("grammar guarantees bare_token has inner pair");
-            build_value(inner, lines, depth)
-        }
-        rule => Err(ParseError {
-            message: format!(
-                "unexpected rule in value position: {}",
-                rule_to_display(&rule)
-            ),
-            span: Some(make_span(&pair, lines)),
-        }),
-    }
-}
-
-fn build_bracket_expr(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    let span = make_span(&pair, lines);
-    let mut inner = pair.into_inner().peekable();
-
-    let first = match inner.peek() {
-        None => return Ok(Spanned::new(Expr::Dict(vec![]), span)), // empty: []
-        Some(p) => p,
-    };
-
-    match first.as_rule() {
-        Rule::type_assert_body => {
-            let first = inner.next().expect("peek succeeded so next is Some");
-            build_type_assert(first, span, lines, depth)
-        }
-        Rule::special_form => {
-            let sf = inner
-                .next()
-                .expect("peek succeeded so next is Some")
-                .into_inner()
-                .next()
-                .expect("grammar guarantees special_form has inner pair");
-            build_special_form(sf, span, lines, depth)
-        }
-        Rule::dict_entries => {
-            let first = inner.next().expect("peek succeeded so next is Some");
-            let entries = build_dict_entries(first, lines, depth)?;
-            Ok(Spanned::new(Expr::Dict(entries), span))
-        }
-        rule => Err(ParseError {
-            message: format!(
-                "unexpected rule inside bracket_expr: {}",
-                rule_to_display(&rule)
-            ),
-            span: Some(span),
-        }),
-    }
-}
-
-fn build_type_assert(
-    pair: pest::iterators::Pair<'_, Rule>,
-    span: Span,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    // Grammar: type_assert_body = { "@" ~ annotation_value ~ value }
-    let mut inner = pair.into_inner();
-    let ann_pair = inner
-        .next()
-        .expect("grammar guarantees type_assert_body has annotation_value");
-    let expr_pair = inner
-        .next()
-        .expect("grammar guarantees type_assert_body has value");
-
-    let annotation = build_annotation_value(ann_pair, lines, depth)?;
-    let expr = build_value(expr_pair, lines, depth)?;
-
-    Ok(Spanned::new(
-        Expr::TypeAssert {
-            annotation,
-            expr: Box::new(expr),
-            resolved_type: RefCell::new(None),
-        },
-        span,
-    ))
-}
-
-fn build_annotated_bare(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    // Grammar: annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
-    let span = make_span(&pair, lines);
-    let mut inner = pair.into_inner();
-    let name_pair = inner
-        .next()
-        .expect("grammar guarantees annotated_bare has bare_word");
-    let name = name_pair.as_str().to_string();
-    let ann_pair = inner
-        .next()
-        .expect("grammar guarantees annotated_bare has annotation_value");
-    let annotation = build_annotation_value(ann_pair, lines, depth)?;
-    Ok(Spanned::new(Expr::Annotated { name, annotation }, span))
-}
-
-fn build_special_form(
-    pair: pest::iterators::Pair<'_, Rule>,
-    span: Span,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    match pair.as_rule() {
-        Rule::call_form => build_call(pair, span, lines, depth),
-        Rule::fn_form => build_fn(pair, span, lines, depth),
-        Rule::type_form => build_type_alias(pair, span, lines, depth),
-        rule => Err(ParseError {
-            message: format!("unexpected special form: {}", rule_to_display(&rule)),
-            span: Some(span),
-        }),
-    }
-}
-
-fn build_call(
-    pair: pest::iterators::Pair<'_, Rule>,
-    span: Span,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    // Grammar: call_form = { keyword_call ~ value ~ call_args }
-    let mut inner = pair.into_inner();
-
-    let _ = inner.next().expect("grammar guarantees keyword_call");
-
-    let func = build_value(
-        inner
-            .next()
-            .expect("grammar guarantees call_form has function value"),
-        lines,
-        depth,
-    )?;
-
-    let call_args_pair = inner
-        .next()
-        .expect("grammar guarantees call_form has call_args");
-    let mut args = Vec::new();
-    let mut named_args = Vec::new();
-
-    for child in call_args_pair.into_inner() {
-        match child.as_rule() {
-            Rule::named_arg => {
-                let na = build_named_arg(child, lines, depth)?;
-                named_args.push(na);
-            }
-            _ => {
-                let val = build_value(child, lines, depth)?;
-                args.push(val);
-            }
-        }
-    }
-
-    Ok(Spanned::new(
-        Expr::Call {
-            func: Box::new(func),
-            args,
-            named_args,
-        },
-        span,
-    ))
-}
-
-fn build_named_arg(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<NamedArg>, ParseError> {
-    let span = make_span(&pair, lines);
-    let mut inner = pair.into_inner();
-    let key_pair = inner.next().expect("grammar guarantees named_arg has key");
-    let name = key_pair.as_str().to_string();
-    // named_arg_key can match either `$var` (var_ref) or `bare_word`;
-    // strip the `$` prefix so the stored name is always bare.
-    let name = name.strip_prefix('$').map(String::from).unwrap_or(name);
-
-    let value = build_value(
-        inner
-            .next()
-            .expect("grammar guarantees named_arg has value"),
-        lines,
-        depth,
-    )?;
-
-    Ok(Spanned::new(NamedArg { name, value }, span))
-}
-
-fn build_fn(
-    pair: pest::iterators::Pair<'_, Rule>,
-    span: Span,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    // Grammar: fn_form = { keyword_fn ~ fn_annotation? ~ param_list ~ value }
-    let mut inner = pair.into_inner();
-
-    let _ = inner.next().expect("grammar guarantees keyword_fn");
-
-    let mut return_ann = None;
-    let mut next = inner
-        .next()
-        .expect("grammar guarantees fn_form has token after keyword");
-
-    // Check for fn_annotation
-    if next.as_rule() == Rule::fn_annotation {
-        let ann_inner = next
-            .into_inner()
-            .next()
-            .expect("grammar guarantees fn_annotation has annotation_value");
-        return_ann = Some(build_annotation_value(ann_inner, lines, depth)?);
-        next = inner
-            .next()
-            .expect("grammar guarantees fn_form has param_list after annotation");
-    }
-
-    // next should be param_list
-    let params = build_param_list(next, lines, depth)?;
-
-    // body
-    let body = build_value(
-        inner.next().expect("grammar guarantees fn_form has body"),
-        lines,
-        depth,
-    )?;
-
-    Ok(Spanned::new(
-        Expr::Fn {
-            return_ann,
-            params,
-            body: Box::new(body),
-            desugared: false,
-        },
-        span,
-    ))
-}
-
-fn build_param_list(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Vec<Spanned<Param>>, ParseError> {
-    let mut params = Vec::new();
-    let mut saw_variadic: Option<Span> = None;
-    for child in pair.into_inner() {
-        match child.as_rule() {
-            Rule::param => {
-                if let Some(ref variadic_span) = saw_variadic {
-                    return Err(ParseError {
-                        message: format!(
-                            "parameter after variadic parameter (variadic at {})",
-                            variadic_span
-                        ),
-                        span: Some(make_span(&child, lines)),
-                    });
-                }
-                let p_span = make_span(&child, lines);
-                let mut p_inner = child.into_inner();
-                let name_pair = p_inner
-                    .next()
-                    .expect("grammar guarantees param has param_name");
-                let name = name_pair.as_str().to_string();
-
-                let annotation = if let Some(ann_pair) = p_inner.next() {
-                    // param_annotation = ${ "@" ~ annotation_value }
-                    let ann_inner = ann_pair
-                        .into_inner()
-                        .next()
-                        .expect("grammar guarantees param_annotation has annotation_value");
-                    Some(build_annotation_value(ann_inner, lines, depth)?)
-                } else {
-                    None
-                };
-
-                params.push(Spanned::new(
-                    Param {
-                        name,
-                        annotation,
-                        variadic: false,
-                    },
-                    p_span,
-                ));
-            }
-            Rule::variadic_param => {
-                let p_span = make_span(&child, lines);
-                if let Some(ref first_span) = saw_variadic {
-                    return Err(ParseError {
-                        message: format!("multiple variadic parameters (first at {})", first_span),
-                        span: Some(p_span),
-                    });
-                }
-                saw_variadic = Some(p_span);
-                // variadic_param is atomic (@{}), so extract name from raw text
-                let raw = child.as_str();
-                let name = raw
-                    .strip_prefix("...")
-                    .expect("grammar guarantees variadic_param starts with ...")
-                    .to_string();
-
-                params.push(Spanned::new(
-                    Param {
-                        name,
-                        annotation: None,
-                        variadic: true,
-                    },
-                    p_span,
-                ));
-            }
-            other => unreachable!("unexpected rule in param_list: {}", rule_to_display(&other)),
-        }
-    }
-    Ok(params)
-}
-
-fn build_annotation_value(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Annotation>, ParseError> {
-    let span = make_span(&pair, lines);
-    let inner = pair
-        .into_inner()
-        .next()
-        .expect("grammar guarantees annotation_value has inner pair");
-    match inner.as_rule() {
-        Rule::bracket_expr => {
-            let bracket_span = make_span(&inner, lines);
-            let mut bracket_inner = inner.into_inner().peekable();
-            match bracket_inner.peek().map(|p| p.as_rule()) {
-                None => Ok(Spanned::new(Annotation::PropertyDict(vec![]), bracket_span)),
-                Some(Rule::dict_entries) => {
-                    let first = bracket_inner
-                        .next()
-                        .expect("peek succeeded so next is Some");
-                    let entries = build_dict_entries(first, lines, depth)?;
-                    // Reject rest entries in property dict annotations with 'type:' key (SPEC 5.6)
-                    // Rest entries are allowed in type expressions (e.g., [@[name: String ...] $val])
-                    // but not as properties alongside 'type:' (e.g., [x@[type: Int ...]])
-                    let has_type_key = entries.iter().any(|e| {
-                        e.node
-                            .key
-                            .as_ref()
-                            .map_or(false, |k| matches!(&k.node, Expr::Str(s) if s == "type"))
-                    });
-                    if has_type_key {
-                        if let Some(rest_entry) = entries
-                            .iter()
-                            .find(|e| matches!(&e.node.value.node, Expr::Rest(_)))
-                        {
-                            return Err(ParseError {
-                                message: "rest entries (...) cannot appear alongside 'type:' in annotation bracket expressions".to_string(),
-                                span: Some(rest_entry.span),
-                            });
-                        }
-                    }
-                    Ok(Spanned::new(
-                        Annotation::PropertyDict(entries),
-                        bracket_span,
-                    ))
-                }
-                Some(rule) => Err(ParseError {
-                    message: format!(
-                        "annotation bracket expression must contain key-value entries, \
-                             found {}",
-                        rule_to_display(&rule)
-                    ),
-                    span: Some(bracket_span),
-                }),
-            }
-        }
-        Rule::annotation_word => Ok(Spanned::new(
-            Annotation::Simple(inner.as_str().to_string()),
-            span,
-        )),
-        rule => Err(ParseError {
-            message: format!(
-                "unexpected annotation value type: {}",
-                rule_to_display(&rule)
-            ),
-            span: Some(span),
-        }),
-    }
-}
-
-fn build_type_alias(
-    pair: pest::iterators::Pair<'_, Rule>,
-    span: Span,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    // Grammar: type_form = { keyword_type ~ value }
-    let mut inner = pair.into_inner();
-    let _ = inner.next().expect("grammar guarantees keyword_type");
-    let body = build_value(
-        inner
-            .next()
-            .expect("grammar guarantees type_form has body value"),
-        lines,
-        depth,
-    )?;
-    Ok(Spanned::new(Expr::TypeAlias(Box::new(body)), span))
-}
-
-fn build_dict_entries(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Vec<Spanned<Entry>>, ParseError> {
-    let mut entries = Vec::new();
-    let mut seen_keys = std::collections::HashSet::new();
-    for child in pair.into_inner() {
-        if child.as_rule() == Rule::entry {
-            let entry = build_entry(child, lines, depth)?;
-            if let Some(ref key_expr) = entry.node.key {
-                let key_text = key_to_string(&key_expr.node);
-                if let Some(key_text) = key_text {
-                    if seen_keys.contains(&key_text) {
-                        return Err(ParseError {
-                            message: format!("duplicate key \"{}\"", key_text),
-                            span: Some(key_expr.span),
-                        });
-                    }
-                    seen_keys.insert(key_text);
-                }
-            }
-            entries.push(entry);
-        }
-    }
-    Ok(entries)
+    None
 }
 
 /// Extract a comparable string from a key expression for duplicate detection.
-/// Returns None for complex expressions (bracket exprs) where comparison isn't meaningful.
+/// Returns None for complex expressions where comparison isn't meaningful.
 ///
 /// Parse-time duplicate detection is literal-keys-only; computed keys (DotAccess,
-/// BracketAccess, Call) return None here and are checked at eval-time by eval_dict.
+/// BracketAccess, Call) return None here and are checked at eval-time.
 fn key_to_string(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Str(s) => Some(s.clone()),
@@ -779,247 +73,1576 @@ fn key_to_string(expr: &Expr) -> Option<String> {
     }
 }
 
-fn build_entry(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Entry>, ParseError> {
-    let span = make_span(&pair, lines);
-    let inner = pair
-        .into_inner()
-        .next()
-        .expect("grammar guarantees entry has inner pair");
+/// Helper: count how many whitespace/newline/semicolon tokens to skip from the current position.
+/// Also collects comment tokens into the leading_comments map (keyed by the next non-whitespace token's offset).
+fn skip_whitespace_tokens(
+    tokens: &[Spanned<Token>],
+    current_index: usize,
+    leading_comments: &mut BTreeMap<usize, Vec<String>>,
+) -> usize {
+    let mut count = 0;
+    let mut idx = current_index;
+    let mut collected_comments = Vec::new();
 
-    match inner.as_rule() {
-        Rule::keyed_entry => {
-            let mut kv = inner.into_inner();
-            let key_pair = kv.next().expect("grammar guarantees keyed_entry has key");
-            let key_inner = key_pair
-                .into_inner()
-                .next()
-                .expect("grammar guarantees key has inner value");
-            let key = build_value(key_inner, lines, depth)?;
+    while idx < tokens.len() {
+        match &tokens[idx].node {
+            Token::Comment(text) => {
+                collected_comments.push(text.clone());
+                count += 1;
+                idx += 1;
+            }
+            Token::Newline | Token::Semicolon => {
+                count += 1;
+                idx += 1;
+            }
+            _ => {
+                // Found non-whitespace token — attach collected comments to it
+                if !collected_comments.is_empty() && idx < tokens.len() {
+                    let next_offset = tokens[idx].span.start.offset;
+                    leading_comments
+                        .entry(next_offset)
+                        .or_insert_with(Vec::new)
+                        .extend(collected_comments);
+                }
+                break;
+            }
+        }
+    }
+    count
+}
 
-            let val_pair = kv.next().expect("grammar guarantees keyed_entry has value");
-            let value = build_value(val_pair, lines, depth)?;
+/// Parse an annotation starting from the given token index (which should be At or ImmediateAt).
+/// Returns (Annotation, next_index) on success.
+///
+/// Annotations are always flat (BareWord or property dict), so no recursion depth check is needed.
+/// If property dict annotations are implemented in a future sprint, they will be parsed via the
+/// main loop's depth-checked bracket handling, not here.
+fn parse_annotation(
+    tokens: &[Spanned<Token>],
+    start_index: usize,
+    leading_comments: &mut BTreeMap<usize, Vec<String>>,
+) -> Result<(Spanned<Annotation>, usize), ParseError> {
+    let mut i = start_index;
 
-            Ok(Spanned::new(
-                Entry {
-                    key: Some(key),
-                    value,
-                },
-                span,
-            ))
+    // Skip the @ token
+    match &tokens[i].node {
+        Token::At | Token::ImmediateAt => {
+            i += 1;
         }
-        Rule::rest_entry => {
-            let raw = inner.as_str();
-            let name = raw.strip_prefix("...").expect("rest_entry starts with ...");
-            let rest_name = if name.is_empty() {
-                None
-            } else {
-                Some(name.to_string())
-            };
-            let value = Spanned::new(Expr::Rest(rest_name), span);
-            Ok(Spanned::new(Entry { key: None, value }, span))
+        _ => {
+            return Err(ParseError {
+                message: "expected @ or @@ to start annotation".to_string(),
+                span: Some(tokens[i].span),
+            });
         }
-        Rule::auto_entry => {
-            let val_pair = inner
-                .into_inner()
-                .next()
-                .expect("grammar guarantees auto_entry has value");
-            let value = build_value(val_pair, lines, depth)?;
-            Ok(Spanned::new(Entry { key: None, value }, span))
+    }
+
+    // Skip whitespace after @
+    i += skip_whitespace_tokens(tokens, i, leading_comments);
+
+    if i >= tokens.len() {
+        return Err(ParseError {
+            message: "unexpected end of input after @".to_string(),
+            span: None,
+        });
+    }
+
+    let ann_token = &tokens[i];
+
+    match &ann_token.node {
+        Token::BareWord(name) => {
+            // Simple annotation
+            let annotation = Annotation::Simple(name.clone());
+            Ok((Spanned::new(annotation, ann_token.span), i + 1))
         }
-        rule => Err(ParseError {
-            message: format!("unexpected rule in entry: {}", rule_to_display(&rule)),
-            span: Some(span),
+        Token::OpenBracket => {
+            // Property dict annotation: @[key: value ...]
+            // We need to parse this as a dict and convert it
+            // For now, return an error as this requires full dict parsing
+            Err(ParseError {
+                message: "property dict annotations (@[...]) not yet implemented".to_string(),
+                span: Some(ann_token.span),
+            })
+        }
+        _ => Err(ParseError {
+            message: format!(
+                "expected annotation name or bracket dict after @, found {:?}",
+                ann_token.node
+            ),
+            span: Some(ann_token.span),
         }),
     }
 }
 
-fn build_access_expr(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<Spanned<Expr>, ParseError> {
-    let span = make_span(&pair, lines);
-    let mut inner = pair.into_inner();
+/// Parse a function parameter list: `[param1 param2@Type ...rest]`
+/// Expects the current token to be OpenBracket. Advances index past CloseBracket.
+/// Returns (Vec<Param>, next_index) on success.
+fn parse_param_list(
+    tokens: &[Spanned<Token>],
+    i: &mut usize,
+    leading_comments: &mut BTreeMap<usize, Vec<String>>,
+) -> Result<Vec<Spanned<Param>>, ParseError> {
+    let _param_list_start = *i;
 
-    // First child is var_ref
-    let var_pair = inner
-        .next()
-        .expect("grammar guarantees access_expr has var_ref");
-    let var_span = make_span(&var_pair, lines);
-    let var_name = var_pair
-        .as_str()
-        .strip_prefix('$')
-        .expect("grammar guarantees var_ref starts with $")
-        .to_string();
-    let mut current = Spanned::new(Expr::VarRef(var_name), var_span);
+    // Consume OpenBracket
+    if !matches!(&tokens[*i].node, Token::OpenBracket) {
+        return Err(ParseError {
+            message: "expected '[' to start param list".to_string(),
+            span: Some(tokens[*i].span),
+        });
+    }
+    *i += 1;
 
-    // Remaining children are access_chain elements
-    for chain in inner {
-        let chain_inner = chain
-            .into_inner()
-            .next()
-            .expect("grammar guarantees access_chain has inner pair");
-        match chain_inner.as_rule() {
-            Rule::dot_access => {
-                let field_pair = chain_inner
-                    .into_inner()
-                    .next()
-                    .expect("grammar guarantees dot_access has field name");
-                let field = field_pair.as_str().to_string();
-                let new_span = Span {
-                    start: current.span.start,
-                    end: lines.offset_to_position(field_pair.as_span().end()),
-                };
-                current = Spanned::new(
-                    Expr::DotAccess {
-                        expr: Box::new(current),
-                        field,
-                    },
-                    new_span,
-                );
+    let mut params = Vec::new();
+    let mut saw_variadic = false;
+
+    loop {
+        *i += skip_whitespace_tokens(tokens, *i, leading_comments);
+
+        if *i >= tokens.len() {
+            return Err(ParseError {
+                message: "unexpected end of input in param list".to_string(),
+                span: None,
+            });
+        }
+
+        match &tokens[*i].node {
+            Token::CloseBracket => {
+                *i += 1; // Consume CloseBracket
+                break;
             }
-            Rule::bracket_access_chain => {
-                let chain_end = lines.offset_to_position(chain_inner.as_span().end());
-                let bracket_inner = chain_inner
-                    .into_inner()
-                    .next()
-                    .expect("grammar guarantees bracket_access_chain has inner pair");
-                // bracket_access_inner: range_expr | value
-                let access_inner = bracket_inner
-                    .into_inner()
-                    .next()
-                    .expect("grammar guarantees bracket_access_inner has inner pair");
-                match access_inner.as_rule() {
-                    Rule::range_expr => {
-                        let (start_expr, end_expr) = build_range_expr(access_inner, lines, depth)?;
-                        let new_span = Span {
-                            start: current.span.start,
-                            end: chain_end,
+            Token::Ellipsis => {
+                // Variadic param: ...name
+                if saw_variadic {
+                    return Err(ParseError {
+                        message: "multiple variadic parameters".to_string(),
+                        span: Some(tokens[*i].span),
+                    });
+                }
+                saw_variadic = true;
+                let ellipsis_span = tokens[*i].span;
+                *i += 1;
+
+                *i += skip_whitespace_tokens(tokens, *i, leading_comments);
+
+                if *i >= tokens.len() {
+                    return Err(ParseError {
+                        message: "expected parameter name after '...'".to_string(),
+                        span: Some(ellipsis_span),
+                    });
+                }
+
+                match &tokens[*i].node {
+                    Token::BareWord(name) => {
+                        let param_span = Span {
+                            start: ellipsis_span.start,
+                            end: tokens[*i].span.end,
                         };
-                        current = Spanned::new(
-                            Expr::RangeAccess {
-                                expr: Box::new(current),
-                                start: start_expr.map(Box::new),
-                                end: end_expr.map(Box::new),
+                        params.push(Spanned::new(
+                            Param {
+                                name: name.clone(),
+                                annotation: None,
+                                variadic: true,
                             },
-                            new_span,
-                        );
+                            param_span,
+                        ));
+                        *i += 1;
+
+                        // Check for illegal annotation on variadic param
+                        if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
+                            return Err(ParseError {
+                                message: "annotations on variadic parameters are not allowed"
+                                    .to_string(),
+                                span: Some(tokens[*i].span),
+                            });
+                        }
                     }
                     _ => {
-                        let key = build_value(access_inner, lines, depth)?;
-                        let new_span = Span {
-                            start: current.span.start,
-                            end: chain_end,
-                        };
-                        current = Spanned::new(
-                            Expr::BracketAccess {
-                                expr: Box::new(current),
-                                key: Box::new(key),
-                            },
-                            new_span,
-                        );
+                        return Err(ParseError {
+                            message: "expected parameter name after '...'".to_string(),
+                            span: Some(tokens[*i].span),
+                        });
                     }
                 }
             }
-            rule => {
+            Token::BareWord(name) => {
+                if saw_variadic {
+                    return Err(ParseError {
+                        message: "parameter after variadic parameter".to_string(),
+                        span: Some(tokens[*i].span),
+                    });
+                }
+
+                let param_start_span = tokens[*i].span;
+                let param_name = name.clone();
+                *i += 1;
+
+                // Check for annotation: param@Type
+                let annotation =
+                    if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
+                        let (ann, next_i) = parse_annotation(tokens, *i, leading_comments)?;
+                        *i = next_i;
+                        Some(ann)
+                    } else {
+                        None
+                    };
+
+                let param_span = if let Some(ref ann) = annotation {
+                    Span {
+                        start: param_start_span.start,
+                        end: ann.span.end,
+                    }
+                } else {
+                    param_start_span
+                };
+
+                params.push(Spanned::new(
+                    Param {
+                        name: param_name,
+                        annotation,
+                        variadic: false,
+                    },
+                    param_span,
+                ));
+            }
+            _ => {
                 return Err(ParseError {
-                    message: format!(
-                        "unexpected rule in access_chain: {}",
-                        rule_to_display(&rule)
-                    ),
+                    message: format!("unexpected token in param list: {:?}", tokens[*i].node),
+                    span: Some(tokens[*i].span),
+                });
+            }
+        }
+    }
+
+    Ok(params)
+}
+
+/// Stack frame types for the iterative parser.
+///
+/// Each variant corresponds to a bracket-form being parsed. The parser pushes
+/// a frame on `Token::OpenBracket` or `Token::BracketAccess`, collects entries/args/params
+/// during iteration, then pops and constructs the AST node on `Token::CloseBracket`.
+#[derive(Debug, Clone)]
+enum StackFrame {
+    /// Dictionary literal: `[key: value ...]`
+    Dict {
+        entries: Vec<Entry>,
+        /// Pending key from a BareWord/QuotedString/VarRef before a colon
+        pending_key: Option<Spanned<Expr>>,
+        /// Track seen keys for duplicate detection (literal keys only)
+        seen_keys: std::collections::HashSet<String>,
+        span_start: usize,
+    },
+    /// Function call: `[call $func arg1 arg2 name: val]`
+    Call {
+        args: Vec<CallArg>,
+        /// Pending key for named args (BareWord before colon)
+        pending_key: Option<(String, Span)>,
+        span_start: usize,
+    },
+    /// Function definition: `[fn [params] body]` or `[fn@Type [params] body]`
+    Fn {
+        /// Parameter list — parsed from `[fn [x y] body]` syntax
+        params: Vec<Spanned<Param>>,
+        body: Option<Spanned<Expr>>,
+        return_ann: Option<Spanned<Annotation>>,
+        span_start: usize,
+    },
+    /// Type alias: `[type expr]`
+    TypeAlias {
+        type_expr: Option<Spanned<Expr>>,
+        span_start: usize,
+    },
+    /// Type assertion: `[@Annotation expr]`
+    TypeAssert {
+        annotation: Option<Spanned<Annotation>>,
+        expr: Option<Spanned<Expr>>,
+        span_start: usize,
+    },
+    /// Bracket access key: `$a[key_expr]` where `key_expr` may contain nested brackets
+    /// Also handles range access: `$a[2..5]`
+    BracketAccessKey {
+        target: Spanned<Expr>,
+        /// The first expression before `..` (if range) or the full key (if not range)
+        key_expr: Option<Spanned<Expr>>,
+        /// Set to true if we've seen a `..` token, making this a range access
+        is_range: bool,
+        /// The expression after `..` (only for range access)
+        range_end: Option<Spanned<Expr>>,
+        span_start: usize,
+    },
+}
+
+/// Intermediate representation for call arguments (positional or named).
+///
+/// During call parsing, arguments are collected in order. The evaluator later
+/// enforces the C-PRIORITY binding order (see `doc/04-functions.md §Call Convention`).
+#[derive(Debug, Clone, PartialEq)]
+enum CallArg {
+    Positional(Spanned<Expr>),
+    Named(String, Spanned<Expr>),
+}
+
+/// Parse output: AST plus comment side-channels for the formatter.
+///
+/// `leading_comments` are keyed by the `span.start.offset` of the node they precede.
+/// `trailing_comments` are keyed by the `span.start.offset` of the node they follow.
+///
+/// The evaluator and type checker consume only `file`; the formatter uses all three fields.
+///
+/// External pipeline consumers that don't need comments should access `.file` directly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParseOutput {
+    pub file: Spanned<File>,
+    pub leading_comments: BTreeMap<usize, Vec<String>>,
+    pub trailing_comments: BTreeMap<usize, String>,
+}
+
+/// Parse tinct source text using the iterative parser.
+///
+/// This is the main entry point for Phase 2c-1 (complete feature set). The parser handles:
+/// - Basic literals: `Int`, `Float`, `BoolLit`, `QuotedString`, `BareWord`, `VarRef`
+/// - Dicts: `[]`, `[42]`, `[a: 1 b: 2]`, keyed and auto-indexed entries
+/// - Call forms: `[call $f arg1 arg2 name: val]`
+/// - Fn forms: `[fn [x y@Int ...rest] body]`, `[fn@Type [params] body]` with full param parsing
+/// - Type-alias: `[type expr]`
+/// - Type-assert: `[@Annotation expr]`
+/// - Bracket access: `$a[0]`, `$a[$key]`
+/// - Dot access chains: `$a.b.c`, `$a.b[0]`
+/// - Range access: `$a[2..5]`, `$a[..5]`, `$a[2..]`, `$a[..]`
+/// - Document separators: `---` between document sections
+/// - Comment collection: leading and trailing comments attached by span offset
+///
+/// Not yet implemented (deferred to parser-core-c2):
+/// - Annotated bare words as dict values (`word@SimpleType`)
+/// - Corpus parity tests with pest parser
+///
+/// NOTE: When parser-core-c2 lands, `parse()` in parser.rs will be replaced by this function.
+/// All pipeline entry points (eval_source, typecheck_source, REPL, LSP) will unwrap `.file`
+/// from `ParseOutput`.
+pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
+    // Tokenize the input via the lexer
+    let tokens = lexer::tokenize(input).map_err(|e| ParseError {
+        message: e.message,
+        span: Some(e.span),
+    })?;
+
+    // Stack of frames tracking bracket nesting
+    let mut stack: Vec<StackFrame> = Vec::new();
+
+    // Current document being built (one or more expressions)
+    let mut current_document_expressions: Vec<Spanned<Expr>> = Vec::new();
+
+    // All documents in the file
+    let mut documents: Vec<Spanned<Document>> = Vec::new();
+
+    // Comment maps
+    let mut leading_comments: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut trailing_comments: BTreeMap<usize, String> = BTreeMap::new();
+
+    // Track the span of the last significant token for trailing comment detection
+    let mut last_significant_span: Option<Span> = None;
+
+    // Convert to index-based iteration for peeking
+    let token_vec = tokens;
+    let mut i = 0;
+
+    while i < token_vec.len() {
+        let spanned_token = &token_vec[i];
+        let token = &spanned_token.node;
+        let span = spanned_token.span;
+
+        match token {
+            Token::OpenBracket => {
+                // Check depth before pushing
+                if stack.len() >= MAX_PARSE_DEPTH {
+                    return Err(ParseError {
+                        message: format!(
+                            "maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"
+                        ),
+                        span: Some(span),
+                    });
+                }
+
+                // Peek at next non-whitespace/non-newline token for form classification
+                let next_token = peek_next_significant(&token_vec, i);
+
+                match next_token {
+                    Some((Token::BareWord(s), keyword_idx))
+                        if s == "call"
+                            && !matches!(
+                                peek_next_significant(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Call form: [call $func args...]
+                        // (Not a call form if the keyword is followed by colon: [call: x] is a dict.)
+                        // (depth already checked above)
+                        stack.push(StackFrame::Call {
+                            args: Vec::new(),
+                            pending_key: None,
+                            span_start: span.start.offset,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "call" token
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::BareWord(s), keyword_idx))
+                        if s == "fn"
+                            && !matches!(
+                                peek_next_significant(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Fn form: [fn [params] body] or [fn@RetType [params] body]
+                        // (Not a fn form if the keyword is followed by colon: [fn: x] is a dict.)
+                        // (depth already checked above)
+
+                        i += 1; // Consume the OpenBracket
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += 1; // Consume the "fn" token
+
+                        // Check for return annotation: fn@RetType
+                        let return_ann = if i < token_vec.len()
+                            && matches!(&token_vec[i].node, Token::ImmediateAt)
+                        {
+                            let (ann, next_i) =
+                                parse_annotation(&token_vec, i, &mut leading_comments)?;
+                            i = next_i;
+                            Some(ann)
+                        } else {
+                            None
+                        };
+
+                        // Parse param list if present: [fn [params] body]
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        let params = if i < token_vec.len()
+                            && matches!(&token_vec[i].node, Token::OpenBracket)
+                        {
+                            parse_param_list(&token_vec, &mut i, &mut leading_comments)?
+                        } else {
+                            Vec::new()
+                        };
+
+                        stack.push(StackFrame::Fn {
+                            params,
+                            body: None,
+                            return_ann,
+                            span_start: span.start.offset,
+                        });
+                        continue;
+                    }
+                    Some((Token::BareWord(s), keyword_idx))
+                        if s == "type"
+                            && !matches!(
+                                peek_next_significant(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Type-alias form: [type expr]
+                        // (Not a type form if the keyword is followed by colon: [type: x] is a dict.)
+                        // (depth already checked above)
+                        stack.push(StackFrame::TypeAlias {
+                            type_expr: None,
+                            span_start: span.start.offset,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "type" token
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::At, _)) | Some((Token::ImmediateAt, _)) => {
+                        // Type-assert form: [@Annotation expr]
+                        // (depth already checked above)
+                        stack.push(StackFrame::TypeAssert {
+                            annotation: None,
+                            expr: None,
+                            span_start: span.start.offset,
+                        });
+                        i += 1; // Consume the OpenBracket
+                        continue;
+                    }
+                    _ => {
+                        // Default: dict literal
+                        // (depth already checked above)
+                        stack.push(StackFrame::Dict {
+                            entries: Vec::new(),
+                            pending_key: None,
+                            seen_keys: std::collections::HashSet::new(),
+                            span_start: span.start.offset,
+                        });
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+
+            Token::BracketAccess => {
+                // Check depth before pushing
+                if stack.len() >= MAX_PARSE_DEPTH {
+                    return Err(ParseError {
+                        message: format!(
+                            "maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"
+                        ),
+                        span: Some(span),
+                    });
+                }
+
+                // Pop the target expression from the current context (document or frame)
+                let target = if stack.is_empty() {
+                    if current_document_expressions.is_empty() {
+                        return Err(ParseError {
+                            message: "bracket access requires a target expression before '['"
+                                .to_string(),
+                            span: Some(span),
+                        });
+                    }
+                    current_document_expressions.pop().unwrap()
+                } else {
+                    pop_last_value_from_frame(&mut stack, span)?
+                };
+
+                stack.push(StackFrame::BracketAccessKey {
+                    target,
+                    key_expr: None,
+                    is_range: false,
+                    range_end: None,
+                    span_start: span.start.offset,
+                });
+                i += 1;
+                continue;
+            }
+
+            Token::CloseBracket => {
+                // Pop the frame and construct the AST node
+                let frame = stack.pop().ok_or_else(|| ParseError {
+                    message: "unmatched closing bracket".to_string(),
+                    span: Some(span),
+                })?;
+
+                let dict_span = |span_start: usize| Span {
+                    start: Position {
+                        offset: span_start,
+                        line: 1, // TODO(parser-core-c): proper line tracking from lexer tokens
+                        column: 1,
+                    },
+                    end: span.end,
+                };
+
+                match frame {
+                    StackFrame::Dict {
+                        entries,
+                        pending_key,
+                        seen_keys: _,
+                        span_start,
+                    } => {
+                        // If there's a pending key, that's an error — key without value
+                        if let Some(key_expr) = pending_key {
+                            return Err(ParseError {
+                                message: "key without value: expected `:` and value".to_string(),
+                                span: Some(key_expr.span),
+                            });
+                        }
+
+                        // Construct the dict expression
+                        let dict_expr = Expr::Dict(
+                            entries
+                                .into_iter()
+                                .map(|e| {
+                                    let entry_span = if let Some(ref key) = e.key {
+                                        Span {
+                                            start: key.span.start,
+                                            end: e.value.span.end,
+                                        }
+                                    } else {
+                                        e.value.span
+                                    };
+                                    Spanned::new(e, entry_span)
+                                })
+                                .collect(),
+                        );
+
+                        let spanned_dict = Spanned::new(dict_expr, dict_span(span_start));
+
+                        // Push to parent or document (via push_value to handle pending_key)
+                        push_value(&mut stack, &mut current_document_expressions, spanned_dict)?;
+                    }
+
+                    StackFrame::Call {
+                        args,
+                        pending_key,
+                        span_start,
+                    } => {
+                        // If there's a pending key, that's an error — named arg without value
+                        if let Some((key, key_span)) = pending_key {
+                            return Err(ParseError {
+                                message: format!("named argument `{}` without value", key),
+                                span: Some(key_span),
+                            });
+                        }
+
+                        // First arg is the function, rest are arguments
+                        if args.is_empty() {
+                            return Err(ParseError {
+                                message: "call form requires at least a function expression"
+                                    .to_string(),
+                                span: Some(span),
+                            });
+                        }
+
+                        let func = match &args[0] {
+                            CallArg::Positional(expr) => expr.clone(),
+                            CallArg::Named(name, _) => {
+                                return Err(ParseError {
+                                    message: format!(
+                                        "call function cannot be a named argument (got `{name}:`)",
+                                    ),
+                                    span: Some(span),
+                                });
+                            }
+                        };
+
+                        let mut positional_args = Vec::new();
+                        let mut named_args = Vec::new();
+
+                        for arg in args.into_iter().skip(1) {
+                            match arg {
+                                CallArg::Positional(expr) => positional_args.push(expr),
+                                CallArg::Named(name, expr) => {
+                                    named_args.push(Spanned::new(
+                                        NamedArg {
+                                            name,
+                                            value: expr.clone(),
+                                        },
+                                        expr.span,
+                                    ));
+                                }
+                            }
+                        }
+
+                        let call_expr = Expr::Call {
+                            func: Box::new(func),
+                            args: positional_args,
+                            named_args,
+                        };
+
+                        let spanned_call = Spanned::new(call_expr, dict_span(span_start));
+                        push_value(&mut stack, &mut current_document_expressions, spanned_call)?;
+                    }
+
+                    StackFrame::Fn {
+                        params,
+                        body,
+                        return_ann,
+                        span_start,
+                    } => {
+                        // Fn form: [fn [params] body]
+                        let body = body.ok_or_else(|| ParseError {
+                            message: "fn form requires a body expression".to_string(),
+                            span: Some(span),
+                        })?;
+
+                        let fn_expr = Expr::Fn {
+                            return_ann,
+                            params,
+                            body: Box::new(body),
+                            desugared: false,
+                        };
+
+                        let spanned_fn = Spanned::new(fn_expr, dict_span(span_start));
+                        push_value(&mut stack, &mut current_document_expressions, spanned_fn)?;
+                    }
+
+                    StackFrame::TypeAlias {
+                        type_expr,
+                        span_start,
+                    } => {
+                        let type_expr = type_expr.ok_or_else(|| ParseError {
+                            message: "type-alias form requires a type expression".to_string(),
+                            span: Some(span),
+                        })?;
+
+                        let alias_expr = Expr::TypeAlias(Box::new(type_expr));
+                        let spanned_alias = Spanned::new(alias_expr, dict_span(span_start));
+                        push_value(&mut stack, &mut current_document_expressions, spanned_alias)?;
+                    }
+
+                    StackFrame::TypeAssert {
+                        annotation,
+                        expr,
+                        span_start,
+                    } => {
+                        let annotation = annotation.ok_or_else(|| ParseError {
+                            message: "type-assert form requires an annotation".to_string(),
+                            span: Some(span),
+                        })?;
+                        let expr = expr.ok_or_else(|| ParseError {
+                            message: "type-assert form requires an expression".to_string(),
+                            span: Some(span),
+                        })?;
+
+                        use std::cell::RefCell;
+                        let type_assert_expr = Expr::TypeAssert {
+                            annotation,
+                            expr: Box::new(expr),
+                            resolved_type: RefCell::new(None),
+                        };
+
+                        let spanned_type_assert =
+                            Spanned::new(type_assert_expr, dict_span(span_start));
+                        push_value(
+                            &mut stack,
+                            &mut current_document_expressions,
+                            spanned_type_assert,
+                        )?;
+                    }
+
+                    StackFrame::BracketAccessKey {
+                        target,
+                        key_expr,
+                        is_range,
+                        range_end,
+                        span_start,
+                    } => {
+                        if is_range {
+                            // Range access: $a[start..end]
+                            let range_access_expr = Expr::RangeAccess {
+                                expr: Box::new(target),
+                                start: key_expr.map(Box::new),
+                                end: range_end.map(Box::new),
+                            };
+
+                            let spanned_access =
+                                Spanned::new(range_access_expr, dict_span(span_start));
+                            push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_access,
+                            )?;
+                        } else {
+                            // Regular bracket access: $a[key]
+                            let key = key_expr.ok_or_else(|| ParseError {
+                                message: "bracket access requires a key expression".to_string(),
+                                span: Some(span),
+                            })?;
+
+                            let bracket_access_expr = Expr::BracketAccess {
+                                expr: Box::new(target),
+                                key: Box::new(key),
+                            };
+
+                            let spanned_access =
+                                Spanned::new(bracket_access_expr, dict_span(span_start));
+                            push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_access,
+                            )?;
+                        }
+                    }
+                }
+
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
+            Token::Colon => {
+                // Key-value separator
+                match stack.last_mut() {
+                    Some(StackFrame::Dict {
+                        ref mut pending_key,
+                        ..
+                    }) => {
+                        if pending_key.is_none() {
+                            return Err(ParseError {
+                                message: "`:` without a key (expected key before `:`)".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        // Pending key is set; next expression will be the value
+                    }
+                    Some(StackFrame::Call {
+                        ref mut pending_key,
+                        ..
+                    }) => {
+                        if pending_key.is_none() {
+                            return Err(ParseError {
+                                message: "`:` without a name (expected bare word before `:` for named arg)".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        // Pending key is set; next expression will be the value
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            message: "`:` can only appear in dict or call forms".to_string(),
+                            span: Some(span),
+                        });
+                    }
+                }
+                i += 1;
+                continue;
+            }
+
+            // Literals: collect as values
+            Token::Int(n) => {
+                let expr = Spanned::new(Expr::Int(*n), span);
+                push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
+            Token::Float(f) => {
+                let expr = Spanned::new(Expr::Float(*f), span);
+                push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
+            Token::BoolLit(b) => {
+                let expr = Spanned::new(Expr::Bool(*b), span);
+                push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
+            Token::QuotedString(s) => {
+                let expr = Spanned::new(Expr::Str(s.clone()), span);
+                push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
+            Token::BareWord(s) => {
+                // Check for annotation: word@Type
+                if i + 1 < token_vec.len() && matches!(&token_vec[i + 1].node, Token::ImmediateAt) {
+                    // Annotated bare word
+                    let name = s.clone();
+                    let name_span = span;
+                    i += 1; // Move to ImmediateAt token
+                    let (annotation, next_i) =
+                        parse_annotation(&token_vec, i, &mut leading_comments)?;
+                    i = next_i;
+                    let full_span = Span {
+                        start: name_span.start,
+                        end: annotation.span.end,
+                    };
+                    let expr = Spanned::new(Expr::Annotated { name, annotation }, full_span);
+                    push_value(&mut stack, &mut current_document_expressions, expr)?;
+                    last_significant_span = Some(full_span);
+                    continue;
+                }
+
+                let expr = Spanned::new(Expr::Str(s.clone()), span);
+                // Check if this is a potential key (next token is colon)
+                if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
+                    // This bare word is a key candidate
+                    match stack.last_mut() {
+                        Some(StackFrame::Dict {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            *pending_key = Some(expr.clone());
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::Call {
+                            ref mut pending_key,
+                            args: _,
+                            ..
+                        }) => {
+                            // Named arg key — store the string name
+                            *pending_key = Some((s.clone(), span));
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        _ => {
+                            // Not in dict/call context; treat as normal value
+                            push_value(&mut stack, &mut current_document_expressions, expr)?;
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    // Not followed by colon; regular value
+                    push_value(&mut stack, &mut current_document_expressions, expr)?;
+                    last_significant_span = Some(span);
+                    i += 1;
+                    continue;
+                }
+            }
+
+            Token::VarRef(name) => {
+                let expr = Spanned::new(Expr::VarRef(name.clone()), span);
+                push_value(&mut stack, &mut current_document_expressions, expr)?;
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
+            // Other tokens: deferred to later sprints or ignored
+            Token::Comment(comment_text) => {
+                // Determine if this is a trailing or leading comment based on line position
+                // Trailing: comment on the same line as the previous significant token
+                // Leading: comment on a different line (or no previous token)
+                if let Some(prev_span) = last_significant_span {
+                    if prev_span.start.line == span.start.line {
+                        // Same line as previous token → trailing comment
+                        trailing_comments.insert(prev_span.start.offset, comment_text.clone());
+                    } else {
+                        // Different line → leading comment for next token
+                        if let Some((_, next_idx)) = peek_next_significant(&token_vec, i) {
+                            let next_offset = token_vec[next_idx].span.start.offset;
+                            leading_comments
+                                .entry(next_offset)
+                                .or_insert_with(Vec::new)
+                                .push(comment_text.clone());
+                        }
+                    }
+                } else {
+                    // No previous token → leading comment for next token
+                    if let Some((_, next_idx)) = peek_next_significant(&token_vec, i) {
+                        let next_offset = token_vec[next_idx].span.start.offset;
+                        leading_comments
+                            .entry(next_offset)
+                            .or_insert_with(Vec::new)
+                            .push(comment_text.clone());
+                    }
+                }
+
+                i += 1;
+                continue;
+            }
+
+            Token::Newline | Token::Semicolon => {
+                // Whitespace/separators — ignored
+                i += 1;
+                continue;
+            }
+
+            Token::DocSeparator => {
+                // Document separator: finalize current document and start a new one
+                if !stack.is_empty() {
+                    return Err(ParseError {
+                        message: "document separator cannot appear inside bracket expressions"
+                            .to_string(),
+                        span: Some(span),
+                    });
+                }
+
+                // Finalize current document (even if empty)
+                let exprs = std::mem::take(&mut current_document_expressions);
+                let doc_span = if exprs.is_empty() {
+                    // Empty document: use separator position
+                    span
+                } else {
+                    Span {
+                        start: exprs.first().unwrap().span.start,
+                        end: exprs.last().unwrap().span.end,
+                    }
+                };
+                documents.push(Spanned::new(Document { expressions: exprs }, doc_span));
+
+                i += 1;
+                continue;
+            }
+
+            Token::Dot => {
+                // Dot access: pop the preceding expression and create DotAccess
+                // Pop from the current context (document or frame)
+                let target = if stack.is_empty() {
+                    if current_document_expressions.is_empty() {
+                        return Err(ParseError {
+                            message: "dot access requires a target expression before '.'"
+                                .to_string(),
+                            span: Some(span),
+                        });
+                    }
+                    current_document_expressions.pop().unwrap()
+                } else {
+                    // Inside a frame — pop the last value from the current frame
+                    pop_last_value_from_frame(&mut stack, span)?
+                };
+
+                i += 1; // Consume the Dot
+
+                // Skip whitespace
+                i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+
+                if i >= token_vec.len() {
+                    return Err(ParseError {
+                        message: "expected field name after '.'".to_string(),
+                        span: Some(span),
+                    });
+                }
+
+                // Next token must be a BareWord for the field name
+                match &token_vec[i].node {
+                    Token::BareWord(field) => {
+                        let field_name = field.clone();
+                        let dot_access_span = Span {
+                            start: target.span.start,
+                            end: token_vec[i].span.end,
+                        };
+
+                        let dot_access_expr = Expr::DotAccess {
+                            expr: Box::new(target),
+                            field: field_name,
+                        };
+
+                        let spanned_access = Spanned::new(dot_access_expr, dot_access_span);
+
+                        if stack.is_empty() {
+                            current_document_expressions.push(spanned_access);
+                        } else {
+                            push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_access,
+                            )?;
+                        }
+
+                        i += 1;
+                        continue;
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            message: format!(
+                                "expected field name (bare word) after '.', found {:?}",
+                                token_vec[i].node
+                            ),
+                            span: Some(token_vec[i].span),
+                        });
+                    }
+                }
+            }
+
+            Token::Range => {
+                // Range operator: must be inside a BracketAccessKey frame
+                match stack.last_mut() {
+                    Some(StackFrame::BracketAccessKey {
+                        ref mut is_range, ..
+                    }) => {
+                        *is_range = true;
+                        i += 1;
+                        continue;
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            message:
+                                "range operator '..' can only appear in bracket access context"
+                                    .to_string(),
+                            span: Some(span),
+                        });
+                    }
+                }
+            }
+
+            Token::At | Token::ImmediateAt => {
+                // Check context: if we're in a TypeAssert frame and don't have annotation yet, parse it
+                match stack.last_mut() {
+                    Some(StackFrame::TypeAssert {
+                        ref mut annotation, ..
+                    }) if annotation.is_none() => {
+                        // Parse the annotation
+                        let (ann, next_i) = parse_annotation(&token_vec, i, &mut leading_comments)?;
+                        *annotation = Some(ann);
+                        i = next_i;
+                        continue;
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            message: "@ annotations outside type-assert or param contexts not yet supported".to_string(),
+                            span: Some(span),
+                        });
+                    }
+                }
+            }
+
+            Token::Ellipsis => {
+                return Err(ParseError {
+                    message: "variadic/rest markers not yet supported".to_string(),
                     span: Some(span),
                 });
             }
         }
     }
 
-    Ok(current)
-}
+    // Check for unclosed brackets
+    if !stack.is_empty() {
+        // Get the innermost unclosed bracket's position
+        let innermost_frame = stack.last().unwrap();
+        let bracket_offset = match innermost_frame {
+            StackFrame::Dict { span_start, .. } => *span_start,
+            StackFrame::Call { span_start, .. } => *span_start,
+            StackFrame::Fn { span_start, .. } => *span_start,
+            StackFrame::TypeAlias { span_start, .. } => *span_start,
+            StackFrame::TypeAssert { span_start, .. } => *span_start,
+            StackFrame::BracketAccessKey { span_start, .. } => *span_start,
+        };
 
-type RangePair = (Option<Spanned<Expr>>, Option<Spanned<Expr>>);
-
-fn build_range_expr(
-    pair: pest::iterators::Pair<'_, Rule>,
-    lines: &LineTable,
-    depth: usize,
-) -> Result<RangePair, ParseError> {
-    // Grammar: range_expr = { range_value? ~ ".." ~ range_value? }
-    // Determine the absolute offset of ".." by finding it in the pair's raw text.
-    let pair_start = pair.as_span().start();
-    let raw = pair.as_str();
-    let span = make_span(&pair, lines);
-    let dot_dot_offset = pair_start
-        + raw.find("..").ok_or_else(|| ParseError {
-            message: "range_expr must contain '..'".to_string(),
-            span: Some(span),
-        })?;
-
-    let mut start = None;
-    let mut end = None;
-    for child in pair.into_inner() {
-        if child.as_rule() == Rule::range_value {
-            let child_start = child.as_span().start();
-            let val_inner = child
-                .into_inner()
-                .next()
-                .expect("grammar guarantees range_value has inner value");
-            let val = build_value(val_inner, lines, depth)?;
-            if child_start < dot_dot_offset {
-                start = Some(val);
-            } else {
-                end = Some(val);
+        // Convert offset to line/column
+        // Build line starts table from input
+        let mut line_starts = vec![0];
+        for (i, ch) in input.char_indices() {
+            if ch == '\n' {
+                line_starts.push(i + 1);
             }
         }
-    }
-    Ok((start, end))
-}
 
-fn unescape(s: &str) -> String {
-    if !s.contains('\\') {
-        return s.to_string();
-    }
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => result.push('\n'),
-                Some('t') => result.push('\t'),
-                Some('r') => result.push('\r'),
-                Some('\\') => result.push('\\'),
-                Some('"') => result.push('"'),
-                Some(_) => unreachable!("grammar enforces valid escape sequences"),
-                None => result.push('\\'),
-            }
+        // Binary search to find the line for bracket_offset
+        let line_index = match line_starts.binary_search(&bracket_offset) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let start_pos = Position {
+            offset: bracket_offset,
+            line: line_index + 1,
+            column: bracket_offset - line_starts[line_index] + 1,
+        };
+
+        let unclosed_span = Span {
+            start: start_pos,
+            end: Position {
+                offset: bracket_offset + 1,
+                line: start_pos.line,
+                column: start_pos.column + 1,
+            },
+        };
+
+        let count = stack.len();
+        let message = if count == 1 {
+            "unclosed bracket".to_string()
         } else {
-            result.push(c);
+            format!("{} unclosed brackets", count)
+        };
+
+        return Err(ParseError {
+            message,
+            span: Some(unclosed_span),
+        });
+    }
+
+    // Build the final file
+    // If no expressions, create one empty document
+    if current_document_expressions.is_empty() && documents.is_empty() {
+        let doc = Document {
+            expressions: vec![],
+        };
+        let doc_span = Span {
+            start: Position {
+                offset: 0,
+                line: 1,
+                column: 1,
+            },
+            end: Position {
+                offset: input.len(),
+                line: 1,
+                column: 1,
+            },
+        };
+        documents.push(Spanned::new(doc, doc_span));
+    } else if !current_document_expressions.is_empty() {
+        // Finalize current document
+        let doc = Document {
+            expressions: current_document_expressions,
+        };
+        let doc_span = Span {
+            start: Position {
+                offset: 0,
+                line: 1,
+                column: 1,
+            },
+            end: Position {
+                offset: input.len(),
+                line: 1,
+                column: 1,
+            },
+        };
+        documents.push(Spanned::new(doc, doc_span));
+    }
+
+    let file = File { documents };
+    let file_span = Span {
+        start: Position {
+            offset: 0,
+            line: 1,
+            column: 1,
+        },
+        end: Position {
+            offset: input.len(),
+            line: 1,
+            column: 1,
+        },
+    };
+
+    Ok(ParseOutput {
+        file: Spanned::new(file, file_span),
+        leading_comments,
+        trailing_comments,
+    })
+}
+
+/// Helper: pop the last value from the current frame for postfix operator transformation.
+/// This is used by dot access and other postfix operators that need to retroactively
+/// transform the previously-pushed expression.
+///
+/// Note: For Dict frames, this pops the entire entry and returns just the value. The caller
+/// must re-push the transformed value, which will create a new entry (either keyed or auto-indexed
+/// depending on whether there was a pending_key).
+fn pop_last_value_from_frame(
+    stack: &mut Vec<StackFrame>,
+    span: Span,
+) -> Result<Spanned<Expr>, ParseError> {
+    match stack.last_mut() {
+        Some(StackFrame::Dict {
+            ref mut entries,
+            ref mut pending_key,
+            ..
+        }) => {
+            // Check if there's a pending key first - if so, we haven't pushed the value yet
+            // and there's nothing to pop
+            if pending_key.is_some() {
+                return Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                });
+            }
+            if entries.is_empty() {
+                return Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                });
+            }
+            let last_entry = entries.pop().unwrap();
+            // Restore the key as pending_key if it existed, so the transformed value
+            // will be re-associated with the same key
+            *pending_key = last_entry.key;
+            Ok(last_entry.value)
+        }
+        Some(StackFrame::Call { ref mut args, .. }) => {
+            if args.is_empty() {
+                return Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                });
+            }
+            match args.pop().unwrap() {
+                CallArg::Positional(expr) => Ok(expr),
+                CallArg::Named(name, _expr) => Err(ParseError {
+                    message: format!("dot access cannot operate on named argument '{}'", name),
+                    span: Some(span),
+                }),
+            }
+        }
+        Some(StackFrame::Fn { ref mut body, .. }) => {
+            if let Some(b) = body.take() {
+                Ok(b)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
+        Some(StackFrame::BracketAccessKey {
+            ref mut key_expr,
+            ref mut range_end,
+            ref is_range,
+            ..
+        }) => {
+            if *is_range {
+                if let Some(end) = range_end.take() {
+                    Ok(end)
+                } else if let Some(start) = key_expr.take() {
+                    Ok(start)
+                } else {
+                    Err(ParseError {
+                        message: "dot access requires a target before '.'".to_string(),
+                        span: Some(span),
+                    })
+                }
+            } else {
+                if let Some(key) = key_expr.take() {
+                    Ok(key)
+                } else {
+                    Err(ParseError {
+                        message: "dot access requires a target before '.'".to_string(),
+                        span: Some(span),
+                    })
+                }
+            }
+        }
+        Some(StackFrame::TypeAlias {
+            ref mut type_expr, ..
+        }) => {
+            if let Some(expr) = type_expr.take() {
+                Ok(expr)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
+        Some(StackFrame::TypeAssert { ref mut expr, .. }) => {
+            if let Some(e) = expr.take() {
+                Ok(e)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
+        None => Err(ParseError {
+            message: "dot access requires a target before '.'".to_string(),
+            span: Some(span),
+        }),
+    }
+}
+
+/// Helper: push an expression to the parent frame or current document.
+fn push_expr_to_parent(
+    stack: &mut Vec<StackFrame>,
+    current_document_expressions: &mut Vec<Spanned<Expr>>,
+    expr: Spanned<Expr>,
+) -> Result<(), ParseError> {
+    if stack.is_empty() {
+        current_document_expressions.push(expr);
+        Ok(())
+    } else {
+        match stack.last_mut() {
+            Some(StackFrame::Dict {
+                ref mut entries, ..
+            }) => {
+                entries.push(Entry {
+                    key: None,
+                    value: expr,
+                });
+                Ok(())
+            }
+            Some(StackFrame::Call { ref mut args, .. }) => {
+                args.push(CallArg::Positional(expr));
+                Ok(())
+            }
+            Some(StackFrame::Fn { ref mut body, .. }) => {
+                if body.is_some() {
+                    return Err(ParseError {
+                        message: "fn form can only have one body expression".to_string(),
+                        span: Some(expr.span),
+                    });
+                }
+                *body = Some(expr);
+                Ok(())
+            }
+            Some(StackFrame::TypeAlias {
+                ref mut type_expr, ..
+            }) => {
+                if type_expr.is_some() {
+                    return Err(ParseError {
+                        message: "type-alias form can only have one type expression".to_string(),
+                        span: Some(expr.span),
+                    });
+                }
+                *type_expr = Some(expr);
+                Ok(())
+            }
+            Some(StackFrame::TypeAssert {
+                expr: ref mut type_assert_expr,
+                ..
+            }) => {
+                if type_assert_expr.is_some() {
+                    return Err(ParseError {
+                        message: "type-assert form can only have one expression".to_string(),
+                        span: Some(expr.span),
+                    });
+                }
+                *type_assert_expr = Some(expr);
+                Ok(())
+            }
+            Some(StackFrame::BracketAccessKey {
+                ref mut key_expr,
+                ref is_range,
+                ref mut range_end,
+                ..
+            }) => {
+                if *is_range {
+                    // We've seen .., so this expression is the end of the range
+                    if range_end.is_some() {
+                        return Err(ParseError {
+                            message: "range access can only have one expression after '..'"
+                                .to_string(),
+                            span: Some(expr.span),
+                        });
+                    }
+                    *range_end = Some(expr);
+                } else {
+                    // No .. yet, so this is the key or range start
+                    if key_expr.is_some() {
+                        return Err(ParseError {
+                            message:
+                                "bracket access can only have one key expression before '..' or ']'"
+                                    .to_string(),
+                            span: Some(expr.span),
+                        });
+                    }
+                    *key_expr = Some(expr);
+                }
+                Ok(())
+            }
+            None => unreachable!("stack.is_empty() was false but last_mut returned None"),
         }
     }
-    result
+}
+
+/// Helper: push a value expression, handling keyed entries in dict/call contexts.
+fn push_value(
+    stack: &mut Vec<StackFrame>,
+    current_document_expressions: &mut Vec<Spanned<Expr>>,
+    expr: Spanned<Expr>,
+) -> Result<(), ParseError> {
+    if stack.is_empty() {
+        current_document_expressions.push(expr);
+        return Ok(());
+    }
+
+    match stack.last_mut() {
+        Some(StackFrame::Dict {
+            ref mut entries,
+            ref mut pending_key,
+            ref mut seen_keys,
+            ..
+        }) => {
+            if let Some(key) = pending_key.take() {
+                // Check for duplicate key (literal keys only)
+                if let Some(key_str) = key_to_string(&key.node) {
+                    if seen_keys.contains(&key_str) {
+                        return Err(ParseError {
+                            message: format!("duplicate key \"{}\"", key_str),
+                            span: Some(key.span),
+                        });
+                    }
+                    seen_keys.insert(key_str);
+                }
+                // This value completes a keyed entry
+                entries.push(Entry {
+                    key: Some(key),
+                    value: expr,
+                });
+            } else {
+                // Auto-indexed entry
+                entries.push(Entry {
+                    key: None,
+                    value: expr,
+                });
+            }
+            Ok(())
+        }
+        Some(StackFrame::Call {
+            ref mut args,
+            ref mut pending_key,
+            ..
+        }) => {
+            if let Some((name, _)) = pending_key.take() {
+                // This value completes a named argument
+                args.push(CallArg::Named(name, expr));
+            } else {
+                // Positional argument
+                args.push(CallArg::Positional(expr));
+            }
+            Ok(())
+        }
+        _ => {
+            // All other frames: delegate to push_expr_to_parent
+            push_expr_to_parent(stack, current_document_expressions, expr)
+        }
+    }
+}
+
+/// Parse tinct source text and return the AST.
+///
+/// This is a compatibility wrapper around `parse2()` that extracts just the AST file,
+/// discarding comment information. Most pipeline entry points (eval_source, typecheck_source,
+/// REPL, LSP) use this function.
+///
+/// For advanced use cases (like the formatter) that need comment preservation, use `parse2()`
+/// directly and access the `ParseOutput.leading_comments` and `ParseOutput.trailing_comments` maps.
+pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
+    let output = parse2(input)?;
+    Ok(output.file)
+}
+
+/// Parse a single tinct expression.
+///
+/// This is a convenience wrapper that parses the input and returns the first expression
+/// from the first document. If the input is empty or has no expressions, returns an error.
+///
+/// Primarily used for testing and corpus validation where single-expression inputs are common.
+pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
+    let file = parse(input)?;
+
+    if file.node.documents.is_empty() {
+        return Err(ParseError {
+            message: "no documents in input".to_string(),
+            span: None,
+        });
+    }
+
+    let first_doc = &file.node.documents[0];
+    if first_doc.node.expressions.is_empty() {
+        return Err(ParseError {
+            message: "no expressions in first document".to_string(),
+            span: Some(first_doc.span),
+        });
+    }
+
+    Ok(first_doc.node.expressions[0].clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse_ok(input: &str) -> Spanned<Expr> {
-        parse_expression(input).unwrap_or_else(|e| panic!("parse failed: {e}"))
-    }
-
-    fn parse_err(input: &str) -> ParseError {
-        parse_expression(input).unwrap_err()
+    /// Helper: parse successfully and return the first expression from the first document.
+    fn parse_expr(input: &str) -> Spanned<Expr> {
+        let output = parse2(input).expect("parse failed");
+        output.file.node.documents[0].node.expressions[0].clone()
     }
 
     #[test]
-    fn test_int_literal() {
-        let ast = parse_ok("[42]");
-        match &ast.node {
+    fn test_empty_dict() {
+        let output = parse2("[]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 1);
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 0);
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dict_one_value() {
+        let output = parse2("[42]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 1);
+        match &doc.expressions[0].node {
             Expr::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
+                assert!(entries[0].node.key.is_none()); // auto-indexed
                 assert!(matches!(&entries[0].node.value.node, Expr::Int(42)));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -1027,375 +1650,92 @@ mod tests {
     }
 
     #[test]
-    fn test_negative_int() {
-        let ast = parse_ok("[-1]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Int(-1)));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_float_literal() {
-        let ast = parse_ok("[3.14]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::Float(f) => assert!((*f - 3.14).abs() < f64::EPSILON),
-                    other => panic!("expected Float, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_negative_float() {
-        let ast = parse_ok("[-3.14]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::Float(f) => assert!((*f + 3.14).abs() < f64::EPSILON),
-                    other => panic!("expected Float, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bool_literals() {
-        let ast = parse_ok("[true false]");
-        match &ast.node {
+    fn test_keyed_entry() {
+        let output = parse2("[a: 1 b: 2]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Dict(entries) => {
                 assert_eq!(entries.len(), 2);
-                assert!(matches!(&entries[0].node.value.node, Expr::Bool(true)));
-                assert!(matches!(&entries[1].node.value.node, Expr::Bool(false)));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bool_prefix_is_bare_word() {
-        let ast = parse_ok("[truename falsehood]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "truename"));
-                assert!(
-                    matches!(&entries[1].node.value.node, Expr::Str(ref s) if s == "falsehood")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_quoted_string() {
-        let ast = parse_ok(r#"["hello world"]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "hello world")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_quoted_overrides_bool() {
-        let ast = parse_ok(r#"["true"]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "true"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref() {
-        let ast = parse_ok("[$name]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "name"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_with_question_mark() {
-        let ast = parse_ok("[$has?]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "has?"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bare_word() {
-        let ast = parse_ok("[hello]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "hello"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bare_word_with_dots() {
-        let ast = parse_ok("[some.file.txt]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "some.file.txt")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_empty_dict() {
-        let ast = parse_ok("[]");
-        assert!(matches!(&ast.node, Expr::Dict(entries) if entries.is_empty()));
-    }
-
-    #[test]
-    fn test_simple_dict() {
-        let ast = parse_ok("[name: Alice  age: 30]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-                // name: Alice
+                // First entry: a: 1
                 assert!(entries[0].node.key.is_some());
-                assert!(
-                    matches!(&entries[0].node.key.as_ref().unwrap().node, Expr::Str(ref s) if s == "name")
-                );
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "Alice"));
-                // age: 30
-                assert!(
-                    matches!(&entries[1].node.key.as_ref().unwrap().node, Expr::Str(ref s) if s == "age")
-                );
-                assert!(matches!(&entries[1].node.value.node, Expr::Int(30)));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_list() {
-        let ast = parse_ok("[a b c]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
-                assert!(entries[0].node.key.is_none());
-                assert!(entries[1].node.key.is_none());
-                assert!(entries[2].node.key.is_none());
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_nested_dict() {
-        let ast = parse_ok("[db: [host: localhost  port: 5432]]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::Dict(inner) => {
-                        assert_eq!(inner.len(), 2);
-                    }
-                    other => panic!("expected nested Dict, got {other:?}"),
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a', got {other:?}"),
                 }
+                assert!(matches!(&entries[0].node.value.node, Expr::Int(1)));
+                // Second entry: b: 2
+                assert!(entries[1].node.key.is_some());
+                match &entries[1].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "b"),
+                    other => panic!("expected key 'b', got {other:?}"),
+                }
+                assert!(matches!(&entries[1].node.value.node, Expr::Int(2)));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_call() {
-        let ast = parse_ok("[call $f $x $y]");
-        match &ast.node {
+    fn test_call_simple() {
+        let output = parse2("[call $f 1 2]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Call {
                 func,
                 args,
                 named_args,
             } => {
-                assert!(matches!(&func.node, Expr::VarRef(ref s) if s == "f"));
+                match &func.node {
+                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    other => panic!("expected VarRef for func, got {other:?}"),
+                }
                 assert_eq!(args.len(), 2);
-                assert!(named_args.is_empty());
+                assert!(matches!(&args[0].node, Expr::Int(1)));
+                assert!(matches!(&args[1].node, Expr::Int(2)));
+                assert_eq!(named_args.len(), 0);
             }
             other => panic!("expected Call, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_call_with_named_args() {
-        let ast = parse_ok("[call $fetch $url timeout: 60]");
-        match &ast.node {
+    fn test_call_named_args() {
+        let output = parse2("[call $f x: 1]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Call {
                 func,
                 args,
                 named_args,
             } => {
-                assert!(matches!(&func.node, Expr::VarRef(ref s) if s == "fetch"));
-                assert_eq!(args.len(), 1);
-                assert_eq!(named_args.len(), 1);
-                assert_eq!(named_args[0].node.name, "timeout");
-                assert!(matches!(&named_args[0].node.value.node, Expr::Int(60)));
-            }
-            other => panic!("expected Call, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_named_arg_with_dollar_key() {
-        // Named arg binding at eval-time uses the bare parameter name (e.g. "timeout"),
-        // so the `$` prefix in `$timeout:` must be stripped at parse time.
-        // Both `[call $f $timeout: 60]` and `[call $f timeout: 60]` must produce
-        // identical named-arg ASTs — same name ("timeout") and same value (Int(60)).
-        let dollar_form = parse_ok("[call $f $timeout: 60]");
-        let bare_form = parse_ok("[call $f timeout: 60]");
-
-        fn extract_named_arg(ast: &Spanned<Expr>) -> (&str, &Expr) {
-            match &ast.node {
-                Expr::Call { named_args, .. } => {
-                    assert_eq!(named_args.len(), 1);
-                    (
-                        named_args[0].node.name.as_str(),
-                        &named_args[0].node.value.node,
-                    )
+                match &func.node {
+                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    other => panic!("expected VarRef for func, got {other:?}"),
                 }
-                other => panic!("expected Call, got {other:?}"),
-            }
-        }
-
-        let (dollar_name, dollar_val) = extract_named_arg(&dollar_form);
-        let (bare_name, bare_val) = extract_named_arg(&bare_form);
-
-        // Both forms must produce the same bare name
-        assert_eq!(dollar_name, "timeout");
-        assert_eq!(bare_name, "timeout");
-
-        // And the same value
-        assert!(matches!(dollar_val, Expr::Int(60)));
-        assert!(matches!(bare_val, Expr::Int(60)));
-    }
-
-    #[test]
-    fn test_named_arg_dollar_numeric_key() {
-        // $123: is valid per the grammar: var_ident_char accepts digits, so "$" ~ var_ident
-        // matches "$123" and strips the "$" to produce name "123".
-        // This is a deliberate consequence of the denylist approach — var_ident_char
-        // excludes only structural delimiters (whitespace, brackets, colon, etc.), not digits.
-        // No invalid corpus test for $123: — it parses successfully with key "123".
-        let ast = parse_ok("[call $f $123: 42]");
-        match &ast.node {
-            Expr::Call { named_args, .. } => {
+                assert_eq!(args.len(), 0);
                 assert_eq!(named_args.len(), 1);
-                assert_eq!(named_args[0].node.name, "123");
-                assert!(matches!(&named_args[0].node.value.node, Expr::Int(42)));
+                assert_eq!(named_args[0].node.name, "x");
+                assert!(matches!(&named_args[0].node.value.node, Expr::Int(1)));
             }
             other => panic!("expected Call, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_call_colon_is_dict() {
-        // call: is a key, not a keyword
-        let ast = parse_ok("[call: something]");
-        assert!(matches!(&ast.node, Expr::Dict(_)));
-    }
-
-    #[test]
-    fn test_dollar_call_is_dict() {
-        // $call is a var ref, not the keyword
-        let ast = parse_ok("[$call $x]");
-        assert!(matches!(&ast.node, Expr::Dict(_)));
     }
 
     #[test]
     fn test_fn_simple() {
-        let ast = parse_ok("[fn [x] $x]");
-        match &ast.node {
+        let output = parse2("[fn 42]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Fn {
-                return_ann,
                 params,
                 body,
-                ..
+                return_ann,
+                desugared,
             } => {
+                assert_eq!(params.len(), 0);
+                assert!(matches!(&body.node, Expr::Int(42)));
                 assert!(return_ann.is_none());
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].node.name, "x");
-                assert!(matches!(&body.node, Expr::VarRef(ref s) if s == "x"));
-            }
-            other => panic!("expected Fn, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_fn_with_annotations() {
-        let ast = parse_ok("[fn@Number [x@Number y@Number] [call $+ $x $y]]");
-        match &ast.node {
-            Expr::Fn {
-                return_ann, params, ..
-            } => {
-                assert!(
-                    matches!(&return_ann.as_ref().unwrap().node, Annotation::Simple(ref s) if s == "Number")
-                );
-                assert_eq!(params.len(), 2);
-                assert!(params[0].node.annotation.is_some());
-                assert!(params[1].node.annotation.is_some());
-            }
-            other => panic!("expected Fn, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_fn_with_property_dict_annotation() {
-        let ast = parse_ok("[fn [timeout@[type: Number  default: 30]] $timeout]");
-        match &ast.node {
-            Expr::Fn { params, .. } => {
-                assert_eq!(params.len(), 1);
-                match &params[0].node.annotation.as_ref().unwrap().node {
-                    Annotation::PropertyDict(entries) => {
-                        assert_eq!(entries.len(), 2);
-                    }
-                    other => panic!("expected PropertyDict, got {other:?}"),
-                }
-            }
-            other => panic!("expected Fn, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_fn_variadic() {
-        let ast = parse_ok("[fn [f ...args] [call $map $f $args]]");
-        match &ast.node {
-            Expr::Fn { params, .. } => {
-                assert_eq!(params.len(), 2);
-                assert!(!params[0].node.variadic);
-                assert!(params[1].node.variadic);
-                assert_eq!(params[1].node.name, "args");
+                assert_eq!(*desugared, false);
             }
             other => panic!("expected Fn, got {other:?}"),
         }
@@ -1403,386 +1743,355 @@ mod tests {
 
     #[test]
     fn test_type_alias() {
-        let ast = parse_ok("[type [a b c]]");
-        match &ast.node {
-            Expr::TypeAlias(inner) => match &inner.node {
-                Expr::Dict(entries) => {
-                    assert_eq!(entries.len(), 3);
-                    // Auto-indexed entries: keys are None, values are bare words
-                    for entry in entries {
-                        assert!(entry.node.key.is_none(), "expected auto-indexed entry");
-                    }
-                    assert!(matches!(&entries[0].node.value.node, Expr::Str(s) if s == "a"));
-                    assert!(matches!(&entries[1].node.value.node, Expr::Str(s) if s == "b"));
-                    assert!(matches!(&entries[2].node.value.node, Expr::Str(s) if s == "c"));
-                }
-                other => panic!("expected Dict inside TypeAlias, got {other:?}"),
-            },
+        let output = parse2("[type 42]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::TypeAlias(inner) => {
+                assert!(matches!(&inner.node, Expr::Int(42)));
+            }
             other => panic!("expected TypeAlias, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_dot_access() {
-        let ast = parse_ok("[$person.name]");
-        match &ast.node {
-            Expr::Dict(entries) => match &entries[0].node.value.node {
-                Expr::DotAccess { expr, field } => {
-                    assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "person"));
-                    assert_eq!(field, "name");
-                }
-                other => panic!("expected DotAccess, got {other:?}"),
-            },
-            other => panic!("expected Dict, got {other:?}"),
-        }
+    fn test_literal_int() {
+        let expr = parse_expr("42");
+        assert!(matches!(expr.node, Expr::Int(42)));
     }
 
     #[test]
-    fn test_bracket_access() {
-        let ast = parse_ok("[$data[0]]");
-        match &ast.node {
-            Expr::Dict(entries) => match &entries[0].node.value.node {
-                Expr::BracketAccess { expr, key } => {
-                    assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "data"));
-                    assert!(matches!(&key.node, Expr::Int(0)));
-                }
-                other => panic!("expected BracketAccess, got {other:?}"),
-            },
-            other => panic!("expected Dict, got {other:?}"),
+    fn test_depth_limit() {
+        let mut input = String::new();
+        for _ in 0..MAX_PARSE_DEPTH {
+            input.push('[');
         }
-    }
+        input.push('['); // One more to exceed
+        for _ in 0..=MAX_PARSE_DEPTH {
+            input.push(']');
+        }
 
-    #[test]
-    fn test_chained_access() {
-        let ast = parse_ok("[$config.services[0].host]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                // Should be DotAccess(BracketAccess(DotAccess(VarRef, "services"), 0), "host")
-                match &entries[0].node.value.node {
-                    Expr::DotAccess { expr, field } => {
-                        assert_eq!(field, "host");
-                        match &expr.node {
-                            Expr::BracketAccess { expr: inner, key } => {
-                                assert!(matches!(&key.node, Expr::Int(0)));
-                                match &inner.node {
-                                    Expr::DotAccess {
-                                        expr: var,
-                                        field: f2,
-                                    } => {
-                                        assert!(
-                                            matches!(&var.node, Expr::VarRef(ref s) if s == "config")
-                                        );
-                                        assert_eq!(f2, "services");
-                                    }
-                                    other => panic!("expected inner DotAccess, got {other:?}"),
-                                }
-                            }
-                            other => panic!("expected BracketAccess, got {other:?}"),
-                        }
-                    }
-                    other => panic!("expected outer DotAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_space_prevents_access() {
-        // $a .b should be two separate entries, not dot access
-        let ast = parse_ok("[$a .b]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "a"));
-                assert!(matches!(&entries[1].node.value.node, Expr::Str(ref s) if s == ".b"));
-            }
-            other => panic!("expected Dict with 2 entries, got {other:?}"),
-        }
+        let err = parse2(&input).unwrap_err();
+        assert!(err.message.contains("maximum nesting depth exceeded"));
     }
 
     #[test]
     fn test_type_assert_simple() {
-        let ast = parse_ok("[@Number $expr]");
-        match &ast.node {
+        let output = parse2("[@Number 42]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::TypeAssert {
                 annotation, expr, ..
             } => {
-                assert!(matches!(&annotation.node, Annotation::Simple(ref s) if s == "Number"));
-                assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "expr"));
+                match &annotation.node {
+                    Annotation::Simple(name) => assert_eq!(name, "Number"),
+                    other => panic!("expected Simple annotation, got {other:?}"),
+                }
+                assert!(matches!(&expr.node, Expr::Int(42)));
             }
             other => panic!("expected TypeAssert, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_type_assert_with_fallback() {
-        let ast = parse_ok("[@[type: Number  default: 0] $x]");
-        match &ast.node {
-            Expr::TypeAssert { annotation, .. } => {
-                assert!(matches!(&annotation.node, Annotation::PropertyDict(_)));
+    fn test_bracket_access_literal_key() {
+        let output = parse2("$a[0]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::BracketAccess { expr, key } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(matches!(&key.node, Expr::Int(0)));
             }
-            other => panic!("expected TypeAssert, got {other:?}"),
+            other => panic!("expected BracketAccess, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_comments_ignored() {
-        let ast = parse_ok(
-            "[
-            # This is a comment
-            name: Alice  # inline comment
-            age: 30
-        ]",
+    fn test_bracket_access_variable_key() {
+        let output = parse2("$a[$key]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::BracketAccess { expr, key } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                match &key.node {
+                    Expr::VarRef(name) => assert_eq!(name, "key"),
+                    other => panic!("expected VarRef key, got {other:?}"),
+                }
+            }
+            other => panic!("expected BracketAccess, got {other:?}"),
+        }
+    }
+
+    // --- Error path tests ---
+
+    #[test]
+    fn test_call_empty() {
+        let err = parse2("[call]").unwrap_err();
+        assert!(
+            err.message.contains("call form requires"),
+            "expected error about call form requiring a function, got: {}",
+            err.message
         );
-        match &ast.node {
+    }
+
+    #[test]
+    fn test_call_func_as_named_arg() {
+        // [call f: $x] — first arg is Named("f", ...) which is forbidden as func
+        let err = parse2("[call f: $x]").unwrap_err();
+        assert!(
+            err.message.contains("named argument"),
+            "expected error about named argument, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_dict_pending_key_no_value() {
+        // [a:] — key with no value before closing bracket
+        let err = parse2("[a:]").unwrap_err();
+        assert!(
+            err.message.contains("key without value"),
+            "expected 'key without value' error, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_call_pending_named_arg_no_value() {
+        // [call $f x:] — named arg x with no value before closing bracket
+        let err = parse2("[call $f x:]").unwrap_err();
+        assert!(
+            err.message.contains("without value"),
+            "expected 'without value' error for named arg, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_alias_empty() {
+        let err = parse2("[type]").unwrap_err();
+        assert!(
+            err.message.contains("type-alias form requires"),
+            "expected error about type-alias requiring a type expression, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_assert_no_annotation() {
+        // [@] — type-assert with @; parse_annotation sees CloseBracket after @ → error
+        let err = parse2("[@]").unwrap_err();
+        assert!(
+            err.message
+                .contains("expected annotation name or bracket dict after @"),
+            "expected error about invalid annotation token, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_assert_no_expr() {
+        // [@Number] — annotation parsed, but no expression
+        let err = parse2("[@Number]").unwrap_err();
+        assert!(
+            err.message
+                .contains("type-assert form requires an expression"),
+            "expected error about missing expression, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_bracket_access_empty() {
+        // $a[] — bracket access with empty key
+        let err = parse2("$a[]").unwrap_err();
+        assert!(
+            err.message
+                .contains("bracket access requires a key expression"),
+            "expected error about empty key, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_colon_outside_dict_call() {
+        // [fn :] — because "fn" is followed by ":", it's classified as a dict (not Fn form).
+        // Within the dict, "fn" is set as pending_key, then "]" arrives with no value → error.
+        // The `:` can only appear in non-dict/call contexts error fires when colon appears
+        // with no pending context, e.g. inside a TypeAlias frame: [type :]
+        let err = parse2("[fn :]").unwrap_err();
+        assert!(
+            err.message.contains("key without value") || err.message.contains("`:` without a key"),
+            "expected key-related error for [fn :], got: {}",
+            err.message
+        );
+        // Also test the true "colon outside dict/call" case: colon in a TypeAlias frame
+        let err2 = parse2("[type x :]").unwrap_err();
+        // [type x :] — "type" is not followed by colon so Fn frame... wait "type" is followed
+        // by space then "x", so TypeAlias frame is pushed. "x" is not followed by colon
+        // (it's followed by space then ":"). So "x" is pushed as type_expr. Then ":" appears
+        // with TypeAlias frame on stack → "`:` can only appear in dict or call forms".
+        assert!(
+            err2.message
+                .contains("`:` can only appear in dict or call forms"),
+            "expected error about colon in wrong context for [type x :], got: {}",
+            err2.message
+        );
+    }
+
+    #[test]
+    fn test_colon_without_key_in_dict() {
+        // [:] — colon with no preceding key in a dict
+        let err = parse2("[:]").unwrap_err();
+        assert!(
+            err.message.contains("`:` without a key"),
+            "expected error about colon without key, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_fn_multiple_bodies() {
+        // [fn 1 2] — two body expressions in an fn form
+        let err = parse2("[fn 1 2]").unwrap_err();
+        assert!(
+            err.message
+                .contains("fn form can only have one body expression"),
+            "expected error about multiple body expressions, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_alias_multiple_exprs() {
+        // [type 1 2] — two expressions in a type-alias form
+        let err = parse2("[type 1 2]").unwrap_err();
+        assert!(
+            err.message
+                .contains("type-alias form can only have one type expression"),
+            "expected error about multiple expressions, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_type_assert_multiple_exprs() {
+        // [@Number 1 2] — two expressions in a type-assert form
+        let err = parse2("[@Number 1 2]").unwrap_err();
+        assert!(
+            err.message
+                .contains("type-assert form can only have one expression"),
+            "expected error about multiple expressions, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_fn_empty() {
+        // [fn] — fn with no body
+        let err = parse2("[fn]").unwrap_err();
+        assert!(
+            err.message.contains("fn form requires a body expression"),
+            "expected error about fn requiring a body, got: {}",
+            err.message
+        );
+    }
+
+    // --- Edge case / positive tests ---
+
+    #[test]
+    fn test_keyword_as_dict_key() {
+        // [call: 1] — "call" followed by colon → dict, not a call form (Fix 2)
+        let output = parse2("[call: 1]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
+                assert_eq!(entries.len(), 1);
+                let key = entries[0].node.key.as_ref().expect("expected keyed entry");
+                match &key.node {
+                    Expr::Str(s) => assert_eq!(s, "call"),
+                    other => panic!("expected key 'call', got {other:?}"),
+                }
+                assert!(matches!(&entries[0].node.value.node, Expr::Int(1)));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_pipeline_example() {
-        let ast = parse_ok(
-            "[call $-> $data
-            [call $filter [call $> $_.age 30] $_]
-            [call $map $_.name $_]
-            $sort]",
-        );
-        match &ast.node {
-            Expr::Call { func, args, .. } => {
-                assert!(matches!(&func.node, Expr::VarRef(ref s) if s == "->"));
-                assert_eq!(args.len(), 4);
-                assert!(matches!(&args[1].node, Expr::Call { .. }));
-                assert!(matches!(&args[2].node, Expr::Call { .. }));
-                assert!(matches!(&args[3].node, Expr::VarRef(ref s) if s == "sort"));
+    fn test_all_keywords_as_dict_keys() {
+        // [call: 1 fn: 2 type: 3] — all three keywords as dict keys
+        let output = parse2("[call: 1 fn: 2 type: 3]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 3);
+                let expected_keys = ["call", "fn", "type"];
+                let expected_values = [1i64, 2, 3];
+                for (i, (key, val)) in expected_keys.iter().zip(expected_values.iter()).enumerate()
+                {
+                    let entry_key = entries[i].node.key.as_ref().expect("expected keyed entry");
+                    match &entry_key.node {
+                        Expr::Str(s) => assert_eq!(s.as_str(), *key),
+                        other => panic!("expected key '{key}', got {other:?}"),
+                    }
+                    match &entries[i].node.value.node {
+                        Expr::Int(n) => assert_eq!(*n, *val),
+                        other => panic!("expected Int({val}), got {other:?}"),
+                    }
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_whitespace_in_form_classification() {
+        // "[ call $f]" — leading whitespace before keyword; peek skips it → still a Call form
+        let output = parse2("[ call $f]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Call {
+                func,
+                args,
+                named_args,
+            } => {
+                match &func.node {
+                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    other => panic!("expected VarRef for func, got {other:?}"),
+                }
+                assert_eq!(args.len(), 0);
+                assert_eq!(named_args.len(), 0);
             }
             other => panic!("expected Call, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_full_config_example() {
-        let input = r#"[
-            base: [timeout: 30  retries: 3]
-            dev:  [call $merge $base [env: dev]]
-            prod: [call $merge $base [env: prod  timeout: 60]]
-        ]"#;
-        let ast = parse_ok(input);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
-                // base is a Dict
-                assert!(matches!(&entries[0].node.value.node, Expr::Dict(_)));
-                // dev and prod are Call
-                assert!(matches!(&entries[1].node.value.node, Expr::Call { .. }));
-                assert!(matches!(&entries[2].node.value.node, Expr::Call { .. }));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_function_definition_as_entry() {
-        let ast = parse_ok("[double: [fn@Number [x@Number] [call $* $x 2]]]");
-        match &ast.node {
+    fn test_keyed_entry_with_bracket_value() {
+        // [a: [1]] — dict with keyed entry whose value is a nested dict (Fix 1)
+        let output = parse2("[a: [1]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Fn { .. }));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_error_span_on_unmatched_bracket() {
-        let err = parse_err("[hello");
-        // pest grammar errors have no span (they come from LltParser::parse)
-        // but the message should describe what was expected
-        assert!(err.span.is_none());
-        assert!(!err.message.is_empty());
-    }
-
-    #[test]
-    fn test_error_extra_closing_bracket() {
-        let err = parse_err("[hello]]");
-        assert!(
-            err.message.contains("expected EOI"),
-            "expected 'expected EOI' in: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_error_unexpected_colon_at_top_level() {
-        let err = parse_err(": value");
-        assert!(
-            err.message.contains("expected file"),
-            "expected 'expected file' in: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_error_missing_value_after_colon() {
-        let err = parse_err("[key:]");
-        assert!(
-            err.message.contains("expected value"),
-            "expected 'expected value' in: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_error_integer_overflow() {
-        // i64::MAX + 1 = 9223372036854775808
-        let err = parse_err("[99999999999999999999]");
-        assert!(
-            err.message.contains("invalid integer"),
-            "expected 'invalid integer' in: {}",
-            err.message
-        );
-        assert!(
-            err.span.is_some(),
-            "integer overflow error should have a span"
-        );
-    }
-
-    #[test]
-    fn test_error_integer_underflow() {
-        // Very large negative number
-        let err = parse_err("[-99999999999999999999]");
-        assert!(
-            err.message.contains("invalid integer"),
-            "expected 'invalid integer' in: {}",
-            err.message
-        );
-        assert!(err.span.is_some());
-    }
-
-    #[test]
-    fn test_error_span_position_correctness() {
-        // Integer overflow at a known position inside a dict
-        let err = parse_err("[a: 99999999999999999999]");
-        assert!(err.span.is_some());
-        let span = err.span.unwrap();
-        // The int literal starts at column 5 (1-indexed): "[a: " = 4 chars, then the number
-        assert_eq!(span.start.line, 1);
-        assert_eq!(span.start.column, 5);
-    }
-
-    #[test]
-    fn test_error_span_multiline_position() {
-        // Put the overflow on line 2
-        let err = parse_err("[a: 1\nb: 99999999999999999999]");
-        assert!(err.span.is_some());
-        let span = err.span.unwrap();
-        assert_eq!(span.start.line, 2);
-        assert_eq!(span.start.column, 4); // "b: " = 3 chars, number starts at col 4
-    }
-
-    #[test]
-    fn test_error_depth_limit() {
-        // Verify that moderate nesting works fine (5 levels)
-        let ast = parse_ok("[[[[[42]]]]]");
-        match ast.node {
-            Expr::Dict(_) => {}
-            other => panic!("expected Dict at 5-deep nesting, got: {other:?}"),
-        }
-
-        // Verify the depth limit triggers by calling build_value directly with
-        // a high starting depth. This avoids constructing 256+ nested brackets
-        // which is too slow for pest's PEG parser.
-        let input = "42";
-        let pairs = LltParser::parse(Rule::value, input).unwrap();
-        let lines = LineTable::new(input);
-        let pair = pairs.into_iter().next().unwrap();
-
-        // At depth=MAX_PARSE_DEPTH, build_value rejects immediately.
-        let err = build_value(pair, &lines, MAX_PARSE_DEPTH).unwrap_err();
-        assert!(err.message.contains("maximum nesting depth exceeded"));
-        assert!(err.span.is_some());
-
-        // At depth=MAX_PARSE_DEPTH-1, parsing should succeed (leaf value, no further nesting).
-        let pairs2 = LltParser::parse(Rule::value, input).unwrap();
-        let pair2 = pairs2.into_iter().next().unwrap();
-        assert!(build_value(pair2, &lines, MAX_PARSE_DEPTH - 1).is_ok());
-    }
-
-    #[test]
-    fn test_error_depth_limit_message_format() {
-        // Verify ParseError Display formatting with and without span
-        let err_with_span = ParseError {
-            message: format!("maximum nesting depth exceeded ({MAX_PARSE_DEPTH})"),
-            span: Some(Span::new(
-                Position {
-                    offset: 0,
-                    line: 1,
-                    column: 1,
-                },
-                Position {
-                    offset: 5,
-                    line: 1,
-                    column: 6,
-                },
-            )),
-        };
-        let display = format!("{err_with_span}");
-        assert!(display.contains("maximum nesting depth exceeded"));
-        assert!(display.contains("1:1"));
-    }
-
-    #[test]
-    fn test_float_inf() {
-        // f64 can parse "inf" but our grammar only accepts digit sequences,
-        // so "inf" should parse as a bare word, not a float
-        let ast = parse_ok("[inf]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "inf"));
-            }
-            other => panic!("expected Dict with bare word, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_float_nan() {
-        // "nan" should be a bare word, not a float
-        let ast = parse_ok("[nan]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "nan"));
-            }
-            other => panic!("expected Dict with bare word, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_float_very_large() {
-        // A very large float that can be parsed by f64 (within range)
-        let ast = parse_ok("[1.7976931348623157]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Float(_)));
-            }
-            other => panic!("expected Dict with Float, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_float_very_small() {
-        let ast = parse_ok("[0.000000001]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
+                let key = entries[0].node.key.as_ref().expect("expected keyed entry");
+                match &key.node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a', got {other:?}"),
+                }
+                // Value should be a Dict containing Int(1)
                 match &entries[0].node.value.node {
-                    Expr::Float(f) => assert!(*f > 0.0 && *f < 0.001),
-                    other => panic!("expected Float, got {other:?}"),
+                    Expr::Dict(inner_entries) => {
+                        assert_eq!(inner_entries.len(), 1);
+                        assert!(matches!(&inner_entries[0].node.value.node, Expr::Int(1)));
+                    }
+                    other => panic!("expected inner Dict, got {other:?}"),
                 }
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -1790,14 +2099,113 @@ mod tests {
     }
 
     #[test]
-    fn test_float_zero() {
-        let ast = parse_ok("[0.0]");
-        match &ast.node {
+    fn test_call_named_arg_bracket_value() {
+        // [call $f x: [1]] — call with named arg whose value is a nested dict (Fix 1)
+        let output = parse2("[call $f x: [1]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Call {
+                func,
+                args,
+                named_args,
+            } => {
+                match &func.node {
+                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    other => panic!("expected VarRef for func, got {other:?}"),
+                }
+                assert_eq!(args.len(), 0);
+                assert_eq!(named_args.len(), 1);
+                assert_eq!(named_args[0].node.name, "x");
+                match &named_args[0].node.value.node {
+                    Expr::Dict(inner_entries) => {
+                        assert_eq!(inner_entries.len(), 1);
+                        assert!(matches!(&inner_entries[0].node.value.node, Expr::Int(1)));
+                    }
+                    other => panic!("expected inner Dict for named arg value, got {other:?}"),
+                }
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_call_only_named_args() {
+        // [call $f x: 1 y: 2] — call with func and two named args, no positional
+        let output = parse2("[call $f x: 1 y: 2]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Call {
+                func,
+                args,
+                named_args,
+            } => {
+                match &func.node {
+                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    other => panic!("expected VarRef for func, got {other:?}"),
+                }
+                assert_eq!(args.len(), 0);
+                assert_eq!(named_args.len(), 2);
+                assert_eq!(named_args[0].node.name, "x");
+                assert!(matches!(&named_args[0].node.value.node, Expr::Int(1)));
+                assert_eq!(named_args[1].node.name, "y");
+                assert!(matches!(&named_args[1].node.value.node, Expr::Int(2)));
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unmatched_closing_bracket() {
+        let err = parse2("]").unwrap_err();
+        assert!(
+            err.message.contains("unmatched closing bracket"),
+            "expected 'unmatched closing bracket' error, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_unclosed_bracket() {
+        let err = parse2("[").unwrap_err();
+        assert!(
+            err.message.contains("unclosed bracket"),
+            "expected 'unclosed bracket' error, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_call_colon_without_key() {
+        // [call $f :] — colon inside Call frame with pending_key=None (no preceding bare word)
+        let err = parse2("[call $f :]").unwrap_err();
+        assert!(
+            err.message.contains("without a name"),
+            "expected error about colon without a name in call frame, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_bracket_access_inside_dict() {
+        // [a: $x[0]] — bracket access works as dict value (BracketAccess pops from frame)
+        let output = parse2("[a: $x[0]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a', got {other:?}"),
+                }
                 match &entries[0].node.value.node {
-                    Expr::Float(f) => assert!((*f).abs() < f64::EPSILON),
-                    other => panic!("expected Float(0.0), got {other:?}"),
+                    Expr::BracketAccess { expr, key } => {
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "x"),
+                            other => panic!("expected VarRef('x'), got {other:?}"),
+                        }
+                        assert!(matches!(&key.node, Expr::Int(0)));
+                    }
+                    other => panic!("expected BracketAccess as value, got {other:?}"),
                 }
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -1805,1293 +2213,821 @@ mod tests {
     }
 
     #[test]
-    fn test_semicolon_separated_entries() {
-        let ast = parse_ok("[a: 1; b: 2; c: 3]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
+    fn test_annotation_invalid_token() {
+        // [@123] — parse_annotation receives Int(123) after @, not BareWord or OpenBracket
+        let err = parse2("[@123]").unwrap_err();
+        assert!(
+            err.message
+                .contains("expected annotation name or bracket dict after @"),
+            "expected error about invalid annotation token, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_nested_bracket_access() {
+        // $a[0][1] — second BracketAccess wraps the result of the first
+        let output = parse2("$a[0][1]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::BracketAccess {
+                expr: outer_expr,
+                key: outer_key,
+            } => {
+                // outer key is Int(1)
                 assert!(
-                    matches!(&entries[0].node.key.as_ref().unwrap().node, Expr::Str(ref s) if s == "a")
+                    matches!(&outer_key.node, Expr::Int(1)),
+                    "expected outer key Int(1), got {:?}",
+                    outer_key.node
                 );
+                // outer target is BracketAccess($a, 0)
+                match &outer_expr.node {
+                    Expr::BracketAccess {
+                        expr: inner_expr,
+                        key: inner_key,
+                    } => {
+                        match &inner_expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "a"),
+                            other => panic!("expected VarRef('a') as inner target, got {other:?}"),
+                        }
+                        assert!(
+                            matches!(&inner_key.node, Expr::Int(0)),
+                            "expected inner key Int(0), got {:?}",
+                            inner_key.node
+                        );
+                    }
+                    other => panic!("expected inner BracketAccess, got {other:?}"),
+                }
+            }
+            other => panic!("expected outer BracketAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mixed_keyed_and_auto_indexed() {
+        // [a: 1 2 b: 3] — keyed, auto-indexed, keyed entries
+        let output = parse2("[a: 1 2 b: 3]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(
+                    entries.len(),
+                    3,
+                    "expected 3 entries, got {}",
+                    entries.len()
+                );
+                // Entry 0: key=Some("a"), value=1
+                let key0 = entries[0]
+                    .node
+                    .key
+                    .as_ref()
+                    .expect("entry 0 should have key");
+                match &key0.node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a', got {other:?}"),
+                }
                 assert!(matches!(&entries[0].node.value.node, Expr::Int(1)));
+                // Entry 1: key=None (auto-indexed), value=2
                 assert!(
-                    matches!(&entries[1].node.key.as_ref().unwrap().node, Expr::Str(ref s) if s == "b")
+                    entries[1].node.key.is_none(),
+                    "entry 1 should be auto-indexed (no key)"
                 );
                 assert!(matches!(&entries[1].node.value.node, Expr::Int(2)));
-                assert!(
-                    matches!(&entries[2].node.key.as_ref().unwrap().node, Expr::Str(ref s) if s == "c")
-                );
+                // Entry 2: key=Some("b"), value=3
+                let key2 = entries[2]
+                    .node
+                    .key
+                    .as_ref()
+                    .expect("entry 2 should have key");
+                match &key2.node {
+                    Expr::Str(s) => assert_eq!(s, "b"),
+                    other => panic!("expected key 'b', got {other:?}"),
+                }
                 assert!(matches!(&entries[2].node.value.node, Expr::Int(3)));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
     }
 
-    #[test]
-    fn test_semicolon_with_auto_entries() {
-        let ast = parse_ok("[a; b; c]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
-                assert!(entries.iter().all(|e| e.node.key.is_none()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
+    // --- New tests for parser-core-c features ---
 
     #[test]
-    fn test_mixed_semicolons_and_whitespace() {
-        let ast = parse_ok("[a: 1; b: 2  c: 3]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_trailing_semicolon() {
-        let ast = parse_ok("[a: 1; b: 2;]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bracket_key_nested_dict() {
-        // A bracket expression as a key: [bracket key]: value
-        let ast = parse_ok("[[computed key]: value]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                let key = entries[0].node.key.as_ref().unwrap();
-                match &key.node {
-                    Expr::Dict(inner) => {
-                        assert_eq!(inner.len(), 2);
-                        assert!(
-                            matches!(&inner[0].node.value.node, Expr::Str(ref s) if s == "computed")
-                        );
-                        assert!(
-                            matches!(&inner[1].node.value.node, Expr::Str(ref s) if s == "key")
-                        );
-                    }
-                    other => panic!("expected Dict as key, got {other:?}"),
-                }
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "value"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_as_key() {
-        let ast = parse_ok("[$key: value]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                let key = entries[0].node.key.as_ref().unwrap();
-                assert!(matches!(&key.node, Expr::VarRef(ref s) if s == "key"));
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "value"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_escape_newline() {
-        let ast = parse_ok(r#"["hello\nworld"]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "hello\nworld")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_escape_tab() {
-        let ast = parse_ok(r#"["col1\tcol2"]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "col1\tcol2")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_escape_carriage_return() {
-        let ast = parse_ok(r#"["line\r\nend"]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "line\r\nend")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_escape_backslash() {
-        let ast = parse_ok(r#"["path\\to\\file"]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "path\\to\\file")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_escape_quote() {
-        let ast = parse_ok(r#"["say \"hello\""]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "say \"hello\"")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_escape_all_sequences_combined() {
-        let ast = parse_ok(r#"["a\nb\tc\r\\d\"e"]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::Str(s) => assert_eq!(s, "a\nb\tc\r\\d\"e"),
-                    other => panic!("expected Str, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_empty_string() {
-        let ast = parse_ok(r#"[""]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s.is_empty()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bare_word_unicode() {
-        let ast = parse_ok("[caf\u{00e9}]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "caf\u{00e9}")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bare_word_cjk() {
-        let ast = parse_ok("[\u{4f60}\u{597d}]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "\u{4f60}\u{597d}")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bare_word_operator_chars() {
-        // Bare words can contain >, <, =, +, * per bare_word_char
-        let ast = parse_ok("[>=]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == ">="));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bare_word_angle_brackets() {
-        let ast = parse_ok("[<=>]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "<=>"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bare_word_tilde_and_caret() {
-        let ast = parse_ok("[~thing ^other]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "~thing"));
-                assert!(matches!(&entries[1].node.value.node, Expr::Str(ref s) if s == "^other"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bare_word_with_at_sign() {
-        // @ is always structural -- name@domain parses as Annotated
-        let ast = parse_ok("[name@domain]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::Annotated { name, annotation } => {
-                        assert_eq!(name, "name");
-                        assert!(
-                            matches!(&annotation.node, Annotation::Simple(ref s) if s == "domain")
-                        );
-                    }
-                    other => panic!("expected Annotated, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_int_as_dict_key() {
-        let ast = parse_ok("[0: zero  1: one  2: two]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
-                assert!(matches!(
-                    &entries[0].node.key.as_ref().unwrap().node,
-                    Expr::Int(0)
-                ));
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "zero"));
-                assert!(matches!(
-                    &entries[1].node.key.as_ref().unwrap().node,
-                    Expr::Int(1)
-                ));
-                assert!(matches!(
-                    &entries[2].node.key.as_ref().unwrap().node,
-                    Expr::Int(2)
-                ));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_float_as_dict_key() {
-        let ast = parse_ok("[3.14: pi]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Float(f) => assert!((*f - 3.14).abs() < f64::EPSILON),
-                    other => panic!("expected Float key, got {other:?}"),
-                }
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "pi"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bool_as_dict_key() {
-        let ast = parse_ok("[true: yes  false: no]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-                assert!(matches!(
-                    &entries[0].node.key.as_ref().unwrap().node,
-                    Expr::Bool(true)
-                ));
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "yes"));
-                assert!(matches!(
-                    &entries[1].node.key.as_ref().unwrap().node,
-                    Expr::Bool(false)
-                ));
-                assert!(matches!(&entries[1].node.value.node, Expr::Str(ref s) if s == "no"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_fn_annotation_dict_with_default() {
-        let ast = parse_ok("[fn@[type: Number  default: 0] [x] $x]");
-        match &ast.node {
+    fn test_fn_params_simple() {
+        let output = parse2("[fn [x y] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Fn {
-                return_ann,
                 params,
                 body,
-                ..
+                return_ann,
+                desugared,
             } => {
-                let ann = return_ann.as_ref().unwrap();
-                match &ann.node {
-                    Annotation::PropertyDict(entries) => {
-                        assert_eq!(entries.len(), 2);
-                        assert!(
-                            matches!(&entries[0].node.key.as_ref().unwrap().node, Expr::Str(ref s) if s == "type")
-                        );
-                        assert!(
-                            matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "Number")
-                        );
-                        assert!(
-                            matches!(&entries[1].node.key.as_ref().unwrap().node, Expr::Str(ref s) if s == "default")
-                        );
-                        assert!(matches!(&entries[1].node.value.node, Expr::Int(0)));
-                    }
-                    other => panic!("expected PropertyDict annotation, got {other:?}"),
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_none());
+                assert!(!params[0].node.variadic);
+                assert_eq!(params[1].node.name, "y");
+                assert!(params[1].node.annotation.is_none());
+                assert!(!params[1].node.variadic);
+                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
+                assert!(return_ann.is_none());
+                assert!(!desugared);
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_params_annotated() {
+        let output = parse2("[fn [x@Int] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_some());
+                match &params[0].node.annotation.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Int"),
+                    other => panic!("expected Simple annotation, got {other:?}"),
+                }
+                assert!(!params[0].node.variadic);
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_return_annotation() {
+        let output = parse2("[fn@Number [x] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn {
+                return_ann, params, ..
+            } => {
+                assert!(return_ann.is_some());
+                match &return_ann.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Number"),
+                    other => panic!("expected Simple annotation, got {other:?}"),
                 }
                 assert_eq!(params.len(), 1);
-                assert!(matches!(&body.node, Expr::VarRef(ref s) if s == "x"));
+                assert_eq!(params[0].node.name, "x");
             }
             other => panic!("expected Fn, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_param_annotation_simple_and_dict_mixed() {
-        let ast = parse_ok("[fn [x@Number  y@[type: String  default: hello]] $x]");
-        match &ast.node {
+    fn test_fn_variadic() {
+        let output = parse2("[fn [...args] $args]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
-                assert_eq!(params.len(), 2);
-                // x has simple annotation
-                match &params[0].node.annotation.as_ref().unwrap().node {
-                    Annotation::Simple(s) => assert_eq!(s, "Number"),
-                    other => panic!("expected Simple annotation on x, got {other:?}"),
-                }
-                // y has property dict annotation
-                match &params[1].node.annotation.as_ref().unwrap().node {
-                    Annotation::PropertyDict(entries) => {
-                        assert_eq!(entries.len(), 2);
-                    }
-                    other => panic!("expected PropertyDict annotation on y, got {other:?}"),
-                }
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "args");
+                assert!(params[0].node.variadic);
+                assert!(params[0].node.annotation.is_none());
             }
             other => panic!("expected Fn, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_fn_empty_param_list() {
-        let ast = parse_ok("[fn [] 42]");
-        match &ast.node {
-            Expr::Fn {
-                return_ann,
-                params,
-                body,
-                ..
+    fn test_dot_access_simple() {
+        let output = parse2("$a.b").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::DotAccess { expr, field } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert_eq!(field, "b");
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_chain() {
+        let output = parse2("$a.b.c").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::DotAccess {
+                expr: outer_expr,
+                field: outer_field,
             } => {
-                assert!(return_ann.is_none());
-                assert!(params.is_empty());
-                assert!(matches!(&body.node, Expr::Int(42)));
-            }
-            other => panic!("expected Fn, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_fn_empty_params_with_annotation() {
-        let ast = parse_ok("[fn@Number [] 0]");
-        match &ast.node {
-            Expr::Fn {
-                return_ann,
-                params,
-                body,
-                ..
-            } => {
-                assert!(
-                    matches!(&return_ann.as_ref().unwrap().node, Annotation::Simple(ref s) if s == "Number")
-                );
-                assert!(params.is_empty());
-                assert!(matches!(&body.node, Expr::Int(0)));
-            }
-            other => panic!("expected Fn, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_range_both_bounds() {
-        let ast = parse_ok("[$data[2..5]]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::RangeAccess { expr, start, end } => {
-                        assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "data"));
-                        let s = start.as_ref().expect("start should be Some");
-                        assert!(matches!(&s.node, Expr::Int(2)));
-                        let e = end.as_ref().expect("end should be Some");
-                        assert!(matches!(&e.node, Expr::Int(5)));
+                assert_eq!(outer_field, "c");
+                match &outer_expr.node {
+                    Expr::DotAccess {
+                        expr: inner_expr,
+                        field: inner_field,
+                    } => {
+                        assert_eq!(inner_field, "b");
+                        match &inner_expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "a"),
+                            other => panic!("expected VarRef at base, got {other:?}"),
+                        }
                     }
-                    other => panic!("expected RangeAccess, got {other:?}"),
+                    other => panic!("expected inner DotAccess, got {other:?}"),
                 }
             }
-            other => panic!("expected Dict, got {other:?}"),
+            other => panic!("expected outer DotAccess, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_range_no_start() {
-        let ast = parse_ok("[$data[..3]]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::RangeAccess { expr, start, end } => {
-                        assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "data"));
-                        assert!(start.is_none(), "start should be None for [..3]");
-                        let e = end.as_ref().expect("end should be Some");
-                        assert!(matches!(&e.node, Expr::Int(3)));
-                    }
-                    other => panic!("expected RangeAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_range_no_end() {
-        let ast = parse_ok("[$data[2..]]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::RangeAccess { expr, start, end } => {
-                        assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "data"));
-                        let s = start.as_ref().expect("start should be Some");
-                        assert!(matches!(&s.node, Expr::Int(2)));
-                        assert!(end.is_none(), "end should be None for [2..]");
-                    }
-                    other => panic!("expected RangeAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_range_unbounded() {
-        let ast = parse_ok("[$data[..]]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::RangeAccess { expr, start, end } => {
-                        assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "data"));
-                        assert!(start.is_none(), "start should be None for [..]");
-                        assert!(end.is_none(), "end should be None for [..]");
-                    }
-                    other => panic!("expected RangeAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_range_with_var_refs() {
-        let ast = parse_ok("[$data[$start..$end]]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::RangeAccess { expr, start, end } => {
-                        assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "data"));
-                        let s = start.as_ref().expect("start should be Some");
-                        assert!(matches!(&s.node, Expr::VarRef(ref v) if v == "start"));
-                        let e = end.as_ref().expect("end should be Some");
-                        assert!(matches!(&e.node, Expr::VarRef(ref v) if v == "end"));
-                    }
-                    other => panic!("expected RangeAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_range_chained_with_dot_access() {
-        let ast = parse_ok("[$items[1..3].name]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::DotAccess { expr, field } => {
-                        assert_eq!(field, "name");
-                        assert!(matches!(&expr.node, Expr::RangeAccess { .. }));
-                    }
-                    other => panic!("expected DotAccess wrapping RangeAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_operator_greater_than() {
-        let ast = parse_ok("[$>]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == ">"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_operator_less_equal() {
-        let ast = parse_ok("[$<=]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "<="));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_operator_arrow() {
-        let ast = parse_ok("[$->]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "->"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_operator_plus() {
-        let ast = parse_ok("[$+]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "+"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_operator_star() {
-        let ast = parse_ok("[$*]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "*"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_operator_slash() {
-        let ast = parse_ok("[$/]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "/"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_var_ref_operator_equals() {
-        let ast = parse_ok("[$=]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::VarRef(ref s) if s == "="));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_span_simple_int() {
-        let ast = parse_ok("[42]");
-        // The outer bracket_expr spans the full input
-        assert_eq!(ast.span.start.offset, 0);
-        assert_eq!(ast.span.end.offset, 4);
-        assert_eq!(ast.span.start.line, 1);
-        assert_eq!(ast.span.start.column, 1);
-    }
-
-    #[test]
-    fn test_span_multiline() {
-        let ast = parse_ok("[a: 1\nb: 2]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-                // Second entry starts on line 2
-                let second_entry_span = &entries[1].span;
-                assert_eq!(second_entry_span.start.line, 2);
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_error_bare_dollar() {
-        // $ alone is not a valid var_ref (needs var_ident after it)
-        let err = parse_err("[$]");
-        assert!(
-            err.message
-                .contains("expected special_form, type_assert_body, or entry"),
-            "expected 'expected special_form, type_assert_body, or entry' in: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_whitespace_only_input_is_empty_dict() {
-        // Empty document that's just whitespace is valid (empty dict)
-        let ast = parse_ok("   ");
-        assert!(matches!(&ast.node, Expr::Dict(entries) if entries.is_empty()));
-    }
-
-    #[test]
-    fn test_error_double_colon() {
-        let err = parse_err("[a:: b]");
-        assert!(
-            err.message.contains("expected value"),
-            "expected 'expected value' in: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_error_display_without_span() {
-        let err = ParseError {
-            message: "test error".to_string(),
-            span: None,
-        };
-        let display = format!("{err}");
-        assert_eq!(display, "test error");
-    }
-
-    #[test]
-    fn test_error_display_with_span() {
-        let err = ParseError {
-            message: "test error".to_string(),
-            span: Some(Span {
-                start: Position {
-                    offset: 5,
-                    line: 2,
-                    column: 3,
-                },
-                end: Position {
-                    offset: 10,
-                    line: 2,
-                    column: 8,
-                },
-            }),
-        };
-        let display = format!("{err}");
-        assert_eq!(display, "2:3: test error");
-    }
-
-    #[test]
-    fn test_single_document_single_expression() {
-        let file = parse("[x: 1]").unwrap();
-        assert_eq!(file.node.documents.len(), 1);
-        assert_eq!(file.node.documents[0].node.expressions.len(), 1);
-    }
-
-    #[test]
-    fn test_single_document_multiple_expressions() {
-        let file = parse("[x: 1]\n\n[y: 2]").unwrap();
-        assert_eq!(file.node.documents.len(), 1);
-        assert_eq!(file.node.documents[0].node.expressions.len(), 2);
-    }
-
-    #[test]
-    fn test_two_documents() {
-        let file = parse("[x: 1]\n---\n[y: 2]").unwrap();
-        assert_eq!(file.node.documents.len(), 2);
-        assert_eq!(file.node.documents[0].node.expressions.len(), 1);
-        assert_eq!(file.node.documents[1].node.expressions.len(), 1);
-    }
-
-    #[test]
-    fn test_three_documents() {
-        let file = parse("[a: 1]\n---\n[b: 2]\n---\n[c: 3]").unwrap();
-        assert_eq!(file.node.documents.len(), 3);
-    }
-
-    #[test]
-    fn test_document_separator_not_bare_word() {
-        // ---- (four hyphens) is a bare word, not a separator
-        let file = parse("[x: ----]").unwrap();
-        assert_eq!(file.node.documents.len(), 1);
-        let expr = &file.node.documents[0].node.expressions[0];
-        match &expr.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(s) if s == "----"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_empty_file() {
-        let file = parse("").unwrap();
-        assert_eq!(file.node.documents.len(), 1);
-        assert_eq!(file.node.documents[0].node.expressions.len(), 0);
-    }
-
-    #[test]
-    fn test_whitespace_only_file() {
-        let file = parse("   \n\n   ").unwrap();
-        assert_eq!(file.node.documents.len(), 1);
-        assert_eq!(file.node.documents[0].node.expressions.len(), 0);
-    }
-
-    #[test]
-    fn test_multi_expression_with_call() {
-        // Simulates include-as-expression followed by a dict
-        let file = parse("[call $include \"lib.llt\"]\n\n[result: 42]").unwrap();
-        assert_eq!(file.node.documents.len(), 1);
-        let doc = &file.node.documents[0];
-        assert_eq!(doc.node.expressions.len(), 2);
-        assert!(matches!(&doc.node.expressions[0].node, Expr::Call { .. }));
-        assert!(matches!(&doc.node.expressions[1].node, Expr::Dict(_)));
-    }
-
-    #[test]
-    fn test_document_separator_with_whitespace() {
-        let file = parse("[x: 1]\n\n---\n\n[y: 2]").unwrap();
-        assert_eq!(file.node.documents.len(), 2);
-    }
-
-    #[test]
-    fn test_file_display() {
-        let file = parse("[x: 1]\n---\n[y: 2]").unwrap();
-        let display = format!("{}", file.node);
-        assert!(display.contains("---"));
-    }
-
-    #[test]
-    fn test_document_with_pipeline_variable() {
-        let file = parse("[data: 1]\n---\n[result: $$.data]").unwrap();
-        assert_eq!(file.node.documents.len(), 2);
-        let expr = &file.node.documents[1].node.expressions[0];
-        match &expr.node {
-            Expr::Dict(entries) => {
-                assert!(matches!(
-                    &entries[0].node.value.node,
-                    Expr::DotAccess { expr, field }
-                    if matches!(&expr.node, Expr::VarRef(n) if n == "$") && field == "data"
-                ));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_mixed_positional_and_named_in_dict() {
-        let ast = parse_ok("[a key: val b]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
-                assert!(entries[0].node.key.is_none());
-                assert!(entries[1].node.key.is_some());
-                assert!(entries[2].node.key.is_none());
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_mixed_positional_and_named_in_call() {
-        let ast = parse_ok("[call $f key: 1 $x]");
-        match &ast.node {
+    fn test_dot_access_inside_call() {
+        // [call $fn $a.b]
+        let output = parse2("[call $fn $a.b]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Call {
-                args, named_args, ..
+                func,
+                args,
+                named_args,
             } => {
+                match &func.node {
+                    Expr::VarRef(name) => assert_eq!(name, "fn"),
+                    other => panic!("expected VarRef for func, got {other:?}"),
+                }
                 assert_eq!(args.len(), 1);
-                assert_eq!(named_args.len(), 1);
+                match &args[0].node {
+                    Expr::DotAccess { expr, field } => {
+                        assert_eq!(field, "b");
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "a"),
+                            other => panic!("expected VarRef, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected DotAccess, got {other:?}"),
+                }
+                assert_eq!(named_args.len(), 0);
             }
             other => panic!("expected Call, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_error_duplicate_key() {
-        let err = parse_err("[name: Alice  name: Bob]");
-        assert!(
-            err.message.contains("duplicate key"),
-            "got: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_duplicate_auto_indexed_values_ok() {
-        // Auto-indexed entries with same value are NOT duplicates
-        let ast = parse_ok("[a b a]");
-        match &ast.node {
+    fn test_dot_access_inside_dict() {
+        // [x: $y.z]
+        let output = parse2("[x: $y.z]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
             Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
+                assert_eq!(entries.len(), 1);
+                assert!(entries[0].node.key.is_some());
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "x"),
+                    other => panic!("expected key 'x', got {other:?}"),
+                }
+                match &entries[0].node.value.node {
+                    Expr::DotAccess { expr, field } => {
+                        assert_eq!(field, "z");
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "y"),
+                            other => panic!("expected VarRef, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected DotAccess, got {other:?}"),
+                }
             }
             other => panic!("expected Dict, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_error_duplicate_int_key() {
-        let err = parse_err("[0: zero  0: nil]");
+    fn test_range_access_both() {
+        let output = parse2("$a[2..5]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::RangeAccess { expr, start, end } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(start.is_some());
+                match &start.as_ref().unwrap().node {
+                    Expr::Int(n) => assert_eq!(*n, 2),
+                    other => panic!("expected Int(2) for start, got {other:?}"),
+                }
+                assert!(end.is_some());
+                match &end.as_ref().unwrap().node {
+                    Expr::Int(n) => assert_eq!(*n, 5),
+                    other => panic!("expected Int(5) for end, got {other:?}"),
+                }
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_range_access_unbounded() {
+        let output = parse2("$a[..]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::RangeAccess { expr, start, end } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(start.is_none());
+                assert!(end.is_none());
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_range_access_start_only() {
+        let output = parse2("$a[2..]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::RangeAccess { expr, start, end } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(start.is_some());
+                match &start.as_ref().unwrap().node {
+                    Expr::Int(n) => assert_eq!(*n, 2),
+                    other => panic!("expected Int(2) for start, got {other:?}"),
+                }
+                assert!(end.is_none());
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_range_access_end_only() {
+        let output = parse2("$a[..5]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::RangeAccess { expr, start, end } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef, got {other:?}"),
+                }
+                assert!(start.is_none());
+                assert!(end.is_some());
+                match &end.as_ref().unwrap().node {
+                    Expr::Int(n) => assert_eq!(*n, 5),
+                    other => panic!("expected Int(5) for end, got {other:?}"),
+                }
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_doc_separator() {
+        let output = parse2("[a: 1]\n---\n[b: 2]").expect("parse failed");
+        assert_eq!(output.file.node.documents.len(), 2);
+
+        // First document
+        let doc1 = &output.file.node.documents[0].node;
+        assert_eq!(doc1.expressions.len(), 1);
+        match &doc1.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a', got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc1, got {other:?}"),
+        }
+
+        // Second document
+        let doc2 = &output.file.node.documents[1].node;
+        assert_eq!(doc2.expressions.len(), 1);
+        match &doc2.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "b"),
+                    other => panic!("expected key 'b', got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comment_leading() {
+        let output = parse2("# comment\n[a: 1]").expect("parse failed");
+        assert!(!output.leading_comments.is_empty());
+        // Comments are attached by offset of next significant token
+        // We just verify that we have at least one comment collected
+        let has_comment = output
+            .leading_comments
+            .values()
+            .any(|v| v.iter().any(|c| c.contains("comment")));
         assert!(
-            err.message.contains("duplicate key"),
-            "got: {}",
-            err.message
+            has_comment,
+            "expected to find 'comment' in leading_comments"
         );
     }
 
     #[test]
-    fn test_error_multiple_variadics() {
-        let err = parse_err("[fn [...a ...b] $a]");
-        assert!(
-            err.message.contains("multiple variadic"),
-            "got: {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn test_error_param_after_variadic() {
-        let err = parse_err("[fn [...rest x] $x]");
+    fn test_fn_param_variadic_not_last() {
+        // [...args x] — variadic param not last
+        let err = parse2("[fn [...args x] $x]").unwrap_err();
         assert!(
             err.message.contains("parameter after variadic"),
-            "got: {}",
+            "expected error about param after variadic, got: {}",
             err.message
         );
     }
 
     #[test]
-    fn test_variadic_last_ok() {
-        let ast = parse_ok("[fn [x y ...rest] $x]");
-        match &ast.node {
-            Expr::Fn { params, .. } => {
+    fn test_fn_multiple_variadic() {
+        // [...args ...rest] — multiple variadic params
+        let err = parse2("[fn [...args ...rest] $x]").unwrap_err();
+        assert!(
+            err.message.contains("multiple variadic"),
+            "expected error about multiple variadic params, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_fn_variadic_with_annotation_errors() {
+        // [...args@Int] — annotation on variadic param
+        let err = parse2("[fn [...args@Int] $args]").unwrap_err();
+        assert!(
+            err.message
+                .contains("annotations on variadic parameters are not allowed"),
+            "expected error about variadic annotation, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_range_outside_bracket_access() {
+        // .. outside brackets is a bare word per lexer rules (Range only emitted inside brackets)
+        let output = parse2("1..5").expect("should parse (.. is bare word outside brackets)");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 2); // Int(1) and BareWord("..5")
+    }
+
+    #[test]
+    fn test_doc_separator_inside_bracket() {
+        // --- inside a bracket expression
+        let err = parse2("[---]").unwrap_err();
+        assert!(
+            err.message
+                .contains("document separator cannot appear inside"),
+            "expected error about doc separator inside bracket, got: {}",
+            err.message
+        );
+    }
+
+    // --- Tests added for review findings (parser-core-c1) ---
+
+    #[test]
+    fn test_whitespace_prevents_dot_access() {
+        // "$a .b" has whitespace before dot; lexer emits Dot as non-access-context bare word ".b"
+        let output = parse2("$a .b").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(
+            doc.expressions.len(),
+            2,
+            "expected 2 expressions (VarRef 'a' + BareWord '.b'), got {}",
+            doc.expressions.len()
+        );
+        match &doc.expressions[0].node {
+            Expr::VarRef(name) => assert_eq!(name, "a"),
+            other => panic!("expected VarRef('a') as first expr, got {other:?}"),
+        }
+        // Second expression: the ".b" bare word (not a DotAccess)
+        assert!(
+            !matches!(&doc.expressions[1].node, Expr::DotAccess { .. }),
+            "second expression should not be DotAccess — whitespace prevents dot access"
+        );
+    }
+
+    #[test]
+    fn test_whitespace_prevents_bracket_access() {
+        // "$a [0]" has whitespace before "["; lexer emits OpenBracket (not BracketAccess)
+        let output = parse2("$a [0]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(
+            doc.expressions.len(),
+            2,
+            "expected 2 expressions (VarRef 'a' + Dict containing Int(0)), got {}",
+            doc.expressions.len()
+        );
+        match &doc.expressions[0].node {
+            Expr::VarRef(name) => assert_eq!(name, "a"),
+            other => panic!("expected VarRef('a') as first expr, got {other:?}"),
+        }
+        match &doc.expressions[1].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert!(matches!(&entries[0].node.value.node, Expr::Int(0)));
+            }
+            other => panic!("expected Dict([Int(0)]) as second expr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_params_mixed() {
+        // [fn [x y@Int ...rest] $x] — simple + annotated + variadic
+        let output = parse2("[fn [x y@Int ...rest] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, body, .. } => {
                 assert_eq!(params.len(), 3);
+                // param 0: simple "x"
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_none());
                 assert!(!params[0].node.variadic);
+                // param 1: annotated "y@Int"
+                assert_eq!(params[1].node.name, "y");
+                assert!(params[1].node.annotation.is_some());
+                match &params[1].node.annotation.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Int"),
+                    other => panic!("expected Simple(Int) annotation, got {other:?}"),
+                }
                 assert!(!params[1].node.variadic);
+                // param 2: variadic "...rest"
+                assert_eq!(params[2].node.name, "rest");
                 assert!(params[2].node.variadic);
+                assert!(params[2].node.annotation.is_none());
+                // body
+                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
             }
             other => panic!("expected Fn, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_line_table_single_line() {
-        let lt = LineTable::new("hello");
-        let pos = lt.offset_to_position(0);
-        assert_eq!(pos.line, 1);
-        assert_eq!(pos.column, 1);
-        let pos = lt.offset_to_position(4);
-        assert_eq!(pos.line, 1);
-        assert_eq!(pos.column, 5);
-    }
-
-    #[test]
-    fn test_line_table_multi_line() {
-        let lt = LineTable::new("ab\ncd\nef");
-        // 'a' = offset 0 -> line 1, col 1
-        assert_eq!(
-            lt.offset_to_position(0),
-            Position {
-                offset: 0,
-                line: 1,
-                column: 1
-            }
-        );
-        // 'c' = offset 3 -> line 2, col 1
-        assert_eq!(
-            lt.offset_to_position(3),
-            Position {
-                offset: 3,
-                line: 2,
-                column: 1
-            }
-        );
-        // 'e' = offset 6 -> line 3, col 1
-        assert_eq!(
-            lt.offset_to_position(6),
-            Position {
-                offset: 6,
-                line: 3,
-                column: 1
-            }
-        );
-        // 'f' = offset 7 -> line 3, col 2
-        assert_eq!(
-            lt.offset_to_position(7),
-            Position {
-                offset: 7,
-                line: 3,
-                column: 2
-            }
-        );
-    }
-
-    #[test]
-    fn test_line_table_offset_on_newline() {
-        let lt = LineTable::new("ab\ncd");
-        // '\n' = offset 2 -> still on line 1, column 3
-        assert_eq!(
-            lt.offset_to_position(2),
-            Position {
-                offset: 2,
-                line: 1,
-                column: 3
-            }
-        );
-    }
-
-    #[test]
-    fn test_line_table_empty() {
-        let lt = LineTable::new("");
-        let pos = lt.offset_to_position(0);
-        assert_eq!(pos.line, 1);
-        assert_eq!(pos.column, 1);
-    }
-
-    #[test]
-    fn test_parse_expression_returns_last() {
-        let ast = parse_expression("[a: 1]\n[b: 2]").unwrap();
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(
-                    matches!(&entries[0].node.key.as_ref().unwrap().node, Expr::Str(ref s) if s == "b")
-                );
-                assert!(matches!(&entries[0].node.value.node, Expr::Int(2)));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_expression_empty_input() {
-        let ast = parse_expression("").unwrap();
-        // Empty input should return an empty dict
-        assert!(
-            matches!(&ast.node, Expr::Dict(entries) if entries.is_empty()),
-            "expected empty Dict for empty input, got: {:?}",
-            ast.node
-        );
-    }
-
-    #[test]
-    fn test_bracket_access_with_string_key() {
-        let ast = parse_ok(r#"[$data["key"]]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::BracketAccess { expr, key } => {
-                        assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "data"));
-                        assert!(matches!(&key.node, Expr::Str(ref s) if s == "key"));
-                    }
-                    other => panic!("expected BracketAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_bracket_access_with_var_ref_key() {
-        let ast = parse_ok("[$data[$var]]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.value.node {
-                    Expr::BracketAccess { expr, key } => {
-                        assert!(matches!(&expr.node, Expr::VarRef(ref s) if s == "data"));
-                        assert!(matches!(&key.node, Expr::VarRef(ref s) if s == "var"));
-                    }
-                    other => panic!("expected BracketAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_quoted_string_as_key() {
-        let ast = parse_ok(r#"["my key": value]"#);
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                let key = entries[0].node.key.as_ref().unwrap();
-                assert!(matches!(&key.node, Expr::Str(ref s) if s == "my key"));
-                assert!(matches!(&entries[0].node.value.node, Expr::Str(ref s) if s == "value"));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    // -- Rest entries --
-
-    #[test]
-    fn test_rest_entry_anonymous() {
-        let ast = parse_ok("[a: 1 ...]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-                assert!(matches!(&entries[1].node.value.node, Expr::Rest(None)));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_rest_entry_named() {
-        let ast = parse_ok("[a: 1 ...extra]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2);
-                assert!(
-                    matches!(&entries[1].node.value.node, Expr::Rest(Some(ref n)) if n == "extra")
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_rest_entry_only() {
-        let ast = parse_ok("[...]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Rest(None)));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_rest_entry_after_keyed_entries_allowed() {
-        let ast = parse_ok("[name: String  age: Number ...]");
-        match &ast.node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 3);
-                assert!(entries[0].node.key.is_some());
-                assert!(entries[1].node.key.is_some());
-                assert!(matches!(&entries[2].node.value.node, Expr::Rest(None)));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_rest_in_type_context() {
-        let ast = parse_ok("[type [name: String ...]]");
-        match &ast.node {
-            Expr::TypeAlias(inner) => match &inner.node {
-                Expr::Dict(entries) => {
-                    assert_eq!(entries.len(), 2);
-                    assert!(matches!(&entries[1].node.value.node, Expr::Rest(None)));
-                }
-                other => panic!("expected Dict, got {other:?}"),
-            },
-            other => panic!("expected TypeAlias, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_rest_named_in_type_context() {
-        let ast = parse_ok("[type [name: String ...rest]]");
-        match &ast.node {
-            Expr::TypeAlias(inner) => match &inner.node {
-                Expr::Dict(entries) => {
-                    assert_eq!(entries.len(), 2);
-                    assert!(
-                        matches!(&entries[1].node.value.node, Expr::Rest(Some(ref n)) if n == "rest")
-                    );
-                }
-                other => panic!("expected Dict, got {other:?}"),
-            },
-            other => panic!("expected TypeAlias, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_annotation_bracket_special_form_rejected() {
-        let result = parse("[fn [x@[call $f $x]] $x]");
-        assert!(
-            result.is_err(),
-            "special form in annotation bracket should be rejected"
-        );
-    }
-
-    #[test]
-    fn test_annotation_bracket_dict_entries_accepted() {
-        let result = parse("[fn [x@[type: Number  default: 0]] $x]");
-        assert!(
-            result.is_ok(),
-            "dict entries in annotation bracket should be accepted"
-        );
-    }
-
-    #[test]
-    fn test_annotation_bracket_rest_entry_with_type_key_rejected() {
-        let result = parse("[fn [x@[type: Int  ...rest]] $x]");
-        assert!(
-            result.is_err(),
-            "rest entry alongside type: key in annotation bracket should be rejected"
-        );
-    }
-
-    #[test]
-    fn test_annotation_bracket_rest_entry_without_type_key_allowed() {
-        let result = parse("[fn [x@[default: 0  ...rest]] $x]");
-        assert!(
-            result.is_ok(),
-            "rest entry without type: key in annotation bracket should be allowed: {:?}",
-            result.err()
-        );
-    }
-
-    #[test]
-    fn test_type_assert_special_form_rejected() {
-        let result = parse("[@[call $f $x] 42]");
-        assert!(
-            result.is_err(),
-            "special form in type assert annotation should be rejected"
-        );
-    }
-
-    #[test]
-    fn test_line_table_unix_endings() {
-        let table = LineTable::new("abc\ndef\nghi");
-        assert_eq!(
-            table.offset_to_position(0),
-            Position {
-                offset: 0,
-                line: 1,
-                column: 1
-            }
-        );
-        assert_eq!(
-            table.offset_to_position(4),
-            Position {
-                offset: 4,
-                line: 2,
-                column: 1
-            }
-        );
-        assert_eq!(
-            table.offset_to_position(5),
-            Position {
-                offset: 5,
-                line: 2,
-                column: 2
-            }
-        );
-        assert_eq!(
-            table.offset_to_position(8),
-            Position {
-                offset: 8,
-                line: 3,
-                column: 1
-            }
-        );
-    }
-
-    #[test]
-    fn test_line_table_crlf_endings() {
-        let table = LineTable::new("abc\r\ndef\r\nghi");
-        assert_eq!(
-            table.offset_to_position(0),
-            Position {
-                offset: 0,
-                line: 1,
-                column: 1
-            }
-        );
-        assert_eq!(
-            table.offset_to_position(5),
-            Position {
-                offset: 5,
-                line: 2,
-                column: 1
-            }
-        );
-        assert_eq!(
-            table.offset_to_position(6),
-            Position {
-                offset: 6,
-                line: 2,
-                column: 2
-            }
-        );
-        assert_eq!(
-            table.offset_to_position(10),
-            Position {
-                offset: 10,
-                line: 3,
-                column: 1
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_crlf_multiline() {
-        let input = "[x: 1\r\ny: 2]";
-        let file = parse(input).unwrap();
-        let doc = &file.node.documents[0].node;
-        assert_eq!(doc.expressions.len(), 1);
+    fn test_fn_both_annotations() {
+        // [fn@Number [x@Int] $x] — return annotation + annotated param
+        let output = parse2("[fn@Number [x@Int] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
-            Expr::Dict(entries) => assert_eq!(entries.len(), 2),
+            Expr::Fn {
+                params,
+                return_ann,
+                body,
+                ..
+            } => {
+                // Return annotation
+                assert!(return_ann.is_some());
+                match &return_ann.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Number"),
+                    other => panic!("expected Simple(Number) return annotation, got {other:?}"),
+                }
+                // Param
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_some());
+                match &params[0].node.annotation.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Int"),
+                    other => panic!("expected Simple(Int) param annotation, got {other:?}"),
+                }
+                assert!(!params[0].node.variadic);
+                // Body
+                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_on_dict_literal() {
+        // "[x: 1].x" — dot access immediately after closing bracket (no whitespace)
+        // The lexer emits Dot (not BareWord) after ']' since CloseBracket is in is_access_context.
+        let output = parse2("[x: 1].x").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(
+            doc.expressions.len(),
+            1,
+            "expected 1 expression (DotAccess)"
+        );
+        match &doc.expressions[0].node {
+            Expr::DotAccess { expr, field } => {
+                assert_eq!(field, "x");
+                match &expr.node {
+                    Expr::Dict(entries) => {
+                        assert_eq!(entries.len(), 1);
+                        match &entries[0].node.key.as_ref().unwrap().node {
+                            Expr::Str(s) => assert_eq!(s, "x"),
+                            other => panic!("expected key 'x', got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Dict as DotAccess target, got {other:?}"),
+                }
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comment_trailing() {
+        // "[a: 1] # trailing comment" — comment on same line as dict → trailing
+        let output = parse2("[a: 1] # trailing comment").expect("parse failed");
+        assert!(
+            !output.trailing_comments.is_empty(),
+            "expected at least one trailing comment"
+        );
+        let has_comment = output
+            .trailing_comments
+            .values()
+            .any(|c| c.contains("trailing comment"));
+        assert!(
+            has_comment,
+            "expected to find 'trailing comment' in trailing_comments, got: {:?}",
+            output.trailing_comments
+        );
+    }
+
+    #[test]
+    fn test_range_in_nested_context() {
+        // "[x: $y[2..5]]" — range access as dict value
+        let output = parse2("[x: $y[2..5]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "x"),
+                    other => panic!("expected key 'x', got {other:?}"),
+                }
+                match &entries[0].node.value.node {
+                    Expr::RangeAccess { expr, start, end } => {
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "y"),
+                            other => panic!("expected VarRef('y'), got {other:?}"),
+                        }
+                        assert!(start.is_some());
+                        match &start.as_ref().unwrap().node {
+                            Expr::Int(n) => assert_eq!(*n, 2),
+                            other => panic!("expected Int(2) for start, got {other:?}"),
+                        }
+                        assert!(end.is_some());
+                        match &end.as_ref().unwrap().node {
+                            Expr::Int(n) => assert_eq!(*n, 5),
+                            other => panic!("expected Int(5) for end, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected RangeAccess as dict value, got {other:?}"),
+                }
+            }
             other => panic!("expected Dict, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_parse_crlf_multi_document() {
-        let input = "[x: 1]\r\n---\r\n[y: 2]";
-        let file = parse(input).unwrap();
-        assert_eq!(file.node.documents.len(), 2);
+    fn test_multiple_doc_separators() {
+        // Three documents separated by two ---
+        let output = parse2("[a: 1]\n---\n[b: 2]\n---\n[c: 3]").expect("parse failed");
+        assert_eq!(
+            output.file.node.documents.len(),
+            3,
+            "expected 3 documents, got {}",
+            output.file.node.documents.len()
+        );
+
+        // Document 1: [a: 1]
+        let doc1 = &output.file.node.documents[0].node;
+        assert_eq!(doc1.expressions.len(), 1);
+        match &doc1.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "a"),
+                    other => panic!("expected key 'a' in doc1, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc1, got {other:?}"),
+        }
+
+        // Document 2: [b: 2]
+        let doc2 = &output.file.node.documents[1].node;
+        assert_eq!(doc2.expressions.len(), 1);
+        match &doc2.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "b"),
+                    other => panic!("expected key 'b' in doc2, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc2, got {other:?}"),
+        }
+
+        // Document 3: [c: 3]
+        let doc3 = &output.file.node.documents[2].node;
+        assert_eq!(doc3.expressions.len(), 1);
+        match &doc3.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "c"),
+                    other => panic!("expected key 'c' in doc3, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict in doc3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_empty_params() {
+        // [fn [] 42] — fn with explicit empty param list, body Int(42)
+        let output = parse2("[fn [] 42]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn {
+                params,
+                body,
+                return_ann,
+                desugared,
+            } => {
+                assert_eq!(params.len(), 0, "expected empty param list");
+                assert!(matches!(&body.node, Expr::Int(42)));
+                assert!(return_ann.is_none());
+                assert!(!desugared);
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_param_span() {
+        // [fn [x@Int] $x] — verify param[0] span covers "x@Int"
+        // "[fn [x@Int] $x]"
+        //  0123456789...
+        //  offset 5 = 'x', offset 6 = '@', offset 7..9 = "Int"
+        let output = parse2("[fn [x@Int] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, .. } => {
+                assert_eq!(params.len(), 1);
+                let param_span = params[0].span;
+                assert_eq!(
+                    param_span.start.offset, 5,
+                    "expected param span to start at offset 5 ('x'), got {}",
+                    param_span.start.offset
+                );
+                assert!(
+                    param_span.end.offset > 9,
+                    "expected param span end > 9 (includes '@Int'), got {}",
+                    param_span.end.offset
+                );
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicate_key() {
+        let err = parse2("[a: 1  a: 2]").unwrap_err();
+        assert!(err.message.contains("duplicate key"));
+        assert!(err.message.contains("\"a\""));
+    }
+
+    #[test]
+    fn test_empty_document_explicit() {
+        // --- is the LLT document separator
+        let output = parse2("---\n[a: 1]").expect("parse failed");
+        assert_eq!(output.file.node.documents.len(), 2);
+        assert_eq!(output.file.node.documents[0].node.expressions.len(), 0);
+        assert_eq!(output.file.node.documents[1].node.expressions.len(), 1);
+    }
+
+    #[test]
+    fn test_annotated_bare_word() {
+        let expr = parse_expr("word@Int");
+        match &expr.node {
+            Expr::Annotated { name, annotation } => {
+                assert_eq!(name, "word");
+                match &annotation.node {
+                    Annotation::Simple(s) => assert_eq!(s, "Int"),
+                    other => panic!("expected Simple annotation, got {other:?}"),
+                }
+            }
+            other => panic!("expected Annotated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comment_collection() {
+        let output = parse2("# my comment\n[a: 1]").expect("parse failed");
+        assert!(
+            !output.leading_comments.is_empty(),
+            "expected leading_comments to be non-empty"
+        );
+        let has_comment = output
+            .leading_comments
+            .values()
+            .any(|comments| comments.iter().any(|c| c.contains("my comment")));
+        assert!(
+            has_comment,
+            "expected to find 'my comment' in leading_comments, got: {:?}",
+            output.leading_comments
+        );
     }
 }

@@ -51,13 +51,8 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 
 - [ ] Document parser2 newlines-after-dot behavior divergence from pest — pest's compound-atomic `${}` rule forbids newlines after `.` in access chains; parser2's `skip_whitespace_tokens` skips newlines. Either fix to match pest or document as an intentional extension ("line continuation"). (`src/parser2.rs:994-995`) [Minor, grammar-architect C66]
 
-### parser-core-c3: Phase 2c-3 — Pest Cutover
-
-Remove pest and complete the migration. **Depends on:** `parser-core-c2` (all corpus tests passing).
-
-- [ ] Remove `src/grammar.pest`; remove `pest` and `pest_derive` from `Cargo.toml`
-- [ ] Remove 64 MB worker thread stack workaround — coordinate with `iterative-eval` sprint (both target the same stack overflow root cause)
-- [ ] Benchmark parse time on large inputs; confirm ≥ pest performance on the corpus files
+- [ ] Remove 64 MB worker thread stack workaround — coordinate with `iterative-eval` sprint; parser is now iterative but eval.rs still recursive (`src/main.rs`) [Deferred from parser-core-c3]
+- [ ] Benchmark iterative parser parse time on large inputs; confirm ≥ pest performance [Deferred from parser-core-c3]
 
 ### parser-formatter: Phase 3 — AST-Based Formatter
 
