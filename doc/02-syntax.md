@@ -322,7 +322,7 @@ $x . y                   # $x is a VarRef, ". y" is not dot access (whitespace b
 | `$a.b` | `VarRef("a")`, `Dot`, `BareWord("b")` | Dot access |
 | `a.b` | `BareWord("a.b")` | String containing a dot |
 | `$a .b` | `VarRef("a")`, `BareWord(".b")` | VarRef then separate string |
-| `$a[0].b` | `VarRef("a")`, `BracketAccess(0)`, `Dot`, `BareWord("b")` | Bracket then dot |
+| `$a[0].b` | `VarRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket`, `Dot`, `BareWord("b")` | Bracket then dot |
 
 #### `[` Bracket Access
 
@@ -341,10 +341,10 @@ $data [5]                # Two separate things: VarRef("data"), then list [0: 5]
 
 | Input | Tokens | Interpretation |
 |-------|--------|----------------|
-| `$a[0]` | `VarRef("a")`, `BracketAccess(0)` | Bracket access |
+| `$a[0]` | `VarRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket` | Bracket access |
 | `$a [0]` | `VarRef("a")`, `OpenBracket`, `Int(0)`, `CloseBracket` | VarRef then new list |
-| `$a[0][1]` | `VarRef("a")`, `BracketAccess(0)`, `BracketAccess(1)` | Chained bracket access |
-| `$a.b[0]` | `VarRef("a")`, `Dot`, `BareWord("b")`, `BracketAccess(0)` | Dot then bracket |
+| `$a[0][1]` | `VarRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket`, `BracketAccess`, `Int(1)`, `CloseBracket` | Chained bracket access |
+| `$a.b[0]` | `VarRef("a")`, `Dot`, `BareWord("b")`, `BracketAccess`, `Int(0)`, `CloseBracket` | Dot then bracket |
 
 #### `..` Range Operator
 

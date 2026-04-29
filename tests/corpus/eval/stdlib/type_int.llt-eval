@@ -1,0 +1,3 @@
+[call $int? 42]
+===
+Bool(true)

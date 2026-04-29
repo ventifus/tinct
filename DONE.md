@@ -1862,3 +1862,33 @@ Consolidated from: stdlib-missing-core, stdlib-convenience
 - [ ] `map-indexed` / `map-keys` — indexed mapping and key transformation (Jsonnet)
 - [ ] `sort-on` — sort by key-extraction function instead of comparator (Jsonnet + Nix)
 - [ ] `flip`, `abs`, `sign`, `clamp` — small composable primitives (Nix + Jsonnet; `const` moved to stdlib-pre-seq)
+
+### stdlib-additions-b: Convenience Functions and Utilities (Part 2)
+
+Consolidated from: stdlib-convenience-b, stdlib-type-predicates, stdlib-numeric, stdlib-primitives, stdlib-string-ops
+
+- [x] `unzip` — inverse of zip, split list of pairs into pair of lists [Nit, stdlib-author C31]
+- [x] `transpose` — flip rows/columns of 2D structure [Nit, stdlib-author C31]
+- [ ] `flatten-all` or depth parameter for `flatten` — current `flatten` only goes one level deep; add recursive variant or optional depth param [Nit, stdlib-author C31]
+- [ ] `range-step` — range with step parameter; `$range` only supports `[start]` and `[start end]` with step=1 [Minor, stdlib-author C31]
+- [x] `take-while`, `drop-while` — take/drop elements while predicate holds; implementable via Seq constructor pattern like `filter` [Minor, stdlib-author C31]
+- [x] Variadic `all-of`/`any-of` — current `and`/`or` take exactly 2 args; add list-based variants `[fn [preds] [call $all? $identity $preds]]` (covered by existing any?/all? with $identity) [Nit, stdlib-author C31]
+- [x] `is-int?`, `is-str?`, `is-float?`, `is-bool?`, `is-dict?`, `is-fn?` — type predicate wrappers over `$type-of` (Jsonnet pattern); all one-liners: `[fn [x] [call $= [call $type-of $x] Int]]` etc.
+- [ ] Runtime assertion guards at stdlib function entry with descriptive errors (Jsonnet pattern)
+- [x] `min`, `max`, `sum`, `product` — aggregate functions (stdlib-author review); all one-liners over `$fold`/`$reduce` (product implemented; min/max/sum already in stdlib-additions-a)
+- [x] `abs`, `sign`, `clamp` — numeric primitives (stdlib-author review); all one-liners using `$<`, `$-`, `$if`
+- [ ] Add `$has?` as Rust builtin — `has?` currently uses `$try` around bracket access, which forces the value (materializes it) to check existence. A Rust-native `$has?` would check `IndexMap::contains_key()` in O(1) without materializing the value. 2-arg: `[call $has? $dict $key]`. Unblocks lazy has-checking. (`src/builtins.rs`) [Minor, stdlib-author]
+- [ ] Add `$has?` Rust primitive design: must handle both String and Int key types (matching bracket access semantics), return Bool, never materialize the value thunk. (`src/builtins.rs`) [Minor, stdlib-author]
+- [ ] Add `substr` / `slice-str` Rust builtin for substring extraction (unblocks below)
+- [ ] `starts-with?`, `ends-with?` — string prefix/suffix tests
+- [ ] `chars` — string to character sequence
+- [x] `join` — sequence/dict of strings to single string with separator (already exists as Rust builtin)
+
+### parser-lexer: Phase 1 — Lexer Tokens
+
+Add whitespace-sensitive tokens to `src/lexer.rs`. See doc/whatif/parser-rewrite.md §Phase 1.
+
+- [x] Add `Token::BracketAccess` — emitted when `[` follows a value-ending token (EscapedRef, Identifier, CloseBracket, QuotedString, Int, Float, BoolLit) with no whitespace gap; detect via `last_significant_token` + span offset comparison (`src/lexer.rs`)
+- [x] Add `Token::ImmediateAt` — emitted when `@` follows an `Identifier` with no whitespace gap; same detection mechanism (`src/lexer.rs`)
+- [x] Replace four `has_whitespace_between` call sites in formatter with `Token::BracketAccess` match (`src/formatter.rs`)
+- [x] Update all `Token::OpenBracket` match sites to handle `BracketAccess` where needed (`src/formatter.rs`, `src/parser.rs`)

@@ -1,0 +1,3 @@
+[call $sign [call $- 0 10]]
+===
+Int(-1)

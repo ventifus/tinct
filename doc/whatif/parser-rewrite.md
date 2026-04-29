@@ -109,9 +109,11 @@ $a [0]  → EscapedRef("a"), OpenBracket, Int(0), CloseBracket
 
 Detection uses the existing `last_significant_token` tracking already in
 `src/lexer.rs:120-129`. A `[` is `BracketAccess` when `last_significant_token`
-is a value-ending token (CloseBracket, EscapedRef, Identifier, QuotedString,
-Int, Float, BoolLit) and there is no whitespace gap between the previous
-token's end offset and the current `[`'s start offset.
+is a value-ending token (CloseBracket, EscapedRef, BareWordAfterDot,
+QuotedString, Int, Float, BoolLit) and the `had_whitespace_before` flag is
+false. (Note: standalone `BareWord` is excluded — `call[0]` emits
+`OpenBracket`, not `BracketAccess`. Only `BareWordAfterDot` is value-ending
+for bracket-access purposes, since it already appears in an access chain.)
 
 Keywords (`call`, `fn`, `type`) remain `Token::Identifier`. They are contextual,
 not lexical: `[call: foo]` is a valid dict with key `"call"`; `[x call y]`
@@ -161,9 +163,9 @@ token type.
 
 **Annotated bare words** (`word@annotation`, compound-atomic in pest) are
 handled at the lexer level: when `@` follows an `Identifier` token with no
-whitespace gap (detected via span offset comparison, the same mechanism as
-`BracketAccess`), the lexer emits `Token::ImmediateAt` instead of
-`Token::At`. The parser treats `ImmediateAt` as the annotation separator in
+whitespace gap (detected via the `had_whitespace_before` flag, the same
+mechanism as `BracketAccess`), the lexer emits `Token::ImmediateAt` instead
+of `Token::At`. The parser treats `ImmediateAt` as the annotation separator in
 annotated bare-word context.
 
 `MAX_DEPTH` is checked on `stack.len()` before each push. This fires before

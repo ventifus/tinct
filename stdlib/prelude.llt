@@ -127,6 +127,29 @@ ceil: [fn [x] [call $builtin-sub 0 [call $floor [call $builtin-sub 0 $x]]]]
 # Inherently materializing: derived from arithmetic operations.
 trunc: [fn [x] [call $builtin-if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]
 
+# Absolute value: returns non-negative magnitude of a number.
+# Inherently materializing: derived from comparison and arithmetic.
+abs: [fn [x] [call $builtin-if [call $builtin-lt $x 0] [call $builtin-sub 0 $x] $x]]
+
+# Sign of a number: -1 for negative, 0 for zero, 1 for positive.
+# Inherently materializing: derived from comparison and arithmetic.
+sign: [fn [x]
+    [call $builtin-if [call $builtin-lt $x 0]
+        [call $builtin-sub 0 1]
+        [call $builtin-if [call $builtin-eq $x 0]
+            0
+            1]]]
+
+# Clamp a value between lo and hi bounds (inclusive).
+# Returns lo if x < lo, hi if x > hi, otherwise x.
+# Inherently materializing: derived from comparison operations.
+clamp: [fn [lo hi x]
+    [call $builtin-if [call $builtin-lt $x $lo]
+        $lo
+        [call $builtin-if [call $builtin-lt $hi $x]
+            $hi
+            $x]]]
+
 # ============================================================================
 # String (derived from str, split, builtin-filter, builtin-eq)
 # ============================================================================
@@ -370,6 +393,49 @@ sort-merge: [fn [cmp left right]
 # reduce, drop, map, filter are Rust-native builtins (dual-dispatch on Dict/Seq).
 # See src/builtins.rs for implementations.
 
+# Take elements from the beginning while predicate holds; stop at first failure.
+# Returns the longest prefix of xs where all elements satisfy pred.
+# Inherently materializing: must check elements until predicate fails.
+take-while: [fn [pred xs]
+    [call $builtin-if [call $seq? $xs]
+        [call $error "take-while: expected Dict, got Seq -- collect the Seq first"]
+        [call $take-while-impl $pred $xs [call $keys $xs] 0 []]]]
+
+take-while-impl: [fn [pred xs ks i acc]
+    [call $builtin-if [call $>= $i [call $length $ks]]
+        $acc
+        [call $take-while-check $pred $xs $ks $i $acc $ks[$i]]]]
+
+take-while-check: [fn [pred xs ks i acc current-key]
+    [call $builtin-if [call $pred $xs[$current-key]]
+        [call $take-while-impl $pred $xs $ks [call $builtin-add $i 1]
+            [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]
+        $acc]]
+
+# Drop elements from the beginning while predicate holds.
+# Returns the remaining suffix starting from the first element that fails pred.
+# Inherently materializing: must check elements until predicate fails.
+drop-while: [fn [pred xs]
+    [call $builtin-if [call $seq? $xs]
+        [call $error "drop-while: expected Dict, got Seq -- collect the Seq first"]
+        [call $drop-while-impl $pred $xs [call $keys $xs] 0 [] true]]]
+
+drop-while-impl: [fn [pred xs ks i acc dropping]
+    [call $builtin-if [call $>= $i [call $length $ks]]
+        $acc
+        [call $drop-while-check $pred $xs $ks $i $acc $dropping $ks[$i]]]]
+
+drop-while-check: [fn [pred xs ks i acc dropping current-key]
+    [call $builtin-if $dropping
+        [call $builtin-if [call $pred $xs[$current-key]]
+            [call $drop-while-impl $pred $xs $ks [call $builtin-add $i 1] $acc true]
+            [call $drop-while-impl $pred $xs $ks [call $builtin-add $i 1]
+                [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]
+                false]]
+        [call $drop-while-impl $pred $xs $ks [call $builtin-add $i 1]
+            [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]
+            false]]]
+
 # Apply a function to every [key value] pair, returning new values under same keys.
 map-entries: [fn [f xs] [call $map-entries-impl $f $xs [call $keys $xs] 0 []]]
 
@@ -569,6 +635,31 @@ walk-dict: [fn [f xs]
         []
         [call $keys $xs]]]
 
+# Unzip a list of pairs into a pair of lists.
+# Takes a list of 2-element dicts [0: a 1: b] and returns [a: [0: a0 1: a1 ...] b: [0: b0 1: b1 ...]].
+# Inherently materializing: must map over the entire collection.
+unzip: [fn [pairs]
+    [a: [call $builtin-map [fn [p] $p[0]] $pairs]
+     b: [call $builtin-map [fn [p] $p[1]] $pairs]]]
+
+# Transpose a 2D dict structure (flip rows and columns).
+# Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]].
+# All inner dicts must have the same keys.
+# Inherently materializing: must iterate over all rows and columns.
+transpose: [fn [rows]
+    [call $builtin-if [call $empty? $rows]
+        []
+        [call $transpose-impl $rows [call $keys [call $first [call $values $rows]]]]]]
+
+transpose-impl: [fn [rows col-keys]
+    [call $builtin-reduce
+        [fn [acc col-key]
+            [call $merge $acc
+                [call $make-entry $col-key
+                    [call $builtin-map [fn [row] $row[$col-key]] $rows]]]]
+        []
+        $col-keys]]
+
 # ============================================================================
 # Aggregates
 # ============================================================================
@@ -576,6 +667,10 @@ walk-dict: [fn [f xs]
 # Sum all elements of a numeric collection.
 # Inherently materializing: must reduce all elements.
 sum: [fn [xs] [call $builtin-reduce [fn [a b] [call $builtin-add $a $b]] 0 $xs]]
+
+# Product of all elements in a numeric collection.
+# Inherently materializing: must reduce all elements.
+product: [fn [xs] [call $builtin-reduce [fn [a b] [call $builtin-mul $a $b]] 1 $xs]]
 
 # Return the minimum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic min).
@@ -637,6 +732,21 @@ compose: [fn [f g] [fn [x] [call $f [call $g $x]]]]
 # Thread a value through a series of functions.
 # Usage: [call $-> $data $step1 $step2 $step3]
 ->: [fn [x ...stages] [call $builtin-reduce [fn [acc f] [call $f $acc]] $x $stages]]
+
+# ============================================================================
+# Type Predicates
+# ============================================================================
+
+# Type predicates check the runtime type of a value.
+# Each uses $type-of to inspect the type string.
+# Inherently materializing: $type-of must inspect the value.
+
+int?: [fn [x] [call $builtin-eq [call $type-of $x] Int]]
+str?: [fn [x] [call $builtin-eq [call $type-of $x] String]]
+float?: [fn [x] [call $builtin-eq [call $type-of $x] Float]]
+bool?: [fn [x] [call $builtin-eq [call $type-of $x] Bool]]
+dict?: [fn [x] [call $builtin-eq [call $type-of $x] Dict]]
+fn?: [fn [x] [call $builtin-eq [call $type-of $x] Function]]
 
 # ============================================================================
 # Error Handling

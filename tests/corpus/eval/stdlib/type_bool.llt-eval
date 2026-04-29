@@ -1,0 +1,3 @@
+[call $bool? true]
+===
+Bool(true)
