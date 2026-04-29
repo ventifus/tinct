@@ -1,0 +1,4 @@
+# foldr: empty input returns accumulator
+[call $foldr [fn [a b] [call $+ $a $b]] 0 []]
+===
+Int(0)

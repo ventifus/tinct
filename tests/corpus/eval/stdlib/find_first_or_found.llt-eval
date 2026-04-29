@@ -1,0 +1,4 @@
+# find-first-or: found - returns matching element
+[call $find-first-or [fn [x] [call $> $x 3]] 99 [1 2 3 4 5]]
+===
+Int(4)

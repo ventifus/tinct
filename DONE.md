@@ -1842,3 +1842,23 @@ Float arithmetic can silently produce NaN or Infinity values that propagate thro
 - [x] Fix `Substitution::apply_inner` missing visited-set check for RowVar resolution — TypeVar case (types.rs:258-260) adds the var name to `visited` before recursive resolution for cycle detection; RowVar case (types.rs:272-286) does not. A cyclic substitution `r -> Record({}, RowVar("r"))` would hit `MAX_APPLY_DEPTH` (256 recursive calls) rather than being caught by the visited set. Currently unexploitable because row var binding isn't implemented, but becomes a latent bug when row-unification lands. Fix: add `visited.insert(name.clone())` / `visited.remove(name)` around the RowVar resolution path. (`src/types.rs:272-286`) [Minor, computer-scientist C40] — fixed: `visited_rows: HashSet<String>` properly threaded through `apply_row` at types.rs:389-402 with insert/remove around recursive resolution (done in row-unification-b)
 - [x] Fix `check_call` zero-arity CALL-POLY returning original `ret` not `inst_ret` — verified sound in current code: in `check_call_with_scheme` (line 746), `ret` comes from `instantiate_scheme` at line 694 and is already instantiated; in `check_call` (line 868), `inst_ret` comes from `instantiate_at_level` and is also correctly instantiated; both paths are sound for zero-param functions. (`src/typecheck.rs:538`) [Minor, computer-scientist C40] — re-verified C52: sound in current code, was fixed during check_call_with_scheme split
 - [x] Fix doc/06-type-inference.md false claim about per-entry freshening in Pass 3 — line 497 states "Within a single letrec group during Pass 3, each entry's annotation-derived variables are instantiated independently, preventing collision." This is false: `resolve_type_name` creates `TypeVar("a", L)` for every `@a` annotation across all entries within the same letrec group, sharing the name in `state.levels`. Per-entry freshening only occurs after Pass 4 generalization + subsequent `instantiate_scheme`. This shared naming interacts with the `instantiate()` level-0 bug above to cause incorrect level lowering. Fix: correct the doc paragraph to describe the actual behavior. (`doc/06-type-inference.md:497`) [Minor, computer-scientist C40]
+
+### stdlib-additions-a: Core and Convenience Functions (Part 1)
+
+Consolidated from: stdlib-missing-core, stdlib-convenience
+
+- [x] `with-entries` — `entries | map(f) | from-entries` pipeline (jq pattern; depends on `from-entries` from stdlib-pre-seq)
+- [x] `partition` — single-pass split into matching/non-matching dicts (Nix + Dhall)
+- [x] `flat-map` / `concat-map` — `flatten (map f xs)`, monadic bind for collections (Jsonnet + jq)
+- [x] `find-first` / `find-first-or` — first element matching predicate, with default (Nix)
+- [x] `group-by` — group elements by key function, returning dict of lists (Nix)
+- [x] `deep-merge` — recursive merge for configuration overlays (Jsonnet, RFC 7396)
+- [x] `walk` — recursive bottom-up transform of all sub-values (jq)
+- [x] `sum`, `min`, `max`, `count` — aggregate functions (one-liners over fold)
+- [x] `contains?` / `elem?` — membership test
+- [x] `uniq` / `unique` — deduplicate collection
+- [x] `foldr` — right fold (Tinct only has left fold currently)
+- [ ] `zip-with` — generalized zip with combining function; define `zip` as special case (Nix)
+- [ ] `map-indexed` / `map-keys` — indexed mapping and key transformation (Jsonnet)
+- [ ] `sort-on` — sort by key-extraction function instead of comparator (Jsonnet + Nix)
+- [ ] `flip`, `abs`, `sign`, `clamp` — small composable primitives (Nix + Jsonnet; `const` moved to stdlib-pre-seq)

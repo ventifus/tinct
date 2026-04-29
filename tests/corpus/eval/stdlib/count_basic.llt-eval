@@ -1,0 +1,4 @@
+# count: count elements matching pred
+[call $count [fn [x] [call $> $x 3]] [1 2 3 4 5 6]]
+===
+Int(3)
