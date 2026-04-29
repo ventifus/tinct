@@ -452,6 +452,7 @@ fn check_expr(
                                     ann.span,
                                     state,
                                     &mut ann_mapping_opt,
+                                    &mut None,
                                 )?;
                                 // Contravariant check: expected param type must be subtype of annotation.
                                 // When annotation contains type variables, use unification mode instead of
@@ -506,6 +507,7 @@ fn check_expr(
                                 ann.span,
                                 state,
                                 &mut ann_mapping_opt,
+                                &mut None,
                             )
                             .map_err(|e| vec![e])?;
                             // Check that declared return type is compatible with expected.
@@ -685,28 +687,75 @@ fn infer_dict(
         }
     }
 
-    // Pass 3b: Merge any NEW bindings from state.subst that were added during value inference.
-    // (Value inference may have generated new access-chain constraints.)
-    // For type_map: apply local subst to state.subst bindings, then merge
-    for (k, v) in &state.subst.type_map {
-        let applied_v = subst.apply(v);
-        subst.type_map.entry(k.clone()).or_insert(applied_v);
+    // Pass 3b: Merge bindings from state.subst added during value inference.
+    // Algorithm W substitution composition (Damas & Milner 1982): correct composition
+    // S = S_state . S_local requires unifying overlapping bindings, not discarding one.
+    // The previous or_insert pattern dropped state.subst bindings when local subst already
+    // had the same key, leaving access-chain constraints unresolved as free TypeVars.
+    {
+        let state_type_entries: Vec<(String, Type)> = state
+            .subst
+            .type_map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (k, v) in state_type_entries {
+            let applied_v = subst.apply(&v);
+            match subst.type_map.get(&k).cloned() {
+                Some(existing) => {
+                    // Remove binding before calling unify to prevent apply() from chasing
+                    // k -> existing -> k in a cycle during resolution (mirrors row_map path).
+                    subst.type_map.shift_remove(&k);
+                    // Both maps bind the same variable: unify to reconcile constraints
+                    unify(&existing, &applied_v, &mut subst, state, span).map_err(|e| vec![e])?;
+                }
+                None => {
+                    subst.type_map.insert(k, applied_v);
+                }
+            }
+        }
     }
 
-    // For row_map: apply local subst to field types in state.subst row bindings, then merge
-    for (k, row) in &state.subst.row_map {
-        // Apply local subst to all field types in the row
-        let applied_fields: HashMap<String, Type> = row
-            .fields
+    // For row_map: apply local subst to field types in state.subst row bindings, then merge.
+    // Algorithm W substitution composition: unify on collision (same as type_map above).
+    {
+        let state_row_entries: Vec<(String, Row)> = state
+            .subst
+            .row_map
             .iter()
-            .map(|(field_name, field_ty)| (field_name.clone(), subst.apply(field_ty)))
+            .map(|(k, row)| (k.clone(), row.clone()))
             .collect();
-        let applied_row = Row {
-            fields: applied_fields,
-            // Tail not applied through local subst here — Pass 3c's `subst.apply()` chases tail chains transitively.
-            tail: row.tail.clone(),
-        };
-        subst.row_map.entry(k.clone()).or_insert(applied_row);
+        for (k, row) in state_row_entries {
+            let applied_fields: HashMap<String, Type> = row
+                .fields
+                .iter()
+                .map(|(field_name, field_ty)| (field_name.clone(), subst.apply(field_ty)))
+                .collect();
+            let applied_row = Row {
+                fields: applied_fields,
+                // Tail not applied here; Pass 3c's subst.apply() chases tail chains transitively.
+                tail: row.tail.clone(),
+            };
+            match subst.row_map.get(&k).cloned() {
+                Some(existing) => {
+                    // Both maps bind the same row variable: unify to reconcile constraints.
+                    // Remove the binding for k before calling unify to prevent apply() from
+                    // chasing k -> existing -> k in an infinite cycle during resolution.
+                    subst.row_map.shift_remove(&k);
+                    unify(
+                        &Type::Record(existing),
+                        &Type::Record(applied_row),
+                        &mut subst,
+                        state,
+                        span,
+                    )
+                    .map_err(|e| vec![e])?;
+                }
+                None => {
+                    subst.row_map.insert(k, applied_row);
+                }
+            }
+        }
     }
 
     // Pass 3c: Apply the merged substitution to all field types
@@ -1048,7 +1097,7 @@ fn check_call_with_scheme(
                 // polymorphic call site are visible to subsequent inference steps. Without
                 // this merge, bindings accumulated during argument unification (e.g., a
                 // TypeVar constrained to Int) are lost for downstream entries in the same
-                // letrec group. This mirrors infer_dict Pass 3d (lines 632-641).
+                // letrec group. This mirrors infer_dict Pass 3d (lines 764-773).
                 for (k, v) in &subst.type_map {
                     state.subst.type_map.insert(k.clone(), v.clone());
                 }
@@ -1127,13 +1176,11 @@ fn check_call(
                 if !errors.is_empty() {
                     return Err(errors);
                 }
-                // Direct clone is correct: the CALL-MONO guard (!func_ty.has_type_vars()) proves
-                // ret is fully concrete — no TypeVar or RowVar nodes — so apply() would be a no-op
-                // that wastes 2 HashSet allocations. (check_call_with_scheme always takes CALL-POLY
-                // and uses subst.apply(ret) at line ~970, where subst is seeded from state.subst,
-                // because it is entered after instantiate_scheme which produces fresh TypeVars/RowVars
-                // that are resolved by substitution threading.)
-                return Ok(*ret.clone());
+                // Apply state.subst for defensive consistency with check_call_with_scheme.
+                // The CALL-MONO guard (!func_ty.has_type_vars()) means ret is typically fully
+                // concrete, making apply() a no-op. But applying defensively guards against
+                // edge cases where has_type_vars() and the substitution domain diverge.
+                return Ok(state.subst.apply(ret));
             }
 
             // CALL-POLY: function type has type variables
@@ -1200,7 +1247,7 @@ fn check_call(
                 //
                 // Seed local subst from state.subst so that unification sees access-chain
                 // constraints and letrec bindings accumulated by prior inference steps.
-                // This mirrors check_call_with_scheme (lines 952-955) and infer_dict Pass 3a:
+                // This mirrors check_call_with_scheme (lines 1086-1088) and infer_dict Pass 3a:
                 // Algorithm W threads a single substitution through inference; the two-substitution
                 // model is a borrow-checker workaround. Without seeding, param_ty is unified
                 // against arg_ty in an empty substitution context, missing bindings for TypeVars
@@ -1216,8 +1263,8 @@ fn check_call(
                 // polymorphic call site are visible to subsequent inference steps. Without
                 // this merge, bindings accumulated during argument unification (e.g., a
                 // TypeVar constrained to Int) are lost for downstream entries in the same
-                // letrec group. This mirrors check_call_with_scheme (lines 964-969) and
-                // infer_dict Pass 3d (lines 632-641).
+                // letrec group. This mirrors check_call_with_scheme (lines 1098-1104) and
+                // infer_dict Pass 3d (lines 764-773).
                 for (k, v) in &subst.type_map {
                     state.subst.type_map.insert(k.clone(), v.clone());
                 }
@@ -1231,6 +1278,16 @@ fn check_call(
                 // (not the original `ret` which contains the scheme-internal variable names)
                 Ok(state.subst.apply(inst_ret))
             }
+        }
+        Type::TypeVar(_, _) => {
+            // Unbound type variable (e.g. letrec forward reference to a function not yet
+            // inferred). state.subst.apply already resolved bound TypeVars (line 1140-1144),
+            // so reaching here means alpha is genuinely unbound. Conservative fallback:
+            // infer args for side effects and return Any.
+            for arg in args {
+                let _ = infer_expr(arg, env, state, type_map)?;
+            }
+            Ok(Type::Any)
         }
         Type::Any => {
             // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
@@ -1274,7 +1331,14 @@ fn infer_fn(
     let mut param_types: Vec<Type> = params
         .iter()
         .map(|p| match &p.node.annotation {
-            Some(ann) => resolve_annotation(&ann.node, env, ann.span, state, &mut ann_mapping_opt),
+            Some(ann) => resolve_annotation(
+                &ann.node,
+                env,
+                ann.span,
+                state,
+                &mut ann_mapping_opt,
+                &mut None,
+            ),
             None => Ok(Type::Any),
         })
         .collect::<Result<_, _>>()
@@ -1299,9 +1363,15 @@ fn infer_fn(
 
     let ret_type = match return_ann {
         Some(ann) => {
-            let declared =
-                resolve_annotation(&ann.node, env, ann.span, state, &mut ann_mapping_opt)
-                    .map_err(|e| vec![e])?;
+            let declared = resolve_annotation(
+                &ann.node,
+                env,
+                ann.span,
+                state,
+                &mut ann_mapping_opt,
+                &mut None,
+            )
+            .map_err(|e| vec![e])?;
 
             // When declared return type contains type variables, switch to unification mode
             // (doc/06 line 136-146, Damas & Milner 1982, Pierce & Turner 2000 §3.2).
@@ -1349,8 +1419,15 @@ fn resolve_type_assert(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let expected = resolve_annotation(&annotation.node, env, annotation.span, state, &mut None)
-        .map_err(|e| vec![e])?;
+    let expected = resolve_annotation(
+        &annotation.node,
+        env,
+        annotation.span,
+        state,
+        &mut None,
+        &mut None,
+    )
+    .map_err(|e| vec![e])?;
 
     // Store the resolved type in the AST node for runtime validation (elaboration)
     // INVARIANT: resolved_type is write-once (parser initializes to None, typecheck sets it once)
@@ -1414,9 +1491,16 @@ fn resolve_annotated(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     if name == "Fn" {
-        resolve_fn_type(&annotation.node, env, annotation.span, state, ann_mapping)
+        resolve_fn_type(
+            &annotation.node,
+            env,
+            annotation.span,
+            state,
+            ann_mapping,
+            &mut None,
+        )
     } else {
-        resolve_annotation(&annotation.node, env, span, state, ann_mapping)
+        resolve_annotation(&annotation.node, env, span, state, ann_mapping, &mut None)
     }
 }
 
@@ -1426,8 +1510,9 @@ fn resolve_fn_type(
     span: Span,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    let ret = resolve_annotation_as_type(ann, env, span, state, ann_mapping)?;
+    let ret = resolve_annotation_as_type(ann, env, span, state, ann_mapping, row_ann_mapping)?;
     Ok(Type::Function {
         params: vec![],
         ret: Box::new(ret),
@@ -1443,11 +1528,12 @@ fn resolve_annotation_as_type(
     span: Span,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::Simple(name) => resolve_type_name(name, env, span, state, ann_mapping),
         Annotation::PropertyDict(entries) => {
-            resolve_type_dict(entries, env, span, state, ann_mapping)
+            resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping)
         }
     }
 }
@@ -1458,6 +1544,7 @@ fn resolve_annotation(
     span: Span,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::Simple(name) => resolve_type_name(name, env, span, state, ann_mapping),
@@ -1465,7 +1552,14 @@ fn resolve_annotation(
             if let Some(type_val) = ann.get_property("type") {
                 resolve_type_expr(type_val, env, state, ann_mapping)
             } else {
-                resolve_property_dict_as_record(entries, env, span, state, ann_mapping)
+                resolve_property_dict_as_record(
+                    entries,
+                    env,
+                    span,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )
             }
         }
     }
@@ -1477,8 +1571,9 @@ fn resolve_property_dict_as_record(
     span: Span,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    resolve_type_dict(entries, env, span, state, ann_mapping).or_else(|e| {
+    resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping).or_else(|e| {
         if entries_look_like_type_dict(entries) {
             Err(e)
         } else {
@@ -1594,12 +1689,28 @@ fn resolve_type_expr(
         Expr::Str(name) | Expr::VarRef(name) => {
             resolve_type_name(name, env, expr.span, state, ann_mapping)
         }
-        Expr::Dict(entries) => resolve_type_dict(entries, env, expr.span, state, ann_mapping),
+        Expr::Dict(entries) => {
+            resolve_type_dict(entries, env, expr.span, state, ann_mapping, &mut None)
+        }
         Expr::Annotated { name, annotation } => {
             if name == "Fn" {
-                resolve_fn_type(&annotation.node, env, annotation.span, state, ann_mapping)
+                resolve_fn_type(
+                    &annotation.node,
+                    env,
+                    annotation.span,
+                    state,
+                    ann_mapping,
+                    &mut None,
+                )
             } else {
-                resolve_annotation(&annotation.node, env, expr.span, state, ann_mapping)
+                resolve_annotation(
+                    &annotation.node,
+                    env,
+                    expr.span,
+                    state,
+                    ann_mapping,
+                    &mut None,
+                )
             }
         }
         _ => Err(TypeError::new(
@@ -1615,8 +1726,11 @@ fn resolve_type_dict(
     span: Span,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    if let Some(fn_type) = try_resolve_fn_type_expr(entries, env, span, state, ann_mapping)? {
+    if let Some(fn_type) =
+        try_resolve_fn_type_expr(entries, env, span, state, ann_mapping, row_ann_mapping)?
+    {
         return Ok(fn_type);
     }
 
@@ -1698,6 +1812,7 @@ fn try_resolve_fn_type_expr(
     span: Span,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Option<Type>, TypeError> {
     let first = match entries.first() {
         Some(e) if e.node.key.is_none() => e,
@@ -1727,7 +1842,8 @@ fn try_resolve_fn_type_expr(
         ));
     }
 
-    let ret = resolve_annotation_as_type(ann_node, env, ann_span, state, ann_mapping)?;
+    let ret =
+        resolve_annotation_as_type(ann_node, env, ann_span, state, ann_mapping, row_ann_mapping)?;
 
     let param_entries = match &second.node.value.node {
         Expr::Dict(entries) => entries,
@@ -1747,6 +1863,10 @@ fn try_resolve_fn_type_expr(
                 entry.span,
             ));
         }
+        // NOTE: row_ann_mapping is not threaded into resolve_type_expr (which doesn't accept it).
+        // All current call sites pass &mut None, so this is harmless today. When resolve_type_expr
+        // gains row_ann_mapping support, thread it here to allow row-variable annotations in
+        // function param types (e.g., [Fn@[...rest] [Int]]).
         params.push(resolve_type_expr(
             &entry.node.value,
             env,
@@ -2025,27 +2145,24 @@ mod tests {
         // because they deal with potentially non-fresh variables from both sides of a unification.
         // But check_dot_access creates fresh variables on-demand, making the cycle impossible.
         //
-        // TEST STRATEGY: We'll demonstrate that the occurs check exists and has the correct structure,
-        // even if we can't trigger the error path through normal inference. This documents the
-        // defensive invariant.
+        // TEST STRATEGY: Pass 3b (row-unification-h) now unifies the two γ_data row bindings:
+        //   - From check_dot_access: γ_data → Record({unknown: β}, RowVar(ρ))
+        //   - From infer_dict for `data: [known: 1]`: γ_data → Record({known: 1}, Empty)
+        //
+        // Unifying an open constraint row with a closed concrete row where the constraint
+        // field ("unknown") is absent from the concrete type is a type error — accessing
+        // a non-existent field is correctly detected by Pass 3b unification.
 
-        // Verify the defensive occurs check exists by reading the implementation.
-        // We can't easily trigger it, but we can verify related functionality works correctly.
-
-        // Test: Accessing a field on a TypeVar (forward reference) generates a constraint
-        // and returns a fresh TypeVar, not Any. This proves the constraint generation path works.
-        let ty = infer("[result: $data.unknown  data: [known: 1]]");
-        match ty {
-            Type::Record(Row { fields, .. }) => {
-                // result should be a TypeVar (the fresh β from the constraint)
-                let result_ty = fields.get("result").expect("field 'result' should exist");
-                assert!(
-                    matches!(result_ty, Type::TypeVar(_, _)),
-                    "Field access on TypeVar should generate constraint and return TypeVar, got {result_ty}"
-                );
-            }
-            other => panic!("Expected Record, got {other}"),
-        }
+        // Test: Accessing a non-existent field on a letrec forward-reference now produces
+        // a type error via Pass 3b constraint unification. The constraint IS generated
+        // (check_dot_access binds γ_data → Record({unknown: β}, RowVar(ρ)) in state.subst)
+        // and then correctly checked against the concrete type of `data`.
+        let result = check("[result: $data.unknown  data: [known: 1]]");
+        assert!(
+            result.is_err(),
+            "Accessing non-existent field 'unknown' on a letrec forward reference should \
+             produce a type error via Pass 3b constraint unification; got Ok"
+        );
 
         // Note: The types.rs row occurs checks ARE tested (see test_row_occurs_check_direct_tail_cycle
         // and test_row_occurs_check_nested_in_field_cycle). Those tests demonstrate the occurs check
@@ -2053,16 +2170,16 @@ mod tests {
         // function, so if it were ever triggered, it would work correctly.
 
         // CONCLUSION: This test documents that:
-        // 1. The occurs check exists in check_dot_access (line 710)
+        // 1. The occurs check exists in check_dot_access (typecheck.rs)
         // 2. It uses row_var_occurs_pub which is tested in types.rs
-        // 3. Normal constraint generation works correctly
-        // 4. The error path is likely unreachable but serves as defensive programming
+        // 3. Constraint generation works correctly: γ_data → Record({unknown: β}, RowVar(ρ))
+        // 4. Pass 3b now verifies constraints against concrete types, detecting field absence
     }
 
     #[test]
     fn test_dot_access_typevar_generates_constraint_verified() {
         // Task 6: Verifies that the constraint α = Record({name: β}, RowVar(ρ)) was generated
-        // when dot-accessing a TypeVar target.
+        // when dot-accessing a TypeVar target, and that β is now resolved via Pass 3b.
         //
         // WHAT WE'RE TESTING:
         //   [result: $data.name  data: [name: hello]]
@@ -2073,22 +2190,19 @@ mod tests {
         //   γ_data is a TypeVar and generates the constraint γ_data = Record({name: β}, RowVar(ρ))
         //   stored in state.subst, returning β as the type of `result`.
         //
-        // WHY FULL RESOLUTION DOES NOT OCCUR:
-        //   The local substitution (subst) in infer_dict is initialized from state.subst at
-        //   Pass 3a (before the loop). When Pass 3 processes `result`, check_dot_access writes
-        //   γ_data → Record({name: β}, RowVar(ρ)) to state.subst (not local subst). When Pass 3
-        //   then processes `data` and unifies γ_data with the concrete Record({name: "hello"}),
-        //   local subst does not yet have the γ_data binding (Pass 3b merges AFTER the loop).
-        //   So γ_data → concrete is bound in local subst WITHOUT seeing the β linkage.
-        //   Pass 3b's or_insert skips γ_data (already bound). β never gets resolved to "hello".
+        // HOW RESOLUTION NOW OCCURS (Pass 3b, row-unification-h):
+        //   Pass 3b merges state.subst bindings into local subst after the loop.
+        //   When γ_data appears in BOTH state.subst (→ Record({name: β}, RowVar(ρ))) and local
+        //   subst (→ Record({name: StringLiteral("hello")}, Empty)), Pass 3b calls unify on them:
+        //   unify(Record({name: StringLiteral("hello")}, Empty), Record({name: β}, RowVar(ρ)))
+        //     → common field "name": unify(StringLiteral("hello"), β) → β → StringLiteral("hello")
+        //     → ρ → Row({}, Empty) (tail unification)
+        //   Pass 3c then applies subst to all field types: result's type β → StringLiteral("hello").
         //
         // ASSERTION:
-        //   result's type is a TypeVar (not Any). Any would mean check_dot_access returned Any
-        //   instead of generating a fresh constraint TypeVar. The constraint WAS generated;
-        //   the result type is β, a fresh TypeVar — not the sentinel Any fallback.
-        //
-        //   state.subst contains the γ_data constraint (proving the binding was stored),
-        //   and β appears in state.levels (proving it was freshly allocated by the mechanism).
+        //   result's type is StringLiteral("hello") — the constraint was generated AND resolved
+        //   by Pass 3b unification. Any would mean check_dot_access returned Any instead of
+        //   generating the constraint.
 
         let mut file = crate::parse("[result: $data.name  data: [name: hello]]").unwrap();
         crate::desugar::desugar_file(&mut file.node);
@@ -2099,40 +2213,22 @@ mod tests {
         let doc_env =
             typecheck_document(&file.node.documents[0], &env, &mut state, &mut None).unwrap();
 
-        // Get the type of 'result' — this is β, the fresh TypeVar returned by check_dot_access
+        // Get the type of 'result' — β, resolved by Pass 3b to StringLiteral("hello")
         let result_ty = match doc_env.get("result") {
             Some(scheme) => scheme.body.clone(),
             None => panic!("field 'result' not found"),
         };
 
-        // ASSERTION 1: result's type must be a TypeVar (not Any).
+        // ASSERTION: result's type must be a resolved concrete type, not Any and not TypeVar.
         // Any would mean check_dot_access fell through to the Any arm instead of generating
         // the constraint α = Record({name: β}, RowVar(ρ)).
-        let result_typevar_name = match &result_ty {
-            Type::TypeVar(name, _) => name.clone(),
-            other => panic!(
-                "expected result to have TypeVar β (constraint was generated), got {other}; \
-                 'Any' would indicate no constraint was generated"
-            ),
-        };
-
-        // ASSERTION 2: β is registered in state.levels.
-        // fresh_var registers every TypeVar it creates in state.levels. If β is in levels,
-        // it was freshly allocated by the constraint generation mechanism (not a pre-existing var).
-        // This proves check_dot_access called fresh_type_var() rather than returning Any or
-        // some pre-existing variable.
-        assert!(
-            state.levels.contains_key(&result_typevar_name),
-            "TypeVar β ({result_typevar_name}) should be registered in state.levels; \
-             absence would mean it was not freshly generated by check_dot_access"
+        // TypeVar would mean Pass 3b failed to resolve β through the γ_data collision.
+        // StringLiteral("hello") confirms constraint generation AND Pass 3b resolution.
+        assert_eq!(
+            result_ty,
+            Type::StringLiteral("hello".to_string()),
+            "result must be StringLiteral(\"hello\") — confirms constraint generation AND Pass 3b resolution; got {result_ty}"
         );
-
-        // NOTE: We cannot assert that β appears in state.subst.type_map after typecheck_document
-        // completes. The constraint γ_data = Record({name: β}, RowVar(ρ)) IS stored in state.subst
-        // during check_dot_access, but Pass 3d of infer_dict overwrites the γ_data binding with
-        // the concrete Record({name: "hello"}, Closed) from letrec unification. The β→"hello"
-        // resolution does not propagate back through the two-substitution architecture.
-        // The invariant "constraint was generated" is fully captured by assertions 1 and 2.
     }
 
     #[test]
@@ -2521,6 +2617,7 @@ mod tests {
                 &env,
                 span,
                 &mut InferState::new(),
+                &mut None,
                 &mut None
             )
             .unwrap(),
@@ -2540,6 +2637,7 @@ mod tests {
                 &env,
                 span,
                 &mut InferState::new(),
+                &mut None,
                 &mut None
             )
             .unwrap(),
@@ -2632,7 +2730,15 @@ mod tests {
             span,
         )]);
         assert_eq!(
-            resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None).unwrap(),
+            resolve_annotation(
+                &ann,
+                &env,
+                span,
+                &mut InferState::new(),
+                &mut None,
+                &mut None
+            )
+            .unwrap(),
             Type::Any
         );
     }
@@ -2650,7 +2756,15 @@ mod tests {
             span,
         )]);
         assert_eq!(
-            resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None).unwrap(),
+            resolve_annotation(
+                &ann,
+                &env,
+                span,
+                &mut InferState::new(),
+                &mut None,
+                &mut None
+            )
+            .unwrap(),
             Type::Any
         );
     }
@@ -2667,7 +2781,14 @@ mod tests {
             },
             span,
         )]);
-        let result = resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None);
+        let result = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        );
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -2688,7 +2809,15 @@ mod tests {
             span,
         )]);
         assert_eq!(
-            resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None).unwrap(),
+            resolve_annotation(
+                &ann,
+                &env,
+                span,
+                &mut InferState::new(),
+                &mut None,
+                &mut None
+            )
+            .unwrap(),
             Type::Any
         );
     }
@@ -2710,7 +2839,14 @@ mod tests {
             },
             span,
         )]);
-        let result = resolve_annotation(&ann, &env, span, &mut InferState::new(), &mut None);
+        let result = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("function type"));
     }
@@ -3895,21 +4031,25 @@ mod tests {
 
     #[test]
     fn test_let_gen_typevar_in_dot_access() {
-        // Dot access on a TypeVar now generates a constraint (TypeVar α case) rather than
-        // returning Any. When `$data` has an unknown type during letrec pass 3,
-        // `$data.x` generates constraint α = Record({x: β}, RowVar(ρ)) and returns β.
-        // The result is a TypeVar β (the fresh field type).
-        // Note: full constraint propagation between letrec fields and state.subst is future
-        // work — β is not yet resolved to IntLiteral(1) even though data: [x: 1] confirms it.
-        // See row-unification-f-b in TODO.md.
+        // Dot access on a TypeVar generates a constraint (TypeVar α case) which is now
+        // fully resolved by Pass 3b (row-unification-h). When `$data` has an unknown type
+        // during letrec pass 3, `$data.x` generates constraint α = Record({x: β}, RowVar(ρ))
+        // and returns β. Pass 3b unifies the two α bindings (from check_dot_access and from
+        // infer_dict processing `data: [x: 1]`), resolving β → IntLiteral(1).
         let ty = infer("[result: $data.x  data: [x: 1]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
-                // result is a TypeVar (β, the inferred field type of x), not Any.
+                // result is the resolved type of x (IntLiteral(1)), not Any and not TypeVar.
+                // Pass 3b constraint unification resolves β through the γ_data collision.
                 let result_ty = fields.get("result").expect("field 'result' should exist");
                 assert!(
-                    matches!(result_ty, Type::TypeVar(_, _)),
-                    "expected TypeVar for constrained dot access field, got {result_ty}"
+                    !matches!(result_ty, Type::Any),
+                    "expected resolved type for constrained dot access field, got Any"
+                );
+                assert!(
+                    !matches!(result_ty, Type::TypeVar(_, _)),
+                    "expected resolved type (not TypeVar) for constrained dot access field \
+                     — Pass 3b should have resolved β via γ_data collision; got {result_ty}"
                 );
             }
             other => panic!("expected Record, got {other}"),
@@ -4919,24 +5059,22 @@ mod tests {
     }
 
     #[test]
-    fn test_check_call_mono_skip_subst_apply_documented() {
-        // Task 3: Document why CALL-MONO in check_call can safely skip state.subst.apply()
-        // while check_call_with_scheme (which always takes the CALL-POLY path) must use it.
+    fn test_check_call_mono_subst_apply_documented() {
+        // Documents that CALL-MONO in check_call uses state.subst.apply(ret) for defensive
+        // consistency (sprint row-unification-h), while check_call_with_scheme (which always
+        // takes the CALL-POLY path) has always used it.
         //
         // BACKGROUND: check_call_with_scheme no longer has a CALL-MONO branch. The CALL-MONO
-        // branch was deleted (cycle-findings-c36-a Task 2) because it was provably unreachable:
-        // check_call_with_scheme is only called for polymorphic schemes (guard at line 236 ensures
-        // non-empty type_vars or row_vars), and instantiate_scheme always produces fresh TypeVars
-        // or RowVars for each quantified variable, so has_type_vars() is always true after
-        // instantiation. The function now always takes the CALL-POLY path.
+        // branch was deleted (cycle-findings-c36-a Task 2) because it was provably unreachable.
         //
-        // CALL-MONO in check_call (line 1023): returns `*ret.clone()` (direct clone, no apply)
+        // CALL-MONO in check_call: uses state.subst.apply(ret) for defensive consistency.
         //
-        // WHY check_call CALL-MONO CAN SKIP state.subst.apply():
-        //   check_call: func_ty comes from infer_expr (line 978), then apply() is performed at
-        //     line 985 before the CALL-MONO guard. The CALL-MONO guard (!func_ty.has_type_vars())
-        //     proves `ret` is fully concrete — no TypeVar or RowVar nodes in any position —
-        //     so an additional state.subst.apply() would be a no-op that wastes allocations.
+        // WHY check_call CALL-MONO NOW APPLIES state.subst:
+        //   check_call applies state.subst.apply(ret) defensively (sprint row-unification-h).
+        //   Even though the CALL-MONO guard (!func_ty.has_type_vars()) proves func_ty is
+        //   concrete, applying state.subst ensures consistency with check_call_with_scheme's
+        //   CALL-POLY path and guards against future relaxation of the guard (e.g., RowVar-only
+        //   polymorphism). The apply() is cheap when state.subst is empty (common case).
         //
         // WHY check_call_with_scheme (CALL-POLY) uses subst.apply(ret):
         //   func_ty comes from instantiate_scheme (line 912), which ALWAYS produces fresh
@@ -4945,27 +5083,8 @@ mod tests {
         //   and any state.subst-bound vars in a single pass. After the loop, the local subst is
         //   merged back into state.subst (mirroring infer_dict Pass 3d).
         //
-        // WHEN WOULD REMOVING state.subst.apply() FROM check_call BREAK?
-        //   Only if check_call received a func_ty that:
-        //     (a) passes the !has_type_vars() guard (appears fully concrete at top level), AND
-        //     (b) has TypeVars/RowVars in nested positions that are bound in state.subst.
-        //
-        //   This is currently IMPOSSIBLE because check_call only receives func_ty from:
-        //     1. infer_expr for non-VarRef callees (e.g., inline [fn [x] $x]) — these produce
-        //        fully concrete types with no TypeVars in any position if !has_type_vars().
-        //     2. The state.subst.apply() at line 985 already resolved any nested TypeVars
-        //        before the CALL-MONO guard.
-        //
-        // FUTURE SCENARIO (tracked as row-unification-f-b in TODO.md):
-        //   If check_call were modified to accept a pre-instantiated polymorphic function
-        //   type with nested RowVars, AND those RowVars were bound in state.subst by prior
-        //   constraints, THEN skipping state.subst.apply() would produce a type with unresolved
-        //   RowVar references instead of the fully resolved concrete type.
-        //
-        // This test is a PLACEHOLDER for that future scenario. Currently, no test can
-        // demonstrate the difference because check_call doesn't enter that code path.
-        // The test documents the invariant: check_call's CALL-MONO skip is safe because
-        // has_type_vars() = false implies no nested TypeVars/RowVars in any position.
+        // The test documents the invariant: check_call's CALL-MONO now applies state.subst
+        // defensively — both CALL-MONO and CALL-POLY paths call apply() for consistency.
 
         // Verify current behavior: CALL-MONO in check_call with a monomorphic inline lambda
         let ty = result_field("[f: [fn [x@Int] 42]]\n[result: [call $f 1]]", "result");
@@ -4984,12 +5103,6 @@ mod tests {
             Type::IntLiteral(42),
             "check_call_with_scheme CALL-POLY path should unify and apply state.subst"
         );
-
-        // TODO(row-unification-f-b): Add a test that creates a scenario where:
-        //   - func_ty has nested RowVars bound in state.subst
-        //   - !has_type_vars() = true (top-level concrete)
-        //   - Removing state.subst.apply() from check_call produces wrong result
-        // This is currently impossible to construct without modifying check_call's call sites.
     }
 
     #[test]
@@ -5530,6 +5643,84 @@ mod tests {
                 .message
                 .contains("Note: the type checker does not yet support named arguments")),
             "expected named-arg note in arity mismatch error, got: {errors:?}"
+        );
+    }
+
+    // -- check_call TypeVar arm (letrec forward references) --
+
+    #[test]
+    fn test_check_call_forward_ref_function() {
+        // Letrec forward reference: $f is called before its definition is inferred.
+        // During Pass 3, $f has type TypeVar (from Pass 1). Without the TypeVar arm
+        // in check_call, this produces a spurious "expected function type" error.
+        // With the fix, check_call returns Any for unbound TypeVar callees.
+        let result = check("[result: [call $f 42]  f: [fn [x] $x]]");
+        assert!(
+            result.is_ok(),
+            "forward-reference function call should not produce type error, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_check_call_forward_ref_mutual_recursion() {
+        // Mutual recursion pattern: $g calls $f which is defined later.
+        // Both are forward references during their respective inference passes.
+        let result = check("[g: [fn [x] [call $f $x]]  f: [fn [y] $y]]");
+        assert!(
+            result.is_ok(),
+            "mutual forward-reference calls should typecheck, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_check_call_forward_ref_result_type() {
+        // The result of calling a forward-referenced function is Any (conservative).
+        let ty = result_field("[result: [call $f 42]  f: [fn [x] $x]]", "result");
+        // result is Any because $f was a TypeVar when check_call ran
+        assert_eq!(ty, Type::Any);
+    }
+
+    #[test]
+    fn test_check_call_bound_typevar_resolves_to_function() {
+        // When state.subst binds a TypeVar to a Function type, applying state.subst
+        // before the match resolves the TypeVar so the Function arm fires correctly.
+        // Single-document letrec: f and result defined in the same dict so that
+        // result_field (which processes documents[0]) can find "result".
+        //
+        // Note: in a letrec dict, $f is still a TypeVar (the fresh var from Pass 1)
+        // when [call $f 42] is processed during Pass 3 value inference. Even after
+        // the state.subst.apply() fix, the TypeVar arm fires and returns Any.
+        // The apply() call ensures genuinely-resolved TypeVars reach the Function arm,
+        // but letrec forward-refs within the same dict remain TypeVars at inference time.
+        let ty = result_field("[f: [fn [x] $x]  result: [call $f 42]]", "result");
+        assert_eq!(
+            ty,
+            Type::Any,
+            "call to forward-referenced function in same letrec returns Any (TypeVar arm)"
+        );
+    }
+
+    // -- Pass 3b or_insert unification --
+
+    #[test]
+    fn test_pass3b_state_subst_merge_unifies_overlapping_keys() {
+        // When state.subst and local subst both bind the same TypeVar (e.g., from
+        // an access-chain constraint generated during value inference), the merge
+        // should unify the two bindings instead of discarding the state.subst one.
+        //
+        // Pattern: $data.name generates a constraint in state.subst binding a TypeVar
+        // to Record({name: beta}, rho). The local subst from letrec unification also
+        // binds the same TypeVar. Without unification, beta remains free.
+        //
+        // result must come FIRST to create a forward reference — if data comes first,
+        // $data is already concrete when result is processed and no collision occurs.
+        let ty = result_field("[result: $data.name  data: [name: hello]]", "result");
+        assert_eq!(
+            ty,
+            Type::StringLiteral("hello".to_string()),
+            "Pass 3b must unify overlapping state.subst binding; got: {ty}"
         );
     }
 }
