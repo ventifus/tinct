@@ -515,7 +515,7 @@ All 46 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 |---------|-----------|----------|-------|
 | `eval` | `S → V` | Materializing | Deep materialization — recursively forces all thunks |
 | `error` | `S → ⊥` | Materializing | Always raises; never returns |
-| `try` ‡ | `S → D` | Materializing | Materializes function arg, invokes it, catches errors |
+| `try` ‡ | `S → D` | Materializing | Strict on function arg — materializes before invocation, catches errors |
 | `apply` | `S × S → Θ` | Materializing | Materializes both; delegates to function invocation. Result type depends on the applied function |
 
 **Type introspection:**
@@ -881,7 +881,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |
-| `TypeAssert` | Materializes during eval() (annotation-time), not materialize() (access-time) | The annotated expression is forced when the TypeAssert is evaluated, not when the result is accessed |
+| `TypeAssert` (`[@Type expr]`) | Strict — materializes expr immediately during eval() | Annotation-time forcing (not access-time). Laziness violation; see eval-lazy-fixes TODO |
 
 **Error reporting impact:** Operations that shift from eager to lazy (e.g., `$if`, `$merge`, `$map`) will report errors at access time rather than construction time. This provides more accurate source locations (pointing to where materialization failed) but changes error timing. Inherently materializing operations continue to produce errors at call time.
 
@@ -908,7 +908,7 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 
 **Growth characteristics:** For large dicts, the `HashMap` grows monotonically as new thunks are encountered. The cache never shrinks during traversal — it accumulates all seen thunk pointers until the entire `deep_materialize` call completes. For a dict with 10,000 entries containing shared sub-dicts, the cache may hold thousands of entries. This is acceptable because (a) the cache lifetime is bounded by the single `deep_materialize` call, not the session, and (b) the alternative (no cache) would traverse shared structures multiple times, defeating sharing.
 
-**Comparison to selective materialization:** Regular `materialize()` has no visited set — it forces a single thunk and memoizes the result in `ThunkState::Materialized`. Cyclic dependencies are caught by the `InProgress` sentinel *within* the thunk, not by a global traversal cache. `deep_materialize` adds a *second* layer of cycle detection at the structural level (pointer identity across the value tree), orthogonal to the per-thunk `InProgress` cycle detection.
+**Comparison to selective materialization:** Regular `materialize()` has no visited set — it forces a single thunk and memoizes the result in `ThunkState::Materialized`. Cyclic dependencies are caught by the `InProgress` sentinel *within* the thunk, not by a global traversal cache. `deep_materialize` adds a *second* layer of cycle detection at the structural level (pointer identity across the value tree) via a `HashMap<*const Thunk, Option<Rc<Thunk>>>` dual-purpose cache, orthogonal to the per-thunk `InProgress` cycle detection.
 
 **Relationship to Nix:** Nix's `forceValueDeep` (eval.cc:2264) uses a similar `std::set<const Value *> seen` for pointer-identity cycle detection. The key difference: Nix's set is visit-tracking only (all entries are pointers, not `Option<ptr>`), because Nix uses a conservative GC and doesn't need explicit sharing preservation — shared `Value*` pointers are naturally deduplicated. Tinct's `Option<Rc<Thunk>>` design combines visit-tracking (`None`) with result caching (`Some(rc)`) in a single structure.
 
