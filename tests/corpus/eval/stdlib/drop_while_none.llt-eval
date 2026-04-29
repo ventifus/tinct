@@ -1,0 +1,3 @@
+[call $drop-while [fn [x] [call $< $x 10]] [1 2 3]]
+===
+Dict({})

@@ -1,0 +1,3 @@
+[call $take-while [fn [x] [call $< $x 0]] [1 2 3]]
+===
+Dict({})

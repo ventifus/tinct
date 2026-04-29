@@ -94,7 +94,7 @@ impl<'a> Formatter<'a> {
                     i += 1;
                 }
 
-                Token::OpenBracket => {
+                Token::OpenBracket | Token::BracketAccess => {
                     if let Some(close_idx) = self.find_matching_bracket(i) {
                         if blank_line_pending {
                             self.output.push('\n');
@@ -103,13 +103,9 @@ impl<'a> Formatter<'a> {
                         if at_line_start {
                             self.write_indent();
                         } else {
-                            let is_index = i > 0
-                                && !self.has_whitespace_between(i - 1, i)
-                                && !matches!(
-                                    self.tokens[i - 1].node,
-                                    Token::OpenBracket | Token::Colon | Token::Semicolon
-                                );
-                            if needs_space && !is_index {
+                            // BracketAccess never needs a space before it
+                            let is_bracket_access = matches!(token, Token::BracketAccess);
+                            if needs_space && !is_bracket_access {
                                 self.output.push(' ');
                             }
                         }
@@ -146,7 +142,7 @@ impl<'a> Formatter<'a> {
                     i += 1;
                 }
 
-                Token::At => {
+                Token::At | Token::ImmediateAt => {
                     if at_line_start {
                         if blank_line_pending {
                             self.output.push('\n');
@@ -179,7 +175,7 @@ impl<'a> Formatter<'a> {
                     }
                     self.write_token(token);
                     at_line_start = false;
-                    needs_space = !matches!(token, Token::At);
+                    needs_space = !matches!(token, Token::At | Token::ImmediateAt);
                     i += 1;
                 }
             }
@@ -190,7 +186,7 @@ impl<'a> Formatter<'a> {
         let mut depth = 0;
         for i in open_idx..self.tokens.len() {
             match &self.tokens[i].node {
-                Token::OpenBracket => depth += 1,
+                Token::OpenBracket | Token::BracketAccess => depth += 1,
                 Token::CloseBracket => {
                     depth -= 1;
                     if depth == 0 {
@@ -252,15 +248,10 @@ impl<'a> Formatter<'a> {
                     i += 1;
                     continue;
                 }
-                Token::OpenBracket => {
+                Token::OpenBracket | Token::BracketAccess => {
                     let is_cont = after_colon || after_dot || after_at || after_ellipsis;
-                    let is_index = i > start
-                        && !self.has_whitespace_between(i - 1, i)
-                        && !matches!(
-                            self.tokens[i - 1].node,
-                            Token::OpenBracket | Token::Colon | Token::Semicolon
-                        );
-                    if !is_cont && !is_index {
+                    let is_bracket_access = matches!(self.tokens[i].node, Token::BracketAccess);
+                    if !is_cont && !is_bracket_access {
                         count += 1;
                     }
                     if let Some(close) = self.find_matching_bracket(i) {
@@ -288,7 +279,7 @@ impl<'a> Formatter<'a> {
                     after_colon = false;
                     after_at = false;
                 }
-                Token::At => {
+                Token::At | Token::ImmediateAt => {
                     after_at = true;
                     after_colon = false;
                     after_dot = false;
@@ -307,6 +298,7 @@ impl<'a> Formatter<'a> {
                     after_colon = false;
                     after_dot = false;
                     after_at = false;
+                    // Note: ellipsis handling doesn't use BracketAccess; it tracks its own continuation
                     after_ellipsis = i + 1 < end
                         && !self.has_whitespace_between(i, i + 1)
                         && !matches!(
@@ -351,7 +343,7 @@ impl<'a> Formatter<'a> {
                 Token::Comment(_) | Token::Dot => {
                     j += 1;
                 }
-                Token::At => {
+                Token::At | Token::ImmediateAt => {
                     j += 1;
                     if j < end && matches!(self.tokens[j].node, Token::BareWord(_)) {
                         j += 1;
@@ -396,14 +388,9 @@ impl<'a> Formatter<'a> {
                         needs_space = true;
                     }
                 }
-                Token::OpenBracket => {
-                    let is_index = i > open_idx + 1
-                        && !self.has_whitespace_between(i - 1, i)
-                        && !matches!(
-                            self.tokens[i - 1].node,
-                            Token::OpenBracket | Token::Colon | Token::Semicolon
-                        );
-                    if needs_space && !is_index {
+                Token::OpenBracket | Token::BracketAccess => {
+                    let is_bracket_access = matches!(self.tokens[i].node, Token::BracketAccess);
+                    if needs_space && !is_bracket_access {
                         width += 1;
                     }
                     if let Some(nested_close) = self.find_matching_bracket(i) {
@@ -421,7 +408,7 @@ impl<'a> Formatter<'a> {
                         width += 1;
                     }
                     width += self.token_width(token);
-                    needs_space = !matches!(token, Token::At | Token::Dot);
+                    needs_space = !matches!(token, Token::At | Token::ImmediateAt | Token::Dot);
                 }
             }
             i += 1;
@@ -432,8 +419,8 @@ impl<'a> Formatter<'a> {
 
     fn token_width(&self, token: &Token) -> usize {
         match token {
-            Token::OpenBracket | Token::CloseBracket => 1,
-            Token::Colon | Token::Semicolon | Token::Dot | Token::At => 1,
+            Token::OpenBracket | Token::BracketAccess | Token::CloseBracket => 1,
+            Token::Colon | Token::Semicolon | Token::Dot | Token::At | Token::ImmediateAt => 1,
             Token::Range => 2,
             Token::Ellipsis => 3,
             Token::DocSeparator => 3,
@@ -490,7 +477,7 @@ impl<'a> Formatter<'a> {
                     self.output.push(' ');
                     needs_space = false;
                 }
-                Token::At => {
+                Token::At | Token::ImmediateAt => {
                     self.output.push('@');
                     needs_space = false;
                 }
@@ -519,14 +506,9 @@ impl<'a> Formatter<'a> {
                         needs_space = true;
                     }
                 }
-                Token::OpenBracket => {
-                    let is_index = i > 0
-                        && !self.has_whitespace_between(i - 1, i)
-                        && !matches!(
-                            self.tokens[i - 1].node,
-                            Token::OpenBracket | Token::Colon | Token::Semicolon
-                        );
-                    if needs_space && !is_index {
+                Token::OpenBracket | Token::BracketAccess => {
+                    let is_bracket_access = matches!(self.tokens[i].node, Token::BracketAccess);
+                    if needs_space && !is_bracket_access {
                         self.output.push(' ');
                     }
                     if let Some(nested_close) = self.find_matching_bracket(i) {
@@ -544,7 +526,7 @@ impl<'a> Formatter<'a> {
                         self.output.push(' ');
                     }
                     self.write_token(token);
-                    needs_space = !matches!(token, Token::At);
+                    needs_space = !matches!(token, Token::At | Token::ImmediateAt);
                 }
             }
             i += 1;
@@ -604,7 +586,7 @@ impl<'a> Formatter<'a> {
                     i += 1;
                     continue;
                 }
-                Token::At => {
+                Token::At | Token::ImmediateAt => {
                     self.output.push('@');
                     after_at = true;
                     after_colon = false;
@@ -645,17 +627,13 @@ impl<'a> Formatter<'a> {
                     i += 1;
                     continue;
                 }
-                Token::OpenBracket => {
+                Token::OpenBracket | Token::BracketAccess => {
                     if let Some(nested_close) = self.find_matching_bracket(i) {
                         let is_continuation =
                             after_colon || after_dot || after_at || after_ellipsis;
-                        let is_index = !self.has_whitespace_between(i - 1, i)
-                            && !matches!(
-                                self.tokens[i - 1].node,
-                                Token::OpenBracket | Token::Colon | Token::Semicolon
-                            );
+                        let is_bracket_access = matches!(self.tokens[i].node, Token::BracketAccess);
 
-                        if !is_continuation && !is_index {
+                        if !is_continuation && !is_bracket_access {
                             self.output.push('\n');
                             self.write_indent();
                         }
@@ -701,12 +679,14 @@ impl<'a> Formatter<'a> {
     fn write_token(&mut self, token: &Token) {
         match token {
             Token::OpenBracket => self.output.push('['),
+            Token::BracketAccess => self.output.push('['),
             Token::CloseBracket => self.output.push(']'),
             Token::Colon => self.output.push(':'),
             Token::Semicolon => self.output.push(';'),
             Token::Dot => self.output.push('.'),
             Token::Range => self.output.push_str(".."),
             Token::At => self.output.push('@'),
+            Token::ImmediateAt => self.output.push('@'),
             Token::Ellipsis => self.output.push_str("..."),
             Token::DocSeparator => self.output.push_str("---"),
             Token::Newline => {}
@@ -874,6 +854,22 @@ mod tests {
     #[test]
     fn test_access_chain_in_dict() {
         assert_eq!(format_source("[x: $a.b[0].c]").unwrap(), "[x: $a.b[0].c]\n");
+    }
+
+    #[test]
+    fn test_bracket_access_spacing() {
+        // No whitespace before [ — stays without space (BracketAccess token)
+        assert_eq!(format_source("$a[0]").unwrap(), "$a[0]\n");
+        // Whitespace before [ — space preserved (OpenBracket token, separate expression)
+        assert_eq!(format_source("$a [0]").unwrap(), "$a [0]\n");
+    }
+
+    #[test]
+    fn test_immediate_at_spacing() {
+        // ImmediateAt: no space before @ — stays without space
+        assert_eq!(format_source("x@Int").unwrap(), "x@Int\n");
+        // Regular At: space before @ — space removed (annotation gets no space regardless)
+        assert_eq!(format_source("x @Int").unwrap(), "x@Int\n");
     }
 
     #[test]

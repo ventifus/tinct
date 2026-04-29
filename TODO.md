@@ -32,14 +32,7 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 
 - [x] Write `doc/whatif/parser-rewrite.md` — see doc/whatif/parser-rewrite.md. Immediate pest replacement (no co-existence); `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; `BracketAccess` + `ImmediateAt` lexer tokens; AST-based formatter rewrite; 4-phase adoption. Agent-reviewed: computer-scientist (APPROVE). [Design, grammar-architect]
 
-### parser-lexer: Phase 1 — Lexer Tokens
-
-Add whitespace-sensitive tokens to `src/lexer.rs`. See doc/whatif/parser-rewrite.md §Phase 1.
-
-- [ ] Add `Token::BracketAccess` — emitted when `[` follows a value-ending token (EscapedRef, Identifier, CloseBracket, QuotedString, Int, Float, BoolLit) with no whitespace gap; detect via `last_significant_token` + span offset comparison (`src/lexer.rs`)
-- [ ] Add `Token::ImmediateAt` — emitted when `@` follows an `Identifier` with no whitespace gap; same detection mechanism (`src/lexer.rs`)
-- [ ] Replace four `has_whitespace_between` call sites in formatter with `Token::BracketAccess` match (`src/formatter.rs`)
-- [ ] Update all `Token::OpenBracket` match sites to handle `BracketAccess` where needed (`src/formatter.rs`, `src/parser.rs`)
+- [ ] Fix lexer Newline not resetting `had_whitespace_before` flag — `$a\n[0]` emits `BracketAccess` instead of `OpenBracket`; `$a\n.b` emits `Dot`; both are incorrect. Fix: update `skip_whitespace_except_newline` to set `had_whitespace_before = true` when emitting `Newline` tokens, and reset `last_significant_token` to `None` or `Other`. Blocked on Phase 2 parser (current pest parser handles this correctly via compound-atomic rules). Track for Phase 2 integration. (`src/lexer.rs:233-238`) [Minor, computer-scientist C63]
 
 ### parser-core: Phase 2 — Parser Replacement
 
@@ -489,31 +482,6 @@ Findings from formal audit of doc/*.md theoretical claims (2026-04-21). Covers t
 
 - [ ] Mechanized proof of thunk lifecycle adequacy — formalize bisimulation between PendingBuiltin/PendingCall and equivalent Unevaluated thunks, confirming defunctionalization preserves semantics (Reynolds 1972, Danvy & Nielsen 2003). Property-based testing (QuickCheck-style) as a first step; full Coq/Isabelle/HOL formalization as stretch goal. See doc/08-evaluation.md §Thunk Lifecycle — Adequacy. [Minor, computer-scientist]
 - [ ] Confluence proof sketch for pure subset — show that forcing order does not affect final values in tinct programs without `$include`. The PendingBuiltin/PendingCall extensions add new reduction paths that must preserve the Ariola & Felleisen (1997) diamond property. See doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties. [Minor, computer-scientist]
-
-## stdlib-expansion: Stdlib Expansion
-
-Missing functions identified by cross-language analysis (Jsonnet, jq, Nix, Dhall). All implementable in Tinct unless noted.
-
-### stdlib-additions-b: Convenience Functions and Utilities (Part 2)
-
-Consolidated from: stdlib-convenience-b, stdlib-type-predicates, stdlib-numeric, stdlib-primitives, stdlib-string-ops
-
-- [ ] `unzip` — inverse of zip, split list of pairs into pair of lists [Nit, stdlib-author C31]
-- [ ] `transpose` — flip rows/columns of 2D structure [Nit, stdlib-author C31]
-- [ ] `flatten-all` or depth parameter for `flatten` — current `flatten` only goes one level deep; add recursive variant or optional depth param [Nit, stdlib-author C31]
-- [ ] `range-step` — range with step parameter; `$range` only supports `[start]` and `[start end]` with step=1 [Minor, stdlib-author C31]
-- [ ] `take-while`, `drop-while` — take/drop elements while predicate holds; implementable via Seq constructor pattern like `filter` [Minor, stdlib-author C31]
-- [ ] Variadic `all-of`/`any-of` — current `and`/`or` take exactly 2 args; add list-based variants `[fn [preds] [call $all? $identity $preds]]` [Nit, stdlib-author C31]
-- [ ] `is-int?`, `is-str?`, `is-float?`, `is-bool?`, `is-dict?`, `is-fn?` — type predicate wrappers over `$type-of` (Jsonnet pattern); all one-liners: `[fn [x] [call $= [call $type-of $x] Int]]` etc.
-- [ ] Runtime assertion guards at stdlib function entry with descriptive errors (Jsonnet pattern)
-- [ ] `min`, `max`, `sum`, `product` — aggregate functions (stdlib-author review); all one-liners over `$fold`/`$reduce`
-- [ ] `abs`, `sign`, `clamp` — numeric primitives (stdlib-author review); all one-liners using `$<`, `$-`, `$if`
-- [ ] Add `$has?` as Rust builtin — `has?` currently uses `$try` around bracket access, which forces the value (materializes it) to check existence. A Rust-native `$has?` would check `IndexMap::contains_key()` in O(1) without materializing the value. 2-arg: `[call $has? $dict $key]`. Unblocks lazy has-checking. (`src/builtins.rs`) [Minor, stdlib-author]
-- [ ] Add `$has?` Rust primitive design: must handle both String and Int key types (matching bracket access semantics), return Bool, never materialize the value thunk. (`src/builtins.rs`) [Minor, stdlib-author]
-- [ ] Add `substr` / `slice-str` Rust builtin for substring extraction (unblocks below)
-- [ ] `starts-with?`, `ends-with?` — string prefix/suffix tests
-- [ ] `chars` — string to character sequence
-- [ ] `join` — sequence/dict of strings to single string with separator
 
 ## error-context: Error Context Enrichment
 

@@ -14,6 +14,8 @@ use crate::ast::{Position, Span, Spanned};
 pub enum Token {
     /// `[` (opening bracket)
     OpenBracket,
+    /// `[` immediately after a value (no whitespace gap) — bracket access
+    BracketAccess,
     /// `]` (closing bracket)
     CloseBracket,
     /// `:` (key-value separator)
@@ -26,6 +28,8 @@ pub enum Token {
     Range,
     /// `@` (annotation separator)
     At,
+    /// `@` immediately after a bare word (no whitespace gap) — annotation
+    ImmediateAt,
     /// `...` (variadic/rest marker)
     Ellipsis,
     /// `---` (document separator)
@@ -52,12 +56,14 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Token::OpenBracket => write!(f, "["),
+            Token::BracketAccess => write!(f, "["),
             Token::CloseBracket => write!(f, "]"),
             Token::Colon => write!(f, ":"),
             Token::Semicolon => write!(f, ";"),
             Token::Dot => write!(f, "."),
             Token::Range => write!(f, ".."),
             Token::At => write!(f, "@"),
+            Token::ImmediateAt => write!(f, "@"),
             Token::Ellipsis => write!(f, "..."),
             Token::DocSeparator => write!(f, "---"),
             Token::Newline => write!(f, "\\n"),
@@ -126,6 +132,11 @@ enum LastSignificantToken {
     VarRef,
     CloseBracket,
     BareWordAfterDot,
+    QuotedString,
+    Int,
+    Float,
+    BoolLit,
+    BareWord,
     Other,
 }
 
@@ -250,8 +261,15 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 self.bracket_depth += 1;
                 let end = self.current_position();
-                self.tokens
-                    .push(Spanned::new(Token::OpenBracket, Span::new(start, end)));
+
+                // Emit BracketAccess if no whitespace before and previous token is value-ending
+                let token = if !self.had_whitespace_before && self.is_bracket_access_context() {
+                    Token::BracketAccess
+                } else {
+                    Token::OpenBracket
+                };
+
+                self.tokens.push(Spanned::new(token, Span::new(start, end)));
                 self.last_significant_token = Some(LastSignificantToken::Other);
                 Ok(())
             }
@@ -288,8 +306,15 @@ impl<'a> Lexer<'a> {
                 self.after_access_dot = false;
                 self.advance();
                 let end = self.current_position();
-                self.tokens
-                    .push(Spanned::new(Token::At, Span::new(start, end)));
+
+                // Emit ImmediateAt if no whitespace before and previous token is BareWord
+                let token = if !self.had_whitespace_before && self.is_immediate_at_context() {
+                    Token::ImmediateAt
+                } else {
+                    Token::At
+                };
+
+                self.tokens.push(Spanned::new(token, Span::new(start, end)));
                 self.last_significant_token = Some(LastSignificantToken::Other);
                 Ok(())
             }
@@ -406,6 +431,31 @@ impl<'a> Lexer<'a> {
         )
     }
 
+    fn is_bracket_access_context(&self) -> bool {
+        // BracketAccess is emitted instead of OpenBracket when `[` follows
+        // a value-ending token with no whitespace gap.
+        // Value-ending tokens: VarRef, CloseBracket, BareWordAfterDot, QuotedString, Int, Float, BoolLit
+        matches!(
+            self.last_significant_token,
+            Some(LastSignificantToken::VarRef)
+                | Some(LastSignificantToken::CloseBracket)
+                | Some(LastSignificantToken::BareWordAfterDot)
+                | Some(LastSignificantToken::QuotedString)
+                | Some(LastSignificantToken::Int)
+                | Some(LastSignificantToken::Float)
+                | Some(LastSignificantToken::BoolLit)
+        )
+    }
+
+    fn is_immediate_at_context(&self) -> bool {
+        // ImmediateAt is emitted instead of At when `@` follows
+        // a BareWord with no whitespace gap.
+        matches!(
+            self.last_significant_token,
+            Some(LastSignificantToken::BareWord)
+        )
+    }
+
     fn lex_comment(&mut self) -> Result<(), LexError> {
         let start = self.current_position();
         self.advance(); // skip '#'
@@ -441,7 +491,7 @@ impl<'a> Lexer<'a> {
                         Token::QuotedString(result),
                         Span::new(start, end),
                     ));
-                    self.last_significant_token = Some(LastSignificantToken::Other);
+                    self.last_significant_token = Some(LastSignificantToken::QuotedString);
                     return Ok(());
                 }
                 '\\' => {
@@ -591,11 +641,11 @@ impl<'a> Lexer<'a> {
         if word == "true" {
             self.tokens
                 .push(Spanned::new(Token::BoolLit(true), Span::new(start, end)));
-            self.last_significant_token = Some(LastSignificantToken::Other);
+            self.last_significant_token = Some(LastSignificantToken::BoolLit);
         } else if word == "false" {
             self.tokens
                 .push(Spanned::new(Token::BoolLit(false), Span::new(start, end)));
-            self.last_significant_token = Some(LastSignificantToken::Other);
+            self.last_significant_token = Some(LastSignificantToken::BoolLit);
         } else {
             self.tokens
                 .push(Spanned::new(Token::BareWord(word), Span::new(start, end)));
@@ -603,7 +653,7 @@ impl<'a> Lexer<'a> {
             if in_access_field {
                 self.last_significant_token = Some(LastSignificantToken::BareWordAfterDot);
             } else {
-                self.last_significant_token = Some(LastSignificantToken::Other);
+                self.last_significant_token = Some(LastSignificantToken::BareWord);
             }
         }
         Ok(())
@@ -650,7 +700,7 @@ impl<'a> Lexer<'a> {
                     Ok(n) => {
                         self.tokens
                             .push(Spanned::new(Token::Float(n), Span::new(start, end)));
-                        self.last_significant_token = Some(LastSignificantToken::Other);
+                        self.last_significant_token = Some(LastSignificantToken::Float);
                         Ok(())
                     }
                     Err(e) => Err(LexError::new(
@@ -668,7 +718,7 @@ impl<'a> Lexer<'a> {
                     Ok(n) => {
                         self.tokens
                             .push(Spanned::new(Token::Int(n), Span::new(start, end)));
-                        self.last_significant_token = Some(LastSignificantToken::Other);
+                        self.last_significant_token = Some(LastSignificantToken::Int);
                         Ok(())
                     }
                     Err(e) => Err(LexError::new(
@@ -687,7 +737,7 @@ impl<'a> Lexer<'a> {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::Int(n), Span::new(start, end)));
-                    self.last_significant_token = Some(LastSignificantToken::Other);
+                    self.last_significant_token = Some(LastSignificantToken::Int);
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
@@ -852,8 +902,20 @@ mod tests {
 
     #[test]
     fn test_bracket_access() {
+        // VarRef precedes — BracketAccess (no whitespace)
         assert_eq!(
             tok("$a[0]"),
+            vec![
+                Token::VarRef("a".into()),
+                Token::BracketAccess,
+                Token::Int(0),
+                Token::CloseBracket
+            ]
+        );
+
+        // VarRef precedes with whitespace — OpenBracket
+        assert_eq!(
+            tok("$a [0]"),
             vec![
                 Token::VarRef("a".into()),
                 Token::OpenBracket,
@@ -862,11 +924,86 @@ mod tests {
             ]
         );
 
+        // CloseBracket precedes — BracketAccess
+        assert_eq!(tok("]["), vec![Token::CloseBracket, Token::BracketAccess]);
+
+        // QuotedString precedes — BracketAccess
         assert_eq!(
-            tok("$a [0]"),
+            tok(r#""str"[0]"#),
+            vec![
+                Token::QuotedString("str".into()),
+                Token::BracketAccess,
+                Token::Int(0),
+                Token::CloseBracket
+            ]
+        );
+
+        // Int precedes — BracketAccess
+        assert_eq!(
+            tok("42[0]"),
+            vec![
+                Token::Int(42),
+                Token::BracketAccess,
+                Token::Int(0),
+                Token::CloseBracket
+            ]
+        );
+
+        // Float precedes — BracketAccess
+        assert_eq!(
+            tok("3.14[0]"),
+            vec![
+                Token::Float(3.14),
+                Token::BracketAccess,
+                Token::Int(0),
+                Token::CloseBracket
+            ]
+        );
+
+        // BoolLit precedes — BracketAccess
+        assert_eq!(
+            tok("true[0]"),
+            vec![
+                Token::BoolLit(true),
+                Token::BracketAccess,
+                Token::Int(0),
+                Token::CloseBracket
+            ]
+        );
+
+        // BareWord with whitespace — OpenBracket
+        assert_eq!(
+            tok("call [x]"),
+            vec![
+                Token::BareWord("call".into()),
+                Token::OpenBracket,
+                Token::BareWord("x".into()),
+                Token::CloseBracket
+            ]
+        );
+
+        // Call expression followed by bracket access — BracketAccess
+        assert_eq!(
+            tok("[call $f][0]"),
+            vec![
+                Token::OpenBracket,
+                Token::BareWord("call".into()),
+                Token::VarRef("f".into()),
+                Token::CloseBracket,
+                Token::BracketAccess,
+                Token::Int(0),
+                Token::CloseBracket
+            ]
+        );
+
+        // BareWordAfterDot precedes — BracketAccess (real usage: $a.b[0])
+        assert_eq!(
+            tok("$a.b[0]"),
             vec![
                 Token::VarRef("a".into()),
-                Token::OpenBracket,
+                Token::Dot,
+                Token::BareWord("b".into()),
+                Token::BracketAccess,
                 Token::Int(0),
                 Token::CloseBracket
             ]
@@ -880,7 +1017,7 @@ mod tests {
             tok("$a[2..5]"),
             vec![
                 Token::VarRef("a".into()),
-                Token::OpenBracket,
+                Token::BracketAccess,
                 Token::Int(2),
                 Token::Range,
                 Token::Int(5),
@@ -963,7 +1100,7 @@ mod tests {
             tok("$a[..]"),
             vec![
                 Token::VarRef("a".into()),
-                Token::OpenBracket,
+                Token::BracketAccess,
                 Token::Range,
                 Token::CloseBracket
             ]
@@ -1048,5 +1185,38 @@ mod tests {
     fn test_empty_input() {
         // Empty input should return empty token list
         assert_eq!(tok(""), Vec::<Token>::new());
+    }
+
+    #[test]
+    fn test_immediate_at() {
+        // BareWord followed by @ with no whitespace — ImmediateAt
+        assert_eq!(
+            tok("x@Int"),
+            vec![
+                Token::BareWord("x".into()),
+                Token::ImmediateAt,
+                Token::BareWord("Int".into())
+            ]
+        );
+
+        // BareWord followed by @ with whitespace — At
+        assert_eq!(
+            tok("x @Int"),
+            vec![
+                Token::BareWord("x".into()),
+                Token::At,
+                Token::BareWord("Int".into())
+            ]
+        );
+
+        // VarRef followed by @ — At (not ImmediateAt, only fires after BareWord)
+        assert_eq!(
+            tok("$var@Int"),
+            vec![
+                Token::VarRef("var".into()),
+                Token::At,
+                Token::BareWord("Int".into())
+            ]
+        );
     }
 }
