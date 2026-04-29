@@ -824,7 +824,7 @@ fn unify_remainders(
         }
 
         // Case 2: Only left has unique fields — right tail must absorb them
-        // Guard requires u2_empty to prevent silently dropping unique2 when both sides have unique fields
+        // Guard: u2_empty required — when both sides have unique fields with different RowVars, Case 4 applies; this guard ensures Case 2 only fires when unique2 is genuinely empty.
         (_, RowTail::RowVar(rho2, _)) if !u1_empty && u2_empty => {
             let row_to_bind = Row {
                 fields: unique1,
@@ -845,7 +845,8 @@ fn unify_remainders(
         }
 
         // Case 3: Only right has unique fields — left tail must absorb them
-        // Guard requires u1_empty to prevent silently dropping unique1 when both sides have unique fields
+        // Guard: u1_empty required — when both sides have unique fields with different RowVars,
+        // Case 4 applies; this guard ensures Case 3 only fires when unique1 is genuinely empty.
         (RowTail::RowVar(rho1, _), _) if !u2_empty && u1_empty => {
             let row_to_bind = Row {
                 fields: unique2,

@@ -490,7 +490,7 @@ pub struct InferState {
 }
 ```
 
-`InferState.subst` accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution via `or_insert` — local letrec bindings take precedence on collision. Known limitation: colliding bindings should be unified rather than silently dropped (see row-unification-h).
+`InferState.subst` accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution: when both maps bind the same variable, the two bindings are **unified** (Algorithm W substitution composition, Damas & Milner 1982) rather than silently dropped. Colliding bindings are **unified** (unify) rather than dropped, maintaining substitution composition soundness.
 
 When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `TypeVar(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
 
