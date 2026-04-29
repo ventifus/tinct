@@ -1978,6 +1978,11 @@ Update all documentation that still references the pest parser. The iterative pa
 - [x] Fix $try materializes body with None — passes Some(&call_span)
 - [x] Fix lib.rs serialization depth exceeded — depth_exceeded(MAX_EVAL_DEPTH) (E040)
 
+### builtins-message-polish: Builtin Error Message Polish
+
+- [x] Fix $to-float NaN/Infinity error message — "to-float: X parses to a non-finite value (NaN/Infinity not allowed)" instead of "cannot parse"
+- [x] Add $eq/$< precision loss documentation — comment at 2^53 boundary, matches Jsonnet silent promotion
+
 ### misc-nits-c: Miscellaneous Nits (Part 3) — partial (13/15)
 
 - [x] Clarify corpus test comment in variadic_param_collects_dict.llt-eval
