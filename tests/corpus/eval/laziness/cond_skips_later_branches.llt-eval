@@ -1,0 +1,4 @@
+# $cond skips evaluation of later branches when first branch matches
+[call $cond [[true first] [true [call $error "should not evaluate"]]]]
+===
+String("first")

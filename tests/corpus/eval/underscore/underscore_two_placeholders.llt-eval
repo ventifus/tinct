@@ -1,0 +1,4 @@
+# Two $_ placeholders in same expression - both reference the same parameter
+[call [call $+ $_ $_] 5]
+===
+Int(10)

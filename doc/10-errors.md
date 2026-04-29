@@ -333,21 +333,21 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 | Spec element | Implementation |
 |-------------|----------------|
-| EvalError struct | `error.rs:445-449` |
-| DECORATE | `attach_materialization_context` (`eval.rs:815-843`) |
-| PROP-EVAL | `eval.rs:931-951` (Unevaluated path, `map_err(&decorate)` + conditional cache) |
-| PROP-BUILTIN | `eval.rs:952-1003` (PendingBuiltin path) |
-| PROP-RESULT | `eval.rs:967-987`, `eval.rs:1044-1063` (recursive materialize of result) |
-| PROP-CYCLE | `eval.rs:908-922` (InProgress handler, inline error construction) |
-| PROP-DEPTH | `eval.rs:869-875` (depth check, no state change) |
-| MEMO-CACHE | `thunk.cache_failure` (`value.rs:384-386`) |
-| MEMO-SKIP | `eval.rs:944-948`, `eval.rs:976-983`, `eval.rs:993-999` (non-cacheable state restore) |
-| MEMO-REACCESS | `eval.rs:885-906` (Failed state handler) |
-| TRY | `builtin_try` (`builtins.rs:800-884`) |
-| TRY-UNCATCHABLE | `builtins.rs:870-871` (`!e.kind.is_catchable()` re-raise) |
-| TRY catching boundary | `builtins.rs:837` (body materialize inside match) |
-| Error-to-value | `builtins.rs:873-881` (extract `e.message()`, delegates to `e.kind.to_string()`) |
-| $error | `builtin_error` (`builtins.rs:785-795`) |
+| EvalError struct | `error.rs:465-470` |
+| DECORATE | `attach_materialization_context` (`eval.rs:1153-1181`) |
+| PROP-EVAL | `eval.rs:1277-1297` (Unevaluated path, `map_err(&decorate)` + conditional cache) |
+| PROP-BUILTIN | `eval.rs:1319-1396` (PendingBuiltin path) |
+| PROP-RESULT | `eval.rs:1357-1378`, `eval.rs:1457-1478` (recursive materialize of result) |
+| PROP-CYCLE | `eval.rs:1255-1268` (InProgress handler, inline error construction) |
+| PROP-DEPTH | `eval.rs:1281-1292` (depth check, no state change) |
+| MEMO-CACHE | `thunk.cache_failure` (`value.rs:489-491`) |
+| MEMO-SKIP | `eval.rs:1307-1313`, `eval.rs:1368-1375`, `eval.rs:1386-1393` (non-cacheable state restore) |
+| MEMO-REACCESS | `eval.rs:1232-1253` (Failed state handler) |
+| TRY | `builtin_try` (`builtins.rs:891-970`) |
+| TRY-UNCATCHABLE | `builtins.rs:956-957` (`!e.kind.is_catchable()` re-raise) |
+| TRY catching boundary | `builtins.rs:922` (body materialize inside match) |
+| Error-to-value | `builtins.rs:963` (extract `e.message()`, delegates to `e.kind.to_string()`) |
+| $error | `builtin_error` (`builtins.rs:875-886`) |
 
 ## Structured Error Model
 

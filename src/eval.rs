@@ -1044,7 +1044,8 @@ fn eval_dot_access(
             ctx,
             access_span,
             depth,
-        ),
+        )
+        .map_err(&push_frame),
         _ => Err(
             EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), *access_span).into(),
         ),
@@ -1081,7 +1082,7 @@ fn eval_bracket_access(
                 Key::Int(n) => Value::Int(n),
                 Key::String(s) => Value::String(s),
             };
-            invoke_proxy_handler(&handler, key_val, ctx, access_span, depth)
+            invoke_proxy_handler(&handler, key_val, ctx, access_span, depth).map_err(&push_frame)
         }
         _ => Err(
             EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), *access_span).into(),

@@ -536,12 +536,12 @@ bracket_access_inner = {
 
 range_expr = { range_value? ~ ".." ~ range_value? }
 
-range_value = { float_lit | int_lit | var_ref }
+range_value = { int_lit | var_ref }
 ```
 
-Range values are limited to numeric literals and variable references.
+Range values are limited to integer literals and variable references.
 
-Because `access_expr` is compound-atomic (`$`), `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word. Note that `.` is excluded from `var_ident_char` (see `grammar.pest:167-173`), which is what allows `$a.b` to parse as access rather than as a single identifier ending in `.b`.
+Because `access_expr` is compound-atomic (`$`), `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word. Note that `.` is excluded from `var_ident_char` (see `grammar.pest:170-176`), which is what allows `$a.b` to parse as access rather than as a single identifier ending in `.b`.
 
 Similarly, `$a[0]` is bracket access, but `$a [0]` is a VarRef followed by a nested bracket expression.
 
@@ -847,7 +847,7 @@ bracket_access_inner = {
 range_expr = { range_value? ~ ".." ~ range_value? }
 
 // Values inside range expressions — limited to atoms (no nested brackets in ranges)
-range_value = { float_lit | int_lit | var_ref }
+range_value = { int_lit | var_ref }
 
 // === Literals ===
 
@@ -913,6 +913,7 @@ bare_word_char = _{
 | `Fn@Number` | Annotated value | `@` in value context |
 | `[@T $e]` | Type assertion | `@` first in `[]` |
 | `call` (first in `[]`) | Keyword | Special form recognition |
+| `call@Type` (first in `[]`) | Annotated { name: 'call', ... } (NOT keyword) | @ after bare word converts keyword candidate to annotated value |
 | `call:` | Key (not keyword) | Colon makes it a key |
 | `$call` | VarRef (not keyword) | `$` makes it a reference |
 | `a..b` | Bare word `a..b` | `..` outside bracket access |

@@ -98,6 +98,7 @@ param_list = { "[" ~ (variadic_param | param)* ~ "]" }
 
 param = ${ param_name ~ param_annotation? }
 
+// Same character class as annotation_word and access_field — update all three together
 param_name = @{
     (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
 }
@@ -110,6 +111,7 @@ variadic_param = @{ "..." ~ param_name }
 annotation_value = !{ bracket_expr | annotation_word }
 
 // A bare word in annotation context (e.g., Number, String, a, b)
+// Same character class as param_name and access_field — update all three together
 annotation_word = @{
     (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
 }
@@ -144,6 +146,7 @@ access_chain = ${ dot_access | bracket_access_chain }
 
 dot_access = ${ "." ~ access_field }
 
+// Same character class as param_name and annotation_word — update all three together
 access_field = @{
     (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
 }
@@ -155,7 +158,7 @@ bracket_access_inner = { range_expr | value }
 range_expr = { range_value? ~ ".." ~ range_value? }
 
 // Values inside range expressions -- limited to atoms (no nested brackets in ranges)
-range_value = { float_lit | int_lit | var_ref }
+range_value = { int_lit | var_ref }
 
 // === Literals ===
 

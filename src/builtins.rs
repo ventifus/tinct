@@ -4624,6 +4624,9 @@ mod tests {
     #[test]
     fn try_depth_exceeded_not_catchable() {
         // DepthExceeded errors should NOT be caught by $try - they should propagate
+        // NOTE: No corpus test exists for this because triggering DepthExceeded
+        // reliably requires either a custom builtin (not available in corpus tests)
+        // or recursive thunk forcing with 16MB stack (impractical in corpus format).
         fn depth_exceeded_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let BuiltinArgs { call_span, .. } = ctx;
             Err(EvalError::depth_exceeded(256, call_span).into())
