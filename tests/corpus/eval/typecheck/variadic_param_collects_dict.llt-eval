@@ -1,6 +1,7 @@
 # Variadic param collects excess positional args into a Dict.
-# The variadic param type is overridden to Record({}, Empty) in type inference
-# (typecheck.rs:1151), regardless of any annotation context.
+# The variadic param type is set to Any in type inference (typecheck.rs:1480):
+# grammar forbids @annotation on variadic params, so param_types[i] and the
+# env binding are both set to Any for consistency.
 # At runtime, excess positional args are collected into an int-keyed Dict.
 [f: [fn [x ...rest] $rest]
  result: [call $f 10 20 30]]
