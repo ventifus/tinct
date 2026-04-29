@@ -142,7 +142,7 @@ Dicts are inferred in five sequential passes using the [DICT-GEN] rule — see �
 
 ```
 For each param pᵢ:
-    if variadic (...pᵢ): σᵢ = Record([], Closed)   (see Limitation #4)
+    if variadic (...pᵢ): σᵢ = Any                   (see Limitation #4)
     else if annotated pᵢ@σᵢ: use σᵢ
     else: σᵢ = Any
 Γ' = Γ, p₁:σ₁, ..., pₙ:σₙ
@@ -165,7 +165,7 @@ Else:
 Γ ⊢ [fn@σᵣ [p₁@τ₁ ... pₙ@τₙ] body] ⇐ Fn(σ₁...σₙ → σ_exp)
     where ¬has_type_vars(Fn(σ₁...σₙ → σ_exp))       (expected type fully concrete)
 For each param pᵢ:
-    if variadic: use Record([], Closed)
+    if variadic: use Any
     else if annotated pᵢ@τᵢ:
         if has_type_vars(τᵢ): unify(σᵢ, τᵢ, S)       (annotation with TypeVars)
         else: check σᵢ <: τᵢ                         (contravariant check)
@@ -181,7 +181,7 @@ Else:
 ────────────────────────────────── [CHECK-FN]
 ```
 
-**Substitution note:** σ_exp is substitution-applied (S(σ_exp)) before comparison via `state.subst.apply`, ensuring that any type variables bound during parameter checking are resolved before the subsumption check. σᵣ (the declared return annotation) is guaranteed to be concrete — no TypeVars — at the `else: check σᵣ <: σ_exp` sub-branch (the concrete-return-annotation path), because the `!declared.has_type_vars()` guard has already fired. Applying the current substitution to σᵣ would therefore be a no-op; the code omits it correctly.
+**Substitution note:** σ_exp is substitution-applied (S(σ_exp)) before comparison via `state.subst.apply`, ensuring that any type variables bound during parameter checking are resolved before the subsumption check. σᵣ (the declared return annotation) is guaranteed to be concrete — no TypeVars — at the `else: check σᵣ <: σ_exp` sub-branch (the concrete-return-annotation path), because the `!declared.has_inference_vars()` guard has already fired. Applying the current substitution to σᵣ would therefore be a no-op; the code omits it correctly.
 
 Unannotated non-variadic params get type Any. This is the source of the "Any escape hatch" — without annotations, functions have monomorphic type Fn(Any...Any → τᵣ). Polymorphism requires explicit type variable annotations (e.g., `x@a`).
 
@@ -345,7 +345,7 @@ unify(StringLiteral(s), StringLiteral(t), S) =
     error       if s ≠ t                         [U-STRLIT-NEQ]
 ```
 
-Bidirectional literal-to-parent promotions are implemented as explicit match arms in `unify()` (e.g., `IntLiteral(_)` with `Int`, `Float` with `Number`). These are fast-path optimizations for common subtype pairs that avoid the `has_type_vars` guard and `is_subtype` call in [U-SUBSUME]. The [U-SUBSUME] rule below provides the general fallback for any concrete type pair.
+Bidirectional literal-to-parent promotions are implemented as explicit match arms in `unify()` (e.g., `IntLiteral(_)` with `Int`, `Float` with `Number`). These are fast-path optimizations for common subtype pairs that avoid the `has_inference_vars` guard and `is_subtype` call in [U-SUBSUME]. The [U-SUBSUME] rule below provides the general fallback for any concrete type pair.
 
 Structural:
 
@@ -378,7 +378,7 @@ unify(σ, τ, S) where ¬has_type_vars(σ) ∧ ¬has_type_vars(τ):
 
 **Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] is bidirectional because it operates within unification where the original directionality is lost after structural decomposition. This is sound because the substitution is not modified — the bidirectional check only determines compatibility, not binding direction.
 
-**Dual-path promotion design.** `unify()` also implements bidirectional promotion arms for 5 type pairs (`IntLiteral` with `Int` and `Number`; `Int` with `Number`; `Float` with `Number`; `StringLiteral` with `Str`) plus literal identity checks, directly as Robinson unification match cases. These are symmetric (either direction succeeds) and fire before [U-SUBSUME]. The dual-path design is intentional: promotions in `unify()` handle CALL-POLY argument matching where type variables have been resolved to concrete types by substitution, while [U-SUBSUME] via `is_subtype` handles the general fallback for concrete type pairs not covered by explicit arms. Both paths produce the same result for overlapping cases — neither modifies the substitution — but the explicit arms avoid the `has_type_vars` guard and `is_subtype` call overhead for the most common promotion patterns. Note: `IntLiteral` with `Float` is intentionally NOT a promotion arm because `IntLiteral` is not a subtype of `Float` — they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`).
+**Dual-path promotion design.** `unify()` also implements bidirectional promotion arms for 5 type pairs (`IntLiteral` with `Int` and `Number`; `Int` with `Number`; `Float` with `Number`; `StringLiteral` with `Str`) plus literal identity checks, directly as Robinson unification match cases. These are symmetric (either direction succeeds) and fire before [U-SUBSUME]. The dual-path design is intentional: promotions in `unify()` handle CALL-POLY argument matching where type variables have been resolved to concrete types by substitution, while [U-SUBSUME] via `is_subtype` handles the general fallback for concrete type pairs not covered by explicit arms. Both paths produce the same result for overlapping cases — neither modifies the substitution — but the explicit arms avoid the `has_inference_vars` guard and `is_subtype` call overhead for the most common promotion patterns. Note: `IntLiteral` with `Float` is intentionally NOT a promotion arm because `IntLiteral` is not a subtype of `Float` — they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`).
 
 All other non-structural, non-subsumable combinations: error [U-FAIL]
 
@@ -613,7 +613,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 **Interaction with CALL-POLY.** When a call expression targets a `VarRef`, the inference engine inspects the scheme directly before any instantiation. This determines the routing:
 
-- **Polymorphic scheme** (has quantified `type_vars` or `row_vars`): routes to `check_call_with_scheme`, which calls `instantiate_scheme` once to produce a function type with fresh `_tN` variables at ℓ_current. It then checks `has_type_vars()` on the *post-instantiation* type: if all variables were resolved (fully concrete), it takes the CALL-MONO path (bidirectional checking via `check_expr`); if type variables remain, it takes the CALL-POLY path (synthesize arguments, unify, apply substitution to return type). This avoids double instantiation — without this optimization, VAR-POLY would instantiate the scheme at the reference site, producing `_tN` variables, and then CALL-POLY's `instantiate_at_level` would freshen those into yet more `_tM` variables.
+- **Polymorphic scheme** (has quantified `type_vars` or `row_vars`): routes to `check_call_with_scheme`, which calls `instantiate_scheme` once to produce a function type with fresh `_tN` variables at ℓ_current. It then checks `has_inference_vars()` on the *post-instantiation* type: if all variables were resolved (fully concrete), it takes the CALL-MONO path (bidirectional checking via `check_expr`); if type variables remain, it takes the CALL-POLY path (synthesize arguments, unify, apply substitution to return type). This avoids double instantiation — without this optimization, VAR-POLY would instantiate the scheme at the reference site, producing `_tN` variables, and then CALL-POLY's `instantiate_at_level` would freshen those into yet more `_tM` variables.
 - **Monomorphic scheme** (no quantified vars): routes to `check_call`, which infers the function expression normally. Since the scheme has no quantified variables, no instantiation occurs. The inferred type is typically concrete, so the CALL-MONO path fires directly.
 - **Non-VarRef function expressions** (e.g., inline lambdas): always route to `check_call`.
 
@@ -671,4 +671,4 @@ Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) →
 
 3. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
 
-4. **Variadic params typed as closed empty record.** Variadic parameters (`...args`) are assigned type `Record([], Closed)` but should be `Any`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
+4. **Variadic params typed as Any.** Variadic parameters (`...args`) are assigned type `Any`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
