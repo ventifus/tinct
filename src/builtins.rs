@@ -43,8 +43,8 @@ const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
 /// Prevents heap exhaustion from splitting by empty separator or small patterns.
 const MAX_SPLIT_PARTS: usize = 1_000_000;
 
-fn ok_val(v: Value) -> EvalResult<Rc<Thunk>> {
-    Ok(Rc::new(Thunk::new_materialized(v, Span::origin())))
+fn ok_val(v: Value, span: Span) -> EvalResult<Rc<Thunk>> {
+    Ok(Rc::new(Thunk::new_materialized(v, span)))
 }
 
 /// Maximum file size for reading LLT files: 10 MB.
@@ -93,7 +93,7 @@ fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<Rc<Thunk>> {
     if !val.is_finite() {
         Err(EvalError::float_not_finite(op.to_string(), val, span).into())
     } else {
-        ok_val(Value::Float(val))
+        ok_val(Value::Float(val), span)
     }
 }
 
@@ -155,13 +155,12 @@ fn stringify(value: &Value) -> String {
 fn require_dict(name: &str, value: Value, def_span: Span) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
-        other => Err(EvalError::type_mismatch_ctx(
-            name.to_string(),
-            "Dict",
-            other.type_name(),
-            def_span,
-        )
-        .into()),
+        other => {
+            Err(
+                EvalError::type_mismatch_ctx(name.to_string(), "Dict", other.type_name(), def_span)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -206,7 +205,7 @@ fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match extract_num_pair(args, &ctx, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_add(b)
-            .map(|n| ok_val(Value::Int(n)))
+            .map(|n| ok_val(Value::Int(n), call_span))
             .unwrap_or_else(|| {
                 // Overflow error: def_span is call_span (the + operation itself)
                 Err(EvalError::integer_overflow("+".to_string(), call_span).into())
@@ -229,7 +228,7 @@ fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match extract_num_pair(args, &ctx, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
-            .map(|n| ok_val(Value::Int(n)))
+            .map(|n| ok_val(Value::Int(n), call_span))
             .unwrap_or_else(|| {
                 // Overflow error: def_span is call_span (the - operation itself)
                 Err(EvalError::integer_overflow("-".to_string(), call_span).into())
@@ -252,7 +251,7 @@ fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match extract_num_pair(args, &ctx, depth, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
-            .map(|n| ok_val(Value::Int(n)))
+            .map(|n| ok_val(Value::Int(n), call_span))
             .unwrap_or_else(|| {
                 // Overflow error: def_span is call_span (the * operation itself)
                 Err(EvalError::integer_overflow("*".to_string(), call_span).into())
@@ -277,7 +276,7 @@ fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             if b == 0 {
                 Err(EvalError::division_by_zero("/".to_string(), call_span).into())
             } else {
-                ok_val(Value::Float(a as f64 / b as f64))
+                ok_val(Value::Float(a as f64 / b as f64), call_span)
             }
         }
         NumPair::Floats(a, b) => {
@@ -321,7 +320,7 @@ fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         // Dict, Function, Builtin are never equal
         _ => false,
     };
-    ok_val(Value::Bool(result))
+    ok_val(Value::Bool(result), call_span)
 }
 
 /// `<`: Less-than comparison.
@@ -362,7 +361,7 @@ fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             .into());
         }
     };
-    ok_val(Value::Bool(result))
+    ok_val(Value::Bool(result), call_span)
 }
 
 /// `if`: Conditional with selective materialization.
@@ -431,7 +430,7 @@ fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Rc::new(Thunk::new_materialized(key_value, origin)),
         );
     }
-    ok_val(Value::Dict(result))
+    ok_val(Value::Dict(result), call_span)
 }
 
 /// `length`: Takes 1 arg (a Dict). Returns an Int with the number of entries.
@@ -450,7 +449,7 @@ fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
     let map = require_dict("length", val, args[0].span)?;
-    ok_val(Value::Int(map.len() as i64))
+    ok_val(Value::Int(map.len() as i64), call_span)
 }
 
 /// `merge`: Takes 2 args (both Dicts). Returns a right-biased merge: all
@@ -485,7 +484,7 @@ fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     for (key, thunk) in &right {
         result.insert(key.clone(), Rc::clone(thunk));
     }
-    ok_val(Value::Dict(result))
+    ok_val(Value::Dict(result), call_span)
 }
 
 /// `append`: Takes 2 args: a Dict and any value. Returns a new dict with the
@@ -526,7 +525,7 @@ fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .unwrap_or(0);
 
     map.insert(Key::Int(next_key), Rc::clone(&args[1]));
-    ok_val(Value::Dict(map))
+    ok_val(Value::Dict(map), call_span)
 }
 
 /// `str`: Variadic string concatenation and toString.
@@ -548,7 +547,7 @@ fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let val = materialize(arg, Some(&call_span), &ctx, depth)?;
         result.push_str(&stringify(&val));
     }
-    ok_val(Value::String(result))
+    ok_val(Value::String(result), call_span)
 }
 
 /// `split`: Split a string by a separator.
@@ -603,7 +602,7 @@ fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )),
         );
     }
-    ok_val(Value::Dict(map))
+    ok_val(Value::Dict(map), call_span)
 }
 
 /// `replace`: Replace all occurrences of a pattern in a string.
@@ -661,10 +660,10 @@ fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Fast-path: if there are no matches, return the input unchanged
     if match_count == 0 {
-        return ok_val(Value::String(input.into()));
+        return ok_val(Value::String(input.into()), call_span);
     }
 
-    ok_val(Value::String(input.replace(pattern.as_str(), &replacement)))
+    ok_val(Value::String(input.replace(pattern.as_str(), &replacement)), call_span)
 }
 
 /// `upper`: Convert a string to uppercase. Takes 1 arg (String).
@@ -705,7 +704,7 @@ fn builtin_upper(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     }
 
-    ok_val(Value::String(result))
+    ok_val(Value::String(result), call_span)
 }
 
 /// `lower`: Convert a string to lowercase. Takes 1 arg (String).
@@ -746,7 +745,7 @@ fn builtin_lower(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     }
 
-    ok_val(Value::String(result))
+    ok_val(Value::String(result), call_span)
 }
 
 /// `trim`: Remove leading and trailing whitespace from a string.
@@ -763,7 +762,7 @@ fn builtin_trim(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = expect_one_arg("trim", args, named, &ctx, depth, call_span)?;
     let s = require_string("trim", val, args[0].span)?;
-    ok_val(Value::String(s.trim().to_string()))
+    ok_val(Value::String(s.trim().to_string()), call_span)
 }
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
@@ -783,12 +782,12 @@ fn float_to_int_builtin(
 ) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg(name, args, named, ctx, depth, call_span)?;
     match val {
-        Value::Int(n) => ok_val(Value::Int(n)),
+        Value::Int(n) => ok_val(Value::Int(n), call_span),
         Value::Float(f) => {
             if !f.is_finite() {
                 return Err(EvalError::float_not_finite(name.to_string(), f, args[0].span).into());
             }
-            ok_val(Value::Int(checked_f64_to_i64(name, op(f), call_span)?))
+            ok_val(Value::Int(checked_f64_to_i64(name, op(f), call_span)?), call_span)
         }
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
@@ -852,7 +851,7 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("to-int", args, named, &ctx, depth, call_span)?;
     let s = require_string("to-int", val, args[0].span)?;
     match s.parse::<i64>() {
-        Ok(n) => ok_val(Value::Int(n)),
+        Ok(n) => ok_val(Value::Int(n), call_span),
         Err(_) => {
             Err(
                 EvalError::parse_conversion("to-int".to_string(), s.clone(), "Int", call_span)
@@ -878,7 +877,7 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("to-float", args, named, &ctx, depth, call_span)?;
     let s = require_string("to-float", val, args[0].span)?;
     match s.parse::<f64>() {
-        Ok(f) if f.is_finite() => ok_val(Value::Float(f)),
+        Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
         Ok(f) => Err(EvalError::float_not_finite("to-float".to_string(), f, call_span).into()),
         Err(_) => {
             Err(
@@ -904,7 +903,7 @@ fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = expect_one_arg("eval", args, named, &ctx, depth, call_span)?;
     let deep = crate::eval::deep_materialize(&val, &ctx, depth)?;
-    ok_val(deep)
+    ok_val(deep, call_span)
 }
 
 /// `error`: takes 1 arg (String message), always raises.
@@ -989,7 +988,7 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Key::String("ok".to_string()),
                 Rc::new(Thunk::new_materialized(value, call_span)),
             );
-            ok_val(Value::Dict(result))
+            ok_val(Value::Dict(result), call_span)
         }
         Err(e) => {
             // Resource limit errors (DepthExceeded, ResourceLimitExceeded) must not be catchable by user code.
@@ -1005,7 +1004,7 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     call_span,
                 )),
             );
-            ok_val(Value::Dict(result))
+            ok_val(Value::Dict(result), call_span)
         }
     }
 }
@@ -1111,7 +1110,7 @@ fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         "Builtin" => "Function",
         other => other,
     };
-    ok_val(Value::String(name.to_string()))
+    ok_val(Value::String(name.to_string()), call_span)
 }
 
 /// Convert a `serde_json::Value` into an LLT `Value`.
@@ -1124,11 +1123,11 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
         return Err(EvalError::json_depth_exceeded(MAX_EVAL_DEPTH, span).into());
     }
     match json {
-        serde_json::Value::Null => ok_val(Value::Dict(IndexMap::new())),
-        serde_json::Value::Bool(b) => ok_val(Value::Bool(*b)),
+        serde_json::Value::Null => ok_val(Value::Dict(IndexMap::new()), span),
+        serde_json::Value::Bool(b) => ok_val(Value::Bool(*b), span),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                ok_val(Value::Int(i))
+                ok_val(Value::Int(i), span)
             } else if let Some(f) = n.as_f64() {
                 if !f.is_finite() {
                     // JSON does not support NaN or Infinity, but some parsers
@@ -1136,7 +1135,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
                     // non-finite values. Reject them explicitly.
                     Err(EvalError::float_not_finite("from-json".to_string(), f, span).into())
                 } else {
-                    ok_val(Value::Float(f))
+                    ok_val(Value::Float(f), span)
                 }
             } else {
                 // Unreachable with default serde_json: as_f64() covers all
@@ -1144,7 +1143,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
                 Err(EvalError::json_range(span).into())
             }
         }
-        serde_json::Value::String(s) => ok_val(Value::String(s.clone())),
+        serde_json::Value::String(s) => ok_val(Value::String(s.clone()), span),
         serde_json::Value::Array(arr) => {
             if arr.len() > MAX_COLLECT_SIZE {
                 return Err(EvalError::resource_limit_exceeded(
@@ -1164,7 +1163,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
                     thunk,
                 );
             }
-            ok_val(Value::Dict(map))
+            ok_val(Value::Dict(map), span)
         }
         serde_json::Value::Object(obj) => {
             if obj.len() > MAX_COLLECT_SIZE {
@@ -1182,7 +1181,7 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
                 let thunk = json_to_value(v, depth + 1, span)?;
                 map.insert(Key::String(k.clone()), thunk);
             }
-            ok_val(Value::Dict(map))
+            ok_val(Value::Dict(map), span)
         }
     }
 }
@@ -1358,7 +1357,7 @@ fn builtin_seq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(Value::Seq {
         head: Rc::clone(&args[0]),
         tail: Rc::clone(&args[1]),
-    })
+    }, call_span)
 }
 
 /// `head`: Extract the first element of a sequence.
@@ -1441,7 +1440,7 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Handle empty dict (terminal value) as input
     if let Value::Dict(ref d) = val {
         if d.is_empty() {
-            return ok_val(Value::Dict(IndexMap::new()));
+            return ok_val(Value::Dict(IndexMap::new()), call_span);
         }
     }
 
@@ -1501,7 +1500,7 @@ fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     }
 
-    ok_val(Value::Dict(map))
+    ok_val(Value::Dict(map), call_span)
 }
 
 /// `seq?`: Type predicate for sequences.
@@ -1516,7 +1515,7 @@ fn builtin_seq_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("seq?", args, named, &ctx, depth, call_span)?;
-    ok_val(Value::Bool(matches!(val, Value::Seq { .. })))
+    ok_val(Value::Bool(matches!(val, Value::Seq { .. })), call_span)
 }
 
 /// `range`: Sequence of integers from start to end (exclusive), or infinite.
@@ -1567,8 +1566,8 @@ fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let next_start = start_int
             .checked_add(1)
             .ok_or_else(|| EvalError::integer_overflow("range".to_string(), call_span))?;
-        let head = ok_val(Value::Int(start_int))?;
-        let tail_args = vec![ok_val(Value::Int(next_start))?];
+        let head = ok_val(Value::Int(start_int), call_span)?;
+        let tail_args = vec![ok_val(Value::Int(next_start), call_span)?];
         let tail = Rc::new(Thunk::new_pending_builtin(
             builtin_range,
             tail_args,
@@ -1578,7 +1577,7 @@ fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Cow::Borrowed("call $range"),
             Rc::clone(&ctx),
         ));
-        ok_val(Value::Seq { head, tail })
+        ok_val(Value::Seq { head, tail }, call_span)
     } else {
         // Finite range: [start, start+1, ..., end-1]
         let end = materialize(&args[1], None, &ctx, depth)?;
@@ -1597,15 +1596,15 @@ fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         if start_int >= end_int {
             // Empty range
-            ok_val(Value::Dict(IndexMap::new()))
+            ok_val(Value::Dict(IndexMap::new()), call_span)
         } else {
             let next_start = start_int
                 .checked_add(1)
                 .ok_or_else(|| EvalError::integer_overflow("range".to_string(), call_span))?;
-            let head = ok_val(Value::Int(start_int))?;
+            let head = ok_val(Value::Int(start_int), call_span)?;
             let tail_args = vec![
-                ok_val(Value::Int(next_start))?,
-                ok_val(Value::Int(end_int))?,
+                ok_val(Value::Int(next_start), call_span)?,
+                ok_val(Value::Int(end_int), call_span)?,
             ];
             let tail = Rc::new(Thunk::new_pending_builtin(
                 builtin_range,
@@ -1616,7 +1615,7 @@ fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Cow::Borrowed("call $range"),
                 Rc::clone(&ctx),
             ));
-            ok_val(Value::Seq { head, tail })
+            ok_val(Value::Seq { head, tail }, call_span)
         }
     }
 }
@@ -1651,7 +1650,7 @@ fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Cow::Borrowed("call $repeat"),
         Rc::clone(&ctx),
     ));
-    ok_val(Value::Seq { head, tail })
+    ok_val(Value::Seq { head, tail }, call_span)
 }
 
 /// Internal helper for `cycle`: produces the next element in the cycle.
@@ -1716,7 +1715,7 @@ fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         })?;
 
     // Create tail as PendingBuiltin for next step
-    let tail_args = vec![Rc::clone(&args[0]), ok_val(Value::Int(next_idx))?];
+    let tail_args = vec![Rc::clone(&args[0]), ok_val(Value::Int(next_idx), call_span)?];
     let tail = Rc::new(Thunk::new_pending_builtin(
         builtin_cycle_step,
         tail_args,
@@ -1727,7 +1726,7 @@ fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Rc::clone(&ctx),
     ));
 
-    ok_val(Value::Seq { head, tail })
+    ok_val(Value::Seq { head, tail }, call_span)
 }
 
 /// `cycle`: Infinite sequence cycling through entries of a dict.
@@ -1757,7 +1756,7 @@ fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
             // Start cycling from index 0
             builtin_cycle_step(BuiltinArgs {
-                args: &[Rc::clone(&args[0]), ok_val(Value::Int(0))?],
+                args: &[Rc::clone(&args[0]), ok_val(Value::Int(0), call_span)?],
                 named: &IndexMap::new(),
                 depth,
                 call_span,
@@ -1822,7 +1821,7 @@ fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Rc::clone(&ctx),
     ));
 
-    ok_val(Value::Seq { head, tail })
+    ok_val(Value::Seq { head, tail }, call_span)
 }
 
 /// Internal helper for `unfold`: performs one unfold step.
@@ -1861,7 +1860,7 @@ fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match step_result {
         Value::Dict(ref map) if map.is_empty() => {
             // Termination: return empty dict
-            ok_val(Value::Dict(IndexMap::new()))
+            ok_val(Value::Dict(IndexMap::new()), call_span)
         }
         Value::Dict(ref map) if map.len() >= 2 => {
             // Extract first two values (ignore keys)
@@ -1884,7 +1883,7 @@ fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Rc::clone(&ctx),
             ));
 
-            ok_val(Value::Seq { head, tail })
+            ok_val(Value::Seq { head, tail }, call_span)
         }
         Value::Dict(ref map) => Err(EvalError::type_mismatch_ctx(
             "unfold".to_string(),
@@ -1978,7 +1977,7 @@ fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 ));
                 new_map.insert(key.clone(), pending_call);
             }
-            ok_val(Value::Dict(new_map))
+            ok_val(Value::Dict(new_map), call_span)
         }
         Value::Seq { head, tail } => {
             // Seq path: head = f(head), tail = map(f, tail)
@@ -2004,7 +2003,7 @@ fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Seq {
                 head: new_head,
                 tail: new_tail,
-            })
+            }, call_span)
         }
         other => Err(EvalError::type_mismatch_ctx(
             "map".to_string(),
@@ -2045,7 +2044,7 @@ fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let keys: Vec<Key> = map.keys().cloned().collect();
 
             if keys.is_empty() {
-                return ok_val(Value::Dict(IndexMap::new()));
+                return ok_val(Value::Dict(IndexMap::new()), call_span);
             }
 
             // Wrap materialized values in Materialized-state thunks so the
@@ -2063,7 +2062,7 @@ fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 );
             }
             let keys_thunk = Rc::new(Thunk::new_materialized(Value::Dict(keys_map), call_span));
-            let idx_thunk = ok_val(Value::Int(0))?;
+            let idx_thunk = ok_val(Value::Int(0), call_span)?;
 
             let filter_args = vec![Rc::clone(&pred_thunk), dict_thunk, keys_thunk, idx_thunk];
 
@@ -2151,7 +2150,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Check if we've reached the end
     if idx_int >= keys_map.len() as i64 {
-        return ok_val(Value::Dict(IndexMap::new()));
+        return ok_val(Value::Dict(IndexMap::new()), call_span);
     }
 
     // Get the current key
@@ -2232,7 +2231,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     // Build tail: filter-dict-step with idx+1
-    let next_idx_thunk = ok_val(Value::Int(idx_int + 1))?;
+    let next_idx_thunk = ok_val(Value::Int(idx_int + 1), call_span)?;
     let tail_args = vec![
         Rc::clone(&pred_thunk),
         dict_thunk,
@@ -2254,7 +2253,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ok_val(Value::Seq {
             head: value_thunk,
             tail,
-        })
+        }, call_span)
     } else {
         // Skip this value, continue to next
         Ok(tail)
@@ -2290,7 +2289,7 @@ fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         match current {
             Value::Dict(_) => {
                 // End of sequence
-                return ok_val(Value::Dict(IndexMap::new()));
+                return ok_val(Value::Dict(IndexMap::new()), call_span);
             }
             Value::Seq { head, tail } => {
                 // Apply predicate to head
@@ -2333,7 +2332,7 @@ fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     return ok_val(Value::Seq {
                         head,
                         tail: new_tail,
-                    });
+                    }, call_span);
                 } else {
                     // Skip this element: advance the loop without extra depth
                     current = materialize(&tail, None, &ctx, depth)?;
@@ -2386,7 +2385,7 @@ fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     if n_int <= 0 {
         // Return empty dict (terminal for Seq, empty for Dict)
-        return ok_val(Value::Dict(IndexMap::new()));
+        return ok_val(Value::Dict(IndexMap::new()), call_span);
     }
 
     let xs = materialize(&args[1], None, &ctx, depth)?;
@@ -2398,12 +2397,12 @@ fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .take(n_int as usize)
                 .map(|(k, v)| (k.clone(), Rc::clone(v)))
                 .collect();
-            ok_val(Value::Dict(taken))
+            ok_val(Value::Dict(taken), call_span)
         }
         Value::Seq { head, tail } => {
             // Seq: head = seq head, tail = take(n-1, seq tail)
             let new_head = Rc::clone(&head);
-            let tail_args = vec![ok_val(Value::Int(n_int - 1))?, Rc::clone(&tail)];
+            let tail_args = vec![ok_val(Value::Int(n_int - 1), call_span)?, Rc::clone(&tail)];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
                 builtin_take,
                 tail_args,
@@ -2416,7 +2415,7 @@ fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Seq {
                 head: new_head,
                 tail: new_tail,
-            })
+            }, call_span)
         }
         other => Err(EvalError::type_mismatch_ctx(
             "take".to_string(),
@@ -2475,7 +2474,7 @@ fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .skip(n_int as usize)
                 .map(|(k, v)| (k.clone(), Rc::clone(v)))
                 .collect();
-            ok_val(Value::Dict(dropped))
+            ok_val(Value::Dict(dropped), call_span)
         }
         Value::Seq { head: _, tail } => {
             // Seq: use lazy step function to drop remaining elements
@@ -2528,7 +2527,7 @@ fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match seq {
         Value::Dict(_) => {
             // End of sequence before we finished dropping
-            ok_val(Value::Dict(IndexMap::new()))
+            ok_val(Value::Dict(IndexMap::new()), call_span)
         }
         Value::Seq { head: _, tail } => {
             // Drop this element, continue with tail
@@ -2721,7 +2720,7 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             // Early return for empty collection
             if parts.is_empty() {
-                return ok_val(Value::String(String::new()));
+                return ok_val(Value::String(String::new()), call_span);
             }
 
             // Check output size before joining
@@ -2741,7 +2740,7 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into());
             }
 
-            ok_val(Value::String(parts.join(&sep_str)))
+            ok_val(Value::String(parts.join(&sep_str)), call_span)
         }
         Value::Seq { head, tail } => {
             // Seq path: traverse head/tail chain, collect strings
@@ -2786,7 +2785,7 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             // Early return for empty collection
             if parts.is_empty() {
-                return ok_val(Value::String(String::new()));
+                return ok_val(Value::String(String::new()), call_span);
             }
 
             // Check output size before joining
@@ -2806,7 +2805,7 @@ fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into());
             }
 
-            ok_val(Value::String(parts.join(&sep_str)))
+            ok_val(Value::String(parts.join(&sep_str)), call_span)
         }
         other => Err(EvalError::type_mismatch_ctx(
             "join".to_string(),
@@ -2876,7 +2875,7 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Seq {
                 head,
                 tail: result_thunk,
-            })
+            }, call_span)
         }
         Value::Dict(ref xs_map) => {
             // Dict path: eagerly merge both dicts with integer reindexing
@@ -2922,7 +2921,7 @@ fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         })?;
                     }
 
-                    ok_val(Value::Dict(result))
+                    ok_val(Value::Dict(result), call_span)
                 }
                 other => Err(EvalError::type_mismatch_ctx(
                     "concat".to_string(),
@@ -2982,7 +2981,7 @@ fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Seq {
                 head,
                 tail: new_tail,
-            })
+            }, call_span)
         }
         other => Err(EvalError::type_mismatch_ctx(
             "concat-seq-step".to_string(),
@@ -4690,7 +4689,7 @@ mod tests {
     #[test]
     fn try_with_builtin_success() {
         fn ok_builtin(_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            ok_val(Value::Int(99))
+            ok_val(Value::Int(99), Span::origin())
         }
         let b = Value::Builtin {
             name: "ok",
@@ -4871,7 +4870,7 @@ mod tests {
             let a = materialize(&args[0], None, &ctx, 0)?;
             let b = materialize(&args[1], None, &ctx, 0)?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y)),
+                (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
                 _ => Err(EvalError::new("expected ints".to_string(), call_span).into()),
             }
         }
@@ -5049,7 +5048,7 @@ mod tests {
     #[test]
     fn type_of_builtin_returns_function() {
         fn dummy(_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            ok_val(Value::Int(0))
+            ok_val(Value::Int(0), Span::origin())
         }
         let builtin = Value::Builtin {
             name: "dummy",
@@ -11182,7 +11181,7 @@ mod tests {
         // needing a closure env with stdlib builtins.
         fn pred_eq_299(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let val = crate::eval::materialize(&ctx.args[0], None, &ctx.ctx, ctx.depth)?;
-            ok_val(Value::Bool(matches!(val, Value::Int(299))))
+            ok_val(Value::Bool(matches!(val, Value::Int(299))), Span::origin())
         }
 
         let result = std::thread::Builder::new()
