@@ -1821,3 +1821,15 @@ Minor concat correctness, span, and depth consistency issues from C43 review.
 - [x] Add type validation to concat_seq_step terminal case — when xs_tail materializes to Dict (sequence terminator), `ys_thunk` is returned directly without type checking; `concat(seq(1, 2, 3), 42)` defers the type error until consumer forces past last element. Distinct from empty-xs Dict path (line 157). Either eagerly validate ys or document intentional deferral. (`src/builtins.rs:2598-2600`) [Minor, computer-scientist]
 - [x] Fix concat/collect error paths to use operand span as definition-site — 4 error paths in `builtin_concat` (Dict ys type mismatch, initial xs type mismatch, step tail type mismatch) and `builtin_collect` (tail type mismatch) use `call_span` as definition-site instead of `args[N].span`. Should use `EvalError::type_mismatch(..., operand_span).with_materialization_span(call_span)`. (`src/builtins.rs:2565-2579, 2616-2623, 2305-2313`) [Major, span-integrity-checker]
 - [x] Resolve concat_seq_step depth increment inconsistency — verified C70: all step functions (filter_seq_step, drop_seq_step, reduce_seq_step) use `depth+1`; the premise was incorrect. Only `builtin_take` (line 2145) and `builtin_filter_dict_step` (line 1987) use flat `depth` and are tracked in eval-engine-c68. (`src/builtins.rs:2609`) [Minor, eval-engine; closed C70 - incorrect premise]
+
+### float-nan-infinity: Float NaN/Infinity Propagation
+
+Float arithmetic can silently produce NaN or Infinity values that propagate through the evaluator unchecked. Only caught at JSON serialization, far from the cause. Found by computer-scientist codebase review (2026-04-20).
+
+- [x] Decide NaN/Infinity rejection policy — Option B: reject at both arithmetic result sites AND `$from-json` entry. "All floats are finite" invariant. Consistent with `$to-float`, matches Jsonnet/Nickel/CUE consensus for config languages targeting JSON output. See doc/11-stdlib.md §Equality and Comparison Part 5
+- [x] Add NaN/Infinity result check to `builtin_add` Float path — `a + b` can produce Infinity (`1e308 + 1e308`), reject at point of origin (`src/builtins.rs:210`) [Major, computer-scientist]
+- [x] Add NaN/Infinity result check to `builtin_sub` Float path — `a - b` can produce Infinity, and `-Inf - (-Inf)` produces NaN (`src/builtins.rs:229`) [Major, computer-scientist]
+- [x] Add NaN/Infinity result check to `builtin_mul` Float path — `a * b` can produce Infinity (`1e308 * 2.0`) and `0.0 * Inf` produces NaN (`src/builtins.rs:248`) [Major, computer-scientist]
+- [x] Add NaN/Infinity result check to `builtin_div_float` Float path — `Inf / finite` produces Infinity, `Inf / Inf` and `0.0 / 0.0` produce NaN (only `b == 0.0` is checked) (`src/builtins.rs:270-274`) [Major, computer-scientist]
+- [x] Add shared `check_float_result(f64, &str, Span)` helper returning error on `is_nan()` or `is_infinite()` (`src/builtins.rs`)
+- [x] Reject NaN/Infinity in `$from-json` parse path — add `is_finite()` check after `as_f64()` in `json_to_value` Number arm (`src/builtins.rs` json_to_value)
