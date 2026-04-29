@@ -98,65 +98,8 @@ Replace the current closed-strict/open-lenient record unification with full Remy
 
 - [x] Design Remy-style row unification model (row variable binding, remainder semantics, occurs check) — see doc/07-type-extensions.md §Row-Variable Unification — Kinded Rémy Model (Dict+Tail Representation)
 
-### row-unification-c: Verification and Bug Fixes
 
-Bug fixes and verification for row-variable unification. Requires row-unification-b.
 
-- [x] Fix `unify_remainders` reachable silent-success when `rho1 == rho2` with non-empty unique fields — Case 4 guard (`rho1 != rho2`) excludes the case where both rows share the same row variable but have different unique fields; e.g. unifying `{x: Int, ...rho}` with `{y: Str, ...rho}` falls through to `_ => Ok(())` silently succeeding, dropping the unique-field constraints. Soundness violation: the shared tail cannot absorb fields from both sides without contradiction. Fix: add an explicit case before the fallback: `(RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _)) if rho1 == rho2 && (!u1_empty || !u2_empty) => Err(TypeError::new("incompatible fields with shared row variable", span))`. Then change the fallback to `unreachable!()`. (`src/types.rs:603-706`) [Major, computer-scientist C51]
-- [x] Fix row occurs check not chasing TypeVar bindings through substitution — `row_var_occurs_in_type` returns `false` for `TypeVar` even when the type var is bound to a type containing the target row var; theoretical incompleteness, low practical impact given typical HM inference order (`src/types.rs:460-481`) [Minor, computer-scientist C49]
-- [x] Fix anonymous `[...]` open record annotations sharing `_open` row variable name and hardcoded level 0 — multiple open-record annotations on different params share the same `RowVar("_open", 0)`, causing their tails to be identified during unification; the hardcoded level 0 also prevents generalization (Kiselyov 2013: variables at level 0 are never generalized), so a function `[fn [x@[name: String ...]] ...]` cannot infer a polymorphic row tail. Fix: generate fresh names via `state.name_counter` at `state.level`. Named row vars (`...rest`) already get proper treatment at lines 1200-1213. (`src/typecheck.rs:1199`) [Minor, computer-scientist C49]
-- [x] Test inference through polymorphic functions that extend/restrict records (e.g., `[fn add-id [r@[...rest]] [id: 1  ...rest]]`)
-- [x] Verify consistency between `unify` and `is_subtype` for all RowRest combinations
-- [x] Ensure row variable occurs check before binding — existing `occurs_in()` handles `RowVar` case correctly (`src/types.rs:215-228`), but when row-unification adds row variable binding, it must go through the same occurs-check path to prevent infinite types like `r = [x: Int ...r]`. (`src/types.rs`) [Major, computer-scientist]
-- [x] Add debug assertion in `apply_row` field merge for duplicate fields — field partitioning in `unify_rows` ensures disjoint unique fields, so a duplicate during merge indicates an internal error; add `debug_assert!(!merged.contains_key(&key))` (`src/types.rs:404-410`) [Nit, type-theorist C49] — duplicates in apply_row are legitimate (explicit field wins over row-variable-inherited); explanatory comments added instead
-
-### row-unification-d: Verification Continuation — Tests, Comments, Doc Fixes
-
-Verification follow-on for row-unification-c. Requires row-unification-c.
-
-- [x] Add comment to `unify_tails` RowVar/RowVar binding explaining why no occurs check is needed — Robinson (1965) vacuous satisfaction. (`src/types.rs:547`)
-- [x] Add comment to `row_var_occurs_in_type` TypeVar chase explaining no-cycle invariant. (`src/types.rs:495`)
-- [x] Update `doc/07-type-extensions.md` pseudocode for `unify_remainders` — added Case 7, `u2_empty`/`u1_empty` guards, `when ρ₁ ≠ ρ₂` on Case 4.
-- [x] Corpus error test for same-rho soundness — determined infeasible (annotation mapping isolation prevents shared row vars end-to-end; unit test is sufficient)
-- [x] Add cross-function anonymous open record test — `test_cross_function_anonymous_open_records_get_fresh_vars` (`src/typecheck.rs:2405`)
-- [x] Add `test_lower_row_var_levels_prevents_generalization` (`src/types.rs:4510`)
-- [x] Add `test_unify_tails_empty_vs_rowvar` symmetric direction (`src/types.rs:4557`)
-- [x] Add multi-hop TypeVar chase test (`src/types.rs:4585`)
-
-### row-unification-e: Row Type Features and Performance
-
-Feature additions, performance improvements, and remaining small fixes for row types. Requires row-unification-d.
-
-- [x] Generate unification constraints from access chains — `$x.field` produces `unify(typeof(x), Record([field: α], ρ))`, enabling field requirement inference from usage. Implemented in `check_dot_access` TypeVar and RowVar cases. See doc/07 §Part 5. (`src/typecheck.rs:586-671`) [Major, type-theorist]
-- [x] Subtyping proof search for TypeAssert defaults — validate default value type matches asserted type via `is_subtype`. (`src/typecheck.rs:1044-1063`) [Major, type-theorist]
-- [x] Cache FTV/FRV (free type/row variables) per Type during construction — analysis determined call pattern is already O(1) per unification (not a hot loop); implemented as explanatory comment in `row_var_occurs_in_type` documenting why caching is not needed. [Major, performance-expert]
-- [x] Use HashMap for Row.fields at type level, IndexMap only at runtime — row fields are semantically unordered (Rémy left-commutativity), HashMap removes insertion-order overhead. Runtime `Value::Dict` keeps IndexMap for user-visible key ordering. (`src/types.rs:39`) [Minor, performance-expert]
-- [x] Eliminate Cases 2/3 redundant clones in `unify_remainders` — unique fields and tails now moved directly into Row struct instead of cloning. (`src/types.rs:741-777`) [Minor, performance-expert C52]
-- [x] Add `RowTail::Empty` PartialEq variant tests — existing tests cover `RowVar == RowVar` and `RowVar != RowVar` (different names) but not `Empty == Empty` or `Empty != RowVar(...)`. Add `test_rowtail_eq_empty_both` and `test_rowtail_neq_empty_vs_rowvar`. (`src/types.rs:21-28`) [Nit, test-crafter C52]
-- [x] Add level-minimization assertion to `test_unify_tails_both_rowvar_different_names` — test at line 3663 initializes both vars at level 0 so the min(rho1_level, rho2_level) logic is coincidentally correct; add a variant with rho1 at level 2 and rho2 at level 4 and assert the stored tail level is 2. (`src/types.rs:3663-3684`) [Nit, test-crafter C52]
-- [x] Fix `doc/07-type-extensions.md` apply_row duplicate claim — doc at line 368 already correctly describes left-biased merge semantics; implementation at `src/types.rs:404-416` correct. (`doc/07-type-extensions.md:368`) [Minor, computer-scientist C52]
-### row-unification-f: State.Subst Correctness (Majors)
-
-Substitution threading correctness fixes for the access-chain changes from row-unification-e. Requires row-unification-e.
-
-- [x] Merge `state.subst` with letrec local `subst` in `infer_dict` — two independent substitutions share domain variables (e.g., `_t1`) but are never reconciled. Forward-reference dot-access (`$data.x` before `data:` defined) generates constraints in `state.subst` that are invisible to letrec unification in local `subst`. Result: TypeVar instead of resolved type. Fix: use `state.subst` as the single accumulator, or compose the two substitutions before Pass 4 generalization. Invariant: Algorithm W substitution threading (Damas & Milner 1982). (`src/typecheck.rs:495-537`) [Major, computer-scientist C52]
-- [x] Apply `state.subst` before `is_subtype` in `resolve_type_assert` default validation — `default_ty` and `expected` may contain TypeVars bound in `state.subst`, producing stale comparisons and false positives. (`src/typecheck.rs:1048`) [Major, computer-scientist C52]
-- [x] Incorporate `state.subst` in CALL-POLY return type — `check_call` (typecheck.rs:812) and `check_call_with_scheme` (typecheck.rs:933) compute return type via only the local unification subst; access-chain constraints in `state.subst` that constrain the return TypeVar are not applied. Fix: `state.subst.apply(&subst.apply(inst_ret))` at both sites. (`src/typecheck.rs:812, 933`) [Major, integration-verifier C52]
-- [x] Document or resolve default-value always-validate policy — `resolve_type_assert` validates the default type even when the main assertion passes (e.g., `[@[type: Number  default: "hello"] 42]` fails compile-time despite the default being dead code). Either (a) document the invariant in doc/07 §Interaction with default: ("default must statically satisfy the asserted type regardless of assertion outcome"), or (b) relax to only validate when `check_result.is_err()`. Choose one, align code and doc. (`src/typecheck.rs:1044-1063`, `doc/07-type-extensions.md`) [Major, type-theorist C52]
-- [x] Re-resolve row tails after shared-field unification in `unify_rows` — Step 4 passes `resolved1.tail` and `resolved2.tail` from Step 1 to `unify_remainders`, but Step 3's shared-field unification can bind row variables that appear as tails (via nested `unify(Record(...), Record(...), ...)`). When this happens, `unify_tails` (called from `unify_remainders` Case 1) overwrites the binding made during Step 3 by inserting a new entry for the same row variable into `subst.row_map`. This violates the Robinson (1965) substitution-threading invariant: the standard algorithm requires applying the current substitution before proceeding to the next equation. `unify()` does this at lines 887-888 but `unify_rows` does not re-resolve tails after Step 3. Fix: after Step 3, re-resolve both rows via `resolve_row(&Row { fields: unique1, tail: resolved1.tail }, subst)` (and similarly for row2), then use the re-resolved tails for Step 4. Alternatively, have `unify_tails` check if a row variable is already bound before inserting (idempotency guard). (`src/types.rs:838-878, 586-628`) [Major, computer-scientist C53]
-
-### row-unification-g-b: Test Coverage and Nit Fixes (Continued)
-
-Overflow from row-unification-g plus nit fixes from the row-unification-f panel review. Requires row-unification-g.
-
-- [x] Add unit test for `validate_and_wrap_record` nested `field_path` error message — `src/eval.rs:178-193` builds a `"field \"x\": record missing field \"y\""` prefix when `field_path` is non-empty (fires during `ThunkState::Guarded` materialization of nested record fields), but zero tests exercise this branch; any refactor of the `field_path_prefix` concatenation would go uncaught. Add a unit test that calls `validate_and_wrap_record` with a non-empty `field_path` and verifies the error message contains the expected prefix. (`src/eval.rs:178-193`) [Major, test-crafter C53]
-- [x] Add corpus laziness test for `ThunkState::Guarded` record proxy — `tests/corpus/eval/laziness/` has nine tests but none demonstrate that proxy contract field validation fires lazily (only when the guarded field is accessed, not at assertion time). Add `tests/corpus/eval/laziness/typeassert_record_lazy_guard.llt-eval`: a closed record TypeAssert where one field contains a side-effectful or error-producing thunk (`$error`) that is never accessed — if the guard fires eagerly the test fails, if lazy it passes. (`tests/corpus/eval/laziness/`) [Major, test-crafter C53]
-- [x] Fix termination comment for recursive `unify_rows` call — line 890 says "Terminates because each round binds at least one row variable, and the occurs check bounds the number of variables"; the first clause is false for concrete-field-only recursion. Replace with: "Terminates because each recursive entry requires Step 3 to have bound at least one row variable (surfacing new_shared fields), strictly reducing the number of unbound row variables. The occurs check prevents cyclic bindings." (`src/types.rs:887-892`) [Nit, computer-scientist C53]
-- [x] Annotate Pass 3b row-tail limitation — `tail: row.tail.clone()` does not chase the tail through local subst; add comment: "Tail not applied through local subst here — Pass 3c's `subst.apply()` chases tail chains transitively." (`src/typecheck.rs:543-555`) [Nit, type-theorist C53]
-- [x] Cite `row-unification-f-b` in `test_let_gen_typevar_in_dot_access` comment — the comment documents known incompleteness ("β is not yet resolved to IntLiteral(1)") but doesn't cite the tracking TODO item. Append "See row-unification-f-b in TODO.md." (`src/typecheck.rs:2917-2920`) [Nit, sprint-reviewer C53]
-- [x] Add ASSERT-DEFAULT suppression test — add `test_typeassert_default_suppresses_main_error_but_propagates_ok` that calls `check("[result: [@[type: Number  default: 0] hello]]")` and verifies the result is `Ok`, confirming main-check error is suppressed when a valid default is present. (`src/typecheck.rs`) [Minor, sprint-reviewer C53]
-- [x] Add CALL-POLY state.subst constraint test — add a test where a forward-reference dot-access binds a TypeVar in state.subst before a polymorphic call whose return type references that same TypeVar, verifying `state.subst.apply()` in the CALL-POLY arm changes the result. Without this, removing `state.subst.apply()` from `check_call`/`check_call_with_scheme` would not break any test. (`src/typecheck.rs:837, 958`) [Minor, test-crafter C53]
-- [x] Add typecheck corpus runner — `tests/corpus/eval/typecheck/` is executed by the eval runner which discards type errors (`let _ = typecheck::typecheck_file(...)` at corpus_tests.rs:81); type-checker regressions that don't change runtime output are invisible. Add a dedicated `test_typecheck_corpus()` that calls `typecheck_file()` and validates Ok/Err. (`tests/corpus_tests.rs:81`, `tests/corpus/eval/typecheck/`) [Major, test-crafter C54]
 
 ## type-extensions: Type System Extensions
 
@@ -331,15 +274,6 @@ Replace eager dict merge with lazy overlay representation. See doc/08-evaluation
 
 ## sequences-remaining: Sequences and Fully Lazy Operations (remaining)
 
-### seq-cycle-fix: Seq Cycle Detection Asymmetry
-
-Found by eval-engine codebase review (2026-04-20).
-
-**Design decision (2026-04-21):** Pointer-identity visited set (`HashSet<*const Thunk>`) + depth/fuel backstop is sufficient. Cross-type cycles through distinct thunk allocations are nearly impossible to construct in tinct's Rc-sharing model (letrec uses `Rc::clone`, not copy). CEK migration replaces depth limit with explicit fuel, which serves the same backstop role. No value-level allocation tagging needed.
-
-- [x] Design value-level vs pointer-level cycle detection strategy for `deep_materialize` — decision: pointer identity + depth/fuel backstop is sufficient; cross-type cycles through distinct allocations are nearly impossible in Rc-sharing model. No changes needed; CEK migration (iterative `Cont::DeepEntries`/`Cont::DeepSeqTail`) subsumes the stack overflow concern. (`src/eval.rs:1109-1139`) [Major, eval-engine]
-- [x] Document deep_materialize Seq→Dict terminal case — docstring doesn't explain that Seq tail eventually materializes to empty Dict `[]` as terminal value, and infinite sequences hit MAX_EVAL_DEPTH (`src/eval.rs:1056-1069`) [Minor, eval-engine]
-- [x] Fix deep_materialize breaking Launchbury sharing — creates new `Rc<Thunk>` allocations for every Dict entry/Seq element, so two references that shared the same thunk via `Rc::clone` will have `Rc::ptr_eq` return false after deep_materialize. Only affects `--eval` output path. Fix: maintain `HashMap<*const Thunk, Rc<Thunk>>` during traversal to reuse forced replacements. (`src/eval.rs:1090-1107`) [Minor, computer-scientist]
 
 ## perf-stdlib: Performance: Stdlib Rust Reimplementations
 
@@ -837,18 +771,6 @@ Documentation and code quality fixes following the call-convention-kotlin sprint
 - [ ] Replace raw `EvalError` struct literals with named constructors in `bind_args_thunks` — three sites at `src/eval.rs:622, 666, 681` bypass the constructor API. Replace with `EvalError::missing_required_param`, `EvalError::unknown_named_arg`, or equivalent named constructors. (`src/eval.rs:622, 666, 681`) [Minor, eval-engine C48]
 
 
-### doc-pest-cleanup: Parser Rewrite Documentation Update
-
-Update all documentation that still references the pest parser. The iterative parser (parser-core-c3, 2026-04-29) replaced pest entirely — grammar.pest deleted, pest dep removed.
-
-- [x] Remove §6 "Complete Grammar" pest code block from doc/02-syntax.md — updated to EBNF, canonical source → parser.rs + lexer.rs [Major, grammar-architect C71]
-- [x] Update CLAUDE.md:3 — "pest PEG grammar" → "hand-written iterative descent" [Major, grammar-architect C71]
-- [x] Update README.md — removed pest references, grammar.pest table row [Major, grammar-architect C71]
-- [x] Update doc/15-ast.md — "planned" → present tense for iterative parser [Major, grammar-architect C71]
-- [x] Update doc/17-references.md — pest marked historical [Major, grammar-architect C71]
-- [x] Update doc/04-functions.md, doc/09-documents.md — pest → ebnf code fences [Minor, grammar-architect C71]
-- [x] Update STATUS.md — Parser Rewrite moved to Completed [Minor, grammar-architect C71]
-- [x] Update TODO.md parser-rewrite section header — Phase 1-2 complete noted [Minor, grammar-architect C71]
 
 ## doc-divergences: Documentation Divergences (doc/*.md / Code)
 

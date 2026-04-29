@@ -1944,3 +1944,16 @@ Span and message quality gaps in TypeAssert/Guarded error paths. Corpus tests bl
 - [x] Fix Guarded thunk field errors using `guard_span` — now uses `inner.span` as definition_span for field errors
 - [x] Fix nominal TypeAssert fallback — uses `EvalError::type_assert_failed()` constructor with dual-span
 - [x] Normalize TypeAssertFailed message format — fieldpath-prefix scheme applied consistently
+
+### doc-pest-cleanup: Parser Rewrite Documentation Update
+
+Update all documentation that still references the pest parser. The iterative parser (parser-core-c3, 2026-04-29) replaced pest entirely — grammar.pest deleted, pest dep removed.
+
+- [x] Remove §6 "Complete Grammar" pest code block from doc/02-syntax.md — updated to EBNF, canonical source → parser.rs + lexer.rs
+- [x] Update CLAUDE.md:3 — "pest PEG grammar" → "hand-written iterative descent"
+- [x] Update README.md — removed pest references, grammar.pest table row
+- [x] Update doc/15-ast.md — "planned" → present tense for iterative parser
+- [x] Update doc/17-references.md — pest marked historical
+- [x] Update doc/04-functions.md, doc/09-documents.md — pest → ebnf code fences
+- [x] Update STATUS.md — Parser Rewrite moved to Completed
+- [x] Update TODO.md parser-rewrite section header — Phase 1-2 complete noted
