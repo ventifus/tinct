@@ -143,9 +143,23 @@ pub struct FlatEnv {
 }
 ```
 
-Variable lookup becomes `env.slots[slot]` — O(1) instead of O(depth) chain
-walk. The `(level, slot)` pair is assigned by a pre-eval variable resolution
-pass (de Bruijn levels, not indices — no shifting needed under substitution).
+Variable lookup becomes `env.slots[slot]` — O(1) per level instead of
+O(depth) chain walk. The `(level, slot)` pair is assigned by a pre-eval
+variable resolution pass (de Bruijn levels, not indices — no shifting needed
+under substitution).
+
+**Caveat — display vector required for true O(1):** `FlatEnv` has a
+`parent: Option<EnvId>` chain used for stdlib/builtins root lookups. Without a
+*display vector* (de Bruijn 1972 §3) — a `Vec<EnvId>` indexed by level,
+prepopulated at closure creation time — resolving a variable at level `k`
+still requires walking `k` parent links to reach the right `FlatEnv`, giving
+O(level) lookup in the worst case. A display vector trades O(scope_size)
+storage at closure creation for guaranteed O(1) slot access at lookup.
+Alternatively, copy-on-capture flat closures (Nix model) copy all bindings
+into a single flat frame at closure creation time — O(scope_size) creation,
+O(1) lookup, but no sharing across closures. The `parent` chain on `FlatEnv`
+is retained for the stdlib root only; user-scope lookups via `(level, slot)`
+pairs achieve O(1) under the display-vector assumption.
 
 The environment arena uses the same `Vec + newtype index` pattern as thunks.
 Two separate arenas (`ThunkArena` + `EnvArena`) with cross-references via
