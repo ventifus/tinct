@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -515,23 +516,26 @@ impl fmt::Debug for Thunk {
 }
 
 /// Lexical scope chain: bindings in the current scope plus an optional parent link.
+/// Uses `HashMap` (not `IndexMap`) because bindings are looked up by name only — insertion
+/// order carries no semantic meaning for lexical scoping. This is the hottest lookup path
+/// in the evaluator (every VarRef walks this chain).
 #[derive(Debug, Clone)]
 pub struct Environment {
-    pub(crate) bindings: IndexMap<String, Rc<Thunk>>,
+    pub(crate) bindings: HashMap<String, Rc<Thunk>>,
     pub(crate) parent: Option<Rc<RefCell<Environment>>>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
-            bindings: IndexMap::new(),
+            bindings: HashMap::new(),
             parent: None,
         }
     }
 
     pub fn with_parent(parent: Rc<RefCell<Environment>>) -> Self {
         Self {
-            bindings: IndexMap::new(),
+            bindings: HashMap::new(),
             parent: Some(parent),
         }
     }

@@ -6,8 +6,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
-use indexmap::IndexMap;
-
 use crate::ast::Span;
 
 /// Row tail for Rémy-style row polymorphism (kinded row variables)
@@ -30,10 +28,10 @@ impl PartialEq for RowTail {
 
 /// Row representation for record types (dict+tail representation)
 ///
-/// `fields` uses `HashMap` (not `IndexMap`) because row field order is semantically irrelevant
-/// at the type level — Rémy's commutativity equations make rows unordered. `Display` sorts
-/// field names for deterministic output. Runtime `Value::Dict` keeps `IndexMap` for ordered
-/// user-visible semantics; this HashMap is only at the type-inference layer.
+/// `fields` uses `HashMap` because row field order is semantically irrelevant at the type level —
+/// Rémy's commutativity equations make rows unordered. `Display` sorts field names for
+/// deterministic output. Runtime `Value::Dict` keeps `IndexMap` for ordered user-visible
+/// semantics; this HashMap is only at the type-inference layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     pub fields: HashMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
@@ -349,8 +347,8 @@ impl Default for InferState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Substitution {
-    pub type_map: IndexMap<String, Type>, // α → τ  (kind: Type)
-    pub row_map: IndexMap<String, Row>,   // ρ → r  (kind: Row)
+    pub type_map: HashMap<String, Type>, // α → τ  (kind: Type)
+    pub row_map: HashMap<String, Row>,   // ρ → r  (kind: Row)
 }
 
 const MAX_APPLY_DEPTH: usize = 256;
@@ -362,13 +360,13 @@ pub const MAX_SUBST_SIZE: usize = 10_000;
 impl Substitution {
     /// Create a new empty substitution.
     ///
-    /// Performance note: `IndexMap::new()` creates a map with zero capacity
+    /// Performance note: `HashMap::new()` creates a map with zero capacity
     /// and performs no heap allocation until the first insert. This is optimal
     /// for fully-concrete dicts that generate no unification constraints.
     pub fn new() -> Self {
         Self {
-            type_map: IndexMap::new(),
-            row_map: IndexMap::new(),
+            type_map: HashMap::new(),
+            row_map: HashMap::new(),
         }
     }
 
@@ -392,6 +390,9 @@ impl Substitution {
     }
 
     pub fn apply(&self, ty: &Type) -> Type {
+        if self.type_map.is_empty() && self.row_map.is_empty() {
+            return ty.clone();
+        }
         let mut visited_types = HashSet::new();
         let mut visited_rows = HashSet::new();
         self.apply_type(ty, 0, &mut visited_types, &mut visited_rows)
@@ -919,6 +920,24 @@ fn unify_rows(
     let resolved1 = resolve_row(row1, subst);
     let resolved2 = resolve_row(row2, subst);
 
+    // Fast-path: both rows are closed and have identical key sets — the common case
+    // for checking an inferred closed record against an annotated closed record.
+    // Skip all partition allocation and proceed directly to per-field unification.
+    if resolved1.tail == RowTail::Empty
+        && resolved2.tail == RowTail::Empty
+        && resolved1.fields.len() == resolved2.fields.len()
+        && resolved1
+            .fields
+            .keys()
+            .all(|k| resolved2.fields.contains_key(k))
+    {
+        for (key, ty1) in &resolved1.fields {
+            let ty2 = &resolved2.fields[key];
+            unify(ty1, ty2, subst, state, span)?;
+        }
+        return Ok(());
+    }
+
     // Step 2: Partition fields into shared and unique
     let keys1: HashSet<&String> = resolved1.fields.keys().collect();
     let keys2: HashSet<&String> = resolved2.fields.keys().collect();
@@ -951,6 +970,22 @@ fn unify_rows(
     // that share a row variable with the outer row's tail). Passing stale tails to
     // Step 4 would cause unify_remainders to overwrite the Step-3 binding, violating
     // the Robinson (1965) substitution-threading invariant.
+    //
+    // Fast-path: both tails are already Empty — re-resolution is a no-op (resolve_row
+    // with RowTail::Empty returns the row unchanged). Skip the two resolve_row calls and
+    // the Step 3.6 re-partition allocations; proceed directly to unify_remainders.
+    if resolved1.tail == RowTail::Empty && resolved2.tail == RowTail::Empty {
+        return unify_remainders(
+            unique1,
+            resolved1.tail,
+            unique2,
+            resolved2.tail,
+            subst,
+            state,
+            span,
+        );
+    }
+
     let re_resolved1 = resolve_row(
         &Row {
             fields: unique1,
@@ -1371,24 +1406,24 @@ impl fmt::Display for Type {
 
 #[derive(Debug, Clone)]
 pub struct TypeEnv {
-    bindings: IndexMap<String, TypeScheme>,
-    type_aliases: IndexMap<String, Type>,
+    bindings: HashMap<String, TypeScheme>,
+    type_aliases: HashMap<String, Type>,
     parent: Option<Rc<TypeEnv>>,
 }
 
 impl TypeEnv {
     pub fn new() -> Self {
         Self {
-            bindings: IndexMap::new(),
-            type_aliases: IndexMap::new(),
+            bindings: HashMap::new(),
+            type_aliases: HashMap::new(),
             parent: None,
         }
     }
 
     pub fn with_parent(parent: Rc<TypeEnv>) -> Self {
         Self {
-            bindings: IndexMap::new(),
-            type_aliases: IndexMap::new(),
+            bindings: HashMap::new(),
+            type_aliases: HashMap::new(),
             parent: Some(parent),
         }
     }

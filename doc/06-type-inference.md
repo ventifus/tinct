@@ -448,7 +448,7 @@ Tinct uses levels-based let-generalization following Kiselyov (2013) to support 
 σ ::= ∀(α₁...αₙ, ρ₁...ρₘ). τ    (n,m ≥ 0; when both zero, equivalent to monomorphic τ)
 ```
 
-Implementation: `TypeEnv.bindings` changes from `IndexMap<String, Type>` to `IndexMap<String, TypeScheme>`. The `TypeScheme` struct:
+Implementation: `TypeEnv.bindings` changes from `HashMap<String, Type>` to `HashMap<String, TypeScheme>`. The `TypeScheme` struct:
 
 ```rust
 #[derive(Debug, Clone)]
@@ -598,7 +598,7 @@ The Record type uses monomorphic (substitution-applied) types for the type map a
 
 Mutually recursive entries constrain each other through unification during Pass 3. This is standard monomorphic letrec (OCaml, Haskell `let rec`) — entries see each other as monomorphic during inference, not polymorphic. Polymorphic recursion (Mycroft 1984) is not supported: it would require fixpoint iteration to convergence, which is more complex and can diverge. The monomorphic restriction is sufficient for tinct's use cases.
 
-**Document-level scheme threading.** `typecheck_document` splats dict Record fields into the parent environment for downstream document expressions. To preserve polymorphism across `---` boundaries, the splat must carry type schemes alongside the Record type. Implementation: `infer_dict` returns both the `Record` type (for structural checks) and an `IndexMap<String, TypeScheme>` (for environment threading). `typecheck_document` inserts the schemes into the parent `TypeEnv`.
+**Document-level scheme threading.** `typecheck_document` splats dict Record fields into the parent environment for downstream document expressions. To preserve polymorphism across `---` boundaries, the splat must carry type schemes alongside the Record type. Implementation: `infer_dict` returns both the `Record` type (for structural checks) and a `HashMap<String, TypeScheme>` (for environment threading). `typecheck_document` inserts the schemes into the parent `TypeEnv`.
 
 **Interaction with `Any` and unannotated parameters:**
 
@@ -633,13 +633,13 @@ Mutually recursive entries constrain each other through unification during Pass 
 |-----------|--------------|
 | `Type::TypeVar` | `TypeVar(String, u32)` — manual `PartialEq` (name only, level ignored for equality) |
 | `RowTail::RowVar` | `RowVar(String, u32)` — levels for row generalization |
-| `TypeEnv.bindings` | `IndexMap<String, TypeScheme>` |
-| `TypeEnv.type_aliases` | `IndexMap<String, Type>` — aliases stay monomorphic |
+| `TypeEnv.bindings` | `HashMap<String, TypeScheme>` |
+| `TypeEnv.type_aliases` | `HashMap<String, Type>` — aliases stay monomorphic |
 | `TypeEnv::get()` | Returns `&TypeScheme` |
 | `TypeEnv::insert_scheme()` | `fn(name, TypeScheme)` |
 | `infer_expr` VAR case | `instantiate_scheme(env.get(name)?, ...)` |
 | `infer_dict` | 5 passes (0-4), bind to fresh αᵢ, generalize in Pass 4 |
-| `infer_dict` return | `(Type, IndexMap<String, TypeScheme>)` |
+| `infer_dict` return | `(Type, HashMap<String, TypeScheme>)` |
 | `typecheck_document` | Splats `TypeScheme`s into parent env across `---` boundaries |
 | `instantiate()` | `fn(Type, &mut u32) → (Type, Subst)` — for CALL-POLY call-site freshening |
 | `instantiate_scheme()` | `fn(TypeScheme, u32, &mut InferState) → Type` |

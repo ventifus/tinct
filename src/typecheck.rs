@@ -6,8 +6,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use indexmap::IndexMap;
-
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, lower_row_var_levels_pub,
@@ -83,7 +81,7 @@ fn typecheck_document(
         return Ok(Rc::new(result_env));
     }
 
-    let mut last_dict_schemes: Option<IndexMap<String, TypeScheme>> = None;
+    let mut last_dict_schemes: Option<HashMap<String, TypeScheme>> = None;
     // Carries the inferred Record type and the enclosing_level saved before inference,
     // so that generalization in the block below the loop uses the correct level explicitly.
     let mut last_record_type: Option<(Type, u32)> = None;
@@ -604,7 +602,7 @@ fn infer_dict(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
     span: Span,
-) -> Result<(Type, IndexMap<String, TypeScheme>), Vec<TypeError>> {
+) -> Result<(Type, HashMap<String, TypeScheme>), Vec<TypeError>> {
     // Level management: save enclosing level, increment for dict body
     let enclosing_level = state.level;
     state.level += 1;
@@ -712,7 +710,7 @@ fn infer_dict(
                 Some(existing) => {
                     // Remove binding before calling unify to prevent apply() from chasing
                     // k -> existing -> k in a cycle during resolution (mirrors row_map path).
-                    subst.type_map.shift_remove(&k);
+                    subst.type_map.remove(&k);
                     // Both maps bind the same variable: unify to reconcile constraints
                     unify(&existing, &applied_v, &mut subst, state, span).map_err(|e| vec![e])?;
                 }
@@ -748,7 +746,7 @@ fn infer_dict(
                     // Both maps bind the same row variable: unify to reconcile constraints.
                     // Remove the binding for k before calling unify to prevent apply() from
                     // chasing k -> existing -> k in an infinite cycle during resolution.
-                    subst.row_map.shift_remove(&k);
+                    subst.row_map.remove(&k);
                     unify(
                         &Type::Record(existing),
                         &Type::Record(applied_row),
@@ -784,7 +782,7 @@ fn infer_dict(
     state.subst.check_size(span).map_err(|e| vec![e])?;
 
     // Pass 4: Generalize - create TypeSchemes for each entry
-    let mut schemes = IndexMap::with_capacity(field_types.len());
+    let mut schemes = HashMap::with_capacity(field_types.len());
     for (name, ty) in &field_types {
         let scheme = generalize(enclosing_level, ty, state);
         schemes.insert(name.clone(), scheme);
