@@ -190,17 +190,19 @@ impl Type {
         }
     }
 
-    pub fn has_type_vars(&self) -> bool {
+    /// Returns true if the type contains any inference variables (TypeVar or RowVar).
+    /// Used to determine whether a type is concrete or still under inference.
+    pub fn has_inference_vars(&self) -> bool {
         match self {
             Type::TypeVar(_, _) => true,
             Type::Record(row) => {
                 matches!(row.tail, RowTail::RowVar(_, _))
-                    || row.fields.values().any(|ty| ty.has_type_vars())
+                    || row.fields.values().any(|ty| ty.has_inference_vars())
             }
             Type::Function { params, ret } => {
-                params.iter().any(|p| p.has_type_vars()) || ret.has_type_vars()
+                params.iter().any(|p| p.has_inference_vars()) || ret.has_inference_vars()
             }
-            Type::Seq(elem) => elem.has_type_vars(),
+            Type::Seq(elem) => elem.has_inference_vars(),
             Type::Proxy => false,
             _ => false,
         }
@@ -784,10 +786,13 @@ fn unify_remainders(
             let rho_fresh_level = state.level;
             state.levels.insert(rho_fresh_name.clone(), rho_fresh_level);
 
-            // Occurs checks: ρ₁ must not appear in U₂ fields + fresh tail
+            let fresh_tail = RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level);
+
+            // Occurs checks: construct row for check, then reuse for binding
+            // ρ₁ must not appear in U₂ fields + fresh tail
             let row2_with_fresh = Row {
-                fields: unique2.clone(),
-                tail: RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level),
+                fields: unique2,
+                tail: fresh_tail.clone(),
             };
             if row_var_occurs(rho1, &row2_with_fresh, subst) {
                 return Err(TypeError::new(
@@ -798,8 +803,8 @@ fn unify_remainders(
 
             // ρ₂ must not appear in U₁ fields + fresh tail
             let row1_with_fresh = Row {
-                fields: unique1.clone(),
-                tail: RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level),
+                fields: unique1,
+                tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
             };
             if row_var_occurs(rho2, &row1_with_fresh, subst) {
                 return Err(TypeError::new(
@@ -1172,7 +1177,7 @@ pub fn unify(
         // relation in both directions. Bidirectional because unification is symmetric —
         // the original actual/expected roles are lost after structural decomposition.
         // The substitution is not modified (no variables to bind).
-        _ if !a.has_type_vars() && !b.has_type_vars() => {
+        _ if !a.has_inference_vars() && !b.has_inference_vars() => {
             if Type::is_subtype(&a, &b) || Type::is_subtype(&b, &a) {
                 Ok(())
             } else {
@@ -1309,7 +1314,7 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
     let ty = &state.subst.apply(ty);
 
     // Early exit for monomorphic types (common case: all-concrete config dicts)
-    if !ty.has_type_vars() {
+    if !ty.has_inference_vars() {
         return TypeScheme::mono(ty.clone());
     }
 
@@ -2042,19 +2047,19 @@ mod tests {
     }
 
     #[test]
-    fn test_has_type_vars_primitive() {
-        assert!(!Type::Int.has_type_vars());
-        assert!(!Type::Str.has_type_vars());
-        assert!(!Type::Any.has_type_vars());
+    fn test_has_inference_vars_primitive() {
+        assert!(!Type::Int.has_inference_vars());
+        assert!(!Type::Str.has_inference_vars());
+        assert!(!Type::Any.has_inference_vars());
     }
 
     #[test]
-    fn test_has_type_vars_type_var() {
-        assert!(Type::TypeVar("a".into(), 0).has_type_vars());
+    fn test_has_inference_vars_type_var() {
+        assert!(Type::TypeVar("a".into(), 0).has_inference_vars());
     }
 
     #[test]
-    fn test_has_type_vars_function() {
+    fn test_has_inference_vars_function() {
         let with = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::Int),
@@ -2063,15 +2068,15 @@ mod tests {
             params: vec![Type::Int],
             ret: Box::new(Type::Str),
         };
-        assert!(with.has_type_vars());
-        assert!(!without.has_type_vars());
+        assert!(with.has_inference_vars());
+        assert!(!without.has_inference_vars());
     }
 
     #[test]
-    fn test_has_type_vars_record() {
+    fn test_has_inference_vars_record() {
         let mut fields = HashMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
-        assert!(closed_record(fields).has_type_vars());
+        assert!(closed_record(fields).has_inference_vars());
     }
 
     #[test]
@@ -3090,9 +3095,9 @@ mod tests {
     }
 
     #[test]
-    fn test_has_type_vars_seq() {
-        assert!(Type::Seq(Box::new(Type::TypeVar("a".into(), 0))).has_type_vars());
-        assert!(!Type::Seq(Box::new(Type::Int)).has_type_vars());
+    fn test_has_inference_vars_seq() {
+        assert!(Type::Seq(Box::new(Type::TypeVar("a".into(), 0))).has_inference_vars());
+        assert!(!Type::Seq(Box::new(Type::Int)).has_inference_vars());
     }
 
     #[test]

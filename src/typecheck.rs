@@ -409,7 +409,7 @@ fn check_expr(
                 ret: ref expected_ret,
             } = resolved_expected
             {
-                if !resolved_expected.has_type_vars() {
+                if !resolved_expected.has_inference_vars() {
                     // Create a fresh annotation mapping for this lambda to prevent
                     // cross-contamination of type variables.
                     // Only allocate if any param has an annotation or there's a return annotation.
@@ -462,7 +462,7 @@ fn check_expr(
                                 // Contravariant check: expected param type must be subtype of annotation.
                                 // When annotation contains type variables, use unification mode instead of
                                 // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
-                                if resolved.has_type_vars() {
+                                if resolved.has_inference_vars() {
                                     let mut subst = std::mem::take(&mut state.subst);
                                     let result =
                                         unify(expected_ty, &resolved, &mut subst, state, ann.span);
@@ -518,7 +518,7 @@ fn check_expr(
                             // Check that declared return type is compatible with expected.
                             // When declared contains type variables, use unification mode instead of
                             // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
-                            if declared.has_type_vars() {
+                            if declared.has_inference_vars() {
                                 let mut subst = std::mem::take(&mut state.subst);
                                 let result =
                                     unify(&declared, expected_ret, &mut subst, state, ann.span);
@@ -550,7 +550,7 @@ fn check_expr(
                             // state.subst.apply at the guard resolved pre-existing bindings,
                             // but annotation unification can create new ones.
                             //
-                            // Currently a no-op: the !has_type_vars() guard ensures expected_ret
+                            // Currently a no-op: the !has_inference_vars() guard ensures expected_ret
                             // (from the resolved type) has no TypeVars. Annotation unification
                             // binds annotation-fresh TypeVars, not expected_ret TypeVars. Retained
                             // as a safety net per Algorithm W substitution threading invariant.
@@ -937,7 +937,7 @@ fn check_dot_access(
             });
 
             // Unify TypeVar(α) with Record({field: β}, RowVar(ρ)) using the global substitution.
-            // Borrow-split: mem::take + restore avoids simultaneous &mut state (for unify's inner calls) and &mut state.subst (for compose)
+            // Use mem::take to work around borrow checker (unify needs &mut subst and &mut state)
             let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
             let result = unify(&alpha_ty, &record_ty, &mut subst, state, span);
@@ -1166,7 +1166,7 @@ fn check_call_with_scheme(
             // for polymorphic schemes (non-empty type_vars or row_vars), and instantiate_scheme
             // produces fresh TypeVars/RowVars for each quantified variable. Since generalize only
             // quantifies variables that appear in the body, the instantiated type must contain
-            // those fresh variables, so has_type_vars() is always true.
+            // those fresh variables, so has_inference_vars() is always true.
             // Synthesize arguments and unify (doc/06 line 162-170)
             let mut arg_types = Vec::with_capacity(args.len());
             for a in args {
@@ -1200,11 +1200,19 @@ fn check_call_with_scheme(
                     state.subst.row_map.insert(k.clone(), row.clone());
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
-                Ok(subst.apply(ret))
+                // Apply state.subst only if non-empty (performance optimization)
+                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                    Ok(subst.apply(ret))
+                } else {
+                    Ok(state.subst.apply(&subst.apply(ret)))
+                }
             } else {
                 // Zero-param function: return the return type
-                let inst_ret = ret;
-                Ok(state.subst.apply(inst_ret))
+                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                    Ok((**ret).clone())
+                } else {
+                    Ok(state.subst.apply(ret))
+                }
             }
         }
         Type::Any => {
@@ -1233,7 +1241,7 @@ fn check_call(
 ) -> Result<Type, Vec<TypeError>> {
     let func_ty = infer_expr(func, env, state, type_map)?;
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
-    // with polymorphic return annotations). Without this, has_type_vars() incorrectly returns
+    // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
     let func_ty = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
         func_ty
@@ -1261,7 +1269,7 @@ fn check_call(
 
             // CALL-MONO: function type is fully concrete (no type variables)
             // Use bidirectional checking for arguments via [SUB] rule (doc/06 line 152-157)
-            if !func_ty.has_type_vars() {
+            if !func_ty.has_inference_vars() {
                 let mut errors = Vec::new();
                 for (arg, param_ty) in args.iter().zip(params.iter()) {
                     if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
@@ -1272,9 +1280,9 @@ fn check_call(
                     return Err(errors);
                 }
                 // Apply state.subst for defensive consistency with check_call_with_scheme.
-                // The CALL-MONO guard (!func_ty.has_type_vars()) means ret is typically fully
+                // The CALL-MONO guard (!func_ty.has_inference_vars()) means ret is typically fully
                 // concrete, making apply() a no-op. But applying defensively guards against
-                // edge cases where has_type_vars() and the substitution domain diverge.
+                // edge cases where has_inference_vars() and the substitution domain diverge.
                 return Ok(state.subst.apply(ret));
             }
 
@@ -1367,11 +1375,20 @@ fn check_call(
                     state.subst.row_map.insert(k.clone(), row.clone());
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
-                Ok(subst.apply(inst_ret))
+                // Apply state.subst only if non-empty (performance optimization)
+                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                    Ok(subst.apply(inst_ret))
+                } else {
+                    Ok(state.subst.apply(&subst.apply(inst_ret)))
+                }
             } else {
                 // Zero-param polymorphic function: return the instantiated return type
                 // (not the original `ret` which contains the scheme-internal variable names)
-                Ok(state.subst.apply(inst_ret))
+                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                    Ok((**inst_ret).clone())
+                } else {
+                    Ok(state.subst.apply(inst_ret))
+                }
             }
         }
         Type::TypeVar(_, _) => {
@@ -1482,7 +1499,7 @@ fn infer_fn(
             // TypeVars in is_subtype only match via reflexive equality, so
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
-            if declared.has_type_vars() {
+            if declared.has_inference_vars() {
                 let body_ty = infer_expr(body, &fn_env, state, type_map)?;
                 // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
                 let mut subst = std::mem::take(&mut state.subst);
@@ -4322,7 +4339,7 @@ mod tests {
         );
         match ty {
             Type::Function { params, ret } => {
-                // When checking mode is skipped (has_type_vars), params stay as annotated or Any
+                // When checking mode is skipped (has_inference_vars), params stay as annotated or Any
                 assert_eq!(params, vec![Type::TypeVar("a".into(), 0)]);
                 assert_eq!(*ret, Type::TypeVar("b".into(), 0));
             }
@@ -4429,7 +4446,7 @@ mod tests {
     #[test]
     fn test_function_return_annotation_with_type_var_error_path() {
         // Exercise the error path of the new unification-mode branch
-        // (declared.has_type_vars() = true) at src/typecheck.rs:1056-1062.
+        // (declared.has_inference_vars() = true) at src/typecheck.rs:1056-1062.
         //
         // When the body expression fails to infer a type, the error propagates
         // via `?` at line 1057. This test confirms that the new path correctly
@@ -4509,7 +4526,7 @@ mod tests {
     fn test_lambda_checking_mode_param_annotation_with_type_var() {
         // Task 1 fix: Lambda with @a-style param annotation checked against concrete function type.
         // When the annotation is a TypeVar, is_subtype fails (TypeVars only match reflexively).
-        // The fix switches to unification mode when resolved.has_type_vars().
+        // The fix switches to unification mode when resolved.has_inference_vars().
         //
         // Pattern: [call $identity [fn@b [y@b] $y]] where identity is polymorphic.
         // check_expr sees expected_ty=concrete from identity's instantiation, resolved=TypeVar("b").
@@ -4538,7 +4555,7 @@ mod tests {
     fn test_lambda_checking_mode_return_annotation_with_type_var() {
         // Task 1 fix: Lambda with @a-style return annotation checked against concrete function type.
         // When the return annotation is a TypeVar, is_subtype fails (TypeVars only match reflexively).
-        // The fix switches to unification mode when declared.has_type_vars().
+        // The fix switches to unification mode when declared.has_inference_vars().
         //
         // Pattern: [@[Fn@Int [Int]] [fn@c [x] 42]] — expected return Int, declared TypeVar("c").
         // Without fix: is_subtype(TypeVar("c"), Int) = false → error.
@@ -4622,7 +4639,7 @@ mod tests {
         // This test validates the Algorithm W substitution threading invariant
         // (Damas & Milner, 1982): substitutions must be applied before inspecting
         // types. The guard uses state.subst.apply(expected) so that bound TypeVars
-        // are resolved before the has_type_vars() check.
+        // are resolved before the has_inference_vars() check.
         //
         // Scenario: A polymorphic type annotation @[Fn@a [a]] on a lambda creates
         // fresh TypeVars. These TypeVars are NOT in state.subst, so lambda checking
@@ -4670,11 +4687,11 @@ mod tests {
         // 1. infer_fn returns Fn(TypeVar("_t5") -> TypeVar("_t5")) with state.subst = {_t5 -> TypeVar("_t6")}
         //    (from unifying body $x with return annotation @a)
         // 2. check_call receives func_ty with unresolved _t5
-        // 3. has_type_vars() = true → CALL-POLY fires
+        // 3. has_inference_vars() = true → CALL-POLY fires
         // 4. instantiate_at_level freshens _t5 to _t7
         // 5. unify tries to bind _t7, but the substitution for _t5 is lost → wrong type
         //
-        // With fix: state.subst.apply() resolves _t5 before has_type_vars() check.
+        // With fix: state.subst.apply() resolves _t5 before has_inference_vars() check.
         let ty = result_field("[result: [call [fn@a [x@a] $x] 42]]", "result");
         assert_eq!(
             ty,
@@ -5232,7 +5249,7 @@ mod tests {
         //
         // WHY check_call CALL-MONO NOW APPLIES state.subst:
         //   check_call applies state.subst.apply(ret) defensively (sprint row-unification-h).
-        //   Even though the CALL-MONO guard (!func_ty.has_type_vars()) proves func_ty is
+        //   Even though the CALL-MONO guard (!func_ty.has_inference_vars()) proves func_ty is
         //   concrete, applying state.subst ensures consistency with check_call_with_scheme's
         //   CALL-POLY path and guards against future relaxation of the guard (e.g., RowVar-only
         //   polymorphism). The apply() is cheap when state.subst is empty (common case).
