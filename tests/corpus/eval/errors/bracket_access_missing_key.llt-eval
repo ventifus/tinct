@@ -2,4 +2,4 @@
 
 $data.b
 ===
-[E001] key not found: b
+[E001] key not found: b (available keys: a)

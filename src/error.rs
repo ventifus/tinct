@@ -44,6 +44,7 @@ pub enum ErrorKind {
     // --- Access errors (E000-E009) ---
     KeyNotFound {
         key: String,
+        available_keys: Vec<String>,
     },
     /// `name` stores the identifier without `$` prefix (e.g., `"x"` not `"$x"`).
     /// Display adds the `$` back: `"undefined variable: $x"`.
@@ -240,7 +241,55 @@ impl ErrorKind {
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::KeyNotFound { key } => write!(f, "key not found: {key}"),
+            Self::KeyNotFound {
+                key,
+                available_keys,
+            } => {
+                write!(f, "key not found: {key}")?;
+                if available_keys.is_empty() {
+                    return Ok(());
+                }
+
+                // Find best match using Jaro-Winkler similarity.
+                // Threshold 0.8 is consistent with prior art (cargo, rustc suggest at ~0.8).
+                // Jaro-Winkler is prefix-weighted and handles transpositions well for short
+                // identifier-style keys. A single-char typo on a 4-char key typically scores
+                // 0.83-0.92; unrelated keys typically score < 0.7.
+                let mut best_match: Option<(&str, f64)> = None;
+                for avail in available_keys {
+                    let similarity = strsim::jaro_winkler(key, avail);
+                    if similarity > 0.8 {
+                        if let Some((_, best_sim)) = best_match {
+                            if similarity > best_sim {
+                                best_match = Some((avail, similarity));
+                            }
+                        } else {
+                            best_match = Some((avail, similarity));
+                        }
+                    }
+                }
+
+                if let Some((suggestion, _)) = best_match {
+                    write!(f, " (did you mean: '{suggestion}')")
+                } else {
+                    // No close match found above the similarity threshold.
+                    // Fall back to listing up to 5 available keys so the user
+                    // can see what keys are actually present. Mirrors rustc's
+                    // "available fields are: ..." style for struct field errors.
+                    let keys_str = available_keys
+                        .iter()
+                        .take(5)
+                        .map(|k| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let suffix = if available_keys.len() > 5 {
+                        ", ..."
+                    } else {
+                        ""
+                    };
+                    write!(f, " (available keys: {keys_str}{suffix})")
+                }
+            }
             Self::UndefinedVariable { name } => write!(f, "undefined variable: ${name}"),
             Self::TypeMismatch {
                 context: Some(ctx),
@@ -318,7 +367,7 @@ impl fmt::Display for ErrorKind {
 impl PartialEq for ErrorKind {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::KeyNotFound { key: k1 }, Self::KeyNotFound { key: k2 }) => k1 == k2,
+            (Self::KeyNotFound { key: k1, .. }, Self::KeyNotFound { key: k2, .. }) => k1 == k2,
             (Self::UndefinedVariable { name: n1 }, Self::UndefinedVariable { name: n2 }) => {
                 n1 == n2
             }
@@ -513,10 +562,11 @@ impl EvalError {
         self.stack.push(StackFrame { label, span });
     }
 
-    pub fn key_not_found(key: &str, definition_span: Span) -> Self {
+    pub fn key_not_found(key: &str, available_keys: Vec<String>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::KeyNotFound {
                 key: key.to_string(),
+                available_keys,
             },
             definition_span,
             materialization_span: None,
@@ -825,6 +875,12 @@ impl EvalError {
     }
 }
 
+/// Suffixes that identify stdlib internal helper frames to hide from user-facing stack traces.
+/// User-facing stdlib functions like `$map` and `$filter` do not use these suffixes and remain
+/// visible. Filtering is suffix-based (ends_with), not substring-based (contains), so a label
+/// like "multi-step-validator" is preserved correctly.
+const HIDDEN_SUFFIXES: &[&str] = &["-impl", "-step", "-check"];
+
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -847,6 +903,14 @@ impl fmt::Display for EvalError {
             if frame.span == Span::origin() {
                 continue;
             }
+
+            // Filter out stdlib internal helper functions (suffixes: -impl, -step, -check).
+            // These are implementation details that add noise to user-facing stack traces.
+            // User-facing stdlib functions like $map, $filter remain visible.
+            if HIDDEN_SUFFIXES.iter().any(|s| frame.label.ends_with(s)) {
+                continue;
+            }
+
             write!(f, "\n  in {} at {}", frame.label, frame.span)?;
         }
         Ok(())
@@ -893,7 +957,7 @@ mod tests {
     #[test]
     fn test_eval_error_key_not_found() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::key_not_found("foo", span);
+        let err = EvalError::key_not_found("foo", vec![], span);
         assert_eq!(err.message(), "key not found: foo");
     }
 
@@ -984,7 +1048,8 @@ mod tests {
 
         // All other errors ARE catchable
         assert!(ErrorKind::KeyNotFound {
-            key: "foo".to_string()
+            key: "foo".to_string(),
+            available_keys: vec![],
         }
         .is_catchable());
         assert!(ErrorKind::TypeMismatch {
@@ -1050,6 +1115,7 @@ mod tests {
         vec![
             ErrorKind::KeyNotFound {
                 key: "x".to_string(),
+                available_keys: vec![],
             },
             ErrorKind::UndefinedVariable {
                 name: "x".to_string(),
@@ -1193,7 +1259,8 @@ mod tests {
 
         // All other errors ARE cacheable (can be stored in Failed thunk state)
         assert!(ErrorKind::KeyNotFound {
-            key: "foo".to_string()
+            key: "foo".to_string(),
+            available_keys: vec![],
         }
         .is_cacheable());
         assert!(ErrorKind::TypeMismatch {
@@ -1232,7 +1299,8 @@ mod tests {
             format!(
                 "{}",
                 ErrorKind::KeyNotFound {
-                    key: "name".to_string()
+                    key: "name".to_string(),
+                    available_keys: vec![],
                 }
             ),
             "key not found: name"
@@ -1643,7 +1711,7 @@ mod tests {
         let frame1_span = test_span(10, 1, 10, 15);
         let frame2_span = test_span(15, 1, 15, 20);
 
-        let err = EvalError::key_not_found("missing_key", def_span)
+        let err = EvalError::key_not_found("missing_key", vec![], def_span)
             .with_materialization_span(mat_span)
             .with_frame("dict entry 'a'".to_string(), frame1_span)
             .with_frame("dict entry 'b'".to_string(), frame2_span);
@@ -1671,8 +1739,8 @@ mod tests {
         let first_mat_span = test_span(5, 1, 5, 10);
         let second_access_span = test_span(8, 1, 8, 10);
 
-        let mut err =
-            EvalError::key_not_found("key", def_span).with_materialization_span(first_mat_span);
+        let mut err = EvalError::key_not_found("key", vec![], def_span)
+            .with_materialization_span(first_mat_span);
 
         // Simulate a second access from a different location
         // Should preserve original mat_span and add second access as stack frame
@@ -1694,7 +1762,7 @@ mod tests {
         let def_span = test_span(1, 1, 1, 10);
         let frame_span = test_span(5, 1, 5, 10);
 
-        let mut err = EvalError::key_not_found("key", def_span);
+        let mut err = EvalError::key_not_found("key", vec![], def_span);
 
         err.push_frame("first".to_string(), frame_span);
         assert_eq!(err.stack.len(), 1);
@@ -1790,7 +1858,7 @@ mod tests {
     #[test]
     fn test_error_code_prefix_format() {
         // Verify that error codes follow the [EXXX] format exactly
-        let err = EvalError::key_not_found("test", test_span(1, 1, 1, 5));
+        let err = EvalError::key_not_found("test", vec![], test_span(1, 1, 1, 5));
         let display = format!("{err}");
 
         // Should start with [E001]
@@ -1799,7 +1867,7 @@ mod tests {
         // Verify all error codes follow the pattern
         let test_cases = vec![
             (
-                EvalError::key_not_found("x", test_span(1, 1, 1, 5)),
+                EvalError::key_not_found("x", vec![], test_span(1, 1, 1, 5)),
                 "[E001]",
             ),
             (
@@ -1840,5 +1908,122 @@ mod tests {
                 display
             );
         }
+    }
+
+    #[test]
+    fn test_key_not_found_with_suggestion() {
+        // Test close match suggestion (typo: nme → name)
+        let err = ErrorKind::KeyNotFound {
+            key: "nme".to_string(),
+            available_keys: vec!["name".to_string(), "age".to_string()],
+        };
+        let display = format!("{err}");
+        assert!(display.contains("key not found: nme"));
+        assert!(display.contains("did you mean: 'name'"));
+    }
+
+    #[test]
+    fn test_key_not_found_with_available_keys() {
+        // Test no close match - should show available keys
+        let err = ErrorKind::KeyNotFound {
+            key: "xyz".to_string(),
+            available_keys: vec!["name".to_string(), "age".to_string(), "address".to_string()],
+        };
+        let display = format!("{err}");
+        assert!(display.contains("key not found: xyz"));
+        assert!(display.contains("available keys:"));
+        assert!(display.contains("name"));
+        assert!(display.contains("age"));
+        assert!(display.contains("address"));
+    }
+
+    #[test]
+    fn test_key_not_found_truncates_long_list() {
+        // Test that long key lists are truncated to 5 items
+        let err = ErrorKind::KeyNotFound {
+            key: "missing".to_string(),
+            available_keys: vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+                "e".to_string(),
+                "f".to_string(),
+                "g".to_string(),
+            ],
+        };
+        let display = format!("{err}");
+        assert!(display.contains("available keys:"));
+        assert!(display.contains("..."));
+        // Should show first 5 keys as a joined list and then "..." — verify both
+        // the exact joined sequence and that the truncated keys are absent
+        assert!(display.contains("a, b, c, d, e"));
+        assert!(!display.contains(", f"));
+    }
+
+    #[test]
+    fn test_key_not_found_empty_available_keys() {
+        // Test empty dict - no suggestions
+        let err = ErrorKind::KeyNotFound {
+            key: "foo".to_string(),
+            available_keys: vec![],
+        };
+        let display = format!("{err}");
+        assert_eq!(display, "key not found: foo");
+        assert!(!display.contains("did you mean"));
+        assert!(!display.contains("available keys"));
+    }
+
+    #[test]
+    fn test_stdlib_internal_frames_filtered_from_display() {
+        // Verify that stdlib internal helper frames (with -impl, -step, -check suffixes)
+        // are NOT shown in error display output, while user-facing stdlib functions remain visible
+        let def_span = test_span(5, 1, 5, 10);
+        let mat_span = test_span(10, 1, 10, 5);
+
+        let mut err = EvalError::new("error in stdlib".to_string(), def_span)
+            .with_materialization_span(mat_span);
+
+        // Add user-facing stdlib function (should be visible)
+        err.push_frame("call $map".to_string(), test_span(8, 1, 8, 10));
+
+        // Add internal helper frames (should be filtered out)
+        err.push_frame("call $map-impl".to_string(), test_span(100, 1, 100, 10));
+        err.push_frame("call $remove-step".to_string(), test_span(200, 1, 200, 10));
+        err.push_frame("call $cond-check".to_string(), test_span(300, 1, 300, 10));
+
+        // Add another user-facing function
+        err.push_frame("call $filter".to_string(), test_span(12, 1, 12, 15));
+
+        let display = format!("{err}");
+
+        // Should contain user-facing stdlib functions
+        assert!(display.contains("in call $map at 8:1-8:10"));
+        assert!(display.contains("in call $filter at 12:1-12:15"));
+
+        // Should NOT contain internal helper frames
+        assert!(!display.contains("map-impl"));
+        assert!(!display.contains("remove-step"));
+        assert!(!display.contains("cond-check"));
+        assert!(!display.contains("100:1-100:10"));
+        assert!(!display.contains("200:1-200:10"));
+        assert!(!display.contains("300:1-300:10"));
+    }
+
+    #[test]
+    fn test_stdlib_frame_filter_uses_ends_with_not_contains() {
+        // "multi-step-validator" contains "-step" but does NOT end with "-step",
+        // so it should NOT be filtered — only suffix-based filtering is correct.
+        let def_span = test_span(1, 1, 1, 5);
+        let err = EvalError::internal("test".to_string(), def_span).with_frame(
+            "call $multi-step-validator".to_string(),
+            test_span(10, 1, 10, 5),
+        );
+        let display = format!("{err}");
+        // Frame label contains "-step" as substring but not suffix — must appear
+        assert!(
+            display.contains("multi-step-validator"),
+            "frames with '-step' as a substring (not suffix) must not be filtered; got: {display}"
+        );
     }
 }

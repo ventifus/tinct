@@ -526,9 +526,9 @@ Span and message quality gaps introduced or exposed by the typeassert-structural
 
 Richer error context for debugging.
 
-- [ ] Add available keys to `key_not_found` errors for "did you mean?" suggestions (use `strsim` crate for edit-distance matching)
+- [x] Add available keys to `key_not_found` errors for "did you mean?" suggestions (use `strsim` crate for edit-distance matching) (completed in error-context sprint — strsim Jaro-Winkler > 0.8 threshold, available_keys field on KeyNotFound, fallback to listing up to 5 keys)
 - [x] Filter `Span::origin()` frames from user-facing stack trace output — stdlib calls and synthetic values produce frames with `Span::origin()` (0:0-0:0) that are noise in error output. Filter in `EvalError::Display`: skip frames where `frame.span == Span::origin()`. Derived from Nickel's `group_by_calls()` stdlib-frame filtering pattern. (`src/error.rs:788-791`) [Minor, span-integrity-checker T4] (completed in cycle-findings-c46-a)
-- [ ] Filter stdlib/prelude.llt frames from user-facing stack traces (Nickel `group_by_calls` pattern)
+- [x] Filter stdlib/prelude.llt frames from user-facing stack traces (Nickel `group_by_calls` pattern) (completed in error-context sprint — label-suffix filter: frames ending in -impl/-step/-check are hidden from Display output; note: this is label-convention-based, not file-path-based like Nickel's group_by_calls; a future file-path-based approach remains possible)
 - [ ] Build `$include` chain threading — nested include errors should show the full include path ("included from A at line X")
 - [ ] Add secondary span support for "evaluated to this" labels on lazy evaluation errors (Nickel dual-position pattern)
 - [ ] Reconstruct multi-hop cycle paths for circular dependency errors (show the full cycle chain, not just the blackholed thunk)
