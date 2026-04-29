@@ -573,7 +573,7 @@ instantiate(τ, counter):
   return apply_type(τ, renaming)
 ```
 
-Row variables and type variables use **separate namespaces** — `_t0` is unambiguously a type variable or a row variable depending on which map it appears in. The implementation uses separate namespaces: `type_map` for type variables, `row_map` for row variables.
+Row variables and type variables use **separate namespaces** — `_t0` is unambiguously a type variable or a row variable depending on which map it appears in. Both share the `_t{n}` naming counter (via `InferState.name_counter`), but are separated by the kinded `type_map` vs `row_map` in Substitution. This separation is enforced structurally by Rust's type system: `type_map: IndexMap<String, Type>` binds type variable names to Type, while `row_map: IndexMap<String, Row>` binds row variable names to Row. A variable name cannot appear in both maps simultaneously during well-formed unification. (User-supplied annotation names that violate kind separation can break this invariant — see `ann_mapping` cross-kind collision in TODO.md.)
 
 **Generalization** (with levels, per [Type Inference](06-type-inference.md) §Let-Generalization): row variables carry levels identically to type variables. A row variable `ρ` with `levels[ρ] > ℓ` is generalized at a let-binding. The `TypeScheme` representation extends to track both:
 
@@ -581,7 +581,7 @@ Row variables and type variables use **separate namespaces** — `_t0` is unambi
 pub struct TypeScheme {
     pub type_vars: Vec<String>,    // universally quantified type variables
     pub row_vars: Vec<String>,     // universally quantified row variables
-    pub ty: Type,
+    pub body: Type,
 }
 ```
 
