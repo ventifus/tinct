@@ -655,6 +655,11 @@ fn test_typecheck_corpus() {
 ///
 /// The type checker is advisory at runtime (eval always proceeds), but this corpus ensures
 /// we can write regression tests that assert specific type errors are detected.
+///
+/// IMPORTANT: Files in `tests/corpus/eval/type_errors/` MUST NOT use stdlib builtins
+/// (e.g., `$+`, `$merge`, `$get`). `typecheck_source` uses an empty TypeEnv with no
+/// builtin type signatures — stdlib builtins appear as undefined variables, masking
+/// the actual type error being tested. Use only core annotation forms: `@Type`, `[fn ...]`.
 #[test]
 fn test_typecheck_error_corpus_eval() {
     let corpus_dir =

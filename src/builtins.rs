@@ -5112,7 +5112,7 @@ mod tests {
     }
 
     #[test]
-    fn type_of_seq() {
+    fn test_type_of_seq() {
         // Seq values should report type name "Seq" from $type-of
         let seq = Value::Seq {
             head: thunk(Value::Int(1)),
