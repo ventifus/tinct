@@ -503,7 +503,7 @@ Span and error kind gaps in builtin functions. Found by span-integrity-checker C
 - [x] Fix `$collect` size-limit error using `ErrorKind::Internal` — already uses `EvalError::resource_limit_exceeded` (E043). (`src/builtins.rs`) [Minor, span-integrity-checker C43]
 - [x] Fix `concat` Dict+non-Dict mismatch using `ErrorKind::Internal` — already uses `EvalError::type_mismatch_ctx`. (`src/builtins.rs`) [Minor, span-integrity-checker C43]
 - [x] Fix `$try` materializes body with `None` mat_span — `materialize(&body_thunk, Some(&call_span), ...)` and `materialize(&result_thunk, Some(&call_span), ...)` now pass call-site span. (`src/builtins.rs`) [Minor, span-integrity-checker C43]
-- [ ] Fix `lib.rs` serialization depth exceeded using `ErrorKind::Internal` — "maximum serialization depth exceeded" should use `ErrorKind::DepthExceeded` (E040) not Internal, so it can be distinguished from eval depth. Also thread value span into `value_to_json()`. (`src/lib.rs:113,127,164`) [Minor, span-integrity-checker C43]
+- [x] Fix `lib.rs` serialization depth exceeded — now uses `EvalError::depth_exceeded(MAX_EVAL_DEPTH, Span::origin())` (E040); value_to_display_string now matches value_to_json (`src/lib.rs`) [Minor, span-integrity-checker C43]
 
 ## stdlib-docs: Stdlib Documentation
 

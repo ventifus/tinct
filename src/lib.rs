@@ -232,14 +232,9 @@ pub fn value_to_display_string(
     depth: usize,
 ) -> Result<String, Box<error::EvalError>> {
     if depth > eval::MAX_EVAL_DEPTH {
-        return Err(error::EvalError::resource_limit_exceeded(
-            format!(
-                "display depth exceeded: maximum depth is {}",
-                eval::MAX_EVAL_DEPTH
-            ),
-            ast::Span::origin(),
-        )
-        .into());
+        return Err(
+            error::EvalError::depth_exceeded(eval::MAX_EVAL_DEPTH, ast::Span::origin()).into(),
+        );
     }
     match val {
         value::Value::Int(n) => Ok(format!("Int({n})")),
