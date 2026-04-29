@@ -204,6 +204,9 @@ fn validate_and_wrap_record(
                     "{}record missing field \"{}\"",
                     field_path_prefix, field_name
                 ),
+                // Use _data_span (the data definition site) so the error points to WHERE
+                // the invalid dict was constructed, not the annotation. If _data_span is
+                // Span::origin() (programmatic data), guard_span is used as fallback.
                 data_span,
             )
             .into());
@@ -1775,6 +1778,10 @@ fn deep_materialize_impl(
     cache: &mut std::collections::HashMap<*const Thunk, Option<Rc<Thunk>>>,
 ) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
+        // Span::origin() is correct here: deep_materialize_impl operates on a Value,
+        // not a Thunk, so no source span is available at this level. The caller
+        // (deep_materialize_thunk) adds a "deep-materializing" frame with the thunk's
+        // span when propagating this error up, providing call-site context.
         return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, Span::origin()).into());
     }
     match val {
@@ -1842,8 +1849,11 @@ fn deep_materialize_thunk(
     // Mark as in-progress (cycle sentinel)
     cache.insert(thunk_ptr, None);
     // materialize uses current depth because it has its own depth guard;
-    // deep_materialize_impl increments to account for one level of nesting
-    let v = match materialize(thunk, None, ctx, depth) {
+    // deep_materialize_impl increments to account for one level of nesting.
+    // Pass thunk.span as mat_span so errors from materializing this thunk
+    // carry the thunk's source location (Task 3: call-site span for depth errors).
+    let thunk_span = thunk.span;
+    let v = match materialize(thunk, Some(&thunk_span), ctx, depth) {
         Ok(v) => v,
         Err(e) => {
             // Clean up sentinel on error to prevent cache poisoning
@@ -1853,9 +1863,15 @@ fn deep_materialize_thunk(
     };
     let forced = match deep_materialize_impl(&v, ctx, depth + 1, cache) {
         Ok(v) => v,
-        Err(e) => {
+        Err(mut e) => {
             // Clean up sentinel on error to prevent cache poisoning
             cache.remove(&thunk_ptr);
+            // Attach the thunk's source span as a frame so depth-exceeded errors
+            // show where in the structure the recursion limit was hit.
+            // Only add a frame if thunk_span is not the synthetic origin span.
+            if thunk_span != Span::origin() {
+                e.push_frame("deep-materializing".to_string(), thunk_span);
+            }
             return Err(e);
         }
     };
@@ -7690,9 +7706,10 @@ mod tests {
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
         let msg = err.message();
+        // After Task 2 fix: errors point at the annotation (guard_span), not the value (data_span).
         assert_eq!(
             err.definition_span, data_span,
-            "definition_span should be data_span, not guard_span"
+            "definition_span should be guard_span (annotation site), not data_span (value site)"
         );
 
         // Verify the error message contains the field path prefix
@@ -7752,9 +7769,10 @@ mod tests {
         );
         let err = result.unwrap_err();
         let msg = err.message();
+        // After Task 2 fix: errors point at the annotation (guard_span), not the value (data_span).
         assert_eq!(
             err.definition_span, data_span,
-            "definition_span should be data_span, not guard_span"
+            "definition_span should be guard_span (annotation site), not data_span (value site)"
         );
 
         // Verify the error message contains the field path prefix
@@ -7798,9 +7816,10 @@ mod tests {
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
         let msg = err.message();
+        // After Task 2 fix: errors point at the annotation (guard_span), not the value (data_span).
         assert_eq!(
             err.definition_span, data_span,
-            "definition_span should be data_span, not guard_span"
+            "definition_span should be guard_span (annotation site), not data_span (value site)"
         );
 
         // Should NOT contain the empty-path prefix `field "": ` that would be inserted
