@@ -1059,7 +1059,18 @@ pub fn unify(
             state.levels.insert(name.clone(), 0);
             Ok(())
         }
-        (Type::Any, _) | (_, Type::Any) => Ok(()),
+        (Type::Any, other) | (other, Type::Any) => {
+            // Zero levels of all type/row vars in the non-Any side to prevent
+            // over-generalization. E.g., unify(Any, Fn(TypeVar("b",3) → Int))
+            // must zero b's level so it won't be generalized.
+            let mut type_vars = BTreeSet::new();
+            let mut row_vars = BTreeSet::new();
+            other.collect_all_vars(&mut type_vars, &mut row_vars);
+            for var in type_vars.iter().chain(row_vars.iter()) {
+                state.levels.insert(var.clone(), 0);
+            }
+            Ok(())
+        }
 
         // U-VAR-LEVEL: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (Type::TypeVar(name, _), _) => {
@@ -3705,6 +3716,86 @@ mod tests {
 
         // Level should be set to 0 to prevent generalization
         assert_eq!(state.levels.get("a"), Some(&0));
+    }
+
+    #[test]
+    fn test_unify_any_with_function_zeros_contained_vars() {
+        // unify(Any, Fn(TypeVar("b",3) → Int)) must zero b's level
+        let span = test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+        state.levels.insert("b".into(), 3);
+
+        let fn_ty = Type::Function {
+            params: vec![Type::TypeVar("b".into(), 3)],
+            ret: Box::new(Type::Int),
+        };
+
+        let mut subst = Substitution::new();
+        unify(&Type::Any, &fn_ty, &mut subst, &mut state, span).unwrap();
+
+        assert_eq!(
+            state.levels.get("b"),
+            Some(&0),
+            "TypeVar inside Fn unified with Any must have level zeroed"
+        );
+    }
+
+    #[test]
+    fn test_unify_any_with_record_zeros_contained_vars() {
+        // unify(Any, Record({x: TypeVar("c",2), ...ρ})) must zero both c and ρ
+        let span = test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+        state.levels.insert("c".into(), 2);
+        state.levels.insert("rho".into(), 2);
+
+        let mut fields = HashMap::new();
+        fields.insert("x".into(), Type::TypeVar("c".into(), 2));
+        let rec_ty = Type::Record(Row {
+            fields,
+            tail: RowTail::RowVar("rho".into(), 2),
+        });
+
+        let mut subst = Substitution::new();
+        unify(&Type::Any, &rec_ty, &mut subst, &mut state, span).unwrap();
+
+        assert_eq!(
+            state.levels.get("c"),
+            Some(&0),
+            "TypeVar inside Record unified with Any must have level zeroed"
+        );
+        assert_eq!(
+            state.levels.get("rho"),
+            Some(&0),
+            "RowVar inside Record unified with Any must have level zeroed"
+        );
+    }
+
+    #[test]
+    fn test_unify_complex_with_any_zeros_contained_vars() {
+        // Symmetric: unify(Fn(TypeVar("d",4) → Seq(TypeVar("e",4))), Any)
+        let span = test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+        state.levels.insert("d".into(), 4);
+        state.levels.insert("e".into(), 4);
+
+        let fn_ty = Type::Function {
+            params: vec![Type::TypeVar("d".into(), 4)],
+            ret: Box::new(Type::Seq(Box::new(Type::TypeVar("e".into(), 4)))),
+        };
+
+        let mut subst = Substitution::new();
+        unify(&fn_ty, &Type::Any, &mut subst, &mut state, span).unwrap();
+
+        assert_eq!(
+            state.levels.get("d"),
+            Some(&0),
+            "TypeVar in param unified with Any must have level zeroed"
+        );
+        assert_eq!(
+            state.levels.get("e"),
+            Some(&0),
+            "TypeVar in Seq return unified with Any must have level zeroed"
+        );
     }
 
     // --- Task 4: instantiate_scheme with row var body ---

@@ -490,13 +490,7 @@ fn check_expr(
                     let mut fn_env = TypeEnv::with_parent(Rc::clone(env));
                     for (param, ty) in params.iter().zip(param_types.iter()) {
                         if param.node.variadic {
-                            fn_env.insert(
-                                param.node.name.clone(),
-                                Type::Record(Row {
-                                    fields: HashMap::new(),
-                                    tail: RowTail::Empty,
-                                }),
-                            );
+                            fn_env.insert(param.node.name.clone(), Type::Any);
                         } else {
                             fn_env.insert(param.node.name.clone(), ty.clone());
                         }
@@ -1483,11 +1477,8 @@ fn infer_fn(
     let mut fn_env = TypeEnv::with_parent(Rc::clone(env));
     for (i, param) in params.iter().enumerate() {
         if param.node.variadic {
-            let variadic_ty = Type::Record(Row {
-                fields: HashMap::new(),
-                tail: RowTail::Empty,
-            });
-            // Variadic params always receive a closed empty record, regardless of annotation.
+            let variadic_ty = Type::Any;
+            // Variadic params accept arbitrary fields, typed as Any.
             // Update param_types[i] to match the env binding so the function signature is accurate.
             param_types[i] = variadic_ty.clone();
             fn_env.insert(param.node.name.clone(), variadic_ty);
@@ -5389,16 +5380,12 @@ mod tests {
     // -- Variadic param type inference --
 
     #[test]
-    fn test_variadic_param_type_is_record() {
-        // Variadic params always receive a closed empty record type in the function signature,
-        // regardless of any context (typecheck.rs:1151 override).
+    fn test_variadic_param_type_is_any() {
+        // Variadic params accept arbitrary fields, typed as Any in the function signature.
         //
         // Grammar: variadic_param = @{ "..." ~ param_name } — no @annotation syntax.
         // The param_types override at infer_fn ensures the function type reflects
-        // Record({}, Empty) for the variadic slot, not Any or an annotation-derived type.
-        //
-        // This test covers the fix at typecheck.rs:1151 that overrides param_types[i] for
-        // variadic params so the function signature matches the env binding.
+        // Any for the variadic slot.
 
         // Basic variadic: single param, collects all positional args as a dict
         let ty = result_field("[f: [fn [...rest] $rest]]", "f");
@@ -5406,41 +5393,30 @@ mod tests {
             Type::Function { params, .. } => {
                 assert_eq!(params.len(), 1, "variadic function should have 1 param");
                 assert!(
-                    matches!(
-                        &params[0],
-                        Type::Record(Row {
-                            tail: RowTail::Empty,
-                            ..
-                        })
-                    ),
-                    "variadic param should have type Record({{}} Closed), got: {:?}",
+                    matches!(&params[0], Type::Any),
+                    "variadic param should have type Any, got: {:?}",
                     params[0]
                 );
             }
             other => panic!("expected Function type for f, got {other}"),
         }
 
-        // Variadic with named params before it: only the rest param gets Record type
-        let ty = result_field("[f: [fn [a b ...rest] $rest]]", "f");
+        // Variadic with annotated params before it: non-variadic params keep their annotation,
+        // variadic param is Any regardless
+        let ty = result_field("[f: [fn [a@Int b@Int ...rest] $a]]", "f");
         match ty {
             Type::Function { params, .. } => {
                 assert_eq!(params.len(), 3, "function should have 3 params");
-                // First two params are inferred normally
+                // First two params have annotation-derived types
                 assert!(
-                    !matches!(&params[0], Type::Record(_)),
-                    "non-variadic param 'a' should not be Record, got: {:?}",
+                    matches!(&params[0], Type::Int),
+                    "annotated param 'a' should be Int, got: {:?}",
                     params[0]
                 );
-                // Third param (variadic) must be Record({}, Empty)
+                // Third param (variadic) must be Any
                 assert!(
-                    matches!(
-                        &params[2],
-                        Type::Record(Row {
-                            tail: RowTail::Empty,
-                            ..
-                        })
-                    ),
-                    "variadic param 'rest' should have type Record({{}} Closed), got: {:?}",
+                    matches!(&params[2], Type::Any),
+                    "variadic param 'rest' should have type Any, got: {:?}",
                     params[2]
                 );
             }
@@ -5449,23 +5425,18 @@ mod tests {
     }
 
     #[test]
-    fn test_variadic_param_env_binding_is_record() {
-        // The env binding for a variadic param inside the function body must be Record({}, Empty),
-        // not Any. This is the effect of fn_env.insert(param.node.name.clone(), variadic_ty)
-        // at typecheck.rs:1152, which is paired with the param_types override at line 1151.
+    fn test_variadic_param_env_binding_is_any() {
+        // The env binding for a variadic param inside the function body is Any.
         //
         // If the body references $rest, its inferred type comes from the env binding.
-        // Returning $rest should give the function a Record return type.
+        // Returning $rest should give the function an Any return type.
 
         let ty = result_field("[f: [fn [x ...rest] $rest]]", "f");
         match ty {
             Type::Function { ret, .. } => {
                 assert!(
-                    matches!(
-                        ret.as_ref(),
-                        Type::Record(Row { tail: RowTail::Empty, .. })
-                    ),
-                    "function returning variadic param should have Record return type, got: {ret:?}"
+                    matches!(ret.as_ref(), Type::Any),
+                    "function returning variadic param should have Any return type, got: {ret:?}"
                 );
             }
             other => panic!("expected Function type for f, got {other}"),
