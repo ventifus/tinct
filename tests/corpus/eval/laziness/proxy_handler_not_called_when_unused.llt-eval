@@ -1,0 +1,6 @@
+[
+  d: [x: [call $proxy [fn [k] [call $error "handler should not be called"]]]  y: 42]
+  result: $d.y
+]
+===
+Dict({"d": Dict({"x": Proxy, "y": Int(42)}), "result": Int(42)})

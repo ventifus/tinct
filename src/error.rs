@@ -807,6 +807,17 @@ impl EvalError {
             stack: Vec::new(),
         }
     }
+
+    pub fn missing_required_param(param: impl Into<String>, span: Span) -> Self {
+        Self {
+            kind: ErrorKind::MissingRequiredParam {
+                param: param.into(),
+            },
+            definition_span: span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
 }
 
 impl fmt::Display for EvalError {

@@ -373,7 +373,7 @@ fn infer_expr(
 /// lambda's parameter inference (Pierce & Turner 2000 lambda checking mode).
 ///
 /// This function is used at checking positions where the expected type is fully concrete
-/// (no type variables): CALL-MONO arguments, return annotations, and TypeAssert.
+/// (no type variables): CALL-MONO arguments, concrete return annotations (no TypeVars), and TypeAssert.
 fn check_expr(
     expr: &Spanned<Expr>,
     expected: &Type,
@@ -615,11 +615,7 @@ fn infer_dict(
     for (key_name, is_alias) in &key_entries {
         if !is_alias {
             if let Some(ref name) = key_name {
-                let fresh_var = Type::TypeVar(format!("_t{}", state.name_counter), state.level);
-                state
-                    .levels
-                    .insert(format!("_t{}", state.name_counter), state.level);
-                state.name_counter += 1;
+                let fresh_var = state.fresh_type_var();
                 dict_env.insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
             }
         }

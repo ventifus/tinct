@@ -525,6 +525,11 @@ assert: [fn [cond msg] [call $builtin-if $cond true [call $error $msg]]]
 # This enables embedded DSLs (like stdlib/sql.llt) to redefine operators
 # in lexical scope while the prelude continues to work correctly by calling
 # the builtin-* escape hatches (which the prelude's internal functions use).
+#
+# Note: overrides apply to the initial dispatch only. Seq corecursion steps
+# (map/filter/reduce/take/drop on Seq tails) always call the underlying Rust
+# implementation directly via hardcoded function pointers in PendingBuiltin
+# continuations, bypassing any $include override.
 
 # Comparison operators
 <: [fn [a b] [call $builtin-lt $a $b]]

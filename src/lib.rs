@@ -198,8 +198,8 @@ pub fn value_to_json(
             ast::Span::origin(),
         )
         .into()),
-        Value::Builtin { .. } => Err(error::EvalError::value_not_serializable(
-            "Builtin".to_string(),
+        Value::Builtin { name, .. } => Err(error::EvalError::value_not_serializable(
+            format!("Builtin ({name})"),
             ast::Span::origin(),
         )
         .into()),
@@ -543,7 +543,8 @@ mod tests {
         };
         let err = value_to_json(&b, &test_ctx(), 0).unwrap_err();
         assert!(
-            err.message().contains("cannot serialize Builtin to JSON"),
+            err.message()
+                .contains("cannot serialize Builtin (test) to JSON"),
             "got: {}",
             err.message()
         );
@@ -711,6 +712,18 @@ mod tests {
         };
         let display = value_to_display_string(&seq, &test_ctx(), 0).expect("display failed");
         assert_eq!(display, "Seq(Int(1), ...)");
+    }
+
+    #[test]
+    fn test_display_proxy() {
+        let proxy = Value::Proxy {
+            handler: Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        let display = value_to_display_string(&proxy, &test_ctx(), 0).expect("display failed");
+        assert_eq!(display, "Proxy");
     }
 
     #[test]

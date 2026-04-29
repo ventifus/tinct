@@ -164,3 +164,15 @@ struct Environment {
 - Auto-generated docs: annotate stdlib reference with materialization behavior
 
 **Explicit materialization:** Use `$eval` to materialize a value eagerly at binding time. A syntax-level `[! expr]` force annotation is not part of the language — `$eval` serves this purpose.
+
+### Performance Note: Operator Wrapper Overhead
+
+The stdlib defines 12 LLT wrapper functions for the shadowable operators (`$<`, `$=`, `$+`, `$-`, `$*`, `$/`, `$if`, `$filter`, `$map`, `$reduce`, `$take`, `$drop`). Each wrapper function invocation adds:
+
+- +1 `Rc<RefCell<Environment>>` allocation (the call environment)
+- 2–3 environment insertions (binding the function arguments)
+- +1 eval depth level per invocation
+
+These costs are negligible for ordinary use but can accumulate in tight recursive loops that use operator builtins via their `$`-prefixed names (e.g., `[call $reduce $+ 0 $list]`).
+
+**Prelude internal optimization:** The prelude itself uses `$builtin-add`, `$builtin-sub`, etc. (the raw Rust-native builtins registered in `standard_builtins()`) rather than the LLT wrapper aliases. This avoids the wrapper overhead for stdlib-internal implementations. User code that needs maximum throughput in hot paths can do the same.

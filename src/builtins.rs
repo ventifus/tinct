@@ -1985,7 +1985,7 @@ fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     Key::String(s) => Value::String(s),
                 };
                 keys_map.insert(
-                    Key::Int(i as i64),
+                    Key::Int(i64::try_from(i).expect("collection too large")),
                     Rc::new(Thunk::new_materialized(key_value, call_span)),
                 );
             }
@@ -10961,5 +10961,99 @@ mod tests {
             .join();
 
         assert!(result.is_ok(), "test thread panicked: {:?}", result);
+    }
+
+    #[test]
+    fn test_proxy_returns_proxy_value() {
+        let handler = thunk(Value::Int(42));
+        let result = builtin_proxy(BuiltinArgs {
+            args: &[handler.clone()],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap();
+
+        let val = mat(Ok(result));
+        match val {
+            Value::Proxy { handler: h } => {
+                // Verify the handler thunk is the same Rc
+                assert!(Rc::ptr_eq(&h, &handler));
+            }
+            other => panic!("expected Proxy, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_proxy_arity_error() {
+        // Zero args
+        let err = builtin_proxy(BuiltinArgs {
+            args: &[],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("arity mismatch"),
+            "got: {}",
+            err.message()
+        );
+
+        // Two args
+        let err = builtin_proxy(BuiltinArgs {
+            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("arity mismatch"),
+            "got: {}",
+            err.message()
+        );
+
+        // Three args
+        let err = builtin_proxy(BuiltinArgs {
+            args: &[
+                thunk(Value::Int(1)),
+                thunk(Value::Int(2)),
+                thunk(Value::Int(3)),
+            ],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("arity mismatch"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_proxy_named_arg_error() {
+        let mut named = IndexMap::new();
+        named.insert("handler".to_string(), thunk(Value::Int(42)));
+
+        let err = builtin_proxy(BuiltinArgs {
+            args: &[],
+            named: &named,
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("does not accept named arguments"),
+            "got: {}",
+            err.message()
+        );
     }
 }

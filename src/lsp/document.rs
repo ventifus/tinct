@@ -90,8 +90,8 @@ pub struct DocumentStore {
     docs: HashMap<Url, DocumentState>,
     /// Cached stdlib environment, created once on construction.
     stdlib_env: Rc<RefCell<Environment>>,
-    /// Evaluation context for LSP sessions.
-    eval_ctx: Rc<crate::eval::EvalContext>,
+    /// Base evaluation context (with "." as base_dir).
+    base_eval_ctx: Rc<crate::eval::EvalContext>,
 }
 
 impl DocumentStore {
@@ -100,10 +100,10 @@ impl DocumentStore {
         // so the LSP can still provide parsing/type-checking diagnostics.
         let stdlib_env =
             create_stdlib_env().unwrap_or_else(|_| Rc::new(RefCell::new(Environment::new())));
-        // Create evaluation context (current directory for LSP, sandboxed).
+        // Create base evaluation context.
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
-        let eval_ctx = crate::eval::EvalContext::new(
+        let base_eval_ctx = crate::eval::EvalContext::new(
             std::path::PathBuf::from("."),
             Rc::clone(&stdlib_env),
             true,
@@ -111,16 +111,23 @@ impl DocumentStore {
         Self {
             docs: HashMap::new(),
             stdlib_env,
-            eval_ctx,
+            base_eval_ctx,
         }
     }
 
     /// Update or insert a document, re-parsing and re-analyzing the text.
     pub fn update_document(&mut self, url: Url, text: String) {
-        self.docs.insert(
-            url,
-            DocumentState::new(text, &self.stdlib_env, &self.eval_ctx),
-        );
+        // Create evaluation context with document's directory as base_dir.
+        // $include paths should resolve against the document's directory, not editor cwd.
+        let base_dir = url
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let eval_ctx = self.base_eval_ctx.with_base_dir(base_dir);
+
+        self.docs
+            .insert(url, DocumentState::new(text, &self.stdlib_env, &eval_ctx));
     }
 
     /// Remove a document from the store.

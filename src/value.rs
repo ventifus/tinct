@@ -321,11 +321,7 @@ impl Thunk {
         field_path: Vec<String>,
         guard_span: Span,
     ) -> Self {
-        let origin = if field_path.is_empty() {
-            Cow::Borrowed("type guard")
-        } else {
-            Cow::Owned(format!("type guard: {}", field_path.join(".")))
-        };
+        let origin = Cow::Borrowed("type guard");
         Self {
             state: RefCell::new(ThunkState::Guarded {
                 inner,
@@ -1179,5 +1175,51 @@ mod tests {
 
         // StrKey should not match Int keys
         assert_eq!(map.get(&StrKey("0")), None);
+    }
+
+    #[test]
+    fn test_proxy_type_name() {
+        let proxy = Value::Proxy {
+            handler: Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        assert_eq!(proxy.type_name(), "Proxy");
+    }
+
+    #[test]
+    fn test_proxy_debug() {
+        let proxy = Value::Proxy {
+            handler: Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        let debug_str = format!("{:?}", proxy);
+        assert_eq!(debug_str, "Proxy");
+    }
+
+    #[test]
+    fn test_proxy_display() {
+        let proxy = Value::Proxy {
+            handler: Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        let display_str = format!("{}", proxy);
+        assert_eq!(display_str, "<proxy>");
+    }
+
+    #[test]
+    fn test_value_partial_eq_proxy_always_false() {
+        let p = Value::Proxy {
+            handler: Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 1),
+            )),
+        };
+        assert_ne!(p.clone(), p);
     }
 }

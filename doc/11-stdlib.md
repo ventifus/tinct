@@ -233,6 +233,8 @@ Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-f
 
 Functions available to all user code. About half are implemented in Tinct in `stdlib/prelude.llt`. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`) are omitted.
 
+> **Note:** Overrides apply to the initial dispatch only; Seq corecursion steps always call the underlying Rust implementation directly.
+
 **Utility Functions:**
 
 Functions primarily used internally by other stdlib functions, but also available to user code.
