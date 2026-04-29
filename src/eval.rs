@@ -869,14 +869,9 @@ fn bind_args_thunks(
             let covered_positionally = i < positional.len();
             let covered_by_name = named.contains_key(&param.name);
             if !covered_positionally && !covered_by_name {
-                return Err(Box::new(EvalError {
-                    kind: crate::error::ErrorKind::MissingRequiredParam {
-                        param: param.name.clone(),
-                    },
-                    definition_span: *call_span,
-                    materialization_span: None,
-                    stack: Vec::new(),
-                }));
+                return Err(
+                    EvalError::missing_required_param(param.name.clone(), *call_span).into(),
+                );
             }
         }
     }

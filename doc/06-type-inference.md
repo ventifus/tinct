@@ -73,14 +73,14 @@ fn check_expr(
 }
 ```
 
-`check_expr` is used only at positions where the expected type is fully concrete (no type variables): CALL-MONO arguments, return annotations, and TypeAssert. For CALL-POLY arguments (where type variables need binding), unification with subsumptive fallback is used instead — see [U-SUBSUME] in the Unification section.
+`check_expr` is used only at positions where the expected type is fully concrete (no type variables): CALL-MONO arguments, concrete return annotations (no type variables), and TypeAssert. For CALL-POLY arguments (where type variables need binding), unification with subsumptive fallback is used instead — see [U-SUBSUME] in the Unification section.
 
 **Checking positions** (expected type fully concrete, uses `check_expr` with [SUB]):
 
 | Position | Expected type | Mechanism |
 |----------|--------------|-----------|
 | Function arguments (CALL-MONO) | Parameter type | `check_expr` |
-| Function body with return annotation | Declared return type | `check_expr` |
+| Function body with concrete return annotation | Declared return type (no TypeVars) | `check_expr` |
 | TypeAssert inner expression | Annotated type | `check_expr` |
 | Lambda body (CHECK-FN mode) | Expected return type | `check_expr` |
 
@@ -89,6 +89,9 @@ fn check_expr(
 | Position | Expected type | Mechanism |
 |----------|--------------|-----------|
 | Function arguments (CALL-POLY) | Instantiated param type (has type vars) | `unify` with [U-SUBSUME] fallback |
+| `infer_fn` with TypeVar return annotation | Body type vs return annotation | infer body + `unify` |
+| `check_expr` lambda with TypeVar param annotation | Declared param type | `unify` param into env |
+| `check_expr` lambda with TypeVar return annotation | Synthesized body type vs return annotation | infer body + `unify` |
 
 **Synthesis positions** (type flows up, no expected type):
 
