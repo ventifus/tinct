@@ -858,6 +858,8 @@ fn bind_args_thunks(
     call_span: &Span,
     depth: usize,
 ) -> EvalResult<Rc<RefCell<Environment>>> {
+    // TODO(iterative-eval): frame reuse is unsafe with shared Rc<RefCell<Environment>>
+    // (closure_env mutations visible to re-entrant callers via shared Rc); safe post-flat-env.
     let call_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
         closure_env,
     ))));

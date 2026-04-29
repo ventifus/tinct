@@ -38,6 +38,93 @@
 
 > **Note:** The type checker runs after desugaring but type errors are advisory — evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
 
+### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
+
+> **Status:** Design complete (agent-reviewed); implementation pending. See `iterative-eval` sprint in TODO.md.
+
+The iterative evaluator replaces the recursive `eval()` / `materialize()` call stack with an explicit continuation stack. The design follows Reynolds (1972) defunctionalization: each recursive call becomes a first-class `Cont` value pushed onto a `Vec<Cont>` stack. The main loop is a two-register machine `(action: Action, stack: Vec<Cont>)`.
+
+**`Action` enum — what the machine does next:**
+
+```rust
+enum Action {
+    Eval { expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize },
+    Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, depth: usize },
+    Continue(Result<Value, Box<EvalError>>),    // result ready; pop top continuation and apply
+}
+```
+
+**`Cont` enum — defunctionalized continuations (~18–20 variants):**
+
+Each variant captures exactly the free variables needed to resume computation after its sub-expression completes. Large fields are `Box`ed to keep frame size ≤ 96 bytes.
+
+```rust
+enum Cont {
+    // dict construction: remaining entries, dict_env built so far
+    DictEntries {
+        remaining: Box<Vec<(Spanned<Expr>, Spanned<Expr>)>>,
+        dict_env: Rc<RefCell<Environment>>,
+        dict_map: Box<IndexMap<Key, Rc<Thunk>>>,
+    },
+
+    // function call: force the function expression, then dispatch
+    // Captures all free variables needed to complete the call after func is known.
+    PendingCallForceFunc {
+        thunk: Rc<Thunk>,     // the deferred function-position thunk being forced
+        args: Box<Vec<Rc<Thunk>>>,
+        named: Box<IndexMap<String, Rc<Thunk>>>,
+        call_span: Span,
+        depth: usize,
+    },
+
+    // access chain: remaining accesses after head is materialized
+    AccessChain {
+        remaining: Box<Vec<Spanned<Expr>>>,
+        env: Rc<RefCell<Environment>>,
+    },
+
+    // document pipeline: bind result as $$ in child env, continue with next document
+    DocumentPipeline {
+        remaining: Box<Vec<Spanned<Expr>>>,
+        env: Rc<RefCell<Environment>>,
+    },
+
+    // ... ~14 additional variants for $if branches, TypeAssert, Guarded validation,
+    //     deep_materialize traversal, builtin arg forcing, etc.
+}
+```
+
+**`PendingCallForceFunc` carries `named`:** The `named` field (`Box<IndexMap<String, Rc<Thunk>>>`) is required because named args are free variables of the continuation — they were bound at the call site and must survive until the function is forced and `bind_args_thunks` is called. Omitting `named` would silently discard named arguments, breaking the Kotlin-model call convention. (Reynolds 1972: defunctionalized continuations must capture all free variables of the original closure.)
+
+**Main loop sketch:**
+
+```rust
+fn run(mut action: Action, mut stack: Vec<Cont>, ctx: &Rc<EvalContext>) -> EvalResult<Value> {
+    loop {
+        match action {
+            Action::Eval { expr, env, depth } => {
+                action = eval_step(expr, env, depth, &mut stack, ctx)?;
+            }
+            Action::Materialize { thunk, mat_span, depth } => {
+                action = materialize_step(thunk, mat_span, depth, &mut stack, ctx)?;
+            }
+            Action::Continue(result) => {
+                match stack.pop() {
+                    None => return result,
+                    Some(cont) => {
+                        action = apply_cont(cont, result, &mut stack, ctx)?;
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+**Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Box<Spanned<Expr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed, though `MAX_EVAL_DEPTH` can still be applied as `stack.len() > MAX_EVAL_DEPTH`).
+
+**Relationship to current `ThunkState`:** `PendingBuiltin` and `PendingCall` in `ThunkState` are proto-continuations — defunctionalized call sites captured as data. The CEK machine subsumes them: `PendingBuiltin` becomes a `Cont::PendingBuiltinForceResult` continuation, `PendingCall` becomes `Cont::PendingCallForceFunc`. After CEK migration, `ThunkState` simplifies: `PendingBuiltin` and `PendingCall` are removed (now represented as `Cont` variants on the stack), leaving `{Unevaluated, InProgress, Materialized, Failed, Guarded}` — five states instead of seven. (`Guarded` is a current state added by the typeassert-structural sprint; it remains post-CEK to support proxy contract checking.)
+
 ### EvalContext — Evaluation Infrastructure Context
 
 The evaluator threads an `EvalContext` through `eval()`, `materialize()`, and builtin dispatch. This separates evaluation infrastructure (file resolution, sandboxing) from variable bindings (`Environment`) and stack depth tracking (`depth`).
