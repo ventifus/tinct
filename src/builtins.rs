@@ -314,7 +314,11 @@ fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         (Value::Float(a), Value::Float(b)) => a == b,
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Bool(a), Value::Bool(b)) => a == b,
-        // Cross-type: Int/Float promotion
+        // Cross-type: Int/Float promotion via `as f64` cast.
+        // Known limitation: integers with absolute value > 2^53 lose precision on
+        // promotion (e.g. 9007199254740993i64 as f64 == 9007199254740992.0), which
+        // can cause non-transitive equality (doc/11-stdlib.md §Equality P3). No
+        // runtime guard is added — this matches Jsonnet's silent promotion approach.
         (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
         (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
         // Dict, Function, Builtin are never equal
@@ -348,7 +352,10 @@ fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         (Value::Float(a), Value::Float(b)) => a < b,
         (Value::String(a), Value::String(b)) => a < b,
         (Value::Bool(a), Value::Bool(b)) => !a && *b, // false < true
-        // Cross-type: Int/Float promotion
+        // Cross-type: Int/Float promotion via `as f64` cast.
+        // Known limitation: integers with absolute value > 2^53 lose precision on
+        // promotion (doc/11-stdlib.md §Equality P3, P6). No runtime guard — matches
+        // Jsonnet's silent promotion approach.
         (Value::Int(a), Value::Float(b)) => (*a as f64) < *b,
         (Value::Float(a), Value::Int(b)) => *a < (*b as f64),
         _ => {
@@ -884,7 +891,11 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let s = require_string("to-float", val, args[0].span)?;
     match s.parse::<f64>() {
         Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
-        Ok(f) => Err(EvalError::float_not_finite("to-float".to_string(), f, call_span).into()),
+        Ok(_f) => Err(EvalError::internal(
+            format!("to-float: \"{s}\" parses to a non-finite value (NaN/Infinity not allowed)"),
+            call_span,
+        )
+        .into()),
         Err(_) => {
             Err(
                 EvalError::parse_conversion("to-float".to_string(), s.clone(), "Float", call_span)
@@ -4180,7 +4191,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite number"),
+            err.message().contains("parses to a non-finite value"),
             "got: {}",
             err.message()
         );
@@ -4197,7 +4208,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite number"),
+            err.message().contains("parses to a non-finite value"),
             "got: {}",
             err.message()
         );
@@ -4214,7 +4225,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite number"),
+            err.message().contains("parses to a non-finite value"),
             "got: {}",
             err.message()
         );
@@ -4231,7 +4242,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite number"),
+            err.message().contains("parses to a non-finite value"),
             "got: {}",
             err.message()
         );
