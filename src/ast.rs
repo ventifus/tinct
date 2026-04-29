@@ -64,6 +64,9 @@ pub struct Document {
 }
 
 /// The central expression type
+///
+/// PartialEq note: TypeAssert compares resolved_type RefCell — pre-typecheck vs post-typecheck
+/// nodes will differ.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// Integer literal, e.g. `42` or `-1`
@@ -387,13 +390,15 @@ mod tests {
 
     #[test]
     fn test_display_type_assert_with_property_dict() {
+        // Annotation keys from the parser are always Expr::Str (bare words);
+        // Expr::VarRef keys are structurally valid but never produced by the parser.
         let entries = vec![
             sp(Entry {
-                key: Some(sp(Expr::VarRef("type".into()))),
-                value: sp(Expr::VarRef("Number".into())),
+                key: Some(sp(Expr::Str("type".into()))),
+                value: sp(Expr::Str("Number".into())),
             }),
             sp(Entry {
-                key: Some(sp(Expr::VarRef("min".into()))),
+                key: Some(sp(Expr::Str("min".into()))),
                 value: sp(Expr::Int(0)),
             }),
         ];
@@ -402,7 +407,10 @@ mod tests {
             expr: Box::new(sp(Expr::VarRef("x".into()))),
             resolved_type: RefCell::new(None),
         };
-        assert_eq!(format!("{expr}"), "[@[$type: $Number  $min: 0] $x]");
+        assert_eq!(
+            format!("{expr}"),
+            "[@[\"type\": \"Number\"  \"min\": 0] $x]"
+        );
     }
 
     #[test]
@@ -597,17 +605,19 @@ mod tests {
 
     #[test]
     fn test_display_annotation_property_dict_with_entries() {
+        // Annotation keys from the parser are always Expr::Str (bare words);
+        // Expr::VarRef keys are structurally valid but never produced by the parser.
         let ann = Annotation::PropertyDict(vec![
             sp(Entry {
-                key: Some(sp(Expr::VarRef("type".into()))),
-                value: sp(Expr::VarRef("Number".into())),
+                key: Some(sp(Expr::Str("type".into()))),
+                value: sp(Expr::Str("Number".into())),
             }),
             sp(Entry {
-                key: Some(sp(Expr::VarRef("default".into()))),
+                key: Some(sp(Expr::Str("default".into()))),
                 value: sp(Expr::Int(42)),
             }),
         ]);
-        assert_eq!(format!("{ann}"), "[$type: $Number  $default: 42]");
+        assert_eq!(format!("{ann}"), "[\"type\": \"Number\"  \"default\": 42]");
     }
 
     #[test]

@@ -44,10 +44,9 @@ struct TestFile<'a> {
 /// and is STRIPPED from the input before evaluation. This means `#`-prefixed content
 /// on line 1 is never evaluated, even if it's just a comment.
 ///
-/// Note: Expected output (the section after `===`) is compared against the result
-/// of `parse_expression()`, which returns the LAST expression from the FIRST document.
-/// For single-expression files, this is straightforward. For multi-expression or
-/// multi-document files, only the final expression of the first document is compared.
+/// Note: Expected output (the section after `===`) depends on the test runner:
+/// - Valid corpus: compares first expression's AST (via `parse_expression()`).
+/// - Eval corpus: compares full file evaluation (last expression of last document).
 fn split_test_file(content: &str) -> TestFile {
     const DELIM: &str = "===";
     const NEWLINE_DELIM_NEWLINE: &str = "\n===\n";
@@ -305,6 +304,44 @@ fn test_corpus_structure() {
         assert!(path.exists(), "Required test directory missing: {}", dir);
         assert!(path.is_dir(), "Path is not a directory: {}", dir);
     }
+
+    // Minimum test count assertions for key directories
+    const EVAL_LAZINESS_MIN: usize = 15;
+    const EVAL_BUILTINS_MIN: usize = 87;
+    const EVAL_STDLIB_MIN: usize = 133;
+    const EVAL_ERRORS_MIN: usize = 45;
+
+    let laziness_count = find_test_files(&manifest_dir.join("tests/corpus/eval/laziness")).len();
+    assert!(
+        laziness_count >= EVAL_LAZINESS_MIN,
+        "tests/corpus/eval/laziness/ has {} tests, expected at least {}",
+        laziness_count,
+        EVAL_LAZINESS_MIN
+    );
+
+    let builtins_count = find_test_files(&manifest_dir.join("tests/corpus/eval/builtins")).len();
+    assert!(
+        builtins_count >= EVAL_BUILTINS_MIN,
+        "tests/corpus/eval/builtins/ has {} tests, expected at least {}",
+        builtins_count,
+        EVAL_BUILTINS_MIN
+    );
+
+    let stdlib_count = find_test_files(&manifest_dir.join("tests/corpus/eval/stdlib")).len();
+    assert!(
+        stdlib_count >= EVAL_STDLIB_MIN,
+        "tests/corpus/eval/stdlib/ has {} tests, expected at least {}",
+        stdlib_count,
+        EVAL_STDLIB_MIN
+    );
+
+    let errors_count = find_test_files(&manifest_dir.join("tests/corpus/eval/errors")).len();
+    assert!(
+        errors_count >= EVAL_ERRORS_MIN,
+        "tests/corpus/eval/errors/ has {} tests, expected at least {}",
+        errors_count,
+        EVAL_ERRORS_MIN
+    );
 }
 
 #[test]
@@ -879,5 +916,31 @@ fn test_has_error_code_prefix_invalid_letters_in_number() {
     assert!(
         !has_error_code_prefix("[E0A1] letter in number"),
         "[E0A1] with letter in number should NOT be detected"
+    );
+}
+
+/// Documents the behavior of split_test_file() when `===` appears in expected output.
+///
+/// split_test_file splits at the FIRST `\n===\n` in the file (between input and expected).
+/// Any subsequent `===` lines in the expected section are passed through verbatim — they are
+/// NOT treated as additional delimiters. This means `===` can safely appear in expected output.
+///
+/// The practical limitation is that `\n===\n` in the INPUT section would cause a premature
+/// split before the intended delimiter. In practice this never arises since LLT source doesn't
+/// contain bare `===` lines.
+#[test]
+fn test_split_test_file_delimiter_limitation_documented() {
+    // Construct a file where the expected output itself contains `===` on its own line.
+    // split_test_file splits only at the FIRST `\n===\n` delimiter.
+    let content = "expr\n===\nexpected line 1\n===\nexpected line 2\n";
+    let parsed = split_test_file(content);
+    // split_test_file splits only at the FIRST `===`. The second `===` is passed through
+    // verbatim as part of the expected output — it is NOT treated as a second delimiter.
+    // So the full expected output is "expected line 1\n===\nexpected line 2".
+    assert_eq!(
+        parsed.expected,
+        Some("expected line 1\n===\nexpected line 2"),
+        "split_test_file keeps the second `===` as literal expected content; \
+         if any corpus test had `===` as the ONLY content expected, no special handling is needed"
     );
 }
