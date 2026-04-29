@@ -477,7 +477,7 @@ User-facing error presentation improvements.
 - [ ] Span-aware error recovery in REPL — show source line with caret pointing to error span (span-integrity-checker review)
 - [ ] `tinct explain <error-code>` command for extended help on error categories (span-integrity-checker review, Elm-inspired)
 - [ ] Add LSP `related_information` for materialization-site spans and stack frames (currently discarded)
-- [ ] Use `ErrorKind::code()` for LSP diagnostic error code — `eval_error_to_diagnostic()` sets `code: None` instead of using the structured error code from `ErrorKind::code()`. (`src/lsp/analysis.rs:237-249`) [Minor, span-integrity-checker C32]
+- [x] Use `ErrorKind::code()` for LSP diagnostic error code — eval_error_to_diagnostic now sets `code: Some(NumberOrString::String(kind.code()))` (`src/lsp/analysis.rs`) [Minor, span-integrity-checker C32]
 - [x] Add `desugar_file()` call to LSP `DocumentState::new()` — pipeline is parse→typecheck→eval, missing the desugar step. User code containing `$_` will see un-desugared ASTs in LSP. (`src/lsp/document.rs:54`) [Minor, computer-scientist C32; fix applied C69]
 
 ### error-message-polish: Error Message Polish (Minor)
