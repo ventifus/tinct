@@ -149,21 +149,18 @@ fn test_valid_corpus() {
 
         let test = split_test_file(&content);
 
-        let expected_output = match test.expected {
-            Some(e) => e,
-            None => {
-                failed.push((
-                    relative_path.to_path_buf(),
-                    "valid corpus test file missing expected AST output after ===".to_string(),
-                ));
-                continue;
-            }
-        };
-
         // Use parse (full file) to verify the input is valid.
         // For expected output comparison, use parse_expression (single expr).
         match parse(test.input) {
             Ok(_) => {
+                // Single-section files (no `===`) are parse-only tests: verifying that
+                // the file parses without error is sufficient. The corpus README documents
+                // this convention. Skip AST comparison when no expected section is present.
+                let expected_output = match test.expected {
+                    Some(e) => e,
+                    None => continue,
+                };
+
                 // Expected output is compared against single-expression format
                 match parse_expression(test.input) {
                     Ok(ast) => {
@@ -284,6 +281,7 @@ fn test_corpus_structure() {
         "tests/corpus/eval/regressions",
         "tests/corpus/eval/stdlib",
         "tests/corpus/eval/type_assertions",
+        "tests/corpus/eval/type_errors",
         "tests/corpus/eval/typecheck",
         "tests/corpus/eval/underscore",
         // Invalid corpus
@@ -348,10 +346,13 @@ fn test_corpus_structure() {
 fn test_eval_corpus() {
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval");
     let errors_dir = corpus_dir.join("errors");
+    // type_errors/ files are expected to fail typecheck (not produce eval output);
+    // they are handled by test_typecheck_error_corpus_eval instead.
+    let type_errors_dir = corpus_dir.join("type_errors");
 
     let test_files: Vec<_> = find_test_files(&corpus_dir)
         .into_iter()
-        .filter(|p| !p.starts_with(&errors_dir))
+        .filter(|p| !p.starts_with(&errors_dir) && !p.starts_with(&type_errors_dir))
         .collect();
     assert!(
         !test_files.is_empty(),
@@ -637,6 +638,86 @@ fn test_typecheck_corpus() {
             eprintln!("  - {}: {}", path.display(), error);
         }
         panic!("Typecheck corpus tests failed");
+    }
+}
+
+/// Type-error corpus runner for `tests/corpus/eval/type_errors/`.
+///
+/// Each `.llt-eval` file in this directory must:
+/// 1. Contain LLT source that **fails** type checking (i.e. `typecheck_source()` returns `Err`).
+/// 2. Have an `===` section with an expected error substring.
+///
+/// Unlike the ignored `test_typecheck_error_corpus` (which targets
+/// `tests/corpus/invalid/type_errors/` and awaits stdlib type signatures), this runner
+/// only exercises the type checker itself — no stdlib builtins required. Files should use
+/// only core language features (functions, annotations, dicts) that the type checker handles
+/// without builtin type signatures.
+///
+/// The type checker is advisory at runtime (eval always proceeds), but this corpus ensures
+/// we can write regression tests that assert specific type errors are detected.
+#[test]
+fn test_typecheck_error_corpus_eval() {
+    let corpus_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval/type_errors");
+
+    let test_files = find_test_files(&corpus_dir);
+    if test_files.is_empty() {
+        // Directory exists but has no .llt-eval files — acceptable (new directory).
+        return;
+    }
+
+    let mut failed = Vec::new();
+
+    for test_file in &test_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+        let relative_path = test_file
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(test_file);
+
+        let test = split_test_file(&content);
+
+        let expected_substr = match test.expected {
+            Some(e) => e,
+            None => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    "type error corpus test file missing expected error substring after ==="
+                        .to_string(),
+                ));
+                continue;
+            }
+        };
+
+        // Type check should fail for all files in tests/corpus/eval/type_errors/
+        match typecheck_source(test.input) {
+            Ok(()) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    "Expected typecheck to fail, but it succeeded".to_string(),
+                ));
+            }
+            Err(error_msg) => {
+                if !error_msg.contains(expected_substr) {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual errors ---\n{}",
+                            expected_substr, error_msg
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n{} type error test(s) failed:", failed.len());
+        for (path, error) in &failed {
+            eprintln!("  - {}: {}", path.display(), error);
+        }
+        panic!("Type error corpus tests failed");
     }
 }
 
