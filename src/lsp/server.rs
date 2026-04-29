@@ -21,6 +21,10 @@ use crate::lsp::document::DocumentStore;
 /// Maximum document size the LSP server will process: 10 MB (matches `MAX_FILE_SIZE` in builtins).
 const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
 
+/// Maximum length of an LSP method name that will be echoed in error responses.
+/// Prevents heap exhaustion from malicious clients sending arbitrarily long method names.
+const MAX_METHOD_NAME_LEN: usize = 256;
+
 /// Run the LSP server on stdio.
 pub fn run_lsp() -> Result<(), Box<dyn Error>> {
     eprintln!("tinct LSP server starting...");
@@ -103,12 +107,21 @@ fn handle_request(
         }
         _ => {
             // Unknown request; respond with method not found.
+            // Cap method name length to prevent resource exhaustion from malicious LSP clients.
+            let method_display = if req.method.len() > MAX_METHOD_NAME_LEN {
+                format!(
+                    "method not found: <name too long ({} bytes)>",
+                    req.method.len()
+                )
+            } else {
+                format!("method not found: {}", req.method)
+            };
             connection.sender.send(Message::Response(Response {
                 id: req.id,
                 result: None,
                 error: Some(lsp_server::ResponseError {
                     code: lsp_server::ErrorCode::MethodNotFound as i32,
-                    message: format!("method not found: {}", req.method),
+                    message: method_display,
                     data: None,
                 }),
             }))?;
@@ -403,5 +416,10 @@ mod tests {
     #[test]
     fn test_max_document_size_constant() {
         assert_eq!(MAX_DOCUMENT_SIZE, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_max_method_name_len_constant() {
+        assert_eq!(MAX_METHOD_NAME_LEN, 256);
     }
 }

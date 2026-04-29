@@ -39,6 +39,10 @@ const MAX_COLLECT_SIZE: usize = 1_000_000;
 /// Prevents memory exhaustion from adversarial inputs or replacement patterns.
 const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
 
+/// Maximum number of parts produced by `$split` (1,000,000 elements).
+/// Prevents heap exhaustion from splitting by empty separator or small patterns.
+const MAX_SPLIT_PARTS: usize = 1_000_000;
+
 fn ok_val(v: Value) -> EvalResult<Rc<Thunk>> {
     Ok(Rc::new(Thunk::new_materialized(v, Span::origin())))
 }
@@ -539,11 +543,29 @@ fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let sep = require_string("split", sep_val, call_span)?;
     let input = require_string("split", input_val, call_span)?;
 
-    let parts: Vec<&str> = input.split(sep.as_str()).collect();
-    let mut map = IndexMap::new();
+    // Bound allocation before the guard fires: take at most MAX_SPLIT_PARTS + 1 entries
+    // so that adversarial input (e.g., splitting a large string by empty separator) cannot
+    // heap-exhaust the process before the check.
+    let parts: Vec<&str> = input
+        .split(sep.as_str())
+        .take(MAX_SPLIT_PARTS + 1)
+        .collect();
+    if parts.len() > MAX_SPLIT_PARTS {
+        return Err(EvalError::resource_limit_exceeded(
+            format!("$split: input produces more than {MAX_SPLIT_PARTS} parts"),
+            call_span,
+        )
+        .into());
+    }
+    let mut map = IndexMap::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         map.insert(
-            Key::Int(i64::try_from(i).expect("collection too large")),
+            Key::Int(i64::try_from(i).map_err(|_| {
+                EvalError::resource_limit_exceeded(
+                    "$split: result index too large".to_string(),
+                    call_span,
+                )
+            })?),
             Rc::new(Thunk::new_materialized(
                 Value::String(part.to_string()),
                 call_span,
@@ -6302,6 +6324,55 @@ mod tests {
                 let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
                 assert_eq!(v0, Value::String("".into()));
             }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn split_parts_limit_exceeded() {
+        // Splitting "a" repeated MAX_SPLIT_PARTS+1 times by empty separator produces
+        // MAX_SPLIT_PARTS+2 parts, which exceeds the limit.
+        // Verifies that ResourceLimitExceeded is returned and that the error fires
+        // after at most MAX_SPLIT_PARTS+1 allocations (not after the full split).
+        let input = "a".repeat(MAX_SPLIT_PARTS + 1);
+        let result = builtin_split(BuiltinArgs {
+            args: &[thunk(Value::String("".into())), thunk(Value::String(input))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        assert!(result.is_err(), "expected Err for > MAX_SPLIT_PARTS parts");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }),
+            "expected ResourceLimitExceeded, got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn split_parts_at_limit_succeeds() {
+        // Splitting a string that produces exactly MAX_SPLIT_PARTS parts must succeed
+        // (guard is `>`, not `>=`). Construct "a,a,a,...,a" with MAX_SPLIT_PARTS items
+        // separated by commas, then split by "," — produces exactly MAX_SPLIT_PARTS parts.
+        let input = vec!["a"; MAX_SPLIT_PARTS].join(",");
+        let result = builtin_split(BuiltinArgs {
+            args: &[
+                thunk(Value::String(",".into())),
+                thunk(Value::String(input)),
+            ],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        let val = match result {
+            Ok(t) => mat(Ok(t)),
+            Err(e) => panic!("expected Ok for exactly MAX_SPLIT_PARTS parts, got Err: {e:?}"),
+        };
+        match val {
+            Value::Dict(map) => assert_eq!(map.len(), MAX_SPLIT_PARTS),
             other => panic!("expected Dict, got {other:?}"),
         }
     }

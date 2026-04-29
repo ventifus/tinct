@@ -85,6 +85,8 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 /// Primarily used for corpus tests that verify the `IncludeForbidden` error path.
 pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
     let mut file = parse(input).map_err(|e| format!("{e}"))?;
+    // PIPELINE INVARIANT: Desugar must run after parse and before typecheck.
+    // See also: src/main.rs:234-240 (run_eval pipeline)
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
     // Type errors are advisory; evaluation proceeds regardless.
