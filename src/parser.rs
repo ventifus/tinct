@@ -985,6 +985,15 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
             Token::VarRef(name) => {
                 let expr = Spanned::new(Expr::VarRef(name.clone()), span);
+                // Check if this VarRef is a potential dict key (followed by colon)
+                if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
+                    if let Some(StackFrame::Dict { ref mut pending_key, .. }) = stack.last_mut() {
+                        *pending_key = Some(expr.clone());
+                        last_significant_span = Some(span);
+                        i += 1;
+                        continue;
+                    }
+                }
                 push_value(&mut stack, &mut current_document_expressions, expr)?;
                 last_significant_span = Some(span);
                 i += 1;
