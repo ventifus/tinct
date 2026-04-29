@@ -242,7 +242,7 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str) -> Diag
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::ERROR),
-        code: None,
+        code: Some(lsp_types::NumberOrString::String(err.kind.code().to_string())),
         code_description: None,
         source: Some("tinct-eval".to_string()),
         message: err.message(),
