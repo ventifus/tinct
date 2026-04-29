@@ -944,3 +944,335 @@ fn test_split_test_file_delimiter_limitation_documented() {
          if any corpus test had `===` as the ONLY content expected, no special handling is needed"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Parser equivalence test — validates parser2 matches pest parser output
+// ---------------------------------------------------------------------------
+
+/// Test that parser2 produces identical ASTs to the pest parser on all corpus files.
+///
+/// This is the validation gate for the parser rewrite: if this test passes, parser2
+/// is ready for the pest cutover. The test compares AST structure (ignoring spans
+/// and comment maps) on every valid input file in tests/corpus/eval/.
+#[test]
+fn test_parser2_equivalence() {
+    use tinct::parser2;
+
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval");
+    let errors_dir = corpus_dir.join("errors");
+
+    let test_files: Vec<_> = find_test_files(&corpus_dir)
+        .into_iter()
+        .filter(|p| !p.starts_with(&errors_dir))
+        .collect();
+
+    assert!(
+        !test_files.is_empty(),
+        "No test files found in {}",
+        corpus_dir.display()
+    );
+
+    let mut failed = Vec::new();
+    let mut skipped = Vec::new();
+
+    for test_file in &test_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+        let relative_path = test_file
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(test_file);
+
+        let test = split_test_file(&content);
+        let input = test.input;
+
+        // Parse with both parsers
+        let pest_result = parse(input);
+        let parser2_result = parser2::parse2(input);
+
+        match (pest_result, parser2_result) {
+            (Ok(pest_ast), Ok(parser2_output)) => {
+                // Compare AST structure (ignore spans and comment maps)
+                if !files_equal(&pest_ast.node, &parser2_output.file.node) {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "AST mismatch\n--- pest ---\n{:#?}\n--- parser2 ---\n{:#?}",
+                            pest_ast.node, parser2_output.file.node
+                        ),
+                    ));
+                }
+            }
+            (Ok(_), Err(e)) => {
+                // pest succeeded, parser2 failed
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!("pest succeeded but parser2 failed: {}", e),
+                ));
+            }
+            (Err(pest_err), Ok(_)) => {
+                // pest failed, parser2 succeeded
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!(
+                        "pest failed but parser2 succeeded (pest error: {})",
+                        pest_err
+                    ),
+                ));
+            }
+            (Err(pest_err), Err(parser2_err)) => {
+                // Both failed - compare error messages to ensure consistency
+                // Normalize error messages by extracting the core error kind
+                let pest_msg = pest_err.message.to_lowercase();
+                let parser2_msg = parser2_err.message.to_lowercase();
+
+                // Check if error messages indicate the same kind of error
+                // Allow for different phrasing but same error category
+                let both_depth = pest_msg.contains("depth") && parser2_msg.contains("depth");
+                let both_duplicate =
+                    pest_msg.contains("duplicate") && parser2_msg.contains("duplicate");
+                let both_unclosed = (pest_msg.contains("unclosed")
+                    || pest_msg.contains("unmatched"))
+                    && (parser2_msg.contains("unclosed") || parser2_msg.contains("unmatched"));
+                let both_unexpected =
+                    pest_msg.contains("unexpected") && parser2_msg.contains("unexpected");
+                let both_invalid = pest_msg.contains("invalid") && parser2_msg.contains("invalid");
+
+                if !(both_depth
+                    || both_duplicate
+                    || both_unclosed
+                    || both_unexpected
+                    || both_invalid)
+                {
+                    // Error kinds don't match - this is a divergence
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "Both parsers failed but with different error kinds:\npest: {}\nparser2: {}",
+                            pest_err.message, parser2_err.message
+                        ),
+                    ));
+                } else {
+                    // Errors are similar - skip this file
+                    skipped.push(relative_path.to_path_buf());
+                }
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n{} parser2 equivalence test(s) failed:", failed.len());
+        for (path, error) in &failed {
+            eprintln!("  - {}: {}", path.display(), error);
+        }
+        if !skipped.is_empty() {
+            eprintln!("\n{} file(s) skipped (both parsers failed):", skipped.len());
+            for path in &skipped {
+                eprintln!("  - {}", path.display());
+            }
+        }
+        panic!("Parser2 equivalence tests failed");
+    }
+}
+
+/// Compare two File AST nodes for structural equality (ignoring spans and resolved types).
+fn files_equal(a: &tinct::ast::File, b: &tinct::ast::File) -> bool {
+    if a.documents.len() != b.documents.len() {
+        return false;
+    }
+    a.documents
+        .iter()
+        .zip(b.documents.iter())
+        .all(|(da, db)| documents_equal(&da.node, &db.node))
+}
+
+/// Compare two Document AST nodes for structural equality.
+fn documents_equal(a: &tinct::ast::Document, b: &tinct::ast::Document) -> bool {
+    if a.expressions.len() != b.expressions.len() {
+        return false;
+    }
+    a.expressions
+        .iter()
+        .zip(b.expressions.iter())
+        .all(|(ea, eb)| exprs_equal(&ea.node, &eb.node))
+}
+
+/// Compare two Expr AST nodes for structural equality (ignoring spans and resolved types).
+fn exprs_equal(a: &tinct::ast::Expr, b: &tinct::ast::Expr) -> bool {
+    use tinct::ast::Expr;
+
+    match (a, b) {
+        (Expr::Int(n1), Expr::Int(n2)) => n1 == n2,
+        (Expr::Float(f1), Expr::Float(f2)) => f1 == f2,
+        (Expr::Bool(b1), Expr::Bool(b2)) => b1 == b2,
+        (Expr::Str(s1), Expr::Str(s2)) => s1 == s2,
+        (Expr::VarRef(v1), Expr::VarRef(v2)) => v1 == v2,
+        (
+            Expr::DotAccess {
+                expr: e1,
+                field: f1,
+            },
+            Expr::DotAccess {
+                expr: e2,
+                field: f2,
+            },
+        ) => f1 == f2 && exprs_equal(&e1.node, &e2.node),
+        (Expr::BracketAccess { expr: e1, key: k1 }, Expr::BracketAccess { expr: e2, key: k2 }) => {
+            exprs_equal(&e1.node, &e2.node) && exprs_equal(&k1.node, &k2.node)
+        }
+        (
+            Expr::RangeAccess {
+                expr: e1,
+                start: s1,
+                end: end1,
+            },
+            Expr::RangeAccess {
+                expr: e2,
+                start: s2,
+                end: end2,
+            },
+        ) => {
+            exprs_equal(&e1.node, &e2.node)
+                && opt_exprs_equal(s1.as_ref().map(|v| &**v), s2.as_ref().map(|v| &**v))
+                && opt_exprs_equal(end1.as_ref().map(|v| &**v), end2.as_ref().map(|v| &**v))
+        }
+        (Expr::Dict(entries1), Expr::Dict(entries2)) => {
+            if entries1.len() != entries2.len() {
+                return false;
+            }
+            entries1
+                .iter()
+                .zip(entries2.iter())
+                .all(|(e1, e2)| entries_equal(&e1.node, &e2.node))
+        }
+        (
+            Expr::Call {
+                func: f1,
+                args: a1,
+                named_args: n1,
+            },
+            Expr::Call {
+                func: f2,
+                args: a2,
+                named_args: n2,
+            },
+        ) => {
+            exprs_equal(&f1.node, &f2.node)
+                && a1.len() == a2.len()
+                && a1
+                    .iter()
+                    .zip(a2.iter())
+                    .all(|(e1, e2)| exprs_equal(&e1.node, &e2.node))
+                && n1.len() == n2.len()
+                && n1
+                    .iter()
+                    .zip(n2.iter())
+                    .all(|(na1, na2)| named_args_equal(&na1.node, &na2.node))
+        }
+        (
+            Expr::Fn {
+                return_ann: r1,
+                params: p1,
+                body: b1,
+                desugared: d1,
+            },
+            Expr::Fn {
+                return_ann: r2,
+                params: p2,
+                body: b2,
+                desugared: d2,
+            },
+        ) => {
+            d1 == d2
+                && opt_annotations_equal(r1.as_ref(), r2.as_ref())
+                && p1.len() == p2.len()
+                && p1
+                    .iter()
+                    .zip(p2.iter())
+                    .all(|(pa1, pa2)| params_equal(&pa1.node, &pa2.node))
+                && exprs_equal(&b1.node, &b2.node)
+        }
+        (Expr::TypeAlias(t1), Expr::TypeAlias(t2)) => exprs_equal(&t1.node, &t2.node),
+        (
+            Expr::TypeAssert {
+                annotation: a1,
+                expr: e1,
+                ..
+            },
+            Expr::TypeAssert {
+                annotation: a2,
+                expr: e2,
+                ..
+            },
+        ) => {
+            // Ignore resolved_type (elaboration data)
+            annotations_equal(&a1.node, &a2.node) && exprs_equal(&e1.node, &e2.node)
+        }
+        (
+            Expr::Annotated {
+                name: n1,
+                annotation: a1,
+            },
+            Expr::Annotated {
+                name: n2,
+                annotation: a2,
+            },
+        ) => n1 == n2 && annotations_equal(&a1.node, &a2.node),
+        (Expr::Rest(r1), Expr::Rest(r2)) => r1 == r2,
+        _ => false,
+    }
+}
+
+fn opt_exprs_equal(
+    a: Option<&tinct::ast::Spanned<tinct::ast::Expr>>,
+    b: Option<&tinct::ast::Spanned<tinct::ast::Expr>>,
+) -> bool {
+    match (a, b) {
+        (Some(e1), Some(e2)) => exprs_equal(&e1.node, &e2.node),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn entries_equal(a: &tinct::ast::Entry, b: &tinct::ast::Entry) -> bool {
+    opt_exprs_equal(a.key.as_ref(), b.key.as_ref()) && exprs_equal(&a.value.node, &b.value.node)
+}
+
+fn named_args_equal(a: &tinct::ast::NamedArg, b: &tinct::ast::NamedArg) -> bool {
+    a.name == b.name && exprs_equal(&a.value.node, &b.value.node)
+}
+
+fn params_equal(a: &tinct::ast::Param, b: &tinct::ast::Param) -> bool {
+    a.name == b.name
+        && a.variadic == b.variadic
+        && opt_annotations_equal(a.annotation.as_ref(), b.annotation.as_ref())
+}
+
+fn opt_annotations_equal(
+    a: Option<&tinct::ast::Spanned<tinct::ast::Annotation>>,
+    b: Option<&tinct::ast::Spanned<tinct::ast::Annotation>>,
+) -> bool {
+    match (a, b) {
+        (Some(ann1), Some(ann2)) => annotations_equal(&ann1.node, &ann2.node),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn annotations_equal(a: &tinct::ast::Annotation, b: &tinct::ast::Annotation) -> bool {
+    use tinct::ast::Annotation;
+
+    match (a, b) {
+        (Annotation::Simple(s1), Annotation::Simple(s2)) => s1 == s2,
+        (Annotation::PropertyDict(entries1), Annotation::PropertyDict(entries2)) => {
+            if entries1.len() != entries2.len() {
+                return false;
+            }
+            entries1
+                .iter()
+                .zip(entries2.iter())
+                .all(|(e1, e2)| entries_equal(&e1.node, &e2.node))
+        }
+        _ => false,
+    }
+}

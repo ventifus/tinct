@@ -49,17 +49,7 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 
 
 
-### parser-core-c2: Phase 2c-2 — Constraints, Error Messages, Corpus Parity
-
-Inline validation and quality error messages, achieving corpus test equivalence with the pest parser. **Depends on:** `parser-core-c1`.
-
-- [ ] Implement annotated bare words in parser2 — `x@Int` as standalone dict value or auto-indexed entry not yet implemented; `Token::At|ImmediateAt` handler (parser2.rs:1066-1084) returns "not yet supported". Pest grammar's `annotated_bare = ${ bare_word ~ "@" ~ annotation_value }` must be supported for corpus parity. (`src/parser2.rs:1066-1084`) [Major, computer-scientist C66]
-- [ ] Fix parser2 to preserve empty leading documents at `---` boundary — input `---\n[a: 1]` produces 1 document in parser2 vs 2 (empty + content) in pest; pest grammar `document = { expression* }` allows empty documents. Fix: always push the current document (even if empty) when a DocSeparator is encountered. (`src/parser2.rs:954-969`) [Minor, computer-scientist C66]
-- [ ] Fix parser2 `skip_whitespace_tokens` to collect comments — comments inside param lists or between `fn` and param list brackets are silently dropped; needed for formatter round-tripping. Pass comment maps to `skip_whitespace_tokens` or replace callers with inline loops. (`src/parser2.rs:35-48`) [Minor, computer-scientist C66]
 - [ ] Document parser2 newlines-after-dot behavior divergence from pest — pest's compound-atomic `${}` rule forbids newlines after `.` in access chains; parser2's `skip_whitespace_tokens` skips newlines. Either fix to match pest or document as an intentional extension ("line continuation"). (`src/parser2.rs:994-995`) [Minor, grammar-architect C66]
-- [ ] Static constraints inline: duplicate key detection in Dict frame (error on second occurrence of same key), variadic rules in Fn frame (only one variadic, must be last) (`src/parser2.rs`)
-- [ ] Error messages with bracket context: "unclosed bracket opened at line 5:3", "expected value after `:` at line 7:12", span correctly pointing to the opening bracket (`src/parser2.rs`)
-- [ ] All corpus tests pass before landing — add `test_parser_equivalence` in `tests/` that parses all valid corpus files with both `parser::parse()` and `parser2::parse2()`, compares AST structure (ignoring comment maps). Zero divergences allowed before cutover.
 
 ### parser-core-c3: Phase 2c-3 — Pest Cutover
 

@@ -1919,3 +1919,12 @@ Complete remaining language constructs so parser2 can parse all valid tinct sour
 - [x] Range access operator — `$a[2..5]`, `$a[..5]`, `$a[2..]`, `$a[..]`: detect `Token::Range` inside BracketAccessKey frame, parse optional start/end expressions (`src/parser2.rs`)
 - [x] Document separators — `Token::DocSeparator`: finalize current document, push to documents vec, start new document (`src/parser2.rs`)
 - [x] Comment collection for ParseOutput — `Token::Comment`: attach to leading_comments or trailing_comments BTreeMap by span.start.offset (`src/parser2.rs`)
+
+### parser-core-c2: Phase 2c-2 — Constraints, Error Messages, Corpus Parity (partial)
+
+- [x] Implement annotated bare words in parser2 — `x@Int` (`src/parser2.rs`)
+- [x] Fix parser2 to preserve empty leading documents at `---` boundary (`src/parser2.rs`)
+- [x] Fix parser2 `skip_whitespace_tokens` to collect comments (`src/parser2.rs`)
+- [x] Static constraints inline: duplicate key detection in Dict frame (`src/parser2.rs`)
+- [x] Error messages with bracket context: unclosed bracket errors include opening position (`src/parser2.rs`)
+- [x] All corpus tests pass — `test_parser2_equivalence` added (`tests/corpus_tests.rs`)

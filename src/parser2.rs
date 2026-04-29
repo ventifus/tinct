@@ -33,17 +33,55 @@ fn peek_next_significant<'a>(
     None
 }
 
+/// Extract a comparable string from a key expression for duplicate detection.
+/// Returns None for complex expressions where comparison isn't meaningful.
+///
+/// Parse-time duplicate detection is literal-keys-only; computed keys (DotAccess,
+/// BracketAccess, Call) return None here and are checked at eval-time.
+fn key_to_string(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Str(s) => Some(s.clone()),
+        Expr::Int(n) => Some(n.to_string()),
+        Expr::Float(n) => Some(n.to_string()),
+        Expr::Bool(b) => Some(b.to_string()),
+        Expr::VarRef(name) => Some(format!("${name}")),
+        _ => None,
+    }
+}
+
 /// Helper: count how many whitespace/newline/semicolon tokens to skip from the current position.
-fn skip_whitespace_tokens(tokens: &[Spanned<Token>], current_index: usize) -> usize {
+/// Also collects comment tokens into the leading_comments map (keyed by the next non-whitespace token's offset).
+fn skip_whitespace_tokens(
+    tokens: &[Spanned<Token>],
+    current_index: usize,
+    leading_comments: &mut BTreeMap<usize, Vec<String>>,
+) -> usize {
     let mut count = 0;
     let mut idx = current_index;
+    let mut collected_comments = Vec::new();
+
     while idx < tokens.len() {
         match &tokens[idx].node {
-            Token::Newline | Token::Semicolon | Token::Comment(_) => {
+            Token::Comment(text) => {
+                collected_comments.push(text.clone());
                 count += 1;
                 idx += 1;
             }
-            _ => break,
+            Token::Newline | Token::Semicolon => {
+                count += 1;
+                idx += 1;
+            }
+            _ => {
+                // Found non-whitespace token — attach collected comments to it
+                if !collected_comments.is_empty() && idx < tokens.len() {
+                    let next_offset = tokens[idx].span.start.offset;
+                    leading_comments
+                        .entry(next_offset)
+                        .or_insert_with(Vec::new)
+                        .extend(collected_comments);
+                }
+                break;
+            }
         }
     }
     count
@@ -58,6 +96,7 @@ fn skip_whitespace_tokens(tokens: &[Spanned<Token>], current_index: usize) -> us
 fn parse_annotation(
     tokens: &[Spanned<Token>],
     start_index: usize,
+    leading_comments: &mut BTreeMap<usize, Vec<String>>,
 ) -> Result<(Spanned<Annotation>, usize), ParseError> {
     let mut i = start_index;
 
@@ -75,7 +114,7 @@ fn parse_annotation(
     }
 
     // Skip whitespace after @
-    i += skip_whitespace_tokens(tokens, i);
+    i += skip_whitespace_tokens(tokens, i, leading_comments);
 
     if i >= tokens.len() {
         return Err(ParseError {
@@ -117,6 +156,7 @@ fn parse_annotation(
 fn parse_param_list(
     tokens: &[Spanned<Token>],
     i: &mut usize,
+    leading_comments: &mut BTreeMap<usize, Vec<String>>,
 ) -> Result<Vec<Spanned<Param>>, ParseError> {
     let _param_list_start = *i;
 
@@ -133,7 +173,7 @@ fn parse_param_list(
     let mut saw_variadic = false;
 
     loop {
-        *i += skip_whitespace_tokens(tokens, *i);
+        *i += skip_whitespace_tokens(tokens, *i, leading_comments);
 
         if *i >= tokens.len() {
             return Err(ParseError {
@@ -159,7 +199,7 @@ fn parse_param_list(
                 let ellipsis_span = tokens[*i].span;
                 *i += 1;
 
-                *i += skip_whitespace_tokens(tokens, *i);
+                *i += skip_whitespace_tokens(tokens, *i, leading_comments);
 
                 if *i >= tokens.len() {
                     return Err(ParseError {
@@ -216,7 +256,7 @@ fn parse_param_list(
                 // Check for annotation: param@Type
                 let annotation =
                     if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
-                        let (ann, next_i) = parse_annotation(tokens, *i)?;
+                        let (ann, next_i) = parse_annotation(tokens, *i, leading_comments)?;
                         *i = next_i;
                         Some(ann)
                     } else {
@@ -265,6 +305,8 @@ enum StackFrame {
         entries: Vec<Entry>,
         /// Pending key from a BareWord/QuotedString/VarRef before a colon
         pending_key: Option<Spanned<Expr>>,
+        /// Track seen keys for duplicate detection (literal keys only)
+        seen_keys: std::collections::HashSet<String>,
         span_start: usize,
     },
     /// Function call: `[call $func arg1 arg2 name: val]`
@@ -419,7 +461,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "call" token
-                        i += skip_whitespace_tokens(&token_vec, i);
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
                         i += 1;
                         continue;
                     }
@@ -435,14 +477,15 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         // (depth already checked above)
 
                         i += 1; // Consume the OpenBracket
-                        i += skip_whitespace_tokens(&token_vec, i);
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
                         i += 1; // Consume the "fn" token
 
                         // Check for return annotation: fn@RetType
                         let return_ann = if i < token_vec.len()
                             && matches!(&token_vec[i].node, Token::ImmediateAt)
                         {
-                            let (ann, next_i) = parse_annotation(&token_vec, i)?;
+                            let (ann, next_i) =
+                                parse_annotation(&token_vec, i, &mut leading_comments)?;
                             i = next_i;
                             Some(ann)
                         } else {
@@ -450,11 +493,11 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         };
 
                         // Parse param list if present: [fn [params] body]
-                        i += skip_whitespace_tokens(&token_vec, i);
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
                         let params = if i < token_vec.len()
                             && matches!(&token_vec[i].node, Token::OpenBracket)
                         {
-                            parse_param_list(&token_vec, &mut i)?
+                            parse_param_list(&token_vec, &mut i, &mut leading_comments)?
                         } else {
                             Vec::new()
                         };
@@ -483,7 +526,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "type" token
-                        i += skip_whitespace_tokens(&token_vec, i);
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
                         i += 1;
                         continue;
                     }
@@ -504,6 +547,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         stack.push(StackFrame::Dict {
                             entries: Vec::new(),
                             pending_key: None,
+                            seen_keys: std::collections::HashSet::new(),
                             span_start: span.start.offset,
                         });
                         i += 1;
@@ -568,6 +612,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     StackFrame::Dict {
                         entries,
                         pending_key,
+                        seen_keys: _,
                         span_start,
                     } => {
                         // If there's a pending key, that's an error — key without value
@@ -853,6 +898,25 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::BareWord(s) => {
+                // Check for annotation: word@Type
+                if i + 1 < token_vec.len() && matches!(&token_vec[i + 1].node, Token::ImmediateAt) {
+                    // Annotated bare word
+                    let name = s.clone();
+                    let name_span = span;
+                    i += 1; // Move to ImmediateAt token
+                    let (annotation, next_i) =
+                        parse_annotation(&token_vec, i, &mut leading_comments)?;
+                    i = next_i;
+                    let full_span = Span {
+                        start: name_span.start,
+                        end: annotation.span.end,
+                    };
+                    let expr = Spanned::new(Expr::Annotated { name, annotation }, full_span);
+                    push_value(&mut stack, &mut current_document_expressions, expr)?;
+                    last_significant_span = Some(full_span);
+                    continue;
+                }
+
                 let expr = Spanned::new(Expr::Str(s.clone()), span);
                 // Check if this is a potential key (next token is colon)
                 if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
@@ -953,15 +1017,18 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     });
                 }
 
-                // Finalize current document
-                if !current_document_expressions.is_empty() {
-                    let exprs = std::mem::take(&mut current_document_expressions);
-                    let doc_span = Span {
+                // Finalize current document (even if empty)
+                let exprs = std::mem::take(&mut current_document_expressions);
+                let doc_span = if exprs.is_empty() {
+                    // Empty document: use separator position
+                    span
+                } else {
+                    Span {
                         start: exprs.first().unwrap().span.start,
                         end: exprs.last().unwrap().span.end,
-                    };
-                    documents.push(Spanned::new(Document { expressions: exprs }, doc_span));
-                }
+                    }
+                };
+                documents.push(Spanned::new(Document { expressions: exprs }, doc_span));
 
                 i += 1;
                 continue;
@@ -987,7 +1054,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 i += 1; // Consume the Dot
 
                 // Skip whitespace
-                i += skip_whitespace_tokens(&token_vec, i);
+                i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
 
                 if i >= token_vec.len() {
                     return Err(ParseError {
@@ -1065,7 +1132,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         ref mut annotation, ..
                     }) if annotation.is_none() => {
                         // Parse the annotation
-                        let (ann, next_i) = parse_annotation(&token_vec, i)?;
+                        let (ann, next_i) = parse_annotation(&token_vec, i, &mut leading_comments)?;
                         *annotation = Some(ann);
                         i = next_i;
                         continue;
@@ -1090,9 +1157,56 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
     // Check for unclosed brackets
     if !stack.is_empty() {
+        // Get the innermost unclosed bracket's position
+        let innermost_frame = stack.last().unwrap();
+        let bracket_offset = match innermost_frame {
+            StackFrame::Dict { span_start, .. } => *span_start,
+            StackFrame::Call { span_start, .. } => *span_start,
+            StackFrame::Fn { span_start, .. } => *span_start,
+            StackFrame::TypeAlias { span_start, .. } => *span_start,
+            StackFrame::TypeAssert { span_start, .. } => *span_start,
+            StackFrame::BracketAccessKey { span_start, .. } => *span_start,
+        };
+
+        // Convert offset to line/column
+        // Build line starts table from input
+        let mut line_starts = vec![0];
+        for (i, ch) in input.char_indices() {
+            if ch == '\n' {
+                line_starts.push(i + 1);
+            }
+        }
+
+        // Binary search to find the line for bracket_offset
+        let line_index = match line_starts.binary_search(&bracket_offset) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let start_pos = Position {
+            offset: bracket_offset,
+            line: line_index + 1,
+            column: bracket_offset - line_starts[line_index] + 1,
+        };
+
+        let unclosed_span = Span {
+            start: start_pos,
+            end: Position {
+                offset: bracket_offset + 1,
+                line: start_pos.line,
+                column: start_pos.column + 1,
+            },
+        };
+
+        let count = stack.len();
+        let message = if count == 1 {
+            "unclosed bracket".to_string()
+        } else {
+            format!("{} unclosed brackets", count)
+        };
+
         return Err(ParseError {
-            message: format!("{} unclosed bracket(s)", stack.len()),
-            span: None,
+            message,
+            span: Some(unclosed_span),
         });
     }
 
@@ -1384,9 +1498,20 @@ fn push_value(
         Some(StackFrame::Dict {
             ref mut entries,
             ref mut pending_key,
+            ref mut seen_keys,
             ..
         }) => {
             if let Some(key) = pending_key.take() {
+                // Check for duplicate key (literal keys only)
+                if let Some(key_str) = key_to_string(&key.node) {
+                    if seen_keys.contains(&key_str) {
+                        return Err(ParseError {
+                            message: format!("duplicate key \"{}\"", key_str),
+                            span: Some(key.span),
+                        });
+                    }
+                    seen_keys.insert(key_str);
+                }
                 // This value completes a keyed entry
                 entries.push(Entry {
                     key: Some(key),
@@ -2791,5 +2916,54 @@ mod tests {
             }
             other => panic!("expected Fn, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_duplicate_key() {
+        let err = parse2("[a: 1  a: 2]").unwrap_err();
+        assert!(err.message.contains("duplicate key"));
+        assert!(err.message.contains("\"a\""));
+    }
+
+    #[test]
+    fn test_empty_document_explicit() {
+        // --- is the LLT document separator
+        let output = parse2("---\n[a: 1]").expect("parse failed");
+        assert_eq!(output.file.node.documents.len(), 2);
+        assert_eq!(output.file.node.documents[0].node.expressions.len(), 0);
+        assert_eq!(output.file.node.documents[1].node.expressions.len(), 1);
+    }
+
+    #[test]
+    fn test_annotated_bare_word() {
+        let expr = parse_expr("word@Int");
+        match &expr.node {
+            Expr::Annotated { name, annotation } => {
+                assert_eq!(name, "word");
+                match &annotation.node {
+                    Annotation::Simple(s) => assert_eq!(s, "Int"),
+                    other => panic!("expected Simple annotation, got {other:?}"),
+                }
+            }
+            other => panic!("expected Annotated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comment_collection() {
+        let output = parse2("# my comment\n[a: 1]").expect("parse failed");
+        assert!(
+            !output.leading_comments.is_empty(),
+            "expected leading_comments to be non-empty"
+        );
+        let has_comment = output
+            .leading_comments
+            .values()
+            .any(|comments| comments.iter().any(|c| c.contains("my comment")));
+        assert!(
+            has_comment,
+            "expected to find 'my comment' in leading_comments, got: {:?}",
+            output.leading_comments
+        );
     }
 }
