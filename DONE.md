@@ -1998,3 +1998,20 @@ Update all documentation that still references the pest parser. The iterative pa
 - [x] Document REPL multi-document limitation (doc/16-architecture.md)
 - [x] Update doc/08-evaluation.md visited set language
 - [x] Add $try strictness annotation to doc/08-evaluation.md
+
+### test-corpus-efg: Corpus Coverage (Parts 5–7 + Type Errors)
+
+- [x] $to-float NaN/Inf corpus test (to_float_nan_input.llt-eval, E099)
+- [x] $filter non-Bool predicate corpus test (E010)
+- [x] CALL-ANY arity mismatch corpus test (E020)
+- [x] let-gen polymorphism corpus test
+- [x] Typecheck error corpus tests (return_annotation_mismatch, lambda_param_incompatible)
+- [x] $/, $error, $try builtin corpus tests
+- [x] $map Seq-path laziness corpus test
+- [x] Fix test_valid_corpus rejecting parse-only files (Critical)
+- [x] Bidirectional typing error corpus tests
+- [x] Fix eval_source silently discarding type errors + test_typecheck_error_corpus_eval runner (Critical)
+- [x] Fix doc/06 check_expr pseudocode — prose + source reference
+- [x] test_check_call_with_scheme_non_function_scheme unit test
+- [x] Laziness short-circuit tests (and/or already existed)
+- [x] test_check_expr_lambda_arity_mismatch unit test
