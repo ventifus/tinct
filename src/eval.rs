@@ -1053,7 +1053,9 @@ fn eval_dot_access(
             // Use StrKey wrapper to avoid allocating Key::String
             match map.get(&crate::value::StrKey(field)) {
                 Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(EvalError::key_not_found(field, *access_span).into()),
+                None => Err(EvalError::key_not_found(field, target_thunk.span)
+                    .with_materialization_span(*access_span)
+                    .into()),
             }
         }
         Value::Proxy { handler } => invoke_proxy_handler(
@@ -1064,9 +1066,9 @@ fn eval_dot_access(
             depth,
         )
         .map_err(&push_frame),
-        _ => Err(
-            EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), *access_span).into(),
-        ),
+        _ => Err(EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), target_thunk.span)
+            .with_materialization_span(*access_span)
+            .into()),
     }
 }
 
@@ -1091,7 +1093,9 @@ fn eval_bracket_access(
             let key = eval_key(key_expr, env, ctx, depth)?;
             match map.get(&key) {
                 Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(EvalError::key_not_found(&key.to_string(), *access_span).into()),
+                None => Err(EvalError::key_not_found(&key.to_string(), target_thunk.span)
+                    .with_materialization_span(*access_span)
+                    .into()),
             }
         }
         Value::Proxy { handler } => {
@@ -1102,9 +1106,9 @@ fn eval_bracket_access(
             };
             invoke_proxy_handler(&handler, key_val, ctx, access_span, depth).map_err(&push_frame)
         }
-        _ => Err(
-            EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), *access_span).into(),
-        ),
+        _ => Err(EvalError::type_mismatch("Dict or Proxy", target_val.type_name(), target_thunk.span)
+            .with_materialization_span(*access_span)
+            .into()),
     }
 }
 
@@ -1136,14 +1140,17 @@ fn eval_range_access(
                     "range access".to_string(),
                     "Dict",
                     "Proxy",
-                    *access_span,
+                    target_thunk.span,
                 )
+                .with_materialization_span(*access_span)
                 .into(),
             ));
         }
         _ => {
             return Err(push_frame(
-                EvalError::type_mismatch("Dict", target_val.type_name(), *access_span).into(),
+                EvalError::type_mismatch("Dict", target_val.type_name(), target_thunk.span)
+                    .with_materialization_span(*access_span)
+                    .into(),
             ));
         }
     };
