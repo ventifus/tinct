@@ -1514,10 +1514,7 @@ impl TypeError {
     }
 
     pub fn type_mismatch(expected: &Type, got: &Type, span: Span) -> Self {
-        Self::new(
-            format!("type mismatch: expected {expected}, got {got}"),
-            span,
-        )
+        Self::new(format!("cannot unify {expected} with {got}"), span)
     }
 
     pub fn field_not_found(field: &str, record_type: &Type, span: Span) -> Self {
@@ -2235,7 +2232,7 @@ mod tests {
     fn test_type_error_type_mismatch() {
         let span = test_span(1, 1, 1, 5);
         let err = TypeError::type_mismatch(&Type::Int, &Type::Str, span);
-        assert_eq!(err.message, "type mismatch: expected Int, got String");
+        assert_eq!(err.message, "cannot unify Int with String");
     }
 
     #[test]
@@ -2667,7 +2664,7 @@ mod tests {
             span,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("type mismatch"));
+        assert!(result.unwrap_err().message.contains("cannot unify"));
     }
 
     #[test]
@@ -2698,7 +2695,7 @@ mod tests {
             span,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("type mismatch"));
+        assert!(result.unwrap_err().message.contains("cannot unify"));
     }
 
     #[test]

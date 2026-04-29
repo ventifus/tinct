@@ -488,8 +488,8 @@ Minor wording and span improvements.
 - [ ] Fix `Span::origin()` used for non-origin errors — create separate span constructors for runtime limits and default inputs (`src/eval.rs:923, 292`) [Minor, span-integrity-checker]
 - [ ] Add call-site span to depth limit errors — currently lacks stack frame attachment (`src/eval.rs:812-820`) [Minor, span-integrity-checker]
 - [ ] Enhance "materialized at" error message to distinguish access vs call sites (`src/error.rs:85-86`) [Minor, span-integrity-checker]
-- [ ] Change unification error wording from "type mismatch" to "cannot unify X with Y" (`src/types.rs:314`) [Minor, type-theorist]
-- [ ] Improve Fn type expression error message for keyed params — currently generic (`src/typecheck.rs:764-772`) [Minor, type-theorist]
+- [x] Change unification error wording — TypeError message now "cannot unify {expected} with {got}"; 15 test assertions updated (`src/types.rs`, `src/typecheck.rs`) [Minor, type-theorist]
+- [x] Improve Fn type expression error message for keyed params — now "function type parameter at position N: expected a type name, got key 'X'" (`src/typecheck.rs`) [Minor, type-theorist]
 - [ ] Thread `call_site_span` through `deep_materialize()` — all 3 nested `materialize()` calls at lines 1231, 1251, 1264 pass `None` for mat_span, losing materialization context. Add `call_site_span: Span` parameter and pass `Some(&call_site_span)` to nested calls. Update callers in `src/builtins.rs:738`, `src/repl.rs:171`, `src/main.rs:149,168`, `src/lib.rs:88` to pass appropriate span or `Span::origin()`. (`src/eval.rs:1204,1231,1251,1264`) [Minor, span-integrity-checker]
 
 ### span-builtins: Builtin Span and Error Kind Quality

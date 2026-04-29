@@ -2026,10 +2026,17 @@ fn try_resolve_fn_type_expr(
     };
 
     let mut params = Vec::new();
-    for entry in param_entries {
-        if entry.node.key.is_some() {
+    for (pos, entry) in param_entries.iter().enumerate() {
+        if let Some(ref key) = entry.node.key {
+            let key_name = match &key.node {
+                Expr::Str(s) => format!("'{s}'"),
+                _ => "unknown".to_string(),
+            };
             return Err(TypeError::new(
-                "function type parameters must be auto-indexed type names",
+                format!(
+                    "function type parameter at position {}: expected a type name, got key {key_name}",
+                    pos + 1
+                ),
                 entry.span,
             ));
         }
@@ -2518,14 +2525,14 @@ mod tests {
     fn test_type_assert_fail() {
         let errors = check_err("[@Number hello]");
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].message.contains("type mismatch"));
+        assert!(errors[0].message.contains("cannot unify"));
     }
 
     #[test]
     fn test_type_assert_int_not_string() {
         let errors = check_err("[@String 42]");
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].message.contains("type mismatch"));
+        assert!(errors[0].message.contains("cannot unify"));
     }
 
     #[test]
@@ -2542,7 +2549,7 @@ mod tests {
     fn test_type_assert_no_default_still_errors() {
         let errors = check_err("[@[type: Number] hello]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
+            errors.iter().any(|e| e.message.contains("cannot unify")),
             "TypeAssert without default: should still report type error, got: {:?}",
             errors
         );
@@ -2705,7 +2712,7 @@ mod tests {
     fn test_fn_return_annotation_mismatch() {
         let errors = check_err("[fn@String [x@Number] $x]");
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].message.contains("type mismatch"));
+        assert!(errors[0].message.contains("cannot unify"));
     }
 
     // -- Call --
@@ -3501,8 +3508,8 @@ mod tests {
     fn test_call_unification_error() {
         let errors = check_err("[f: [fn [x@a y@a] $x]]\n[result: [call $f 42 hello]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
-            "expected type mismatch error, got: {:?}",
+            errors.iter().any(|e| e.message.contains("cannot unify")),
+            "expected unification error, got: {:?}",
             errors
         );
     }
@@ -4016,14 +4023,14 @@ mod tests {
     fn test_type_assert_closed_record_rejects_extra_fields() {
         let errors = check_err("[@[name: String] [name: Alice  age: 30]]");
         assert!(!errors.is_empty());
-        assert!(errors[0].message.contains("type mismatch"));
+        assert!(errors[0].message.contains("cannot unify"));
     }
 
     #[test]
     fn test_type_assert_open_record_requires_fields() {
         let errors = check_err("[@[name: String ...] [age: 30]]");
         assert!(!errors.is_empty());
-        assert!(errors[0].message.contains("type mismatch"));
+        assert!(errors[0].message.contains("cannot unify"));
     }
 
     #[test]
@@ -4324,7 +4331,7 @@ mod tests {
         // This should fail: String is not subtype of Int
         let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f hello]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
+            errors.iter().any(|e| e.message.contains("cannot unify")),
             "CALL-MONO should reject String arg for Int param, got: {:?}",
             errors
         );
@@ -4416,7 +4423,7 @@ mod tests {
         // Type mismatch should fail
         let errors = check_err("[f: [fn@Int [] hello]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
+            errors.iter().any(|e| e.message.contains("cannot unify")),
             "Function body type mismatch should error, got: {:?}",
             errors
         );
@@ -4495,7 +4502,7 @@ mod tests {
         // This tests the fix added in the bidirectional-typing fix pass (contravariant check).
         let errors = check_err("[x: [@[Fn@Int [Int]] [fn [x@String] $x]]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
+            errors.iter().any(|e| e.message.contains("cannot unify")),
             "Incompatible param annotation should produce type mismatch error, got: {:?}",
             errors
         );
@@ -4532,7 +4539,7 @@ mod tests {
         // is_subtype(&Number, &Int) = false → should error.
         let errors = check_err("[f: [@[Fn@Int [Int]] [fn@Number [x] 42]]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
+            errors.iter().any(|e| e.message.contains("cannot unify")),
             "Declared return Number is not subtype of expected Int — should error, got: {:?}",
             errors
         );
@@ -4599,13 +4606,13 @@ mod tests {
         // Verify that parameter annotation type mismatch error messages are correctly ordered.
         // When checking [@[Fn@Number [Int]] [fn [x@String] $x]], the expected param type is Int
         // (from the function type annotation) but the parameter annotation says String.
-        // The error should say "expected Int, got String" (not "expected String, got Int").
+        // The error should say "cannot unify Int with String" (not "cannot unify String with Int").
         let errors = check_err("[f: [@[Fn@Number [Int]] [fn [x@String] $x]]]");
         assert_eq!(errors.len(), 1, "should have exactly one error");
         let msg = &errors[0].message;
         assert!(
-            msg.contains("expected Int") && msg.contains("got String"),
-            "Error message should say 'expected Int, got String' but got: {msg}"
+            msg.contains("cannot unify Int with String"),
+            "Error message should say 'cannot unify Int with String' but got: {msg}"
         );
     }
 
@@ -4780,7 +4787,7 @@ mod tests {
         // StringLiteral for Int param fails
         let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f \"hello\"]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
+            errors.iter().any(|e| e.message.contains("cannot unify")),
             "StringLiteral arg for Int param should error: {:?}",
             errors
         );
@@ -4815,7 +4822,7 @@ mod tests {
         assert!(check("[result: [@Number 42]]").is_ok());
         let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [@Int [call $f 3.14]]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
+            errors.iter().any(|e| e.message.contains("cannot unify")),
             "Float should not be subtype of Int: {:?}",
             errors
         );
@@ -4848,7 +4855,7 @@ mod tests {
         // Uses Fn@ReturnType [params] syntax for function type annotation
         let errors = check_err("[result: [@[Fn@Int [Int]] [fn [x@String] $x]]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
+            errors.iter().any(|e| e.message.contains("cannot unify")),
             "String annotation should be incompatible with Int expected param: {:?}",
             errors
         );
@@ -5790,8 +5797,8 @@ mod tests {
              [g: [fn [r@[type: [x: Int ...]]] [call $f $r]]]",
         );
         assert!(
-            errors.iter().any(|e| e.message.contains("type mismatch")),
-            "expected type mismatch error, got: {errors:?}"
+            errors.iter().any(|e| e.message.contains("cannot unify")),
+            "expected unification error, got: {errors:?}"
         );
     }
 
