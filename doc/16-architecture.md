@@ -225,7 +225,7 @@ enum Key {
 }
 
 struct Environment {
-    bindings: HashMap<String, Rc<Thunk>>,  // currently IndexMap; HashMap migration tracked in TODO.md row-unification-perf-c
+    bindings: HashMap<String, Rc<Thunk>>,  // lookup-only; insertion order carries no semantic meaning
     parent: Option<Rc<RefCell<Environment>>>,   // mutable — letrec needs self-referential bindings
 }
 ```

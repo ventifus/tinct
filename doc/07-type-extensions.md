@@ -359,8 +359,8 @@ The substitution splits into two kinded maps:
 
 ```rust
 pub struct Substitution {
-    pub type_map: IndexMap<String, Type>,   // α → τ  (kind: Type)
-    pub row_map: IndexMap<String, Row>,     // ρ → r  (kind: Row)
+    pub type_map: HashMap<String, Type>,   // α → τ  (kind: Type)
+    pub row_map: HashMap<String, Row>,     // ρ → r  (kind: Row)
 }
 ```
 
