@@ -48,16 +48,26 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 - [ ] Remove dead Dict/Call match arms in parser2 `push_expr_to_parent` — lines 845-856 are unreachable because `push_value` intercepts Dict/Call frames before delegating. (`src/parser2.rs:845-856`) [Nit, computer-scientist C65]
 
 
-### parser-core-c: Phase 2c — Constraints, Errors, and Cutover
 
-Inline validation, quality error messages, and pest removal. **Depends on:** `parser-core-b`.
+### parser-core-c2: Phase 2c-2 — Constraints, Error Messages, Corpus Parity
 
-- [ ] Static constraints inline: duplicate key detection in Dict frame, variadic rules in Fn frame (`src/parser.rs`)
-- [ ] Error messages with bracket context: "unclosed bracket opened at line 5:3", "expected value after `:` at line 7:12" (`src/parser.rs`)
-- [ ] All corpus tests pass before landing (corpus suite is the regression suite)
+Inline validation and quality error messages, achieving corpus test equivalence with the pest parser. **Depends on:** `parser-core-c1`.
+
+- [ ] Implement annotated bare words in parser2 — `x@Int` as standalone dict value or auto-indexed entry not yet implemented; `Token::At|ImmediateAt` handler (parser2.rs:1066-1084) returns "not yet supported". Pest grammar's `annotated_bare = ${ bare_word ~ "@" ~ annotation_value }` must be supported for corpus parity. (`src/parser2.rs:1066-1084`) [Major, computer-scientist C66]
+- [ ] Fix parser2 to preserve empty leading documents at `---` boundary — input `---\n[a: 1]` produces 1 document in parser2 vs 2 (empty + content) in pest; pest grammar `document = { expression* }` allows empty documents. Fix: always push the current document (even if empty) when a DocSeparator is encountered. (`src/parser2.rs:954-969`) [Minor, computer-scientist C66]
+- [ ] Fix parser2 `skip_whitespace_tokens` to collect comments — comments inside param lists or between `fn` and param list brackets are silently dropped; needed for formatter round-tripping. Pass comment maps to `skip_whitespace_tokens` or replace callers with inline loops. (`src/parser2.rs:35-48`) [Minor, computer-scientist C66]
+- [ ] Document parser2 newlines-after-dot behavior divergence from pest — pest's compound-atomic `${}` rule forbids newlines after `.` in access chains; parser2's `skip_whitespace_tokens` skips newlines. Either fix to match pest or document as an intentional extension ("line continuation"). (`src/parser2.rs:994-995`) [Minor, grammar-architect C66]
+- [ ] Static constraints inline: duplicate key detection in Dict frame (error on second occurrence of same key), variadic rules in Fn frame (only one variadic, must be last) (`src/parser2.rs`)
+- [ ] Error messages with bracket context: "unclosed bracket opened at line 5:3", "expected value after `:` at line 7:12", span correctly pointing to the opening bracket (`src/parser2.rs`)
+- [ ] All corpus tests pass before landing — add `test_parser_equivalence` in `tests/` that parses all valid corpus files with both `parser::parse()` and `parser2::parse2()`, compares AST structure (ignoring comment maps). Zero divergences allowed before cutover.
+
+### parser-core-c3: Phase 2c-3 — Pest Cutover
+
+Remove pest and complete the migration. **Depends on:** `parser-core-c2` (all corpus tests passing).
+
 - [ ] Remove `src/grammar.pest`; remove `pest` and `pest_derive` from `Cargo.toml`
-- [ ] Remove 64 MB worker thread stack workaround — coordinate with `iterative-eval` sprint
-- [ ] Benchmark parse time on large inputs
+- [ ] Remove 64 MB worker thread stack workaround — coordinate with `iterative-eval` sprint (both target the same stack overflow root cause)
+- [ ] Benchmark parse time on large inputs; confirm ≥ pest performance on the corpus files
 
 ### parser-formatter: Phase 3 — AST-Based Formatter
 
@@ -188,7 +198,7 @@ Future type system work identified by type-theorist review (2026-04-19). Updated
 - [ ] Document `Type::Number` having no literal variant — asymmetry with Int/String is due to dict key constraint (`src/types.rs:21-37`) [Minor, type-theorist]
 - [ ] Fix `Type::Function` Display for nested types — add parentheses for nested function annotations (`src/types.rs:369-378`) [Minor, type-theorist]
 - [x] Decide variadic param annotation semantics — forbid annotations on `...args`. Row types use string keys but variadic collects into Int-keyed Dict; annotation can't participate in type inference. Revisit when Seq types land (variadic may collect into `Seq<T>` instead of Dict).
-- [ ] Fix variadic param type from `Record([], Closed)` to `Any` — no annotation to resolve, just correct the type (`src/typecheck.rs:469-473`) [Minor, type-theorist]
+- [x] Fix variadic param type from `Record([], Closed)` to `Any` — no annotation to resolve, just correct the type (`src/typecheck.rs:469-473`) [Minor, type-theorist] — already fixed: code at typecheck.rs:1480-1483 types variadic as Any; doc/06 Limitation #4 updated to match
 - [ ] Clarify `resolve_annotated` interpreting all Fn annotations as function types (`src/typecheck.rs:522-533`) [Minor, type-theorist]
 - [ ] Populate type map on errors — record `Type::Any` for failed subexpressions to improve LSP hover (`src/typecheck.rs:200-206`) [Minor, type-theorist]
 - [ ] Fix annotation TypeVar aliasing — same `@a` in two sibling dict entries overwrites `state.levels["a"]`; e.g., `[f: [fn [x@a] $x]  g: [fn [y@a] $y]]` — `g`'s inference overwrites `f`'s level, causing incorrect generalization of `f`'s scheme at Pass 4. Fix: use `state.fresh_var()` for annotation-derived TypeVars (fresh name with counter) instead of the bare annotation name. (`src/typecheck.rs:738`) [Major, type-theorist C40]
@@ -267,6 +277,8 @@ Chaperone semantics, elaboration gap, and tests. Split from typeassert-structura
 Public API completeness and error quality improvements from the C56 integration-verifier review.
 
 - [ ] Fix `Expr::Rest` error using raw `EvalError` struct literal — `src/eval.rs:466-473` constructs `EvalError` with a raw struct literal (kind `Internal`) rather than the `EvalError::internal()` named constructor used by all other eval errors. Replace with `EvalError::internal("rest marker (...) is only valid inside type expressions", expr.span).into()`. (`src/eval.rs:466-473`) [Nit, integration-verifier C59]
+- [ ] Add `EvalError::resource_limit_exceeded(message, span)` convenience constructor — `ErrorKind::ResourceLimitExceeded` variant exists but has no typed constructor; callers use `EvalError::new()` (E099 Internal) instead. Add: `pub fn resource_limit_exceeded(message: impl Into<String>, definition_span: Span) -> Self` matching the pattern of other named constructors. (`src/error.rs`) [Major, integration-verifier C66]
+- [ ] Fix `eval_source_with_config` using relative `PathBuf::from(".")` for base_dir — `$include` resolution in `eval_source()` / `eval_source_with_config()` uses a relative `.` base, while the CLI canonicalizes to an absolute path. Results in different `$include` behavior between the library API and CLI. Change to `std::env::current_dir().ok().and_then(|d| d.canonicalize().ok()).unwrap_or_else(|| PathBuf::from("."))` or document the semantic difference explicitly. (`src/lib.rs:100`) [Major, integration-verifier C66]
 - [ ] Add divergence documentation for `is_cacheable` and `is_catchable` — both currently return `!matches!(self, Self::DepthExceeded { .. })` but serve distinct semantic roles (cacheability = Launchbury (1993) thunk state machine monotonicity; catchability = user-facing `$try` semantics per Nix `tryEval` model). Add `// INVARIANT: currently equivalent to is_catchable(); these can diverge if a future error should be cached but not catchable.` comment on each method cross-referencing the other, so future contributors know the bodies may differ. (`src/error.rs:198-208`) [Minor, computer-scientist C59]
 - [ ] Re-export `ErrorKind` and `ArityBound` from `lib.rs` — `error` module is `pub(crate)`, making `EvalError.kind: ErrorKind` opaque to library consumers who want to branch on error kind; add `pub use error::{ErrorKind, ArityBound, StackFrame};` to `src/lib.rs:55`. (`src/lib.rs:55`) [Major, integration-verifier C56]
 - [ ] Re-export `EvalConfig` and `EvalState` from `lib.rs` — `doc/16-architecture.md` states these are public API, but only `EvalContext` appears in the `pub use eval::{...}` block; external callers constructing or inspecting evaluation sessions cannot access the config or state types. Add `EvalConfig, EvalState` to the `pub use eval::{...}` block. (`src/lib.rs:47-48`) [Major, integration-verifier C56]
@@ -378,6 +390,8 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 - [ ] Eliminate Substitution::apply() HashSet allocation per unify() call — `subst.apply()` allocates a fresh `HashSet<String>` visited set per call; `unify()` calls it twice (lines 339-340), producing 2N HashSet allocs for an N-field dict Pass 3. Add `apply_with_visited(&self, ty, visited: &mut HashSet<String>)` variant to share one visited set across both calls. (`src/types.rs:243`, `src/types.rs:339-340`) [Major, performance-expert C40]
 - [ ] Fix double `format!()` in `infer_dict` Pass 1 by calling `state.fresh_var()` — Pass 1 manually inlines 4-line logic identical to `InferState::fresh_var()` (introduced in let-gen-types): `format!()` evaluated twice, `state.levels` registration duplicated, compiler warning `fresh_var is never used`. One-line fix: replace with `let fresh_var = state.fresh_var();`. Resolves DRY violation, eliminates warning, and fixes double `format!()`. (`src/typecheck.rs:476-479`, `src/types.rs:214-219`) [Minor, computer-scientist C42 + performance-expert C40]
 - [ ] Document performance characteristics in doc/16-architecture.md — Environment O(depth) lookup, IndexMap ~20% vs HashMap, thunk triple-boxing cost, Substitution::apply() tree walk cost [Minor, performance-expert]
+- [ ] Fix PendingCall error-path clones — when a PendingCall materialization fails with a non-cacheable error (DepthExceeded), `src/eval.rs:1486-1490,1502-1506,1539-1543,1556-1560` restore thunk state by cloning `Rc<Thunk>` + `Vec<CallArg>` + `Vec<NamedArg>` + `Rc<EvalContext>`. Change to move-then-restore: bind `let (func, args, named, ctx) = take_pending_call(thunk)` before first error check; on non-cacheable error, move them back into `set_state()` instead of cloning. Eliminates 4 clones per failed PendingCall. (`src/eval.rs:1486-1560`) [Major, performance-expert C66]
+- [ ] Add fast path in `eval_range_access` for unbounded range — `start.is_none() && end.is_none()` (full dict) allocates a new IndexMap unnecessarily; return `Ok(Rc::clone(&target_thunk))` early. (`src/eval.rs:1154-1159`) [Minor, performance-expert C66]
 - [x] Decide Substitution::apply() depth limit behavior — Option A: raise TypeError on >256-depth chains ("type substitution exceeded maximum depth"). Analogous to MAX_EVAL_DEPTH → EvalError. Silent truncation defeats purpose of type checking. OCaml/Haskell precedent. Union-find migration will subsume.
 - [ ] Add per-variable depth limit to Substitution::apply() — implement chosen behavior (`src/types.rs:141-144`) [Critical, type-theorist]
 - [ ] Fix Substitution::apply depth counter conflating chain depth with structural width — single `depth` parameter increments for both TypeVar chain-following and structural descent into Record fields/Function params. A record type with >256 fields (K8s manifests) would silently return un-substituted type variables. The `visited: HashSet<String>` already prevents infinite TypeVar chains (Tarjan 1975), so depth counter should only guard structural recursion. Either increment depth only on TypeVar resolution, or use separate counters. (`src/types.rs:145-198`) [Major, computer-scientist]
@@ -780,6 +794,9 @@ Infrastructure tooling and output quality improvements. Split from 15-item backl
 
 Consolidated from: test-framework-b, test-advanced
 
+- [ ] Add corpus tests for error codes with zero coverage — error codes E030 (ArityMismatch), E032 (MissingKeyArg), E033 (UnexpectedNamedArg), E035 (ValueNotSerializable), E041 (CircularDependency), E043 (ResourceLimitExceeded), E050-E054 (TypeError variants), E060-E062 (TypeAssertFailed variants), E099 (Internal) all lack any corpus test. Add at least one corpus test per code in `tests/corpus/eval/errors/`. (`tests/corpus/eval/errors/`) [Critical, test-crafter C66]
+- [ ] Update `tests/corpus/README.md` — currently documents 4 top-level directories but the corpus now has 21 subdirectories. Re-list all 21 and describe the taxonomy. (`tests/corpus/README.md`) [Major, test-crafter C66]
+- [ ] Add corpus tests for resource limit violations — MAX_EVAL_DEPTH (depth exceeded on nested eval), MAX_COLLECT_SIZE (collect > 1M elements), and MAX_STRING_SIZE ($replace output amplification) all have no corpus tests verifying the error message and error code. Add `tests/corpus/eval/errors/eval_depth_exceeded.llt-eval`, `collect_size_exceeded.llt-eval`, `string_size_exceeded.llt-eval`. [Major, test-crafter C66]
 - [ ] Standardize error corpus test format and document in README (`tests/corpus/`) [Nit, test-crafter]
 - [ ] Create `tests/corpus/README.md` documenting test format — specify `===` delimiter usage (separates input from expected output, must be on its own line), expected output format for success tests (JSON result) vs error tests (error message substring), multi-expression behavior, clarify that `===` is not language-reserved. (`tests/corpus/`) [Minor, test-crafter]
 - [ ] Add testing requirements section to doc/02-syntax.md — static constraints section (lines 154-221) describes 6 parser-enforced rules but lacks test mandate; add "Testing Requirements" subsection requiring each constraint has at least one `tests/corpus/invalid/syntax_errors/` test showing parser rejection. (`doc/02-syntax.md:154-221`) [Major, test-crafter]
@@ -859,6 +876,9 @@ Split from docs-vs-code. All items target doc/02-syntax.md.
 
 Split from docs-vs-code. Items targeting stdlib docs, data model, examples, AST, references, CLAUDE.md, and 4 code fixes.
 
+- [ ] **doc/02-syntax.md escape_seq missing extensibility note** — `escape_seq` supports exactly 5 sequences (`\"`, `\\`, `\n`, `\t`, `\r`) but no note explains this is the full set or documents the Unicode workaround. Add after line 218: "Currently supports these 5 sequences. Unicode escapes (`\uXXXX`) are not yet supported — use `$from-json` for full Unicode string parsing." (`doc/02-syntax.md:218`) [Minor, grammar-architect C66]
+- [ ] **doc/15-ast.md keyword detection table uses "optional whitespace" but pest uses horizontal-only** — Desugaring Rules table on lines 297-305 says "not followed by (optional whitespace then) `:` " but `colon_ahead` in `grammar.pest` uses `ws_chars = _{ " " | "\t" }` (no newlines). Change to "optional horizontal whitespace then" and add: "`call\n:` is a Dict (newline breaks keyword recognition)." (`doc/15-ast.md:297-305`) [Minor, grammar-architect C66]
+- [ ] **doc/08-evaluation.md §Laziness Design $reduce row inaccurate** — line 824 says "Materializes accumulator at each step" but the dict path builds a lazy PendingCall accumulator chain; only the Seq path materializes the tail per step. Fix line 824: "Builds lazy PendingCall accumulator chain; materializes tail at each step for Seq path only." (`doc/08-evaluation.md:824`) [Minor, eval-engine C66]
 - [ ] **doc/13-examples.md one example has prose explanation but others don't** — be consistent across examples. (`doc/13-examples.md`) [Nit, grammar-architect]
 - [ ] **doc/17-references.md appendix numbered but only one exists** — remove "A" from any "Appendix A" heading. (`doc/17-references.md`) [Nit, grammar-architect]
 - [ ] **doc/03-data-model.md missing Value::Seq documentation** — `Value::Seq` exists in code (`src/value.rs:84-85`) and doc/08-evaluation.md covers lazy sequences, but doc/03-data-model.md §Values doesn't mention Seq; add cross-reference. (`doc/03-data-model.md`, `doc/08-evaluation.md:~72`) [Major, integration-verifier]

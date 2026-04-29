@@ -1909,3 +1909,13 @@ Form classification and access chain handling. **Depends on:** `parser-core-a`.
 - [x] On `BracketAccess`: push BracketAccessKey frame; CloseBracket pops and produces key expression (`src/parser.rs`)
 - [x] On `ImmediateAt`: handle annotated bare-word rule (`word@annotation`) — no whitespace between Identifier and At (`src/parser.rs`)
 - [x] MAX_DEPTH check on `stack.len()` before each push — fires before allocation (`src/parser.rs`)
+
+### parser-core-c1: Phase 2c-1 — Complete parser2 Feature Set (partial)
+
+Complete remaining language constructs so parser2 can parse all valid tinct source. **Depends on:** `parser-core-b`.
+
+- [x] Fn param list parsing — `[fn [x y z] body]` and `[fn@Type [params] body]`: detect param-list `[` after keyword, parse params (BareWord with optional `@Annotation`), variadic rest param (`...name`), store in Fn frame (`src/parser2.rs`)
+- [x] Dot access chains — `$a.b.c` and `$a.b[0]`: detect `Token::Dot` after VarRef/BareWordAfterDot, peek next for field name, wrap in chained `Expr::DotAccess` (`src/parser2.rs`)
+- [x] Range access operator — `$a[2..5]`, `$a[..5]`, `$a[2..]`, `$a[..]`: detect `Token::Range` inside BracketAccessKey frame, parse optional start/end expressions (`src/parser2.rs`)
+- [x] Document separators — `Token::DocSeparator`: finalize current document, push to documents vec, start new document (`src/parser2.rs`)
+- [x] Comment collection for ParseOutput — `Token::Comment`: attach to leading_comments or trailing_comments BTreeMap by span.start.offset (`src/parser2.rs`)
