@@ -269,6 +269,8 @@ Entries without explicit keys receive auto-incrementing integer keys. The counte
 
 In the AST, auto-indexed entries have `key: None`. The integer keys are assigned during evaluation, not parsing.
 
+**Note:** Auto-indexing is an eval-time key assignment, not an AST transformation. The AST preserves `key: None` for positional entries. This differs from `$_` implicit lambda desugaring (§Desugaring Rules), which is a true AST rewrite performed by the parser.
+
 ### Annotation Shorthand
 
 `x@Number` is shorthand for `x@[type: Number]`:

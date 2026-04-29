@@ -583,7 +583,7 @@ Quoted strings are valid as keys, allowing keys that contain spaces, colons, or 
 
 **Mixed ordering:** positional (auto-indexed) and keyed (named) entries may appear in any order within a single `[]`. Auto-indices are assigned sequentially to positional entries regardless of where keyed entries appear.
 
-**Semicolons:** `;` acts as an entry separator, equivalent to whitespace. It allows multiple entries on one line:
+**Semicolons:** `;` acts as an optional entry separator for multiple entries on one line. It is not required (whitespace alone suffices), but it enables one-line dict literals:
 
 ```tinct
 [a: 1; b: 2; c: 3]

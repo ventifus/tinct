@@ -858,3 +858,4 @@ The following span assignments should be implemented:
 | Builtin name missing from stack frames | Stack traces show generic `"materialized"` for builtin-originating errors | Should include the builtin name as the stack frame label (e.g., `"in $merge at ..."`) |
 | Depth limit errors lack call-site context | `def_span` points to the thunk being forced | Should also include `mat_span` pointing to the call site that triggered the depth limit |
 | Access vs. call span attribution | Access expression errors (`$d.k`) and call expression errors (`[call $f ...]`) use the same span logic | Access chains should attribute `def_span` to the access target; call expressions should attribute `def_span` to the call site |
+| Desugared lambda spans | `wrap_expr_in_lambda` (for `$_.field` desugaring) assigns outer expression span to both Fn node and body | Type errors in desugared lambda bodies point to outer call site; inner expression span is lost during AST transformation |
