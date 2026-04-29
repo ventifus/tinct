@@ -1820,17 +1820,24 @@ fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             ok_val(Value::Seq { head, tail })
         }
-        Value::Dict(ref map) => Err(EvalError::internal(
-            format!(
-                "unfold: step function must return dict with 2+ entries or empty dict, got {} entries",
-                map.len()
+        Value::Dict(ref map) => Err(EvalError::type_mismatch_ctx(
+            "unfold".to_string(),
+            "Dict with at least 2 entries",
+            &format!(
+                "Dict with {} {}",
+                map.len(),
+                if map.len() == 1 { "entry" } else { "entries" }
             ),
             call_span,
         )
         .into()),
-        other => Err(
-            EvalError::type_mismatch_ctx("unfold".to_string(), "Dict", other.type_name(), call_span).into(),
-        ),
+        other => Err(EvalError::type_mismatch_ctx(
+            "unfold".to_string(),
+            "Dict",
+            other.type_name(),
+            call_span,
+        )
+        .into()),
     }
 }
 

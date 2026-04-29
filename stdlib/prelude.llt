@@ -61,6 +61,9 @@ not: [fn [x] [call $builtin-if $x false true]]
 and: [fn [a b] [call $builtin-if $a $b false]]
 
 # Short-circuit OR: if a is truthy, returns a; otherwise returns b.
+# NOTE: Both references to `$a` in `[call $builtin-if $a $a $b]` are bound to
+# the same parameter — the parameter binding is shared, so the thunk is forced
+# at most once (Launchbury 1993). The second reference is a cache hit.
 or: [fn [a b] [call $builtin-if $a $a $b]]
 
 # Short-circuit predicate test: returns true if any element satisfies pred.

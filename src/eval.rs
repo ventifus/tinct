@@ -546,7 +546,12 @@ pub fn eval_document(
         }
     }
 
-    unreachable!("document has expressions but loop did not return")
+    // INVARIANT: This is unreachable because the loop above always returns when
+    // processing the last expression (when i == exprs.len() - 1). The loop only
+    // terminates naturally if exprs is empty, but we return early for empty docs.
+    unreachable!(
+        "eval_document: loop did not return — exprs was non-empty but is_last never triggered"
+    )
 }
 
 /// Evaluate a file: one or more documents separated by `---`.
@@ -1725,8 +1730,14 @@ fn deep_materialize_impl(
             Ok(Value::Dict(result))
         }
         Value::Seq { head, tail } => {
-            // Recursively force both head and tail. Tail eventually materializes to empty Dict []
-            // (terminal nil). Infinite sequences (e.g., $iterate) hit MAX_EVAL_DEPTH.
+            // Seq depth: head and tail are both recursed from the same depth — independent
+            // branches, not additive. Total depth consumed is max(head_subtree, tail_subtree).
+            //
+            // Key asymmetry vs Dict: Seq spine traversal is O(n) in depth (each cons cell's
+            // tail passes through deep_materialize_thunk with depth+1), so a flat Seq of N
+            // elements reaches depth D+N along the tail spine. Dict traversal is O(1) in
+            // depth — a flat loop with all entries processed at the same level. Infinite
+            // sequences (e.g., $iterate) hit MAX_EVAL_DEPTH before the spine is exhausted.
             let deep_head = deep_materialize_thunk(head, ctx, depth, cache)?;
             let deep_tail = deep_materialize_thunk(tail, ctx, depth, cache)?;
             Ok(Value::Seq {

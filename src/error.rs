@@ -23,8 +23,13 @@ impl fmt::Display for ArityBound {
             Self::AtMost(1) => write!(f, "at most 1 argument"),
             Self::AtMost(n) => write!(f, "at most {n} arguments"),
             Self::Range(lo, hi) => {
-                if *lo == *hi && *lo == 1 {
-                    write!(f, "1 argument")
+                if *lo == *hi {
+                    // Range(n, n) is effectively Exact(n), so display as such
+                    if *lo == 1 {
+                        write!(f, "1 argument")
+                    } else {
+                        write!(f, "{lo} arguments")
+                    }
                 } else {
                     write!(f, "{lo} to {hi} arguments")
                 }
@@ -1165,7 +1170,9 @@ mod tests {
         assert_eq!(format!("{}", ArityBound::Exact(2)), "2 arguments");
         assert_eq!(format!("{}", ArityBound::AtMost(1)), "at most 1 argument");
         assert_eq!(format!("{}", ArityBound::AtMost(3)), "at most 3 arguments");
+        assert_eq!(format!("{}", ArityBound::Range(0, 0)), "0 arguments");
         assert_eq!(format!("{}", ArityBound::Range(1, 1)), "1 argument");
+        assert_eq!(format!("{}", ArityBound::Range(2, 2)), "2 arguments");
         assert_eq!(format!("{}", ArityBound::Range(1, 3)), "1 to 3 arguments");
         assert_eq!(format!("{}", ArityBound::Range(0, 5)), "0 to 5 arguments");
     }

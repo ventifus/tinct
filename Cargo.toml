@@ -27,7 +27,7 @@ lsp = ["dep:lsp-server", "dep:lsp-types"]
 [dependencies]
 clap = { version = "4.6", features = ["derive"], optional = true }
 indexmap = "2.7"
-libc = "0.2"
+libc = "0.2"  # Used for POSIX signal handling (SIGALRM timeout) in src/main.rs
 lsp-server = { version = "0.7", optional = true }
 lsp-types = { version = "0.95", optional = true }
 pest = "2.8"
