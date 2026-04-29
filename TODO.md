@@ -58,6 +58,9 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 
 Rewrite `src/formatter.rs` to walk `ParseOutput`. See doc/whatif/parser-rewrite.md §Phase 3. **Depends on:** `parser-core`.
 
+**BLOCKED (C69):** AST-based formatter rewrite attempted but reverted — the AST does not preserve bare-word vs quoted-string distinction (both stored as `Expr::Str`), making exact formatting impossible. **Prerequisite:** either (a) add `Expr::BareWord(String)` variant to distinguish from `Expr::Str(String)`, or (b) store the original source text span for each expression to enable round-tripping. Design work needed before re-attempting.
+
+- [ ] Design: decide how to preserve bare-word vs quoted-string distinction in AST for formatter round-tripping — options: (a) add `Expr::BareWord` variant, (b) store `original_text: Option<&str>` in `Spanned`, (c) use lexer token stream alongside AST
 - [ ] Rewrite `src/formatter.rs` as AST walker over `ParseOutput.file`
 - [ ] Emit leading comments via `ParseOutput.leading_comments.get(&node.span.start.offset)` before each node (`src/formatter.rs`)
 - [ ] Emit trailing comments via `ParseOutput.trailing_comments.get(&node.span.start.offset)` after each line (`src/formatter.rs`)
