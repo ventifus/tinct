@@ -1013,7 +1013,7 @@ fn check_call_with_scheme(
             if params.len() != args.len() {
                 return Err(vec![TypeError::new(
                     format!(
-                        "arity mismatch: expected {} arguments, got {}",
+                        "arity mismatch: expected {} arguments, got {}. Note: the type checker does not yet support named arguments. If named arguments satisfy this requirement, evaluation may still succeed.",
                         params.len(),
                         args.len()
                     ),
@@ -1111,7 +1111,7 @@ fn check_call(
             if params.len() != args.len() {
                 return Err(vec![TypeError::new(
                     format!(
-                        "arity mismatch: expected {} arguments, got {}",
+                        "arity mismatch: expected {} arguments, got {}. Note: the type checker does not yet support named arguments. If named arguments satisfy this requirement, evaluation may still succeed.",
                         params.len(),
                         args.len()
                     ),
@@ -1467,7 +1467,7 @@ fn resolve_annotation(
         Annotation::Simple(name) => resolve_type_name(name, env, span, state, ann_mapping),
         Annotation::PropertyDict(entries) => {
             if let Some(type_val) = ann.get_property("type") {
-                resolve_type_expr_value(type_val, env, state, ann_mapping)
+                resolve_type_expr(type_val, env, state, ann_mapping)
             } else {
                 resolve_property_dict_as_record(entries, env, span, state, ann_mapping)
             }
@@ -1588,15 +1588,6 @@ fn resolve_type_name(
     }
 }
 
-fn resolve_type_expr_value(
-    expr: &Spanned<Expr>,
-    env: &TypeEnv,
-    state: &mut InferState,
-    ann_mapping: &mut Option<&mut HashMap<String, String>>,
-) -> Result<Type, TypeError> {
-    resolve_type_expr(expr, env, state, ann_mapping)
-}
-
 fn resolve_type_expr(
     expr: &Spanned<Expr>,
     env: &TypeEnv,
@@ -1616,7 +1607,7 @@ fn resolve_type_expr(
             }
         }
         _ => Err(TypeError::new(
-            format!("invalid type expression: {}", expr.node),
+            format!("invalid type expression in annotation: {}", expr.node),
             expr.span,
         )),
     }
@@ -2558,6 +2549,67 @@ mod tests {
             .unwrap(),
             Type::TypeVar("a".into(), 0),
         );
+    }
+
+    #[test]
+    fn test_resolve_type_name_outside_function_scope() {
+        // Test resolve_type_name None path (ann_mapping is None) when used outside function scope.
+        // Lines ~1572-1580 in resolve_type_name.
+        // When ann_mapping is None, lowercase annotation names create TypeVars using the annotation
+        // name directly (not a generated fresh name).
+        let env = Rc::new(TypeEnv::new());
+        let span = crate::test_util::test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+
+        // Call resolve_type_name with ann_mapping = None (simulates top-level annotation)
+        let ty = resolve_type_name("a", &env, span, &mut state, &mut None).unwrap();
+
+        // Should create TypeVar("a", 0) - using annotation name directly
+        assert_eq!(ty, Type::TypeVar("a".into(), 0));
+
+        // Verify it was registered in state.levels
+        assert_eq!(state.levels.get("a"), Some(&0));
+    }
+
+    #[test]
+    fn test_resolve_type_name_outside_function_scope_monotonicity() {
+        // Test U-VAR-LEVEL monotonicity for resolve_type_name None path.
+        // When ann_mapping is None, the second reference to the same annotation name must return
+        // the level stored in state.levels (which may have been lowered by unification), not the
+        // current state.level.
+        //
+        // Scenario:
+        //   1. Register "a" at level 1 (first reference at state.level=1).
+        //   2. Simulate U-VAR-LEVEL lowering by writing level 0 into state.levels["a"].
+        //   3. Bump state.level to 2 (as if we entered a deeper scope).
+        //   4. Second reference to "a" must return TypeVar("a", 0) — the stored level —
+        //      not TypeVar("a", 2) (which would be wrong, using the current level) and
+        //      not TypeVar("a", 1) (which would be the unmodified registration level).
+        let env = Rc::new(TypeEnv::new());
+        let span = crate::test_util::test_span(1, 1, 1, 5);
+        let mut state = InferState::new();
+
+        // Step 1: first reference registers "a" at level 1
+        state.level = 1;
+        let ty1 = resolve_type_name("a", &env, span, &mut state, &mut None).unwrap();
+        assert_eq!(ty1, Type::TypeVar("a".into(), 1));
+        assert_eq!(state.levels.get("a"), Some(&1));
+
+        // Step 2: simulate unification lowering the level of "a" to 0 (U-VAR-LEVEL rule)
+        state.levels.insert("a".to_string(), 0);
+
+        // Step 3: move to a higher scope level — second reference must not use this
+        state.level = 2;
+
+        // Step 4: second reference returns the stored (lowered) level 0, not state.level=2
+        let ty2 = resolve_type_name("a", &env, span, &mut state, &mut None).unwrap();
+        assert_eq!(
+            ty2,
+            Type::TypeVar("a".into(), 0),
+            "second reference must return stored level 0, not current state.level=2"
+        );
+        // Level in state.levels must still be 0 (monotonicity — no upward movement)
+        assert_eq!(state.levels.get("a"), Some(&0));
     }
 
     #[test]
@@ -5327,5 +5379,161 @@ mod tests {
 
         check(dict_input).expect("dict case should type-check");
         check(non_dict_input).expect("non-dict case should type-check");
+    }
+
+    // -- Level restoration on error --
+
+    #[test]
+    fn test_level_restored_after_non_dict_record_error() {
+        // Regression test for level restoration in typecheck_document when infer_expr fails
+        // in the Err branch of the non-Dict, non-last expression path in `typecheck_document`.
+        //
+        // SCENARIO: A multi-document program where a non-last document has a type error.
+        // The second document triggers an error (undefined variable `$undefined`), which exercises
+        // the Err branch in the non-Dict path in `typecheck_document`, ensuring state.level is
+        // correctly restored on error.
+        // The third document references a field from the first document - it should still type-check
+        // correctly, proving that state.level was restored even though the second document errored.
+        //
+        // Without level restoration in the Err branch of `typecheck_document`, the third document
+        // would inherit the incremented level from the failed second document, causing generalization
+        // to fail or produce wrong levels for type variables.
+        let input = r#"
+            [x: 42]
+            ---
+            [call $undefined]
+            ---
+            [result: $x]
+        "#;
+
+        // Parse and desugar
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let mut env = Rc::new(TypeEnv::new());
+        let mut state = InferState::new();
+
+        // Process first document (should succeed)
+        let doc1 = &file.node.documents[0];
+        env = typecheck_document(doc1, &env, &mut state, &mut None)
+            .expect("first document should type-check");
+
+        let level_after_doc1 = state.level;
+
+        // Process second document (should fail with undefined variable)
+        let doc2 = &file.node.documents[1];
+        let result = typecheck_document(doc2, &env, &mut state, &mut None);
+        assert!(result.is_err(), "second document should fail");
+        assert!(
+            result.unwrap_err()[0]
+                .message
+                .contains("undefined variable"),
+            "error should be about undefined variable"
+        );
+
+        // CRITICAL: level must be restored after error
+        assert_eq!(
+            state.level, level_after_doc1,
+            "state.level must be restored to enclosing level after error"
+        );
+
+        // Process third document (should succeed, proving level was restored)
+        let doc3 = &file.node.documents[2];
+        env = typecheck_document(doc3, &env, &mut state, &mut None)
+            .expect("third document should type-check correctly after level restoration");
+
+        // Verify the result has the correct type
+        let result_ty = env.get("result").expect("result should be in env");
+        assert_eq!(result_ty.body, Type::IntLiteral(42));
+    }
+
+    // -- Malformed composite type annotations --
+
+    #[test]
+    fn test_annotation_malformed_function_missing_params() {
+        // Regression test for error handling of malformed Fn@ annotations.
+        // [Fn@Int] has only 1 entry, but function types require exactly 2.
+        let errors = check_err("[fn [f@[type: [Fn@Int]]] $f]");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("function type")
+                    && e.message.contains("exactly 2 entries")),
+            "expected error about function type requiring 2 entries, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_annotation_malformed_function_non_dict_params() {
+        // Function type with non-bracket parameter list should produce clear error.
+        // [Fn@Int 42] — second entry is not a bracket expression.
+        let errors = check_err("[fn [f@[type: [Fn@Int 42]]] $f]");
+        assert!(
+            errors.iter().any(|e| e
+                .message
+                .contains("parameter list must be a bracket expression")),
+            "expected error about parameter list, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_annotation_malformed_nested_record_int_literal() {
+        // Nested record type with integer literal instead of type name should produce error.
+        // IntLiteral (42) is not a valid type expression.
+        let errors = check_err("[fn [p@[type: [outer: [inner: 42]]]] $p]");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("invalid type expression in annotation")),
+            "expected error about invalid type expression in annotation, got: {errors:?}"
+        );
+    }
+
+    // -- Open-record subtype rejection --
+
+    #[test]
+    fn test_open_record_not_subtype_of_closed() {
+        // Companion to open_record_accepts_closed corpus test (positive direction).
+        // A function f annotated to accept a CLOSED record [x: Int] cannot be called
+        // with an open-record-typed argument: is_subtype(open, closed) = false (Rémy 1994).
+        //
+        // Uses multi-document input so f's type is fully resolved in document 1 before
+        // document 2 type-checks g. Inside g's body, $r has open-record type [x: Int, ...ρ]
+        // from its annotation. Passing $r to $f (which expects the closed record [x: Int])
+        // triggers the is_subtype guard in check_expr (the synthesize+subsume path) and
+        // produces a type mismatch error.
+        let errors = check_err(
+            "[f: [fn [r@[type: [x: Int]]] $r]]
+             ---
+             [g: [fn [r@[type: [x: Int ...]]] [call $f $r]]]",
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("type mismatch")),
+            "expected type mismatch error, got: {errors:?}"
+        );
+    }
+
+    // -- Arity-mismatch named-arg note --
+
+    #[test]
+    fn test_arity_mismatch_named_arg_note() {
+        // Arity mismatch errors include a note about named arguments to explain why the
+        // type checker rejects a call that evaluation might still accept via named args.
+        //
+        // Uses multi-document input so f's type is fully resolved before the call site
+        // is checked (avoids letrec TypeVar ambiguity where the function type is not yet
+        // concrete when the call is type-checked).
+        //
+        // [fn [x] $x] takes 1 positional arg; calling with 0 args triggers arity mismatch.
+        let errors = check_err(
+            "[f: [fn [x] $x]]
+             ---
+             [result: [call $f]]",
+        );
+        assert!(
+            errors.iter().any(|e| e
+                .message
+                .contains("Note: the type checker does not yet support named arguments")),
+            "expected named-arg note in arity mismatch error, got: {errors:?}"
+        );
     }
 }

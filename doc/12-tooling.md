@@ -2,9 +2,9 @@
 
 ## Formatter (`llt fmt`)
 
-**Zero-configuration** code formatter for Tinct files. Operates on the hand-written lexer's token stream (not the AST), so comments and whitespace are preserved and reformatted.
+**Zero-configuration** code formatter for Tinct files.
 
-**Architecture:** The formatter lexes source into a token stream (including comment tokens), groups tokens into bracket-delimited blocks, applies formatting rules, and emits reformatted source. It does not parse to AST — this avoids losing comments (pest silently drops them) and avoids a dependency on the iterative parser.
+**Planned Architecture:** The formatter will walk the `Spanned<File>` AST from `ParseOutput`, using the comment maps (`leading_comments`, `trailing_comments`) for comment placement. Comments will be stored as span-keyed side tables, not in the AST nodes — `Spanned<T>` is unchanged. Error nodes (`Expr::Error(Span)`) will be rendered by emitting the original source text verbatim. The current formatter is a token-stream walker; the AST-based formatter is accepted but not yet implemented. See `doc/whatif/parser-rewrite.md` §AST-Based Formatter.
 
 ### Line-Breaking: Width + Element Count
 

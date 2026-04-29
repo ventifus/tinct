@@ -6,4 +6,4 @@
 [f: [fn [x] [@Int [call $f [call $+ $x 1]]]]
  result: [call $f 0]]
 ===
-=== ERROR: [E040]
+=== [E040]

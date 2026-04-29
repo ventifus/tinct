@@ -2327,7 +2327,7 @@ fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin_take,
                 tail_args,
                 IndexMap::new(),
-                depth,
+                depth + 1,
                 call_span,
                 Cow::Borrowed("call $take"),
                 Rc::clone(&ctx),
@@ -3053,6 +3053,11 @@ mod tests {
     use super::*;
     use crate::ast::{Expr, Param, Spanned};
     use crate::test_util::test_span;
+
+    /// Stack size for tests that exercise deep recursive evaluation chains.
+    /// The default Rust test thread stack (8 MB) is too small for tests that push
+    /// MAX_EVAL_DEPTH (256) levels of PendingBuiltin thunks; 16 MB provides headroom.
+    const TEST_STACK_SIZE: usize = 16 * 1024 * 1024; // 16 MB
 
     /// Helper: wrap a Value in a materialized Thunk inside an Rc.
     fn thunk(val: Value) -> Rc<Thunk> {
@@ -9788,7 +9793,7 @@ mod tests {
         // Run in a thread with larger stack to avoid Rust stack overflow when testing
         // depth-exceeded behavior (same pattern as corpus test runners and join_seq_size_limit).
         let result = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024) // 16MB stack
+            .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0))],
@@ -10788,7 +10793,7 @@ mod tests {
         // Run in a thread with larger stack to avoid Rust stack overflow when testing
         // depth-exceeded behavior (same pattern as corpus test runners).
         let result = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024) // 16MB stack
+            .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0))],
@@ -10892,5 +10897,69 @@ mod tests {
             }
             other => panic!("expected Dict, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn take_large_count_infinite_seq_depth_exceeded() {
+        // Verify that $take with a count exceeding MAX_EVAL_DEPTH on an infinite sequence
+        // hits the depth limit due to depth accumulation in the recursive PendingBuiltin chain.
+        // This test verifies the fix where builtin_take passes depth+1 (not depth) when
+        // creating the tail thunk.
+        //
+        // With the fix: depth accumulates as 1→2→...→257, hitting the depth > MAX_EVAL_DEPTH (256) guard.
+        // (The initial call is at depth=0; each PendingBuiltin tail is created with depth+1,
+        // so the chain of PendingBuiltin depths starts at 1.)
+        // Without the fix: depth stays constant, allowing unbounded sequences.
+        //
+        // Run in a thread with larger stack to avoid Rust stack overflow.
+        let result = std::thread::Builder::new()
+            .stack_size(TEST_STACK_SIZE)
+            .spawn(|| {
+                // Create infinite range starting at 0
+                let range_result = builtin_range(BuiltinArgs {
+                    args: &[thunk(Value::Int(0))],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                })
+                .unwrap();
+
+                // Try to take 260 elements (slightly more than MAX_EVAL_DEPTH=256)
+                // This ensures we hit the depth limit.
+                let take_result = builtin_take(BuiltinArgs {
+                    args: &[thunk(Value::Int(260)), range_result],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                })
+                .unwrap();
+
+                // Force the entire sequence by calling collect
+                let collect_result = builtin_collect(BuiltinArgs {
+                    args: &[take_result],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                });
+
+                // Should fail with depth exceeded
+                assert!(
+                    collect_result.is_err(),
+                    "collect(take(260, range(0))) should hit depth limit"
+                );
+                let err = collect_result.unwrap_err();
+                assert!(
+                    err.message().contains("maximum evaluation depth"),
+                    "expected depth limit error, got: {}",
+                    err.message()
+                );
+            })
+            .unwrap()
+            .join();
+
+        assert!(result.is_ok(), "test thread panicked: {:?}", result);
     }
 }

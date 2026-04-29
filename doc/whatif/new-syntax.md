@@ -103,9 +103,13 @@ Revised literal recognition precedence:
 
 1. Numeric pattern → Int or Float literal (unchanged)
 2. `true`/`false` → Bool literal (unchanged)
-3. `null` → Null literal (unchanged)
-4. Quoted string `"..."` → String literal (unchanged)
-5. **Everything else → variable reference** (changed from string)
+3. Quoted string `"..."` → String literal (unchanged)
+4. **Everything else → variable reference** (changed from string)
+
+> **Note on `null`:** Tinct has no null value (see `doc/03-data-model.md §No Null`). Under the
+> new syntax, the bare word `null` becomes a variable reference — it will produce an
+> undefined-variable error at runtime unless `null` is explicitly bound in scope. Use `[]`
+> (the empty dict) as the idiomatic tinct no-value placeholder.
 
 ```lisp
 [
@@ -183,6 +187,30 @@ compatibility during migration.
 matching every Lisp: `(f)` is always application. To construct a
 single-element data sequence containing a reference, use `[$f]`.
 
+**Single-element bracket expressions** — all four cases:
+
+| Expression | Interpretation | Rule |
+|-----------|----------------|------|
+| `[f]` | Call: `f()` | Priority 4: bare word in head |
+| `[$f]` | Data: `[ref(f)]` | Priority 5: `$`-prefixed head |
+| `["s"]` | Data: `["s"]` | Priority 6: literal in head |
+| `[42]` | Data: `[42]` | Priority 6: literal in head |
+
+In configuration, `stages: [deploy]` calls `deploy()` with zero arguments.
+Use `stages: [$deploy]` for a single-element sequence containing a reference,
+or `stages: ["deploy"]` for a single-element sequence containing a string.
+
+**Reserved words.** `fn`, `type`, and `call` are contextual reserved words —
+they match priority 2 in head position and cannot be used as call targets via
+implied call. They remain valid as dict keys (`fn: something`) and in
+non-head value positions.
+
+**Priority table lookahead.** Priorities 3 and 5 require one token of
+lookahead past the head element to check for `:` (distinguishing a keyed
+entry from a call or data head). A PEG implements this as ordered alternatives
+with a lookahead predicate; the iterative parser peeks one token ahead before
+committing to a frame type.
+
 ### `$` as Position-Dependent Disambiguator
 
 `$` is repurposed from a universal reference sigil to a position-
@@ -222,9 +250,9 @@ stages: [$parse transform format]
 ```
 
 **Other positions** — `$` on a non-head, non-key bare word is
-redundant. `$x` and `x` resolve to the same reference. This
-ensures `$` is never an error — users migrating incrementally can
-leave `$` on references without breakage.
+redundant. `$x` and `x` resolve to the same reference. `$` is
+permanently valid on references in value position; the formatter
+normalizes `$x` to `x`, but both forms are always accepted.
 
 **No ambiguity between key and head positions.** The `:` after a
 token is what distinguishes key context from head context.
@@ -288,7 +316,8 @@ the section's output:
 follows, not the one that preceded it. Named sections bind their
 output as `%name` in all subsequent sections. `%` always refers
 to the immediately previous section's output, whether that
-section was named or not.
+section was named or not. Duplicate section names within a file
+are a parse error.
 
 The first section may omit its `---` header (no name, no
 pragmas), or include one:
@@ -695,22 +724,26 @@ structured data.
 ### Lexer (src/lexer.rs)
 
 **Current:** Classifies `$word` as `VarRef` and bare words as
-`BareWord` (strings). `%` is not a valid identifier character.
+`BareWord` (strings). `%` may already be accepted by
+`is_bare_word_char` — verify before claiming Phase 1 adds it.
+`Identifier` tokens are not yet access-context triggers.
 
 **Proposed:**
 - Bare words → `Identifier` tokens (references in value position)
 - `$word` → `EscapedRef` tokens (reference with disambiguation
   marker, used in head and key positions)
-- `%` added to valid identifier characters — `%word` is a regular
-  `Identifier` token (no special token type)
+- `%` confirmed as valid identifier character — `%word` is a
+  regular `Identifier` token (no special token type)
+- `Identifier` added to the set of access-context triggers, so
+  `%name.field` and `name.field` produce dot-access chains (not
+  separate tokens)
 - Quoted strings remain `StringLiteral`
 - Bare `$` (no following word) → syntax error (pipeline role
   moved to `%` by convention)
 
-**Impact:** Major. The lexer's classification logic is
-fundamentally changed. `BareWord` is repurposed to `Identifier`,
-`VarRef` is repurposed to `EscapedRef`, and `%` is added to the
-identifier character set.
+**Impact:** Major. `BareWord` is repurposed to `Identifier`,
+`VarRef` is repurposed to `EscapedRef`, `Identifier` becomes an
+access-context trigger alongside `EscapedRef` and `CloseBracket`.
 
 ### Parser (src/parser.rs)
 
@@ -841,20 +874,18 @@ This phase provides immediate value — named pipeline sections
 are useful regardless of whether the other syntax changes are
 adopted. No breaking changes.
 
-### Phase 2: New Syntax + Migration
+### Phase 2: New Syntax Adoption
 
-The reformed syntax replaces the current syntax entirely. All
-existing `.llt` files — including the stdlib and test corpus —
-must be migrated. `tinct migrate` automates the transformation:
+The reformed syntax replaces the current syntax. There is no user
+code to migrate — all tinct files (stdlib, corpus, tests) are
+internal and updated directly as part of this sprint.
 
-- Remove `$` from variable references
-- Remove `call` keywords (optionally preserve with `--keep-call`)
-- Add quotes to all bare-word string values
-- Replace `$$` with `%`
-- Convert `[$x $y $z]` data sequences to `[$x y z]` form
-
-After migration, the old `$`-sigil syntax and `call` keyword form
-are parse errors. There is no dual-mode period.
+The breaking change is that bare words in value position are now
+variable references rather than strings. Existing files using
+unquoted strings (`[host: localhost]`) will produce undefined-
+variable errors unless the bare word is in scope. `$x` in value
+position remains valid — both `x` and `$x` resolve as references.
+`call` and `fn` remain valid keywords. `$$` is replaced by `%`.
 
 ### Prerequisites
 
@@ -915,9 +946,11 @@ are parse errors. There is no dual-mode period.
 - McCarthy, J. (1960). "Recursive functions of symbolic expressions
   and their computation by machine, Part I." *Communications of the
   ACM*, 3(4), 184-195. — S-expression semantics: `(f x y)` is
-  always application, `'(f x y)` is data. tinct's `[f x y]` / 
-  `[$f x y]` distinction follows this model with `$` replacing
-  quote.
+  always application, `'(f x y)` is data. tinct's `[$f x y]`
+  draws on this model: `$` is a call-suppression marker, not
+  quote — it prevents call interpretation of the bracket form
+  while still permitting evaluation of its contents. `[$f x y]`
+  is closer to `(list f x y)` than to `'(f x y)`.
 - Ford, B. (2004). "Parsing expression grammars: a recognition-
   based syntactic foundation." *POPL '04*, pp. 111-122. — PEGs
   support local syntactic checks (head-position rule) without

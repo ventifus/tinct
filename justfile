@@ -5,7 +5,7 @@
 container := "podman"
 
 # Rust version to use
-rust_version := "1.85"
+rust_version := "1.86"
 
 # Container image
 rust_image := "rust:" + rust_version
@@ -98,6 +98,22 @@ check:
 # Update dependencies
 update:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo update
+
+# Update dependencies as root (use if permission errors occur).
+# Runs without {{user_flag}} because the cargo cache volume may lack write access
+# for the host user inside the container; root always has write access.
+update-root:
+    {{container}} run {{run_flags}} {{rust_image}} cargo update
+
+# Downgrade dependencies that require Rust 1.87+; pin to last Rust-1.86-compatible versions.
+# Pinned crates and reasons:
+#   home 0.5.5          — newer versions require Rust 1.87+
+#   url 2.5.3           — newer versions depend on idna ≥ 1.0 which requires Rust 1.87+
+#   idna_adapter 1.2.0  — newer versions (via idna 1.x) require Rust 1.87+
+# (icu_* packages are pulled in transitively through idna; pinning idna_adapter is sufficient)
+# Runs as root for the same reason as update-root (cargo cache volume permissions).
+downgrade-deps:
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo update home --precise 0.5.5 && cargo update url --precise 2.5.3 && cargo update idna_adapter --precise 1.2.0"
 
 # Pin a specific dependency version
 update-precise PKG VER:

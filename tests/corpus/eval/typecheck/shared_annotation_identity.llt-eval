@@ -1,0 +1,7 @@
+# Shared annotation identity: polymorphic function with repeated type variable
+# [f: [fn [x@a y@a] $x]] demonstrates that multiple params can share the same annotation identity.
+# The function should be polymorphic (\forall a. Fn(a, a) -> a), allowing any type as long as both args match.
+[f: [fn [x@a y@a] $x]
+ result: [call $f 42 42]]
+===
+Dict({"f": Function(x, y), "result": Int(42)})

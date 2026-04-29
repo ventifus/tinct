@@ -441,7 +441,12 @@ impl PartialEq for ErrorKind {
             }
             (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
             (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
-            // Different variants are not equal
+            // This wildcard correctly returns false for cross-variant comparisons
+            // (e.g., Timeout vs IoError). When adding a new ErrorKind variant, add a
+            // corresponding same-variant arm in each match block in code(), Display,
+            // is_catchable(), is_cacheable() — enforced by the all_error_kind_variants()
+            // runtime test (test_partialeq_all_variants_covered, test_error_kind_code,
+            // test_error_kind_display, test_is_catchable_all_variants, test_is_cacheable).
             _ => false,
         }
     }
