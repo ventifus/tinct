@@ -881,6 +881,25 @@ impl EvalError {
 /// like "multi-step-validator" is preserved correctly.
 const HIDDEN_SUFFIXES: &[&str] = &["-impl", "-step", "-check"];
 
+/// Infer a context-appropriate verb for the materialization span label.
+/// Checks the first visible stack frame label to determine whether the thunk
+/// was forced by a function call or a field/bracket access.
+fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
+    for frame in stack {
+        if HIDDEN_SUFFIXES.iter().any(|s| frame.label.ends_with(s)) {
+            continue;
+        }
+        let label = frame.label.to_ascii_lowercase();
+        if label.contains("call") {
+            return "called at";
+        }
+        if label.contains('.') || label.contains("dot") || label.contains("access") || label.contains('[') || label.contains("bracket") {
+            return "accessed at";
+        }
+    }
+    "materialized at"
+}
+
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -893,7 +912,8 @@ impl fmt::Display for EvalError {
         // Only show materialization span if it differs from definition span (doc/10-errors.md:820)
         if let Some(ref mat_span) = self.materialization_span {
             if mat_span != &self.definition_span {
-                write!(f, " (materialized at {mat_span})")?;
+                let verb = infer_materialization_verb(&self.stack);
+                write!(f, " ({verb} {mat_span})")?;
             }
         }
         for frame in &self.stack {
