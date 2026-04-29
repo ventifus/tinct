@@ -3212,6 +3212,30 @@ mod tests {
     }
 
     #[test]
+    fn test_u_refl_fast_path_level_blind() {
+        // Verify that unify() returns Ok(()) via the [U-REFL] fast path (line: `if a == b`)
+        // when both sides are the same TypeVar name but with different levels.
+        // TypeVar PartialEq is name-only, so ("a", level=0) == ("a", level=3), triggering
+        // the fast path before any match arm is reached. The substitution must remain empty.
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 3);
+        let result = unify(
+            &Type::TypeVar("a".into(), 0),
+            &Type::TypeVar("a".into(), 3),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(result.is_ok(), "same-name TypeVar with different levels should unify via [U-REFL]");
+        assert!(
+            subst.type_map.is_empty(),
+            "fast path must not bind anything in the substitution"
+        );
+    }
+
+    #[test]
     fn test_typevar_neq_different_name() {
         assert_ne!(Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0));
     }
