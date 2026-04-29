@@ -1957,3 +1957,12 @@ Update all documentation that still references the pest parser. The iterative pa
 - [x] Update doc/04-functions.md, doc/09-documents.md — pest → ebnf code fences
 - [x] Update STATUS.md — Parser Rewrite moved to Completed
 - [x] Update TODO.md parser-rewrite section header — Phase 1-2 complete noted
+
+### error-message-polish: Error Message Polish (6/7 tasks — 1 deferred)
+
+- [x] Improve document pipeline non-Dict error message — type_mismatch_ctx("document pipeline", ...)
+- [x] Fix Span::origin() for non-origin errors — validate_and_wrap_record uses data_span
+- [x] Add call-site span to depth limit errors — deep_materialize_thunk passes thunk span
+- [x] Enhance "materialized at" verb — infer_materialization_verb() for called/accessed/materialized
+- [x] Change unification error wording — "cannot unify X with Y" in TypeError
+- [x] Improve Fn type expression error — "function type parameter at position N: got key 'X'"
