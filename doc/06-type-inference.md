@@ -515,9 +515,13 @@ Both rules lower levels symmetrically: when binding α to τ, every type variabl
 ```
 unify(α, Any, S) = S,  set ℓ(α) = 0               [U-ANY-VAR]
 unify(Any, α, S) = S,  set ℓ(α) = 0               [U-VAR-ANY]
+unify(Any, τ, S) = S,  set ℓ(β) = 0
+    for all β ∈ FTV(τ) ∪ FRV(τ)                    [U-ANY-COMPLEX]
+unify(τ, Any, S) = S,  set ℓ(β) = 0
+    for all β ∈ FTV(τ) ∪ FRV(τ)                    [U-COMPLEX-ANY]
 ```
 
-This ensures Any-touched variables are never generalized (since `ℓ(α) = 0` is never `> ℓ` for any binding level). The variable remains free and resolves to its eventual binding (if any) or stays unconstrained.
+This ensures Any-touched variables are never generalized (since `ℓ(β) = 0` is never `> ℓ` for any binding level). The [U-ANY-VAR] and [U-VAR-ANY] rules are special cases of the complex rules where FTV(α) = {α}. The [U-ANY-COMPLEX] and [U-COMPLEX-ANY] rules handle cases like `unify(Any, Fn(β → Int))` where β must also be zeroed to prevent over-generalization.
 
 **Generalization.** At a dict boundary at level ℓ, after all entries in the letrec group are inferred:
 
@@ -613,7 +617,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 - **Monomorphic scheme** (no quantified vars): routes to `check_call`, which infers the function expression normally. Since the scheme has no quantified variables, no instantiation occurs. The inferred type is typically concrete, so the CALL-MONO path fires directly.
 - **Non-VarRef function expressions** (e.g., inline lambdas): always route to `check_call`.
 
-**Substitution name uniqueness.** `Substitution::type_map` and `Substitution::row_map` are keyed by variable name, routing type and row variable bindings to their respective maps. User-annotated type variables (e.g., `@a`) are not globally unique, but `instantiate_scheme()` renames them to fresh `_tN` names before any substitution sharing occurs. Within a single letrec group during Pass 3, each entry's annotation-derived variables are instantiated independently, preventing collision.
+**Substitution name uniqueness.** `Substitution::type_map` and `Substitution::row_map` are keyed by variable name, routing type and row variable bindings to their respective maps. User-annotated type variables (e.g., `@a`) are mapped to fresh `_tN` names by `resolve_type_name` during Pass 3 inference. Each function entry maintains its own `ann_mapping` (a per-function `HashMap<String, String>`), so `@a` in one function maps to a different `_tN` than `@a` in a sibling function. Within a single function, all references to the same annotation name `@a` resolve to the same `_tN` variable (ensuring constraints are shared as intended). After Pass 4 generalization produces `TypeScheme`s, `instantiate_scheme()` renames the quantified variables to fresh `_tM` names at each call site, preventing cross-call-site interference.
 
 **Error recovery.** If Pass 3 inference fails for an entry, `Type::Any` is inserted for that entry (matching current behavior). Level lowering from partial unification before the failure is retained in `InferState.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in Pass 4 proceeds for successfully-inferred entries; failed entries get `TypeScheme::mono(Type::Any)`.
 
