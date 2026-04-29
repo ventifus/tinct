@@ -1928,3 +1928,9 @@ Complete remaining language constructs so parser2 can parse all valid tinct sour
 - [x] Static constraints inline: duplicate key detection in Dict frame (`src/parser2.rs`)
 - [x] Error messages with bracket context: unclosed bracket errors include opening position (`src/parser2.rs`)
 - [x] All corpus tests pass — `test_parser2_equivalence` added (`tests/corpus_tests.rs`)
+
+### parser-core-c3: Phase 2c-3 — Pest Cutover
+
+Remove pest and complete the migration. **Depends on:** `parser-core-c2` (all corpus tests passing).
+
+- [x] Remove `src/grammar.pest`; remove `pest` and `pest_derive` from `Cargo.toml` — pest parser replaced by iterative parser (parser2 renamed to parser.rs). Compatibility wrappers `parse()` and `parse_expression()` preserve API. All callers unchanged.
