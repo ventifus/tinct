@@ -2733,6 +2733,53 @@ mod tests {
             .any(|e| e.message.contains("expected function type")));
     }
 
+    #[test]
+    fn test_check_call_with_scheme_non_function_scheme() {
+        // Exercises the `_ => Err(not_a_function)` arm in check_call_with_scheme.
+        //
+        // check_call_with_scheme is only reached for polymorphic schemes (non-empty
+        // type_vars or row_vars). The `_` arm fires when the instantiated body is
+        // neither Type::Function nor Type::Any. We construct such a scheme directly:
+        // ∀a. Int — polymorphic (has type_vars) but body is Int (not a function).
+        // After instantiate_scheme, the body is still Int (no substitution to apply),
+        // so the `_` arm fires and produces "expected function type".
+        //
+        // This guards the arm against removal or refactoring that would cause a panic
+        // instead of a graceful error on malformed (but internally representable) schemes.
+        let input = "[call $f 1]";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        // Build env with `f: ∀a. Int` — polymorphic scheme, non-function body.
+        // type_vars non-empty satisfies the dispatch guard at line ~286, routing to
+        // check_call_with_scheme rather than check_call.
+        let mut parent_env = TypeEnv::new();
+        parent_env.insert_scheme(
+            "f".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                row_vars: vec![],
+                body: Type::Int,
+            },
+        );
+        let parent_env = Rc::new(parent_env);
+
+        let mut state = InferState::new();
+        let expr = &file.node.documents[0].node.expressions[0];
+        let result = infer_expr(expr, &parent_env, &mut state, &mut None);
+
+        // Must produce a not_a_function error, not a panic.
+        assert!(
+            result.is_err(),
+            "calling a non-function polymorphic scheme should be an error"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.message.contains("expected function type")),
+            "error should mention 'expected function type', got: {errors:?}"
+        );
+    }
+
     // -- Document scope chain --
 
     #[test]
