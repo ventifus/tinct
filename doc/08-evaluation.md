@@ -202,9 +202,9 @@ doubled: [call $map [fn [n] [call $* $n 2]] [call $range 0]]
 
 ## Thunk Lifecycle — Formal Specification
 
-Extends Launchbury (1993) natural semantics for call-by-need with three additional thunk states (PendingBuiltin, PendingCall, Failed) for deferred computation and error memoization. PendingBuiltin and PendingCall are defunctionalized continuations (Reynolds 1972; Danvy & Nielsen 2003) — they represent deferred computation as data rather than closures.
+Extends Launchbury (1993) natural semantics for call-by-need with four additional thunk states (PendingBuiltin, PendingCall, Guarded, Failed) for deferred computation, contract validation, and error memoization. PendingBuiltin and PendingCall are defunctionalized continuations (Reynolds 1972; Danvy & Nielsen 2003) — they represent deferred computation as data rather than closures. Guarded implements proxy contracts (Findler & Felleisen 2002) for lazy TypeAssert field validation.
 
-**State set:** `S = { Unevaluated, PendingBuiltin, PendingCall, InProgress, Materialized, Failed }`
+**State set:** `S = { Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed }`
 
 ### Part 1: State Transition DAG
 
@@ -212,11 +212,12 @@ The valid state transitions form a directed acyclic graph. Monotonicity theorem:
 
 ```
 Unevaluated ──────────┐
-PendingBuiltin ────────┼──→ InProgress ──┬──→ Materialized
-PendingCall ───────────┘                 └──→ Failed ⟲
+PendingBuiltin ────────┤
+PendingCall ───────────┼──→ InProgress ──┬──→ Materialized
+Guarded ──────────────┘                 └──→ Failed ⟲
 ```
 
-The DAG governs state *transitions*, not construction. Thunks may be constructed directly in Unevaluated, PendingBuiltin, PendingCall, or Materialized state (via `Thunk::new_materialized`). The DAG applies only to subsequent state changes.
+The DAG governs state *transitions*, not construction. Thunks may be constructed directly in Unevaluated, PendingBuiltin, PendingCall, Guarded, or Materialized state (via `Thunk::new_materialized`). The DAG applies only to subsequent state changes.
 
 Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs`):
 
@@ -225,11 +226,12 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 | Unevaluated → InProgress | `take_unevaluated()` | Atomic (`mem::replace`) |
 | PendingBuiltin → InProgress | `take_pending_builtin()` | Atomic (`mem::replace`) |
 | PendingCall → InProgress | `take_pending_call()` | Atomic (`mem::replace`) |
+| Guarded → InProgress | `take_guarded()` | Atomic (`mem::replace`) |
 | InProgress → Materialized | `set_state(Materialized(v))` | Direct write |
 | InProgress → Failed | `cache_failure(err)` | Via `transition()` |
 | Failed → Failed | `set_state(Failed(e'))` | Direct write (diagnostic refinement only) |
 
-**Monotonicity proof sketch:** The DAG has no cycles. Each source state (Unevaluated, PendingBuiltin, PendingCall) transitions only to InProgress. InProgress transitions only to Materialized or Failed. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
+**Monotonicity proof sketch:** The DAG has no cycles. Each source state (Unevaluated, PendingBuiltin, PendingCall, Guarded) transitions only to InProgress. InProgress transitions only to Materialized or Failed. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
 
 **Atomicity invariant:** Each `take_*` method atomically swaps the thunk state to InProgress before returning the captured data. This ensures no observer can see the old state after the transition begins. The atomicity is provided by `std::mem::replace` under an exclusive `borrow_mut()` — Rust's borrow checker prevents double borrows within a single thread.
 
@@ -280,6 +282,19 @@ force(θ, d) ⇒ error("circular dependency")
 **State management after cycle detection:** The thunk is left in `Failed` state, not restored to its original state (`Unevaluated`, `PendingBuiltin`, etc.). This is correct because circular dependencies are semantic errors, not transient resource exhaustion — retrying the same thunk will always produce the same cycle. The cached error may be refined with additional materialization spans as the error propagates through the call stack (via the `Failed → Failed` diagnostic self-edge), but the error identity is fixed.
 
 **Error propagation path:** After transitioning to `Failed`, the error is returned via `Err(err_boxed)`. Callers higher in the materialization stack see the error and propagate it upward. If the same thunk is accessed from a different call site later, the `Failed` case (lines 1242-1264) fires immediately, returning the cached error (potentially with an updated materialization span for the new access site).
+
+**[FORCE-GUARD]**
+```
+θ.state = Guarded(θ_inner, τ, path, span)
+θ.state ← InProgress
+force(θ_inner, d+1) ⇒ v
+v ∈ τ                                          (validate)
+θ.state ← Materialized(v)
+───────────────────────────
+force(θ, d) ⇒ v
+```
+
+Guarded thunks implement proxy contracts (Findler & Felleisen 2002) for TypeAssert record field validation. The inner thunk is forced, the result is validated against the expected type τ, and the validated value is memoized. If validation fails, the thunk transitions to Failed with a type assertion error decorated with the field path. Guard memoization ensures each field is validated at most once.
 
 **[FORCE-EVAL]**
 ```
@@ -352,6 +367,8 @@ Error variants for FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN follow FORC
 
 **Fast path:** In FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN, if θ' is already Materialized, skip the recursive `force` and extract the value directly. This is observationally equivalent to the general rule — FORCE-CACHED fires immediately on the recursive `force(θ', d+1)` — but avoids the function call overhead (`eval.rs:944-945` for PendingBuiltin, `eval.rs:1020-1022` for PendingCall).
 
+**Value::Proxy access dispatch.** Dot access (`$proxy.field`) and bracket access (`$proxy[key]`) on a `Value::Proxy` are not part of the thunk lifecycle — they occur *after* materialization produces a Proxy value. The evaluator dispatches to `invoke_proxy_handler`, which materializes the handler thunk (sharing-preserving via Launchbury memoization) and invokes it with the key. Each proxy access costs one depth level via `materialize(handler, ..., depth + 1)`. Proxy-handler-returns-Proxy chains are bounded by `MAX_EVAL_DEPTH`.
+
 ### Part 3: Semantic Properties
 
 Six properties essential for call-by-need soundness (Launchbury 1993, Ariola & Felleisen 1997):
@@ -361,7 +378,7 @@ Six properties essential for call-by-need soundness (Launchbury 1993, Ariola & F
 | **Determinism** | Satisfied | Pure subset only; `$include` introduces external state dependence. FORCE-DEPTH is also context-dependent (same thunk may succeed at different depths) |
 | **Sharing (evaluate-at-most-once)** | Satisfied | Materialized and Failed are semantically terminal — subsequent forces return cached result (Failed may refine diagnostic metadata) |
 | **Monotonicity** | Satisfied | DAG has no backward edges; Failed self-edge refines diagnostics only (proven above) |
-| **Adequacy** | Holds for extensions | PendingBuiltin/PendingCall are observationally equivalent to Unevaluated (defunctionalization preserves semantics). Failed extends the codomain from Value⊥ to Value + Error⊥ (absorbing, deterministic) |
+| **Adequacy** | Holds for extensions | PendingBuiltin/PendingCall are observationally equivalent to Unevaluated (defunctionalization preserves semantics). Guarded is observationally equivalent to an Unevaluated thunk that forces and validates (proxy contract). Failed extends the codomain from Value⊥ to Value + Error⊥ (absorbing, deterministic) |
 | **Confluence** | Pure subset only | `$include` makes evaluation order observable; in the pure subset, forcing order does not affect final values |
 | **Sharing preservation** | Satisfied | `Rc<Thunk>` ensures identity-based sharing; the CEK machine preserves thunk identity through continuation dispatch |
 
@@ -383,6 +400,7 @@ These states are defunctionalized continuations (Reynolds 1972). Each is observa
 
 - `PendingBuiltin(f, args, named, pd, cs, Σ_θ)` ≡ `Unevaluated([call $f ...args ...named], env, Σ_θ)` where env binds the arg thunks
 - `PendingCall(f_θ, args, named, cs, Σ_θ)` ≡ `Unevaluated([call <force f_θ> ...args ...named], env, Σ_θ)`
+- `Guarded(θ_inner, τ, path, span)` ≡ `Unevaluated(<force θ_inner then validate ∈ τ>, env, Σ_θ)` — a proxy contract monitor (Findler & Felleisen 2002)
 
 The equivalence for PendingCall holds because `eval` of `[call ...]` already performs dynamic dispatch on the callee — if `f_θ` materializes to a Builtin rather than a Function, both the PendingCall path (FORCE-CALL-BUILTIN) and the hypothetical Unevaluated path would dispatch to the same builtin.
 
@@ -392,8 +410,8 @@ The difference is operational: PendingBuiltin/PendingCall avoid constructing AST
 
 The iterative evaluator (§Iterative Evaluator) subsumes PendingBuiltin and PendingCall into explicit `Cont` variants on the continuation stack. After migration:
 
-- The ThunkState enum simplifies to `{Unevaluated, InProgress, Materialized, Failed}`
-- PendingBuiltin and PendingCall become `Cont::BuiltinDispatch` and `Cont::CallForceFunc` on the explicit stack; both must handle Function and Builtin dispatch after forcing
+- The ThunkState enum simplifies to `{Unevaluated, Guarded, InProgress, Materialized, Failed}`
+- PendingBuiltin and PendingCall become `Cont::BuiltinDispatch` and `Cont::CallForceFunc` on the explicit stack; both must handle Function and Builtin dispatch after forcing. Guarded remains in ThunkState (it wraps an inner thunk, not a continuation).
 - The monotonicity proof and semantic properties carry over unchanged — the state DAG loses two source nodes but gains no new transitions
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Rc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
 - MAX_EVAL_DEPTH is replaced by configurable resource limits (`--max-depth`, `--max-memory`) rather than hardcoded safety bounds
@@ -544,6 +562,12 @@ All 46 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 | `reduce` † ‡ | `L × L × S → LT` | Lazy-transforming | Function and init lazy; collection strict for dispatch |
 | `join` † | `S × S → V` | Materializing | Both strict; materializes all elements for concatenation |
 | `concat` † | `S × L → LT` | Lazy-transforming | First arg strict for dispatch; second lazy; Seq path lazy chain, Dict path eager merge |
+
+**Proxy:**
+
+| Builtin | Signature | Category | Notes |
+|---------|-----------|----------|-------|
+| `proxy` | `L → D` | Structural | Lazy in handler arg; returns Proxy container |
 
 ### Part 3: Delta Rules
 

@@ -530,6 +530,9 @@ assert: [fn [cond msg] [call $builtin-if $cond true [call $error $msg]]]
 # (map/filter/reduce/take/drop on Seq tails) always call the underlying Rust
 # implementation directly via hardcoded function pointers in PendingBuiltin
 # continuations, bypassing any $include override.
+#
+# NOTE: Arity errors refer to these wrapper functions, not the underlying
+# builtins. This is an accepted trade-off of the overridable-ops design.
 
 # Comparison operators
 <: [fn [a b] [call $builtin-lt $a $b]]
