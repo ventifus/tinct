@@ -844,8 +844,8 @@ Found by grammar-architect codebase review (2026-04-23, Cycle #39).
 
 Found by computer-scientist codebase review (2026-04-22).
 
-- [ ] Fix `$to-float` error message for NaN/Infinity — says "cannot parse" but value was parsed successfully; issue is policy rejection of non-finite values. Change to `"to-float: \"{s}\" parses to a non-finite value (NaN/Infinity not allowed)"`. (`src/builtins.rs:741-756`) [Minor, computer-scientist]
-- [ ] Add `$eq`/`$<` precision loss warning for integers > 2^53 — `9007199254740993i64 as f64` rounds to `9007199254740992.0`, producing incorrect cross-type equality. Add range check before `as f64` promotion: error if integer abs value > 2^53. Matches Jsonnet approach. Tracked in doc/11-stdlib.md §Equality P3 as known property but no runtime guard. (`src/builtins.rs:305-306`) [Minor, computer-scientist]
+- [x] Fix `$to-float` error message for NaN/Infinity — changed to `EvalError::internal` with `"to-float: \"{s}\" parses to a non-finite value (NaN/Infinity not allowed)"`, referencing the original input string. Unit tests updated. (`src/builtins.rs`) [Minor, computer-scientist]
+- [x] Add `$eq`/`$<` precision loss documentation for integers > 2^53 — Jsonnet does NOT add a runtime guard for comparison (only for bitwise ops via `safeDoubleToInt64`); silent `as f64` promotion matches Jsonnet's approach. Added code comments in `builtin_eq` and `builtin_lt` referencing doc/11-stdlib.md §Equality P3 and P6. No runtime check added. (`src/builtins.rs:317-322, 355-360`) [Minor, computer-scientist]
 
 ### test-corpus-efg: Corpus Coverage (Parts 5–7 + Type Errors)
 
