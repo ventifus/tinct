@@ -825,6 +825,12 @@ impl fmt::Display for EvalError {
             }
         }
         for frame in &self.stack {
+            // Filter out synthetic origin spans (Span::origin() = offset 0, line 1, col 1;
+            // displays as 1:1-1:1) from stdlib/builtin calls. Uses exact structural
+            // equality — real user source at line 1 would have a different byte offset.
+            if frame.span == Span::origin() {
+                continue;
+            }
             write!(f, "\n  in {} at {}", frame.label, frame.span)?;
         }
         Ok(())
@@ -1724,6 +1730,43 @@ mod tests {
         assert!(display.contains("collect: exceeded maximum collection size"));
         // Should contain the limit value
         assert!(display.contains("1000000"));
+    }
+
+    #[test]
+    fn test_origin_span_frames_filtered_from_display() {
+        // Verify that stack frames with Span::origin() (synthetic stdlib/builtin frames)
+        // are NOT shown in error display output
+        let def_span = test_span(3, 5, 3, 10);
+        let mat_span = test_span(20, 1, 20, 5);
+        let real_frame_span = test_span(10, 2, 10, 8);
+
+        let mut err =
+            EvalError::new("bad value".to_string(), def_span).with_materialization_span(mat_span);
+
+        // Add a real user frame
+        err.push_frame("user_function".to_string(), real_frame_span);
+
+        // Add a synthetic origin frame (should be filtered out)
+        err.push_frame("stdlib_internal".to_string(), Span::origin());
+
+        // Add another real frame
+        let real_frame2_span = test_span(15, 1, 15, 12);
+        err.push_frame("another_user_function".to_string(), real_frame2_span);
+
+        let display = format!("{err}");
+
+        // Should contain the real frames
+        assert!(display.contains("in user_function at 10:2-10:8"));
+        assert!(display.contains("in another_user_function at 15:1-15:12"));
+
+        // Should NOT contain the origin frame (1:1-1:1).
+        // Note: Span::origin() uses exact structural equality — offset=0, line=1, col=1
+        // for both start and end.  Real user code at line 1 col 1 would NOT be filtered
+        // because it would have a non-zero byte offset, making the spans structurally
+        // distinct.  Only the synthetic Span::origin() sentinel (offset 0, empty range)
+        // triggers the filter at error.rs:829.
+        assert!(!display.contains("stdlib_internal"));
+        assert!(!display.contains("1:1-1:1"));
     }
 
     #[test]

@@ -1098,8 +1098,6 @@ pub fn unify(
                 ))
             }
         }
-        (Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => Ok(()),
-
         (
             Type::Function {
                 params: p1,
@@ -1132,6 +1130,19 @@ pub fn unify(
 
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
+
+        // [U-SUBSUME]: concrete type subsumption fallback (Pierce & Turner 2000)
+        // When both sides are ground types (no type variables), check the subtype
+        // relation in both directions. Bidirectional because unification is symmetric —
+        // the original actual/expected roles are lost after structural decomposition.
+        // The substitution is not modified (no variables to bind).
+        _ if !a.has_type_vars() && !b.has_type_vars() => {
+            if Type::is_subtype(&a, &b) || Type::is_subtype(&b, &a) {
+                Ok(())
+            } else {
+                Err(TypeError::type_mismatch(&a, &b, span))
+            }
+        }
 
         _ => Err(TypeError::type_mismatch(&a, &b, span)),
     }
@@ -2668,6 +2679,72 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
         assert!(unify(&Type::Int, &Type::Bool, &mut subst, &mut state, span).is_err());
+    }
+
+    #[test]
+    fn test_unify_int_literal_float_fails() {
+        // Regression guard: IntLiteral is not a subtype of Float (different branches of the
+        // numeric lattice: IntLiteral <: Int <: Number vs Float <: Number). The unsound
+        // `(IntLiteral, Float)` promotion arm was removed; this test ensures it stays gone.
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        assert!(unify(
+            &Type::IntLiteral(42),
+            &Type::Float,
+            &mut subst,
+            &mut state,
+            span
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_unify_float_with_int_literal_fails() {
+        // Regression guard: symmetric case — Float is not a supertype of IntLiteral.
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        assert!(unify(
+            &Type::Float,
+            &Type::IntLiteral(42),
+            &mut subst,
+            &mut state,
+            span
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_unify_subsume_positive_path() {
+        // [U-SUBSUME] positive-path coverage note:
+        //
+        // The [U-SUBSUME] arm fires for concrete (no type-var) pairs not matched by any
+        // prior structural or explicit-promotion arm. With the current type vocabulary,
+        // every valid subtype relationship already has a fast-path explicit arm:
+        //   IntLiteral <: Int | Number  (unify line 1075)
+        //   Int <: Number               (unify line 1075)
+        //   Float <: Number             (unify line 1077)
+        //   StringLiteral <: Str        (unify line 1078)
+        //
+        // This means [U-SUBSUME]'s positive branch (is_subtype returns true) is
+        // unreachable with the current set of types.  The arm is a future extension
+        // point: when a new subtype relationship is added to is_subtype() without a
+        // corresponding explicit arm, [U-SUBSUME] will catch it automatically.
+        //
+        // The NEGATIVE branch (both concrete, neither is a subtype of the other) IS
+        // exercised: pairs like (Int, Bool) or (Float, Bool) fall through all explicit
+        // arms and reach [U-SUBSUME], which correctly rejects them.
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // Negative path through [U-SUBSUME]: concrete types with no subtype relation.
+        // Neither Int <: Bool nor Bool <: Int, so [U-SUBSUME] rejects correctly.
+        assert!(unify(&Type::Int, &Type::Bool, &mut subst, &mut state, span).is_err());
+
+        // Another negative path through [U-SUBSUME]: Float <: Bool is also false.
+        assert!(unify(&Type::Float, &Type::Bool, &mut subst, &mut state, span).is_err());
     }
 
     #[test]
