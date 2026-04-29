@@ -47,31 +47,7 @@ Note: tinct's `IntLiteral(42)` and `StringLiteral("hello")` are **singleton lite
 
 Implementation:
 
-```rust
-fn check_expr(
-    expr: &Spanned<Expr>,
-    expected: &Type,
-    env: &Rc<TypeEnv>,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<(), Vec<TypeError>> {
-    // Special case: lambda checking mode (when expr is Fn and expected is Function
-    // with no type vars, propagate expected param types to unannotated params).
-    // See src/typecheck.rs:308-452 for full implementation.
-    
-    // Default: synthesize then check subsumption
-    let actual = infer_expr(expr, env, state, type_map)?;
-    // Apply state.subst to both types — access-chain constraints may have bound
-    // TypeVars in state.subst. Without substitution, comparison uses stale TypeVars.
-    let actual = state.subst.apply(&actual);
-    let expected_resolved = state.subst.apply(expected);
-    if !Type::is_subtype(&actual, &expected_resolved) {
-        Err(vec![TypeError::type_mismatch(&expected_resolved, &actual, expr.span)])
-    } else {
-        Ok(())
-    }
-}
-```
+**Note:** The complete `check_expr` implementation handles lambda checking mode (propagating expected parameter types to unannotated lambda parameters when the expected type is fully concrete), annotated parameter type resolution, checking against expected return annotations, and subsumption via `[U-SUBSUME]`. See `src/typecheck.rs` for the full implementation (search for `fn check_expr`).
 
 `check_expr` is used only at positions where the expected type is fully concrete (no type variables): CALL-MONO arguments, concrete return annotations (no type variables), and TypeAssert. For CALL-POLY arguments (where type variables need binding), unification with subsumptive fallback is used instead — see [U-SUBSUME] in the Unification section.
 
