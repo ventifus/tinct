@@ -242,7 +242,9 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str) -> Diag
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::ERROR),
-        code: Some(lsp_types::NumberOrString::String(err.kind.code().to_string())),
+        code: Some(lsp_types::NumberOrString::String(
+            err.kind.code().to_string(),
+        )),
         code_description: None,
         source: Some("tinct-eval".to_string()),
         message: err.message(),
@@ -362,6 +364,11 @@ mod tests {
             .find(|d| d.source.as_deref() == Some("tinct-eval"))
             .unwrap();
         assert_eq!(eval_diag.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(
+            eval_diag.code,
+            Some(lsp_types::NumberOrString::String("E002".to_string())),
+            "eval diagnostic should include error code E002 (UndefinedVariable)"
+        );
     }
 
     #[test]
