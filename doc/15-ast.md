@@ -218,21 +218,11 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 
 ### Bracket Nesting Depth Limit
 
-**Planned:** The iterative parser (`Vec<StackFrame>` main loop) will bound nesting depth by heap, not the native call stack. `MAX_PARSE_DEPTH` (256) will be checked on `stack.len()` before each push, firing before any allocation — inputs exceeding this limit will produce a clear parse error. The current parser is pest-based; this design is accepted but not yet implemented. See `doc/whatif/parser-rewrite.md` §Design — Iterative Parser.
+The iterative parser (`Vec<StackFrame>` main loop) bounds nesting depth by heap, not the native call stack. `MAX_PARSE_DEPTH` (256) is checked on `stack.len()` before each push, firing before any allocation — inputs exceeding this limit produce a clear parse error.
 
 ### Parser Output
 
-**Planned:** `parse()` will return `ParseOutput`:
-
-```rust
-pub struct ParseOutput {
-    pub file: Spanned<File>,
-    pub leading_comments: BTreeMap<usize, Vec<String>>,  // keyed by span.start.offset
-    pub trailing_comments: BTreeMap<usize, String>,
-}
-```
-
-`Spanned<T>` is unchanged. Comments will be stored as a side table alongside the AST; the evaluator and type checker will receive `Spanned<File>` only. The formatter will use the comment maps for comment placement. Currently `parse()` returns `Result<Spanned<File>, ParseError>`. See `doc/whatif/parser-rewrite.md` §Design.
+`parse()` returns `Result<Spanned<File>, ParseError>`. Comments are not preserved in the AST — they are stripped during parsing. Future work may add a `ParseOutput` struct with comment side-tables for formatter support.
 
 ### Annotation Bracket Restriction
 

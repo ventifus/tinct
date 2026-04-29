@@ -64,7 +64,7 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Krishnamurthi, S. (2012). *Programming Languages: Application and Interpretation (PLAI)*. — Textbook pipeline: parse → desugar → typecheck → evaluate. Desugaring produces a core language AST that all downstream passes consume. tinct's `$_` transformation is a desugaring in this sense.
 
 **Parsing:**
-- Ford, B. (2004). Parsing expression grammars: a recognition-based syntactic foundation. In *POPL '04*, pp. 111–122. ACM. — Proves O(n) parsing with packrat memoization. tinct's pest grammar (`src/grammar.pest`) implements a PEG with ordered choice, no left recursion, and finite lookahead.
+- Ford, B. (2004). Parsing expression grammars: a recognition-based syntactic foundation. In *POPL '04*, pp. 111–122. ACM. — Proves O(n) parsing with packrat memoization. Tinct originally used a pest PEG grammar (removed in parser-core-c3); the current hand-written parser follows similar principles: ordered choice, no left recursion, and finite lookahead.
 
 **Algebraic data types and variants:**
 - Rémy, D. (1989). "Typechecking records and variants in a natural extension of ML." In *POPL '89*, pp. 77–88. ACM. — Row polymorphism covers records *and* variants from the start using the same presence/absence flag machinery. Foundation for tinct's structural ADT model. [ADTs, nominal variants, `doc/whatif/algebraic-data-types.md`]
@@ -79,4 +79,4 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 
 - [Crafting Interpreters](https://craftinginterpreters.com/) — evaluator implementation
 - [Write You a Haskell](http://dev.stephendiehl.com/fun/) — lazy evaluation
-- [pest.rs](https://pest.rs/) — PEG parser (used for `src/grammar.pest`)
+- [pest.rs](https://pest.rs/) — PEG parser (historical: tinct originally used pest, removed in sprint parser-core-c3)

@@ -192,13 +192,11 @@ entry point but existing string tokenization is unchanged.
 is a desugaring step in the parser — no new AST node type.
 **Impact:** Minor — new parse rule that assembles existing AST nodes.
 
-### Grammar (src/grammar.pest)
+### Grammar (src/lexer.rs + src/parser.rs)
 
 **Current:** String grammar handles `"..."` with escape sequences.
-**Proposed:** If pest grammar is still in use, add `istring` rule
-with `i"` prefix and interpolation segment alternatives. If the
-hand-written lexer is primary, this change is in src/lexer.rs instead.
-**Impact:** Minor — additive grammar rule.
+**Proposed:** Add `istring` rule with `i"` prefix and interpolation segment alternatives in the hand-written lexer at `src/lexer.rs`.
+**Impact:** Minor — additive lexer/parser rule.
 
 ### Type Checker (src/typecheck.rs)
 

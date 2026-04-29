@@ -203,7 +203,7 @@ Prevents evaluation from consuming unbounded resources (DoS protection, runaway 
 
 Tinct is a pure configuration language — it should never spawn child processes.
 
-- Always on. Blocks `fork`, `execve`, `execveat` via seccomp. `clone` is allowed because Tinct uses worker threads (64MB stack for pest deep nesting workaround).
+- Always on. Blocks `fork`, `execve`, `execveat` via seccomp. `clone` is allowed because Tinct uses worker threads (64MB stack for evaluator deep recursion workaround).
 - No CLI flag to disable — there is no legitimate reason for a config evaluator to fork or exec.
 - Linux-only; on other platforms, Tinct simply never calls process-creation APIs. Logs a warning on non-Linux.
 

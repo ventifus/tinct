@@ -51,19 +51,19 @@ fetch: [fn@String [url@String
 ### Formal Grammar
 
 **In parameter position** (inside a `param_list`):
-```pest
+```ebnf
 param_annotation = ${ "@" ~ annotation_value }
 ```
 `x@Number` splits into param `x` with annotation `Number`.
 
 **On `fn` keyword** (return type):
-```pest
+```ebnf
 fn_annotation = ${ "@" ~ annotation_value }
 ```
 `fn@Number` means the function returns `Number`.
 
 **In value position** (generalized annotation):
-```pest
+```ebnf
 annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
 ```
 `Fn@Number` produces an `Annotated` node with name `"Fn"` and annotation `Number`. This is used for function type constructors (`Fn@Return [Params]`) and is available for future use on any bare word.
@@ -109,7 +109,7 @@ Both are "fallback value when the expected thing isn't there."
 ### Formal Grammar
 
 **As type assertion** (first token inside `[]`):
-```pest
+```ebnf
 type_assert_body = { "@" ~ annotation_value ~ value }
 ```
 `[@Number $expr]` asserts `$expr` has type `Number`. When a `default:` is provided (e.g., `[@[type: Number  default: 0] $expr]`), the default value is evaluated in the same environment as the asserted expression.

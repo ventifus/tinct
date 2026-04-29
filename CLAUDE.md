@@ -1,6 +1,6 @@
 ## Architecture
 
-Tinct is a configuration language with lazy evaluation and type inference. Parser: pest PEG grammar → `Spanned<File>` AST. Evaluator: `Thunk`-based lazy memoization with letrec dict scoping. Type system: Hindley-Milner inference with row polymorphism. See README.md for comprehensive architecture and feature list.
+Tinct is a configuration language with lazy evaluation and type inference. Parser: hand-written iterative descent (`src/parser.rs` + `src/lexer.rs`) → `Spanned<File>` AST. Evaluator: `Thunk`-based lazy memoization with letrec dict scoping. Type system: Hindley-Milner inference with row polymorphism. See README.md for comprehensive architecture and feature list.
 
 ## Memory Palace
 
