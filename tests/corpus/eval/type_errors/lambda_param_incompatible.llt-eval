@@ -1,0 +1,6 @@
+# Bidirectional typing: lambda with annotated param that conflicts with the return annotation.
+# [fn@Int [x@String] $x]: the body $x has type String, but the return annotation says Int.
+# String is not a subtype of Int — type error.
+[fn@Int [x@String] $x]
+===
+cannot unify

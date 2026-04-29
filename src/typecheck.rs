@@ -6183,4 +6183,69 @@ mod tests {
             "type_map entry for `$id` should be a Function type (instantiated scheme), got {recorded_ty}"
         );
     }
+
+    // -- check_expr lambda arity mismatch --
+
+    #[test]
+    fn test_check_expr_lambda_arity_mismatch() {
+        // Lambda with 2 params checked against a Fn type expecting 1 param triggers the
+        // arity check inside check_expr's lambda checking mode (lines 433-442).
+        //
+        // We call check_expr directly with a hand-built AST to avoid the @[...] composite
+        // annotation syntax which is not yet implemented in the parser. This tests the
+        // actual arity check code path without going through the full parse pipeline.
+        let span = Span::origin();
+
+        // Build: [fn [x y] $x] — a 2-param lambda
+        let param_x = Spanned::new(
+            Param {
+                name: "x".to_string(),
+                annotation: None,
+                variadic: false,
+            },
+            span,
+        );
+        let param_y = Spanned::new(
+            Param {
+                name: "y".to_string(),
+                annotation: None,
+                variadic: false,
+            },
+            span,
+        );
+        let body = Spanned::new(
+            Expr::VarRef("x".to_string()),
+            span,
+        );
+        let lambda = Spanned::new(
+            Expr::Fn {
+                return_ann: None,
+                params: vec![param_x, param_y],
+                body: Box::new(body),
+                desugared: false,
+            },
+            span,
+        );
+
+        // Expected type: Fn(String -> Int) — a 1-param function type
+        let expected_ty = Type::Function {
+            params: vec![Type::Str],
+            ret: Box::new(Type::Int),
+        };
+
+        let env = Rc::new(TypeEnv::new());
+        let mut state = InferState::new();
+        let result = check_expr(&lambda, &expected_ty, &env, &mut state, &mut None);
+
+        assert!(
+            result.is_err(),
+            "Lambda with 2 params checked against 1-param Fn type should error"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.message.contains("arity mismatch")),
+            "Expected arity mismatch error, got: {:?}",
+            errors
+        );
+    }
 }

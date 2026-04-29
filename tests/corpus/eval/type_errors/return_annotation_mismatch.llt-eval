@@ -1,0 +1,6 @@
+# Bidirectional typing: return annotation incompatible with param type.
+# A function with @String return annotation but @Int param — the body $x returns Int,
+# but the @String annotation declares it should return String. Type error.
+[call [fn@String [x@Int] $x] 1]
+===
+cannot unify
