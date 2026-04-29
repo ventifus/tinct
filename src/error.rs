@@ -54,8 +54,8 @@ pub enum ErrorKind {
 
     // --- Type errors (E010-E019) ---
     /// Runtime type mismatch from evaluator or builtin dispatch.
-    /// `context` carries the builtin name (e.g., `"merge"`) when the mismatch
-    /// originates from a builtin; `None` for generic evaluator mismatches.
+    /// `context` carries the operation name (e.g., `"merge"`, `"document pipeline"`)
+    /// when the mismatch originates from a named operation; `None` for generic mismatches.
     /// `expected` is human-readable, not machine-parseable — may contain
     /// compound descriptions like `"Dict or Seq"`.
     TypeMismatch {

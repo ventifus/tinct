@@ -482,7 +482,7 @@ User-facing error presentation improvements.
 
 Minor wording and span improvements.
 
-- [ ] Improve document pipeline non-Dict error message for new users (`src/eval.rs:225-246`) [Minor, eval-engine]
+- [x] Improve document pipeline non-Dict error message — now uses type_mismatch_ctx("document pipeline", ...) for clear user-facing context (`src/eval.rs`) [Minor, eval-engine]
 - [ ] Fix `Span::origin()` used for non-origin errors — create separate span constructors for runtime limits and default inputs (`src/eval.rs:923, 292`) [Minor, span-integrity-checker]
 - [ ] Add call-site span to depth limit errors — currently lacks stack frame attachment (`src/eval.rs:812-820`) [Minor, span-integrity-checker]
 - [ ] Enhance "materialized at" error message to distinguish access vs call sites (`src/error.rs:85-86`) [Minor, span-integrity-checker]

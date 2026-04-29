@@ -542,7 +542,13 @@ pub fn eval_document(
                 current_env = child_env;
             }
             _ => {
-                return Err(EvalError::type_mismatch("Dict", value.type_name(), expr.span).into());
+                return Err(EvalError::type_mismatch_ctx(
+                    "document pipeline".to_string(),
+                    "Dict",
+                    value.type_name(),
+                    expr.span,
+                )
+                .into());
             }
         }
     }
@@ -4231,7 +4237,7 @@ mod tests {
         });
         let err = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
-            err.message().contains("type mismatch"),
+            err.message().contains("document pipeline"),
             "got: {}",
             err.message()
         );
