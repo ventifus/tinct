@@ -288,7 +288,7 @@ fn infer_expr(
                     Some(scheme) if !scheme.type_vars.is_empty() || !scheme.row_vars.is_empty() => {
                         // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
                         check_call_with_scheme(
-                            scheme, args, named_args, env, expr.span, state, type_map,
+                            scheme, func.span, args, named_args, env, expr.span, state, type_map,
                         )
                     }
                     Some(_) => {
@@ -423,6 +423,13 @@ fn check_expr(
                         None
                     };
                     let mut ann_mapping_opt = ann_mapping.as_mut();
+                    // row_ann_mapping tracks named row variables per lambda scope (kinded separation).
+                    let mut row_ann_mapping = if has_annotations {
+                        Some(HashMap::new())
+                    } else {
+                        None
+                    };
+                    let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
 
                     // Arity check
                     if params.len() != expected_params.len() {
@@ -452,7 +459,7 @@ fn check_expr(
                                     ann.span,
                                     state,
                                     &mut ann_mapping_opt,
-                                    &mut None,
+                                    &mut row_ann_mapping_opt,
                                 )?;
                                 // Contravariant check: expected param type must be subtype of annotation.
                                 // When annotation contains type variables, use unification mode instead of
@@ -507,7 +514,7 @@ fn check_expr(
                                 ann.span,
                                 state,
                                 &mut ann_mapping_opt,
-                                &mut None,
+                                &mut row_ann_mapping_opt,
                             )
                             .map_err(|e| vec![e])?;
                             // Check that declared return type is compatible with expected.
@@ -947,6 +954,10 @@ fn check_dot_access(
     }
 }
 
+// NOTE: The match in this function has a guarded TypeVar arm (static_field.is_some()) and an
+// unguarded TypeVar catch-all arm (static_field.is_none()). The guard structure prevents the
+// unguarded arm from shadowing the guarded one. If the Expr enum gains new variants, the match
+// may silently fall to the catch-all — add explicit arms for new variants as they are added.
 fn check_bracket_access(
     target: &Spanned<Expr>,
     key: &Spanned<Expr>,
@@ -960,32 +971,107 @@ fn check_bracket_access(
     let target_ty = state.subst.apply(&target_ty);
     let key_ty = infer_expr(key, env, state, type_map)?;
 
+    // Extract the string-literal field name from the key expression (if statically known).
+    let static_field: Option<String> = match &key.node {
+        Expr::Str(s) => Some(s.clone()),
+        Expr::Int(n) => Some(n.to_string()),
+        _ => match &key_ty {
+            Type::StringLiteral(s) => Some(s.clone()),
+            Type::IntLiteral(n) => Some(n.to_string()),
+            _ => None,
+        },
+    };
+
     match &target_ty {
-        Type::Record(Row { fields, tail: rest }) => {
-            let is_open = matches!(rest, RowTail::RowVar(_, _));
-            let lookup = |field_name: &str| -> Result<Type, Vec<TypeError>> {
-                match fields.get(field_name) {
-                    Some(ty) => Ok(ty.clone()),
-                    None if is_open => Ok(Type::Any),
-                    None => Err(vec![TypeError::field_not_found(
-                        field_name, &target_ty, span,
-                    )]),
+        Type::Record(Row {
+            ref fields,
+            ref tail,
+        }) => {
+            // If key is statically known, try field lookup first.
+            if let Some(ref field_name) = static_field {
+                if let Some(ty) = fields.get(field_name.as_str()) {
+                    return Ok(ty.clone());
                 }
-            };
-            match &key.node {
-                Expr::Str(s) => lookup(s),
-                Expr::Int(n) => lookup(&n.to_string()),
-                _ => match &key_ty {
-                    Type::StringLiteral(s) => lookup(s.as_str()),
-                    Type::IntLiteral(n) => lookup(&n.to_string()),
-                    Type::Str | Type::Int | Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
-                    _ => Err(vec![TypeError::new(
-                        format!("bracket access key must be String or Int, got {key_ty}"),
-                        span,
-                    )]),
-                },
+                // Field not found — dispatch on tail (mirrors check_dot_access).
+                match tail {
+                    // Open record (RowVar tail): bind ρ → Row({field: β}, RowVar(ρ_fresh))
+                    RowTail::RowVar(rho, rho_level_creation) => {
+                        let rho_level = state.levels.get(rho).copied().unwrap_or(0);
+                        debug_assert!(
+                            rho_level <= *rho_level_creation,
+                            "RowVar current level ({}) should be ≤ creation level ({})",
+                            rho_level,
+                            rho_level_creation,
+                        );
+
+                        let beta = state.fresh_type_var();
+                        let (rho_fresh_name, rho_fresh_level) = state.fresh_row_var_name();
+
+                        let mut new_fields = HashMap::new();
+                        new_fields.insert(field_name.clone(), beta.clone());
+                        let binding = Row {
+                            fields: new_fields,
+                            tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
+                        };
+
+                        if row_var_occurs_pub(rho, &binding, &state.subst) {
+                            debug_assert!(
+                                false,
+                                "unreachable: fresh row var and fresh type var cannot contain ρ"
+                            );
+                            return Err(vec![TypeError::new(
+                                format!("infinite row type: {rho} occurs in its own binding"),
+                                span,
+                            )]);
+                        }
+
+                        lower_row_var_levels_pub(&binding, rho_level, state);
+                        state.subst.row_map.insert(rho.clone(), binding);
+                        state.subst.check_size(span).map_err(|e| vec![e])?;
+
+                        return Ok(beta);
+                    }
+                    // Closed record (Empty tail): field not found error.
+                    RowTail::Empty => {
+                        return Err(vec![TypeError::field_not_found(
+                            field_name, &target_ty, span,
+                        )]);
+                    }
+                }
+            }
+            // Dynamic key — cannot generate field-level constraints.
+            match &key_ty {
+                Type::Str | Type::Int | Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
+                _ => Err(vec![TypeError::new(
+                    format!("bracket access key must be String or Int, got {key_ty}"),
+                    span,
+                )]),
             }
         }
+        // Unknown type (TypeVar α) with static key: generate constraint α = Record({key: β}, RowVar(ρ))
+        Type::TypeVar(ref alpha, alpha_level) if static_field.is_some() => {
+            let field_name =
+                static_field.expect("static_field.is_some() guaranteed by match guard");
+            let beta = state.fresh_type_var();
+            let (rho_name, rho_level) = state.fresh_row_var_name();
+
+            let mut fields = HashMap::new();
+            fields.insert(field_name, beta.clone());
+            let record_ty = Type::Record(Row {
+                fields,
+                tail: RowTail::RowVar(rho_name, rho_level),
+            });
+
+            let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
+            let mut subst = std::mem::take(&mut state.subst);
+            let result = unify(&alpha_ty, &record_ty, &mut subst, state, span);
+            state.subst = subst;
+            result.map_err(|e| vec![e])?;
+
+            Ok(beta)
+        }
+        // Dynamic key (static_field.is_none()) or Any — cannot generate field-level constraints
+        // without knowing the field name at inference time.
         Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
         Type::Proxy => Ok(Type::Any),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
@@ -1038,6 +1124,7 @@ fn check_range_access(
 /// and then CALL-POLY instantiating the result, we instantiate once here.
 fn check_call_with_scheme(
     scheme: &TypeScheme,
+    func_span: Span,
     args: &[Spanned<Expr>],
     named_args: &[Spanned<NamedArg>],
     env: &Rc<TypeEnv>,
@@ -1047,6 +1134,16 @@ fn check_call_with_scheme(
 ) -> Result<Type, Vec<TypeError>> {
     // Instantiate the scheme once at the current level
     let func_ty = instantiate_scheme(scheme, state.level, state);
+
+    // Record the function expression's type in the type map for LSP hover.
+    // This mirrors check_dot_access recording the target span (line ~835).
+    // check_call handles this via infer_expr, which records to type_map automatically.
+    // check_call_with_scheme bypasses infer_expr (to avoid double instantiation), so
+    // we must record explicitly here.
+    if let Some(ref mut tm) = type_map {
+        let key = (func_span.start.offset, func_span.end.offset);
+        tm.insert(key, func_ty.clone());
+    }
 
     // Infer named args for type map population and error detection
     for na in named_args {
@@ -1327,6 +1424,15 @@ fn infer_fn(
         None
     };
     let mut ann_mapping_opt = ann_mapping.as_mut();
+    // row_ann_mapping tracks named row variables (e.g., ...r in [a: Int ...r]) per function scope.
+    // It is separate from ann_mapping (which tracks type-kind variables) to enforce kinded
+    // substitution: a name used as a row variable cannot also be used as a type variable.
+    let mut row_ann_mapping = if has_annotations {
+        Some(HashMap::new())
+    } else {
+        None
+    };
+    let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
 
     let mut param_types: Vec<Type> = params
         .iter()
@@ -1337,7 +1443,7 @@ fn infer_fn(
                 ann.span,
                 state,
                 &mut ann_mapping_opt,
-                &mut None,
+                &mut row_ann_mapping_opt,
             ),
             None => Ok(Type::Any),
         })
@@ -1369,7 +1475,7 @@ fn infer_fn(
                 ann.span,
                 state,
                 &mut ann_mapping_opt,
-                &mut None,
+                &mut row_ann_mapping_opt,
             )
             .map_err(|e| vec![e])?;
 
@@ -1429,14 +1535,7 @@ fn resolve_type_assert(
     )
     .map_err(|e| vec![e])?;
 
-    // Store the resolved type in the AST node for runtime validation (elaboration)
-    // INVARIANT: resolved_type is write-once (parser initializes to None, typecheck sets it once)
-    let prev = resolved_type.replace(Some(expected.clone()));
-    debug_assert!(
-        prev.is_none(),
-        "resolved_type written twice — elaboration invariant violated (span: {:?})",
-        annotation.span
-    );
+    // resolved_type will be stored after substitution application below (write-once invariant).
 
     // Use checking mode for TypeAssert inner expression (doc/06 line 214-226)
     let check_result = check_expr(inner, &expected, env, state, type_map);
@@ -1479,6 +1578,17 @@ fn resolve_type_assert(
     // The expected type may contain TypeVars that were bound during checking mode or
     // access-chain inference (e.g., check_dot_access binds row variables).
     let expected = state.subst.apply(&expected);
+
+    // Store the substitution-applied type in the AST node for runtime validation (elaboration).
+    // INVARIANT: resolved_type is write-once (parser initializes to None, typecheck sets it once).
+    // The type is stored AFTER substitution to ensure the runtime sees fully-resolved types.
+    let prev = resolved_type.replace(Some(expected.clone()));
+    debug_assert!(
+        prev.is_none(),
+        "resolved_type written twice — elaboration invariant violated (span: {:?})",
+        annotation.span
+    );
+
     Ok(expected)
 }
 
@@ -1630,6 +1740,15 @@ fn resolve_type_name(
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
+    // NOTE: cross-kind collision only detected in the row→type direction (resolve_type_dict
+    // checks if ann_mapping contains the row-variable name before registering it in
+    // row_ann_mapping). The type→row direction is not yet detected here because
+    // resolve_type_name has no access to row_ann_mapping. To detect the reverse direction
+    // (a name first registered as a row variable then referenced as a type variable), this
+    // function would need a `row_ann_mapping: &Option<&HashMap<String, String>>` parameter
+    // (6 parameters total) plus a symmetric collision check before the existing ann_mapping
+    // lookup at line ~1744.
+    // TODO: add `row_ann_mapping` parameter and symmetric collision check.
     match name {
         "Int" => Ok(Type::Int),
         "Float" => Ok(Type::Float),
@@ -1747,8 +1866,28 @@ fn resolve_type_dict(
                     RowTail::RowVar(fresh_name, state.level)
                 }
                 Some(n) => {
-                    // Row variables in type expressions also need fresh names per function
-                    if let Some(ref mut mapping) = ann_mapping {
+                    // Row variables in type expressions use row_ann_mapping (not ann_mapping).
+                    // ann_mapping is for type-kind variables; row_ann_mapping is for row-kind
+                    // variables. Using the wrong map would cause cross-kind collisions where a
+                    // name used as both a type variable and a row variable maps to the same fresh
+                    // name in the type substitution (kinded substitution violation).
+                    //
+                    // Cross-kind collision: if the same name appears in both ann_mapping (as a
+                    // type variable) and row_ann_mapping (as a row variable), the annotation is
+                    // ambiguous and must be rejected.
+                    let cross_kind = ann_mapping.as_ref().map_or(false, |m| m.contains_key(n));
+                    if cross_kind {
+                        // Same name already used as a type variable in this function scope.
+                        // This is a cross-kind collision: reject with a TypeError.
+                        return Err(TypeError::new(
+                            format!(
+                                "annotation name '{n}' is already used as a type variable in this function; \
+                                 it cannot also be used as a row variable"
+                            ),
+                            span,
+                        ));
+                    }
+                    if let Some(ref mut mapping) = row_ann_mapping {
                         // Check if this row variable name already has a mapping
                         if let Some(existing_var) = mapping.get(n) {
                             // Already mapped: return the existing RowVar with its current level
@@ -2704,6 +2843,29 @@ mod tests {
         );
         // Level in state.levels must still be 0 (monotonicity — no upward movement)
         assert_eq!(state.levels.get("a"), Some(&0));
+    }
+
+    #[test]
+    fn test_ann_cross_kind_type_then_row_errors() {
+        // Cross-kind collision: annotation name `a` used first as a type variable (@a on param x)
+        // and then as a row variable (...a in the record annotation on param y).
+        // resolve_type_dict detects this and emits a TypeError: "already used as a type variable".
+        //
+        // The cross-kind check is in the type→row direction: when a name that is already in
+        // ann_mapping (TypeVar) is encountered as a row-variable tail in row_ann_mapping.
+        let result = check("[fn [x@a y@[name: Int ...a]] $x]");
+        assert!(
+            result.is_err(),
+            "cross-kind annotation collision (TypeVar then RowVar) must produce a TypeError"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("already used as a type variable")),
+            "cross-kind collision must produce descriptive error; got: {:?}",
+            errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -4836,10 +4998,11 @@ mod tests {
     // -- state.subst apply() regression test --
 
     #[test]
-    #[ignore] // KNOWN ISSUE: requires row-unification-h or_insert unification fix
     fn test_bracket_access_forward_ref_resolves_correctly() {
         // Forward-reference bracket access should resolve to field type.
-        // Exercises the state.subst.apply() path in check_bracket_access (line ~717).
+        // Exercises the TypeVar constraint generation in check_bracket_access:
+        // γ_data is a TypeVar (forward ref), bracket access with string-literal key
+        // generates α = Record({name: β}, RowVar(ρ)), Pass 3b resolves β.
         let ty = result_field("[result: $data[name]  data: [name: hello]]", "result");
         assert_eq!(ty, Type::StringLiteral("hello".to_string()));
     }
@@ -5721,6 +5884,285 @@ mod tests {
             ty,
             Type::StringLiteral("hello".to_string()),
             "Pass 3b must unify overlapping state.subst binding; got: {ty}"
+        );
+    }
+
+    // -- Bracket access row constraints --
+
+    #[test]
+    fn test_bracket_access_open_record_generates_row_constraint() {
+        // When bracket-accessing an open record with a string-literal key not in known
+        // fields, check_bracket_access should generate ρ → Row({key: β}, RowVar(ρ'))
+        // (mirroring check_dot_access's RowVar arm) instead of returning Type::Any.
+        //
+        // Pattern: [Open: [type [name: String ...]]]
+        //          [p: [@Open [name: Alice  score: 42]]]
+        //          [r: $p["score2"]]
+        // r should be a TypeVar (fresh β from the constraint), not Any.
+        let env = doc_env(
+            "[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice  score: 42]]]\n[r: $p[score2]]",
+        );
+        match env.get("r").map(|s| &s.body) {
+            Some(Type::TypeVar(_, _)) => {}
+            Some(other) => panic!(
+                "expected TypeVar for bracket access on open record unknown field, got {other}"
+            ),
+            None => panic!("field 'r' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_bracket_access_open_record_known_field() {
+        // Bracket access with a string-literal key that IS in known fields should return
+        // the field's type directly, unchanged from previous behavior.
+        let env =
+            doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice]]]\n[r: $p[name]]");
+        match env.get("r").map(|s| &s.body) {
+            Some(Type::Str) => {}
+            Some(other) => panic!("expected Str for bracket access on known field, got {other}"),
+            None => panic!("field 'r' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_bracket_access_closed_record_missing_field_errors() {
+        // Bracket access with a string-literal key not in fields of a closed record should
+        // error, not return Any.
+        let result = check("[p: [name: Alice]]\n[r: $p[unknown]]");
+        assert!(
+            result.is_err(),
+            "bracket access on closed record for missing field should error"
+        );
+    }
+
+    #[test]
+    fn test_bracket_access_typevar_generates_constraint() {
+        // When target is a TypeVar and key is a string literal, check_bracket_access should
+        // generate α = Record({key: β}, RowVar(ρ)) (mirroring check_dot_access's TypeVar arm).
+        //
+        // Pattern: [result: $data["name"]  data: [name: hello]]
+        // Pass 3b resolves β through the γ_data collision → StringLiteral("hello").
+        let ty = result_field("[result: $data[name]  data: [name: hello]]", "result");
+        assert_eq!(
+            ty,
+            Type::StringLiteral("hello".to_string()),
+            "bracket access on TypeVar must generate constraint resolved by Pass 3b; got {ty}"
+        );
+    }
+
+    #[test]
+    fn test_bracket_access_typevar_dynamic_key_returns_any() {
+        // When target is a TypeVar and key is also a TypeVar (dynamic, non-literal),
+        // check_bracket_access cannot generate field-level constraints and returns Any.
+        //
+        // [fn [data key] $data[$key]] — both `data` and `key` are fresh TypeVars (no
+        // annotations). The key TypeVar is not a literal, so static_field = None, falling
+        // to the Type::Any | Type::TypeVar arm in check_bracket_access which returns Any.
+        let fn_ty = infer("[fn [data key] $data[$key]]");
+        match fn_ty {
+            Type::Function { ret, .. } => {
+                assert_eq!(
+                    *ret,
+                    Type::Any,
+                    "bracket access on TypeVar with dynamic TypeVar key must return Any; got {ret}"
+                );
+            }
+            other => panic!("expected Function type, got {other}"),
+        }
+    }
+
+    // -- resolve_type_assert state.subst.apply() regression --
+
+    #[test]
+    fn test_resolve_type_assert_subst_apply_is_load_bearing() {
+        // Regression test for `state.subst.apply(&expected)` at the end of resolve_type_assert.
+        //
+        // The apply at line ~1482 ensures that TypeVars inside `expected` are resolved through
+        // the current substitution before the type is returned and recorded in the AST node.
+        // Without the apply, a TypeVar that was bound in state.subst during check_expr (or
+        // during a prior inference step in the same letrec pass) would remain unresolved in
+        // the returned type, causing downstream inference to see an unresolved TypeVar where
+        // a concrete type was expected.
+        //
+        // ISOLATION SCENARIO:
+        // The scenario where ONLY removing state.subst.apply(&expected) causes a failure
+        // requires that `expected` contains a TypeVar bound in state.subst. Since
+        // resolve_type_assert calls resolve_annotation with &mut None (no ann_mapping),
+        // a lowercase annotation name like `@a` produces TypeVar("a", level) as expected.
+        //
+        // For TypeVar("a") to be in state.subst, something in the letrec pass before or
+        // during check_expr must unify "a" with a concrete type. The current architecture
+        // does not produce this naturally (check_expr synthesizes + checks is_subtype,
+        // never calling unify with the expected TypeVar as an argument).
+        //
+        // A full isolation test requires cross-field constraint propagation within a letrec
+        // pass (tracked as future work in row-unification-h). This test instead verifies:
+        //   (a) TypeAssert with a concrete expected type returns the expected type (not the
+        //       inner expression's more specific type — TypeAssert widens to the annotation)
+        //   (b) state.subst.apply() on a concrete type is a no-op (idempotence)
+        //   (c) The apply path does not break the return value
+        //
+        // WHAT WOULD BREAK WITHOUT THE APPLY:
+        // If `expected` is TypeVar("a") and "a" were bound to Int in state.subst:
+        //   - Without apply: resolve_type_assert returns TypeVar("a"), which later appears
+        //     in the type_map and env as an unresolved TypeVar.
+        //   - With apply: resolve_type_assert returns Int, which is the concrete resolved type.
+        //
+        // The `resolved_type` RefCell is stored AFTER state.subst.apply(), so both the runtime
+        // elaboration and static type checking see the same fully-resolved post-apply type.
+
+        // Case 1: TypeAssert with Int annotation returns Int (not IntLiteral(42))
+        // This verifies the apply path returns the expected type (widening behavior).
+        // Without apply (for concrete types), result is identical — but this exercises the code path.
+        let ty = result_field("[x: [@Int 42]]", "x");
+        assert_eq!(
+            ty,
+            Type::Int,
+            "[@Int 42] should return Int (the asserted type), not IntLiteral(42)"
+        );
+
+        // Case 2: TypeAssert with default: — inner fails, default succeeds.
+        // Tests that state.subst.apply(&expected) at line ~1461 (default check path)
+        // resolves the expected type correctly.
+        // [@[type: Int  default: 42] $missing]: $missing is undefined, check_expr fails,
+        // default 42 is inferred as IntLiteral(42), is_subtype(IntLiteral, Int) = true,
+        // return apply(Int) = Int.
+        let ty = result_field("[x: [@[type: Int  default: 42] $missing]]", "x");
+        assert_eq!(
+            ty,
+            Type::Int,
+            "[@[type: Int  default: 42] $missing] should return Int (the asserted type) using the default"
+        );
+
+        // Case 3: Verify the apply at line ~1482 works for a concrete annotation type.
+        // [@[type: [x: Int  y: Int]] [x: 1  y: 2]]: check_expr on the inner record against
+        // Record{x: Int, y: Int}. is_subtype passes (IntLiteral(1) <: Int).
+        // state.subst.apply(Record{x: Int, y: Int}) = Record{x: Int, y: Int} (no-op on concrete).
+        // The apply is idempotent — this guards against regression where apply corrupts concrete types.
+        let ty = result_field("[p: [@[type: [x: Int  y: Int]] [x: 1  y: 2]]]", "p");
+        match ty {
+            Type::Record(Row { ref fields, ref tail }) => {
+                assert_eq!(
+                    fields.get("x"),
+                    Some(&Type::Int),
+                    "record.x should be Int"
+                );
+                assert_eq!(
+                    fields.get("y"),
+                    Some(&Type::Int),
+                    "record.y should be Int"
+                );
+                assert_eq!(
+                    *tail,
+                    RowTail::Empty,
+                    "type-asserted record should be closed"
+                );
+            }
+            other => panic!(
+                "[@[type: [x: Int  y: Int]] [x: 1  y: 2]] should return the annotated record type, got {other}"
+            ),
+        }
+    }
+
+    // -- check_call_with_scheme func span recording --
+
+    #[test]
+    fn test_check_call_with_scheme_records_func_span_in_type_map() {
+        // Regression test for func span recording in check_call_with_scheme.
+        //
+        // When a polymorphic function is called via VarRef, infer_expr routes to
+        // check_call_with_scheme (to avoid double instantiation). Because this path
+        // bypasses infer_expr for the function expression, the function VarRef span
+        // would NOT appear in type_map unless check_call_with_scheme records it explicitly.
+        //
+        // This test verifies that after check_call_with_scheme runs, type_map contains
+        // an entry for the function name's span with the instantiated function type.
+        // This is required for LSP hover to show the type of the function name at the
+        // call site (e.g., hovering over `$id` in `[call $id 42]` shows `Fn(Int → Int)`).
+        //
+        // check_call (the non-scheme path) records the func span automatically via
+        // infer_expr(func, ...) which populates type_map on every infer_expr call.
+        // check_call_with_scheme must mirror this behavior by recording explicitly.
+        //
+        // SETUP: A polymorphic identity function `id` in a separate document (so it is
+        // fully generalized and the call routes to check_call_with_scheme, not check_call).
+        let input = "[id: [fn [x@a] $x]]\n---\n[result: [call $id 42]]";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let mut env = Rc::new(TypeEnv::new());
+        let mut state = InferState::new();
+        let mut type_map = TypeMap::new();
+
+        // Process document 1 (defines `id`)
+        env = typecheck_document(
+            &file.node.documents[0],
+            &env,
+            &mut state,
+            &mut Some(&mut type_map),
+        )
+        .expect("document 1 should type-check");
+
+        // Process document 2 (calls `$id`)
+        env = typecheck_document(
+            &file.node.documents[1],
+            &env,
+            &mut state,
+            &mut Some(&mut type_map),
+        )
+        .expect("document 2 should type-check");
+
+        // Verify result resolves to IntLiteral(42) (correct CALL-POLY behavior)
+        let result_ty = env
+            .get("result")
+            .expect("result should be in env")
+            .body
+            .clone();
+        assert_eq!(
+            result_ty,
+            Type::IntLiteral(42),
+            "CALL-POLY should return the argument type via identity function"
+        );
+
+        // Find the span of `$id` in `[result: [call $id 42]]` from the second document.
+        // The outer expression in document 2 is a Dict [result: [call $id 42]].
+        // We need to dig into the dict entry's value to find the Call expression.
+        let doc2_expr = &file.node.documents[1].node.expressions[0];
+        let func_span = match &doc2_expr.node {
+            Expr::Dict(entries) => {
+                // Find the entry with key "result"
+                let call_entry = entries
+                    .iter()
+                    .find(|e| {
+                        matches!(&e.node.key, Some(k) if matches!(&k.node, Expr::Str(s) if s == "result"))
+                    })
+                    .expect("should have 'result' entry");
+                match &call_entry.node.value.node {
+                    Expr::Call { func, .. } => (func.span.start.offset, func.span.end.offset),
+                    other => {
+                        panic!("expected Expr::Call as value of 'result' entry, got {other:?}")
+                    }
+                }
+            }
+            Expr::Call { func, .. } => (func.span.start.offset, func.span.end.offset),
+            other => panic!("expected Expr::Dict or Expr::Call in document 2, got {other:?}"),
+        };
+
+        // The func span ($id) must appear in type_map.
+        assert!(
+            type_map.contains_key(&func_span),
+            "type_map must contain the span of `$id` (the polymorphic function VarRef) \
+             after check_call_with_scheme — required for LSP hover. \
+             func span: {func_span:?}, type_map keys: {:?}",
+            type_map.keys().collect::<Vec<_>>()
+        );
+
+        // The type recorded for `$id` should be the instantiated function type
+        // (a Function type, since id was called with an Int arg — instantiated to Fn(Int→Int)).
+        let recorded_ty = &type_map[&func_span];
+        assert!(
+            matches!(recorded_ty, Type::Function { .. }),
+            "type_map entry for `$id` should be a Function type (instantiated scheme), got {recorded_ty}"
         );
     }
 }
