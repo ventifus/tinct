@@ -1977,3 +1977,19 @@ Update all documentation that still references the pest parser. The iterative pa
 - [x] Fix concat Dict+non-Dict — already uses type_mismatch_ctx
 - [x] Fix $try materializes body with None — passes Some(&call_span)
 - [x] Fix lib.rs serialization depth exceeded — depth_exceeded(MAX_EVAL_DEPTH) (E040)
+
+### misc-nits-c: Miscellaneous Nits (Part 3) — partial (13/15)
+
+- [x] Clarify corpus test comment in variadic_param_collects_dict.llt-eval
+- [x] Switch row_var_occurs_in_type_impl to monotone visited set (src/types.rs:602)
+- [x] Add test for visited.contains early-return cycle-guard (src/types.rs)
+- [x] Document desugared lambda span behavior (doc/10-errors.md)
+- [x] Improve $eval on infinite Seq error — seq_depth counter, targeted message (src/eval.rs)
+- [x] Fix grammar.pest:8 — RESOLVED: file deleted in parser-core-c3
+- [x] Clarify doc/02-syntax.md semicolons
+- [x] Clarify doc/15-ast.md auto-indexing
+- [x] Fix desugar.rs docstring — verified correct
+- [x] Document TypeAssert in Laziness table (doc/08-evaluation.md)
+- [x] Document REPL multi-document limitation (doc/16-architecture.md)
+- [x] Update doc/08-evaluation.md visited set language
+- [x] Add $try strictness annotation to doc/08-evaluation.md
