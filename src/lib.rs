@@ -22,6 +22,7 @@ pub(crate) mod eval;
 pub mod formatter;
 pub mod lexer;
 pub mod parser;
+pub mod parser2;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod typecheck;

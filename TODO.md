@@ -34,22 +34,31 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 
 - [ ] Fix lexer Newline not resetting `had_whitespace_before` flag — `$a\n[0]` emits `BracketAccess` instead of `OpenBracket`; `$a\n.b` emits `Dot`; both are incorrect. Fix: update `skip_whitespace_except_newline` to set `had_whitespace_before = true` when emitting `Newline` tokens, and reset `last_significant_token` to `None` or `Other`. Blocked on Phase 2 parser (current pest parser handles this correctly via compound-atomic rules). Track for Phase 2 integration. (`src/lexer.rs:233-238`) [Minor, computer-scientist C63]
 
-### parser-core: Phase 2 — Parser Replacement
 
-Replace `src/parser.rs` and `src/grammar.pest` with iterative parser. See doc/whatif/parser-rewrite.md §Phase 2. **Depends on:** `parser-lexer`.
+- [ ] Fix `push_literal` silently drops expressions when top-of-stack is non-Dict frame — currently unreachable in parser-core-a but will cause silent data loss when Call/Fn/TypeAlias/TypeAssert frames are added in parser-core-b. Add `unreachable!()` or variant-specific handlers. (`src/parser2.rs:28`) [Minor, computer-scientist C64]
+- [ ] Fix unclosed bracket error using `span: None` — each StackFrame stores `span_start` (the opening bracket's offset), so the diagnostic message "unclosed bracket" could point to the opening site instead of EOF. Per design doc, target message is "unclosed bracket opened at line 5:3". (`src/parser2.rs:343`) [Minor, computer-scientist C64]
+- [ ] Replace `CallArg::Named(String, Spanned<Expr>)` with `CallArg::Named(NamedArg)` — eliminates duplication with `ast::NamedArg { name, value }` struct; simplifies call construction in parser-core-b. (`src/parser2.rs:87`) [Minor, grammar-architect C64]
+- [ ] Change `StackFrame::Dict.entries` from `Vec<Entry>` to `Vec<Spanned<Entry>>` — eliminates allocation-then-wrap overhead during dict construction; matches AST's `Expr::Dict(Vec<Spanned<Entry>>)` target type. Address during parser-core-c profiling. (`src/parser2.rs:50,176-186`) [Minor, grammar-architect C64]
+- [ ] Update line tracking TODO in parse2 skeleton — line 191 says "proper line tracking from lexer tokens" but lexer already provides full `Spanned<Token>` with Position (line, column, offset); change to "extract line/column from token spans instead of placeholder (1,1)". (`src/parser2.rs:191`) [Nit, grammar-architect C64]
 
-- [ ] Implement `Vec<StackFrame>` main loop consuming lexer tokens, returning `ParseOutput` (`src/parser.rs`)
-- [ ] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert, BracketAccessKey — one variant per bracket/access form (`src/parser.rs`)
-- [ ] Add `ParseOutput { file: Spanned<File>, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String> }` (`src/parser.rs`)
+### parser-core-b: Phase 2b — Token Dispatch
+
+Form classification and access chain handling. **Depends on:** `parser-core-a`.
+
 - [ ] On `OpenBracket`: peek first token for form classification (Identifier keyword detection, At for TypeAssert) — push appropriate frame (`src/parser.rs`)
 - [ ] On `BracketAccess`: push BracketAccessKey frame; CloseBracket pops and produces key expression (`src/parser.rs`)
 - [ ] On `ImmediateAt`: handle annotated bare-word rule (`word@annotation`) — no whitespace between Identifier and At (`src/parser.rs`)
 - [ ] MAX_DEPTH check on `stack.len()` before each push — fires before allocation (`src/parser.rs`)
+
+### parser-core-c: Phase 2c — Constraints, Errors, and Cutover
+
+Inline validation, quality error messages, and pest removal. **Depends on:** `parser-core-b`.
+
 - [ ] Static constraints inline: duplicate key detection in Dict frame, variadic rules in Fn frame (`src/parser.rs`)
 - [ ] Error messages with bracket context: "unclosed bracket opened at line 5:3", "expected value after `:` at line 7:12" (`src/parser.rs`)
+- [ ] All corpus tests pass before landing (corpus suite is the regression suite)
 - [ ] Remove `src/grammar.pest`; remove `pest` and `pest_derive` from `Cargo.toml`
 - [ ] Remove 64 MB worker thread stack workaround — coordinate with `iterative-eval` sprint
-- [ ] All corpus tests pass before landing (corpus suite is the regression suite)
 - [ ] Benchmark parse time on large inputs
 
 ### parser-formatter: Phase 3 — AST-Based Formatter
