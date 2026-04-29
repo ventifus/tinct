@@ -1966,3 +1966,14 @@ Update all documentation that still references the pest parser. The iterative pa
 - [x] Enhance "materialized at" verb — infer_materialization_verb() for called/accessed/materialized
 - [x] Change unification error wording — "cannot unify X with Y" in TypeError
 - [x] Improve Fn type expression error — "function type parameter at position N: got key 'X'"
+
+### span-builtins: Builtin Span and Error Kind Quality
+
+- [x] Fix ok_val() hardcoding Span::origin() — ~65 call sites now pass call_span
+- [x] Fix expect_one_arg() passes None mat_span — passes Some(&call_span)
+- [x] Fix extract_num_pair() passes None mat_span — both materialize calls use Some(&call_span)
+- [x] Fix $try arity mismatch message — type_mismatch_ctx("try", "zero-argument function", ...)
+- [x] Fix $collect size-limit — already uses resource_limit_exceeded (E043)
+- [x] Fix concat Dict+non-Dict — already uses type_mismatch_ctx
+- [x] Fix $try materializes body with None — passes Some(&call_span)
+- [x] Fix lib.rs serialization depth exceeded — depth_exceeded(MAX_EVAL_DEPTH) (E040)
