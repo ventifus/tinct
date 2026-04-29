@@ -1900,3 +1900,12 @@ Foundation types for the iterative parser. See doc/whatif/parser-rewrite.md §Ph
 - [x] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert, BracketAccessKey — one variant per bracket/access form (`src/parser.rs`)
 - [x] Add `ParseOutput { file: Spanned<File>, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String> }` (`src/parser.rs`)
 - [x] Implement `Vec<StackFrame>` main loop skeleton — token iteration, push/pop mechanics, depth tracking (without full form dispatch) (`src/parser.rs`)
+
+### parser-core-b: Phase 2b — Token Dispatch
+
+Form classification and access chain handling. **Depends on:** `parser-core-a`.
+
+- [x] On `OpenBracket`: peek first token for form classification (Identifier keyword detection, At for TypeAssert) — push appropriate frame (`src/parser.rs`)
+- [x] On `BracketAccess`: push BracketAccessKey frame; CloseBracket pops and produces key expression (`src/parser.rs`)
+- [x] On `ImmediateAt`: handle annotated bare-word rule (`word@annotation`) — no whitespace between Identifier and At (`src/parser.rs`)
+- [x] MAX_DEPTH check on `stack.len()` before each push — fires before allocation (`src/parser.rs`)

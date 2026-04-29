@@ -41,14 +41,12 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 - [ ] Change `StackFrame::Dict.entries` from `Vec<Entry>` to `Vec<Spanned<Entry>>` — eliminates allocation-then-wrap overhead during dict construction; matches AST's `Expr::Dict(Vec<Spanned<Entry>>)` target type. Address during parser-core-c profiling. (`src/parser2.rs:50,176-186`) [Minor, grammar-architect C64]
 - [ ] Update line tracking TODO in parse2 skeleton — line 191 says "proper line tracking from lexer tokens" but lexer already provides full `Spanned<Token>` with Position (line, column, offset); change to "extract line/column from token spans instead of placeholder (1,1)". (`src/parser2.rs:191`) [Nit, grammar-architect C64]
 
-### parser-core-b: Phase 2b — Token Dispatch
+- [ ] Fix parser2 bracket access error message: "bracket access inside dict/call contexts" should say "bracket access inside nested bracket contexts" — the limitation applies to all non-empty stack frames, not just dict/call. (`src/parser2.rs:339-343`) [Nit, computer-scientist C65]
+- [ ] Restore deleted Phase 2a tests in parser2.rs — test_unmatched_closing_bracket and test_unclosed_bracket ARE present; test_nested_dict_one_level, test_nested_dict_two_levels, test_depth_limit_boundary_succeeds may have been removed. Verify which are missing and re-add them. (`src/parser2.rs`) [Minor, computer-scientist C65]
+- [ ] Fix `[call\n: x]` classified as Dict instead of Call in parser2 — `peek_next_significant` skips Newline tokens, so newline-before-colon makes keyword-colon guard fire incorrectly. Pest grammar's `colon_ahead` uses horizontal-only whitespace. Resolve before parser2 replaces parser.rs. (`src/parser2.rs:17-32`) [Minor, grammar-architect C65]
+- [ ] Support QuotedString and VarRef as dict keys in parser2 — `["key": 1]` and `[$x: 1]` currently produce "colon without key" error; pest grammar allows both as key forms. Implement key detection for these token types in the Colon handler's Dict arm. (`src/parser2.rs:649-651,695-699`) [Minor, computer-scientist C65]
+- [ ] Remove dead Dict/Call match arms in parser2 `push_expr_to_parent` — lines 845-856 are unreachable because `push_value` intercepts Dict/Call frames before delegating. (`src/parser2.rs:845-856`) [Nit, computer-scientist C65]
 
-Form classification and access chain handling. **Depends on:** `parser-core-a`.
-
-- [ ] On `OpenBracket`: peek first token for form classification (Identifier keyword detection, At for TypeAssert) — push appropriate frame (`src/parser.rs`)
-- [ ] On `BracketAccess`: push BracketAccessKey frame; CloseBracket pops and produces key expression (`src/parser.rs`)
-- [ ] On `ImmediateAt`: handle annotated bare-word rule (`word@annotation`) — no whitespace between Identifier and At (`src/parser.rs`)
-- [ ] MAX_DEPTH check on `stack.len()` before each push — fires before allocation (`src/parser.rs`)
 
 ### parser-core-c: Phase 2c — Constraints, Errors, and Cutover
 
