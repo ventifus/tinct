@@ -35,6 +35,7 @@ makes the best case for its feature: "What would it take to do this well?"
 | [Quasiquoting](quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros |
 | [Desugaring as Macros](macros.md) | Procedural AST macros for user-defined syntactic transformations |
 | [Custom Call Aliases](call-aliases.md) | `[timed $f ...]` — macro-defined call forms; gated on macros |
+| [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with iterative parser; `ParseOutput` comment map; AST-based formatter (**Accepted**) |
 | [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections |
 
 ## Runtime and Performance
@@ -71,7 +72,7 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 
 | Proposal | Summary | Accepted |
 |----------|---------|---------|
-| _(none yet)_ | | |
+| [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; AST-based formatter rewrite | 2026-04-28 |
 
 ### Adopt Now
 
@@ -130,10 +131,10 @@ These proposals have accepted designs but explicit gating conditions not yet met
 
 **[Unified Syntax Reform](new-syntax.md)** — Bare-word references + implied call +
 `%`-named pipeline sections would reduce token count ~30–40% across all tinct
-code. But it breaks all existing syntax at every reference and call site. This is a
-major coordinated migration requiring a dual-mode parser and explicit migration
-tooling, not an incremental sprint. Adopt as a deliberate project milestone, not a
-feature sprint.
+code. Breaks all existing bare-word string values (they become references). There
+is no user code, so adoption is a clean internal cutover — no migration tooling
+needed. Requires parser-rewrite Phase 3 (AST-based formatter) as a prerequisite.
+Adopt as a deliberate project milestone, not a feature sprint.
 
 ### Additive Capability (No TODO Replacement)
 

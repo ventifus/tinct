@@ -1,5 +1,7 @@
 # What If: Iterative Parser and AST-Based Formatter for tinct
 
+**State:** Accepted — 2026-04-28
+
 What would it take to replace tinct's pest-based parser with a hand-written
 iterative parser and rewrite the formatter to operate on the AST?
 
@@ -129,13 +131,20 @@ pushes and pops frames.
 
 ```rust
 enum StackFrame {
-    Dict    { entries: Vec<Entry>, span_start: usize },
-    Call    { args: Vec<CallArg>, span_start: usize },
-    Fn      { params: Vec<Param>, body_start: Option<usize>, span_start: usize },
-    TypeAlias { name: String, params: Vec<String>, span_start: usize },
-    TypeAssert { annotation: Spanned<TypeExpr>, span_start: usize },
+    Dict           { entries: Vec<Entry>, span_start: usize },
+    Call           { args: Vec<CallArg>, span_start: usize },
+    Fn             { params: Vec<Param>, body_start: Option<usize>, span_start: usize },
+    TypeAlias      { name: String, params: Vec<String>, span_start: usize },
+    TypeAssert     { annotation: Spanned<TypeExpr>, span_start: usize },
+    BracketAccessKey { span_start: usize },
 }
 ```
+
+`BracketAccessKey` handles bracket access keys that contain nested bracket
+expressions — e.g. `$a[some_expr]` where `some_expr` itself contains `[]`.
+When `Token::BracketAccess` is encountered during atom parsing, a
+`BracketAccessKey` frame is pushed; `Token::CloseBracket` pops it and
+produces the key expression for the enclosing access chain.
 
 On `Token::OpenBracket`: peek at the next non-whitespace token to classify the
 form (keyword detection: `Identifier("call")`, `Identifier("fn")`,
@@ -149,6 +158,13 @@ On `Token::CloseBracket`: pop the frame, construct the corresponding AST node
 Between brackets: parse atoms (literals, EscapedRefs, Identifiers), access chains
 (dot and bracket), and annotations — all non-recursive, driven by the current
 token type.
+
+**Annotated bare words** (`word@annotation`, compound-atomic in pest) are
+handled at the lexer level: when `@` follows an `Identifier` token with no
+whitespace gap (detected via span offset comparison, the same mechanism as
+`BracketAccess`), the lexer emits `Token::ImmediateAt` instead of
+`Token::At`. The parser treats `ImmediateAt` as the annotation separator in
+annotated bare-word context.
 
 `MAX_DEPTH` is checked on `stack.len()` before each push. This fires before
 any allocation, replacing the post-hoc depth check in the current builder.
@@ -168,48 +184,42 @@ error: unclosed bracket
 ```
 
 **Comment attachment**: the iterative parser collects `Token::Comment` tokens
-as they appear and attaches them to the immediately following AST node as
-`leading_comments: Vec<String>`. Trailing comments (a comment on the same line
-as a value, after it) are attached as `trailing_comment: Option<String>`.
-
-This requires extending `Spanned<T>` or wrapping it in an `Annotated<T>` that
-carries comment vectors alongside the span. The simplest correct form:
+and returns them alongside the AST in a `ParseOutput` struct:
 
 ```rust
-pub struct Annotated<T> {
-    pub node: T,
-    pub span: Span,
-    pub leading_comments: Vec<String>,
-    pub trailing_comment: Option<String>,
+pub struct ParseOutput {
+    pub file: Spanned<File>,
+    pub leading_comments: BTreeMap<usize, Vec<String>>,  // keyed by span.start.offset
+    pub trailing_comments: BTreeMap<usize, String>,       // keyed by span.start.offset
 }
 ```
 
-Existing code that destructures `Spanned<T>` as `{ node, span }` gains two
-optional fields; both can be ignored by the evaluator and type checker, which
-do not need comment content.
+Leading comments (appearing before an AST node) are keyed by the
+`span.start.offset` of the node they precede. Trailing comments (appearing
+on the same line after a value) are keyed by the `span.start.offset` of the
+node they follow. The formatter looks up both maps for each node it emits.
 
-**Dual-parser API**: `parse()` accepts a `ParserSelection` enum:
+`Spanned<T>` is completely unchanged — no new fields, no broken `PartialEq`,
+no memory overhead in evaluator or type-checker paths. The evaluator and type
+checker receive `Spanned<File>` as before; only the formatter consumes the
+comment maps.
 
-```rust
-pub enum ParserSelection { Pest, Iterative }
-
-pub fn parse(source: &str, sel: ParserSelection) -> Result<Spanned<File>, ParseError>
-```
-
-The pest parser stays as the reference implementation until graduation.
-A comparison test suite parses every corpus file with both parsers and asserts
-AST equality (ignoring comment fields, which pest does not produce).
+`parse(source: &str) -> Result<ParseOutput, ParseError>`. There is no parser
+selection parameter — the iterative parser replaces pest entirely (see
+§Phased Adoption). The corpus test suite serves as the regression suite: if
+all corpus tests pass with the new parser, it is correct.
 
 ### AST-Based Formatter (rewrite of `src/formatter.rs`)
 
-The rewritten formatter walks `Annotated<File>` (the comment-annotated AST)
-and emits canonical tinct source. It does not consume the token stream.
+The rewritten formatter walks `Spanned<File>` from `ParseOutput` and emits
+canonical tinct source. It does not consume the token stream.
 
 Key properties:
 - **Exact structure**: bracket form is known from AST node type, not keyword
   scanning.
 - **Exact comment placement**: leading and trailing comments from
-  `Annotated<T>` are emitted at the correct positions.
+  `ParseOutput.leading_comments` and `ParseOutput.trailing_comments` are
+  looked up by `span.start.offset` and emitted at the correct positions.
 - **No heuristics**: `is_fn_params`, `has_whitespace_between`, keyword string
   comparisons are all eliminated.
 - **Single-line / multi-line decision**: driven by rendered width of the AST
@@ -231,148 +241,127 @@ which uses only whitespace and newlines, never semicolons.
 ### Lexer (`src/lexer.rs`)
 
 **Current:** emits `Token::OpenBracket` for both `$a[0]` and `$a [0]`.
+No `ImmediateAt` token exists.
 
 **Proposed:** emits `Token::BracketAccess` for no-whitespace `[` after a
-value-ending token; `Token::OpenBracket` otherwise.
+value-ending token; `Token::OpenBracket` otherwise. Emits `Token::ImmediateAt`
+for `@` with no whitespace after an `Identifier` token.
 
-**Impact:** Minor — one new token variant, updated in all match sites. The
-formatter currently does span arithmetic at four sites; those simplify to a
-token type check. The existing pest parser does not consume lexer tokens, so
-no change there.
+**Impact:** Minor — two new token variants, updated in all match sites.
 
-### Iterative Parser (`src/parser2.rs`, new file)
+### Parser (`src/parser.rs`, replaced)
 
-**Current:** does not exist.
+**Current:** pest-based, `src/grammar.pest` + `src/parser.rs` builders.
 
-**Proposed:** new file with `Vec<StackFrame>` main loop, lexer token
-consumption, comment attachment, static constraint enforcement, bracket-level
-error recovery (Phase 4).
+**Proposed:** complete replacement with `Vec<StackFrame>` main loop, lexer
+token consumption, `ParseOutput` comment maps, static constraint enforcement,
+bracket-level error recovery (Phase 4). Pest and the grammar file are removed.
 
-**Impact:** Major — new implementation. Pest parser unchanged until graduation.
-Dual `parse()` API is an additive change to the public interface.
+**Impact:** Major — full replacement. The corpus test suite is the regression
+suite; all tests must pass before the switch lands.
 
 ### Formatter (`src/formatter.rs`)
 
 **Current:** token-stream walker with four `has_whitespace_between` call sites,
 `is_fn_params` heuristic, keyword string comparisons.
 
-**Proposed:** complete rewrite as AST walker over `Annotated<File>`.
+**Proposed:** complete rewrite as AST walker over `ParseOutput`. Comment maps
+drive placement; AST node types drive structure.
 
 **Impact:** Major — full rewrite. Behavior is observably equivalent for valid
-files. For files with syntax errors, the new formatter returns an error instead
-of producing output.
+files. For files with syntax errors, the formatter returns an error. Error
+nodes (`Expr::Error(Span)`) are rendered by emitting the original source text
+for the span verbatim, preserving partial formatting capability.
 
-### AST Types (`src/ast.rs`)
+### Parse Output (`src/parser.rs`)
 
-**Current:** `Spanned<T>` carries `node: T` and `span: Span`.
+**Current:** `parse()` returns `Result<Spanned<File>, ParseError>`.
 
-**Proposed:** `Annotated<T>` adds `leading_comments` and `trailing_comment`.
-`Spanned<T>` can be a type alias for `Annotated<T>` or kept as a distinct
-type for contexts that do not need comments.
+**Proposed:** `parse()` returns `Result<ParseOutput, ParseError>` where
+`ParseOutput` carries `Spanned<File>` alongside two `BTreeMap<usize, _>`
+comment tables. `Spanned<T>` is entirely unchanged — no new fields, no impact
+on `PartialEq`, no overhead in evaluator or type-checker code paths.
 
-**Impact:** Moderate — every `Spanned<T>` construction site in `parser.rs`
-grows two default-empty fields; evaluator and type checker are unchanged.
-The iterative parser populates comment fields; the pest parser leaves them
-empty.
+**Impact:** Minor — callers of `parse()` unwrap `ParseOutput.file` for the
+AST; the formatter additionally consumes the comment maps. The evaluator and
+type checker are unaffected.
 
 **Compatibility constraint**: the `(level, slot)` de Bruijn annotation planned
-in `doc/whatif/arena-patterns.md` Phase 1 annotates `VarRef` nodes in the
-AST. The `Annotated<T>` wrapper must be compatible with that planned
-annotation pass — both can coexist as separate fields on the same node or
-as a two-phase annotation approach.
+in `doc/whatif/arena-patterns.md` Phase 1 annotates `VarRef` nodes in the AST
+as a separate post-parse pass. The comment maps are an independent side channel;
+both coexist with no conflict.
 
 ### Pest Dependency (`Cargo.toml`)
 
 **Current:** `pest` and `pest_derive` are build dependencies.
 
-**Proposed:** removed at graduation.
+**Proposed:** removed in Phase 2 (immediate replacement).
 
-**Impact:** Minor at graduation — build simplification, dependency surface
-reduction.
+**Impact:** Minor — build simplification, reduced dependency surface.
 
 ## Phased Adoption
 
-### Phase 1: Lexer — `BracketAccess` Token
+### Phase 1: Lexer — `BracketAccess` and `ImmediateAt` Tokens
 
-Add `Token::BracketAccess` to `src/lexer.rs`. Update the existing formatter
-to use it (replacing the four `has_whitespace_between` call sites). All other
-consumers of the lexer (the pest-to-AST builder and the current formatter)
-continue to work. The iterative parser in Phase 2 will depend on this token.
+Add `Token::BracketAccess` and `Token::ImmediateAt` to `src/lexer.rs`. Update
+the existing formatter to use `BracketAccess` (replacing the four
+`has_whitespace_between` call sites). The pest parser does not consume lexer
+tokens, so it is unaffected. The iterative parser in Phase 2 depends on both
+new tokens.
 
 This phase is independently useful: the formatter loses four ad-hoc span
 comparisons and the lexer accurately reflects source structure.
 
-### Phase 2: Iterative Parser — `src/parser2.rs`
+### Phase 2: Parser Replacement
 
-Implement the iterative parser as a new file. The `parse()` API gains a
-`ParserSelection` parameter. Add a comparison test that parses every corpus
-file with both parsers and asserts AST equality (comment fields excluded from
-comparison). Benchmark parse time on large inputs. Comment attachment is
-required in this phase — the AST-based formatter in Phase 3 depends on it.
+Replace `src/parser.rs` and `src/grammar.pest` with the iterative parser.
+Remove `pest` and `pest_derive` from `Cargo.toml`. The new `parse()` returns
+`ParseOutput { file, leading_comments, trailing_comments }`. All corpus tests
+must pass before this lands — they are the regression suite.
 
-This phase is independently useful: the iterative parser can be used in
-production (via `ParserSelection::Iterative`) while pest remains available
-as the fallback.
+Benchmark parse time on large inputs. Remove the 64 MB worker thread stack
+workaround (also targeted by `iterative-eval`; coordinate the removal to avoid
+a double-landing).
 
 ### Phase 3: AST-Based Formatter
 
-Rewrite `src/formatter.rs` to walk `Annotated<File>`. Depends on Phase 2
-(the iterative parser must produce comment-annotated ASTs). The existing
+Rewrite `src/formatter.rs` to walk `ParseOutput`. Depends on Phase 2 (the
+new parser must produce the `ParseOutput` comment maps). The existing
 `format_source()` API signature is preserved; the implementation changes.
 
-Verify: all existing formatter corpus tests pass. The test suite for the
-formatter (`src/formatter.rs`) covers 48 cases — all should produce identical
-output for valid inputs.
+Error nodes (`Expr::Error(Span)`) are rendered by emitting the original source
+text for the span verbatim.
 
-This phase is independently useful: the formatter becomes exact and loses all
-heuristics.
+Verify: all existing formatter corpus tests (48 cases) pass with identical
+output for valid inputs.
 
 ### Phase 4: Error Recovery
 
-Add bracket-level error recovery to the iterative parser. On a syntax error
-inside a bracket form, skip tokens until the matching `]` (tracking nesting),
-mark the enclosing form as an error node, and continue parsing. Multiple errors
-are collected and reported together.
-
-This phase is independently useful: multi-error reporting significantly
-improves the edit-compile loop.
-
-### Phase 5: Graduation
-
-Once Phases 1–4 are complete and the iterative parser passes the full test
-suite:
-
-1. Make `ParserSelection::Iterative` the default.
-2. Remove the pest parser (`src/parser.rs`, `src/grammar.pest`).
-3. Remove `pest` and `pest_derive` from `Cargo.toml`.
-4. Rename `src/parser2.rs` to `src/parser.rs`.
-5. Remove the 64 MB worker thread stack workaround (see `iterative-eval`
-   sprint, which also targets this workaround independently).
+Extend the iterative parser with bracket-level error recovery. On a syntax
+error inside a bracket form, skip tokens until the matching `]`, emit an
+`Expr::Error(Span)` node, and continue parsing. Multiple errors are collected
+and reported together.
 
 ### Prerequisites
 
 - Phase 1 has no prerequisites — it is a standalone lexer change.
-- Phase 2 requires Phase 1 (`BracketAccess` token) and the `Annotated<T>`
-  AST extension.
-- Phase 3 requires Phase 2 (comment-annotated AST from iterative parser).
-- Phase 4 requires Phase 2 (error recovery is an extension of the iterative
-  parser loop).
-- Phase 5 requires Phases 1–4 and full test suite parity.
+- Phase 2 requires Phase 1 (`BracketAccess`, `ImmediateAt` tokens).
+- Phase 3 requires Phase 2 (`ParseOutput` comment maps from the new parser).
+- Phase 4 requires Phase 2 (error recovery extends the iterative parser loop).
 
 ### Relationship to `iterative-eval`
 
 The `iterative-eval` sprint (see TODO.md) replaces the recursive evaluator
 with a CEK machine using an explicit continuation stack — the same structural
 pattern applied to the evaluator rather than the parser. The two sprints are
-independent: the parser produces `Spanned<File>`/`Annotated<File>`; the
-evaluator consumes it. They do not share types or implementation.
+independent: the parser produces `ParseOutput`; the evaluator consumes
+`Spanned<File>`. They do not share types or implementation.
 
 The one concrete compatibility point: `doc/whatif/arena-patterns.md` Phase 1
 plans a variable resolution pass that annotates `VarRef` nodes in the AST
-with `(level, slot)` de Bruijn pairs for flat environment lookup. The
-`Annotated<T>` type introduced here must not conflict with that annotation.
-Keeping them as separate fields (comments on `Annotated<T>`, de Bruijn data
-as a separate AST pass output) is the clean separation.
+with `(level, slot)` de Bruijn pairs for flat environment lookup. This is a
+separate post-parse pass; the `ParseOutput` comment maps are an independent
+side channel. Both coexist with no conflict.
 
 ### Trigger
 
@@ -403,9 +392,10 @@ as a separate AST pass output) is the clean separation.
   underlying modern AST-based formatters (Prettier, rustfmt's intermediate
   IR). The rewritten formatter's single-line / multi-line decision follows
   Wadler's `fits` predicate applied to rendered subtree width.
-- Nickel evaluator (2022). Rust implementation. `src/parser/` — Hand-written
-  Rust parser for a lazy configuration language with a similar bracket-heavy
-  grammar. Reference point for iterative parser structure in Rust.
+- Nickel language (2022). LALRPOP-based grammar (`grammar.lalrpop`) with
+  hand-written extensions (`src/parser/`) for a lazy configuration language
+  with a similar bracket-heavy syntax. Reference for parsing complex bracket
+  grammars in Rust; uses LALR rather than a hand-written iterative approach.
 - Nix evaluator (C++). `src/libexpr/parser.y`, `src/libexpr/lexer.l` —
   Flex/Bison-based parser for the canonical lazy configuration language.
   Iterative evaluation with explicit frame types (the `iterative-eval`
@@ -413,7 +403,7 @@ as a separate AST pass output) is the clean separation.
   whitespace-sensitive disambiguation.
 - Go `go/ast` package (2009–present). — AST representation that includes
   `CommentGroup` nodes attached to declarations and statements. Reference
-  for the leading/trailing comment attachment model used in Phase 2.
+  for the leading/trailing comment side-channel approach used in `ParseOutput`.
 - Matklad (2018). "Resilient LL Parsing Tutorial." Blog post. — Technique
   for error-resilient hand-written parsers that produce partial ASTs on
   syntax errors. Foundation for Phase 4 bracket-level error recovery.

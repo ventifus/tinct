@@ -218,9 +218,21 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 
 ### Bracket Nesting Depth Limit
 
-The parser enforces `MAX_PARSE_DEPTH` during AST construction (not during pest's parse phase), avoiding native stack overflow. `MAX_PARSE_DEPTH` (256) is the policy limit; inputs exceeding this limit produce a clear parse error.
+**Planned:** The iterative parser (`Vec<StackFrame>` main loop) will bound nesting depth by heap, not the native call stack. `MAX_PARSE_DEPTH` (256) will be checked on `stack.len()` before each push, firing before any allocation — inputs exceeding this limit will produce a clear parse error. The current parser is pest-based; this design is accepted but not yet implemented. See `doc/whatif/parser-rewrite.md` §Design — Iterative Parser.
 
-**Note:** pest itself recurses on Rust's call stack during parse. ~500+ nested brackets may cause native stack overflow before this depth check fires. This is an accepted limitation resolved by the Parser Rewrite milestone.
+### Parser Output
+
+**Planned:** `parse()` will return `ParseOutput`:
+
+```rust
+pub struct ParseOutput {
+    pub file: Spanned<File>,
+    pub leading_comments: BTreeMap<usize, Vec<String>>,  // keyed by span.start.offset
+    pub trailing_comments: BTreeMap<usize, String>,
+}
+```
+
+`Spanned<T>` is unchanged. Comments will be stored as a side table alongside the AST; the evaluator and type checker will receive `Spanned<File>` only. The formatter will use the comment maps for comment placement. Currently `parse()` returns `Result<Spanned<File>, ParseError>`. See `doc/whatif/parser-rewrite.md` §Design.
 
 ### Annotation Bracket Restriction
 

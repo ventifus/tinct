@@ -2,20 +2,6 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-### cycle-findings-c31-panel: Panel Fix-Later Items (Cycle #31)
-
-- [ ] Consider inlining `resolve_type_expr_value` at its single call site (`src/typecheck.rs:1426`) — it is now a trivial one-line wrapper with no semantic distinction from `resolve_type_expr`; the wrapper name implies a semantic distinction that no longer exists. (`src/typecheck.rs:1547-1554`) [Nit, integration-verifier C40 panel]
-- [ ] Fix error message from composite type annotation failures loses annotation context — "invalid type expression" (from `resolve_type_expr` fallback) is less specific than the prior "invalid type in annotation"; consider "invalid type expression in annotation". (`src/typecheck.rs:1559-1562`) [Nit, integration-verifier C40 panel]
-- [ ] Add level-restoration-on-error test — no test proves `state.level` is correctly restored when `infer_expr` fails during non-Dict Record processing in `typecheck_document`; a non-last Record expression that fails inference should leave subsequent expressions seeing the correct level. (`src/typecheck.rs`) [Minor, test-crafter C40 panel]
-- [ ] Add negative test cases for composite type annotation error messages — `test_annotation_composite_function_type` verifies the success path but no test verifies that malformed composite types (e.g., `[type: [Fn@]]`) produce clear error messages. (`src/typecheck.rs`) [Nit, test-crafter C40 panel]
-- [ ] Add unit test for `resolve_type_name` outside-function-scope (`ann_mapping` is `None`) monotonicity — the `None` path (lines 1369-1377) was also fixed but has no test; a top-level `[@a $x]` annotation used twice in a single expression exercises this path. Add a test that creates a scenario where U-VAR-LEVEL lowers the annotation variable's level and the second reference returns the lowered level. (`src/typecheck.rs:1369-1377`) [Minor, test-crafter + computer-scientist C71 panel]
-- [ ] Add corpus test for shared annotation identity — `[f: [fn [x@a y@a] $x]]` should produce a polymorphic function; no corpus-level regression test for repeated annotation identity exists. Add `tests/corpus/eval/typecheck_shared_annotation_identity.llt-eval`. (`tests/corpus/eval/`) [Minor, test-crafter C71 panel]
-- [ ] Add named-arg explanation to type checker arity mismatch errors — when `typecheck::typecheck_file()` produces an arity mismatch for a call that uses named args to satisfy required positional parameters, the error gives no hint that named arguments are not understood by the type checker. Evaluation may succeed at runtime while the type checker rejects the call. Fix: locate arity mismatch error construction in `src/typecheck.rs` and append: "Note: the type checker does not yet support named arguments. If named arguments satisfy this requirement, evaluation may still succeed." (`src/typecheck.rs`) [Major, integration-verifier C71]
-- [ ] Add exhaustive match enforcement to `ErrorKind::PartialEq` impl — the `PartialEq` impl at `src/error.rs:293-420` uses a catch-all `_ => false` arm; adding a new `ErrorKind` variant without adding a match arm silently falls through to `false`, making equality tests between identical variants incorrectly return `false`. Fix: add `#[deny(clippy::match_wildcard_for_single_variants)]` attribute on the impl block, or restructure to use an exhaustive match without a wildcard arm. (`src/error.rs:293`) [Minor, integration-verifier C71]
-- [ ] Fix `builtin_take` Seq recursive tail stores `depth` not `depth+1` — `builtin_take`'s Seq path at `src/builtins.rs:2144` constructs a recursive `PendingBuiltin(builtin_take, ...)` whose stored `depth` is the current depth, not `depth+1`. Every recursive take step runs with the same internal budget, allowing a large `$take` to bypass the depth budget across all tail steps (same class as tracked `filter_dict_step` depth bug at TODO.md line 1065). Fix: change `depth` to `depth+1` at line 2144. Add unit test verifying `take(MAX_EVAL_DEPTH + 5, range(0))` produces `DepthExceeded`. (`src/builtins.rs:2144`) [Minor, eval-engine C68]
-- [ ] Add corpus test for `is_subtype` open-record soundness — no corpus-level end-to-end test demonstrates that a real LLT program with an open-record-as-closed-record type mismatch is caught by the type checker; unit coverage is complete. Add `tests/corpus/eval/typecheck/open_record_not_subtype_of_closed.llt` that typechecks a function accepting an open record applied to a closed-record position. (`tests/corpus/eval/typecheck/`) [Minor, test-crafter C69 panel]
-- [ ] Verify Cargo.lock for anomalous `serde_core` and `zmij` dependencies — `Cargo.lock:487-528, 772-775` shows `serde 1.0.228` depending on `serde_core` and `serde_json 1.0.149` depending on `zmij`; neither dependency exists in the legitimate crate graph for these versions; no `[patch]` in `Cargo.toml` explains the entries. Action: delete `Cargo.lock`, run `cargo update` in a clean environment, compare new checksums against crates.io registry; add `cargo audit` to CI as a blocking gate. (`Cargo.lock:487-528, 772-775`) [Critical, security-expert C70]
-
 ### cycle-findings-c70-b: Code Fixes (Cycle #70)
 
 Code fix findings from Cycle #70 full codebase health review. All items independent.
@@ -132,34 +118,55 @@ Replace pest's recursive descent with a hand-written lexer + iterative parser us
 
 ### Design
 
-- [ ] Write `doc/whatif/parser-rewrite.md` — gather all parser-rewrite design considerations into a cohesive whatif document. Existing notes are scattered across TODO sprint items, doc/03-syntax.md, and the grammar spec. The whatif should cover: current pest parser limitations (recursion depth, error recovery, whitespace-sensitivity coupling), iterative parser architecture (StackFrame enum, lexer-level bracket-access disambiguation, explicit stack vs call stack), error recovery and message quality, dual-parser migration path, graduation criteria, and phased adoption trigger. Consolidates the ad-hoc TODO steps into a forward spec that can inform better sprint planning. [Design, grammar-architect]
+- [x] Write `doc/whatif/parser-rewrite.md` — see doc/whatif/parser-rewrite.md. Immediate pest replacement (no co-existence); `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; `BracketAccess` + `ImmediateAt` lexer tokens; AST-based formatter rewrite; 4-phase adoption. Agent-reviewed: computer-scientist (APPROVE). [Design, grammar-architect]
 
-### iterative-parser: Iterative parser (`src/parser2.rs`)
+### parser-lexer: Phase 1 — Lexer Tokens
 
-Explicit `Vec<StackFrame>` for bracket nesting. Atoms and access chains parsed without recursion.
+Add whitespace-sensitive tokens to `src/lexer.rs`. See doc/whatif/parser-rewrite.md §Phase 1.
 
-- [ ] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert (one variant per bracket form)
-- [ ] On `[`: push frame, determine form from first token (keyword detection)
-- [ ] On `]`: pop frame, construct AST node
-- [ ] Between brackets: parse atoms, access chains, annotations (all non-recursive)
-- [ ] Add BracketAccess token to lexer for whitespace-sensitive bracket access detection — currently the lexer emits plain OpenBracket for both `$a[0]` (bracket access) and `$a [0]` (new expression); iterative parser needs lexer-level disambiguation matching pest's compound-atomic ($) rule for bracket_access_chain (`src/lexer.rs`) [Major, computer-scientist]
-- [ ] MAX_DEPTH check on `stack.len()` (policy, not safety)
-- [ ] Static constraints: duplicate keys, variadic rules
-- [ ] Error messages with precise context ("expected value after `:`", "unclosed bracket at line 5")
+- [ ] Add `Token::BracketAccess` — emitted when `[` follows a value-ending token (EscapedRef, Identifier, CloseBracket, QuotedString, Int, Float, BoolLit) with no whitespace gap; detect via `last_significant_token` + span offset comparison (`src/lexer.rs`)
+- [ ] Add `Token::ImmediateAt` — emitted when `@` follows an `Identifier` with no whitespace gap; same detection mechanism (`src/lexer.rs`)
+- [ ] Replace four `has_whitespace_between` call sites in formatter with `Token::BracketAccess` match (`src/formatter.rs`)
+- [ ] Update all `Token::OpenBracket` match sites to handle `BracketAccess` where needed (`src/formatter.rs`, `src/parser.rs`)
 
-### parser-integration: Integration
+### parser-core: Phase 2 — Parser Replacement
 
-- [ ] `parse()` API accepts parser selection (enum or feature flag)
-- [ ] Both parsers produce identical `Spanned<File>` output
-- [ ] Comparison test: parse every corpus file with both parsers, assert AST equality
-- [ ] Benchmark: compare parse time on large inputs
+Replace `src/parser.rs` and `src/grammar.pest` with iterative parser. See doc/whatif/parser-rewrite.md §Phase 2. **Depends on:** `parser-lexer`.
 
-### parser-graduation: Graduation criteria
+- [ ] Implement `Vec<StackFrame>` main loop consuming lexer tokens, returning `ParseOutput` (`src/parser.rs`)
+- [ ] StackFrame enum: Dict, Call, Fn, TypeAlias, TypeAssert, BracketAccessKey — one variant per bracket/access form (`src/parser.rs`)
+- [ ] Add `ParseOutput { file: Spanned<File>, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String> }` (`src/parser.rs`)
+- [ ] On `OpenBracket`: peek first token for form classification (Identifier keyword detection, At for TypeAssert) — push appropriate frame (`src/parser.rs`)
+- [ ] On `BracketAccess`: push BracketAccessKey frame; CloseBracket pops and produces key expression (`src/parser.rs`)
+- [ ] On `ImmediateAt`: handle annotated bare-word rule (`word@annotation`) — no whitespace between Identifier and At (`src/parser.rs`)
+- [ ] MAX_DEPTH check on `stack.len()` before each push — fires before allocation (`src/parser.rs`)
+- [ ] Static constraints inline: duplicate key detection in Dict frame, variadic rules in Fn frame (`src/parser.rs`)
+- [ ] Error messages with bracket context: "unclosed bracket opened at line 5:3", "expected value after `:` at line 7:12" (`src/parser.rs`)
+- [ ] Remove `src/grammar.pest`; remove `pest` and `pest_derive` from `Cargo.toml`
+- [ ] Remove 64 MB worker thread stack workaround — coordinate with `iterative-eval` sprint
+- [ ] All corpus tests pass before landing (corpus suite is the regression suite)
+- [ ] Benchmark parse time on large inputs
 
-- [ ] Full test suite passes (all unit + corpus tests)
-- [ ] AST output matches pest parser on every corpus file
-- [ ] Error messages are equal or better quality
-- [ ] No stack overflow on any nesting depth up to MAX_DEPTH
+### parser-formatter: Phase 3 — AST-Based Formatter
+
+Rewrite `src/formatter.rs` to walk `ParseOutput`. See doc/whatif/parser-rewrite.md §Phase 3. **Depends on:** `parser-core`.
+
+- [ ] Rewrite `src/formatter.rs` as AST walker over `ParseOutput.file`
+- [ ] Emit leading comments via `ParseOutput.leading_comments.get(&node.span.start.offset)` before each node (`src/formatter.rs`)
+- [ ] Emit trailing comments via `ParseOutput.trailing_comments.get(&node.span.start.offset)` after each line (`src/formatter.rs`)
+- [ ] Remove `is_fn_params` heuristic — replaced by AST node type (`src/formatter.rs`)
+- [ ] Remove all remaining `has_whitespace_between` call sites (`src/formatter.rs`)
+- [ ] Remove keyword string comparisons (`BareWord(s) if s == "fn"` etc.) — replaced by AST node type (`src/formatter.rs`)
+- [ ] All 48 existing formatter corpus tests pass with identical output for valid inputs
+
+### parser-error-recovery: Phase 4 — Error Recovery
+
+Extend the iterative parser with bracket-level error recovery. See doc/whatif/parser-rewrite.md §Phase 4. **Depends on:** `parser-core`.
+
+- [ ] Add `Expr::Error(Span)` variant to AST (`src/ast.rs`)
+- [ ] On syntax error inside a bracket form: skip tokens until matching `]` (tracking nesting depth), emit `Expr::Error(span)`, continue parsing (`src/parser.rs`)
+- [ ] Collect all parse errors per file; report together rather than stopping at first
+- [ ] Formatter renders `Expr::Error(Span)` by emitting original source text for the span verbatim (`src/formatter.rs`)
 
 ## include-fd-hardening: fd-Based $include with cap-std
 

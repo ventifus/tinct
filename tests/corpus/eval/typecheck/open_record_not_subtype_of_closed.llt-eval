@@ -1,0 +1,14 @@
+# Open record is NOT a subtype of a closed record (negative direction)
+# Companion to open_record_accepts_closed.llt-eval (which tests the positive direction).
+#
+# f accepts a CLOSED record [x: Int] — no extra fields allowed.
+# g's parameter r has open-record type [x: Int ...] from its annotation.
+# Passing $r to $f inside g must fail: is_subtype(open, closed) = false (Rémy 1994).
+#
+# The eval/typecheck corpus runner (test_typecheck_corpus) is currently disabled
+# (requires typecheck-stdlib-types sprint). The type-error scenario is exercised by
+# test_open_record_not_subtype_of_closed in src/typecheck.rs.
+[f: [fn [r@[type: [x: Int]]] $r]
+ g: [fn [r@[type: [x: Int ...]]] [call $f $r]]]
+===
+TYPE_ERROR: type mismatch
