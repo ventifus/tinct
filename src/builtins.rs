@@ -942,7 +942,7 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let func_val = materialize(&args[0], None, &ctx, depth)?;
+    let func_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
 
     let call_result = match func_val {
         Value::Function {
