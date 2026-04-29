@@ -1767,15 +1767,23 @@ pub fn materialize(
 /// `deep_materialize_thunk` for the dual-purpose semantics.
 pub fn deep_materialize(val: &Value, ctx: &Rc<EvalContext>, depth: usize) -> EvalResult<Value> {
     let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
-    deep_materialize_impl(val, ctx, depth, &mut cache)
+    deep_materialize_impl(val, ctx, depth, &mut cache, 0)
 }
 
 /// Deep-force a value, recursively materializing all thunks in dicts and seqs.
+///
+/// `seq_depth` tracks consecutive Seq tail traversals along the spine. The check
+/// lives inside the `Seq` match arm (not at function entry) so it fires before the
+/// head's `deep_materialize_thunk` call increments `depth`. Without this placement,
+/// the generic `depth > MAX_EVAL_DEPTH` guard would fire first via the head path
+/// (where `seq_depth` is reset to 0), producing a generic error instead of the
+/// targeted "cannot deep-materialize an infinite Seq" message.
 fn deep_materialize_impl(
     val: &Value,
     ctx: &Rc<EvalContext>,
     depth: usize,
     cache: &mut std::collections::HashMap<*const Thunk, Option<Rc<Thunk>>>,
+    seq_depth: usize,
 ) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
         // Span::origin() is correct here: deep_materialize_impl operates on a Value,
@@ -1788,22 +1796,48 @@ fn deep_materialize_impl(
         Value::Dict(map) => {
             let mut result = IndexMap::new();
             for (key, thunk) in map {
-                let deep_thunk = deep_materialize_thunk(thunk, ctx, depth, cache)?;
+                let deep_thunk = deep_materialize_thunk(thunk, ctx, depth, cache, 0)?;
                 result.insert(key.clone(), deep_thunk);
             }
             Ok(Value::Dict(result))
         }
         Value::Seq { head, tail } => {
+            // Seq spine guard: checked before recursing on head or tail so that
+            // infinite sequences (e.g., $iterate, $repeat) get a targeted error
+            // message. This check must live here in the Seq arm, not at the top
+            // of the function, because the head's deep_materialize_thunk call
+            // increments `depth` — if seq_depth were only checked at function
+            // entry, the generic depth guard would fire first (via the head
+            // recursion at depth+1) before the next tail step could trigger it.
+            //
+            // Uses `>=` rather than `>` because `depth` and `seq_depth` are equal
+            // along a flat Seq spine (both start at 0 and increment by 1 per cons
+            // cell via deep_materialize_thunk). The head's recursion through
+            // deep_materialize_thunk adds `depth + 1`, so the generic depth guard
+            // (`depth > MAX_EVAL_DEPTH`) would fire at `depth = MAX_EVAL_DEPTH + 1`
+            // during head processing of the cell where `seq_depth = MAX_EVAL_DEPTH`.
+            // Using `>=` ensures the seq_depth guard fires at the same cell, before
+            // the head is processed.
+            if seq_depth >= MAX_EVAL_DEPTH {
+                return Err(EvalError::resource_limit_exceeded(
+                    "cannot deep-materialize an infinite Seq: use $collect with $take first"
+                        .to_string(),
+                    Span::origin(),
+                )
+                .into());
+            }
             // Seq depth: head and tail are both recursed from the same depth — independent
             // branches, not additive. Total depth consumed is max(head_subtree, tail_subtree).
             //
             // Key asymmetry vs Dict: Seq spine traversal is O(n) in depth (each cons cell's
             // tail passes through deep_materialize_thunk with depth+1), so a flat Seq of N
             // elements reaches depth D+N along the tail spine. Dict traversal is O(1) in
-            // depth — a flat loop with all entries processed at the same level. Infinite
-            // sequences (e.g., $iterate) hit MAX_EVAL_DEPTH before the spine is exhausted.
-            let deep_head = deep_materialize_thunk(head, ctx, depth, cache)?;
-            let deep_tail = deep_materialize_thunk(tail, ctx, depth, cache)?;
+            // depth — a flat loop with all entries processed at the same level.
+            //
+            // seq_depth tracks consecutive Seq tail traversals. The head resets it
+            // to 0 (head is not part of the spine). The tail increments it.
+            let deep_head = deep_materialize_thunk(head, ctx, depth, cache, 0)?;
+            let deep_tail = deep_materialize_thunk(tail, ctx, depth, cache, seq_depth + 1)?;
             Ok(Value::Seq {
                 head: deep_head,
                 tail: deep_tail,
@@ -1811,7 +1845,7 @@ fn deep_materialize_impl(
         }
         Value::Proxy { handler } => {
             // Deep-materialize the handler thunk and return the proxy with the deep handler
-            let deep_handler = deep_materialize_thunk(handler, ctx, depth, cache)?;
+            let deep_handler = deep_materialize_thunk(handler, ctx, depth, cache, 0)?;
             Ok(Value::Proxy {
                 handler: deep_handler,
             })
@@ -1839,6 +1873,7 @@ fn deep_materialize_thunk(
     ctx: &Rc<EvalContext>,
     depth: usize,
     cache: &mut std::collections::HashMap<*const Thunk, Option<Rc<Thunk>>>,
+    seq_depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     let thunk_ptr = Rc::as_ptr(thunk);
     match cache.get(&thunk_ptr) {
@@ -1861,7 +1896,7 @@ fn deep_materialize_thunk(
             return Err(e);
         }
     };
-    let forced = match deep_materialize_impl(&v, ctx, depth + 1, cache) {
+    let forced = match deep_materialize_impl(&v, ctx, depth + 1, cache, seq_depth) {
         Ok(v) => v,
         Err(mut e) => {
             // Clean up sentinel on error to prevent cache poisoning
@@ -5167,7 +5202,9 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_seq_depth_limit() {
-        // Build a deeply nested Seq structure exceeding MAX_EVAL_DEPTH
+        // Build a deeply nested Seq structure exceeding MAX_EVAL_DEPTH.
+        // The seq_depth counter fires before the generic depth limit,
+        // giving a targeted error message for infinite sequences.
         let span = test_span(1, 1, 1, 1);
         let mut current = Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), span));
 
@@ -5182,7 +5219,12 @@ mod tests {
 
         let outer_seq = materialize(&current, None, &test_ctx(), 0).unwrap();
         let err = deep_materialize(&outer_seq, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("maximum evaluation depth exceeded"));
+        assert!(
+            err.message()
+                .contains("cannot deep-materialize an infinite Seq"),
+            "expected infinite Seq error, got: {}",
+            err.message()
+        );
     }
 
     // ── Sharing preservation tests (Launchbury 1993 invariant) ──────────
@@ -5312,7 +5354,7 @@ mod tests {
         cache.insert(thunk_ptr, None);
 
         // Call deep_materialize_thunk with the pre-populated cache
-        let result = deep_materialize_thunk(&thunk, &test_ctx(), 0, &mut cache).unwrap();
+        let result = deep_materialize_thunk(&thunk, &test_ctx(), 0, &mut cache, 0).unwrap();
 
         // Verify the original thunk is returned unchanged (same Rc pointer)
         assert!(

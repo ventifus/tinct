@@ -622,14 +622,18 @@ fn row_var_occurs_in_type_impl(
             // Cycle detection: if we've already visited this TypeVar, return false
             // to prevent infinite recursion on cyclic bindings (impossible under
             // correct occurs-check invariants, but defended against for robustness).
-            if visited.contains(name) {
+            //
+            // Monotone visited set: once a TypeVar is visited, it stays visited.
+            // The occurs-check result is path-independent — if ρ does not occur in
+            // the resolution of α via one path, it won't occur via any other path,
+            // because subst.type_map is deterministic (each name maps to exactly
+            // one type). Removing on backtrack would only cause redundant re-traversal
+            // without changing the result.
+            if !visited.insert(name.clone()) {
                 return false;
             }
             if let Some(bound) = subst.type_map.get(name) {
-                visited.insert(name.clone());
-                let result = row_var_occurs_in_type_impl(var_name, bound, subst, visited);
-                visited.remove(name);
-                result
+                row_var_occurs_in_type_impl(var_name, bound, subst, visited)
             } else {
                 false
             }
@@ -5363,6 +5367,46 @@ mod tests {
         assert!(
             row_var_occurs_in_type("rho", &tv_alpha, &subst),
             "should detect rho through multi-hop TypeVar chase: alpha → beta → rho"
+        );
+    }
+
+    #[test]
+    fn test_row_occurs_visited_set_early_return() {
+        // Exercises the cycle-guard branch in row_var_occurs_in_type_impl:
+        // when a TypeVar has already been visited, the function returns false
+        // immediately rather than recursing into a cycle.
+        //
+        // This tests defense-in-depth: cyclic type_map bindings (alpha → alpha)
+        // should be impossible under correct occurs-check invariants, but the
+        // visited set prevents infinite recursion if they occur.
+        let mut subst = Substitution::new();
+
+        // Create a cyclic binding: alpha → TypeVar("alpha")
+        subst
+            .type_map
+            .insert("alpha".into(), Type::TypeVar("alpha".into(), 0));
+
+        // row_var_occurs_in_type should hit the visited-set early return
+        // on the second encounter of "alpha" and return false (not hang).
+        let tv_alpha = Type::TypeVar("alpha".into(), 0);
+        assert!(
+            !row_var_occurs_in_type("rho", &tv_alpha, &subst),
+            "cyclic TypeVar binding should not cause infinite recursion; \
+             visited set should catch the cycle and return false"
+        );
+
+        // Also test via a field containing the cyclic TypeVar — the visited
+        // set must propagate correctly through row_var_occurs → field iteration
+        // → row_var_occurs_in_type_impl.
+        let mut fields = HashMap::new();
+        fields.insert("x".into(), Type::TypeVar("alpha".into(), 0));
+        let row = Row {
+            fields,
+            tail: RowTail::Empty,
+        };
+        assert!(
+            !row_var_occurs("rho", &row, &subst),
+            "row_var_occurs should handle cyclic TypeVar in field types"
         );
     }
 
