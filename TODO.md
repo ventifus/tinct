@@ -343,18 +343,6 @@ Found by eval-engine codebase review (2026-04-20).
 - [x] Document deep_materialize Seq→Dict terminal case — docstring doesn't explain that Seq tail eventually materializes to empty Dict `[]` as terminal value, and infinite sequences hit MAX_EVAL_DEPTH (`src/eval.rs:1056-1069`) [Minor, eval-engine]
 - [x] Fix deep_materialize breaking Launchbury sharing — creates new `Rc<Thunk>` allocations for every Dict entry/Seq element, so two references that shared the same thunk via `Rc::clone` will have `Rc::ptr_eq` return false after deep_materialize. Only affects `--eval` output path. Fix: maintain `HashMap<*const Thunk, Rc<Thunk>>` during traversal to reuse forced replacements. (`src/eval.rs:1090-1107`) [Minor, computer-scientist]
 
-### float-nan-infinity: Float NaN/Infinity Propagation
-
-Float arithmetic can silently produce NaN or Infinity values that propagate through the evaluator unchecked. Only caught at JSON serialization, far from the cause. Found by computer-scientist codebase review (2026-04-20).
-
-- [x] Decide NaN/Infinity rejection policy — Option B: reject at both arithmetic result sites AND `$from-json` entry. "All floats are finite" invariant. Consistent with `$to-float`, matches Jsonnet/Nickel/CUE consensus for config languages targeting JSON output. See doc/11-stdlib.md §Equality and Comparison Part 5
-- [ ] Add NaN/Infinity result check to `builtin_add` Float path — `a + b` can produce Infinity (`1e308 + 1e308`), reject at point of origin (`src/builtins.rs:210`) [Major, computer-scientist]
-- [ ] Add NaN/Infinity result check to `builtin_sub` Float path — `a - b` can produce Infinity, and `-Inf - (-Inf)` produces NaN (`src/builtins.rs:229`) [Major, computer-scientist]
-- [ ] Add NaN/Infinity result check to `builtin_mul` Float path — `a * b` can produce Infinity (`1e308 * 2.0`) and `0.0 * Inf` produces NaN (`src/builtins.rs:248`) [Major, computer-scientist]
-- [ ] Add NaN/Infinity result check to `builtin_div_float` Float path — `Inf / finite` produces Infinity, `Inf / Inf` and `0.0 / 0.0` produce NaN (only `b == 0.0` is checked) (`src/builtins.rs:270-274`) [Major, computer-scientist]
-- [ ] Add shared `check_float_result(f64, &str, Span)` helper returning error on `is_nan()` or `is_infinite()` (`src/builtins.rs`)
-- [ ] Reject NaN/Infinity in `$from-json` parse path — add `is_finite()` check after `as_f64()` in `json_to_value` Number arm (`src/builtins.rs` json_to_value)
-
 ## perf-stdlib: Performance: Stdlib Rust Reimplementations
 
 Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append` materializing and cloning the growing accumulator IndexMap on every iteration. Sort is O(n^2 log n) because `sort-merge` uses `cons` (O(n)) per element.

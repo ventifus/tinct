@@ -85,6 +85,18 @@ fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> EvalResult<i64> {
     Ok(f as i64)
 }
 
+/// Helper: check that an f64 arithmetic result is finite.
+///
+/// Returns an error if `val` is NaN or infinite (overflow, e.g. `1e308 + 1e308`).
+/// Used by float arithmetic builtins to prevent silent NaN/Infinity propagation.
+fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<Rc<Thunk>> {
+    if !val.is_finite() {
+        Err(EvalError::float_not_finite(op.to_string(), val, span).into())
+    } else {
+        ok_val(Value::Float(val))
+    }
+}
+
 /// Two-operand numeric pair after auto-promotion.
 ///
 /// Used by arithmetic builtins to implement the promotion table:
@@ -193,7 +205,7 @@ fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             .checked_add(b)
             .map(|n| ok_val(Value::Int(n)))
             .unwrap_or_else(|| Err(EvalError::integer_overflow("+".to_string(), call_span).into())),
-        NumPair::Floats(a, b) => ok_val(Value::Float(a + b)),
+        NumPair::Floats(a, b) => check_float_result(a + b, "+", call_span),
     }
 }
 
@@ -213,7 +225,7 @@ fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             .checked_sub(b)
             .map(|n| ok_val(Value::Int(n)))
             .unwrap_or_else(|| Err(EvalError::integer_overflow("-".to_string(), call_span).into())),
-        NumPair::Floats(a, b) => ok_val(Value::Float(a - b)),
+        NumPair::Floats(a, b) => check_float_result(a - b, "-", call_span),
     }
 }
 
@@ -233,7 +245,7 @@ fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             .checked_mul(b)
             .map(|n| ok_val(Value::Int(n)))
             .unwrap_or_else(|| Err(EvalError::integer_overflow("*".to_string(), call_span).into())),
-        NumPair::Floats(a, b) => ok_val(Value::Float(a * b)),
+        NumPair::Floats(a, b) => check_float_result(a * b, "*", call_span),
     }
 }
 
@@ -260,7 +272,7 @@ fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             if b == 0.0 {
                 Err(EvalError::division_by_zero("/".to_string(), call_span).into())
             } else {
-                ok_val(Value::Float(a / b))
+                check_float_result(a / b, "/", call_span)
             }
         }
     }
@@ -1075,7 +1087,14 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
             if let Some(i) = n.as_i64() {
                 ok_val(Value::Int(i))
             } else if let Some(f) = n.as_f64() {
-                ok_val(Value::Float(f))
+                if !f.is_finite() {
+                    // JSON does not support NaN or Infinity, but some parsers
+                    // (or manual serde_json::Number construction) can produce
+                    // non-finite values. Reject them explicitly.
+                    Err(EvalError::float_not_finite("from-json".to_string(), f, span).into())
+                } else {
+                    ok_val(Value::Float(f))
+                }
             } else {
                 // Unreachable with default serde_json: as_f64() covers all
                 // non-i64 numbers. Return error instead of panicking.
@@ -5316,6 +5335,21 @@ mod tests {
     }
 
     #[test]
+    fn from_json_finite_float_accepted() {
+        // serde_json::Number::from_f64 returns None for NaN/Inf, so we cannot
+        // construct a non-finite serde_json Number through the public API.
+        // The is_finite() guard in json_to_value is defensive against
+        // non-standard parsers or direct serde_json::Number construction.
+        // Verify that a normal finite float passes through correctly.
+        let result = mat(json_to_value(
+            &serde_json::Value::Number(serde_json::Number::from_f64(3.14).expect("finite")),
+            0,
+            call_span(),
+        ));
+        assert_eq!(result, Value::Float(3.14));
+    }
+
+    #[test]
     fn keys_empty_dict() {
         let dict = thunk_dict(IndexMap::new());
         let result = mat(builtin_keys(BuiltinArgs {
@@ -8008,6 +8042,85 @@ mod tests {
         .unwrap_err();
         assert!(
             err.message().contains("integer overflow"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn add_float_overflow_to_infinity_is_error() {
+        let err = builtin_add(BuiltinArgs {
+            args: &[thunk(Value::Float(1e308)), thunk(Value::Float(1e308))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("is not a finite"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn sub_float_nan_is_error() {
+        // f64::INFINITY - f64::INFINITY = NaN
+        let err = builtin_sub(BuiltinArgs {
+            args: &[
+                thunk(Value::Float(f64::INFINITY)),
+                thunk(Value::Float(f64::INFINITY)),
+            ],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("is not a finite"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn mul_float_overflow_to_infinity_is_error() {
+        let err = builtin_mul(BuiltinArgs {
+            args: &[thunk(Value::Float(1e308)), thunk(Value::Float(10.0))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("is not a finite"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn div_float_nan_result_is_error() {
+        // 0.0 / 0.0 produces NaN; the existing b==0.0 guard catches b==0.0,
+        // but this test documents that NaN results from non-zero / 0-adjacent
+        // ops are also caught. Use f64::NAN inputs via Float values directly:
+        // f64::INFINITY / f64::INFINITY = NaN
+        let err = builtin_div_float(BuiltinArgs {
+            args: &[
+                thunk(Value::Float(f64::INFINITY)),
+                thunk(Value::Float(f64::INFINITY)),
+            ],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("is not a finite"),
             "got: {}",
             err.message()
         );
