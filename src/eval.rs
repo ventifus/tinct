@@ -746,18 +746,23 @@ fn eval_call(
             ))
         })
         .collect();
-    let mut named_thunks = IndexMap::new();
-    for na in named_args {
-        named_thunks.insert(
-            na.node.name.clone(),
-            Rc::new(Thunk::new_unevaluated(
-                Rc::new(na.node.value.clone()),
-                Rc::clone(env),
-                Rc::clone(ctx),
-                na.node.value.span,
-            )),
-        );
-    }
+    let named_thunks = if named_args.is_empty() {
+        IndexMap::new()
+    } else {
+        let mut m = IndexMap::with_capacity(named_args.len());
+        for na in named_args {
+            m.insert(
+                na.node.name.clone(),
+                Rc::new(Thunk::new_unevaluated(
+                    Rc::new(na.node.value.clone()),
+                    Rc::clone(env),
+                    Rc::clone(ctx),
+                    na.node.value.span,
+                )),
+            );
+        }
+        m
+    };
 
     let label = func_label(&func_expr.node);
 

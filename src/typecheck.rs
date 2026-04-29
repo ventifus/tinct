@@ -583,8 +583,13 @@ fn check_expr(
     // Apply state.subst to both types before comparison — access-chain constraints
     // may have bound TypeVars in state.subst. Without substitution, the comparison
     // uses stale TypeVars.
-    let actual = state.subst.apply(&actual);
-    let expected_resolved = state.subst.apply(expected);
+    // Guard: skip allocation when subst is empty (common case for concrete programs).
+    let (actual, expected_resolved) =
+        if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+            (actual, expected.clone())
+        } else {
+            (state.subst.apply(&actual), state.subst.apply(expected))
+        };
     if !Type::is_subtype(&actual, &expected_resolved) {
         Err(vec![TypeError::type_mismatch(
             &expected_resolved,
@@ -965,8 +970,13 @@ fn check_bracket_access(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let target_ty = infer_expr(target, env, state, type_map)?;
-    // Apply the global accumulated substitution (same pattern as check_dot_access)
-    let target_ty = state.subst.apply(&target_ty);
+    // Apply the global accumulated substitution (same pattern as check_dot_access).
+    // Guard: skip allocation when subst is empty (common case for concrete programs).
+    let target_ty = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+        target_ty
+    } else {
+        state.subst.apply(&target_ty)
+    };
     let key_ty = infer_expr(key, env, state, type_map)?;
 
     // Extract the string-literal field name from the key expression (if statically known).
@@ -1086,8 +1096,13 @@ fn check_range_access(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let target_ty = infer_expr(target, env, state, type_map)?;
-    // Apply the global accumulated substitution (same pattern as check_dot_access)
-    let target_ty = state.subst.apply(&target_ty);
+    // Apply the global accumulated substitution (same pattern as check_dot_access).
+    // Guard: skip allocation when subst is empty (common case for concrete programs).
+    let target_ty = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+        target_ty
+    } else {
+        state.subst.apply(&target_ty)
+    };
 
     for bound in [start, end].into_iter().flatten() {
         let bound_ty = infer_expr(bound, env, state, type_map)?;
@@ -1570,8 +1585,13 @@ fn resolve_type_assert(
                 // Apply state.subst to both types before comparison — access-chain constraints
                 // may have bound TypeVars in state.subst (e.g., $data.name generates row-variable
                 // bindings). Without substitution, the comparison uses stale TypeVars.
-                let default_ty = state.subst.apply(&default_ty);
-                let expected_resolved = state.subst.apply(&expected);
+                // Guard: skip allocation when subst is empty (common case for concrete programs).
+                let (default_ty, expected_resolved) =
+                    if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                        (default_ty, expected.clone())
+                    } else {
+                        (state.subst.apply(&default_ty), state.subst.apply(&expected))
+                    };
                 if !Type::is_subtype(&default_ty, &expected_resolved) {
                     return Err(vec![TypeError::new(
                         format!(
@@ -1592,7 +1612,12 @@ fn resolve_type_assert(
     // Apply substitution before returning to ensure bound type variables are resolved.
     // The expected type may contain TypeVars that were bound during checking mode or
     // access-chain inference (e.g., check_dot_access binds row variables).
-    let expected = state.subst.apply(&expected);
+    // Guard: skip allocation when subst is empty (common case for concrete programs).
+    let expected = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+        expected
+    } else {
+        state.subst.apply(&expected)
+    };
 
     // Store the substitution-applied type in the AST node for runtime validation (elaboration).
     // INVARIANT: resolved_type is write-once (parser initializes to None, typecheck sets it once).
