@@ -1054,9 +1054,14 @@ fn eval_dot_access(
             // Use StrKey wrapper to avoid allocating Key::String
             match map.get(&crate::value::StrKey(field)) {
                 Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(EvalError::key_not_found(field, target_thunk.span)
-                    .with_materialization_span(*access_span)
-                    .into()),
+                None => {
+                    let available_keys: Vec<String> = map.keys().map(|k| k.to_string()).collect();
+                    Err(
+                        EvalError::key_not_found(field, available_keys, target_thunk.span)
+                            .with_materialization_span(*access_span)
+                            .into(),
+                    )
+                }
             }
         }
         Value::Proxy { handler } => invoke_proxy_handler(
@@ -1099,11 +1104,16 @@ fn eval_bracket_access(
             let key = eval_key(key_expr, env, ctx, depth)?;
             match map.get(&key) {
                 Some(thunk) => Ok(Rc::clone(thunk)),
-                None => Err(
-                    EvalError::key_not_found(&key.to_string(), target_thunk.span)
-                        .with_materialization_span(*access_span)
-                        .into(),
-                ),
+                None => {
+                    let available_keys: Vec<String> = map.keys().map(|k| k.to_string()).collect();
+                    Err(EvalError::key_not_found(
+                        &key.to_string(),
+                        available_keys,
+                        target_thunk.span,
+                    )
+                    .with_materialization_span(*access_span)
+                    .into())
+                }
             }
         }
         Value::Proxy { handler } => {
