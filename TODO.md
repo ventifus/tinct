@@ -485,8 +485,8 @@ User-facing error presentation improvements.
 Minor wording and span improvements.
 
 - [x] Improve document pipeline non-Dict error message — now uses type_mismatch_ctx("document pipeline", ...) for clear user-facing context (`src/eval.rs`) [Minor, eval-engine]
-- [ ] Fix `Span::origin()` used for non-origin errors — create separate span constructors for runtime limits and default inputs (`src/eval.rs:923, 292`) [Minor, span-integrity-checker]
-- [ ] Add call-site span to depth limit errors — currently lacks stack frame attachment (`src/eval.rs:812-820`) [Minor, span-integrity-checker]
+- [x] Fix `Span::origin()` used for non-origin errors — validate_and_wrap_record now uses data_span not guard_span; data_span fallback to origin documented (`src/eval.rs`) [Minor, span-integrity-checker]
+- [x] Add call-site span to depth limit errors — deep_materialize_thunk now passes Some(&thunk_span) to materialize and adds "deep-materializing" frame (`src/eval.rs`) [Minor, span-integrity-checker]
 - [ ] Enhance "materialized at" error message to distinguish access vs call sites (`src/error.rs:85-86`) [Minor, span-integrity-checker]
 - [x] Change unification error wording — TypeError message now "cannot unify {expected} with {got}"; 15 test assertions updated (`src/types.rs`, `src/typecheck.rs`) [Minor, type-theorist]
 - [x] Improve Fn type expression error message for keyed params — now "function type parameter at position N: expected a type name, got key 'X'" (`src/typecheck.rs`) [Minor, type-theorist]
