@@ -1,0 +1,6 @@
+# $error: accessing a dict entry that calls $error propagates the error (E080)
+[x: [call $error "custom message"]]
+---
+$$.x
+===
+[E080] custom message

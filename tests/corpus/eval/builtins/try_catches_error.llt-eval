@@ -1,0 +1,4 @@
+# try: catching an error raised by $error returns [err: message]
+[call $try [fn [] [call $error "caught"]]]
+===
+Dict({"err": String("caught")})

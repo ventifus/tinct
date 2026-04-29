@@ -1,0 +1,6 @@
+# Lazy evaluation: $map on Seq does not apply the function until elements are accessed.
+# $take 0 returns nothing — if map were eager the $error would fire, but it's lazy so
+# the function is never called and the result is an empty dict.
+[call $take 0 [call $map [fn [x] [call $error "forced eagerly"]] [call $range 0 3]]]
+===
+Dict({})
