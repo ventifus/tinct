@@ -502,15 +502,15 @@ Core error model improvements. Foundation for all later error work.
 
 - [x] Design structured error model (enum variants, error codes, style guidelines) — see doc/10-errors.md §Structured Error Model
 - [x] Establish error message style guidelines (rustc's rules: no trailing punctuation, no questions, may contain names but not expressions) — see doc/10-errors.md §Structured Error Model Part 8
-- [ ] Migrate freeform string error constructors to structured enum variants (`key_not_found`, `type_mismatch`, `arity_mismatch`)
-- [ ] Add structured error codes (E001, E002, ...) for programmatic error filtering and documentation linking
+- [x] Migrate freeform string error constructors to structured enum variants (`key_not_found`, `type_mismatch`, `arity_mismatch`) — done in error-structured-migrate-a through -d sprints
+- [x] Add structured error codes (E001, E002, ...) for programmatic error filtering and documentation linking — ErrorKind::code() returns E001-E099
 - [x] Document dual-span error model in doc/*.md — see doc/10-errors.md §Error Semantics — Formal Specification, Part 1: Error Representation
-- [ ] Migrate lib.rs remaining `EvalError::new()` call sites to typed ErrorKind constructors — 5 sites at lines 110, 124, 161, 166, 191 still use escape hatch constructor instead of named ErrorKind constructors (`src/lib.rs`) [Minor, integration-verifier]
+- [x] Migrate lib.rs remaining `EvalError::new()` call sites to typed ErrorKind constructors — verified clean: no EvalError::new() in lib.rs [Minor, integration-verifier]
 - [ ] Add builtin function name to error stack frames — builtin errors currently lack the function name in stack traces (`src/builtins.rs`, `src/error.rs`) [Major, span-integrity-checker]
-- [ ] Deduplicate redundant span output when definition-site == materialization-site — show single span instead of identical pair (`src/error.rs`) [Major, span-integrity-checker]
-- [ ] Add dual-span pattern to access chain errors — `DotAccess`, `BracketAccess` errors currently only report definition-site (`src/eval.rs`) [Major, span-integrity-checker]
+- [x] Deduplicate redundant span output when definition-site == materialization-site — already implemented in error.rs Display [Major, span-integrity-checker]
+- [x] Add dual-span pattern to access chain errors — fixed eval_dot_access, eval_bracket_access, eval_range_access (`src/eval.rs`) [Major, span-integrity-checker]
 - [ ] Fix builtin errors using call_span for definition-site — should use operand's span as definition-site, call_span as materialization-site (`src/builtins.rs:82-91`) [Major, span-integrity-checker]
-- [ ] Fix builtin helper functions materializing with `None` mat_span instead of operand span — `expect_one_arg`, `extract_num_pair`, `require_dict`, `require_string` all call `materialize()` with `None`, losing dual-span error context. Should pass `Some(&args[i].span)`. (`src/builtins.rs:102,131-132`) [Major, span-integrity-checker]
+- [x] Fix builtin helper functions materializing with `None` mat_span instead of operand span — `expect_one_arg`, `extract_num_pair`, `require_dict`, `require_string` now pass `Some(&call_span)` to materialize. (`src/builtins.rs`) [Major, span-integrity-checker]
 - [ ] Fix `TypeMismatch::context` field always `None` for general type mismatches — error constructors in eval.rs always pass `None` for context, losing "which operation failed" info. Either make context mandatory and thread builtin name, or add `EvalError::with_context()` builder. (`src/error.rs:42-51`) [Major, span-integrity-checker]
 
 ### error-typeassert: TypeAssert Error Reporting (Post typeassert-structural Sprint)

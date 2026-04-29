@@ -66,7 +66,7 @@ fn expect_one_arg(
     if !named.is_empty() {
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
-    materialize(&args[0], None, ctx, depth)
+    materialize(&args[0], Some(&call_span), ctx, depth)
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
@@ -119,17 +119,18 @@ fn extract_num_pair(
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], None, ctx, depth)?;
-    let right = materialize(&args[1], None, ctx, depth)?;
+    let left = materialize(&args[0], Some(&call_span), ctx, depth)?;
+    let right = materialize(&args[1], Some(&call_span), ctx, depth)?;
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => Ok(NumPair::Ints(*a, *b)),
         (Value::Int(a), Value::Float(b)) => Ok(NumPair::Floats(*a as f64, *b)),
         (Value::Float(a), Value::Int(b)) => Ok(NumPair::Floats(*a, *b as f64)),
         (Value::Float(a), Value::Float(b)) => Ok(NumPair::Floats(*a, *b)),
-        _ => Err(EvalError::type_mismatch(
+        _ => Err(EvalError::type_mismatch_ctx(
+            "+/-/*//".to_string(),
             "Int or Float",
             &format!("{} and {}", left.type_name(), right.type_name()),
-            call_span,
+            args[0].span,
         )
         .into()),
     }
@@ -150,28 +151,30 @@ fn stringify(value: &Value) -> String {
 }
 
 /// Helper: require that a materialized value is a Dict, returning the inner IndexMap.
-fn require_dict(name: &str, value: Value, call_span: Span) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
+/// `def_span` should be the thunk's span (where the value was defined), not call_span.
+fn require_dict(name: &str, value: Value, def_span: Span) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "Dict",
             other.type_name(),
-            call_span,
+            def_span,
         )
         .into()),
     }
 }
 
 /// Helper: require that a materialized value is a String, returning the inner String.
-fn require_string(name: &str, value: Value, call_span: Span) -> EvalResult<String> {
+/// `def_span` should be the thunk's span (where the value was defined), not call_span.
+fn require_string(name: &str, value: Value, def_span: Span) -> EvalResult<String> {
     match value {
         Value::String(s) => Ok(s),
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "String",
             other.type_name(),
-            call_span,
+            def_span,
         )
         .into()),
     }
@@ -204,7 +207,10 @@ fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_add(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::integer_overflow("+".to_string(), call_span).into())),
+            .unwrap_or_else(|| {
+                // Overflow error: def_span is call_span (the + operation itself)
+                Err(EvalError::integer_overflow("+".to_string(), call_span).into())
+            }),
         NumPair::Floats(a, b) => check_float_result(a + b, "+", call_span),
     }
 }
@@ -224,7 +230,10 @@ fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::integer_overflow("-".to_string(), call_span).into())),
+            .unwrap_or_else(|| {
+                // Overflow error: def_span is call_span (the - operation itself)
+                Err(EvalError::integer_overflow("-".to_string(), call_span).into())
+            }),
         NumPair::Floats(a, b) => check_float_result(a - b, "-", call_span),
     }
 }
@@ -244,7 +253,10 @@ fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
             .map(|n| ok_val(Value::Int(n)))
-            .unwrap_or_else(|| Err(EvalError::integer_overflow("*".to_string(), call_span).into())),
+            .unwrap_or_else(|| {
+                // Overflow error: def_span is call_span (the * operation itself)
+                Err(EvalError::integer_overflow("*".to_string(), call_span).into())
+            }),
         NumPair::Floats(a, b) => check_float_result(a * b, "*", call_span),
     }
 }
@@ -295,8 +307,8 @@ fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], None, &ctx, depth)?;
-    let right = materialize(&args[1], None, &ctx, depth)?;
+    let left = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx, depth)?;
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a == b,
@@ -329,8 +341,8 @@ fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], None, &ctx, depth)?;
-    let right = materialize(&args[1], None, &ctx, depth)?;
+    let left = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx, depth)?;
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a < b,
@@ -341,10 +353,11 @@ fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         (Value::Int(a), Value::Float(b)) => (*a as f64) < *b,
         (Value::Float(a), Value::Int(b)) => *a < (*b as f64),
         _ => {
-            return Err(EvalError::type_mismatch(
+            return Err(EvalError::type_mismatch_ctx(
+                "<".to_string(),
                 "Int, Float, String, or Bool (same or compatible types)",
                 &format!("{} and {}", left.type_name(), right.type_name()),
-                call_span,
+                args[0].span,
             )
             .into());
         }
@@ -372,12 +385,18 @@ fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     // Materialize only the condition
-    let condition = materialize(&args[0], None, &ctx, depth)?;
+    let condition = materialize(&args[0], Some(&call_span), &ctx, depth)?;
 
     match condition {
         Value::Bool(true) => Ok(Rc::clone(&args[1])),
         Value::Bool(false) => Ok(Rc::clone(&args[2])),
-        _ => Err(EvalError::type_mismatch("Bool", condition.type_name(), call_span).into()),
+        _ => Err(EvalError::type_mismatch_ctx(
+            "if".to_string(),
+            "Bool",
+            condition.type_name(),
+            args[0].span,
+        )
+        .into()),
     }
 }
 
@@ -397,8 +416,8 @@ fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], None, &ctx, depth)?;
-    let map = require_dict("keys", val, call_span)?;
+    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let map = require_dict("keys", val, args[0].span)?;
 
     let origin = call_span;
     let mut result = IndexMap::with_capacity(map.len());
@@ -429,8 +448,8 @@ fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], None, &ctx, depth)?;
-    let map = require_dict("length", val, call_span)?;
+    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let map = require_dict("length", val, args[0].span)?;
     ok_val(Value::Int(map.len() as i64))
 }
 
@@ -450,10 +469,10 @@ fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left_val = materialize(&args[0], None, &ctx, depth)?;
-    let right_val = materialize(&args[1], None, &ctx, depth)?;
-    let left = require_dict("merge", left_val, call_span)?;
-    let right = require_dict("merge", right_val, call_span)?;
+    let left_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let right_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let left = require_dict("merge", left_val, args[0].span)?;
+    let right = require_dict("merge", right_val, args[1].span)?;
 
     // TODO: left+right over-allocates when keys overlap; max under-allocates when they don't.
     // Investigate a better heuristic (e.g., left + right/2) if merge becomes a hot path.
@@ -488,8 +507,8 @@ fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let dict_val = materialize(&args[0], None, &ctx, depth)?;
-    let mut map = require_dict("append", dict_val, call_span)?;
+    let dict_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let mut map = require_dict("append", dict_val, args[0].span)?;
 
     // Compute the next integer key: max existing int key + 1, or 0 if none.
     let next_key = map
@@ -526,7 +545,7 @@ fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     reject_named("str", named, call_span)?;
     let mut result = String::new();
     for arg in args {
-        let val = materialize(arg, None, &ctx, depth)?;
+        let val = materialize(arg, Some(&call_span), &ctx, depth)?;
         result.push_str(&stringify(&val));
     }
     ok_val(Value::String(result))
@@ -549,11 +568,11 @@ fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let sep_val = materialize(&args[0], None, &ctx, depth)?;
-    let input_val = materialize(&args[1], None, &ctx, depth)?;
+    let sep_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let input_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
 
-    let sep = require_string("split", sep_val, call_span)?;
-    let input = require_string("split", input_val, call_span)?;
+    let sep = require_string("split", sep_val, args[0].span)?;
+    let input = require_string("split", input_val, args[1].span)?;
 
     // Bound allocation before the guard fires: take at most MAX_SPLIT_PARTS + 1 entries
     // so that adversarial input (e.g., splitting a large string by empty separator) cannot
@@ -604,13 +623,13 @@ fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
-    let pattern_val = materialize(&args[0], None, &ctx, depth)?;
-    let replacement_val = materialize(&args[1], None, &ctx, depth)?;
-    let input_val = materialize(&args[2], None, &ctx, depth)?;
+    let pattern_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let replacement_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let input_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
 
-    let pattern = require_string("replace", pattern_val, call_span)?;
-    let replacement = require_string("replace", replacement_val, call_span)?;
-    let input = require_string("replace", input_val, call_span)?;
+    let pattern = require_string("replace", pattern_val, args[0].span)?;
+    let replacement = require_string("replace", replacement_val, args[1].span)?;
+    let input = require_string("replace", input_val, args[2].span)?;
 
     // Pre-check output size to prevent memory exhaustion.
     // Empty pattern inserts replacement between every character.
@@ -659,7 +678,7 @@ fn builtin_upper(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("upper", args, named, &ctx, depth, call_span)?;
-    let s = require_string("upper", val, call_span)?;
+    let s = require_string("upper", val, args[0].span)?;
     // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
     if s.len() > MAX_STRING_SIZE {
         return Err(EvalError::resource_limit_exceeded(
@@ -700,7 +719,7 @@ fn builtin_lower(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("lower", args, named, &ctx, depth, call_span)?;
-    let s = require_string("lower", val, call_span)?;
+    let s = require_string("lower", val, args[0].span)?;
     // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
     if s.len() > MAX_STRING_SIZE {
         return Err(EvalError::resource_limit_exceeded(
@@ -743,7 +762,7 @@ fn builtin_trim(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("trim", args, named, &ctx, depth, call_span)?;
-    let s = require_string("trim", val, call_span)?;
+    let s = require_string("trim", val, args[0].span)?;
     ok_val(Value::String(s.trim().to_string()))
 }
 
@@ -767,11 +786,17 @@ fn float_to_int_builtin(
         Value::Int(n) => ok_val(Value::Int(n)),
         Value::Float(f) => {
             if !f.is_finite() {
-                return Err(EvalError::float_not_finite(name.to_string(), f, call_span).into());
+                return Err(EvalError::float_not_finite(name.to_string(), f, args[0].span).into());
             }
             ok_val(Value::Int(checked_f64_to_i64(name, op(f), call_span)?))
         }
-        other => Err(EvalError::type_mismatch("Int or Float", other.type_name(), call_span).into()),
+        other => Err(EvalError::type_mismatch_ctx(
+            name.to_string(),
+            "Int or Float",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
     }
 }
 
