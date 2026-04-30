@@ -1,0 +1,4 @@
+# floor: float out of i64 range produces FloatOutOfRange error (E036)
+[call $floor 10000000000000000000.0]
+===
+[E036]

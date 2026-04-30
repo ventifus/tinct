@@ -76,11 +76,7 @@ fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> EvalResult<i64> {
         return Err(EvalError::float_not_finite(name.to_string(), f, call_span).into());
     }
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
-        return Err(EvalError::integer_overflow(
-            format!("{name}: {f} is out of i64 range"),
-            call_span,
-        )
-        .into());
+        return Err(EvalError::float_out_of_range(name.to_string(), f, call_span).into());
     }
     Ok(f as i64)
 }
@@ -3528,7 +3524,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integer overflow"),
+            err.message().contains("out of range for Int"),
             "got: {}",
             err.message()
         );
@@ -3545,7 +3541,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integer overflow"),
+            err.message().contains("out of range for Int"),
             "got: {}",
             err.message()
         );
@@ -3813,7 +3809,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integer overflow"),
+            err.message().contains("out of range for Int"),
             "got: {}",
             err.message()
         );
@@ -3830,7 +3826,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integer overflow"),
+            err.message().contains("out of range for Int"),
             "got: {}",
             err.message()
         );

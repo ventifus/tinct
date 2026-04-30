@@ -47,7 +47,7 @@ safe: [call $try-or [fn [] [call $/ 1 0]] 0]   # → 0
 
 **What `$try` catches:** Errors from evaluating the function's body. Errors from materializing the function itself (e.g., if the function argument is a broken thunk) are *not* caught — they propagate to `$try`'s caller.
 
-**Uncatchable errors:** `DepthExceeded` errors are not catchable by `$try` — they propagate through `$try` to the caller. Depth limit exhaustion is a resource boundary condition that must halt evaluation, not be masked by error handling. See `is_catchable()` in the Error Semantics formal specification below.
+**Uncatchable errors:** `DepthExceeded` and `ResourceLimitExceeded` errors are not catchable by `$try` — they propagate through `$try` to the caller. Resource limit exhaustion is a boundary condition that must halt evaluation, not be masked by error handling. See `is_catchable()` in the Error Semantics formal specification below.
 
 **`$try-or`** is a stdlib convenience: `[call $try-or [fn [] expr] default]` returns `default` if `expr` fails.
 
@@ -91,19 +91,21 @@ All errors are constructed via `EvalError` methods that create an error with a s
 | `integer_overflow(op, span)` | `IntegerOverflow { op }` | `"{op}: integer overflow"` | Arithmetic expression |
 | `division_by_zero(op, span)` | `DivisionByZero { op }` | `"{op}: division by zero"` | Division expression |
 | `float_not_finite(builtin, value, span)` | `FloatNotFinite { builtin, value }` | `"{builtin}: {value} is not a finite number"` | Builtin call expression |
+| `float_out_of_range(builtin, value, span)` | `FloatOutOfRange { builtin, value }` | `"{builtin}: {value} is out of range for Int"` | Builtin call expression |
 | `empty_collection(op, span)` | `EmptyCollection { op }` | `"{op} on empty collection"` | Builtin call expression |
 | `named_arg_rejected(builtin, span)` | `NamedArgRejected { builtin }` | `"{builtin} does not accept named arguments"` | Call expression |
+| `resource_limit_exceeded(message, span)` | `ResourceLimitExceeded { message }` | `"{message}"` (caller-provided) | Resource-checking site |
 | `internal(message, span)` | `Internal { message }` | `"{message}"` (implementation-defined) | Context-dependent |
 
 See `src/error.rs` for the full set of `ErrorKind` variants and their constructors. The table above shows representative error constructors; additional variants not listed include: `UndefinedVariable`, `TypeAssertFailed`, `NamedArgConflict`, `UnknownNamedArg`, `DuplicateKey`, `ValueNotSerializable`, `JsonDepthExceeded`, `IncludeForbidden`, `IncludeNotAvailable`, `IncludeIoError`, `IncludeCycle`, `IncludeParseFailed`, `IncludeFileTooLarge`, `ParseConversion`, `JsonParse`, and `JsonRange`.
 
 **Special error properties:**
 
-- **`DepthExceeded` is not catchable:** `$try` does not catch `DepthExceeded` errors — they propagate to the runtime. Resource limit errors like stack overflow should not be suppressible by user code (follows GHC's `StackOverflow` and Racket's `exn:fail:resource` semantics). The `is_catchable()` method returns `false` for `DepthExceeded`, `true` for all other variants.
+- **`DepthExceeded` and `ResourceLimitExceeded` are not catchable:** `$try` does not catch `DepthExceeded` or `ResourceLimitExceeded` errors — they propagate to the runtime. Resource limit errors like stack overflow should not be suppressible by user code (follows GHC's `StackOverflow` and Racket's `exn:fail:resource` semantics). The `is_catchable()` method returns `false` for these variants, `true` for all others.
 
-- **`DepthExceeded` is not cacheable:** Failed thunk state does not cache `DepthExceeded` errors — a thunk that fails at one depth may succeed at a shallower depth. The `is_cacheable()` method returns `false` for `DepthExceeded`, `true` for all other variants. This implements the PROP-DEPTH non-memoization rule from Part 5.
+- **`DepthExceeded` is not cacheable:** Failed thunk state does not cache `DepthExceeded` errors — a thunk that fails at one depth may succeed at a shallower depth. The `is_cacheable()` method returns `false` for `DepthExceeded`, `true` for all other variants (including `ResourceLimitExceeded`, which is cacheable because resource limits are absolute, not context-dependent). This implements the PROP-DEPTH non-memoization rule from Part 5.
 
-- **`IncludeForbidden` is catchable (intentional):** Unlike `DepthExceeded`, the `IncludeForbidden` error (E042, raised when `$include` is called in `--no-fs` mode) is catchable via `$try`. This follows the Nix `tryEval` model — programs can gracefully degrade when filesystem access is unavailable (e.g., falling back to embedded defaults when external config files cannot be loaded). The tradeoff is that an attacker can detect `--no-fs` mode by wrapping `$include` in `$try` and observing whether it returns `[err: "filesystem access is disabled (--no-fs)"]`. This is accepted because the alternative (making `IncludeForbidden` uncatchable) would prevent legitimate graceful degradation patterns. Programs that need to behave identically regardless of sandbox mode should avoid filesystem access entirely, rather than relying on `IncludeForbidden` being undetectable.
+- **`IncludeForbidden` is catchable (intentional):** Unlike `DepthExceeded` and `ResourceLimitExceeded`, the `IncludeForbidden` error (E042, raised when `$include` is called in `--no-fs` mode) is catchable via `$try`. This follows the Nix `tryEval` model — programs can gracefully degrade when filesystem access is unavailable (e.g., falling back to embedded defaults when external config files cannot be loaded). The tradeoff is that an attacker can detect `--no-fs` mode by wrapping `$include` in `$try` and observing whether it returns `[err: "filesystem access is disabled (--no-fs)"]`. This is accepted because the alternative (making `IncludeForbidden` uncatchable) would prevent legitimate graceful degradation patterns. Programs that need to behave identically regardless of sandbox mode should avoid filesystem access entirely, rather than relying on `IncludeForbidden` being undetectable.
 
 ### Part 3: Error Decoration
 
@@ -355,12 +357,14 @@ This section specifies the structured representation that replaces the freeform 
 
 ### Motivation
 
-The current `EvalError` carries `message: String` as its primary payload. Of ~130 error construction sites, 85 use the freeform `EvalError::new(message, span)` constructor. This prevents:
+The `EvalError` struct uses a structured `ErrorKind` enum with 31 domain-specific variants (see Part 1: Variant Catalog above) instead of a freeform `message: String` field. This structured approach provides:
 
-1. **Programmatic error identity** — tests match substrings; tooling cannot branch on error kind.
-2. **Structured data extraction** — `"key not found: foo"` buries the key name in the message; "did you mean?" suggestions require parsing it back out.
-3. **Error codes** — no stable identifiers for `tinct explain` or documentation linking.
-4. **Multi-format rendering** — message text is baked into construction sites, blocking JSON output, LSP diagnostics, and format-independent rendering.
+1. **Programmatic error identity** — tests and tooling can branch on error kind via pattern matching.
+2. **Structured data extraction** — domain-specific fields (e.g., `key` in `KeyNotFound`, `available_keys` for suggestions) are directly accessible.
+3. **Error codes** — stable identifiers (E001–E099) enable `tinct explain` and documentation linking.
+4. **Multi-format rendering** — error data is separated from presentation, supporting JSON output, LSP diagnostics, and format-independent rendering.
+
+The structured error model is fully implemented. The 46 builtins in `standard_builtins()` and 61+ corpus error tests comprehensively exercise the error variants.
 
 ### Design: `ErrorKind` Enum
 
@@ -414,6 +418,12 @@ pub enum ErrorKind {
     /// and cannot be converted to Int or used in contexts requiring finite floats.
     FloatNotFinite { builtin: String, value: f64 },
     EmptyCollection { op: String },
+    /// Runtime value type cannot be serialized to JSON (Function, Builtin, Seq, Proxy).
+    /// `value_type` is the user-facing type name (e.g., "Function", "Proxy").
+    ValueNotSerializable { value_type: String },
+    /// Float-to-int conversion failed: value is finite but outside i64 range.
+    /// Distinct from `FloatNotFinite` (which rejects NaN/Infinity).
+    FloatOutOfRange { builtin: String, value: f64 },
 
     // --- Limit errors (E040-E049) ---
     /// Evaluation depth limit (recursive thunk forcing).
@@ -423,6 +433,10 @@ pub enum ErrorKind {
     JsonDepthExceeded { limit: usize },
     /// Filesystem access forbidden in `--no-fs` mode.
     IncludeForbidden,
+    /// Resource limit exceeded (collection size, string size, etc.).
+    /// Like `DepthExceeded`, this is non-catchable — resource limits are
+    /// safety boundaries, not application-level errors.
+    ResourceLimitExceeded { message: String },
 
     // --- Include errors (E050-E059) ---
     IncludeNotAvailable,
@@ -455,7 +469,6 @@ The `ArityBound` type expresses flexible arity constraints:
 #[derive(Debug, Clone, PartialEq)]
 pub enum ArityBound {
     Exact(usize),
-    AtMost(usize),
     Range(usize, usize),
 }
 ```
@@ -467,6 +480,7 @@ pub enum ArityBound {
 - **`context: Option<String>` in `TypeMismatch`** carries the builtin name when the mismatch originates from a builtin (e.g., `"merge"` in `"merge: expected Dict, got Int"`). `None` for generic type mismatches from the evaluator. The `expected` field is human-readable, not machine-parseable — it may contain compound descriptions like `"Dict or Seq"`. Programmatic matching on expected types is not supported; use the error code and `context` field instead.
 - **`DivisionByZero` carries `op`** to preserve the operator prefix in Display output (e.g., `"/: division by zero"`). This maintains `$try` message compatibility and future-proofs for additional division operators.
 - **`FloatNotFinite`** covers NaN, Infinity, and -Infinity — all non-finite `f64` values. Named `NotFinite` rather than `OutOfRange` because NaN is not a range concept.
+- **`FloatOutOfRange`** (E036) covers finite values outside the `i64` range (e.g., `1e19`). Named `OutOfRange` rather than `NotFinite` because the value is mathematically finite — it simply exceeds the integer domain of `$floor`/`$round`. Distinct from `FloatNotFinite` because the conditions and user-facing diagnostics differ: `FloatNotFinite` is "not a finite number", `FloatOutOfRange` is "out of range for Int".
 - **`DepthExceeded` vs `JsonDepthExceeded`:** Eval depth (recursive thunk forcing) and JSON nesting depth (`$from-json` parsing) are semantically different limits with different error codes. A JSON depth error at E041 does not indicate runaway evaluation.
 - **`IncludeIoError`** covers both "cannot open" (canonicalize failure) and "cannot read" (metadata/read failure) — both are filesystem IO failures distinguished by the `detail` field.
 - **`Internal` is an escape hatch**, not a permanent category. It accepts a freeform message string for incremental migration. New error sites should use a typed variant; `Internal` should trend toward zero usage over time.
@@ -495,6 +509,7 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E033 | `FloatNotFinite` | Value |
 | E034 | `EmptyCollection` | Value |
 | E035 | `ValueNotSerializable` | Value |
+| E036 | `FloatOutOfRange` | Value |
 | E040 | `DepthExceeded` | Limit |
 | E041 | `JsonDepthExceeded` | Limit |
 | E042 | `IncludeForbidden` | Limit |
@@ -548,8 +563,12 @@ impl ErrorKind {
             Self::IntegerOverflow { .. } => "E032",
             Self::FloatNotFinite { .. } => "E033",
             Self::EmptyCollection { .. } => "E034",
+            Self::ValueNotSerializable { .. } => "E035",
+            Self::FloatOutOfRange { .. } => "E036",
             Self::DepthExceeded { .. } => "E040",
             Self::JsonDepthExceeded { .. } => "E041",
+            Self::IncludeForbidden => "E042",
+            Self::ResourceLimitExceeded { .. } => "E043",
             Self::IncludeNotAvailable => "E050",
             Self::IncludeIoError { .. } => "E051",
             Self::IncludeCycle { .. } => "E052",
@@ -572,12 +591,14 @@ impl ErrorKind {
     }
 
     /// Returns `false` for errors that `$try` must not catch.
-    /// Currently only `DepthExceeded` — resource limit errors like stack overflow
-    /// should not be suppressible by user code (follows GHC's `StackOverflow` and
-    /// Racket's `exn:fail:resource` semantics). All other errors, including
-    /// `IncludeForbidden`, are catchable.
+    /// Resource limit errors (`DepthExceeded`, `ResourceLimitExceeded`) should
+    /// propagate to the runtime, not be suppressible by user code.
+    /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
     pub fn is_catchable(&self) -> bool {
-        !matches!(self, Self::DepthExceeded { .. })
+        !matches!(
+            self,
+            Self::DepthExceeded { .. } | Self::ResourceLimitExceeded { .. }
+        )
     }
 }
 ```
@@ -630,6 +651,10 @@ impl fmt::Display for ErrorKind {
                 write!(f, "{builtin}: {value} is not a finite number"),
             Self::EmptyCollection { op } =>
                 write!(f, "{op} on empty collection"),
+            Self::ValueNotSerializable { value_type } =>
+                write!(f, "cannot serialize {value_type} to JSON"),
+            Self::FloatOutOfRange { builtin, value } =>
+                write!(f, "{builtin}: {value} is out of range for Int"),
             Self::DepthExceeded { limit } =>
                 write!(f, "maximum evaluation depth exceeded ({limit})"),
             Self::JsonDepthExceeded { limit } =>
@@ -667,9 +692,20 @@ impl fmt::Display for ErrorKind {
 impl fmt::Display for ArityBound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Exact(1) => write!(f, "1 argument"),
             Self::Exact(n) => write!(f, "{n} arguments"),
-            Self::AtMost(n) => write!(f, "at most {n} arguments"),
-            Self::Range(lo, hi) => write!(f, "{lo} to {hi} arguments"),
+            Self::Range(lo, hi) => {
+                if *lo == *hi {
+                    // Range(n, n) is effectively Exact(n), so display as such
+                    if *lo == 1 {
+                        write!(f, "1 argument")
+                    } else {
+                        write!(f, "{lo} arguments")
+                    }
+                } else {
+                    write!(f, "{lo} to {hi} arguments")
+                }
+            }
         }
     }
 }
@@ -808,7 +844,7 @@ Builtin error messages are prefixed with the builtin name when the error origina
 
 ## Error Categories — Complete Reference
 
-All 30 `ErrorKind` variants map to stable error codes and human-readable messages:
+All 31 `ErrorKind` variants map to stable error codes and human-readable messages:
 
 | ErrorKind Variant | Error Code | Message Pattern | Definition Site |
 |-------------------|------------|----------------|-----------------|
@@ -827,6 +863,7 @@ All 30 `ErrorKind` variants map to stable error codes and human-readable message
 | **FloatNotFinite** | E033 | `"{builtin}: {value} is not a finite number"` | Builtin call expression |
 | **EmptyCollection** | E034 | `"{op} on empty collection"` | Builtin call expression |
 | **ValueNotSerializable** | E035 | `"cannot serialize {value_type} to JSON"` | Value being serialized |
+| **FloatOutOfRange** | E036 | `"{builtin}: {value} is out of range for Int"` | Builtin call expression |
 | **DepthExceeded** | E040 | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
 | **JsonDepthExceeded** | E041 | `"maximum JSON nesting depth exceeded ({limit})"` | `$from-json` call expression |
 | **IncludeForbidden** | E042 | `"filesystem access is disabled (--no-fs)"` | `$include` call expression |
@@ -843,7 +880,7 @@ All 30 `ErrorKind` variants map to stable error codes and human-readable message
 | **UserError** | E080 | `"{message}"` (user-provided) | `$error` call expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
-The 30 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
+The 31 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
 
 ## Known Span Assignment Issues
 

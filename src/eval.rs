@@ -70,8 +70,9 @@ impl EvalContext {
     }
 
     /// Create a new EvalContext with a different base_dir but sharing the same
-    /// state (include guard, cache) and stdlib_env. Avoids allocating a new
-    /// EvalConfig when only base_dir changes (e.g., during $include).
+    /// state (include guard, cache) and stdlib_env. Note: this allocates a new
+    /// EvalConfig wrapper but shares the underlying stdlib_env and state Rc
+    /// allocations (e.g., during $include).
     pub fn with_base_dir(&self, base_dir: PathBuf) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
@@ -497,14 +498,11 @@ pub fn eval(
             Value::Dict(IndexMap::new()),
             expr.span,
         ))),
-        Expr::Rest(_) => Err(Box::new(EvalError {
-            kind: crate::error::ErrorKind::Internal {
-                message: "rest marker (...) is only valid inside type expressions".to_string(),
-            },
-            definition_span: expr.span,
-            materialization_span: None,
-            stack: Vec::new(),
-        })),
+        Expr::Rest(_) => Err(EvalError::internal(
+            "rest marker (...) is only valid inside type expressions".to_string(),
+            expr.span,
+        )
+        .into()),
     }
 }
 
