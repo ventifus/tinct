@@ -1,4 +1,4 @@
-# What If: SQL Data Sources for tinct
+# What If: SQL Data Sources for tinct (lib-sql)
 
 What would it take to query relational databases from inside tinct programs, using familiar tinct functions lazily dispatched as SQL?
 

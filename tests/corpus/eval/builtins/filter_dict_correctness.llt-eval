@@ -1,0 +1,9 @@
+# Correctness canary for filter_dict_step after the depth-tracking fix.
+# Each recursive step through the dict now correctly increments depth (depth+1).
+# Note: this is NOT a depth-overflow regression test — the depth bug only triggers
+# with >256 entries (> MAX_EVAL_DEPTH). A 5-entry dict passes both before and after
+# the fix. This test verifies filter_dict_step produces correct results at all positions.
+# Filter a multi-entry dict through a predicate that accesses each value.
+[call $collect [call $filter [fn [x] [call $> $x 2]] [a: 1 b: 2 c: 3 d: 4 e: 5]]]
+===
+Dict({0: Int(3), 1: Int(4), 2: Int(5)})

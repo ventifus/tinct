@@ -51,8 +51,15 @@ makes the best case for its feature: "What would it take to do this well?"
 | Proposal | Summary |
 |----------|---------|
 | [General I/O](io.md) | Capability-based I/O: `DirCap`, `NetCap`, `Handle`; `$open`, `$slurp`, `$write`, `$lines` |
-| [TLS, PKI, and HTTP](tls.md) | mTLS, custom CA bundles, certificate pinning, ALPN, HTTP/2 via `$fetch` |
-| [SQL Data Sources](sql-translation.md) | `$sql-open` returns lazy SQL source; `$filter`/`$map` push predicates to the DB |
+| [TLS, PKI, and HTTP](lib-tls.md) | mTLS, custom CA bundles, certificate pinning, ALPN, HTTP/2 via `$fetch` |
+| [SQL Data Sources](lib-sql.md) | `$sql-open` returns lazy SQL source; `$filter`/`$map` push predicates to the DB |
+
+## Standard Library
+
+| Proposal | Summary |
+|----------|---------|
+| [Supplemental Stdlib Modules](lib-supplemental.md) | Extended strings, math builtins, bitwise primitives, base64/hex encoding — 3-phase plan |
+| [Pure-Tinct Regex Engine](lib-regex.md) | Thompson NFA simulation entirely in pure-tinct; depends on lib-supplemental Phases 1 + 3 |
 
 ## Language Capability
 
@@ -93,6 +100,16 @@ standalone parser + desugar change. No dependencies.
 removes structural friction in every multi-step function. The nested-fn workaround
 (`[call [fn [x] ...] val]`) is pervasive. No new keywords; extends the existing
 sequential scoping model to `[fn ...]` bodies.
+
+**[Supplemental Stdlib Modules](lib-supplemental.md) Phase 1** — Pure-tinct
+`stdlib/strings.llt` (`str-contains?`, `str-starts-with?`, `str-ends-with?`,
+`str-pad-left`, `str-pad-right`, `str-chars`, `str-repeat`, `str-find`,
+`str-slice`). At most one new Rust builtin (`$str-chars`). No new crates, no
+gating conditions. Phases 2 (math) and 3 (bitwise primitives) follow in order.
+
+**[Pure-Tinct Regex Engine](lib-regex.md) Phase 1** — Thompson NFA engine
+in `stdlib/regex.llt`. No Rust builtins, no crates. Requires lib-supplemental
+Phases 1 (`str-chars`) and 3 (`$char-code`) complete first.
 
 **[Structural Contracts](structural-contracts.md) Phase 1 only** — Phase 1
 (`$$@Type` pipeline boundary annotation) answers open design questions around
@@ -144,8 +161,8 @@ accepted designs; adopt when the use case is ready.
 | Proposal | Key Unlock |
 |----------|-----------|
 | [General I/O](io.md) Phase 1 | `$emit` — required for all formatter/templating work |
-| [TLS, PKI, and HTTP](tls.md) | mTLS and custom CA for internal-service tinct programs |
-| [SQL Data Sources](sql-translation.md) | Lazy DB reads via `$filter`/`$map` predicate pushdown |
+| [TLS, PKI, and HTTP](lib-tls.md) | mTLS and custom CA for internal-service tinct programs |
+| [SQL Data Sources](lib-sql.md) | Lazy DB reads via `$filter`/`$map` predicate pushdown |
 | [Numeric Types](numeric-types.md) | Range annotations + Decimal type |
 | [Float Dict Keys](float-dict-keys.md) | Decimal keys; gated on Decimal type adoption |
 | [Pattern Matching](pattern-matching.md) | Full match expression; Phase 1 = type predicates (adopt that first) |

@@ -2015,3 +2015,20 @@ Update all documentation that still references the pest parser. The iterative pa
 - [x] test_check_call_with_scheme_non_function_scheme unit test
 - [x] Laziness short-circuit tests (and/or already existed)
 - [x] test_check_expr_lambda_arity_mismatch unit test
+
+## eval-lazy-fixes: Evaluation Laziness Correctness Fixes
+
+Evaluation correctness bugs where values are forced prematurely or depth tracking is wrong. Found by eval-engine C47.
+
+- [x] Fix `ThunkState::Guarded` failure paths skip `decorate()` — all three error paths now call `decorate()` [typeassert-structural-b C62]
+- [x] Fix `ThunkState::Guarded` stuck in `InProgress` on non-cacheable error — fixed in C69 at eval.rs:1567-1572 [Critical, eval-engine C57]
+- [x] Fix `filter_dict_step` depth not incremented — changed `depth` to `depth+1` at builtins.rs:2275 [eval-lazy-fixes C68]
+- [x] Fix `filter_dict_step` re-materializing pre-materialized thunks — added debug_assert! for Materialized state at builtins.rs:2168,2217 [eval-lazy-fixes C68]
+- [x] Add comment to `eval_call` explaining eager function materialization — added comment at eval.rs:764-768 explaining design intent and CEK migration path [eval-lazy-fixes C68]
+- [x] Document `deep_materialize_thunk` cycle sentinel — added comment at eval.rs:1899-1901 explaining intentional Ok return [eval-lazy-fixes C68]
+- [x] Fix `builtin_drop_seq_step` unreachable!() — replaced with EvalError::internal() at builtins.rs:2554 [eval-lazy-fixes C68]
+- [x] Fix `eval_document` depth not incremented — changed to depth+1 at eval.rs:542 [eval-lazy-fixes C68]
+- [x] Add Seq guard to `sort-by` and `sort` in stdlib — added $seq? guard emitting "sort-by: expected Dict, got Seq" (`stdlib/prelude.llt`) [Minor, eval-engine C49]
+- [x] Add Seq guard to `any?` and `all?` in stdlib — guards already present in prelude.llt; corpus tests also already existed [eval-lazy-fixes C68]
+- [x] Remove stale concat comment block in prelude — lines 301-303 describe the LLT implementation that was removed when `concat` migrated to Rust; replace with one-line note matching the `join` pattern at line 117: "# concat is a Rust-native builtin". (`stdlib/prelude.llt:301-303`) [Nit, stdlib-author C52]
+- [x] Fix `deep_materialize_impl` using Span::origin() — added `current_span` parameter to deep_materialize_impl; depth exceeded and infinite Seq errors now use actual thunk span [eval-lazy-fixes C68]
