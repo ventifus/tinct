@@ -40,6 +40,7 @@ After the review may have added new findings to TODO.md, groom the backlog befor
    - **Split** any sprint exceeding 30 non-nit items into smaller sprints (use new kebab-case slugs)
    - **Combine** adjacent sprints of compatible concern when individually under 10 non-nit items — merge them into one sprint
    - **Tack** nit and doc items onto the first available impl sprint rather than creating separate nit-only or doc-only sprints
+   - **Heading level convention**: `##` headings are design/feature sections — they hold design, decide, and research items. `###` headings are implementation sprints. When splitting, creating, or combining, always produce `###` sprint headings nested under the appropriate `##` design section. If no matching `##` section exists, create one. Never place implementation tasks directly under a `##` heading — if you find any, wrap them in a new `###` sub-sprint.
 
 Only edit TODO.md — do not create other files. If no changes are needed, move on.
 
