@@ -19,6 +19,7 @@
 pub mod ast;
 pub(crate) mod error;
 pub(crate) mod eval;
+pub(crate) mod eval_call;
 pub mod formatter;
 pub mod lexer;
 pub mod parser;

@@ -1,5 +1,5 @@
 ---
-description: Interactive design review — work through Design, Decide, and Research items in TODO.md. Designs go to doc/*.md, decisions are recorded inline, research proposals go to doc/whatif/
+description: HITL R&D — interactive Design, Decide, and Research loop for TODO.md items. Designs go to doc/*.md, decisions recorded inline, research proposals to doc/whatif/
 argument-hint: [sprint-slug]
 allowed-tools: Agent, Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*
 model: opus
@@ -31,14 +31,15 @@ The workflow below describes the **Design** path in full. **Decide** and **Resea
 Scan TODO.md for unchecked design work:
 
 1. **Find existing items**: grep for `- [ ]` items whose text starts with "Design", "Decide", or "Research" (these are explicit items for this skill)
-2. **Identify sprints missing items**: look at unchecked sprints (### headings with unchecked items) that describe substantial new features, architecture, or semantics but have no design/decide/research checkbox. Signs a sprint needs one:
+2. **Find hedged items**: grep unchecked `- [ ]` items for weasel words — `optional`, `optionally`, `consider`, `possibly`, `if needed`, `if desired`, `may want to`, `might`, `could also`. Every such item is an undecided choice masquerading as a task. Surface each one with a recommendation to either **commit** (rewrite as a plain task) or **cut** (remove from TODO entirely). Never leave a hedged item as-is.
+3. **Identify sprints missing items**: look at unchecked sprints (### headings with unchecked items) that describe substantial new features, architecture, or semantics but have no design/decide/research checkbox. Signs a sprint needs one:
    - Introduces a new language construct or runtime concept → **Design**
    - Describes a binary policy or strategy choice that gates implementation → **Decide**
    - Explores a speculative feature or alternative approach → **Research**
    - Has TODO items that say "design", "decide", "choose", "model", "policy", "consider", or "either...or"
    - Affects user-facing semantics (not just internal refactoring, nits, docs, or tests)
-3. **Insert missing items**: for sprints that need work but lack an item, insert the appropriate checkbox (`Design`, `Decide`, or `Research`) as the first unchecked item in that sprint. Research items include the target path: `— write proposal to doc/whatif/[name].md`
-4. **Present the list**: show the user all unchecked items (existing + newly inserted), grouped by type, and ask which to start with, or proceed in document order
+4. **Insert missing items**: for sprints that need work but lack an item, insert the appropriate checkbox (`Design`, `Decide`, or `Research`) as the first unchecked item in that sprint. Research items include the target path: `— write proposal to doc/whatif/[name].md`
+5. **Present the list**: show the user all unchecked items (existing + newly inserted), grouped by type — Design/Decide/Research first, then hedged items — and ask which to start with, or proceed in document order
 
 ### Step 2: Design Dialog (for `Design` items)
 
