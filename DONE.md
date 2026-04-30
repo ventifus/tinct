@@ -2232,3 +2232,13 @@ Convert `eval_dot_access()` and `eval_bracket_access()` from calling `materializ
 - [x] Add `MatCont::BracketForceTarget { thunk: Rc<Thunk>, key_thunk: Rc<Thunk>, access_span: Span, origin: String, thunk_span: Span, mat_span: Option<Span> }` — when target resolves, force key_thunk then dispatch (`src/eval.rs`) [Major, eval-engine]
 - [x] Convert `eval_dot_access()` to push `DotAccessForce` continuation and return target thunk to force, instead of calling `materialize()` directly (`src/eval.rs:1075-1122`) [Major, eval-engine]
 - [x] Convert `eval_bracket_access()` to push `BracketForceTarget` continuation similarly (`src/eval.rs:1125-1175`) [Major, eval-engine]
+
+### iterative-eval-b3: MatCont → Cont, add Action enum
+
+Pure structural rename and type additions preparing for the full CEK loop. **No behavior change; all tests must still pass. Depends on iterative-eval-b2. Scope: `src/eval.rs`, ~60 lines changed.**
+
+- [x] Rename `MatCont` → `Cont` and `ContResult` → `Action` throughout `src/eval.rs`; update `apply_mat_cont` → `apply_cont`; adapt `force_step` return type to `Action` — pure rename (`src/eval.rs`) [Major, eval-engine]
+- [x] Add `Action` enum (`Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, depth: usize }`, `Continue(EvalResult<Value>)`) per `doc/16-architecture.md §Iterative Evaluator` — replaces `MatStep`/`ContResult`; note: `Action::Eval` variant is deferred to iterative-eval-b4 (`src/eval.rs`) [Major, eval-engine]
+- [x] Add `fn run(action: Action, mut stack: Vec<Cont>, ctx: &Rc<EvalContext>) -> EvalResult<Value>`: `Action::Materialize` → calls `force_step()`, `Action::Continue` → calls `apply_cont()` on stack top; replace `materialize_rc()` call sites with `run(Action::Materialize { ... }, Vec::new(), ctx)`; `Action::Eval` arm deferred to iterative-eval-b4 (`src/eval.rs`) [Major, eval-engine]
+- [x] Update `doc/16-architecture.md` §Iterative Evaluator status note — Phase 1 (materialize) complete via iterative-eval-a; access chains iterative via iterative-eval-b2; eval() step conversion pending in iterative-eval-b4 (`doc/16-architecture.md`) [Minor]
+- [x] Make access chains fully iterative: eval()'s DotAccess arm should return an Unevaluated(DotAccess_expr) thunk (same pattern as eval_call → PendingCall in iterative-eval-b1), enabling force_step to handle the ENTIRE chain via DotAccessForce continuations iteratively (`src/eval.rs`) [Major, eval-engine C74]

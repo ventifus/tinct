@@ -13,16 +13,6 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [x] Fix doc/16-architecture.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (doc/16-architecture.md §Iterative Evaluator) [Minor, computer-scientist]
 - [x] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
 
-### iterative-eval-b3: MatCont → Cont, add Action enum
-
-Pure structural rename and type additions preparing for the full CEK loop. **No behavior change; all tests must still pass. Depends on iterative-eval-b2. Scope: `src/eval.rs`, ~60 lines changed.**
-
-- [ ] Rename `MatCont` → `Cont` and `ContResult` → `Action` throughout `src/eval.rs`; update `apply_mat_cont` → `apply_cont`; adapt `force_step` return type to `Action` — pure rename (`src/eval.rs`) [Major, eval-engine]
-- [ ] Add `Action` enum (`Eval { expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize }`, `Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, depth: usize }`, `Continue(EvalResult<Value>)`) per `doc/16-architecture.md §Iterative Evaluator` — replaces `MatStep`/`ContResult` (`src/eval.rs`) [Major, eval-engine]
-- [ ] Add `fn run(action: Action, mut stack: Vec<Cont>, ctx: &Rc<EvalContext>) -> EvalResult<Value>`: `Action::Eval` → calls `eval_step()` stub (returns `Action::Materialize` by calling current `eval()` inline for now), `Action::Materialize` → calls `force_step()`, `Action::Continue` → calls `apply_cont()` on stack top; replace `materialize_rc()` call sites with `run(Action::Materialize { ... }, Vec::new(), ctx)` (`src/eval.rs`) [Major, eval-engine]
-- [ ] Update `doc/16-architecture.md` §Iterative Evaluator status note — Phase 1 (materialize) complete via iterative-eval-a; access chains iterative via iterative-eval-b2; eval() step conversion pending in iterative-eval-b4 (`doc/16-architecture.md`) [Minor]
-- [ ] Make access chains fully iterative: eval()'s DotAccess arm should return an Unevaluated(DotAccess_expr) thunk (same pattern as eval_call → PendingCall in iterative-eval-b1), enabling force_step to handle the ENTIRE chain via DotAccessForce continuations iteratively (`src/eval.rs`) [Major, eval-engine C74]
-
 ### iterative-eval-b4: eval() step conversion
 
 Convert `eval()` into `eval_step()` that pushes `Cont` variants and returns `Action`. Wire into `run()`. **Depends on iterative-eval-b3. Scope: `src/eval.rs` + `src/builtins.rs`, ~250 lines.**
@@ -50,8 +40,8 @@ Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. *
 - [ ] Remove 64MB worker thread stack workaround — `src/main.rs` spawns a worker thread with 64MB stack; replace with default stack size once iterative eval eliminates deep recursion (`src/main.rs`) [Minor]
 - [ ] Re-enable depth-exceeded unit tests — tests require >128MB stack in debug mode (marked `#[ignore]`): `collect_max_size_limit_enforced` and `join_seq_size_limit` (`src/builtins.rs`), `filter_seq_step_no_depth_accumulation_on_consecutive_failures` and `take_large_count_infinite_seq_depth_exceeded` (`src/builtins.rs`), `test_pending_call_cycle_detection` (`src/eval.rs`), `test_session_depth_exhaustion` (`src/repl.rs`) [Minor]
 - [ ] Add corpus test for deep evaluation chain through public API — regression guard for iterative materialize correctness (`tests/corpus/eval/eval/deep_chain.llt-eval`) [Minor, test-crafter C70]
-- [ ] Add unit test for PendingBuiltin deep chain — exercises `PendingCallDispatch` continuation in `materialize_rc` (`src/eval.rs`) [Minor, test-crafter C70]
-- [ ] Add unit test for GuardedValidate continuation — verify `[@Int 42]` chain works through `materialize_rc` (`src/eval.rs`) [Minor, test-crafter C70]
+- [ ] Add unit test for PendingBuiltin deep chain — exercises `PendingCallDispatch` continuation in `run()` (`src/eval.rs`) [Minor, test-crafter C70]
+- [ ] Add unit test for GuardedValidate continuation — verify `[@Int 42]` chain works through `run()` (`src/eval.rs`) [Minor, test-crafter C70]
 - [ ] Add comment to existing depth-limit tests clarifying they test the depth-limit policy, not stack-safety (stack-safety tested by `test_iterative_materialize_deep_chain`) (`src/eval.rs`) [Nit, test-crafter C70]
 - [ ] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70]
 - [ ] Convert `deep_materialize_impl` to iterative using `DeepEntries`/`DeepSeqTail` Cont variants — eliminates O(nesting) Rust stack frames at output boundaries (`--eval`, REPL display, `$eval` builtin); sharing/cycle cache (`HashMap<*const Thunk, Option<Rc<Thunk>>>`) carried as `Rc<RefCell<...>>` through the relevant Cont variants; depends on unified Cont enum from iterative-eval-b5. Design intent: "deep_materialize within CEK loop, no separate helper" (design session 2026-04-20). (`src/eval.rs:2618–2772`) [Major, eval-engine]
@@ -68,11 +58,11 @@ Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. *
 
 Move the CEK continuation machinery — the active area for iterative-eval-b sprints. Land before iterative-eval-b3 so those sprints operate on a smaller file.
 
-- [ ] Move `MatCont`, `MatStep`, `ContResult`, `RestoreState`, `attach_materialization_context()`, `next_depth()`, `force_step()`, `materialize_rc()`, `apply_mat_cont()` to `src/eval_materialize.rs` (`src/eval.rs:1245-2100`, ~860 lines) [Minor]
+- [ ] Move `Cont`, `Action`, `RestoreState`, `attach_materialization_context()`, `next_depth()`, `force_step()`, `run()`, `apply_cont()` to `src/eval_materialize.rs` (`src/eval.rs:1245-2100`, ~860 lines) [Minor]
 
 ### eval-split-c: Extract eval_access.rs
 
-- [ ] Move `eval_dot_access()`, `eval_bracket_access()`, `eval_range_access()`, `invoke_proxy_handler()` and their helpers to `src/eval_access.rs` (`src/eval.rs:1075-1238`, ~165 lines) [Minor]
+- [ ] Move `eval_range_access()`, `invoke_proxy_handler()` and their helpers to `src/eval_access.rs` (note: `eval_dot_access()` and `eval_bracket_access()` were deleted in iterative-eval-b3 — dot/bracket access is now fully iterative via `DotAccessForce`/`BracketForceTarget` continuations in `force_step`) [Minor]
 
 ### eval-split-d: Extract eval_deep.rs
 
@@ -82,18 +72,37 @@ Move the CEK continuation machinery — the active area for iterative-eval-b spr
 
 `src/builtins.rs` is ~11000 lines. Split by semantic domain. Each sprint is a pure `mod` extraction.
 
-### builtins-split-a: Extract builtins_seq.rs
+### builtins-split-a: Extract builtins_seq_prim.rs
 
-Largest cohesive block: all sequence primitives and higher-order functions (~4000 lines).
+Core linked-list primitives — the four operations that construct and destructure sequences.
 
-- [ ] Move `builtin_seq`, `builtin_head`, `builtin_tail`, `builtin_collect`, `builtin_range`+`range_step`, `builtin_repeat`, `builtin_cycle`+`cycle_step`, `builtin_iterate`, `builtin_unfold`+`unfold_step`, `builtin_map`+`map_step`, `builtin_filter`+`filter_step`, `builtin_take`, `builtin_drop`, `builtin_reduce`+`fold_step`, `builtin_join`+`join_step`, `builtin_concat` to `src/builtins_seq.rs` (`src/builtins.rs:1365-3087`) [Minor]
+- [ ] Move `builtin_seq`, `builtin_head`, `builtin_tail`, `builtin_collect` to `src/builtins_seq_prim.rs` (`src/builtins.rs:1365-1549`, ~185 lines) [Minor]
 
-### builtins-split-b: Remaining domain splits (optional)
+### builtins-split-b: Extract builtins_seq_gen.rs
 
-After builtins-split-a, `builtins.rs` shrinks to ~1500 lines — borderline acceptable. Further splits optional.
+Sequence generators — create new infinite or finite sequences from seeds or ranges.
 
-- [ ] Optionally extract `builtin_str`/`builtin_split`/`builtin_replace`/`builtin_upper`/`builtin_lower`/`builtin_trim` to `src/builtins_string.rs` (~250 lines) [Minor]
-- [ ] Optionally extract `builtin_add`/`builtin_sub`/`builtin_mul`/`builtin_div_float`/`builtin_eq`/`builtin_lt`/`builtin_if` to `src/builtins_math.rs` (~200 lines) [Minor]
+- [ ] Move `builtin_range`+`range_step`, `builtin_repeat`, `builtin_cycle`+`cycle_step`, `builtin_iterate`, `builtin_unfold`+`unfold_step` to `src/builtins_seq_gen.rs` (`src/builtins.rs:1550-1975`, ~425 lines) [Minor]
+
+### builtins-split-c: Extract builtins_seq_xform.rs
+
+Sequence transforms — consume a sequence and produce a new one element-by-element.
+
+- [ ] Move `builtin_map`+`map_step`, `builtin_filter`+`filter_step`, `builtin_take`, `builtin_drop` to `src/builtins_seq_xform.rs` (`src/builtins.rs:1976-2628`, ~650 lines) [Minor]
+
+### builtins-split-d: Extract builtins_seq_reduce.rs
+
+Sequence reduction — fold a sequence into a single value or collect into a string/dict.
+
+- [ ] Move `builtin_reduce`+`fold_step`, `builtin_join`+`join_step`, `builtin_concat` to `src/builtins_seq_reduce.rs` (`src/builtins.rs:2629-3087`, ~460 lines) [Minor]
+
+### builtins-split-e: Extract builtins_string.rs
+
+- [ ] Move `builtin_str`, `builtin_split`, `builtin_replace`, `builtin_upper`, `builtin_lower`, `builtin_trim` to `src/builtins_string.rs` (~250 lines) [Minor]
+
+### builtins-split-f: Extract builtins_math.rs
+
+- [ ] Move `builtin_add`, `builtin_sub`, `builtin_mul`, `builtin_div_float`, `builtin_eq`, `builtin_lt`, `builtin_if` to `src/builtins_math.rs` (~200 lines) [Minor]
 
 ## parser-rewrite: Parser Rewrite (E2)
 
