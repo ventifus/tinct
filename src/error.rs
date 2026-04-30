@@ -11,7 +11,6 @@ pub type EvalResult<T> = Result<T, Box<EvalError>>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ArityBound {
     Exact(usize),
-    AtMost(usize),
     Range(usize, usize),
 }
 
@@ -20,8 +19,6 @@ impl fmt::Display for ArityBound {
         match self {
             Self::Exact(1) => write!(f, "1 argument"),
             Self::Exact(n) => write!(f, "{n} arguments"),
-            Self::AtMost(1) => write!(f, "at most 1 argument"),
-            Self::AtMost(n) => write!(f, "at most {n} arguments"),
             Self::Range(lo, hi) => {
                 if *lo == *hi {
                     // Range(n, n) is effectively Exact(n), so display as such
@@ -114,6 +111,12 @@ pub enum ErrorKind {
     ValueNotSerializable {
         value_type: String,
     },
+    /// Float-to-int conversion failed: value is finite but outside i64 range.
+    /// Distinct from `FloatNotFinite` (which rejects NaN/Infinity).
+    FloatOutOfRange {
+        builtin: String,
+        value: f64,
+    },
 
     // --- Limit errors (E040-E049) ---
     /// Evaluation depth limit (recursive thunk forcing).
@@ -201,6 +204,7 @@ impl ErrorKind {
             Self::FloatNotFinite { .. } => "E033",
             Self::EmptyCollection { .. } => "E034",
             Self::ValueNotSerializable { .. } => "E035",
+            Self::FloatOutOfRange { .. } => "E036",
             Self::DepthExceeded { .. } => "E040",
             Self::JsonDepthExceeded { .. } => "E041",
             Self::IncludeForbidden => "E042",
@@ -222,6 +226,20 @@ impl ErrorKind {
     /// Returns `false` for errors that must not be cached in Failed thunk state.
     /// Currently only `DepthExceeded` — a thunk that fails at one depth may
     /// succeed at a shallower depth (PROP-DEPTH in §Error Semantics).
+    ///
+    /// # INVARIANT
+    /// This method and `is_catchable()` serve distinct semantic roles and already
+    /// diverge: for example, `ResourceLimitExceeded` is non-catchable (resource
+    /// limits are advisory suppressible) but IS cacheable (hitting a limit will
+    /// always fail again — deterministic).
+    /// - **Cacheability**: Enforces Launchbury (1993) thunk state machine
+    ///   monotonicity. Non-cacheable errors do not transition a thunk to Failed
+    ///   state; the same thunk may succeed under different evaluation conditions.
+    /// - **Catchability**: Defines user-facing `$try` semantics per Nix `tryEval`
+    ///   model. Non-catchable errors propagate to the runtime regardless of
+    ///   try/catch constructs.
+    ///
+    /// Cross-reference: see `is_catchable()` for `$try` semantics.
     pub fn is_cacheable(&self) -> bool {
         !matches!(self, Self::DepthExceeded { .. })
     }
@@ -230,6 +248,20 @@ impl ErrorKind {
     /// Resource limit errors (`DepthExceeded`, `ResourceLimitExceeded`) should
     /// propagate to the runtime, not be suppressible by user code.
     /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
+    ///
+    /// # INVARIANT
+    /// This method and `is_cacheable()` serve distinct semantic roles and already
+    /// diverge: for example, `ResourceLimitExceeded` is non-catchable (resource
+    /// limits are advisory suppressible) but IS cacheable (hitting a limit will
+    /// always fail again — deterministic).
+    /// - **Catchability**: Defines user-facing `$try` semantics per Nix `tryEval`
+    ///   model. Non-catchable errors propagate to the runtime regardless of
+    ///   try/catch constructs.
+    /// - **Cacheability**: Enforces Launchbury (1993) thunk state machine
+    ///   monotonicity. Non-cacheable errors do not transition a thunk to Failed
+    ///   state; the same thunk may succeed under different evaluation conditions.
+    ///
+    /// Cross-reference: see `is_cacheable()` for thunk state machine semantics.
     pub fn is_catchable(&self) -> bool {
         !matches!(
             self,
@@ -327,6 +359,9 @@ impl fmt::Display for ErrorKind {
             Self::EmptyCollection { op } => write!(f, "{op} on empty collection"),
             Self::ValueNotSerializable { value_type } => {
                 write!(f, "cannot serialize {value_type} to JSON")
+            }
+            Self::FloatOutOfRange { builtin, value } => {
+                write!(f, "{builtin}: {value} is out of range for Int")
             }
             Self::DepthExceeded { limit } => {
                 write!(f, "maximum evaluation depth exceeded ({limit})")
@@ -433,6 +468,16 @@ impl PartialEq for ErrorKind {
                 Self::ValueNotSerializable { value_type: v1 },
                 Self::ValueNotSerializable { value_type: v2 },
             ) => v1 == v2,
+            (
+                Self::FloatOutOfRange {
+                    builtin: b1,
+                    value: v1,
+                },
+                Self::FloatOutOfRange {
+                    builtin: b2,
+                    value: v2,
+                },
+            ) => b1 == b2 && v1.to_bits() == v2.to_bits(),
             (Self::DepthExceeded { limit: l1 }, Self::DepthExceeded { limit: l2 }) => l1 == l2,
             (Self::JsonDepthExceeded { limit: l1 }, Self::JsonDepthExceeded { limit: l2 }) => {
                 l1 == l2
@@ -700,6 +745,15 @@ impl EvalError {
         }
     }
 
+    pub fn float_out_of_range(builtin: String, value: f64, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::FloatOutOfRange { builtin, value },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
     pub fn undefined_variable(name: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::UndefinedVariable { name },
@@ -768,9 +822,11 @@ impl EvalError {
         }
     }
 
-    pub fn resource_limit_exceeded(message: String, definition_span: Span) -> Self {
+    pub fn resource_limit_exceeded(message: impl Into<String>, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::ResourceLimitExceeded { message },
+            kind: ErrorKind::ResourceLimitExceeded {
+                message: message.into(),
+            },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -1189,6 +1245,10 @@ mod tests {
             ErrorKind::ValueNotSerializable {
                 value_type: "Function".to_string(),
             },
+            ErrorKind::FloatOutOfRange {
+                builtin: "floor".to_string(),
+                value: 1e20,
+            },
             ErrorKind::DepthExceeded { limit: 256 },
             ErrorKind::JsonDepthExceeded { limit: 128 },
             ErrorKind::IncludeForbidden,
@@ -1259,8 +1319,6 @@ mod tests {
         // Test Display output for all ArityBound variants
         assert_eq!(format!("{}", ArityBound::Exact(1)), "1 argument");
         assert_eq!(format!("{}", ArityBound::Exact(2)), "2 arguments");
-        assert_eq!(format!("{}", ArityBound::AtMost(1)), "at most 1 argument");
-        assert_eq!(format!("{}", ArityBound::AtMost(3)), "at most 3 arguments");
         assert_eq!(format!("{}", ArityBound::Range(0, 0)), "0 arguments");
         assert_eq!(format!("{}", ArityBound::Range(1, 1)), "1 argument");
         assert_eq!(format!("{}", ArityBound::Range(2, 2)), "2 arguments");
@@ -1399,16 +1457,6 @@ mod tests {
             format!(
                 "{}",
                 ErrorKind::ArityMismatch {
-                    expected: ArityBound::AtMost(2),
-                    got: 3
-                }
-            ),
-            "arity mismatch: expected at most 2 arguments, got 3"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::ArityMismatch {
                     expected: ArityBound::Range(1, 3),
                     got: 5
                 }
@@ -1526,6 +1574,16 @@ mod tests {
                 }
             ),
             "cannot serialize Proxy to JSON"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::FloatOutOfRange {
+                    builtin: "floor".to_string(),
+                    value: 1e20
+                }
+            ),
+            "floor: 100000000000000000000 is out of range for Int"
         );
 
         // Limit errors (E040-E049)

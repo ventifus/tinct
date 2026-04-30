@@ -548,7 +548,7 @@ fn check_expr(
                     if params.len() != expected_params.len() {
                         return Err(vec![TypeError::new(
                             format!(
-                                "function arity mismatch: expected {} params, got {}",
+                                "arity mismatch: expected {} arguments, got {}",
                                 expected_params.len(),
                                 params.len()
                             ),

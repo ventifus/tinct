@@ -1167,7 +1167,7 @@ pub fn unify(
             if p1.len() != p2.len() {
                 return Err(TypeError::new(
                     format!(
-                        "function arity mismatch: expected {} params, got {}",
+                        "arity mismatch: expected {} arguments, got {}",
                         p1.len(),
                         p2.len()
                     ),
@@ -2513,10 +2513,7 @@ mod tests {
         };
         let result = unify(&f1, &f2, &mut subst, &mut state, span);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message
-            .contains("function arity mismatch"));
+        assert!(result.unwrap_err().message.contains("arity mismatch"));
     }
 
     #[test]

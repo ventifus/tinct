@@ -46,14 +46,15 @@ pub use parser::{parse, parse_expression, ParseError};
 
 /// Evaluation functions and depth limit.
 pub use eval::{
-    deep_materialize, eval_file, eval_file_with_input, materialize, EvalContext, MAX_EVAL_DEPTH,
+    deep_materialize, eval_file, eval_file_with_input, materialize, EvalConfig, EvalContext,
+    EvalState, MAX_EVAL_DEPTH,
 };
 
 /// Builtin infrastructure: stdlib creation, JSON conversion.
 pub use builtins::{create_stdlib_env, json_to_value, MAX_FILE_SIZE};
 
 /// Error types with source spans and stack traces.
-pub use error::{EvalError, StackFrame};
+pub use error::{ArityBound, ErrorKind, EvalError, EvalResult, StackFrame};
 
 /// Formatter: canonical source reformatter.
 pub use formatter::format_source;
@@ -93,10 +94,11 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let _ = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
     // Create evaluation context (current directory, configurable sandbox)
-    // Note: PathBuf::from(".") is a relative path. $include resolves relative to the test
-    // runner's working directory, not to an absolute path. The CLI (main.rs) canonicalizes
-    // to an absolute path before calling eval_file.
-    let ctx = eval::EvalContext::new(std::path::PathBuf::from("."), Rc::clone(&env), no_fs);
+    let base_dir = std::env::current_dir()
+        .ok()
+        .and_then(|d| d.canonicalize().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
     let thunk =
         eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(|e| format!("{e}"))?;
     let val = eval::materialize(&thunk, None, &ctx, 0).map_err(|e| format!("{e}"))?;
