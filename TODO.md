@@ -1014,11 +1014,12 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [x] Research TLS/PKI/HTTP configuration — see `doc/whatif/lib-tls.md`. `$tls` extended with optional opts dict: `ca-bundle` (Handle to PEM, DirCap-gated), `client-cert`/`client-key` (mTLS, Handle-based), `pin-sha256` (SPKI hash list), `alpn` (protocol negotiation). Default: compiled-in `webpki-roots`. `$tls-peer-cert handle` exposes cert metadata. HTTP/2 and HTTP/3 require Rust-level `$fetch` builtin (Phase 3); Handle byte-stream model is insufficient for multiplexed protocols. HTTP/3/QUIC (Phase 4) via reqwest+quinn. Cert+key Handles flow through DirCap for auditability.
 ## parser-cleanup: Cleanup (post-graduation)
 
-- [ ] Remove `pest` and `pest_derive` dependencies from Cargo.toml
-- [ ] Remove `src/grammar.pest`
-- [ ] Remove pest-specific code from `src/parser.rs`
-- [ ] Remove pest-specific test code and helpers from `src/parser.rs`
-- [ ] Rename `src/parser2.rs` to `src/parser.rs`
-- [ ] Update CLAUDE.md, README.md, SPEC.md references (remove pest notation, update grammar description)
-- [ ] Full pest removal audit: verify no remaining pest references in docs, tests, or comments
+- [x] Remove `pest` and `pest_derive` dependencies from Cargo.toml — already done in parser-core-c3
+- [x] Remove `src/grammar.pest` — already done in parser-core-c3
+- [x] Remove pest-specific code from `src/parser.rs` — parser.rs is the hand-written iterative parser
+- [x] Remove pest-specific test code and helpers from `src/parser.rs` — no pest test helpers remain
+- [x] Rename `src/parser2.rs` to `src/parser.rs` — parser2.rs removed; parser.rs is production parser
+- [x] Update CLAUDE.md, README.md, SPEC.md references — CLAUDE.md and README.md clean; SPEC.md archived to .tmp/
+- [x] Full pest removal audit: all agent files (.claude/agents/*.md) and sprint SKILL.md updated to remove pest PEG grammar references — replaced with hand-written iterative parser (src/parser.rs + src/lexer.rs) [C63]
+- [x] Update agent files to remove pest PEG grammar references — all 6 agent files and SKILL.md updated in parser-cleanup sprint C63
 

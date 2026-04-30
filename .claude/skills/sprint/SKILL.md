@@ -18,7 +18,7 @@ Sprint slugs are kebab-case mnemonic IDs on `###` headings in TODO.md (e.g., `##
 
 Some sprints only touch documentation: doc/*.md, TODO.md, CLAUDE.md, comments, agent definitions, skill definitions, or mempalace content. These don't need build gates or agent review.
 
-**Detection**: a sprint is docs-only if every task in the sprint only modifies `.md` files, comments, mempalace drawers, or non-code project metadata. If any task touches `.rs`, `.pest`, `.llt`, `.js`, `.c`, `.scm`, or test corpus files, it's a code sprint — use the full workflow.
+**Detection**: a sprint is docs-only if every task in the sprint only modifies `.md` files, comments, mempalace drawers, or non-code project metadata. If any task touches `.rs`, `.llt`, `.js`, `.c`, `.scm`, or test corpus files, it's a code sprint — use the full workflow.
 
 **Docs-only workflow**: run Step 1 (planning) and Step 2a (implement tasks) as normal, then skip directly to Step 5 (completion). Steps 2b, 2c, 3, and 4 are all skipped — no build gate, no sprint-reviewer, no specialist panel.
 
@@ -28,7 +28,7 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 
 | Agent Definition | Role | Primary Files |
 |-----------------|------|---------------|
-| `.claude/agents/grammar-architect.md` | Parser/grammar + spec consistency | grammar.pest, parser.rs, ast.rs, doc/*.md |
+| `.claude/agents/grammar-architect.md` | Parser/grammar + spec consistency | lexer.rs, parser.rs, ast.rs, doc/*.md |
 | `.claude/agents/eval-engine.md` | Evaluation semantics + laziness | eval.rs, value.rs, builtins.rs |
 | `.claude/agents/type-theorist.md` | Type system | types.rs, typecheck.rs |
 | `.claude/agents/stdlib-author.md` | LLT stdlib | stdlib/prelude.llt, corpus tests |
@@ -132,7 +132,7 @@ Use this routing table to build the agent list:
 
 | Agent | Dispatch when changed files include... |
 |---|---|
-| grammar-architect | `src/grammar.pest`, `src/parser.rs`, `src/ast.rs`, any `doc/*.md` |
+| grammar-architect | `src/lexer.rs`, `src/parser.rs`, `src/ast.rs`, any `doc/*.md` |
 | eval-engine | `src/eval.rs`, `src/value.rs`, `src/builtins.rs`, `src/error.rs` |
 | type-theorist | `src/types.rs`, `src/typecheck.rs` |
 | stdlib-author | `stdlib/prelude.llt`, `src/builtins.rs`, `tests/corpus/eval/stdlib/` |

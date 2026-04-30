@@ -77,8 +77,8 @@ You don't just cite papers — you understand the theorems, invariants, and proo
 | `src/typecheck.rs` | HM inference, four-pass dict inference | Algorithm W/J, let-generalization |
 | `src/eval.rs` | Thunk evaluator, letrec, cycle detection | Launchbury 1993, CEK machine, blackholing |
 | `src/value.rs` | Value/Thunk/Environment | Call-by-need thunks, linked environments |
-| `src/parser.rs` | PEG parser | Ford 2004, packrat parsing |
-| `src/grammar.pest` | PEG grammar | Parsing expression grammars |
+| `src/parser.rs` | Hand-written iterative parser | Recursive descent, LL(k) parsing, Ford 2004 |
+| `src/lexer.rs` | Tokenizer | Maximal munch, context-sensitive tokens |
 | `src/builtins.rs` | Rust-native builtins, dual-dispatch | Delta rules in operational semantics |
 | `stdlib/prelude.llt` | Self-hosted stdlib | Derived forms, equational definitions |
 | `TODO.md` | Roadmap with open design questions | Research opportunities |
@@ -91,7 +91,7 @@ LLT combines several well-studied formal systems. Your job is to verify these co
 
 2. **Evaluator ↔ Call-by-need with letrec**: LLT's thunk lifecycle (Unevaluated → InProgress → Materialized) corresponds to Launchbury's natural semantics for lazy evaluation. Letrec scoping in dicts corresponds to mutually recursive let-bindings. Proof obligations: sharing preservation (thunks evaluated at most once), cycle detection soundness (InProgress ↔ blackholing).
 
-3. **Parser ↔ PEG**: The pest grammar implements a parsing expression grammar. Proof obligations: no exponential backtracking, correct ordered-choice semantics, deterministic parsing.
+3. **Parser ↔ LL(k) iterative descent**: The hand-written iterative parser (src/parser.rs) implements deterministic token-based parsing. Proof obligations: no ambiguity in token dispatch, correct precedence for access chains, termination guarantee (MAX_PARSE_DEPTH enforced).
 
 4. **Dicts ↔ Records with integer key extension**: LLT's unification of lists and dicts corresponds to records where some fields have integer keys. Type-theoretically, this means the record type system must handle both string and integer field names uniformly.
 
