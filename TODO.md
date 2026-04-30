@@ -13,14 +13,6 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [x] Fix doc/16-architecture.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (doc/16-architecture.md §Iterative Evaluator) [Minor, computer-scientist]
 - [x] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
 
-### iterative-eval-b1: eval_call → PendingCall
-
-Make `eval_call()` return a `PendingCall` thunk instead of calling `materialize()` eagerly. **Unblocked:** `iterative-eval-a` made `materialize_rc` iterative and introduced `PendingCallDispatch`, which handles Function/Builtin dispatch and TCO iteratively. The pre-cek-fixes revert was due to `materialize()` still being recursive — no longer the case. **Scope: `src/eval.rs` only, ~30 lines changed.**
-
-- [ ] In `eval_call()` (`src/eval.rs:756-840`): remove the `materialize(&func_thunk, ...)` call and the `match func_val { ... }` dispatch block; return `Rc::new(Thunk::new_pending_call(func_thunk, pos_thunks, named_thunks, *call_span, *call_span, label, Rc::clone(ctx)))` — `PendingCallDispatch` already handles dispatch and TCO (`src/eval.rs`) [Major, eval-engine]
-- [ ] Add corpus test: 1000-deep tail-recursive fold that previously crashed the Rust stack now completes (`tests/corpus/eval/eval/tco_fold_deep.llt-eval`) [Minor, test-crafter]
-- [ ] Commit note: `default_env` for default params switches from caller scope to closure scope (consistent with `$apply`; defaults are literals in practice); type-mismatch message for calling a non-function changes from "expected Function" to "expected Function or Builtin" — update any corpus tests matching that exact string [Nit]
-
 ### iterative-eval-b2: Access chain continuations
 
 Convert `eval_dot_access()` and `eval_bracket_access()` from calling `materialize()` synchronously to pushing `MatCont` variants. **Depends on iterative-eval-b1. Scope: `src/eval.rs`, ~120 lines.**
@@ -917,6 +909,8 @@ Doc and behavior nits from codebase reviews. Requires misc-nits-b.
 - [ ] Add visited-set note to `row_var_occurs_in_type` pseudocode in doc/07 — the implementation threads a `visited: &mut HashSet<String>` argument; pseudocode omits it [Nit, test-crafter C72 panel]
 - [ ] Add test for Case 5 `unify_remainders` display-hiding with `_`-prefixed row var name [Nit, test-crafter C72 panel]
 - [ ] Fix `Substitution::apply()` to use the new `is_empty()` method instead of inline check (`src/types.rs:406`) [Nit, type-theorist C72 panel]
+- [ ] Update doc/08-evaluation.md and doc/16-architecture.md PendingCall formal spec to include caller_env field (`src/eval.rs:342, doc/16-architecture.md:209`) [Minor, computer-scientist C73 panel]
+- [ ] Fix eval_call() doc comment overstating TCO — should say "prerequisite for unlimited TCO via CEK machine" not "enabling unlimited TCO" (`src/eval.rs:757`) [Nit, computer-scientist C73 panel]
 
 ## integration: Integration / Pipeline
 

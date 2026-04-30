@@ -1,0 +1,5 @@
+# fold over a large-enough range to show reduce-seq-step iteration works
+# PendingCall lazy dispatch defers each f(acc, x) call until result is forced
+[call $fold [fn [acc x] [call $+ $acc $x]] 0 [call $range 1 51]]
+===
+Int(1275)

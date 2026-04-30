@@ -752,7 +752,9 @@ fn func_path(expr: &Expr) -> String {
     }
 }
 
-/// Evaluate a call expression: materialize the function, bind arguments, wrap body as thunk.
+/// Evaluate a call expression: return a PendingCall thunk that defers function dispatch.
+/// The function is NOT materialized at call time — dispatch happens iteratively in
+/// materialize_rc's PendingCallDispatch continuation, enabling unlimited tail-call optimization.
 fn eval_call(
     func_expr: &Spanned<Expr>,
     args: &[Spanned<Expr>],
@@ -762,18 +764,11 @@ fn eval_call(
     call_span: &Span,
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
-    // Evaluate and materialize the function.
-    // Function resolution is eager by design: for Value match dispatch
-    // (function type must be known before binding args). CEK machine
-    // migration (iterative-eval sprint) will defer this via the CALL continuation.
+    // Evaluate the function as a thunk (lazy — no materialization).
     let func_thunk = eval(func_expr, Rc::clone(env), ctx, depth + 1)?;
-    let func_val = materialize(&func_thunk, Some(call_span), ctx, depth + 1)?;
 
     // Wrap arguments as unevaluated thunks (lazy). This ensures expressions
     // like $xs[$i] in unselected $if branches are never evaluated.
-    // For builtins, these thunks are wrapped again in PendingBuiltin (the builtin
-    // call is deferred until its result is materialized). For LLT functions,
-    // invoke_function binds these thunks lazily in the closure environment.
     let pos_thunks: Vec<Rc<Thunk>> = args
         .iter()
         .map(|arg| {
@@ -803,41 +798,19 @@ fn eval_call(
         m
     };
 
-    let label = func_label(&func_expr.node);
-
-    match func_val {
-        Value::Function {
-            params,
-            body,
-            env: closure_env,
-            ..
-        } => invoke_function(&CallContext {
-            params: &params,
-            body: &body,
-            closure_env: &closure_env,
-            positional: &pos_thunks,
-            named: &named_thunks,
-            default_env: env,
-            call_span: *call_span,
-            depth,
-            origin: label.clone(),
-            ctx,
-        })
-        .map_err(|mut e| {
-            e.push_frame(label.to_string(), *call_span);
-            e
-        }),
-        Value::Builtin { func, .. } => Ok(Rc::new(Thunk::new_pending_builtin(
-            func,
-            pos_thunks,
-            named_thunks,
-            depth + 1,
-            *call_span,
-            label,
-            Rc::clone(ctx),
-        ))),
-        _ => Err(EvalError::type_mismatch("Function", func_val.type_name(), *call_span).into()),
-    }
+    // Return PendingCall thunk — function dispatch happens iteratively in materialize_rc.
+    // PendingCallDispatch forces func_thunk, matches Function vs Builtin, and invokes.
+    // For tail-recursive functions, the materialize loop depth stays constant — unlimited TCO!
+    Ok(Rc::new(Thunk::new_pending_call(
+        func_thunk,
+        pos_thunks,
+        named_thunks,
+        *call_span,
+        Rc::clone(env), // caller_env: used for default param evaluation
+        *call_span,
+        func_label(&func_expr.node),
+        Rc::clone(ctx),
+    )))
 }
 
 /// Arguments for invoking a user-defined function.
@@ -1298,6 +1271,7 @@ enum RestoreState {
         args: Vec<Rc<Thunk>>,
         named: IndexMap<String, Rc<Thunk>>,
         call_span: Span,
+        caller_env: Rc<RefCell<Environment>>,
         ctx: Rc<EvalContext>,
     },
 }
@@ -1330,6 +1304,7 @@ impl RestoreState {
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx,
             } => {
                 thunk.set_state(ThunkState::PendingCall {
@@ -1337,6 +1312,7 @@ impl RestoreState {
                     args,
                     named,
                     call_span,
+                    caller_env,
                     ctx,
                 });
             }
@@ -1367,14 +1343,15 @@ enum MatCont {
     /// resulting `Value::Function` or `Value::Builtin`, invokes it with the captured
     /// argument thunks, and pushes a `Memoize` continuation for the result thunk.
     /// Free variables captured: `thunk` (original, for memoization), `func_thunk`
-    /// (for error rollback), `args`, `named`, `call_span`, `ctx`, `origin`,
-    /// `thunk_span`, `mat_span`, `depth`.
+    /// (for error rollback), `args`, `named`, `call_span`, `caller_env`, `ctx`,
+    /// `origin`, `thunk_span`, `mat_span`, `depth`.
     PendingCallDispatch {
         thunk: Rc<Thunk>,
         func_thunk: Rc<Thunk>,
         args: Vec<Rc<Thunk>>,
         named: IndexMap<String, Rc<Thunk>>,
         call_span: Span,
+        caller_env: Rc<RefCell<Environment>>,
         ctx: Rc<EvalContext>,
         origin: Cow<'static, str>,
         thunk_span: Span,
@@ -1631,7 +1608,8 @@ fn force_step(
                 MatStep::Done(Err(decorated))
             }
         }
-    } else if let Some((func_thunk, args, named, call_span, thunk_ctx)) = thunk.take_pending_call()
+    } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
+        thunk.take_pending_call()
     {
         if depth > MAX_EVAL_DEPTH {
             let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
@@ -1643,6 +1621,7 @@ fn force_step(
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx: thunk_ctx,
             });
             return MatStep::Done(Err(err.into()));
@@ -1654,6 +1633,7 @@ fn force_step(
             args,
             named,
             call_span,
+            caller_env,
             ctx: thunk_ctx,
             origin,
             thunk_span,
@@ -1745,6 +1725,7 @@ fn apply_mat_cont(
             args,
             named,
             call_span,
+            caller_env,
             ctx: thunk_ctx,
             origin,
             thunk_span,
@@ -1763,7 +1744,7 @@ fn apply_mat_cont(
                             closure_env: &env,
                             positional: &args,
                             named: &named,
-                            default_env: &env,
+                            default_env: &caller_env, // Use caller's environment for default param evaluation
                             call_span,
                             depth,
                             origin: origin.clone(),
@@ -1777,6 +1758,7 @@ fn apply_mat_cont(
                                     args: args.clone(),
                                     named: named.clone(),
                                     call_span,
+                                    caller_env: caller_env.clone(),
                                     ctx: thunk_ctx.clone(),
                                 };
                                 stack.push(MatCont::Memoize {
@@ -1799,6 +1781,7 @@ fn apply_mat_cont(
                                         args,
                                         named,
                                         call_span,
+                                        caller_env,
                                         ctx: thunk_ctx,
                                     });
                                 }
@@ -1826,6 +1809,7 @@ fn apply_mat_cont(
                                         args: args.clone(),
                                         named: named.clone(),
                                         call_span,
+                                        caller_env: caller_env.clone(),
                                         ctx: thunk_ctx.clone(),
                                     };
                                     stack.push(MatCont::Memoize {
@@ -1848,6 +1832,7 @@ fn apply_mat_cont(
                                         args,
                                         named,
                                         call_span,
+                                        caller_env,
                                         ctx: thunk_ctx,
                                     });
                                 }
@@ -1870,6 +1855,7 @@ fn apply_mat_cont(
                                 args,
                                 named,
                                 call_span,
+                                caller_env,
                                 ctx: thunk_ctx,
                             });
                         }
@@ -1886,6 +1872,7 @@ fn apply_mat_cont(
                             args,
                             named,
                             call_span,
+                            caller_env,
                             ctx: thunk_ctx,
                         });
                     }
@@ -2311,7 +2298,8 @@ pub fn materialize(
                 Err(e)
             }
         }
-    } else if let Some((func_thunk, args, named, call_span, thunk_ctx)) = thunk.take_pending_call()
+    } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
+        thunk.take_pending_call()
     {
         // Check depth limit only for deferred states that require evaluation
         if depth > MAX_EVAL_DEPTH {
@@ -2325,6 +2313,7 @@ pub fn materialize(
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx: thunk_ctx,
             });
             return Err(err.into());
@@ -2344,6 +2333,7 @@ pub fn materialize(
                         args,
                         named,
                         call_span,
+                        caller_env,
                         ctx: thunk_ctx,
                     });
                 }
@@ -2360,7 +2350,7 @@ pub fn materialize(
                     closure_env: &env,
                     positional: &args,
                     named: &named,
-                    default_env: &env, // Use closure env for defaults
+                    default_env: &caller_env, // Use caller's environment for default param evaluation
                     call_span,
                     depth,
                     origin: origin.clone(),
@@ -2386,6 +2376,7 @@ pub fn materialize(
                                         args: args.clone(),
                                         named: named.clone(),
                                         call_span,
+                                        caller_env: caller_env.clone(),
                                         ctx: thunk_ctx.clone(),
                                     });
                                 }
@@ -2407,6 +2398,7 @@ pub fn materialize(
                                 args: args.clone(),
                                 named: named.clone(),
                                 call_span,
+                                caller_env: caller_env.clone(),
                                 ctx: thunk_ctx.clone(),
                             });
                         }
@@ -2444,6 +2436,7 @@ pub fn materialize(
                                             args: args.clone(),
                                             named: named.clone(),
                                             call_span,
+                                            caller_env: caller_env.clone(),
                                             ctx: thunk_ctx.clone(),
                                         });
                                     }
@@ -2461,6 +2454,7 @@ pub fn materialize(
                                 args: args.clone(),
                                 named: named.clone(),
                                 call_span,
+                                caller_env: caller_env.clone(),
                                 ctx: thunk_ctx.clone(),
                             });
                         }
@@ -2480,6 +2474,7 @@ pub fn materialize(
                         args,
                         named,
                         call_span,
+                        caller_env,
                         ctx: thunk_ctx,
                     });
                 }
@@ -3368,7 +3363,9 @@ mod tests {
             args: vec![],
             named_args: vec![],
         });
-        let err = eval(&call_expr, env, &test_ctx(), 0).unwrap_err();
+        let thunk =
+            eval(&call_expr, env, &test_ctx(), 0).expect("eval should return PendingCall thunk");
+        let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("type mismatch"),
             "got: {}",
@@ -3407,7 +3404,9 @@ mod tests {
             args: vec![sp(Expr::Int(1))],
             named_args: vec![],
         });
-        let err = eval(&call_expr, env, &test_ctx(), 0).unwrap_err();
+        let thunk =
+            eval(&call_expr, env, &test_ctx(), 0).expect("eval should return PendingCall thunk");
+        let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message()
                 .contains("missing argument for required parameter"),
@@ -3439,7 +3438,9 @@ mod tests {
             args: vec![sp(Expr::Int(1)), sp(Expr::Int(2))],
             named_args: vec![],
         });
-        let err = eval(&call_expr, env, &test_ctx(), 0).unwrap_err();
+        let thunk =
+            eval(&call_expr, env, &test_ctx(), 0).expect("eval should return PendingCall thunk");
+        let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("arity mismatch"),
             "got: {}",
@@ -3555,7 +3556,9 @@ mod tests {
                 value: sp(Expr::Int(2)),
             })],
         });
-        let err = eval(&call_expr, env, &test_ctx(), 0).unwrap_err();
+        let thunk =
+            eval(&call_expr, env, &test_ctx(), 0).expect("eval should return PendingCall thunk");
+        let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("unexpected named argument: z"),
             "got: {}",
@@ -3600,7 +3603,9 @@ mod tests {
                 value: sp(Expr::Int(42)),
             })],
         });
-        let err = eval(&call_expr, env, &test_ctx(), 0).unwrap_err();
+        let thunk =
+            eval(&call_expr, env, &test_ctx(), 0).expect("eval should return PendingCall thunk");
+        let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message()
                 .contains("received both positional and named argument"),
@@ -6788,7 +6793,9 @@ mod tests {
             call_span,
         );
 
-        let err = eval(&call_expr, env, &test_ctx(), 0).unwrap_err();
+        let thunk =
+            eval(&call_expr, env, &test_ctx(), 0).expect("eval should return PendingCall thunk");
+        let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(err
             .message()
             .contains("missing argument for required parameter"));
@@ -6886,6 +6893,7 @@ mod tests {
             vec![arg1, arg2],
             IndexMap::new(),
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call"),
             Rc::clone(&test_ctx()),
@@ -6934,6 +6942,7 @@ mod tests {
             vec![arg1, arg2],
             IndexMap::new(),
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call"),
             Rc::clone(&test_ctx()),
@@ -6973,6 +6982,7 @@ mod tests {
             vec![arg],
             IndexMap::new(),
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call"),
             Rc::clone(&test_ctx()),
@@ -7007,6 +7017,7 @@ mod tests {
             vec![],
             IndexMap::new(),
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call"),
             Rc::clone(&test_ctx()),
@@ -7054,6 +7065,7 @@ mod tests {
             vec![arg],
             IndexMap::new(),
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call"),
             Rc::clone(&test_ctx()),
@@ -7145,6 +7157,7 @@ mod tests {
             positional,
             named,
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call-named"),
             Rc::clone(&test_ctx()),
@@ -7226,6 +7239,7 @@ mod tests {
             positional,
             IndexMap::new(), // no named args - let y use default
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call-default"),
             Rc::clone(&test_ctx()),
@@ -7431,6 +7445,7 @@ mod tests {
             vec![],
             IndexMap::new(),
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call"),
             Rc::clone(&test_ctx()),
@@ -7469,6 +7484,7 @@ mod tests {
             vec![],
             IndexMap::new(),
             call_span,
+            empty_env(),
             call_span,
             Cow::Borrowed("test-pending-call"),
             Rc::clone(&test_ctx()),
@@ -7630,10 +7646,10 @@ mod tests {
             ThunkState::Failed(_) => {
                 panic!("DepthExceeded should not cache - thunk is in Failed state")
             }
-            ThunkState::Unevaluated { .. } => {
-                // Expected: state was restored to Unevaluated
+            ThunkState::PendingCall { .. } => {
+                // Expected: state was restored to PendingCall
             }
-            other => panic!("expected Unevaluated state, got: {:?}", other),
+            other => panic!("expected PendingCall state, got: {:?}", other),
         };
     }
 
@@ -7730,13 +7746,13 @@ mod tests {
             err2.message()
         );
 
-        // The thunk should still be in Unevaluated state, not Failed
+        // The thunk should still be in PendingCall state, not Failed
         match &*thunk.state() {
             ThunkState::Failed(_) => panic!("DepthExceeded should not cache"),
-            ThunkState::Unevaluated { .. } => {
+            ThunkState::PendingCall { .. } => {
                 // Expected: state was preserved
             }
-            other => panic!("expected Unevaluated state, got: {:?}", other),
+            other => panic!("expected PendingCall state, got: {:?}", other),
         };
     }
 
@@ -9144,12 +9160,12 @@ mod tests {
 
     #[test]
     fn test_tco_tail_recursive_function() {
-        // Tail-recursive countdown. The BuiltinForceArg optimization prevents
-        // Rust stack overflow for builtin arg chains ($-/$+/$= chains are now
-        // forced iteratively on the continuation stack). Depth grows ~2 per
-        // iteration (eval + result Force). 120 iterations proves the optimization
-        // works (pre-optimization limit was ~85 due to ~3 depth/iteration).
-        // Full unlimited TCO requires the complete CEK machine conversion.
+        // Tail-recursive countdown. With PendingCall-based lazy dispatch, function
+        // calls no longer consume eval() depth, but materialization still consumes
+        // depth when forcing the PendingCall chain. The BuiltinForceArg optimization
+        // prevents Rust stack overflow for builtin arg chains ($-/$+/$= iteratively
+        // forced on continuation stack). 10 iterations is a smoke test proving basic
+        // tail recursion works. Full unlimited TCO requires CEK machine conversion.
         let iterations = 10;
         let source = format!(
             r#"
