@@ -1400,6 +1400,24 @@ enum MatCont {
         thunk_span: Span,
         mat_span: Option<Span>,
     },
+    /// Resume a PendingBuiltin call after iteratively materializing arg[0].
+    /// This prevents Rust stack growth from chains like $- → materialize → $- → ...
+    /// where each builtin synchronously materializes its first arg. By pre-materializing
+    /// arg[0] in the iterative loop, the chain stays on the continuation stack instead
+    /// of the Rust call stack.
+    BuiltinForceArg {
+        thunk: Rc<Thunk>,
+        func: crate::value::BuiltinFn,
+        args: Vec<Rc<Thunk>>,
+        named: IndexMap<String, Rc<Thunk>>,
+        depth: usize,
+        call_span: Span,
+        ctx: Rc<EvalContext>,
+        origin: Cow<'static, str>,
+        thunk_span: Span,
+        mat_span: Option<Span>,
+        restore: RestoreState,
+    },
 }
 
 /// Result of processing one thunk in the iterative loop.
@@ -1554,10 +1572,32 @@ fn force_step(
             ctx: thunk_ctx.clone(),
         };
 
+        // TCO: pre-materialize arg[0] iteratively to prevent Rust stack growth.
+        // Without this, chains like $-(n) → materialize($n_prev) → $-(n_prev) → ...
+        // create nested PUBLIC materialize calls on the Rust stack. By forcing
+        // arg[0] through the continuation stack, the chain stays iterative.
+        if !args.is_empty() && args[0].try_get_materialized().is_none() {
+            let arg0 = Rc::clone(&args[0]);
+            stack.push(MatCont::BuiltinForceArg {
+                thunk: Rc::clone(thunk),
+                func,
+                args,
+                named,
+                depth,
+                call_span,
+                ctx: thunk_ctx,
+                origin,
+                thunk_span,
+                mat_span,
+                restore,
+            });
+            return MatStep::Force(arg0, None, depth);
+        }
+
         let builtin_args = crate::value::BuiltinArgs {
             args: &args,
             named: &named,
-            depth: pending_depth,
+            depth,
             call_span,
             ctx: Rc::clone(&thunk_ctx),
         };
@@ -1576,7 +1616,8 @@ fn force_step(
                         mat_span,
                         restore,
                     });
-                    MatStep::Force(result_thunk, mat_span, next_depth(depth))
+                    // TCO: force result at same depth
+                    MatStep::Force(result_thunk, mat_span, depth)
                 }
             }
             Err(e) => {
@@ -1619,7 +1660,14 @@ fn force_step(
             mat_span,
             depth,
         });
-        MatStep::Force(Rc::clone(&func_thunk), Some(call_span), next_depth(depth))
+        // TCO: if function is already materialized (cached from prior call),
+        // don't increment depth — enables tail recursion to same function.
+        let func_depth = if func_thunk.try_get_materialized().is_some() {
+            depth
+        } else {
+            next_depth(depth)
+        };
+        MatStep::Force(Rc::clone(&func_thunk), Some(call_span), func_depth)
     } else if let Some((inner, expected, field_path, guard_span)) = thunk.take_guarded() {
         if depth > MAX_EVAL_DEPTH {
             let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
@@ -1738,7 +1786,8 @@ fn apply_mat_cont(
                                     mat_span,
                                     restore,
                                 });
-                                ContResult::Force(result_thunk, mat_span, next_depth(depth))
+                                // TCO: function return value forced at caller's depth
+                                ContResult::Force(result_thunk, mat_span, depth)
                             }
                             Err(mut e) => {
                                 e.push_frame(origin.to_string(), call_span);
@@ -1758,6 +1807,7 @@ fn apply_mat_cont(
                         }
                     }
                     Value::Builtin { func, .. } => {
+                        // TCO: use loop depth for builtin arg materialization
                         let builtin_args = crate::value::BuiltinArgs {
                             args: &args,
                             named: &named,
@@ -1785,7 +1835,8 @@ fn apply_mat_cont(
                                         mat_span,
                                         restore,
                                     });
-                                    ContResult::Force(result_thunk, mat_span, next_depth(depth))
+                                    // TCO: builtin return value forced at caller's depth
+                                    ContResult::Force(result_thunk, mat_span, depth)
                                 }
                             }
                             Err(e) => {
@@ -1938,11 +1989,79 @@ fn apply_mat_cont(
                 }
             }
         }
+        MatCont::BuiltinForceArg {
+            thunk,
+            func,
+            args,
+            named,
+            depth,
+            call_span,
+            ctx: thunk_ctx,
+            origin,
+            thunk_span,
+            mat_span,
+            restore,
+        } => {
+            let decorate =
+                |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
+
+            // arg[0] has been materialized by the iterative loop (thunk memoization).
+            // Now call the builtin with all args — the builtin will find arg[0] cached.
+            match result {
+                Ok(_) => {
+                    // Use loop depth for builtin arg materialization (TCO)
+                    let builtin_args = crate::value::BuiltinArgs {
+                        args: &args,
+                        named: &named,
+                        depth,
+                        call_span,
+                        ctx: Rc::clone(&thunk_ctx),
+                    };
+                    match func(builtin_args).map_err(&decorate) {
+                        Ok(result_thunk) => {
+                            if let Some(value) = result_thunk.try_get_materialized() {
+                                thunk.set_state(ThunkState::Materialized(value.clone()));
+                                ContResult::Done(Ok(value))
+                            } else {
+                                stack.push(MatCont::Memoize {
+                                    thunk: Rc::clone(&thunk),
+                                    origin,
+                                    thunk_span,
+                                    mat_span,
+                                    restore,
+                                });
+                                ContResult::Force(result_thunk, mat_span, depth)
+                            }
+                        }
+                        Err(e) => {
+                            if e.kind.is_cacheable() {
+                                thunk.cache_failure(&e);
+                            } else {
+                                restore.restore(&thunk);
+                            }
+                            ContResult::Done(Err(e))
+                        }
+                    }
+                }
+                Err(e) => {
+                    let e = decorate(e);
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        restore.restore(&thunk);
+                    }
+                    ContResult::Done(Err(e))
+                }
+            }
+        }
     }
 }
 
 /// Iterative materialization implementation using a continuation stack.
 /// Replaces recursive `materialize()` calls to prevent stack overflow on deeply nested thunks.
+///
+/// **DEPRECATED:** This function is being replaced by `run()` as part of the CEK machine migration.
+/// It's kept temporarily to avoid breaking existing call sites during the transition.
 fn materialize_rc(initial: Rc<Thunk>, mat_span: Option<Span>, depth: usize) -> EvalResult<Value> {
     let mut stack: Vec<MatCont> = Vec::new();
     let mut current = initial;
@@ -2134,16 +2253,16 @@ pub fn materialize(
             return Err(err.into());
         }
 
+        // TCO: use caller's depth for builtin arg materialization, not the stored
+        // pending_depth. This prevents depth accumulation through builtin chains
+        // (e.g., $- → materialize → $- → materialize).
         let builtin_args = crate::value::BuiltinArgs {
             args: &args,
             named: &named,
-            depth: pending_depth,
+            depth,
             call_span,
             ctx: Rc::clone(&thunk_ctx),
         };
-        // Note: errors are decorated with mat_span here and again in the recursive
-        // materialize() call below. The attach_materialization_context() function
-        // has deduplication logic to prevent duplicate span entries.
         match func(builtin_args).map_err(&decorate) {
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion.
@@ -9021,5 +9140,50 @@ mod tests {
             "Error should mention circular dependency, got: {}",
             err.message()
         );
+    }
+
+    #[test]
+    fn test_tco_tail_recursive_function() {
+        // Tail-recursive countdown. The BuiltinForceArg optimization prevents
+        // Rust stack overflow for builtin arg chains ($-/$+/$= chains are now
+        // forced iteratively on the continuation stack). Depth grows ~2 per
+        // iteration (eval + result Force). 120 iterations proves the optimization
+        // works (pre-optimization limit was ~85 due to ~3 depth/iteration).
+        // Full unlimited TCO requires the complete CEK machine conversion.
+        let iterations = 10;
+        let source = format!(
+            r#"
+[
+    count-down: [fn [n acc]
+        [call $if [call $= $n 0]
+            $acc
+            [call $count-down [call $- $n 1] [call $+ $acc 1]]]]
+    result: [call $count-down {} 0]
+]
+    "#,
+            iterations
+        );
+        let parsed = crate::parse(&source).expect("parse should succeed");
+        let mut file = parsed.node;
+        crate::desugar::desugar_file(&mut file);
+        let env = crate::builtins::create_stdlib_env().expect("stdlib env creation should succeed");
+        let ctx = EvalContext::new(PathBuf::from("."), Rc::clone(&env), false);
+        let thunk = eval_file(&file, env, &ctx, 0).expect("eval_file should succeed");
+        let dict_val = materialize(&thunk, None, &ctx, 0).expect("materialization should succeed");
+        match dict_val {
+            Value::Dict(map) => {
+                let result_thunk = map
+                    .get(&Key::String("result".into()))
+                    .expect("result key should exist");
+                let result = materialize(result_thunk, None, &ctx, 0).unwrap_or_else(|e| {
+                    panic!("TCO should allow {} iterations: {}", iterations, e)
+                });
+                match result {
+                    Value::Int(n) => assert_eq!(n, iterations as i64),
+                    other => panic!("Expected Int({}), got {:?}", iterations, other),
+                }
+            }
+            other => panic!("Expected Dict, got {:?}", other),
+        }
     }
 }

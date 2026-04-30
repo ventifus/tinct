@@ -1,0 +1,2 @@
+[f: [fn [x] [call $f [call $+ $x 1]]]
+ result: [call $f 0]]
