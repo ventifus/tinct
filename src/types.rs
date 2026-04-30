@@ -3228,7 +3228,10 @@ mod tests {
             &mut state,
             span,
         );
-        assert!(result.is_ok(), "same-name TypeVar with different levels should unify via [U-REFL]");
+        assert!(
+            result.is_ok(),
+            "same-name TypeVar with different levels should unify via [U-REFL]"
+        );
         assert!(
             subst.type_map.is_empty(),
             "fast path must not bind anything in the substitution"

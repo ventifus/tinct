@@ -215,7 +215,10 @@ impl<'a> Lexer<'a> {
                     self.advance();
                 }
                 '\r' => {
-                    // Handle CRLF
+                    // Handle CRLF. A newline (even as part of CRLF) acts as whitespace
+                    // for bracket-access detection: `[` on the next line is never a
+                    // BracketAccess on the previous line's value.
+                    self.had_whitespace_before = true;
                     let start = self.current_position();
                     self.advance();
                     if self.peek_char() == Some('\n') {
@@ -231,6 +234,9 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '\n' => {
+                    // A newline acts as whitespace for bracket-access detection: `[` on
+                    // the next line is never a BracketAccess on the previous line's value.
+                    self.had_whitespace_before = true;
                     let start = self.current_position();
                     self.advance();
                     let end = self.current_position();
@@ -1054,6 +1060,25 @@ mod tests {
                 Token::BareWord("b".into())
             ]
         );
+    }
+
+    #[test]
+    fn test_newline_prevents_bracket_access() {
+        // A newline between `]` and `[` must produce OpenBracket, not BracketAccess.
+        // `]\n[` is two separate expressions (the `\n` is treated as whitespace for
+        // access-context purposes). Without this, `[x: 42]\n[y: $x]` would parse the
+        // second dict as a bracket access on the first dict rather than a new expression.
+        assert_eq!(
+            tok("]\n["),
+            vec![Token::CloseBracket, Token::Newline, Token::OpenBracket]
+        );
+        // CRLF also prevents bracket access
+        assert_eq!(
+            tok("]\r\n["),
+            vec![Token::CloseBracket, Token::Newline, Token::OpenBracket]
+        );
+        // Same-line `][` still produces BracketAccess
+        assert_eq!(tok("]["), vec![Token::CloseBracket, Token::BracketAccess]);
     }
 
     #[test]

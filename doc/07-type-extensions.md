@@ -12,7 +12,7 @@ The type checker and evaluator must agree on TypeAssert semantics. Currently the
 
 ```
 Expr::TypeAssert { expr, annotation }
-→ Expr::TypeAssert { expr, annotation, resolved_type: Option<Type> }
+→ Expr::TypeAssert { expr, annotation, resolved_type: RefCell<Option<Type>> }
 ```
 
 The parser initializes `resolved_type: None`. The type checker fills it in during `resolve_type_assert()` via `resolve_annotation()`, applying the current substitution to produce a fully-substituted concrete type. Type aliases are resolved at this stage — the evaluator never resolves aliases itself. If type checking is skipped (`--no-typecheck` mode), `resolved_type` remains `None` and the evaluator degrades gracefully (see below).
@@ -170,13 +170,13 @@ For guard failures (detected on field access), the error includes the field path
 
 | Component | Current | After |
 |-----------|---------|-------|
-| `Expr::TypeAssert` | `{ expr, annotation }` | `{ expr, annotation, resolved_type: Option<Type> }` |
+| `Expr::TypeAssert` | `{ expr, annotation }` | `{ expr, annotation, resolved_type: RefCell<Option<Type>> }` |
 | Parser | — | Sets `resolved_type: None` |
 | `resolve_type_assert()` | Returns resolved `Type` | Also sets `resolved_type` on the AST node |
 | `eval()` TypeAssert branch | Extracts type name string, compares via `type_name()` | Reads `resolved_type`; primitives → `value_matches_type`; records → shape check + guard wrapping |
 | `eval()` signature | Unchanged | Unchanged (no new parameters) |
-| New: `value_matches_type()` | — | `fn(&Value, &Type, Span) -> Result<bool, EvalError>` — immediate rules only |
-| New: `guard()` | — | `fn(Rc<Thunk>, Type, Vec<String>, Span) -> Rc<Thunk>` — wraps thunk in `Guarded` state |
+| New: `value_matches_type()` | — | `fn(&Value, &Type) -> bool` — immediate primitive rules only; no span or error return |
+| New: `Thunk::new_guarded()` | — | `fn(Rc<Thunk>, Type, Vec<String>, Span) -> Thunk` — creates a `Thunk` in `Guarded` state; caller wraps in `Rc` |
 | New: `ThunkState::Guarded` | — | `{ inner: Rc<Thunk>, expected: Type, field_path: Vec<String>, guard_span: Span }` |
 | `type_name()` | Used for TypeAssert validation | Retained for error messages and `--no-typecheck` fallback |
 | TypeAssert error messages | "expected Int, got String" | Structural path: "field \"age\": expected Int, got String" |

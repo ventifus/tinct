@@ -1035,18 +1035,27 @@ mod tests {
     #[test]
     fn test_formatter_error_unterminated_string() {
         let result = format_source("[\"unterminated");
-        assert!(result.is_err(), "unterminated string should produce a lex error");
+        assert!(
+            result.is_err(),
+            "unterminated string should produce a lex error"
+        );
     }
 
     #[test]
     fn test_formatter_error_bare_dollar() {
         let result = format_source("$");
-        assert!(result.is_err(), "bare $ without identifier should produce a lex error");
+        assert!(
+            result.is_err(),
+            "bare $ without identifier should produce a lex error"
+        );
     }
 
     #[test]
     fn test_formatter_error_invalid_escape() {
         let result = format_source(r#""\q""#);
-        assert!(result.is_err(), "invalid escape sequence \\q should produce a lex error");
+        assert!(
+            result.is_err(),
+            "invalid escape sequence \\q should produce a lex error"
+        );
     }
 }

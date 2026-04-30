@@ -1,0 +1,13 @@
+# Cargo configuration for tinct
+#
+# Sets the default stack size for all binaries (including test binaries) to 64MB.
+# This prevents stack overflow in the test suite when deeply-nested Rc<Environment>
+# chains are dropped during test teardown. The 64MB limit matches the CLI worker
+# thread stack size in src/main.rs (WORKER_STACK_SIZE = 64 * 1024 * 1024).
+#
+# Note: RUST_MIN_STACK only affects std::thread::Builder-spawned threads, not the
+# main thread. The linker flag -z stacksize sets the main thread stack size via
+# the ELF PT_GNU_STACK segment. ulimit -s is inherited but cannot override a
+# smaller limit set by the binary itself.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,-z,stacksize=67108864"]

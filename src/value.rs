@@ -1226,4 +1226,128 @@ mod tests {
         };
         assert_ne!(p.clone(), p);
     }
+
+    #[test]
+    fn test_thunk_new_guarded_state() {
+        let span = test_span(1, 1, 1, 5);
+        let inner = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let thunk = Thunk::new_guarded(
+            Rc::clone(&inner),
+            Type::Int,
+            vec!["field".to_string()],
+            span,
+        );
+        let state = thunk.state();
+        match &*state {
+            ThunkState::Guarded {
+                expected,
+                field_path,
+                ..
+            } => {
+                assert_eq!(*expected, Type::Int);
+                assert_eq!(field_path, &["field".to_string()]);
+            }
+            other => panic!("expected Guarded state, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_take_guarded_returns_components() {
+        let span = test_span(1, 1, 1, 5);
+        let inner = Rc::new(Thunk::new_materialized(Value::Int(99), span));
+        let thunk = Thunk::new_guarded(Rc::clone(&inner), Type::Int, vec!["x".to_string()], span);
+
+        let result = thunk.take_guarded();
+        assert!(
+            result.is_some(),
+            "take_guarded should succeed on Guarded thunk"
+        );
+
+        let (taken_inner, taken_expected, taken_path, _taken_span) = result.unwrap();
+        assert!(
+            Rc::ptr_eq(&taken_inner, &inner),
+            "inner thunk should be the same Rc"
+        );
+        assert_eq!(taken_expected, Type::Int);
+        assert_eq!(taken_path, vec!["x".to_string()]);
+
+        // After take_guarded, thunk should be InProgress
+        let state = thunk.state();
+        match &*state {
+            ThunkState::InProgress => {}
+            other => panic!("expected InProgress after take_guarded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_take_guarded_on_non_guarded_returns_none() {
+        let span = test_span(1, 1, 1, 5);
+        let thunk = Thunk::new_materialized(Value::Int(7), span);
+
+        let result = thunk.take_guarded();
+        assert!(
+            result.is_none(),
+            "take_guarded on Materialized thunk should return None"
+        );
+
+        // State should be unchanged (still Materialized)
+        let state = thunk.state();
+        match &*state {
+            ThunkState::Materialized(v) => assert_eq!(*v, Value::Int(7)),
+            other => panic!("expected Materialized state to be preserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_thunk_new_guarded_fields() {
+        let span = test_span(1, 1, 1, 5);
+        let inner = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let thunk = Rc::new(Thunk::new_guarded(
+            Rc::clone(&inner),
+            Type::Int,
+            vec!["foo".to_string()],
+            span,
+        ));
+        let result = thunk.take_guarded();
+        assert!(result.is_some());
+        let (got_inner, got_type, got_path, _got_span) = result.unwrap();
+        assert_eq!(got_path, vec!["foo".to_string()]);
+        assert!(matches!(got_type, Type::Int));
+        assert!(Rc::ptr_eq(&got_inner, &inner));
+    }
+
+    #[test]
+    fn test_guarded_materialized_state_is_stable() {
+        // Verifies that once a Guarded thunk is transitioned to Materialized,
+        // the state is stable on re-access. Tests the state machine directly;
+        // the full guard validation path (parse→eval→materialize) is covered
+        // by test_guarded_thunk_preserves_inner_origin in eval.rs.
+        let span = test_span(1, 1, 1, 5);
+        let inner = Rc::new(Thunk::new_materialized(Value::Int(100), span));
+        let thunk = Thunk::new_guarded(Rc::clone(&inner), Type::Int, vec![], span);
+
+        // Verify initial state is Guarded
+        {
+            let state = thunk.state();
+            assert!(
+                matches!(&*state, ThunkState::Guarded { .. }),
+                "initial state should be Guarded"
+            );
+        }
+
+        // Directly transition to Materialized to verify state is stable on re-access.
+        thunk.set_state(ThunkState::Materialized(Value::Int(100)));
+
+        // Re-access: should return cached Materialized value
+        let state = thunk.state();
+        match &*state {
+            ThunkState::Materialized(v) => assert_eq!(*v, Value::Int(100)),
+            other => panic!("expected Materialized after guard success, got {other:?}"),
+        }
+
+        // try_get_materialized should also work
+        drop(state);
+        let cached = thunk.try_get_materialized();
+        assert_eq!(cached, Some(Value::Int(100)));
+    }
 }

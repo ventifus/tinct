@@ -31,17 +31,24 @@ build:
 build-release:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo build --release
 
-# Run all tests
+# Run all tests: lib tests (single-threaded to prevent parallel 128MB-thread exhaustion)
+# followed by corpus integration tests, in separate containers.
+# --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --lib -- --test-threads=1
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test corpus_tests
 
 # Run tests with output
 test-verbose:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test -- --nocapture
+    {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test -- --nocapture
 
 # Run a specific test
 test-one TEST:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test {{TEST}}
+
+# Run only lib unit tests (no integration tests)
+test-lib:
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --lib
 
 # Run only corpus tests
 test-corpus:

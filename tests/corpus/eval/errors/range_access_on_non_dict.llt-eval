@@ -2,4 +2,4 @@
 
 $x[0..2]
 ===
-[E010] type mismatch: expected Dict
+[E010] range access: expected Dict, got Int
