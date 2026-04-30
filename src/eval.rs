@@ -539,7 +539,7 @@ pub fn eval_document(
 
         // Intermediate expression: materialize and extract dict bindings
         let thunk = eval(expr, Rc::clone(&current_env), ctx, depth)?;
-        let value = materialize(&thunk, Some(&expr.span), ctx, depth)?;
+        let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
 
         match value {
             Value::Dict(map) => {
@@ -761,7 +761,10 @@ fn eval_call(
     call_span: &Span,
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
-    // Evaluate and materialize the function
+    // Evaluate and materialize the function.
+    // Function resolution is eager by design: the function must be resolvable
+    // for PendingCall thunk construction. CEK machine migration (iterative-eval
+    // sprint) will defer this via the CALL continuation.
     let func_thunk = eval(func_expr, Rc::clone(env), ctx, depth + 1)?;
     let func_val = materialize(&func_thunk, Some(call_span), ctx, depth + 1)?;
 
@@ -1782,7 +1785,7 @@ pub fn materialize(
 /// `deep_materialize_thunk` for the dual-purpose semantics.
 pub fn deep_materialize(val: &Value, ctx: &Rc<EvalContext>, depth: usize) -> EvalResult<Value> {
     let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
-    deep_materialize_impl(val, ctx, depth, &mut cache, 0)
+    deep_materialize_impl(val, ctx, depth, &mut cache, 0, Span::origin())
 }
 
 /// Deep-force a value, recursively materializing all thunks in dicts and seqs.
@@ -1793,19 +1796,20 @@ pub fn deep_materialize(val: &Value, ctx: &Rc<EvalContext>, depth: usize) -> Eva
 /// the generic `depth > MAX_EVAL_DEPTH` guard would fire first via the head path
 /// (where `seq_depth` is reset to 0), producing a generic error instead of the
 /// targeted "cannot deep-materialize an infinite Seq" message.
+///
+/// `current_span` is the source span of the thunk currently being traversed,
+/// used as the error location for depth-exceeded and infinite-Seq errors; callers
+/// at the entry point should pass [`Span::origin()`].
 fn deep_materialize_impl(
     val: &Value,
     ctx: &Rc<EvalContext>,
     depth: usize,
     cache: &mut std::collections::HashMap<*const Thunk, Option<Rc<Thunk>>>,
     seq_depth: usize,
+    current_span: Span,
 ) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
-        // Span::origin() is correct here: deep_materialize_impl operates on a Value,
-        // not a Thunk, so no source span is available at this level. The caller
-        // (deep_materialize_thunk) adds a "deep-materializing" frame with the thunk's
-        // span when propagating this error up, providing call-site context.
-        return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, Span::origin()).into());
+        return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, current_span).into());
     }
     match val {
         Value::Dict(map) => {
@@ -1837,7 +1841,7 @@ fn deep_materialize_impl(
                 return Err(EvalError::resource_limit_exceeded(
                     "cannot deep-materialize an infinite Seq: use $collect with $take first"
                         .to_string(),
-                    Span::origin(),
+                    current_span,
                 )
                 .into());
             }
@@ -1893,7 +1897,11 @@ fn deep_materialize_thunk(
     let thunk_ptr = Rc::as_ptr(thunk);
     match cache.get(&thunk_ptr) {
         Some(Some(cached)) => return Ok(Rc::clone(cached)), // sharing hit
-        Some(None) => return Ok(Rc::clone(thunk)),          // cycle: return as-is
+        // `Some(None)` is the in-progress sentinel: this thunk is currently being traversed
+        // by an ancestor call in the same deep_materialize invocation. Return the original thunk
+        // without recursing to break the structural cycle. See the "Deep Materialization"
+        // section in doc/08-evaluation.md for the dual-purpose cache design.
+        Some(None) => return Ok(Rc::clone(thunk)),
         None => {}
     }
     // Mark as in-progress (cycle sentinel)
@@ -1911,7 +1919,7 @@ fn deep_materialize_thunk(
             return Err(e);
         }
     };
-    let forced = match deep_materialize_impl(&v, ctx, depth + 1, cache, seq_depth) {
+    let forced = match deep_materialize_impl(&v, ctx, depth + 1, cache, seq_depth, thunk_span) {
         Ok(v) => v,
         Err(mut e) => {
             // Clean up sentinel on error to prevent cache poisoning

@@ -1,5 +1,15 @@
 {
-  "permissions": { "deny": [ "Bash" ] },
+  "permissions": {
+    "deny": [
+      "Bash",
+      "Write(/tmp/**)",
+      "Edit(/tmp/**)",
+      "Write(../**/tmp/**)",
+      "Edit(../**/tmp/**)",
+      "Write(**/*.py)",
+      "Edit(**/*.py)"
+    ]
+  },
   "mcpServers": {
     "mempalace-tinct": {
       "command": "python",

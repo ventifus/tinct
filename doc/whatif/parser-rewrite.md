@@ -191,8 +191,9 @@ and returns them alongside the AST in a `ParseOutput` struct:
 ```rust
 pub struct ParseOutput {
     pub file: Spanned<File>,
-    pub leading_comments: BTreeMap<usize, Vec<String>>,  // keyed by span.start.offset
-    pub trailing_comments: BTreeMap<usize, String>,       // keyed by span.start.offset
+    pub source: String,                                    // original input — for span-based source lookups
+    pub leading_comments: BTreeMap<usize, Vec<String>>,   // keyed by span.start.offset
+    pub trailing_comments: BTreeMap<usize, String>,        // keyed by span.start.offset
 }
 ```
 
@@ -201,10 +202,16 @@ Leading comments (appearing before an AST node) are keyed by the
 on the same line after a value) are keyed by the `span.start.offset` of the
 node they follow. The formatter looks up both maps for each node it emits.
 
+`source` stores the original input string. The formatter uses it for two
+purposes: (1) rendering `Expr::Error(Span)` nodes verbatim by slicing
+`source[span.start.offset..span.end.offset]`, and (2) recovering the
+bare-word vs quoted-string distinction for `Expr::Str` nodes in the current
+syntax (see §AST-Based Formatter below).
+
 `Spanned<T>` is completely unchanged — no new fields, no broken `PartialEq`,
 no memory overhead in evaluator or type-checker paths. The evaluator and type
-checker receive `Spanned<File>` as before; only the formatter consumes the
-comment maps.
+checker receive `Spanned<File>` as before; only the formatter consumes
+`source` and the comment maps.
 
 `parse(source: &str) -> Result<ParseOutput, ParseError>`. There is no parser
 selection parameter — the iterative parser replaces pest entirely (see
@@ -226,6 +233,21 @@ Key properties:
   comparisons are all eliminated.
 - **Single-line / multi-line decision**: driven by rendered width of the AST
   subtree, same policy as today but computed from node structure.
+- **String form preservation**: in the current tinct syntax, both
+  `Token::BareWord` and `Token::QuotedString` collapse to `Expr::Str` during
+  parsing — the AST does not distinguish them. The formatter recovers the
+  original form via a span-based source lookup: for each `Expr::Str` node,
+  it checks `ParseOutput.source.as_bytes()[span.start.offset]`. If that byte
+  is `b'"'`, the string was quoted and is emitted with `"..."` delimiters and
+  proper escaping; otherwise it was a bare word and is emitted verbatim
+  without quotes. This span-peek is isolated to the `Expr::Str` arm of the
+  formatter's expression walker. It is removed when unified syntax Phase 2
+  (`doc/whatif/new-syntax.md`) adopts bare-word references: at that point all
+  `Expr::Str` nodes originate from quoted strings only (bare words become
+  `Expr::VarRef`), and the formatter emits `"..."` unconditionally. The
+  `Expr` enum is not modified for this purpose — no `Expr::BareWord` variant
+  is introduced — preserving schema stability for the macro system's
+  AST-as-dict projection (`doc/whatif/macros.md` §Phase 1).
 
 Trade-off: the rewritten formatter requires a successful parse. Files with
 syntax errors cannot be formatted — the formatter returns an error. This is
@@ -280,13 +302,14 @@ for the span verbatim, preserving partial formatting capability.
 **Current:** `parse()` returns `Result<Spanned<File>, ParseError>`.
 
 **Proposed:** `parse()` returns `Result<ParseOutput, ParseError>` where
-`ParseOutput` carries `Spanned<File>` alongside two `BTreeMap<usize, _>`
-comment tables. `Spanned<T>` is entirely unchanged — no new fields, no impact
-on `PartialEq`, no overhead in evaluator or type-checker code paths.
+`ParseOutput` carries `Spanned<File>`, the original `source: String`, and two
+`BTreeMap<usize, _>` comment tables. `Spanned<T>` is entirely unchanged — no
+new fields, no impact on `PartialEq`, no overhead in evaluator or type-checker
+code paths.
 
 **Impact:** Minor — callers of `parse()` unwrap `ParseOutput.file` for the
-AST; the formatter additionally consumes the comment maps. The evaluator and
-type checker are unaffected.
+AST; the formatter additionally consumes `source` and the comment maps. The
+evaluator and type checker are unaffected.
 
 **Compatibility constraint**: the `(level, slot)` de Bruijn annotation planned
 in `doc/whatif/arena-patterns.md` Phase 1 annotates `VarRef` nodes in the AST

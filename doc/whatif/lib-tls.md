@@ -1,4 +1,4 @@
-# What If: TLS, PKI, and HTTP Protocol Support for tinct
+# What If: TLS, PKI, and HTTP Protocol Support for tinct (lib-tls)
 
 What would it take to give tinct a complete TLS configuration story — CA roots, client certificates, certificate pinning, and protocol negotiation — while keeping the capability model clean and the design appropriate for a configuration language?
 

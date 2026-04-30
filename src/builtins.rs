@@ -29,7 +29,7 @@ use crate::error::{ArityBound, ErrorKind, EvalError, EvalResult};
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
 use crate::eval::{invoke_function, materialize, CallContext, MAX_EVAL_DEPTH};
-use crate::value::{BuiltinArgs, BuiltinFn, Environment, Key, Thunk, Value};
+use crate::value::{BuiltinArgs, BuiltinFn, Environment, Key, Thunk, ThunkState, Value};
 
 /// Maximum collection size for $collect (1,000,000 elements).
 /// Prevents memory exhaustion from infinite sequences without $take.
@@ -2164,6 +2164,8 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
+    // keys_thunk is pre-wrapped as Materialized at the filter call site
+    debug_assert!(matches!(&*keys_thunk.state(), ThunkState::Materialized(_)));
     let keys = materialize(&keys_thunk, None, &ctx, depth)?;
     let keys_map = match keys {
         Value::Dict(ref m) => m,
@@ -2210,6 +2212,8 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     // Get the value from the dict
+    // dict_thunk is pre-wrapped as Materialized at the filter call site
+    debug_assert!(matches!(&*dict_thunk.state(), ThunkState::Materialized(_)));
     let dict = materialize(&dict_thunk, None, &ctx, depth)?;
     let dict_map = match dict {
         Value::Dict(ref m) => m,
@@ -2272,7 +2276,7 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         builtin_filter_dict_step,
         tail_args,
         IndexMap::new(),
-        depth,
+        depth + 1,
         call_span,
         Cow::Borrowed("call $filter"),
         Rc::clone(&ctx),
@@ -2554,7 +2558,16 @@ fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let n = materialize(&args[0], None, &ctx, depth)?;
     let n_int = match n {
         Value::Int(i) => i,
-        _ => unreachable!("drop_seq_step: n_remaining must be Int"),
+        other => {
+            return Err(EvalError::internal(
+                format!(
+                    "drop: expected Int for remaining count, got {}",
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into())
+        }
     };
 
     if n_int <= 0 {

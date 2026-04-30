@@ -580,6 +580,18 @@ formatter reads the flag directly and emits `[call f x]` when
 `implied` is false and `[f x]` when true. The author's choice is
 preserved without inspecting the token stream.
 
+**String rendering simplification.** Under the current tinct syntax,
+the formatter must distinguish bare-word strings from quoted strings
+(`hello` vs `"hello"`) — both parse to `Expr::Str` but must be
+emitted differently. The AST-based formatter handles this via a
+span-based source lookup on `ParseOutput.source` (see
+`doc/whatif/parser-rewrite.md` §AST-Based Formatter, "String form
+preservation"). Phase 2 of this proposal eliminates the problem
+entirely: bare words in value position become `Expr::VarRef`
+(variable references), never `Expr::Str`. All `Expr::Str` nodes
+originate exclusively from quoted strings, so the formatter emits
+`"..."` unconditionally and the span-peek logic is removed.
+
 ### Interaction with Structural Contracts
 
 Structural contracts (doc/whatif/structural-contracts.md) declare

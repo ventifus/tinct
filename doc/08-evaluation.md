@@ -883,7 +883,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |
-| `TypeAssert` (`[@Type expr]`) | Strict — materializes expr immediately during eval() | Annotation-time forcing (not access-time). Laziness violation; see eval-lazy-fixes TODO |
+| `TypeAssert` (`[@Type expr]`) | Strict — materializes expr immediately during eval() | Annotation-time forcing (not access-time). Laziness violation; see open TODO: Fix TypeAssert forces materialization in eval() |
 
 **Error reporting impact:** Operations that shift from eager to lazy (e.g., `$if`, `$merge`, `$map`) will report errors at access time rather than construction time. This provides more accurate source locations (pointing to where materialization failed) but changes error timing. Inherently materializing operations continue to produce errors at call time.
 
@@ -893,7 +893,7 @@ This table documents the laziness behavior of every operation and the rationale 
 
 The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively force all thunks in a value tree. This is distinct from selective materialization (which forces only what's needed for computation) — deep materialization forces *everything*, producing a fully-evaluated value tree suitable for serialization or comparison.
 
-**Cache data structure:** `deep_materialize` uses a stack-local `HashMap<*const Thunk, Option<Rc<Thunk>>>` created at the entry point (`eval.rs:1639`) and passed through the recursion. The cache has a dual-purpose design (`eval.rs:1686-1691`):
+**Cache data structure:** `deep_materialize` uses a stack-local `HashMap<*const Thunk, Option<Rc<Thunk>>>` created at the `deep_materialize` entry point and passed through the recursion. The cache has a dual-purpose design (in `deep_materialize_impl`):
 
 | Cache entry | Meaning | Purpose |
 |-------------|---------|---------|
@@ -902,11 +902,11 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 
 **Cache lifecycle:** The cache is created per `deep_materialize` call and dropped on return. It is *not* shared across multiple top-level `deep_materialize` invocations — each call to `$eval` or CLI evaluation creates a fresh cache. The cache is global *within* a single call: all branches of a nested dict or sequence tree share the same cache instance.
 
-**Cycle handling:** When a thunk pointer is encountered for the second time within the same deep materialization (cache entry is `None`), the function returns `Rc::clone(thunk)` — the original thunk, not forced (`eval.rs:1706`). This prevents infinite recursion on cyclic structures (e.g., `[x: $x]` or mutual dict references). The cycle is detected at the *structure* level (same thunk pointer seen twice during traversal), not the *value* level (the thunk's own `InProgress` sentinel, which detects cycles within a single thunk's evaluation).
+**Cycle handling:** When a thunk pointer is encountered for the second time within the same deep materialization (cache entry is `None`), the function returns `Rc::clone(thunk)` — the original thunk, not forced (in `deep_materialize_thunk`). This prevents infinite recursion on cyclic structures (e.g., `[x: $x]` or mutual dict references). The cycle is detected at the *structure* level (same thunk pointer seen twice during traversal), not the *value* level (the thunk's own `InProgress` sentinel, which detects cycles within a single thunk's evaluation).
 
 **Sharing preservation:** When a thunk appears multiple times in the input value tree (e.g., `let shared = [expensive: [call $f]] in [a: $shared  b: $shared]`), the cache ensures the deep-materialized result is a *single* `Rc<Thunk>` shared by all references. Without the cache, `deep_materialize` would create independent copies for each occurrence, breaking `Rc::ptr_eq` and wasting memory.
 
-**Cache cleanup on error:** If `materialize()` or recursive `deep_materialize_impl()` fails, the cache entry is removed before propagating the error (`eval.rs:1716-1718, 1724-1727`). This prevents cache poisoning: a failed thunk leaves no stale `None` sentinel that would cause subsequent encounters to incorrectly return an unevaluated thunk.
+**Cache cleanup on error:** If `materialize()` or recursive `deep_materialize_impl()` fails, the cache entry is removed before propagating the error (in `deep_materialize_impl`). This prevents cache poisoning: a failed thunk leaves no stale `None` sentinel that would cause subsequent encounters to incorrectly return an unevaluated thunk.
 
 **Growth characteristics:** For large dicts, the `HashMap` grows monotonically as new thunks are encountered. The cache never shrinks during traversal — it accumulates all seen thunk pointers until the entire `deep_materialize` call completes. For a dict with 10,000 entries containing shared sub-dicts, the cache may hold thousands of entries. This is acceptable because (a) the cache lifetime is bounded by the single `deep_materialize` call, not the session, and (b) the alternative (no cache) would traverse shared structures multiple times, defeating sharing.
 

@@ -22,7 +22,7 @@ For output, tinct JSON-serializes the final pipeline value to stdout. There is n
 3. **Network I/O** — open TCP and TLS connections; compose HTTP requests from tinct
 4. **`$stdin`** — access stdin as a readable handle (for shell pipeline integration)
 5. **`$env`** — read environment variables, with appropriate sandboxing
-6. **`$sql-open` / `$sql-exec`** — database connectivity (designed separately in `doc/whatif/sql-translation.md`)
+6. **`$sql-open` / `$sql-exec`** — database connectivity (designed separately in `doc/whatif/lib-sql.md`)
 
 ## Why General I/O Matters for tinct
 
@@ -140,7 +140,7 @@ Important: `$revocable` does not revoke handles already opened through the cap. 
 [call $third-party-plugin $pair.cap $$]
 [call $pair.revoke null]   # future opens via $pair.cap fail
 
-# TCP and TLS connections (see doc/whatif/tls.md for TLS configuration)
+# TCP and TLS connections (see doc/whatif/lib-tls.md for TLS configuration)
 [conn:    [call $connect $net "db.internal" 5432]]
 [secure:  [call $tls $net "api.example.com" 443]]
 ```
@@ -258,7 +258,7 @@ llt eval --cap-net net=api.internal --cap-net net=10.42.0.0/16 script.llt
 
 ### TLS Configuration
 
-`$tls net-cap host port` opens a TLS connection. Certificate validation, CA root selection, client certificates, mutual TLS, and HTTP/3 (QUIC) are a substantial design space addressed separately. See `doc/whatif/tls.md` for the full proposal.
+`$tls net-cap host port` opens a TLS connection. Certificate validation, CA root selection, client certificates, mutual TLS, and HTTP/3 (QUIC) are a substantial design space addressed separately. See `doc/whatif/lib-tls.md` for the full proposal.
 
 For Phase 2 implementation: `$tls` uses `rustls` with the system CA store. Full chain validation and hostname verification are always enabled with no skip-verify option.
 
@@ -446,7 +446,7 @@ Phase 3 (future, no commitment): if type classes arrive, `IO` becomes an enforce
 
 **`$connect net-cap host port`:** Resolve hostname, check against NetCap allowlist (hostname entries pre-DNS, CIDR entries post-DNS), open TCP socket. Returns `Value::Handle`.
 
-**`$tls net-cap host port`:** Same allowlist check as `$connect`. Opens TLS socket using `rustls`. Full chain and hostname verification always enabled. Returns `Value::Handle`. See `doc/whatif/tls.md` for CA root configuration and client certificates.
+**`$tls net-cap host port`:** Same allowlist check as `$connect`. Opens TLS socket using `rustls`. Full chain and hostname verification always enabled. Returns `Value::Handle`. See `doc/whatif/lib-tls.md` for CA root configuration and client certificates.
 
 **`$narrow dir-cap subpath`:** Calls `cap_std::fs::Dir::open(subpath)` — RESOLVE_BENEATH applies to `subpath`, so `"../../etc"` fails at narrow time. Returns attenuated `Value::DirCap`.
 
@@ -559,7 +559,7 @@ Phase 2 (future): distinct `Type::DirCap`, `Type::NetCap`, `Type::Handle`.
 [call $emit [call $to-yaml $$]]
 ```
 
-**Prerequisites:** Phase 1 complete; `rustls = "0.23"` in `Cargo.toml`; see `doc/whatif/tls.md` for full TLS configuration design.
+**Prerequisites:** Phase 1 complete; `rustls = "0.23"` in `Cargo.toml`; see `doc/whatif/lib-tls.md` for full TLS configuration design.
 
 ### Phase 3: Atomic Writes, Streaming Fetch, Sandbox Hardening
 
@@ -576,7 +576,7 @@ Atomic file writes (write-to-temp + rename). Streaming fetch response body via `
 ### Prerequisites
 
 - Phase 1: `eval-sandbox-flags` sprint, `include-fd-hardening` sprint
-- Phase 2: Phase 1 complete; `rustls = "0.23"` added; `doc/whatif/tls.md` design accepted
+- Phase 2: Phase 1 complete; `rustls = "0.23"` added; `doc/whatif/lib-tls.md` design accepted
 - Phase 3: Phase 2 complete
 - Phase 4: Phase 3 complete
 
