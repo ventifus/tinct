@@ -404,10 +404,13 @@ row_var_occurs(ρ, Row { fields, tail }):
       Empty     → false
 
 row_var_occurs_in_type(ρ, τ):
+  # S = ambient substitution (implicit parameter — passed through from the call site)
   Record(r)       → row_var_occurs(ρ, r)
   Function(ps, r) → any(row_var_occurs_in_type(ρ, p) for p in ps)
                      ∨ row_var_occurs_in_type(ρ, r)
   Seq(τ)          → row_var_occurs_in_type(ρ, τ)
+  TypeVar(α)      → if α ∈ S.type_map: row_var_occurs_in_type(ρ, S.type_map[α])
+                     else: false
   otherwise       → false
 
 type_var_occurs_in_row(α, Row { fields, tail }):
@@ -525,7 +528,10 @@ unify_tails(t₁, t₂, S):
     (Empty, Empty)           → S
     (RowVar(ρ₁), RowVar(ρ₂)) →
       if ρ₁ == ρ₂: S
-      else: S ∪ {ρ₁ → Row { fields: {}, tail: RowVar(ρ₂) }}
+      else:
+        # Symmetric level lowering (Kiselyov 2013): prevent unsound generalization
+        levels[ρ₂] := min(levels[ρ₁], levels[ρ₂])
+        S ∪ {ρ₁ → Row { fields: {}, tail: RowVar(ρ₂) }}
     (RowVar(ρ), Empty)       → S ∪ {ρ → Row { fields: {}, tail: Empty }}
     (Empty, RowVar(ρ))       → S ∪ {ρ → Row { fields: {}, tail: Empty }}
 ```
@@ -675,7 +681,9 @@ The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and ch
 | `Substitution { map }` | `Substitution { type_map, row_map }` |
 | `collect_type_vars` (single set) | `collect_type_vars` + `collect_row_vars` (two sets) |
 
-**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) became `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` for the source syntax; the type checker owns the fresh-name counter and generates `_t{n}` names during type resolution. This made all openness explicit and eliminated the `Open` variant entirely.
+**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) became `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` for the source syntax; the type checker owns the fresh-name counter and generates `_open{n}` names during type resolution (distinct from the `_t{n}` prefix used for type variables, though both share the same monotonic counter). This made all openness explicit and eliminated the `Open` variant entirely.
+
+**Annotation isolation constraint.** Each annotation containing an anonymous open record (`[x: Int ...]`) gets a fresh row variable generated inline in `resolve_property_dict_as_record`: the name counter is read as `_open{n}` (via `format!("_open{}", state.name_counter)`), the counter is incremented, and the level is registered in `state.levels`. There is no helper method wrapping this logic; the freshening happens at the `Expr::Rest(None)` match arm. This ensures that two annotations with the same shape in different positions (e.g., two function parameters both typed as `[x: Int ...]`) get distinct row variables (`_open3`, `_open4`), preventing spurious constraint propagation. Without this isolation, unifying one annotation's row variable during constraint solving would affect the other annotation's row, causing type errors for structurally identical but semantically independent open records. The isolation is achieved by freshening during the type checking pass, not during parsing — the parser produces `Expr::Rest(None)`, and freshening happens per annotation site, not per source occurrence.
 
 **Structural similarity.** The dict+tail representation was structurally close to the prior `Record(IndexMap<String, Type>, RowRest)` — the field map was preserved as-is, and `RowRest` became `RowTail` with `Closed` → `Empty` and `Open` eliminated. This minimized the migration surface compared to a cons-list representation. Pattern matches on `Record(fields, rest)` became `Record(Row { fields, tail })` — a mechanical transformation.
 

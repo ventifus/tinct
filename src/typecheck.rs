@@ -13,8 +13,9 @@ use crate::types::{
     TypeScheme,
 };
 
-/// A map from expression span (start_offset, end_offset) to the inferred type.
-/// Populated during type checking so hover can look up types without re-inference.
+/// Map from source span `(start_offset, end_offset)` to inferred type. Populated during type
+/// checking so LSP hover/diagnostics can look up types without re-running inference. Offsets
+/// are sufficient as keys; the full `Span` source text is not needed.
 pub type TypeMap = HashMap<(usize, usize), Type>;
 
 /// Type-check a parsed [`File`].
@@ -194,7 +195,7 @@ fn typecheck_document(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Rc<TypeEnv>, Vec<TypeError>> {
     let mut errors = Vec::new();
-    let mut env = Rc::new(TypeEnv::with_parent(Rc::clone(parent_env)));
+    let mut env = Rc::new(TypeEnv::with_parent(parent_env));
     let mut result_type = Type::Record(Row {
         fields: HashMap::new(),
         tail: RowTail::Empty,
@@ -202,7 +203,7 @@ fn typecheck_document(
 
     let exprs = &doc.node.expressions;
     if exprs.is_empty() {
-        let mut result_env = TypeEnv::with_parent(Rc::clone(&env));
+        let mut result_env = TypeEnv::with_parent(&env);
         result_env.insert(
             "$".to_string(),
             Type::Record(Row {
@@ -231,7 +232,7 @@ fn typecheck_document(
                         last_dict_schemes = Some(schemes);
                         last_expr = Some(expr);
                     } else {
-                        let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
+                        let mut new_env = TypeEnv::with_parent(&env);
                         // Thread schemes into the environment
                         for (name, scheme) in &schemes {
                             new_env.insert_scheme(name.clone(), scheme.clone());
@@ -281,7 +282,11 @@ fn typecheck_document(
                         state.level = enclosing_level; // Restore before generalization
                         match &ty {
                             Type::Record(Row { fields, .. }) => {
-                                let mut new_env = TypeEnv::with_parent(Rc::clone(&env));
+                                // Non-dict Record expressions (e.g., from a function call)
+                                // thread field types as generalized schemes, mirroring Dict behavior.
+                                // This enables polymorphic field access for Records returned from
+                                // polymorphic functions.
+                                let mut new_env = TypeEnv::with_parent(&env);
                                 for (name, field_ty) in fields {
                                     let scheme = generalize(enclosing_level, field_ty, state);
                                     new_env.insert_scheme(name.clone(), scheme);
@@ -304,7 +309,7 @@ fn typecheck_document(
         }
     }
 
-    let mut result_env = TypeEnv::with_parent(Rc::clone(&env));
+    let mut result_env = TypeEnv::with_parent(&env);
 
     // If the last expression was a dict, thread its schemes into the result environment
     if let Some(schemes) = last_dict_schemes {
@@ -541,12 +546,11 @@ fn check_expr(
             // to the less precise synthesize+subsume path.
             // Per Algorithm W (Damas & Milner, 1982): substitutions must be applied before
             // inspecting types, maintaining the substitution threading invariant.
-            let resolved_expected =
-                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
-                    expected.clone()
-                } else {
-                    state.subst.apply(expected)
-                };
+            let resolved_expected = if state.subst.is_empty() {
+                expected.clone()
+            } else {
+                state.subst.apply(expected)
+            };
             // Only use lambda checking mode if expected type is fully concrete after applying subst
             if let Type::Function {
                 params: ref expected_params,
@@ -612,14 +616,16 @@ fn check_expr(
                                         unify(expected_ty, &resolved, &mut subst, state, ann.span);
                                     state.subst = subst;
                                     result.map_err(|_e| {
-                                        TypeError::type_mismatch(expected_ty, &resolved, ann.span)
+                                        TypeError::new(
+                                            format!("parameter annotation {resolved} is more restrictive than required type {expected_ty}"),
+                                            ann.span
+                                        )
                                     })?;
                                 } else {
                                     if !Type::is_subtype(expected_ty, &resolved) {
-                                        return Err(TypeError::type_mismatch(
-                                            expected_ty,
-                                            &resolved,
-                                            ann.span,
+                                        return Err(TypeError::new(
+                                            format!("parameter annotation {resolved} is more restrictive than required type {expected_ty}"),
+                                            ann.span
                                         ));
                                     }
                                 }
@@ -631,7 +637,7 @@ fn check_expr(
                         .map_err(|e| vec![e])?;
 
                     // Build function environment with parameter bindings
-                    let mut fn_env = TypeEnv::with_parent(Rc::clone(env));
+                    let mut fn_env = TypeEnv::with_parent(env);
                     for (param, ty) in params.iter().zip(param_types.iter()) {
                         if param.node.variadic {
                             fn_env.insert(param.node.name.clone(), Type::Any);
@@ -722,12 +728,11 @@ fn check_expr(
     // may have bound TypeVars in state.subst. Without substitution, the comparison
     // uses stale TypeVars.
     // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let (actual, expected_resolved) =
-        if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
-            (actual, expected.clone())
-        } else {
-            (state.subst.apply(&actual), state.subst.apply(expected))
-        };
+    let (actual, expected_resolved) = if state.subst.is_empty() {
+        (actual, expected.clone())
+    } else {
+        (state.subst.apply(&actual), state.subst.apply(expected))
+    };
     if !Type::is_subtype(&actual, &expected_resolved) {
         Err(vec![TypeError::type_mismatch(
             &expected_resolved,
@@ -750,7 +755,7 @@ fn infer_dict(
     let enclosing_level = state.level;
     state.level += 1;
 
-    let mut dict_env = TypeEnv::with_parent(Rc::clone(env));
+    let mut dict_env = TypeEnv::with_parent(env);
     let mut key_entries: Vec<(Option<String>, bool)> = Vec::new();
     let mut auto_index: i64 = 0;
 
@@ -1122,7 +1127,7 @@ fn check_bracket_access(
     let target_ty = infer_expr(target, env, state, type_map)?;
     // Apply the global accumulated substitution (same pattern as check_dot_access).
     // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let target_ty = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+    let target_ty = if state.subst.is_empty() {
         target_ty
     } else {
         state.subst.apply(&target_ty)
@@ -1248,7 +1253,7 @@ fn check_range_access(
     let target_ty = infer_expr(target, env, state, type_map)?;
     // Apply the global accumulated substitution (same pattern as check_dot_access).
     // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let target_ty = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+    let target_ty = if state.subst.is_empty() {
         target_ty
     } else {
         state.subst.apply(&target_ty)
@@ -1276,6 +1281,10 @@ fn check_range_access(
         Type::Record(..) | Type::Any | Type::TypeVar(_, _) => Ok(target_ty),
         Type::Proxy => Err(vec![TypeError::new(
             "range access is not supported on Proxy values",
+            span,
+        )]),
+        Type::Seq(_) => Err(vec![TypeError::new(
+            "range access is not supported on Seq types",
             span,
         )]),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
@@ -1366,14 +1375,14 @@ fn check_call_with_scheme(
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
                 // Apply state.subst only if non-empty (performance optimization)
-                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                if state.subst.is_empty() {
                     Ok(subst.apply(ret))
                 } else {
                     Ok(state.subst.apply(&subst.apply(ret)))
                 }
             } else {
                 // Zero-param function: return the return type
-                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                if state.subst.is_empty() {
                     Ok((**ret).clone())
                 } else {
                     Ok(state.subst.apply(ret))
@@ -1395,6 +1404,9 @@ fn check_call_with_scheme(
     }
 }
 
+/// Check a function call expression.
+/// Note: This function does NOT verify that named arguments exist in the function's parameter list.
+/// Named argument validation is deferred to evaluation time (runtime check).
 fn check_call(
     func: &Spanned<Expr>,
     args: &[Spanned<Expr>],
@@ -1408,7 +1420,7 @@ fn check_call(
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
-    let func_ty = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+    let func_ty = if state.subst.is_empty() {
         func_ty
     } else {
         state.subst.apply(&func_ty)
@@ -1541,7 +1553,7 @@ fn check_call(
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
                 // Apply state.subst only if non-empty (performance optimization)
-                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                if state.subst.is_empty() {
                     Ok(subst.apply(inst_ret))
                 } else {
                     Ok(state.subst.apply(&subst.apply(inst_ret)))
@@ -1549,7 +1561,7 @@ fn check_call(
             } else {
                 // Zero-param polymorphic function: return the instantiated return type
                 // (not the original `ret` which contains the scheme-internal variable names)
-                if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+                if state.subst.is_empty() {
                     Ok((**inst_ret).clone())
                 } else {
                     Ok(state.subst.apply(inst_ret))
@@ -1630,7 +1642,7 @@ fn infer_fn(
         .collect::<Result<_, _>>()
         .map_err(|e| vec![e])?;
 
-    let mut fn_env = TypeEnv::with_parent(Rc::clone(env));
+    let mut fn_env = TypeEnv::with_parent(env);
     for (i, param) in params.iter().enumerate() {
         if param.node.variadic {
             let variadic_ty = Type::Any;
@@ -1743,12 +1755,11 @@ fn resolve_type_assert(
                 // may have bound TypeVars in state.subst (e.g., $data.name generates row-variable
                 // bindings). Without substitution, the comparison uses stale TypeVars.
                 // Guard: skip allocation when subst is empty (common case for concrete programs).
-                let (default_ty, expected_resolved) =
-                    if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
-                        (default_ty, expected.clone())
-                    } else {
-                        (state.subst.apply(&default_ty), state.subst.apply(&expected))
-                    };
+                let (default_ty, expected_resolved) = if state.subst.is_empty() {
+                    (default_ty, expected.clone())
+                } else {
+                    (state.subst.apply(&default_ty), state.subst.apply(&expected))
+                };
                 if !Type::is_subtype(&default_ty, &expected_resolved) {
                     return Err(vec![TypeError::new(
                         format!(
@@ -1770,7 +1781,7 @@ fn resolve_type_assert(
     // The expected type may contain TypeVars that were bound during checking mode or
     // access-chain inference (e.g., check_dot_access binds row variables).
     // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let expected = if state.subst.type_map.is_empty() && state.subst.row_map.is_empty() {
+    let expected = if state.subst.is_empty() {
         expected
     } else {
         state.subst.apply(&expected)
@@ -1811,6 +1822,8 @@ fn resolve_annotated(
     }
 }
 
+/// Resolve a bare `Fn@ReturnType` annotation (without parameter list) into a function type.
+/// `Fn@T` bare = zero-param function returning T; full function type with params uses `try_resolve_fn_type_expr`.
 fn resolve_fn_type(
     ann: &Annotation,
     env: &TypeEnv,
@@ -4986,8 +4999,11 @@ mod tests {
         // This tests the fix added in the bidirectional-typing fix pass (contravariant check).
         let errors = check_err("[x: [@[Fn@Int [Int]] [fn [x@String] $x]]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("cannot unify")),
-            "Incompatible param annotation should produce type mismatch error, got: {:?}",
+            errors
+                .iter()
+                .any(|e| e.message.contains("parameter annotation")
+                    && e.message.contains("more restrictive")),
+            "Incompatible param annotation should produce contravariant error, got: {:?}",
             errors
         );
     }
@@ -5095,8 +5111,8 @@ mod tests {
         assert_eq!(errors.len(), 1, "should have exactly one error");
         let msg = &errors[0].message;
         assert!(
-            msg.contains("cannot unify Int with String"),
-            "Error message should say 'cannot unify Int with String' but got: {msg}"
+            msg.contains("parameter annotation") && msg.contains("more restrictive"),
+            "Error message should say 'parameter annotation ... more restrictive ...' but got: {msg}"
         );
     }
 
@@ -5339,7 +5355,10 @@ mod tests {
         // Uses Fn@ReturnType [params] syntax for function type annotation
         let errors = check_err("[result: [@[Fn@Int [Int]] [fn [x@String] $x]]]");
         assert!(
-            errors.iter().any(|e| e.message.contains("cannot unify")),
+            errors
+                .iter()
+                .any(|e| e.message.contains("parameter annotation")
+                    && e.message.contains("more restrictive")),
             "String annotation should be incompatible with Int expected param: {:?}",
             errors
         );
@@ -5865,6 +5884,36 @@ mod tests {
                 .iter()
                 .any(|e| e.message.contains("range access is not supported on Proxy")),
             "expected 'range access is not supported on Proxy' error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_range_access_on_seq_errors() {
+        // Range access is NOT supported on Seq types (sequences are opaque, not dict-like).
+        // The Type::Seq arm in check_range_access produces a clear error so callers learn
+        // they must use $head/$tail or $collect instead of range slicing.
+        //
+        // Strategy: bind variable "s" to Type::Seq(Int) in the env, then parse `$s` and
+        // call check_range_access directly. infer_expr returns the Seq type from the env,
+        // which hits the Type::Seq arm.
+
+        let mut seq_env = TypeEnv::new();
+        seq_env.insert("s".to_string(), Type::Seq(Box::new(Type::Int)));
+        let env = Rc::new(seq_env);
+        let mut state = InferState::new();
+
+        let mut file = crate::parse("$s").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let seq_expr = &file.node.documents[0].node.expressions[0];
+        let span = seq_expr.span;
+
+        let result = check_range_access(seq_expr, &None, &None, &env, span, &mut state, &mut None);
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e
+                .message
+                .contains("range access is not supported on Seq types")),
+            "expected 'range access is not supported on Seq types' error, got: {errors:?}"
         );
     }
 
