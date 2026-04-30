@@ -13,16 +13,6 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [x] Fix doc/16-architecture.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (doc/16-architecture.md §Iterative Evaluator) [Minor, computer-scientist]
 - [x] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
 
-### iterative-eval-b2: Access chain continuations
-
-Convert `eval_dot_access()` and `eval_bracket_access()` from calling `materialize()` synchronously to pushing `MatCont` variants. **Depends on iterative-eval-b1. Scope: `src/eval.rs`, ~120 lines.**
-
-- [ ] Box large `MatCont` variants before adding more: `PendingCallDispatch.args` → `Box<Vec<Rc<Thunk>>>`, `PendingCallDispatch.named` → `Box<IndexMap<String, Rc<Thunk>>>`, same for `GuardedValidate.field_path` — keeps frame size ≤96B per `doc/16-architecture.md` budget (`src/eval.rs`) [Major, performance-expert]
-- [ ] Add `MatCont::DotAccessForce { thunk: Rc<Thunk>, field: String, access_span: Span, origin: String, thunk_span: Span, mat_span: Option<Span> }` — when target resolves, look up `field` in materialized dict or call proxy handler; error framing mirrors current `eval_dot_access` push_frame closure (`src/eval.rs`) [Major, eval-engine]
-- [ ] Add `MatCont::BracketForceTarget { thunk: Rc<Thunk>, key_thunk: Rc<Thunk>, access_span: Span, origin: String, thunk_span: Span, mat_span: Option<Span> }` — when target resolves, force key_thunk then dispatch (`src/eval.rs`) [Major, eval-engine]
-- [ ] Convert `eval_dot_access()` to push `DotAccessForce` continuation and return target thunk to force, instead of calling `materialize()` directly (`src/eval.rs:1075-1122`) [Major, eval-engine]
-- [ ] Convert `eval_bracket_access()` to push `BracketForceTarget` continuation similarly (`src/eval.rs:1125-1175`) [Major, eval-engine]
-
 ### iterative-eval-b3: MatCont → Cont, add Action enum
 
 Pure structural rename and type additions preparing for the full CEK loop. **No behavior change; all tests must still pass. Depends on iterative-eval-b2. Scope: `src/eval.rs`, ~60 lines changed.**
@@ -31,6 +21,7 @@ Pure structural rename and type additions preparing for the full CEK loop. **No 
 - [ ] Add `Action` enum (`Eval { expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize }`, `Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, depth: usize }`, `Continue(EvalResult<Value>)`) per `doc/16-architecture.md §Iterative Evaluator` — replaces `MatStep`/`ContResult` (`src/eval.rs`) [Major, eval-engine]
 - [ ] Add `fn run(action: Action, mut stack: Vec<Cont>, ctx: &Rc<EvalContext>) -> EvalResult<Value>`: `Action::Eval` → calls `eval_step()` stub (returns `Action::Materialize` by calling current `eval()` inline for now), `Action::Materialize` → calls `force_step()`, `Action::Continue` → calls `apply_cont()` on stack top; replace `materialize_rc()` call sites with `run(Action::Materialize { ... }, Vec::new(), ctx)` (`src/eval.rs`) [Major, eval-engine]
 - [ ] Update `doc/16-architecture.md` §Iterative Evaluator status note — Phase 1 (materialize) complete via iterative-eval-a; access chains iterative via iterative-eval-b2; eval() step conversion pending in iterative-eval-b4 (`doc/16-architecture.md`) [Minor]
+- [ ] Make access chains fully iterative: eval()'s DotAccess arm should return an Unevaluated(DotAccess_expr) thunk (same pattern as eval_call → PendingCall in iterative-eval-b1), enabling force_step to handle the ENTIRE chain via DotAccessForce continuations iteratively (`src/eval.rs`) [Major, eval-engine C74]
 
 ### iterative-eval-b4: eval() step conversion
 
@@ -911,6 +902,9 @@ Doc and behavior nits from codebase reviews. Requires misc-nits-b.
 - [ ] Fix `Substitution::apply()` to use the new `is_empty()` method instead of inline check (`src/types.rs:406`) [Nit, type-theorist C72 panel]
 - [ ] Update doc/08-evaluation.md and doc/16-architecture.md PendingCall formal spec to include caller_env field (`src/eval.rs:342, doc/16-architecture.md:209`) [Minor, computer-scientist C73 panel]
 - [ ] Fix eval_call() doc comment overstating TCO — should say "prerequisite for unlimited TCO via CEK machine" not "enabling unlimited TCO" (`src/eval.rs:757`) [Nit, computer-scientist C73 panel]
+- [ ] Fix definition-site span lost in access chain continuations — DotAccessForce/BracketForceTarget use access_span for both definition and materialization spans; add target_thunk: Rc<Thunk> field to capture the dict's definition span for better error messages (`src/eval.rs:2161-2163,2193-2194`) [Minor, integration-verifier C74 panel]
+- [ ] Eliminate Rc::from(key.as_ref().clone()) extra allocation in BracketAccess force_step handler — use Rc::new((*key).clone()) or restructure to avoid the clone (`src/eval.rs:1572`) [Nit, computer-scientist C74 panel]
+- [ ] Add unit tests verifying boxed args/named preserved correctly in PendingBuiltin/PendingCall error restoration paths — existing tests verify error messages but not state restoration contents [Nit, test-crafter C74 panel]
 
 ## integration: Integration / Pipeline
 
