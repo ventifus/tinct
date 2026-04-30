@@ -2,7 +2,7 @@
 //! substitutions/unification for Hindley-Milner polymorphism,
 //! and type error definitions for the type checker.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -95,6 +95,11 @@ impl Type {
     /// on an algebraic data type — each recursive call descends into a strict sub-term). The
     /// occurs-check invariant (Robinson 1965) additionally ensures that substitution-applied types
     /// are acyclic.
+    ///
+    /// Note: `Any` acts as both top and bottom of the subtype lattice (see [S-ANY-TOP] and
+    /// [S-ANY-BOT] in doc/06). The `Any` short-circuit fires at every recursive call site,
+    /// including nested positions, so `Seq[Any] <: Seq[τ]` holds for all τ. This is intentional
+    /// for gradual typing.
     pub fn is_subtype(sub: &Type, sup: &Type) -> bool {
         if matches!(sub, Type::Any) || matches!(sup, Type::Any) {
             return true;
@@ -168,7 +173,7 @@ impl Type {
         }
     }
 
-    pub fn collect_type_vars(&self, vars: &mut BTreeSet<String>) {
+    pub fn collect_type_vars(&self, vars: &mut HashSet<String>) {
         match self {
             Type::TypeVar(name, _) => {
                 vars.insert(name.clone());
@@ -209,7 +214,7 @@ impl Type {
     }
 
     /// Collect row variables from RowTail positions in the type tree.
-    pub fn collect_row_vars(&self, vars: &mut BTreeSet<String>) {
+    pub fn collect_row_vars(&self, vars: &mut HashSet<String>) {
         match self {
             Type::Record(row) => {
                 for ty in row.fields.values() {
@@ -231,11 +236,11 @@ impl Type {
     }
 
     /// Collect both type variables and row variables in a single tree walk.
-    /// Performance optimization: avoids allocating two BTreeSets and traversing the type tree twice.
+    /// Performance optimization: avoids allocating two HashSets and traversing the type tree twice.
     pub fn collect_all_vars(
         &self,
-        type_vars: &mut BTreeSet<String>,
-        row_vars: &mut BTreeSet<String>,
+        type_vars: &mut HashSet<String>,
+        row_vars: &mut HashSet<String>,
     ) {
         match self {
             Type::TypeVar(name, _) => {
@@ -370,6 +375,12 @@ impl Substitution {
             type_map: HashMap::new(),
             row_map: HashMap::new(),
         }
+    }
+
+    /// Check if the substitution is empty (no bindings in either map).
+    /// Used to guard against unnecessary allocation in apply() operations.
+    pub fn is_empty(&self) -> bool {
+        self.type_map.is_empty() && self.row_map.is_empty()
     }
 
     /// Check if the substitution has exceeded the maximum allowed size.
@@ -726,8 +737,8 @@ fn unify_tails(
 /// Called after a row-variable binding to prevent unsound generalization of inner vars.
 fn lower_row_var_levels(row: &Row, max_level: u32, state: &mut InferState) {
     // Collect both type vars and row vars in a single pass over field types
-    let mut type_vars = BTreeSet::new();
-    let mut row_vars = BTreeSet::new();
+    let mut type_vars = HashSet::new();
+    let mut row_vars = HashSet::new();
     for ty in row.fields.values() {
         ty.collect_all_vars(&mut type_vars, &mut row_vars);
     }
@@ -799,8 +810,13 @@ fn unify_remainders(
                 tail: fresh_tail.clone(),
             };
             if row_var_occurs(rho1, &row2_with_fresh, subst) {
+                let rho1_display = if rho1.starts_with('_') {
+                    "an anonymous open row".to_string()
+                } else {
+                    rho1.clone()
+                };
                 return Err(TypeError::new(
-                    format!("infinite row type: {rho1} occurs in its own binding"),
+                    format!("infinite row type: {rho1_display} occurs in its own binding"),
                     span,
                 ));
             }
@@ -811,8 +827,13 @@ fn unify_remainders(
                 tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
             };
             if row_var_occurs(rho2, &row1_with_fresh, subst) {
+                let rho2_display = if rho2.starts_with('_') {
+                    "an anonymous open row".to_string()
+                } else {
+                    rho2.clone()
+                };
                 return Err(TypeError::new(
-                    format!("infinite row type: {rho2} occurs in its own binding"),
+                    format!("infinite row type: {rho2_display} occurs in its own binding"),
                     span,
                 ));
             }
@@ -841,8 +862,13 @@ fn unify_remainders(
                 tail: tail1,
             };
             if row_var_occurs(rho2, &row_to_bind, subst) {
+                let rho2_display = if rho2.starts_with('_') {
+                    "an anonymous open row".to_string()
+                } else {
+                    rho2.clone()
+                };
                 return Err(TypeError::new(
-                    format!("infinite row type: {rho2} occurs in its own binding"),
+                    format!("infinite row type: {rho2_display} occurs in its own binding"),
                     span,
                 ));
             }
@@ -863,8 +889,13 @@ fn unify_remainders(
                 tail: tail2,
             };
             if row_var_occurs(rho1, &row_to_bind, subst) {
+                let rho1_display = if rho1.starts_with('_') {
+                    "an anonymous open row".to_string()
+                } else {
+                    rho1.clone()
+                };
                 return Err(TypeError::new(
-                    format!("infinite row type: {rho1} occurs in its own binding"),
+                    format!("infinite row type: {rho1_display} occurs in its own binding"),
                     span,
                 ));
             }
@@ -902,11 +933,16 @@ fn unify_remainders(
         {
             let mut fields: Vec<_> = unique1.keys().chain(unique2.keys()).cloned().collect();
             fields.sort();
+            let rho1_display = if rho1.starts_with('_') {
+                "an anonymous open row".to_string()
+            } else {
+                rho1.clone()
+            };
             Err(TypeError::new(
                 format!(
                     "incompatible fields [{}] with shared row variable {}",
                     fields.join(", "),
-                    rho1
+                    rho1_display
                 ),
                 span,
             ))
@@ -1067,8 +1103,8 @@ pub fn unify(
             // Zero levels of all type/row vars in the non-Any side to prevent
             // over-generalization. E.g., unify(Any, Fn(TypeVar("b",3) → Int))
             // must zero b's level so it won't be generalized.
-            let mut type_vars = BTreeSet::new();
-            let mut row_vars = BTreeSet::new();
+            let mut type_vars = HashSet::new();
+            let mut row_vars = HashSet::new();
             other.collect_all_vars(&mut type_vars, &mut row_vars);
             for var in type_vars.iter().chain(row_vars.iter()) {
                 state.levels.insert(var.clone(), 0);
@@ -1086,8 +1122,8 @@ pub fn unify(
             }
             let alpha_level = state.levels.get(name).copied().unwrap_or(0);
             // Lower all type vars and row vars in b to min(their level, α's level) — single tree walk
-            let mut type_vars_in_b = BTreeSet::new();
-            let mut row_vars_in_b = BTreeSet::new();
+            let mut type_vars_in_b = HashSet::new();
+            let mut row_vars_in_b = HashSet::new();
             b.collect_all_vars(&mut type_vars_in_b, &mut row_vars_in_b);
             for beta in type_vars_in_b {
                 let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
@@ -1111,8 +1147,8 @@ pub fn unify(
             }
             let alpha_level = state.levels.get(name).copied().unwrap_or(0);
             // Lower all type vars and row vars in a to min(their level, α's level) — single tree walk
-            let mut type_vars_in_a = BTreeSet::new();
-            let mut row_vars_in_a = BTreeSet::new();
+            let mut type_vars_in_a = HashSet::new();
+            let mut row_vars_in_a = HashSet::new();
             a.collect_all_vars(&mut type_vars_in_a, &mut row_vars_in_a);
             for beta in type_vars_in_a {
                 let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
@@ -1128,6 +1164,10 @@ pub fn unify(
         }
 
         // Literal-to-parent promotions
+        // Note: These rules are bidirectional (IntLiteral ↔ Int) for unification symmetry.
+        // In a pure subtyping system, only IntLiteral <: Int would hold (not vice versa).
+        // Bidirectional promotion simplifies unification but reduces diagnostic precision:
+        // unify(Int, IntLiteral(42)) succeeds, whereas is_subtype(Int, IntLiteral(42)) = false.
         (Type::IntLiteral(_), Type::Int | Type::Number) | (Type::Int, Type::Number) => Ok(()),
         (Type::Int | Type::Number, Type::IntLiteral(_)) | (Type::Number, Type::Int) => Ok(()),
         (Type::Float, Type::Number) | (Type::Number, Type::Float) => Ok(()),
@@ -1213,10 +1253,13 @@ pub fn unify(
 /// level for proper participation in generalization.
 ///
 /// This function is test-only; production code uses `instantiate_at_level()`.
+/// Returns both the instantiated type and the renaming substitution that was applied.
+/// The substitution is unused by current callers but kept for testing/debugging purposes
+/// (allows inspection of which type/row vars were renamed to which fresh vars).
 #[cfg(test)]
 pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
-    let mut type_vars = BTreeSet::new();
-    let mut row_vars = BTreeSet::new();
+    let mut type_vars = HashSet::new();
+    let mut row_vars = HashSet::new();
     ty.collect_all_vars(&mut type_vars, &mut row_vars);
 
     let mut renaming = Substitution::new();
@@ -1249,8 +1292,8 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
 /// so they participate in level-based generalization. Without this, fresh variables
 /// default to level 0 and are permanently excluded from generalization by [U-VAR-LEVEL].
 pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
-    let mut type_vars = BTreeSet::new();
-    let mut row_vars = BTreeSet::new();
+    let mut type_vars = HashSet::new();
+    let mut row_vars = HashSet::new();
     ty.collect_all_vars(&mut type_vars, &mut row_vars);
 
     let mut renaming = Substitution::new();
@@ -1333,8 +1376,8 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
         return TypeScheme::mono(ty.clone());
     }
 
-    let mut all_type_vars = BTreeSet::new();
-    let mut all_row_vars = BTreeSet::new();
+    let mut all_type_vars = HashSet::new();
+    let mut all_row_vars = HashSet::new();
     ty.collect_all_vars(&mut all_type_vars, &mut all_row_vars);
 
     // Filter: keep only vars where levels[var] > level
@@ -1388,7 +1431,7 @@ impl fmt::Display for Type {
                 sorted_fields.sort_by_key(|(k, _)| k.as_str());
                 for (i, (key, ty)) in sorted_fields.iter().enumerate() {
                     if i > 0 {
-                        write!(f, "  ")?;
+                        write!(f, " ")?;
                     }
                     write!(f, "{key}: {ty}")?;
                 }
@@ -1396,7 +1439,7 @@ impl fmt::Display for Type {
                     RowTail::Empty => {}
                     RowTail::RowVar(name, _level) => {
                         if !row.fields.is_empty() {
-                            write!(f, "  ")?;
+                            write!(f, " ")?;
                         }
                         // Hide generated names (starting with _) — display as bare "..."
                         if name.starts_with('_') {
@@ -1440,11 +1483,11 @@ impl TypeEnv {
         }
     }
 
-    pub fn with_parent(parent: Rc<TypeEnv>) -> Self {
+    pub fn with_parent(parent: &Rc<TypeEnv>) -> Self {
         Self {
             bindings: HashMap::new(),
             type_aliases: HashMap::new(),
-            parent: Some(parent),
+            parent: Some(Rc::clone(parent)),
         }
     }
 
@@ -1503,7 +1546,7 @@ impl Default for TypeEnv {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeError {
     pub message: String,
     pub span: Span,
@@ -1607,7 +1650,7 @@ mod tests {
         // Fields are sorted alphabetically for deterministic output (HashMap has no insertion order)
         assert_eq!(
             format!("{}", closed_record(fields)),
-            "[age: Int  name: String]"
+            "[age: Int name: String]"
         );
     }
 
@@ -1622,7 +1665,7 @@ mod tests {
         fields.insert("name".into(), Type::Str);
         assert_eq!(
             format!("{}", row_var_record(fields, "_open", 0)),
-            "[name: String  ...]"
+            "[name: String ...]"
         );
     }
 
@@ -1640,7 +1683,7 @@ mod tests {
         fields.insert("name".into(), Type::Str);
         assert_eq!(
             format!("{}", row_var_record(fields, "rest", 0)),
-            "[name: String  ...rest]"
+            "[name: String ...rest]"
         );
     }
 
@@ -2097,7 +2140,7 @@ mod tests {
             params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
             ret: Box::new(Type::TypeVar("a".into(), 0)),
         };
-        let mut vars = BTreeSet::new();
+        let mut vars = HashSet::new();
         ty.collect_type_vars(&mut vars);
         assert!(vars.contains("a"));
         assert!(vars.contains("b"));
@@ -2108,8 +2151,8 @@ mod tests {
     fn test_collect_all_vars() {
         // TypeVar produces type_vars only
         let ty = Type::TypeVar("a".into(), 0);
-        let mut type_vars = BTreeSet::new();
-        let mut row_vars = BTreeSet::new();
+        let mut type_vars = HashSet::new();
+        let mut row_vars = HashSet::new();
         ty.collect_all_vars(&mut type_vars, &mut row_vars);
         assert!(type_vars.contains("a"));
         assert!(row_vars.is_empty());
@@ -2122,8 +2165,8 @@ mod tests {
             fields,
             tail: RowTail::RowVar("r1".into(), 0),
         });
-        let mut type_vars = BTreeSet::new();
-        let mut row_vars = BTreeSet::new();
+        let mut type_vars = HashSet::new();
+        let mut row_vars = HashSet::new();
         ty.collect_all_vars(&mut type_vars, &mut row_vars);
         assert!(type_vars.contains("t1"));
         assert!(row_vars.contains("r1"));
@@ -2135,8 +2178,8 @@ mod tests {
             params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
             ret: Box::new(Type::TypeVar("c".into(), 0)),
         };
-        let mut type_vars = BTreeSet::new();
-        let mut row_vars = BTreeSet::new();
+        let mut type_vars = HashSet::new();
+        let mut row_vars = HashSet::new();
         ty.collect_all_vars(&mut type_vars, &mut row_vars);
         assert!(type_vars.contains("a"));
         assert!(type_vars.contains("b"));
@@ -2146,8 +2189,8 @@ mod tests {
 
         // Seq type produces type_vars from element type
         let ty = Type::Seq(Box::new(Type::TypeVar("elem".into(), 0)));
-        let mut type_vars = BTreeSet::new();
-        let mut row_vars = BTreeSet::new();
+        let mut type_vars = HashSet::new();
+        let mut row_vars = HashSet::new();
         ty.collect_all_vars(&mut type_vars, &mut row_vars);
         assert!(type_vars.contains("elem"));
         assert!(row_vars.is_empty());
@@ -2161,8 +2204,8 @@ mod tests {
             Type::Number,
             Type::Any,
         ] {
-            let mut type_vars = BTreeSet::new();
-            let mut row_vars = BTreeSet::new();
+            let mut type_vars = HashSet::new();
+            let mut row_vars = HashSet::new();
             ty.collect_all_vars(&mut type_vars, &mut row_vars);
             assert!(type_vars.is_empty());
             assert!(row_vars.is_empty());
@@ -2180,7 +2223,8 @@ mod tests {
     fn test_env_get_parent() {
         let mut parent = TypeEnv::new();
         parent.insert("x".into(), Type::Int);
-        let child = TypeEnv::with_parent(Rc::new(parent));
+        let parent_rc = Rc::new(parent);
+        let child = TypeEnv::with_parent(&parent_rc);
         assert_eq!(child.get("x").map(|s| &s.body), Some(&Type::Int));
     }
 
@@ -2188,7 +2232,8 @@ mod tests {
     fn test_env_shadow() {
         let mut parent = TypeEnv::new();
         parent.insert("x".into(), Type::Int);
-        let mut child = TypeEnv::with_parent(Rc::new(parent));
+        let parent_rc = Rc::new(parent);
+        let mut child = TypeEnv::with_parent(&parent_rc);
         child.insert("x".into(), Type::Str);
         assert_eq!(child.get("x").map(|s| &s.body), Some(&Type::Str));
     }
@@ -2212,7 +2257,8 @@ mod tests {
     fn test_env_type_alias_parent() {
         let mut parent = TypeEnv::new();
         parent.insert_type_alias("Base".into(), Type::Int);
-        let child = TypeEnv::with_parent(Rc::new(parent));
+        let parent_rc = Rc::new(parent);
+        let child = TypeEnv::with_parent(&parent_rc);
         assert_eq!(child.get_type_alias("Base"), Some(&Type::Int));
     }
 
@@ -2220,7 +2266,8 @@ mod tests {
     fn test_env_type_alias_shadow() {
         let mut parent = TypeEnv::new();
         parent.insert_type_alias("T".into(), Type::Int);
-        let mut child = TypeEnv::with_parent(Rc::new(parent));
+        let parent_rc = Rc::new(parent);
+        let mut child = TypeEnv::with_parent(&parent_rc);
         child.insert_type_alias("T".into(), Type::Str);
         assert_eq!(child.get_type_alias("T"), Some(&Type::Str));
     }
@@ -3112,7 +3159,7 @@ mod tests {
     #[test]
     fn test_collect_type_vars_seq() {
         let ty = Type::Seq(Box::new(Type::TypeVar("a".into(), 0)));
-        let mut vars = BTreeSet::new();
+        let mut vars = HashSet::new();
         ty.collect_type_vars(&mut vars);
         assert!(vars.contains("a"));
         assert_eq!(vars.len(), 1);
@@ -3267,7 +3314,7 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = row_var_record(fields, "r", 99);
-        assert_eq!(format!("{ty}"), "[x: Int  ...r]");
+        assert_eq!(format!("{ty}"), "[x: Int ...r]");
     }
 
     #[test]
@@ -3462,7 +3509,8 @@ mod tests {
         let parent_scheme = TypeScheme::mono(Type::Int);
         parent.insert_scheme("x".into(), parent_scheme);
 
-        let mut child = TypeEnv::with_parent(Rc::new(parent));
+        let parent_rc = Rc::new(parent);
+        let mut child = TypeEnv::with_parent(&parent_rc);
         let child_scheme = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
@@ -4148,6 +4196,53 @@ mod tests {
         assert!(
             result.unwrap_err().message.contains("infinite row type"),
             "error should mention infinite row type"
+        );
+    }
+
+    /// Row variable name hiding in occurs-check errors: variables starting with `_` are
+    /// displayed as "an anonymous open row" rather than their raw internal name.
+    /// This tests the branch added in unify_remainders at the occurs-check sites.
+    ///
+    /// Setup mirrors test_row_occurs_check_direct_tail_cycle but uses `_open3` as the
+    /// row variable name — the `_` prefix triggers the display-hiding branch.
+    #[test]
+    fn test_row_occurs_check_anonymous_row_display() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        let mut f1 = HashMap::new();
+        f1.insert("a".into(), Type::Int);
+        f1.insert("b".into(), Type::Str);
+        let mut f2 = HashMap::new();
+        f2.insert("a".into(), Type::Int);
+
+        // Left: {a: Int, b: Str, ..._open3}, right: {a: Int, ..._open3}
+        // After shared field extraction: unique1={b:Str}, unique2={}, tail2=RowVar(_open3)
+        // Case 2: bind _open3 → {b: Str, ..._open3} — CYCLE; error should say "an anonymous open row"
+        let result = unify(
+            &row_var_record(f1, "_open3", 0),
+            &row_var_record(f2, "_open3", 0),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(
+            result.is_err(),
+            "should fail: _open3 binds to {{b: Str, ..._open3}} — infinite row"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("infinite row type"),
+            "error should mention infinite row type, got: {err}"
+        );
+        assert!(
+            err.message.contains("an anonymous open row"),
+            "error should display '_open3' as 'an anonymous open row', got: {err}"
+        );
+        assert!(
+            !err.message.contains("_open3"),
+            "raw internal name '_open3' must not appear in the error, got: {err}"
         );
     }
 

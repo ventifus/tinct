@@ -21,9 +21,9 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | α                          type variable
     | Any                        dynamic/unknown type
 
-ρ ::= Closed                     no additional fields
-    | Open                       arbitrary additional fields
+ρ ::= Closed                     no additional fields (Empty)
     | RowVar(r)                  named row variable (see [Type System Extensions](07-type-extensions.md) §Row-Variable Unification)
+                                 (anonymous `...` syntax in annotations generates fresh `_open{n}` names internally)
 ```
 
 ## Bidirectional Typing
@@ -399,17 +399,24 @@ Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
 
 ```
 instantiate(τ) = (S(τ), S)
-    where S = {α₁ ↦ _t0, α₂ ↦ _t1, ...}
-    for each αᵢ ∈ FTV(τ), fresh names _tN generated
-    from a monotonic per-file counter.
+    where S has two kinded maps:
+      S.type_map = {α₁ ↦ _t0, α₂ ↦ _t1, ...}  (type vars → Type)
+      S.row_map  = {ρ₁ ↦ Row{...}, ...}       (row vars → Row)
+    for each αᵢ ∈ FTV(τ), fresh type var names _tN generated
+    for each ρᵢ ∈ FRV(τ), fresh row var names _tM generated
+    from a shared monotonic per-file counter.
 
-FTV(τ) includes both type variables (α) and row variables
-(RowVar(r)). Type variables are collected via collect_type_vars()
-and row variables via collect_row_vars() (or both in a single
-pass via collect_all_vars()). Both are renamed by instantiate().
-In Rémy (1994), row variables inhabit a distinct kind from type
-variables; tinct maintains separate quantifier lists in TypeScheme
-but shares a common variable namespace.
+FTV(τ) collects type variables via collect_type_vars().
+FRV(τ) collects row variables via collect_row_vars().
+Both can be collected in a single pass via collect_all_vars().
+
+Kinded substitution (Rémy 1994): type variables and row variables
+inhabit distinct kinds, enforced structurally by separate maps.
+type_map binds type variable names to Type; row_map binds row
+variable names to Row. A name cannot appear in both maps in
+well-formed substitutions. TypeScheme carries separate quantifier
+lists (type_vars: Vec<String>, row_vars: Vec<String>), and
+instantiate_scheme() routes each through its corresponding map.
 ```
 
 This is alpha-renaming for call-site freshening. Each polymorphic call site gets independent type variables so unification at one site does not constrain another. With let-generalization (below), instantiation also handles let-bound polymorphic type schemes.
@@ -628,9 +635,9 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
 | `InferState` | `{ name_counter: u32, level: u32, levels: HashMap<String, u32>, subst: Substitution }` |
 | `InferState.subst` | Accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR]; merged into letrec substitution in Pass 3b |
-| `collect_type_vars()` | `fn(&self, &mut BTreeSet<String>)` — collects type variables, no level |
-| `collect_row_vars()` | `fn(&self, &mut BTreeSet<String>)` — collects row variables, no level |
-| `collect_all_vars()` | `fn(&self, &mut BTreeSet<String>, &mut BTreeSet<String>)` — collects both in one pass |
+| `collect_type_vars()` | `fn(&self, &mut HashSet<String>)` — collects type variables, no level |
+| `collect_row_vars()` | `fn(&self, &mut HashSet<String>)` — collects row variables, no level |
+| `collect_all_vars()` | `fn(&self, &mut HashSet<String>, &mut HashSet<String>)` — collects both in one pass |
 | `Type::Display` | Shows `TypeVar` name only (level hidden) |
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).

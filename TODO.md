@@ -13,42 +13,104 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [x] Fix doc/16-architecture.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (doc/16-architecture.md §Iterative Evaluator) [Minor, computer-scientist]
 - [x] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
 
-### iterative-eval-b: Convert eval() and TCO
+### iterative-eval-b1: eval_call → PendingCall
 
-Iterativize `eval()` hot paths and add tail-call optimization. **Depends on iterative-eval-a.**
+Make `eval_call()` return a `PendingCall` thunk instead of calling `materialize()` eagerly. **Unblocked:** `iterative-eval-a` made `materialize_rc` iterative and introduced `PendingCallDispatch`, which handles Function/Builtin dispatch and TCO iteratively. The pre-cek-fixes revert was due to `materialize()` still being recursive — no longer the case. **Scope: `src/eval.rs` only, ~30 lines changed.**
 
-**BLOCKED (C70-C71):** 4 agents attempted the full CEK conversion; all failed. The conversion requires inlining eval's Call handling into force_step with coordinated changes across eval, eval_call, invoke_function, bind_args_thunks in a 9000+ line file. Needs human-guided incremental implementation or architectural simplification. Partial progress: BuiltinForceArg continuation, depth reduction for PendingBuiltin/PendingCallDispatch results.
+- [ ] In `eval_call()` (`src/eval.rs:756-840`): remove the `materialize(&func_thunk, ...)` call and the `match func_val { ... }` dispatch block; return `Rc::new(Thunk::new_pending_call(func_thunk, pos_thunks, named_thunks, *call_span, *call_span, label, Rc::clone(ctx)))` — `PendingCallDispatch` already handles dispatch and TCO (`src/eval.rs`) [Major, eval-engine]
+- [ ] Add corpus test: 1000-deep tail-recursive fold that previously crashed the Rust stack now completes (`tests/corpus/eval/eval/tco_fold_deep.llt-eval`) [Minor, test-crafter]
+- [ ] Commit note: `default_env` for default params switches from caller scope to closure scope (consistent with `$apply`; defaults are literals in practice); type-mismatch message for calling a non-function changes from "expected Function" to "expected Function or Builtin" — update any corpus tests matching that exact string [Nit]
 
-- [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative — prerequisite for unlimited TCO. Each materialize_rc iteration currently calls eval() recursively from force_step; converting this to push Cont variants on the continuation stack would eliminate the depth growth entirely.
-- [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame. Partial: depth tracking improved (PendingBuiltin/PendingCallDispatch results forced at caller's depth), BuiltinForceArg prevents stack overflow for builtin arg chains. Full: requires eval() iterative conversion above.
-- [ ] TCO for recursive stdlib functions (`fold`, `map`, `filter`, `sort-merge`) to avoid stack overflow on large inputs
-- [ ] Merge `MatCont` into unified `Cont` enum — expand the 4-variant `MatCont` to the full ~18-20 Cont variant design; add all `eval()` continuation variants named in doc/16-architecture.md §Iterative Evaluator (DictEntries, AccessChain, DocumentPipeline, CallForceFunc, TypeAssertCheck, DictBuildKey, BindArgDefault, PendingBuiltinForceResult, etc.) alongside existing MatCont variants (Memoize, PendingCallDispatch, GuardedValidate, BuiltinForceArg) (`src/eval.rs`) [Major, eval-engine]
-- [ ] Remove `ThunkState::PendingBuiltin` and `ThunkState::PendingCall` after CEK migration — both are subsumed by `Cont::PendingBuiltinForceResult` and `Cont::PendingCallForceFunc`; ThunkState simplifies to five states: Unevaluated, InProgress, Materialized, Failed, Guarded (doc/16-architecture.md §Iterative Evaluator "Relationship to current ThunkState") (`src/eval.rs`) [Major, eval-engine]
+### iterative-eval-b2: Access chain continuations
 
-### iterative-eval-c: Deferred CEK Fixes
+Convert `eval_dot_access()` and `eval_bracket_access()` from calling `materialize()` synchronously to pushing `MatCont` variants. **Depends on iterative-eval-b1. Scope: `src/eval.rs`, ~120 lines.**
 
-Three lazy-evaluation correctness fixes reverted from pre-cek-fixes due to stack overflow under the recursive evaluator. Safe once iterative-eval-b lands. **Depends on iterative-eval-b.**
+- [ ] Box large `MatCont` variants before adding more: `PendingCallDispatch.args` → `Box<Vec<Rc<Thunk>>>`, `PendingCallDispatch.named` → `Box<IndexMap<String, Rc<Thunk>>>`, same for `GuardedValidate.field_path` — keeps frame size ≤96B per `doc/16-architecture.md` budget (`src/eval.rs`) [Major, performance-expert]
+- [ ] Add `MatCont::DotAccessForce { thunk: Rc<Thunk>, field: String, access_span: Span, origin: String, thunk_span: Span, mat_span: Option<Span> }` — when target resolves, look up `field` in materialized dict or call proxy handler; error framing mirrors current `eval_dot_access` push_frame closure (`src/eval.rs`) [Major, eval-engine]
+- [ ] Add `MatCont::BracketForceTarget { thunk: Rc<Thunk>, key_thunk: Rc<Thunk>, access_span: Span, origin: String, thunk_span: Span, mat_span: Option<Span> }` — when target resolves, force key_thunk then dispatch (`src/eval.rs`) [Major, eval-engine]
+- [ ] Convert `eval_dot_access()` to push `DotAccessForce` continuation and return target thunk to force, instead of calling `materialize()` directly (`src/eval.rs:1075-1122`) [Major, eval-engine]
+- [ ] Convert `eval_bracket_access()` to push `BracketForceTarget` continuation similarly (`src/eval.rs:1125-1175`) [Major, eval-engine]
 
-- [ ] Fix `TypeAssert` forces materialization inside `eval()` — deferred from pre-cek-fixes C69: PendingBuiltin/Guarded approach adds stack depth, causing overflow with recursive evaluator. CEK machine continuation deferral resolves. (`src/eval.rs:164-203`) [Major, eval-engine C47]
-- [ ] Fix eval_call eagerly materializing function value — deferred from pre-cek-fixes C69: PendingCall approach tested and reverted (stack overflow). CEK machine CALL continuation defers function forcing. (`src/eval.rs:462-463`) [Major, computer-scientist C35]
-- [ ] Fix `$apply` eagerly materializing function and args dict — deferred from pre-cek-fixes C69: PendingApply approach tested and reverted (stack overflow). CEK machine resolves. (`src/builtins.rs:858-859`) [Major, eval-engine]
+### iterative-eval-b3: MatCont → Cont, add Action enum
+
+Pure structural rename and type additions preparing for the full CEK loop. **No behavior change; all tests must still pass. Depends on iterative-eval-b2. Scope: `src/eval.rs`, ~60 lines changed.**
+
+- [ ] Rename `MatCont` → `Cont` and `ContResult` → `Action` throughout `src/eval.rs`; update `apply_mat_cont` → `apply_cont`; adapt `force_step` return type to `Action` — pure rename (`src/eval.rs`) [Major, eval-engine]
+- [ ] Add `Action` enum (`Eval { expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize }`, `Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, depth: usize }`, `Continue(EvalResult<Value>)`) per `doc/16-architecture.md §Iterative Evaluator` — replaces `MatStep`/`ContResult` (`src/eval.rs`) [Major, eval-engine]
+- [ ] Add `fn run(action: Action, mut stack: Vec<Cont>, ctx: &Rc<EvalContext>) -> EvalResult<Value>`: `Action::Eval` → calls `eval_step()` stub (returns `Action::Materialize` by calling current `eval()` inline for now), `Action::Materialize` → calls `force_step()`, `Action::Continue` → calls `apply_cont()` on stack top; replace `materialize_rc()` call sites with `run(Action::Materialize { ... }, Vec::new(), ctx)` (`src/eval.rs`) [Major, eval-engine]
+- [ ] Update `doc/16-architecture.md` §Iterative Evaluator status note — Phase 1 (materialize) complete via iterative-eval-a; access chains iterative via iterative-eval-b2; eval() step conversion pending in iterative-eval-b4 (`doc/16-architecture.md`) [Minor]
+
+### iterative-eval-b4: eval() step conversion
+
+Convert `eval()` into `eval_step()` that pushes `Cont` variants and returns `Action`. Wire into `run()`. **Depends on iterative-eval-b3. Scope: `src/eval.rs` + `src/builtins.rs`, ~250 lines.**
+
+- [ ] Create `fn eval_step(expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize, stack: &mut Vec<Cont>, ctx: &Rc<EvalContext>) -> Action` — for each `Expr` variant, push `Cont` and return `Action` instead of recursing; wire `run()` to call `eval_step` for `Action::Eval` (`src/eval.rs`) [Major, eval-engine]
+- [ ] Add `Cont` variants: `DictEntries { remaining: Box<...>, dict_env: Rc<...>, dict_map: Box<IndexMap<...>> }`, `DocumentPipeline { remaining: Box<Vec<Spanned<Expr>>>, env: Rc<...> }`, `TypeAssertCheck { thunk: Rc<Thunk>, expected: Type, annotation: ..., default_opt: ... }`, `DictBuildKey { ... }`, `BindArgDefault { ... }` — per `doc/16-architecture.md §Iterative Evaluator` (`src/eval.rs`) [Major, eval-engine]
+- [ ] Keep `pub fn eval(expr, env, ctx, depth)` as thin wrapper: `run(Action::Eval { expr: Rc::new(expr.clone()), env, depth }, Vec::new(), ctx).map(|v| Rc::new(Thunk::new_materialized(v, expr.span)))` — preserves external API (`src/eval.rs`) [Minor]
+- [ ] Fix `TypeAssert` forces materialization inside `eval()` — implement via `TypeAssertCheck` Cont variant; deferred from pre-cek-fixes C69 (`src/eval.rs:164-203`) [Major, eval-engine C47]
+- [ ] Fix `$apply` eagerly materializing function and args dict — return `Action::Materialize` for func/args thunks via `run()` dispatch; deferred from pre-cek-fixes C69 (`src/builtins.rs:858-859`) [Major, eval-engine]
+
+### iterative-eval-b5: ThunkState simplification
+
+Remove `PendingBuiltin` and `PendingCall` from `ThunkState`; these are fully subsumed by `Cont` variants on the stack. **Depends on iterative-eval-b4. Files: `src/value.rs` + `src/eval.rs` + `src/builtins.rs`.**
+
+- [ ] Remove `ThunkState::PendingBuiltin` — subsumed by `Cont::PendingBuiltinForceResult`; update all creation sites in `builtins.rs` (sequence constructors) and force handling in `force_step` to use the Cont variant instead (`src/value.rs`, `src/eval.rs`) [Major, eval-engine]
+- [ ] Remove `ThunkState::PendingCall` — subsumed by `Cont::PendingCallForceFunc`; update creation sites in `eval_call()`, `builtins.rs` (`iterate`, `unfold`, `map`, `filter`, `fold-step`) to push Cont variant or return `Action::Materialize` directly (`src/value.rs`, `src/eval.rs`, `src/builtins.rs`) [Major, eval-engine]
+- [ ] `ThunkState` simplifies to 5 states: `Unevaluated`, `InProgress`, `Materialized`, `Failed`, `Guarded` — update `doc/08-evaluation.md §Thunk Lifecycle` and `doc/16-architecture.md` [Minor]
+- [ ] Verify thunk lifecycle invariants after simplification — sharing preservation (Rc<Thunk> identity through Cont dispatch), monotonicity (state transitions still one-way except DepthExceeded rollback), cycle detection (InProgress blackholing unchanged). See `doc/08-evaluation.md §Thunk Lifecycle — Relationship to CEK Machine Migration` [Major, computer-scientist]
 
 ### iterative-eval-d: Verification and Cleanup
 
-Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. **Depends on iterative-eval-c.**
+Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. **Depends on iterative-eval-b5.**
 
-- [ ] Verify thunk lifecycle invariants after CEK migration — sharing preservation (thunk identity via `Rc<Thunk>` must be maintained through continuation dispatch), ThunkState simplification (PendingBuiltin/PendingCall subsumed by Cont variants), MAX_EVAL_DEPTH removal (replace with configurable `--max-depth`), monotonicity proof carries over. See doc/08-evaluation.md §Thunk Lifecycle — Relationship to CEK Machine Migration. [Major, computer-scientist]
-- [ ] Benchmark: compare recursive vs iterative on deep chains and large collections
-- [ ] Remove 64MB worker thread stack workaround once iterative eval eliminates deep recursion
-- [ ] Re-enable depth-exceeded unit tests once iterative-eval replaces recursive materialize() — tests require >128MB stack in debug mode (currently marked `#[ignore]`): `collect_max_size_limit_enforced` and `join_seq_size_limit` (src/builtins.rs), `filter_seq_step_no_depth_accumulation_on_consecutive_failures` and `take_large_count_infinite_seq_depth_exceeded` (src/builtins.rs), `test_pending_call_cycle_detection` (src/eval.rs), `test_session_depth_exhaustion` (src/repl.rs)
-- [ ] Add corpus test for deep evaluation chain through public API — regression guard for iterative materialize correctness (`tests/corpus/eval/eval/deep_chain.llt-eval`) [Minor, test-crafter C70 panel]
-- [ ] Add unit test for PendingBuiltin deep chain (exercises PendingCallDispatch continuation in `materialize_rc`) (`src/eval.rs`) [Minor, test-crafter C70 panel]
-- [ ] Add unit test for GuardedValidate continuation in iterative materialize — verify `[@Int 42]` chain works through `materialize_rc` (`src/eval.rs`) [Minor, test-crafter C70 panel]
-- [ ] Add comment to existing depth limit tests clarifying they test the depth limit policy, not stack-safety (that's tested by `test_iterative_materialize_deep_chain`) (`src/eval.rs`) [Nit, test-crafter C70 panel]
-- [ ] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70 panel]
-- [ ] Box large `MatCont` variants (PendingCallDispatch, GuardedValidate) to stay within ≤96B frame budget when MatCont merges into full `Cont` enum in iterative-eval-b (`src/eval.rs`) [Major, computer-scientist + performance-expert C70 panel]
-- [ ] Update `doc/16-architecture.md` §Iterative Evaluator "implementation pending" note — Phase 1 (materialize) complete via iterative-eval-a; eval() conversion pending in iterative-eval-b (`doc/16-architecture.md:43`) [Minor, computer-scientist C70 panel]
-- [ ] Convert `deep_materialize_impl` to iterative using `DeepEntries`/`DeepSeqTail` Cont variants — eliminates O(nesting) Rust stack frames at output boundaries (`--eval`, REPL display, `$eval` builtin); sharing/cycle cache (`HashMap<*const Thunk, Option<Rc<Thunk>>>`) carried as `Rc<RefCell<...>>` through the relevant Cont variants; depends on unified Cont enum from iterative-eval-b. Design intent: "deep_materialize within CEK loop, no separate helper" (design session 2026-04-20). (`src/eval.rs:2618–2772`) [Major, eval-engine]
+- [ ] Benchmark: compare recursive vs iterative on deep chains and large collections [Minor]
+- [ ] Remove 64MB worker thread stack workaround — `src/main.rs` spawns a worker thread with 64MB stack; replace with default stack size once iterative eval eliminates deep recursion (`src/main.rs`) [Minor]
+- [ ] Re-enable depth-exceeded unit tests — tests require >128MB stack in debug mode (marked `#[ignore]`): `collect_max_size_limit_enforced` and `join_seq_size_limit` (`src/builtins.rs`), `filter_seq_step_no_depth_accumulation_on_consecutive_failures` and `take_large_count_infinite_seq_depth_exceeded` (`src/builtins.rs`), `test_pending_call_cycle_detection` (`src/eval.rs`), `test_session_depth_exhaustion` (`src/repl.rs`) [Minor]
+- [ ] Add corpus test for deep evaluation chain through public API — regression guard for iterative materialize correctness (`tests/corpus/eval/eval/deep_chain.llt-eval`) [Minor, test-crafter C70]
+- [ ] Add unit test for PendingBuiltin deep chain — exercises `PendingCallDispatch` continuation in `materialize_rc` (`src/eval.rs`) [Minor, test-crafter C70]
+- [ ] Add unit test for GuardedValidate continuation — verify `[@Int 42]` chain works through `materialize_rc` (`src/eval.rs`) [Minor, test-crafter C70]
+- [ ] Add comment to existing depth-limit tests clarifying they test the depth-limit policy, not stack-safety (stack-safety tested by `test_iterative_materialize_deep_chain`) (`src/eval.rs`) [Nit, test-crafter C70]
+- [ ] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70]
+- [ ] Convert `deep_materialize_impl` to iterative using `DeepEntries`/`DeepSeqTail` Cont variants — eliminates O(nesting) Rust stack frames at output boundaries (`--eval`, REPL display, `$eval` builtin); sharing/cycle cache (`HashMap<*const Thunk, Option<Rc<Thunk>>>`) carried as `Rc<RefCell<...>>` through the relevant Cont variants; depends on unified Cont enum from iterative-eval-b5. Design intent: "deep_materialize within CEK loop, no separate helper" (design session 2026-04-20). (`src/eval.rs:2618–2772`) [Major, eval-engine]
+
+## eval-split: Reduce eval.rs
+
+`src/eval.rs` is ~9000 lines. Extract focused modules so agents work in smaller files. Each sprint is a pure `mod` extraction — no behavior change, all tests pass. Splitting eval-split-b before iterative-eval-b3 is recommended since b3+ modify that section heavily.
+
+### eval-split-a: Extract eval_call.rs
+
+- [ ] Move `func_label()`, `func_path()`, `eval_call()`, `CallContext`, `invoke_function()`, `bind_args_thunks()` to `src/eval_call.rs`; re-export via `pub(crate) use` in `eval.rs` (`src/eval.rs:738-1000`, ~280 lines) [Minor]
+
+### eval-split-b: Extract eval_materialize.rs
+
+Move the CEK continuation machinery — the active area for iterative-eval-b sprints. Land before iterative-eval-b3 so those sprints operate on a smaller file.
+
+- [ ] Move `MatCont`, `MatStep`, `ContResult`, `RestoreState`, `attach_materialization_context()`, `next_depth()`, `force_step()`, `materialize_rc()`, `apply_mat_cont()` to `src/eval_materialize.rs` (`src/eval.rs:1245-2100`, ~860 lines) [Minor]
+
+### eval-split-c: Extract eval_access.rs
+
+- [ ] Move `eval_dot_access()`, `eval_bracket_access()`, `eval_range_access()`, `invoke_proxy_handler()` and their helpers to `src/eval_access.rs` (`src/eval.rs:1075-1238`, ~165 lines) [Minor]
+
+### eval-split-d: Extract eval_deep.rs
+
+- [ ] Move `deep_materialize()`, `deep_materialize_impl()`, `deep_materialize_thunk()` to `src/eval_deep.rs` (`src/eval.rs:2618-2772`, ~155 lines) [Minor]
+
+## builtins-split: Reduce builtins.rs
+
+`src/builtins.rs` is ~11000 lines. Split by semantic domain. Each sprint is a pure `mod` extraction.
+
+### builtins-split-a: Extract builtins_seq.rs
+
+Largest cohesive block: all sequence primitives and higher-order functions (~4000 lines).
+
+- [ ] Move `builtin_seq`, `builtin_head`, `builtin_tail`, `builtin_collect`, `builtin_range`+`range_step`, `builtin_repeat`, `builtin_cycle`+`cycle_step`, `builtin_iterate`, `builtin_unfold`+`unfold_step`, `builtin_map`+`map_step`, `builtin_filter`+`filter_step`, `builtin_take`, `builtin_drop`, `builtin_reduce`+`fold_step`, `builtin_join`+`join_step`, `builtin_concat` to `src/builtins_seq.rs` (`src/builtins.rs:1365-3087`) [Minor]
+
+### builtins-split-b: Remaining domain splits (optional)
+
+After builtins-split-a, `builtins.rs` shrinks to ~1500 lines — borderline acceptable. Further splits optional.
+
+- [ ] Optionally extract `builtin_str`/`builtin_split`/`builtin_replace`/`builtin_upper`/`builtin_lower`/`builtin_trim` to `src/builtins_string.rs` (~250 lines) [Minor]
+- [ ] Optionally extract `builtin_add`/`builtin_sub`/`builtin_mul`/`builtin_div_float`/`builtin_eq`/`builtin_lt`/`builtin_if` to `src/builtins_math.rs` (~200 lines) [Minor]
 
 ## parser-rewrite: Parser Rewrite (E2)
 
@@ -157,53 +219,6 @@ Type::Seq inference, TypeEnv::with_builtins, and core type system correctness.
 - [x] Fix `collect_type_vars()` conflating type and row variable names — collects `RowVar` names into the same `BTreeSet<String>` as `TypeVar` names; `instantiate()` then routes all through the type substitution, freshening row variables as TypeVars. Add separate `collect_row_vars()` (Pierce & Turner 2000) or use two-map substitution. (`src/types.rs:129-151`) [Minor, type-theorist C39] — done in bidirectional-typing-b
 - [ ] Fix `check_bracket_access` rejecting `Type::Number` as key type — only `Type::Str | Type::Int | Type::Any` accepted; `Number` is supertype of `Int` and should produce `Any` return like `Int` does. (`src/typecheck.rs:347-348`) [Fix-later, type-theorist C39]
 
-### type-doc-fixes: Type System Doc Accuracy Fixes (doc/05, doc/06, doc/07)
-
-Accuracy fixes for the type system documentation chapters.
-
-- [ ] Fix doc/06 Instantiation section contradicting implementation — lines 350-355 state "Tinct conflates type vars and row vars into a single namespace — both collected by `collect_type_vars()` and renamed by `instantiate()`." This is false since row-unification-b: kinded substitution is fully implemented with separate `collect_type_vars`/`collect_row_vars`, separate `type_map`/`row_map` in `Substitution`, and `instantiate_scheme`/`instantiate_at_level` freshening both independently. Rewrite the block to describe the actual two-namespace kinded design. (`doc/06-type-inference.md:350-355`) [Major, type-theorist C52]
-- [ ] Fix doc/06 TypeScheme code block showing old single-namespace struct — lines 372-384 show `pub struct TypeScheme { pub vars: Vec<String>, pub body: Type }` but actual code has `type_vars: Vec<String>`, `row_vars: Vec<String>`, `body: Type`. Display claim is accurate in spirit but `TypeScheme::fmt` chains `type_vars`+`row_vars` — add note. (`doc/06-type-inference.md:372-384`) [Major, type-theorist C52]
-- [ ] Fix doc/06 grammar listing `Open` as valid ρ variant — `Open` was eliminated in row-unification-b; grammar should read `ρ ::= Closed | RowVar(r)` with a note that anonymous `...` syntax generates fresh `_open{n}` names internally. (`doc/06-type-inference.md:24`) [Major, integration-verifier C52]
-- [x] Fix doc/07 `RowTail` spec missing `u32` level field — doc/07 line 290 now shows `RowVar(String, u32)` with Kiselyov generalization level. (`doc/07-type-extensions.md:290`) [Major, type-theorist C52]
-- [ ] Fix doc/07 `TypeScheme.ty` should be `body`; add `unify_tails` level-lowering to pseudocode — struct shows `pub ty: Type` but code has `pub body: Type`; `unify_tails` pseudocode at lines 475-479 omits level lowering for RowVar/RowVar case (`types.rs:551-555` lowers rho2 level). (`doc/07-type-extensions.md:532-537, 475-479`) [Major, type-theorist C52]
-- [ ] Fix doc/07 Part 8 anonymous open-record names use `_r{n}` but code uses `_open{n}` — description on line 628 and display example on line 611 both say `_r0`/`_r{n}` but all tests assert `starts_with("_open")`. (`doc/07-type-extensions.md:611, 628`) [Major, integration-verifier C52]
-- [ ] Add TypeVar-chase case to `row_var_occurs_in_type` pseudocode in doc/07 — Part 2 pseudocode shows `otherwise → false` but the row-unification-c fix added TypeVar chasing; add `TypeVar(α) → if α ∈ S.type_map: row_var_occurs_in_type(ρ, S.type_map[α]) else: false`. (`doc/07-type-extensions.md:386-392`) [Minor, integration-verifier C52]
-- [x] Fix doc/07 `apply_row` duplicate field claim — line 368 says "there are no duplicate labels to resolve" and prescribes internal error on duplicates; actual code uses `contains_key` guard (explicit fields take precedence over row-variable-inherited fields) with comments explaining this is legitimate. Update doc to describe contains_key semantics. (`doc/07-type-extensions.md:368`) [Minor, computer-scientist C52] — done in row-unification-e
-- [x] Fix doc/07 `Substitution` pseudocode shows `HashMap` but code uses `IndexMap` — pseudocode at lines 340-344 shows `HashMap<String, Type>` / `HashMap<String, Row>` but `types.rs:293-296` uses `IndexMap`. Update doc. (`doc/07-type-extensions.md:340-344`) [Nit, type-theorist C52]
-- [x] Fix doc/07 `resolve_row` field-merge semantics imprecise — pseudocode shows `fields ∪ bound.fields` without noting precedence; actual code uses `if !merged.contains_key(&key)` — explicit fields win. Update to `fields ∪ (bound.fields \ dom(fields))`. (`doc/07-type-extensions.md:428-430`) [Nit, type-theorist C52]
-- [x] Add comment explaining `generalize` defensive filter — superseded by type-theorist C62 finding: the filter IS load-bearing (named row vars like `...rest` share the `_t{n}` counter prefix, so the filter genuinely excludes them). Fix tracked in type-extensions as Fix `generalize()` defensive filter comment. (`src/types.rs:1084-1087`) [Nit, type-theorist C52, superseded C62]
-- [ ] Fix non-dict Record expressions at document level losing polymorphism — when a non-dict expression returns `Type::Record`, its fields are stored via `TypeEnv::insert` (monomorphic `TypeScheme::mono`); the parallel dict path uses `insert_scheme` (line 102). Field types containing TypeVars from a polymorphic call are silently stored as monomorphic. Document the asymmetry or restructure to use `insert_scheme` with `generalize` for Record fields. (`src/typecheck.rs:119-129`) [Minor, type-theorist C52]
-- [ ] Fix contravariant annotation check error message inverted in lambda-checking mode — `type_mismatch(&resolved, expected_ty, ann.span)` reads "expected {annotation_type}, got {expected_type}"; should read "parameter annotation {resolved} is more restrictive than required type {expected_ty}". (`src/typecheck.rs:361-367`) [Minor, type-theorist C52]
-- [ ] Fix `check_range_access` emitting `not_a_record` for `Seq` targets — `Type::Seq(...)` falls to the `_` arm producing "expected record type, got Seq[Int]"; add a dedicated `Type::Seq` arm with "range access is not supported on Seq types". (`src/typecheck.rs:677`) [Minor, type-theorist C52]
-- [ ] Fix internal row variable names leaking into error messages — `unify_remainders` error messages at `src/types.rs:646,658,686,706,744` interpolate raw `rho` names without the `starts_with('_') → "..."` hiding rule used by `Type::Display`; user sees `"infinite row type: _open3 occurs in its own binding"` for a var they never wrote. Apply hiding rule: if name starts with `'_'`, use `"an anonymous open row"` instead. (`src/types.rs:646-744`) [Minor, integration-verifier C52]
-- [ ] Add named row var type alias freshening at use sites — when a type alias containing `...rest` is resolved via `get_type_alias` in function param annotation context, `rest` gets its literal name (not a fresh `_t{n}`); multiple functions using the same alias in the same dict can share the `rest` name during Pass 3 unification, causing spurious constraint propagation; route alias types through `ann_mapping` freshening in `resolve_type_name` for function param annotation contexts. [Minor, type-theorist C52]
-- [ ] Consider `HashSet` instead of `BTreeSet` in `collect_type_vars` — order doesn't matter (`src/types.rs:85-106`) [Nit, type-theorist]
-- [ ] Remove unused `Substitution` from `instantiate` return type — or document why returned (`src/types.rs:318-330`) [Nit, type-theorist]
-- [ ] Document `Type::is_subtype` not short-circuiting on `Any` in nested positions (`src/types.rs:42-83`) [Nit, type-theorist]
-- [ ] Fix type display using two spaces between fields — consider single space (`src/types.rs:345-367`) [Nit, type-theorist]
-- [x] Fix DESIGN.md "pure Robinson" unification claim — DESIGN.md §Unification claims unification is pure Robinson with subtyping handled by [U-SUBSUME]/`check_expr`, but code implements bidirectional literal promotion rules directly in `unify()`. Now resolved: [U-SUBSUME] fallback implemented, unsound IntLiteral-Float arm removed, doc/06 updated to describe promotion arms as fast-path optimizations with [U-SUBSUME] as general fallback. (`src/types.rs`, `doc/06-type-inference.md`) [Major, type-theorist]
-- [x] Add comment explaining `IntLiteral(n) ~ Float` literal-specific promotion (`src/types.rs:263`) [Nit, type-theorist] — resolved: arm removed (unsound); [U-SUBSUME] correctly rejects IntLiteral/Float
-- [x] Fix IntLiteral-Float soundness: remove `(IntLiteral, Float)` promotion arm from `unify()` — `unify(IntLiteral(_), Float)` returns `Ok(())` but `is_subtype(IntLiteral(_), Float)` = false, violating the U-SUBSUME invariant (concrete types unify iff subtype). At CALL-POLY sites this silently accepts integer literals for Float parameters where CALL-MONO (`is_subtype`) correctly rejects them. IntLiteral promotes to Int; Float is a sibling branch of the numeric lattice, not a supertype. Fix: delete `(Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => Ok(()),` from `unify()` and add `test_unify_int_literal_float_fails`. (`src/types.rs:1014`) [Major, type-theorist C62]
-- [ ] Fix `TypeEnv::with_parent` taking `Rc` instead of `&Rc` — minor API ergonomics (`src/types.rs:399-405`) [Nit, type-theorist]
-- [ ] Document `resolve_fn_type` zero-param semantic — bare `Fn@T` (not in `[Fn@T [Params]]` form) produces `Function { params: vec![], ret: T }` which resembles a thunk type; add comment: "`Fn@T` bare = zero-param function returning T; full function type with params uses `try_resolve_fn_type_expr`." (`src/typecheck.rs:1128-1140`) [Nit, type-theorist C62]
-- [x] Fix `is_subtype` depth-safety comment imprecision — "safe because type nesting is bounded by the parser's MAX_DEPTH (256)" is wrong; parser depth bounds AST nesting, not inferred type structure. The actual guarantee is the HM occurs-check invariant: no type variable can appear in its own binding, so type chains are acyclic. (`src/types.rs:94`) [Nit, type-theorist C62]
-- [x] Fix `generalize()` defensive filter comment — says `!all_row_vars.contains(var)` "cannot trigger in practice" but named row variables (e.g., `...rest`) share the `_t{n}` counter prefix with TypeVars and can appear in both `collect_type_vars` (via field types) and `collect_row_vars` (via tail), so the filter IS load-bearing. Replace: "excludes named row variables from being double-generalized as type variables." (`src/types.rs:1183-1188`) [Nit, type-theorist C62]
-- [ ] Add `Eq` derive to `TypeError` (`src/types.rs:444-448`) [Nit, type-theorist]
-- [x] Refine "Robinson vacuous satisfaction" comment in `unify_tails` — terminology is imprecise; "vacuous" only applies to `rho1 == rho2` sub-case; the `rho1 != rho2` sub-case has concrete satisfaction (empty fields, distinct vars). (`src/types.rs:547`) [Nit, type-theorist C53]
-- [x] Refine TypeVar chase termination comment — omits substitution-application precondition; full invariant requires both apply-before-unify AND occurs check. (`src/types.rs:495`) [Nit, computer-scientist C53]
-- [x] Label Cases 5/6 in doc/07 `unify_remainders` pseudocode — jump from Case 4 to Case 7 unexplained; the two closed-tail error arms are implicitly Cases 5/6. (`doc/07-type-extensions.md:470-472`) [Nit, computer-scientist C53]
-- [ ] Document annotation isolation constraint in doc/07 — same-rho-different-unique-fields errors only manifest via unit tests, not end-to-end corpus tests, because each annotation gets fresh row vars via `state.fresh_row_var()`. (`doc/07-type-extensions.md`) [Minor, integration-verifier C53]
-- [ ] Document `TypeMap` using `(offset, offset)` as key instead of `Span` — offsets are sufficient (`src/typecheck.rs:16`) [Nit, type-theorist]
-- [ ] Consider `Result<Type, TypeError>` for `infer_expr` match arms — most wrap single error in vec (`src/typecheck.rs:142-209`) [Nit, type-theorist]
-- [ ] Document `check_call` not verifying named args exist in params — intentional: named args are eval-time (`src/typecheck.rs:389-447`) [Nit, type-theorist]
-- [ ] Consider `HashMap` instead of `IndexMap` for type alias registry — order doesn't matter (`src/types.rs:386`) [Nit, type-theorist]
-- [ ] Clarify `Fn@T` with zero params — document whether it means thunk or nullary function (`src/typecheck.rs:536-541`) [Nit, type-theorist]
-- [x] Research Type::Any consistency vs subtyping separation — see doc/whatif/gradual-typing.md. Covers consistency relation (Siek & Taha 2006), AGT framework (Garcia et al. 2016), is_consistent() vs is_subtype() separation, Any→Unknown+Top split. Recommendation: don't adopt now; revisit when Any causes a real false positive or algebraic subtyping is adopted.
-- [ ] Document principal type property violations + add false-negative test case — Tinct does not satisfy Damas-Milner principal type theorem: (1) no let-generalization, (2) non-MGU literal coercions, (3) subtyping + parametric polymorphism interaction, (4) `Type::Any` is both top and bottom (`Any <: τ` and `τ <: Any` for all τ — documented in `doc/06-type-inference.md:561-571`). Add a **concrete corpus test** demonstrating the false-negative: `[@Int [call $f "hello"]]` where `$f` is an untyped (Any→Any) identity — TypeAssert silently passes type checking because `Any <: Int`, yet the runtime value is a String. The test should be a `tests/corpus/typecheck/` file that currently produces no type errors but would produce a warning under a sound consistency relation. Add the limitation to DESIGN.md §Type Inference with this example. Fix path: `Type::Any` split (see AnyGradual/AnyPoly item in Integration/Pipeline section). [Minor, computer-scientist + type-theorist]
-- [ ] Document literal promotion symmetry in unification — `IntLiteral↔Int` unification is bidirectional; in a subtyping-aware system `IntLiteral <: Int` but not vice versa; reduces diagnostic value (`src/types.rs:263-264`) [Minor, computer-scientist]
-- [x] Research full Damas-Milner principality path — verdict: full classical DM principality not achievable with gradual typing (proven: Garcia et al. 2016 AGT, Siek et al. 2015). No separate whatif needed. (a) Literal promotion migration designed in doc/06-type-inference.md §Unification (PROPOSED DESIGN block) — achievable and planned under bidirectional-typing. (b) Consistency relation (Siek & Taha 2006) addresses Any-as-top-and-bottom; covered by doc/whatif/gradual-typing.md Phase 2+3, now expanded with full blame tracking. (c) Full principality with subtyping: see doc/whatif/algebraic-subtypes.md (Simple-sub). Achievable target is synthesis-mode local principality + the Gradual Guarantee, not classical DM.
-- [x] Research path-sensitive type narrowing — see doc/whatif/narrowing.md. Make `$if` a type-level special form, fork type environments per branch. Four narrowing patterns: equality-with-literal, type-of guard, key presence, boolean conjunction. No false-branch narrowing (needs negation types). Assumes typeassert-structural complete. Trigger: after let-generalization + bidirectional-typing.
-- [ ] Add `Substitution::is_empty()` method — the `is_empty` guard in `check_call` at `src/typecheck.rs:921` and similar guards access `state.subst.type_map.is_empty() && state.subst.row_map.is_empty()` directly, coupling to the internal representation. If a third kind-map is added, guards would silently miss it. Add `pub fn is_empty(&self) -> bool { self.type_map.is_empty() && self.row_map.is_empty() }` to `Substitution` in `src/types.rs`, then use it at all 7+ guard sites. (`src/types.rs`, `src/typecheck.rs`) [Nit, type-theorist C69 panel]
 
 ## typeassert-structural-b: TypeAssert Structural Contract Checking (Part 2)
 
@@ -898,6 +913,10 @@ Doc and behavior nits from codebase reviews. Requires misc-nits-b.
 - [ ] Document Unicode homograph risk in `var_ident` — `grammar.pest` `var_ident` denylists ASCII punctuation but allows Unicode identifier characters; Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions in LLT programs. Add a note to `doc/02-syntax.md` or `DESIGN.md` acknowledging the risk and documenting the design stance (accept Unicode but restrict to NFC, or ASCII-only for safety). (`src/grammar.pest`) [Minor, grammar-architect train-3]
 - [ ] Fix `doc/15-ast.md:211-223` Annotation Bracket Restriction incomplete — §Annotation Brackets restriction table says special forms (`call`, `fn`, `type`) are parse errors inside annotation brackets, but does not address `type_assert_body` (which is also rejected inside annotation brackets yet is not categorized as a 'special form'); add `type_assert_body` to the restriction table with a clarifying note. (`doc/15-ast.md:211-223`) [Nit, grammar-architect C57]
 - [ ] Add TODO citation to `test_bracket_access_forward_ref_resolves_correctly` `#[ignore]` — test at `src/typecheck.rs:3595` is `#[ignore]` with no comment explaining why or citing the tracking sprint; add `// TODO: enable when check_bracket_access generates row constraints for open records — see row-unification-h-b`. (`src/typecheck.rs:3595`) [Nit, test-crafter C57]
+- [ ] Extract `rho_display` helper function from the 5 duplicated `starts_with('_')` display-hiding sites in `unify_remainders` (`src/types.rs:813-937`) [Nit, test-crafter C72 panel]
+- [ ] Add visited-set note to `row_var_occurs_in_type` pseudocode in doc/07 — the implementation threads a `visited: &mut HashSet<String>` argument; pseudocode omits it [Nit, test-crafter C72 panel]
+- [ ] Add test for Case 5 `unify_remainders` display-hiding with `_`-prefixed row var name [Nit, test-crafter C72 panel]
+- [ ] Fix `Substitution::apply()` to use the new `is_empty()` method instead of inline check (`src/types.rs:406`) [Nit, type-theorist C72 panel]
 
 ## integration: Integration / Pipeline
 
