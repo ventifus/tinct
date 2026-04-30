@@ -102,6 +102,9 @@ impl fmt::Display for LexError {
 
 impl std::error::Error for LexError {}
 
+/// Maximum nesting depth for bracket expressions (enforced during tokenization).
+const MAX_LEX_DEPTH: usize = 256;
+
 /// Tokenize input string into a flat token stream.
 ///
 /// Returns a vector of spanned tokens or an error if the input is malformed.
@@ -117,13 +120,24 @@ struct Lexer<'a> {
     column: usize,
     last_newline_offset: usize,
     tokens: Vec<Spanned<Token>>,
-    /// Tracks if whitespace (not newline) was skipped before the current position
+    /// Tracks if horizontal whitespace (spaces/tabs, not newlines) was skipped before the current position.
+    ///
+    /// Used to disambiguate whitespace-sensitive syntax:
+    /// - `$a.b` (no gap) → dot access; `$a .b` (gap) → two separate tokens
+    /// - `word@annotation` (no gap) → ImmediateAt; `word @annotation` (gap) → At
+    /// - `$a[0]` (no gap) → BracketAccess; `$a [0]` (gap) → OpenBracket
+    ///
+    /// This flag is reset at the start of each token loop iteration and set by `skip_whitespace_except_newline()`.
     had_whitespace_before: bool,
-    /// Bracket nesting depth (for range operator context)
+    /// Bracket nesting depth (for range operator context and MAX_LEX_DEPTH enforcement)
     bracket_depth: usize,
     /// True if the last token was Dot in an access chain (next bare word excludes dots)
     after_access_dot: bool,
-    /// Tracks the last significant token type for O(1) access context detection
+    /// Tracks the last significant token type for O(1) access context detection.
+    ///
+    /// Used to determine when `[` should emit `BracketAccess` (immediately after a value-ending token
+    /// with no whitespace gap) vs `OpenBracket`. Value-ending tokens: VarRef, CloseBracket, BareWord,
+    /// QuotedString, Int, Float, BoolLit. This enables `$a[0]` (bracket access) vs `$a [0]` (separate tokens).
     last_significant_token: Option<LastSignificantToken>,
 }
 
@@ -264,6 +278,16 @@ impl<'a> Lexer<'a> {
             }
             '[' => {
                 self.after_access_dot = false;
+                // Check depth before incrementing; advance first so the span
+                // covers the `[` character (start..end is one char wide).
+                if self.bracket_depth >= MAX_LEX_DEPTH {
+                    self.advance();
+                    let end = self.current_position();
+                    return Err(LexError::new(
+                        format!("maximum nesting depth exceeded (limit: {MAX_LEX_DEPTH})"),
+                        Span::new(start, end),
+                    ));
+                }
                 self.advance();
                 self.bracket_depth += 1;
                 let end = self.current_position();
@@ -1242,6 +1266,25 @@ mod tests {
                 Token::At,
                 Token::BareWord("Int".into())
             ]
+        );
+    }
+
+    #[test]
+    fn test_lex_depth_limit() {
+        // 257 opening brackets exceeds MAX_LEX_DEPTH (256) — lexer must return an error.
+        let input = "[".repeat(257);
+        let result = tokenize(&input);
+        assert!(result.is_err(), "expected error for 257 nested brackets");
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("maximum nesting depth exceeded"),
+            "expected depth error message, got: {}",
+            err.message
+        );
+        // Span must be one character wide (covers the offending `[`, not zero-width).
+        assert_ne!(
+            err.span.start, err.span.end,
+            "error span must not be zero-width"
         );
     }
 }

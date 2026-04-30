@@ -63,8 +63,10 @@ Everything else can be a regular function in the stdlib:
 [$call $x $y]         # Dict — $call is a variable reference, not the keyword
 [mycall $f $x]        # Dict — "mycall" is not a recognized keyword
 [call
-: value]              # CallExpr — ":" is not on the same line, colon_ahead only matches horizontal whitespace
+: value]              # CallExpr — newline breaks colon_ahead (it only matches spaces/tabs, not newlines)
 ```
+
+**Note on `colon_ahead`:** The lookahead pattern that rejects `call:` as a dict key only matches horizontal whitespace (spaces and tabs). A newline between the keyword and colon breaks the pattern, so `[call\n: x]` is a CallExpr, not a dict entry. This is documented formally in §6 Complete Grammar (`colon_ahead = ws_chars* ~ ":"` where `ws_chars = " " | "\t"`).
 
 **Why parser-level:** The distinction between special forms and data must be unambiguous before evaluation. If deferred to the evaluator, `[call $f $x]` would first be constructed as a dict `[0: call  1: $f  2: $x]`, then the evaluator would need to inspect key 0 — but at that point the dict is already a thunk and the string `"call"` is indistinguishable from user data that happens to contain the word "call". Parser-level recognition avoids this ambiguity entirely.
 

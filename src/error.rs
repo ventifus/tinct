@@ -937,12 +937,22 @@ impl EvalError {
 /// like "multi-step-validator" is preserved correctly.
 const HIDDEN_SUFFIXES: &[&str] = &["-impl", "-step", "-check"];
 
+/// Returns `true` if the stack frame should appear in user-facing error output:
+/// not a synthetic origin span and not a stdlib internal helper.
+/// Returns `false` for:
+/// - Synthetic origin spans (Span::origin() = offset 0, line 1, col 1; displays as "1:1-1:1")
+///   from stdlib/builtin calls
+/// - Stdlib internal helper functions (suffixes: -impl, -step, -check)
+fn should_display_frame(frame: &StackFrame) -> bool {
+    frame.span != Span::origin() && !HIDDEN_SUFFIXES.iter().any(|s| frame.label.ends_with(s))
+}
+
 /// Infer a context-appropriate verb for the materialization span label.
 /// Checks the first visible stack frame label to determine whether the thunk
 /// was forced by a function call or a field/bracket access.
 fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
     for frame in stack {
-        if HIDDEN_SUFFIXES.iter().any(|s| frame.label.ends_with(s)) {
+        if !should_display_frame(frame) {
             continue;
         }
         let label = frame.label.to_ascii_lowercase();
@@ -978,17 +988,7 @@ impl fmt::Display for EvalError {
             }
         }
         for frame in &self.stack {
-            // Filter out synthetic origin spans (Span::origin() = offset 0, line 1, col 1;
-            // displays as 1:1-1:1) from stdlib/builtin calls. Uses exact structural
-            // equality — real user source at line 1 would have a different byte offset.
-            if frame.span == Span::origin() {
-                continue;
-            }
-
-            // Filter out stdlib internal helper functions (suffixes: -impl, -step, -check).
-            // These are implementation details that add noise to user-facing stack traces.
-            // User-facing stdlib functions like $map, $filter remain visible.
-            if HIDDEN_SUFFIXES.iter().any(|s| frame.label.ends_with(s)) {
+            if !should_display_frame(frame) {
                 continue;
             }
 
@@ -2107,6 +2107,90 @@ mod tests {
         assert!(
             display.contains("multi-step-validator"),
             "frames with '-step' as a substring (not suffix) must not be filtered; got: {display}"
+        );
+    }
+
+    #[test]
+    fn test_should_display_frame_hidden_suffix() {
+        // A frame whose label ends with a hidden suffix (-impl, -step, -check)
+        // must not be displayed.
+        let real_span = test_span(5, 1, 5, 10);
+        let impl_frame = StackFrame {
+            label: "call $map-impl".to_string(),
+            span: real_span,
+        };
+        assert!(
+            !should_display_frame(&impl_frame),
+            "frame with -impl suffix must return false"
+        );
+        let step_frame = StackFrame {
+            label: "call $remove-step".to_string(),
+            span: real_span,
+        };
+        assert!(
+            !should_display_frame(&step_frame),
+            "frame with -step suffix must return false"
+        );
+        let check_frame = StackFrame {
+            label: "call $validate-check".to_string(),
+            span: real_span,
+        };
+        assert!(
+            !should_display_frame(&check_frame),
+            "frame with -check suffix must return false"
+        );
+        // A user-facing frame with the same real span must be displayed.
+        let user_frame = StackFrame {
+            label: "call $map".to_string(),
+            span: real_span,
+        };
+        assert!(
+            should_display_frame(&user_frame),
+            "user-facing frame must return true"
+        );
+    }
+
+    #[test]
+    fn test_should_display_frame_origin_span() {
+        // A frame whose span is Span::origin() (synthetic stdlib/builtin location)
+        // must not be displayed regardless of its label.
+        let origin_frame = StackFrame {
+            label: "call $builtin-fn".to_string(),
+            span: Span::origin(),
+        };
+        assert!(
+            !should_display_frame(&origin_frame),
+            "frame with Span::origin() must return false"
+        );
+        // A frame with a real span and a non-hidden label must be displayed.
+        let real_frame = StackFrame {
+            label: "call $user-fn".to_string(),
+            span: test_span(3, 1, 3, 10),
+        };
+        assert!(
+            should_display_frame(&real_frame),
+            "frame with real span and non-hidden label must return true"
+        );
+    }
+
+    #[test]
+    fn test_infer_materialization_verb_skips_origin_span() {
+        // Stack where the first frame has Span::origin() (skipped) and the second
+        // has a real "call X" label — verb must be "called at", not "materialized at".
+        let frames = vec![
+            StackFrame {
+                label: "stdlib-internal".to_string(),
+                span: Span::origin(),
+            },
+            StackFrame {
+                label: "call $user-fn".to_string(),
+                span: test_span(7, 1, 7, 20),
+            },
+        ];
+        assert_eq!(
+            infer_materialization_verb(&frames),
+            "called at",
+            "origin-span frame must be skipped; second frame's 'call' label must drive the verb"
         );
     }
 }

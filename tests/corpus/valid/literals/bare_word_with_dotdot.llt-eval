@@ -1,0 +1,4 @@
+# Bare words with .. (double dots) parse as strings, not range operators
+[x: config..bak  y: a..b]
+===
+["x": "config..bak"  "y": "a..b"]

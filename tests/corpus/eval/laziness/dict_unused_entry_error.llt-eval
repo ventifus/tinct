@@ -1,0 +1,6 @@
+# Laziness proof: unused function argument containing $error is never forced
+[first: [fn [a b] $a]]
+
+[call $first 42 [call $error "should not fire"]]
+===
+Int(42)

@@ -2,6 +2,16 @@
 
 Every grammar rule maps to an AST node. All nodes carry source span information for error reporting.
 
+## Parser Implementation Overview
+
+Tinct uses a **hand-written iterative descent parser** composed of two phases:
+
+1. **Tokenization** (`src/lexer.rs`): Converts raw input into a flat token stream with accurate source spans. The lexer handles whitespace-sensitive disambiguation (e.g., `$a.b` vs `$a .b`, `word@annotation` vs `word @annotation`) by tracking whitespace gaps and emitting context-aware tokens (`BracketAccess`, `ImmediateAt`, `Dot`).
+
+2. **Parsing** (`src/parser.rs`): Consumes the token stream using an explicit `Vec<StackFrame>` to avoid Rust call-stack recursion. The iterative parser enforces a maximum nesting depth (`MAX_PARSE_DEPTH = 256`) before allocating stack frames, preventing unbounded memory use.
+
+**Historical note:** Tinct originally used a pest PEG grammar. The hand-written parser replaced pest in sprint parser-core-c3 (commit cc8333c) to gain precise control over error messages, whitespace sensitivity, and stack depth limits.
+
 ## AST Node Types
 
 ### Top-Level Types
@@ -218,7 +228,7 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 
 ### Bracket Nesting Depth Limit
 
-The iterative parser (`Vec<StackFrame>` main loop) bounds nesting depth by heap, not the native call stack. `MAX_PARSE_DEPTH` (256) is checked on `stack.len()` before each push, firing before any allocation — inputs exceeding this limit produce a clear parse error.
+`MAX_LEX_DEPTH = 256` is enforced at the lexer level: when the 257th `[` is encountered the lexer immediately returns an error, so for pure bracket nesting the lexer check fires before the parser ever sees a `Token::OpenBracket`. The iterative parser (`Vec<StackFrame>` main loop) also bounds nesting depth by heap, not the native call stack. `MAX_PARSE_DEPTH` (256) is checked on `stack.len()` before each push, firing before any allocation — inputs exceeding this limit produce a clear parse error.
 
 ### Parser Output
 

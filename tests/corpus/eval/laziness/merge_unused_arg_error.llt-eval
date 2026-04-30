@@ -1,0 +1,6 @@
+# Laziness proof: $merge does not materialize unused dict entry with $error
+[call $merge [a: 1  error: [call $error "should not fire"]] [b: 2]]
+---
+$$.a
+===
+Int(1)
