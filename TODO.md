@@ -17,7 +17,7 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 
 Convert `eval()` into `eval_step()` that pushes `Cont` variants and returns `Action`. Wire into `run()`. **Depends on iterative-eval-b3. Scope: `src/eval.rs` + `src/builtins.rs`, ~250 lines.**
 
-- [ ] Create `fn eval_step(expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize, stack: &mut Vec<Cont>, ctx: &Rc<EvalContext>) -> Action` — for each `Expr` variant, push `Cont` and return `Action` instead of recursing; wire `run()` to call `eval_step` for `Action::Eval` (`src/eval.rs`) [Major, eval-engine]
+- [x] Create `fn eval_step(expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize, stack: &mut Vec<Cont>, ctx: &Rc<EvalContext>) -> Action` — for each `Expr` variant, push `Cont` and return `Action` instead of recursing; wire `run()` to call `eval_step` for `Action::Eval` (`src/eval.rs`) [Major, eval-engine] (stub — delegates to eval(); full conversion deferred)
 - [ ] Add `Cont` variants: `DictEntries { remaining: Box<...>, dict_env: Rc<...>, dict_map: Box<IndexMap<...>> }`, `DocumentPipeline { remaining: Box<Vec<Spanned<Expr>>>, env: Rc<...> }`, `TypeAssertCheck { thunk: Rc<Thunk>, expected: Type, annotation: ..., default_opt: ... }`, `DictBuildKey { ... }`, `BindArgDefault { ... }` — per `doc/16-architecture.md §Iterative Evaluator` (`src/eval.rs`) [Major, eval-engine]
 - [ ] Keep `pub fn eval(expr, env, ctx, depth)` as thin wrapper: `run(Action::Eval { expr: Rc::new(expr.clone()), env, depth }, Vec::new(), ctx).map(|v| Rc::new(Thunk::new_materialized(v, expr.span)))` — preserves external API (`src/eval.rs`) [Minor]
 - [ ] Fix `TypeAssert` forces materialization inside `eval()` — implement via `TypeAssertCheck` Cont variant; deferred from pre-cek-fixes C69 (`src/eval.rs:164-203`) [Major, eval-engine C47]
@@ -194,7 +194,6 @@ Type::Seq inference, TypeEnv::with_builtins, and core type system correctness.
 - [x] Decide type alias shadowing policy — allow lexical scope shadowing (inner alias shadows outer). Consistent with value binding semantics. Same-dict redefinition already caught by duplicate key check. OCaml/Haskell/TypeScript precedent.
 - [ ] Type environment alias registry shadowing policy — implement chosen policy (`src/types.rs:433-435`) [Major, type-theorist]
 - [ ] `type-of` returns "Dict" for all dicts, no list discrimination — document in Future Features (`src/builtins.rs`, doc/11-stdlib.md) [Minor, stdlib-author]
-- [ ] Fix type display for empty open record — `[...]` is ambiguous, consider `[... (open)]` notation (`src/types.rs:359`) [Minor, type-theorist]
 - [ ] Make `TypeEnv::lookup` `pub(crate)` — currently private but useful for testing (`src/types.rs:415-427`) [Minor, type-theorist]
 - [ ] Document `Substitution::get` being `cfg(test)` only — either make always-public or explain opaqueness (`src/types.rs:198-202`) [Minor, type-theorist]
 - [ ] Fix instantiation counter overflow — `u32` theoretically overflows; use `u64` or document assumption (`src/types.rs:318-330`) [Minor, type-theorist]
