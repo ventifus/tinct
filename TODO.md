@@ -17,9 +17,13 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 
 Iterativize `eval()` hot paths and add tail-call optimization. **Depends on iterative-eval-a.**
 
-- [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative
-- [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame
+**Partial progress (C70):** Added `BuiltinForceArg` continuation for iterative builtin arg pre-materialization (prevents Rust stack overflow for $-/$+/$= chains). Reduced depth growth per tail-call iteration from ~5 to ~2 via PendingBuiltin/PendingCallDispatch depth changes. Full unlimited TCO requires converting eval() to iterative (each iteration still calls eval() recursively from force_step).
+
+- [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative — prerequisite for unlimited TCO. Each materialize_rc iteration currently calls eval() recursively from force_step; converting this to push Cont variants on the continuation stack would eliminate the depth growth entirely.
+- [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame. Partial: depth tracking improved (PendingBuiltin/PendingCallDispatch results forced at caller's depth), BuiltinForceArg prevents stack overflow for builtin arg chains. Full: requires eval() iterative conversion above.
 - [ ] TCO for recursive stdlib functions (`fold`, `map`, `filter`, `sort-merge`) to avoid stack overflow on large inputs
+- [ ] Merge `MatCont` into unified `Cont` enum — expand the 4-variant `MatCont` to the full ~18-20 Cont variant design; add all `eval()` continuation variants named in doc/16-architecture.md §Iterative Evaluator (DictEntries, AccessChain, DocumentPipeline, CallForceFunc, TypeAssertCheck, DictBuildKey, BindArgDefault, PendingBuiltinForceResult, etc.) alongside existing MatCont variants (Memoize, PendingCallDispatch, GuardedValidate, BuiltinForceArg) (`src/eval.rs`) [Major, eval-engine]
+- [ ] Remove `ThunkState::PendingBuiltin` and `ThunkState::PendingCall` after CEK migration — both are subsumed by `Cont::PendingBuiltinForceResult` and `Cont::PendingCallForceFunc`; ThunkState simplifies to five states: Unevaluated, InProgress, Materialized, Failed, Guarded (doc/16-architecture.md §Iterative Evaluator "Relationship to current ThunkState") (`src/eval.rs`) [Major, eval-engine]
 
 ### iterative-eval-c: Deferred CEK Fixes
 
@@ -44,6 +48,7 @@ Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. *
 - [ ] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70 panel]
 - [ ] Box large `MatCont` variants (PendingCallDispatch, GuardedValidate) to stay within ≤96B frame budget when MatCont merges into full `Cont` enum in iterative-eval-b (`src/eval.rs`) [Major, computer-scientist + performance-expert C70 panel]
 - [ ] Update `doc/16-architecture.md` §Iterative Evaluator "implementation pending" note — Phase 1 (materialize) complete via iterative-eval-a; eval() conversion pending in iterative-eval-b (`doc/16-architecture.md:43`) [Minor, computer-scientist C70 panel]
+- [ ] Convert `deep_materialize_impl` to iterative using `DeepEntries`/`DeepSeqTail` Cont variants — eliminates O(nesting) Rust stack frames at output boundaries (`--eval`, REPL display, `$eval` builtin); sharing/cycle cache (`HashMap<*const Thunk, Option<Rc<Thunk>>>`) carried as `Rc<RefCell<...>>` through the relevant Cont variants; depends on unified Cont enum from iterative-eval-b. Design intent: "deep_materialize within CEK loop, no separate helper" (design session 2026-04-20). (`src/eval.rs:2618–2772`) [Major, eval-engine]
 
 ## parser-rewrite: Parser Rewrite (E2)
 
@@ -487,6 +492,7 @@ Richer error context for debugging.
 - [ ] Build `$include` chain threading — nested include errors should show the full include path ("included from A at line X")
 - [ ] Add secondary span support for "evaluated to this" labels on lazy evaluation errors (Nickel dual-position pattern)
 - [ ] Reconstruct multi-hop cycle paths for circular dependency errors (show the full cycle chain, not just the blackholed thunk)
+- [ ] Elide repeating frame cycles in `DepthExceeded` stack traces — recursive and mutually-recursive functions produce 256 near-identical stack frames, overwhelming agents parsing test output. In `EvalError::Display`, when `kind == DepthExceeded`, collect visible frames, detect the minimal repeating period P (try P=1..len/3; confirm frames[i].label == frames[i%P].label && frames[i].span == frames[i%P].span for all i < P*(len/P); require at least 3 full repetitions), print one period copy then emit `[... N more repetitions of the above M frame(s) ...]`. No change to the stack data model — display-only. Add a unit test covering P=1 (self-recursion) and P=2 (mutual recursion). (`src/error.rs`) [Minor, integration-verifier]
 
 ### error-ux: Error UX Features
 

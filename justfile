@@ -14,7 +14,8 @@ rust_image := "rust:" + rust_version
 project_name := "tinct"
 
 # Common container run flags (using named volumes for target and cargo cache)
-run_flags := "--rm -v .:/workspace:z -v " + project_name + "-target:/workspace/target -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
+# --memory 4g prevents runaway evaluations from swapping the host system
+run_flags := "--rm --memory 8g -v .:/workspace:z -v " + project_name + "-target:/workspace/target -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
 
 # User flag to match host UID/GID (prevents permission issues)
 user_flag := "--user $(id -u):$(id -g)"
@@ -36,7 +37,7 @@ build-release:
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --lib -- --test-threads=1
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test corpus_tests
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test cli_tests
 
 # Run tests with output
