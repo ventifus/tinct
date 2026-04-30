@@ -20,6 +20,7 @@ pub mod ast;
 pub(crate) mod error;
 pub(crate) mod eval;
 pub(crate) mod eval_call;
+pub(crate) mod eval_deep;
 pub mod formatter;
 pub mod lexer;
 pub mod parser;
@@ -47,9 +48,10 @@ pub use parser::{parse, parse_expression, ParseError};
 
 /// Evaluation functions and depth limit.
 pub use eval::{
-    deep_materialize, eval_file, eval_file_with_input, materialize, EvalConfig, EvalContext,
-    EvalState, MAX_EVAL_DEPTH,
+    eval_file, eval_file_with_input, materialize, EvalConfig, EvalContext, EvalState,
+    MAX_EVAL_DEPTH,
 };
+pub use eval_deep::deep_materialize;
 
 /// Builtin infrastructure: stdlib creation, JSON conversion.
 pub use builtins::{create_stdlib_env, json_to_value, MAX_FILE_SIZE};
