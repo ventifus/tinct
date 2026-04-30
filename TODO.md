@@ -17,7 +17,7 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 
 Iterativize `eval()` hot paths and add tail-call optimization. **Depends on iterative-eval-a.**
 
-**Partial progress (C70):** Added `BuiltinForceArg` continuation for iterative builtin arg pre-materialization (prevents Rust stack overflow for $-/$+/$= chains). Reduced depth growth per tail-call iteration from ~5 to ~2 via PendingBuiltin/PendingCallDispatch depth changes. Full unlimited TCO requires converting eval() to iterative (each iteration still calls eval() recursively from force_step).
+**BLOCKED (C70-C71):** 4 agents attempted the full CEK conversion; all failed. The conversion requires inlining eval's Call handling into force_step with coordinated changes across eval, eval_call, invoke_function, bind_args_thunks in a 9000+ line file. Needs human-guided incremental implementation or architectural simplification. Partial progress: BuiltinForceArg continuation, depth reduction for PendingBuiltin/PendingCallDispatch results.
 
 - [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative — prerequisite for unlimited TCO. Each materialize_rc iteration currently calls eval() recursively from force_step; converting this to push Cont variants on the continuation stack would eliminate the depth growth entirely.
 - [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame. Partial: depth tracking improved (PendingBuiltin/PendingCallDispatch results forced at caller's depth), BuiltinForceArg prevents stack overflow for builtin arg chains. Full: requires eval() iterative conversion above.
