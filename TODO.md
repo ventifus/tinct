@@ -1046,13 +1046,13 @@ Codebase health findings from 9-agent review (2026-04-29).
 
 ### Type System
 
-- [ ] Fix `resolve_type_name` outer-scope path using raw annotation names — when `ann_mapping` is `None` (outside function scope), raw user names like `"a"` are inserted directly into `state.levels` (typecheck.rs:1929-1936); two separate dict entries with `@a` share the same substitution variable causing unintended unification. Fix: use `state.fresh_type_var()` for the `None` path. [Major, computer-scientist C66]
-- [ ] Fix `ann_mapping` cross-kind collision — `resolve_type_name` maps all annotation names through a single HashMap allowing `@a` (type var) to collide with `...a` (row var) in the same function. Split `ann_mapping` into `type_ann_map` and `row_ann_map`, route by syntactic context. (`src/typecheck.rs:1567-1575`) [Major, type-theorist C66]
-- [ ] Add TypeAssert default type validation — `resolve_type_assert` infers but does not validate the `default:` clause against the asserted type; `[@[type: Number default: "hello"] 42]` should fail at compile time. Add `is_subtype(default_ty, expected_ty)` check after inference. (`src/typecheck.rs:1836-1868`) [Major, type-theorist C66]
+- [x] Fix `resolve_type_name` outer-scope path — outer-scope `@a` now calls `state.fresh_type_var()` instead of raw name; fresh mapping per type alias call site [cycle-findings-c66 C67]
+- [x] Fix `ann_mapping` cross-kind collision — added `row_ann_mapping` 6th param to `resolve_type_name`; cross-kind error emitted [cycle-findings-c66 C67]
+- [x] Add TypeAssert default type validation — was already implemented in prior sprint [cycle-findings-c66 C67]
 
 ### API / Integration
 
-- [ ] Enforce desugar ordering at API boundaries — `eval_file()` and `typecheck_file()` do not call `desugar_file()` internally; callers must remember or get spurious "undefined variable _" errors. Add `eval_file_desugared()` / `typecheck_file_desugared()` safe wrappers, or document the precondition explicitly with a `debug_assert!`. [Major, integration-verifier C66]
+- [x] Enforce desugar ordering at API boundaries — added `# Precondition` doc sections to eval_file/eval_file_with_input/typecheck_file/typecheck_file_with_types; all 6 active call sites already satisfy the precondition [cycle-findings-c66 C67]
 - [x] Extract `should_display_frame()` helper — `infer_materialization_verb` (error.rs:938-962) and Display impl (error.rs:979-996) both filter frames by suffix and `Span::origin()` using different predicates; if the suffix list changes, only one site gets updated. Extract shared `fn should_display_frame(frame: &StackFrame) -> bool` helper. [Major, integration-verifier C66] — implemented in cycle-findings-c66 sprint
 
 ### Stdlib Docs
