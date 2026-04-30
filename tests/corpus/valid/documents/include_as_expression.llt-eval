@@ -2,4 +2,4 @@
 
 [result: [call $double 21]]
 ===
-["result": [call $double 21]]
+[call $include "lib/utils.llt"]

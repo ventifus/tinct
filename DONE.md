@@ -1058,7 +1058,7 @@ Test coverage gaps and naming consistency from sandbox-polish-b panel review.
 
 ## overridable-ops: Overridable Operators and `$proxy`
 
-Make comparison, arithmetic, and collection operators shadowable from stdlib, enabling embedded DSLs (e.g. `stdlib/sql.llt`) to intercept them. Add `$proxy` as a generic field-access interception primitive. See `doc/whatif/sql-translation.md` §Implementation in stdlib.
+Make comparison, arithmetic, and collection operators shadowable from stdlib, enabling embedded DSLs (e.g. `stdlib/sql.llt`) to intercept them. Add `$proxy` as a generic field-access interception primitive. See `doc/whatif/lib-sql.md` §Implementation in stdlib.
 
 - [x] Add `$proxy handler-fn` Rust builtin: returns `Value::Proxy { handler }` — a new value variant where any field access `.field` calls `handler("field")` and returns the result (`src/builtins.rs`, `src/eval.rs`)
 - [x] Handle `Value::Proxy` in field-access evaluation — force handler and call with field name string (`src/eval.rs`)
@@ -1464,7 +1464,7 @@ Minor findings from Cycle #34 full codebase health review. All items independent
 - [x] Add architecture redirect to CLAUDE.md [Minor]
 - [x] Add pest recursion caveat to doc/15-ast.md [Major]
 - [x] Fix parse_expression docstring — already done by parser-doc-fixes [Nit]
-- [x] Stage doc/whatif/tls.md [Nit]
+- [x] Stage doc/whatif/lib-tls.md [Nit]
 - [x] Document parse_expression in doc/15-ast.md [Nit]
 - [x] Add (dev, ino) migration note to doc/16-architecture.md EvalState sketch [Nit]
 

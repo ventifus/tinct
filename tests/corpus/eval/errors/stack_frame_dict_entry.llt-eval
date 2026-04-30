@@ -5,4 +5,4 @@
   result: $outer.inner
 ]
 ===
-[E010] type mismatch: expected Int or Float, got Int and String
+[E010] +/-/*//: expected Int or Float, got Int and String

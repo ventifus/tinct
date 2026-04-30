@@ -3,6 +3,7 @@
 .claude/settings.local.json
 .mcp.json
 .tmp/
+.mypy_cache/
 # Rust build artifacts
 /target
 /tinct/target

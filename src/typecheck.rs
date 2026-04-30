@@ -36,10 +36,125 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     }
 }
 
+/// Reset all elaboration state in the AST (TypeAssert.resolved_type fields).
+/// This allows re-typechecking a cached AST without triggering the write-once
+/// invariant assertion in resolve_type_assert.
+///
+/// Uses interior mutability via RefCell, so only needs &File (not &mut File).
+fn reset_elaboration(file: &File) {
+    for doc in &file.documents {
+        for expr in &doc.node.expressions {
+            reset_expr(expr);
+        }
+    }
+}
+
+/// Recursively reset resolved_type in all TypeAssert nodes.
+fn reset_expr(expr: &Spanned<Expr>) {
+    match &expr.node {
+        // Literals: no children
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::VarRef(_)
+        | Expr::Rest(_) => {}
+
+        // Access expressions: recurse into target and key/bounds
+        Expr::DotAccess { expr: target, .. } => {
+            reset_expr(target);
+        }
+        Expr::BracketAccess {
+            expr: target,
+            key: key_expr,
+        } => {
+            reset_expr(target);
+            reset_expr(key_expr);
+        }
+        Expr::RangeAccess {
+            expr: target,
+            start,
+            end,
+        } => {
+            reset_expr(target);
+            if let Some(s) = start {
+                reset_expr(s);
+            }
+            if let Some(e) = end {
+                reset_expr(e);
+            }
+        }
+
+        // Dict: recurse into keys and values
+        Expr::Dict(entries) => {
+            for entry_spanned in entries {
+                if let Some(key_spanned) = &entry_spanned.node.key {
+                    reset_expr(key_spanned);
+                }
+                reset_expr(&entry_spanned.node.value);
+            }
+        }
+
+        // Call: recurse into func, args, and named args
+        Expr::Call {
+            func,
+            args,
+            named_args,
+        } => {
+            reset_expr(func);
+            for arg in args {
+                reset_expr(arg);
+            }
+            for named_arg_spanned in named_args {
+                reset_expr(&named_arg_spanned.node.value);
+            }
+        }
+
+        // Fn: recurse into parameter annotations, return annotation, and body
+        Expr::Fn {
+            params: _,
+            body,
+            return_ann: _,
+            desugared: _,
+        } => {
+            // Annotations (param types, return type) are type expressions and
+            // cannot contain TypeAssert nodes — no reset needed.
+            reset_expr(body);
+        }
+
+        // TypeAlias: recurse into the aliased expression
+        Expr::TypeAlias(inner) => {
+            reset_expr(inner);
+        }
+
+        // TypeAssert: reset resolved_type and recurse into inner expression
+        // Note: we don't recurse into the annotation because annotations are
+        // type expressions and shouldn't contain TypeAssert nodes
+        Expr::TypeAssert {
+            expr: inner,
+            resolved_type,
+            ..
+        } => {
+            *resolved_type.borrow_mut() = None;
+            reset_expr(inner);
+        }
+
+        // Annotated: annotations don't contain TypeAssert nodes, so nothing to reset
+        Expr::Annotated { .. } => {}
+    }
+}
+
 /// Type-check a file, returning both errors and a map from expression spans to
 /// inferred types. The type map is populated even when errors occur, covering
 /// every expression that was successfully inferred.
+///
+/// Automatically resets elaboration state before typechecking, allowing
+/// re-typechecking of cached ASTs (LSP use case) without triggering the
+/// write-once invariant assertion in resolve_type_assert.
 pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
+    // Reset elaboration state to allow re-typechecking cached ASTs
+    reset_elaboration(file);
+
     let mut errors = Vec::new();
     let mut env = Rc::new(TypeEnv::new());
     let mut state = InferState::new();
@@ -2775,7 +2890,9 @@ mod tests {
         );
         let errors = result.unwrap_err();
         assert!(
-            errors.iter().any(|e| e.message.contains("expected function type")),
+            errors
+                .iter()
+                .any(|e| e.message.contains("expected function type")),
             "error should mention 'expected function type', got: {errors:?}"
         );
     }
@@ -6260,10 +6377,7 @@ mod tests {
             },
             span,
         );
-        let body = Spanned::new(
-            Expr::VarRef("x".to_string()),
-            span,
-        );
+        let body = Spanned::new(Expr::VarRef("x".to_string()), span);
         let lambda = Spanned::new(
             Expr::Fn {
                 return_ann: None,
@@ -6293,6 +6407,51 @@ mod tests {
             errors.iter().any(|e| e.message.contains("arity mismatch")),
             "Expected arity mismatch error, got: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn test_double_typecheck_no_panic() {
+        // Regression test for LSP double-typecheck panic risk.
+        // Before the fix, calling typecheck_file_with_types twice on the same AST
+        // would trigger the write-once invariant assertion in resolve_type_assert.
+        // After the fix, reset_elaboration clears resolved_type fields before each typecheck.
+        let input = r#"
+            [@Number 42]
+            [@String "hello"]
+            [@Number 99]
+        "#;
+
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        // First typecheck: should succeed
+        let (errors1, type_map1) = typecheck_file_with_types(&file.node);
+        assert!(
+            errors1.is_empty() || errors1.iter().all(|e| !e.message.contains("panic")),
+            "First typecheck should not panic"
+        );
+        assert!(
+            !type_map1.is_empty(),
+            "First typecheck should populate type_map"
+        );
+
+        // Second typecheck on the same AST: should not panic due to reset_elaboration
+        let (errors2, type_map2) = typecheck_file_with_types(&file.node);
+        assert!(
+            errors2.is_empty() || errors2.iter().all(|e| !e.message.contains("panic")),
+            "Second typecheck should not panic"
+        );
+        assert!(
+            !type_map2.is_empty(),
+            "Second typecheck should populate type_map"
+        );
+
+        // Third typecheck to be extra sure
+        let (errors3, _type_map3) = typecheck_file_with_types(&file.node);
+        assert!(
+            errors3.is_empty() || errors3.iter().all(|e| !e.message.contains("panic")),
+            "Third typecheck should not panic"
         );
     }
 }

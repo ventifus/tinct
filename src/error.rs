@@ -893,7 +893,12 @@ fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
         if label.contains("call") {
             return "called at";
         }
-        if label.contains('.') || label.contains("dot") || label.contains("access") || label.contains('[') || label.contains("bracket") {
+        if label.contains('.')
+            || label.contains("dot")
+            || label.contains("access")
+            || label.contains('[')
+            || label.contains("bracket")
+        {
             return "accessed at";
         }
     }

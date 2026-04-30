@@ -111,16 +111,176 @@ fn skip_whitespace_tokens(
     count
 }
 
+/// Adjust a single `Position` from sub-source coordinates to absolute coordinates.
+///
+/// When `parse_annotation` re-parses a bracket sub-string via `parse2`, the resulting spans
+/// have offsets relative to the start of the sub-string (i.e., offset 0 = start of `[`).
+/// This function shifts a position back into the original file's coordinate space.
+///
+/// `base` is the absolute `Position` of the first character of the sub-source (the `[`).
+/// In sub-source coordinates that character is at offset=0, line=1, column=1.
+fn adjust_position(pos: Position, base: Position) -> Position {
+    Position {
+        offset: pos.offset + base.offset,
+        line: pos.line + base.line - 1,
+        // Column is relative to its own line. Only the first sub-source line shares a line
+        // with content that came before `[`, so we add base.column-1 only for that line.
+        column: if pos.line == 1 {
+            pos.column + base.column - 1
+        } else {
+            pos.column
+        },
+    }
+}
+
+/// Adjust a `Span` from sub-source coordinates to absolute coordinates.
+fn adjust_span(span: Span, base: Position) -> Span {
+    Span {
+        start: adjust_position(span.start, base),
+        end: adjust_position(span.end, base),
+    }
+}
+
+/// Recursively adjust all spans in a `Spanned<Expr>` from sub-source to absolute coordinates.
+fn adjust_spanned_expr(se: Spanned<Expr>, base: Position) -> Spanned<Expr> {
+    Spanned {
+        span: adjust_span(se.span, base),
+        node: adjust_expr(se.node, base),
+    }
+}
+
+/// Recursively adjust all spans in an `Expr`.
+fn adjust_expr(expr: Expr, base: Position) -> Expr {
+    match expr {
+        // Leaf nodes — no nested spans
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::VarRef(_)
+        | Expr::Rest(_) => expr,
+
+        Expr::DotAccess { expr, field } => Expr::DotAccess {
+            expr: Box::new(adjust_spanned_expr(*expr, base)),
+            field,
+        },
+        Expr::BracketAccess { expr, key } => Expr::BracketAccess {
+            expr: Box::new(adjust_spanned_expr(*expr, base)),
+            key: Box::new(adjust_spanned_expr(*key, base)),
+        },
+        Expr::RangeAccess { expr, start, end } => Expr::RangeAccess {
+            expr: Box::new(adjust_spanned_expr(*expr, base)),
+            start: start.map(|s| Box::new(adjust_spanned_expr(*s, base))),
+            end: end.map(|e| Box::new(adjust_spanned_expr(*e, base))),
+        },
+        Expr::Dict(entries) => Expr::Dict(adjust_entries(entries, base)),
+        Expr::Call {
+            func,
+            args,
+            named_args,
+        } => Expr::Call {
+            func: Box::new(adjust_spanned_expr(*func, base)),
+            args: args
+                .into_iter()
+                .map(|a| adjust_spanned_expr(a, base))
+                .collect(),
+            named_args: named_args
+                .into_iter()
+                .map(|na| Spanned {
+                    span: adjust_span(na.span, base),
+                    node: NamedArg {
+                        name: na.node.name,
+                        value: adjust_spanned_expr(na.node.value, base),
+                    },
+                })
+                .collect(),
+        },
+        Expr::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => Expr::Fn {
+            return_ann: return_ann.map(|ra| Spanned {
+                span: adjust_span(ra.span, base),
+                node: adjust_annotation(ra.node, base),
+            }),
+            params: params
+                .into_iter()
+                .map(|p| Spanned {
+                    span: adjust_span(p.span, base),
+                    node: Param {
+                        name: p.node.name,
+                        annotation: p.node.annotation.map(|ann| Spanned {
+                            span: adjust_span(ann.span, base),
+                            node: adjust_annotation(ann.node, base),
+                        }),
+                        variadic: p.node.variadic,
+                    },
+                })
+                .collect(),
+            body: Box::new(adjust_spanned_expr(*body, base)),
+            desugared,
+        },
+        Expr::TypeAlias(inner) => Expr::TypeAlias(Box::new(adjust_spanned_expr(*inner, base))),
+        Expr::TypeAssert {
+            annotation,
+            expr,
+            resolved_type,
+        } => Expr::TypeAssert {
+            annotation: Spanned {
+                span: adjust_span(annotation.span, base),
+                node: adjust_annotation(annotation.node, base),
+            },
+            expr: Box::new(adjust_spanned_expr(*expr, base)),
+            resolved_type,
+        },
+        Expr::Annotated { name, annotation } => Expr::Annotated {
+            name,
+            annotation: Spanned {
+                span: adjust_span(annotation.span, base),
+                node: adjust_annotation(annotation.node, base),
+            },
+        },
+    }
+}
+
+/// Recursively adjust all spans in an `Annotation`.
+fn adjust_annotation(ann: Annotation, base: Position) -> Annotation {
+    match ann {
+        Annotation::Simple(_) => ann,
+        Annotation::PropertyDict(entries) => {
+            Annotation::PropertyDict(adjust_entries(entries, base))
+        }
+    }
+}
+
+/// Adjust all spans in a list of `Spanned<Entry>` from sub-source to absolute coordinates.
+fn adjust_entries(entries: Vec<Spanned<Entry>>, base: Position) -> Vec<Spanned<Entry>> {
+    entries
+        .into_iter()
+        .map(|se| Spanned {
+            span: adjust_span(se.span, base),
+            node: Entry {
+                key: se.node.key.map(|k| adjust_spanned_expr(k, base)),
+                value: adjust_spanned_expr(se.node.value, base),
+            },
+        })
+        .collect()
+}
+
 /// Parse an annotation starting from the given token index (which should be At or ImmediateAt).
 /// Returns (Annotation, next_index) on success.
 ///
-/// Annotations are always flat (BareWord or property dict), so no recursion depth check is needed.
-/// If property dict annotations are implemented in a future sprint, they will be parsed via the
-/// main loop's depth-checked bracket handling, not here.
+/// Supports both simple annotations (`@Number`) and property dict annotations (`@[type: Number default: 0]`).
+/// Property dict annotations are parsed by extracting the bracket sub-string from `input` and
+/// re-parsing it as a standalone expression via `parse2`, then converting the resulting
+/// `Expr::Dict` into `Annotation::PropertyDict`.
 fn parse_annotation(
     tokens: &[Spanned<Token>],
     start_index: usize,
     leading_comments: &mut BTreeMap<usize, Vec<String>>,
+    input: &str,
 ) -> Result<(Spanned<Annotation>, usize), ParseError> {
     let mut i = start_index;
 
@@ -151,18 +311,92 @@ fn parse_annotation(
 
     match &ann_token.node {
         Token::BareWord(name) => {
-            // Simple annotation
+            // Simple annotation: @Number, @a, etc.
             let annotation = Annotation::Simple(name.clone());
             Ok((Spanned::new(annotation, ann_token.span), i + 1))
         }
         Token::OpenBracket => {
             // Property dict annotation: @[key: value ...]
-            // We need to parse this as a dict and convert it
-            // For now, return an error as this requires full dict parsing
-            Err(ParseError {
-                message: "property dict annotations (@[...]) not yet implemented".to_string(),
-                span: Some(ann_token.span),
-            })
+            // Find the matching CloseBracket by tracking nesting depth.
+            let bracket_start = i;
+            let bracket_start_span = tokens[bracket_start].span;
+            let mut depth: usize = 0;
+            let mut end_i = bracket_start;
+            let mut found = false;
+            for j in bracket_start..tokens.len() {
+                match &tokens[j].node {
+                    Token::OpenBracket | Token::BracketAccess => depth += 1,
+                    Token::CloseBracket => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_i = j;
+                            found = true;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !found {
+                return Err(ParseError {
+                    message: "unclosed bracket in property dict annotation".to_string(),
+                    span: Some(bracket_start_span),
+                });
+            }
+
+            let ann_span = Span {
+                start: bracket_start_span.start,
+                end: tokens[end_i].span.end,
+            };
+
+            // Extract the source sub-string for this bracket expression.
+            // Token spans use byte offsets into `input`.
+            let byte_start = bracket_start_span.start.offset;
+            let byte_end = tokens[end_i].span.end.offset;
+            let sub_source = &input[byte_start..byte_end];
+
+            // Re-parse the sub-string as a standalone expression.
+            let sub_output = parse2(sub_source).map_err(|e| ParseError {
+                message: format!("error in property dict annotation: {}", e.message),
+                span: Some(ann_span),
+            })?;
+
+            // Extract the first expression from the first document.
+            let first_expr = sub_output
+                .file
+                .node
+                .documents
+                .into_iter()
+                .next()
+                .and_then(|doc| doc.node.expressions.into_iter().next());
+
+            match first_expr {
+                Some(spanned_expr) => match spanned_expr.node {
+                    Expr::Dict(entries) => {
+                        // The sub-parse produced spans relative to sub_source (offset 0 = `[`).
+                        // Adjust all entry spans back to the original file's coordinate space.
+                        let base = bracket_start_span.start;
+                        let adjusted = adjust_entries(entries, base);
+                        Ok((
+                            Spanned::new(Annotation::PropertyDict(adjusted), ann_span),
+                            end_i + 1,
+                        ))
+                    }
+                    other => Err(ParseError {
+                        message: format!(
+                            "property dict annotation must be a dict expression, got: {other}"
+                        ),
+                        span: Some(ann_span),
+                    }),
+                },
+                None => {
+                    // Empty bracket: @[] — treat as empty PropertyDict
+                    Ok((
+                        Spanned::new(Annotation::PropertyDict(vec![]), ann_span),
+                        end_i + 1,
+                    ))
+                }
+            }
         }
         _ => Err(ParseError {
             message: format!(
@@ -181,6 +415,7 @@ fn parse_param_list(
     tokens: &[Spanned<Token>],
     i: &mut usize,
     leading_comments: &mut BTreeMap<usize, Vec<String>>,
+    input: &str,
 ) -> Result<Vec<Spanned<Param>>, ParseError> {
     let _param_list_start = *i;
 
@@ -277,10 +512,10 @@ fn parse_param_list(
                 let param_name = name.clone();
                 *i += 1;
 
-                // Check for annotation: param@Type
+                // Check for annotation: param@Type or param@[type: ...]
                 let annotation =
                     if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
-                        let (ann, next_i) = parse_annotation(tokens, *i, leading_comments)?;
+                        let (ann, next_i) = parse_annotation(tokens, *i, leading_comments, input)?;
                         *i = next_i;
                         Some(ann)
                     } else {
@@ -509,7 +744,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             && matches!(&token_vec[i].node, Token::ImmediateAt)
                         {
                             let (ann, next_i) =
-                                parse_annotation(&token_vec, i, &mut leading_comments)?;
+                                parse_annotation(&token_vec, i, &mut leading_comments, input)?;
                             i = next_i;
                             Some(ann)
                         } else {
@@ -521,7 +756,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         let params = if i < token_vec.len()
                             && matches!(&token_vec[i].node, Token::OpenBracket)
                         {
-                            parse_param_list(&token_vec, &mut i, &mut leading_comments)?
+                            parse_param_list(&token_vec, &mut i, &mut leading_comments, input)?
                         } else {
                             Vec::new()
                         };
@@ -888,9 +1123,22 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 continue;
             }
 
-            // Literals: collect as values
+            // Literals: collect as values, but detect colon-ahead for dict key position.
             Token::Int(n) => {
                 let expr = Spanned::new(Expr::Int(*n), span);
+                // Check if this integer is a potential dict key (e.g. [0: $x])
+                if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
+                    if let Some(StackFrame::Dict {
+                        ref mut pending_key,
+                        ..
+                    }) = stack.last_mut()
+                    {
+                        *pending_key = Some(expr.clone());
+                        last_significant_span = Some(span);
+                        i += 1;
+                        continue;
+                    }
+                }
                 push_value(&mut stack, &mut current_document_expressions, expr)?;
                 last_significant_span = Some(span);
                 i += 1;
@@ -915,6 +1163,19 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
             Token::QuotedString(s) => {
                 let expr = Spanned::new(Expr::Str(s.clone()), span);
+                // Check if this quoted string is a potential dict key (e.g. ["key": value])
+                if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
+                    if let Some(StackFrame::Dict {
+                        ref mut pending_key,
+                        ..
+                    }) = stack.last_mut()
+                    {
+                        *pending_key = Some(expr.clone());
+                        last_significant_span = Some(span);
+                        i += 1;
+                        continue;
+                    }
+                }
                 push_value(&mut stack, &mut current_document_expressions, expr)?;
                 last_significant_span = Some(span);
                 i += 1;
@@ -929,7 +1190,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     let name_span = span;
                     i += 1; // Move to ImmediateAt token
                     let (annotation, next_i) =
-                        parse_annotation(&token_vec, i, &mut leading_comments)?;
+                        parse_annotation(&token_vec, i, &mut leading_comments, input)?;
                     i = next_i;
                     let full_span = Span {
                         start: name_span.start,
@@ -987,7 +1248,11 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 let expr = Spanned::new(Expr::VarRef(name.clone()), span);
                 // Check if this VarRef is a potential dict key (followed by colon)
                 if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
-                    if let Some(StackFrame::Dict { ref mut pending_key, .. }) = stack.last_mut() {
+                    if let Some(StackFrame::Dict {
+                        ref mut pending_key,
+                        ..
+                    }) = stack.last_mut()
+                    {
                         *pending_key = Some(expr.clone());
                         last_significant_span = Some(span);
                         i += 1;
@@ -1165,7 +1430,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         ref mut annotation, ..
                     }) if annotation.is_none() => {
                         // Parse the annotation
-                        let (ann, next_i) = parse_annotation(&token_vec, i, &mut leading_comments)?;
+                        let (ann, next_i) =
+                            parse_annotation(&token_vec, i, &mut leading_comments, input)?;
                         *annotation = Some(ann);
                         i = next_i;
                         continue;
@@ -1180,10 +1446,45 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::Ellipsis => {
-                return Err(ParseError {
-                    message: "variadic/rest markers not yet supported".to_string(),
-                    span: Some(span),
-                });
+                // Rest/open-row marker: `...` or `...name` inside a dict expression.
+                // Only valid inside a Dict frame (type expression context).
+                // Produces Expr::Rest(None) for anonymous open row, Expr::Rest(Some(name)) for named.
+                if let Some(StackFrame::Dict { .. }) = stack.last() {
+                    let ellipsis_span = span;
+                    i += 1; // Consume ellipsis
+                    i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                    // Check for optional name after ...
+                    let (rest_name, rest_end) = if i < token_vec.len() {
+                        match &token_vec[i].node {
+                            Token::BareWord(name) => {
+                                let n = name.clone();
+                                let end_span = token_vec[i].span;
+                                (
+                                    Some(n),
+                                    Span {
+                                        start: ellipsis_span.start,
+                                        end: end_span.end,
+                                    },
+                                )
+                            }
+                            _ => (None, ellipsis_span),
+                        }
+                    } else {
+                        (None, ellipsis_span)
+                    };
+                    let name_advance = if rest_name.is_some() { 1 } else { 0 };
+                    let rest_expr = Spanned::new(Expr::Rest(rest_name), rest_end);
+                    push_value(&mut stack, &mut current_document_expressions, rest_expr)?;
+                    last_significant_span = Some(rest_end);
+                    i += name_advance;
+                    continue;
+                } else {
+                    return Err(ParseError {
+                        message: "variadic/rest markers not yet supported outside dict context"
+                            .to_string(),
+                        span: Some(span),
+                    });
+                }
             }
         }
     }
@@ -1318,6 +1619,7 @@ fn pop_last_value_from_frame(
         Some(StackFrame::Dict {
             ref mut entries,
             ref mut pending_key,
+            ref mut seen_keys,
             ..
         }) => {
             // Check if there's a pending key first - if so, we haven't pushed the value yet
@@ -1335,8 +1637,14 @@ fn pop_last_value_from_frame(
                 });
             }
             let last_entry = entries.pop().unwrap();
-            // Restore the key as pending_key if it existed, so the transformed value
-            // will be re-associated with the same key
+            // Restore the key as pending_key so the transformed value will be re-associated
+            // with the same key. Also remove it from seen_keys so that when push_value
+            // re-inserts the completed entry it doesn't trigger a false duplicate key error.
+            if let Some(ref key_expr) = last_entry.key {
+                if let Some(key_str) = key_to_string(&key_expr.node) {
+                    seen_keys.remove(&key_str);
+                }
+            }
             *pending_key = last_entry.key;
             Ok(last_entry.value)
         }
@@ -3038,5 +3346,81 @@ mod tests {
             "expected to find 'my comment' in leading_comments, got: {:?}",
             output.leading_comments
         );
+    }
+
+    /// Regression test for f1e38a2: bracket-access value inside a keyed dict entry caused a
+    /// false "duplicate key" error. `[key: $current-key value: $xs[$current-key]]` was
+    /// incorrectly rejected because `pop_last_value_from_frame` restored the popped entry's key
+    /// as `pending_key` without removing it from `seen_keys`, so when `push_value` re-inserted
+    /// the completed bracket-access entry it found the key already in `seen_keys`.
+    #[test]
+    fn test_bracket_access_value_in_keyed_dict_no_false_duplicate() {
+        // Two distinct keys: "key" and "value". The value for "value" is a bracket-access expr.
+        // This must parse without a "duplicate key" error.
+        let output = parse2("[key: $k value: $xs[$k]]").expect(
+            "parse failed: bracket-access value in keyed dict incorrectly rejected as duplicate key",
+        );
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 2, "expected 2 entries");
+                // First entry: key: $k
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "key"),
+                    other => panic!("expected key 'key', got {other:?}"),
+                }
+                match &entries[0].node.value.node {
+                    Expr::VarRef(name) => assert_eq!(name, "k"),
+                    other => panic!("expected VarRef('k') as value, got {other:?}"),
+                }
+                // Second entry: value: $xs[$k]
+                match &entries[1].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "value"),
+                    other => panic!("expected key 'value', got {other:?}"),
+                }
+                match &entries[1].node.value.node {
+                    Expr::BracketAccess { expr, key } => {
+                        match &expr.node {
+                            Expr::VarRef(name) => assert_eq!(name, "xs"),
+                            other => {
+                                panic!("expected VarRef('xs') as bracket target, got {other:?}")
+                            }
+                        }
+                        match &key.node {
+                            Expr::VarRef(name) => assert_eq!(name, "k"),
+                            other => panic!("expected VarRef('k') as bracket key, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected BracketAccess as value for 'value:', got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    /// Regression test: VarRef as dict key followed by bracket-access value.
+    /// `[$k: $xs[$idx]]` — VarRef key "k" whose value is a bracket-access expression.
+    /// Must not produce a duplicate key error.
+    #[test]
+    fn test_varref_key_with_bracket_access_value() {
+        let output = parse2("[$k: $xs[$idx]]")
+            .expect("parse failed: VarRef key with bracket-access value incorrectly rejected");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                // Key is VarRef("k")
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::VarRef(name) => assert_eq!(name, "k"),
+                    other => panic!("expected VarRef key 'k', got {other:?}"),
+                }
+                // Value is BracketAccess
+                match &entries[0].node.value.node {
+                    Expr::BracketAccess { .. } => {}
+                    other => panic!("expected BracketAccess value, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
     }
 }

@@ -2,4 +2,4 @@
 
 $x.foo
 ===
-[E010] type mismatch: expected Dict
+[E010] dot access: expected Dict or Proxy, got Int

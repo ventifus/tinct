@@ -446,13 +446,26 @@ fn test_eval_error_corpus() {
             }
         };
 
-        // Evaluate in a thread with larger stack to handle depth-exceeded tests
-        // (e.g., typeassert_depth_exceeded_not_circular.llt-eval) which can overflow
-        // Rust's default test thread stack when evaluating deeply recursive code.
+        // Evaluate in a thread with a large stack. Two independent sources of
+        // deep recursion require headroom:
+        //
+        // 1. typeassert_depth_exceeded_not_circular: each of the MAX_EVAL_DEPTH
+        //    (256) LLT recursion levels maps to ~6-8 Rust frames inside
+        //    materialize/eval/invoke_function.
+        //
+        // 2. Drop of the stdlib Rc<Environment> chain: create_stdlib_env()
+        //    builds a letrec dict_env whose closures all hold Rc references
+        //    back to that same env. When the thread's local bindings are
+        //    dropped at function exit, the Rc refcount of dict_env reaches
+        //    zero and Rust drops it recursively through the parent chain —
+        //    one Rust frame per environment level. The stdlib prelude is large
+        //    enough that this recursive drop exceeds 64 MB.
+        //
+        // 128 MB gives comfortable headroom above both limits.
         let input = test.input.to_string();
         let no_fs = test.no_fs;
         let eval_result = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024) // 16MB stack
+            .stack_size(128 * 1024 * 1024) // 128MB — debug-mode materialize() needs ~100MB at 256 levels
             .spawn(move || eval_source_with_config(&input, no_fs))
             .unwrap()
             .join()
@@ -520,13 +533,13 @@ fn test_eval_error_corpus_has_error_codes() {
 
         let test = split_test_file(&content);
 
-        // Evaluate in a thread with larger stack to handle depth-exceeded tests
-        // (e.g., typeassert_depth_exceeded_not_circular.llt-eval) which can overflow
-        // Rust's default test thread stack when evaluating deeply recursive code.
+        // Same 128 MB rationale as test_eval_error_corpus above:
+        // handles both MAX_EVAL_DEPTH recursive frames and the stdlib
+        // Rc<Environment> recursive drop at thread exit.
         let input = test.input.to_string();
         let no_fs = test.no_fs;
         let eval_result = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024) // 16MB stack
+            .stack_size(128 * 1024 * 1024) // 128MB — debug-mode materialize() needs ~100MB at 256 levels
             .spawn(move || eval_source_with_config(&input, no_fs))
             .unwrap()
             .join()

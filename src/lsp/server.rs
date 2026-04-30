@@ -84,7 +84,22 @@ fn handle_request(
 ) -> Result<(), Box<dyn Error>> {
     match req.method.as_str() {
         HoverRequest::METHOD => {
-            let params: HoverParams = serde_json::from_value(req.params)?;
+            let params: HoverParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", HoverRequest::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
             let uri = params.text_document_position_params.text_document.uri;
             let pos = params.text_document_position_params.position;
 
