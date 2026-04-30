@@ -2138,6 +2138,13 @@ fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper for filter on Dict: iterates through dict entries, building a Seq.
 ///
 /// Args: (pred, dict, keys, idx)
+///
+/// Consecutive predicate failures are handled by an internal loop rather than
+/// chaining PendingBuiltin thunks. A PendingBuiltin-per-failure would consume
+/// one depth unit per rejected entry (N failures → ~2N depth units total),
+/// hitting MAX_EVAL_DEPTH far earlier than expected on sparse dicts. The
+/// loop short-circuits skips at zero extra depth cost, then defers lazily on
+/// the first pass.
 fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -2149,9 +2156,8 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let pred_thunk = Rc::clone(&args[0]);
     let dict_thunk = Rc::clone(&args[1]);
     let keys_thunk = Rc::clone(&args[2]);
-    let idx = materialize(&args[3], None, &ctx, depth)?;
 
-    let idx_int = match idx {
+    let mut idx_int = match materialize(&args[3], None, &ctx, depth)? {
         Value::Int(i) => i,
         other => {
             return Err(EvalError::type_mismatch_ctx(
@@ -2180,38 +2186,6 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    // Check if we've reached the end
-    if idx_int >= keys_map.len() as i64 {
-        return ok_val(Value::Dict(IndexMap::new()), call_span);
-    }
-
-    // Get the current key
-    let key_value = match keys_map.get(&Key::Int(idx_int)) {
-        Some(thunk) => materialize(thunk, None, &ctx, depth)?,
-        None => {
-            return Err(EvalError::internal(
-                format!("filter-dict-step: key at index {} not found", idx_int),
-                call_span,
-            )
-            .into())
-        }
-    };
-
-    let current_key = match key_value {
-        Value::Int(n) => Key::Int(n),
-        Value::String(s) => Key::String(s),
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "filter-dict-step".to_string(),
-                "Int or String",
-                other.type_name(),
-                call_span,
-            )
-            .into())
-        }
-    };
-
-    // Get the value from the dict
     // dict_thunk is pre-wrapped as Materialized at the filter call site
     debug_assert!(matches!(&*dict_thunk.state(), ThunkState::Materialized(_)));
     let dict = materialize(&dict_thunk, None, &ctx, depth)?;
@@ -2228,72 +2202,107 @@ fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let value_thunk = match dict_map.get(&current_key) {
-        Some(v) => Rc::clone(v),
-        None => {
-            return Err(EvalError::internal(
-                format!("filter-dict-step: key {} not found in dict", current_key),
-                call_span,
-            )
-            .into())
+    // Loop over consecutive failing entries without consuming extra depth.
+    // We only defer via PendingBuiltin when we find a passing entry (the tail
+    // of the emitted Seq node) so depth counts emitted elements, not rejections.
+    loop {
+        // Check if we've reached the end
+        if idx_int >= keys_map.len() as i64 {
+            return ok_val(Value::Dict(IndexMap::new()), call_span);
         }
-    };
 
-    // Apply predicate
-    let pred_call = Rc::new(Thunk::new_pending_call(
-        Rc::clone(&pred_thunk),
-        vec![Rc::clone(&value_thunk)],
-        IndexMap::new(),
-        call_span,
-        value_thunk.span,
-        Cow::Owned(format!("filter-dict pred {}", current_key)),
-        Rc::clone(&ctx),
-    ));
-    let pred_result = materialize(&pred_call, None, &ctx, depth)?;
+        // Get the current key
+        let key_value = match keys_map.get(&Key::Int(idx_int)) {
+            Some(thunk) => materialize(thunk, None, &ctx, depth)?,
+            None => {
+                return Err(EvalError::internal(
+                    format!("filter-dict-step: key at index {} not found", idx_int),
+                    call_span,
+                )
+                .into())
+            }
+        };
 
-    let passes = match pred_result {
-        Value::Bool(b) => b,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "filter".to_string(),
-                "Bool",
-                other.type_name(),
-                call_span,
-            )
-            .into())
-        }
-    };
+        let current_key = match key_value {
+            Value::Int(n) => Key::Int(n),
+            Value::String(s) => Key::String(s),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "filter-dict-step".to_string(),
+                    "Int or String",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
 
-    // Build tail: filter-dict-step with idx+1
-    let next_idx_thunk = ok_val(Value::Int(idx_int + 1), call_span)?;
-    let tail_args = vec![
-        Rc::clone(&pred_thunk),
-        dict_thunk,
-        keys_thunk,
-        next_idx_thunk,
-    ];
-    let tail = Rc::new(Thunk::new_pending_builtin(
-        builtin_filter_dict_step,
-        tail_args,
-        IndexMap::new(),
-        depth + 1,
-        call_span,
-        Cow::Borrowed("call $filter"),
-        Rc::clone(&ctx),
-    ));
+        let value_thunk = match dict_map.get(&current_key) {
+            Some(v) => Rc::clone(v),
+            None => {
+                return Err(EvalError::internal(
+                    format!("filter-dict-step: key {} not found in dict", current_key),
+                    call_span,
+                )
+                .into())
+            }
+        };
 
-    if passes {
-        // Include this value in the result
-        ok_val(
-            Value::Seq {
-                head: value_thunk,
-                tail,
-            },
+        // Apply predicate
+        let pred_call = Rc::new(Thunk::new_pending_call(
+            Rc::clone(&pred_thunk),
+            vec![Rc::clone(&value_thunk)],
+            IndexMap::new(),
             call_span,
-        )
-    } else {
-        // Skip this value, continue to next
-        Ok(tail)
+            value_thunk.span,
+            Cow::Owned(format!("filter-dict pred {}", current_key)),
+            Rc::clone(&ctx),
+        ));
+        let pred_result = materialize(&pred_call, None, &ctx, depth)?;
+
+        let passes = match pred_result {
+            Value::Bool(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "filter".to_string(),
+                    "Bool",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        if passes {
+            // Include this value; defer the rest lazily
+            let next_idx_thunk = ok_val(Value::Int(idx_int + 1), call_span)?;
+            let tail_args = vec![
+                Rc::clone(&pred_thunk),
+                Rc::clone(&dict_thunk),
+                Rc::clone(&keys_thunk),
+                next_idx_thunk,
+            ];
+            let tail = Rc::new(Thunk::new_pending_builtin(
+                builtin_filter_dict_step,
+                tail_args,
+                IndexMap::new(),
+                depth + 1,
+                call_span,
+                Cow::Borrowed("call $filter"),
+                Rc::clone(&ctx),
+            ));
+
+            return ok_val(
+                Value::Seq {
+                    head: value_thunk,
+                    tail,
+                },
+                call_span,
+            );
+        } else {
+            // Skip this entry: advance the loop without extra depth
+            idx_int += 1;
+        }
     }
 }
 
@@ -11322,6 +11331,85 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires >128MB stack in debug mode; permanent fix is iterative-eval sprint (CEK machine)"]
+    fn test_filter_dict_step_no_depth_accumulation() {
+        // Verify that filter_dict_step with consecutive predicate failures in a Dict
+        // does NOT accumulate depth. This test mirrors filter_seq_step_no_depth_accumulation_on_consecutive_failures
+        // but for the dict path.
+        //
+        // Before the fix, each failing dict entry created a PendingBuiltin at depth+1,
+        // so N failures consumed ~2N depth units. After the fix, the skip branch uses
+        // an internal loop, so N failures cost zero extra depth.
+        //
+        // Test: Create a dict with ~300 entries where NONE pass the predicate (all fail).
+        // Call builtin_filter with depth near MAX_EVAL_DEPTH (e.g., depth=200).
+        // Collect the result via builtin_collect to force materialization.
+        // Assert the result is an empty dict (no depth exceeded error).
+        fn pred_always_false(_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            ok_val(Value::Bool(false), Span::origin())
+        }
+
+        let result = std::thread::Builder::new()
+            .stack_size(TEST_STACK_SIZE)
+            .spawn(|| {
+                // Create a dict with 300 entries where all fail the predicate
+                let mut dict_map = IndexMap::new();
+                for i in 0..300 {
+                    dict_map.insert(Key::Int(i), thunk(Value::Int(i)));
+                }
+                let dict_thunk = thunk(Value::Dict(dict_map));
+
+                let pred = thunk(Value::Builtin {
+                    name: "pred_always_false",
+                    func: pred_always_false,
+                });
+
+                // Call filter at depth=200 (near MAX_EVAL_DEPTH=256)
+                // If filter_dict_step accumulates depth incorrectly, this would hit
+                // DepthExceeded after ~27 entries (200 + 27*2 ≥ 256).
+                // With the fix, all 300 failures are handled at constant depth.
+                let filter_result = builtin_filter(BuiltinArgs {
+                    args: &[pred, dict_thunk],
+                    named: &no_named(),
+                    depth: 200,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                })
+                .unwrap();
+
+                // Convert lazy Seq to Dict via builtin_collect, then materialize
+                let collect_result = builtin_collect(BuiltinArgs {
+                    args: &[filter_result],
+                    named: &no_named(),
+                    depth: 200,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                })
+                .unwrap();
+
+                let val =
+                    crate::eval::materialize(&collect_result, None, &test_ctx(), 200).unwrap();
+                match val {
+                    Value::Dict(ref map) => {
+                        assert_eq!(
+                            map.len(),
+                            0,
+                            "expected empty dict (collect of filter with all failing entries)"
+                        );
+                    }
+                    other => panic!(
+                        "expected Dict from collect of filter with all failing entries, got {:?}",
+                        other
+                    ),
+                }
+            })
+            .unwrap()
+            .join();
+
+        assert!(result.is_ok(), "test thread panicked: {:?}", result);
+    }
+
+    #[test]
     fn concat_empty_xs_dict_ys_non_collection_returns_type_error() {
         // Task 2: When xs is an empty Dict, concat must validate that ys is also a
         // collection (Dict or Seq). Before the fix, concat([], 42) would silently
@@ -11543,6 +11631,50 @@ mod tests {
         assert!(
             err.message().contains("does not accept named arguments"),
             "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_drop_seq_step_non_int_remaining_error() {
+        // Create a PendingBuiltin invocation of drop_seq_step where n_remaining
+        // (first arg) is a String instead of an Int. This should trigger the
+        // internal error path at src/builtins.rs:2562-2570.
+
+        // Create args: [String("not an int"), Seq { head: Int(1), tail: empty dict }]
+        let n_remaining = thunk(Value::String("not an int".to_string()));
+        let seq_head = thunk(Value::Int(1));
+        let seq_tail = thunk(Value::Dict(IndexMap::new()));
+        let seq = thunk(Value::Seq {
+            head: seq_head,
+            tail: seq_tail,
+        });
+
+        // Create the PendingBuiltin thunk
+        let pending_thunk = Rc::new(Thunk::new_pending_builtin(
+            builtin_drop_seq_step,
+            vec![n_remaining, seq],
+            IndexMap::new(),
+            0,
+            call_span(),
+            Cow::Borrowed("test drop_seq_step"),
+            test_ctx(),
+        ));
+
+        // Materialize it and expect an error
+        let result = crate::eval::materialize(&pending_thunk, None, &test_ctx(), 0);
+        let err = result.unwrap_err();
+
+        // Verify it's an Internal error with the expected message
+        assert!(
+            matches!(err.kind, crate::error::ErrorKind::Internal { .. }),
+            "Expected ErrorKind::Internal, got: {:?}",
+            err.kind
+        );
+        assert!(
+            err.message()
+                .contains("drop: expected Int for remaining count"),
+            "Expected message to contain 'drop: expected Int for remaining count', got: {}",
             err.message()
         );
     }
