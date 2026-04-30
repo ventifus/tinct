@@ -411,6 +411,7 @@ pub fn eval(
                     _ => {
                         // Non-Record type: immediate validation per spec (line 22)
                         // "For primitive types, validation is immediate"
+                        // TODO: This is a laziness violation - should defer to PendingBuiltin-style deferred check (see TODO.md pre-cek-fixes task 5)
                         let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
                         if value_matches_type(&value, &expected) {
                             Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
@@ -762,9 +763,9 @@ fn eval_call(
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     // Evaluate and materialize the function.
-    // Function resolution is eager by design: the function must be resolvable
-    // for PendingCall thunk construction. CEK machine migration (iterative-eval
-    // sprint) will defer this via the CALL continuation.
+    // Function resolution is eager by design: for Value match dispatch
+    // (function type must be known before binding args). CEK machine
+    // migration (iterative-eval sprint) will defer this via the CALL continuation.
     let func_thunk = eval(func_expr, Rc::clone(env), ctx, depth + 1)?;
     let func_val = materialize(&func_thunk, Some(call_span), ctx, depth + 1)?;
 
@@ -1566,7 +1567,12 @@ pub fn materialize(
                             }
                         }
                     }
-                    Err(e) => {
+                    Err(mut e) => {
+                        // Add stack frame for function call site.
+                        // Success path doesn't need call site tracking - only errors
+                        // need stack traces for debugging. The thunk's span is the
+                        // definition site, which is sufficient for successful results.
+                        e.push_frame(origin.to_string(), call_span);
                         if e.kind.is_cacheable() {
                             thunk.cache_failure(&e);
                         } else {
@@ -1943,6 +1949,7 @@ fn deep_materialize_thunk(
 mod tests {
     use super::*;
     use crate::ast::*;
+    use crate::error::ErrorKind;
     use crate::test_util::{sp, test_span};
     use crate::value::*;
 
@@ -4494,6 +4501,80 @@ mod tests {
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires >128MB stack in debug mode; permanent fix is iterative-eval sprint (CEK machine)"]
+    fn test_eval_document_depth_boundary_error() {
+        // Verify that eval_document correctly applies depth+1 to intermediate expression
+        // materialization (line 542: materialize(&thunk, Some(&expr.span), ctx, depth + 1)).
+        //
+        // Challenge: Simple dict literals evaluate to already-materialized thunks (fast path),
+        // so materialize() returns immediately without checking depth. To trigger the depth
+        // check, we need a thunk in a deferred state (e.g., PendingCall from a function call).
+        //
+        // This test uses a function call in the intermediate expression to produce a
+        // PendingCall thunk. The PendingCall's materialization at depth+1 will then hit
+        // the depth check if depth is near MAX_EVAL_DEPTH.
+        //
+        // Document structure:
+        //   Expr 1 (intermediate): [call $id [x: 1]]  — function call that returns an empty dict
+        //   Expr 2 (last): [y: 1]                     — simple dict literal
+        //
+        // At depth=MAX_EVAL_DEPTH-1, the materialize call at depth+1 should hit DepthExceeded.
+
+        // Helper: identity function that returns its argument as-is
+        fn id_func(_ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            // For simplicity, just return an empty dict (testing the depth check, not the value)
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                Span::origin(),
+            )))
+        }
+
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "id".to_string(),
+            Rc::new(Thunk::new_materialized(
+                Value::Builtin {
+                    name: "id",
+                    func: id_func,
+                },
+                Span::origin(),
+            )),
+        );
+
+        // Expr 1: [call $id [x: 1]]
+        let expr1 = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("id".into()))),
+            args: vec![sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: sp(Expr::Int(1)),
+            })]))],
+            named_args: vec![],
+        });
+
+        // Expr 2: [y: 1]
+        let expr2 = sp(Expr::Dict(vec![sp(Entry {
+            key: Some(sp(Expr::Str("y".into()))),
+            value: sp(Expr::Int(1)),
+        })]));
+
+        let doc = sp(Document {
+            expressions: vec![expr1, expr2],
+        });
+
+        // Call eval_document at depth=MAX_EVAL_DEPTH-1
+        // The materialize call at depth+1 should hit MAX_EVAL_DEPTH and return DepthExceeded
+        let result = eval_document(&doc, env, &test_ctx(), MAX_EVAL_DEPTH - 1);
+
+        match result {
+            Err(err) if matches!(err.kind, ErrorKind::DepthExceeded { .. }) => {
+                // Expected: depth exceeded error
+            }
+            Err(err) => panic!("expected DepthExceeded, got {:?}", err),
+            Ok(_) => panic!("expected DepthExceeded error, but eval_document succeeded"),
         }
     }
 
@@ -7590,6 +7671,30 @@ mod tests {
             "got: {}",
             err.message()
         );
+    }
+
+    #[test]
+    fn test_typeassert_primitive_eager_with_default() {
+        // Primitive TypeAssert with default: MUST eagerly validate to decide whether to use default
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("default".into()))),
+            value: sp(Expr::Int(999)),
+        })];
+
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(entries)),
+            expr: Box::new(sp(Expr::Str("not an int".into()))),
+            resolved_type: RefCell::new(Some(Type::Int)),
+        });
+
+        // eval() returns a Materialized thunk containing the default value
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        assert!(
+            matches!(&*thunk.state(), ThunkState::Materialized(_)),
+            "TypeAssert with default must eagerly materialize"
+        );
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert_eq!(val, Value::Int(999));
     }
 
     // ── value_matches_type unit tests ────────────────────────────────────

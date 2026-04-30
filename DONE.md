@@ -2032,3 +2032,12 @@ Evaluation correctness bugs where values are forced prematurely or depth trackin
 - [x] Add Seq guard to `any?` and `all?` in stdlib — guards already present in prelude.llt; corpus tests also already existed [eval-lazy-fixes C68]
 - [x] Remove stale concat comment block in prelude — lines 301-303 describe the LLT implementation that was removed when `concat` migrated to Rust; replace with one-line note matching the `join` pattern at line 117: "# concat is a Rust-native builtin". (`stdlib/prelude.llt:301-303`) [Nit, stdlib-author C52]
 - [x] Fix `deep_materialize_impl` using Span::origin() — added `current_span` parameter to deep_materialize_impl; depth exceeded and infinite Seq errors now use actual thunk span [eval-lazy-fixes C68]
+
+### pre-cek-fixes: Pre-CEK Laziness and Test Fixes
+
+Independent fixes and unit tests achievable with the current recursive evaluator. 3 laziness violation fixes deferred to iterative-eval-core (cause stack overflow without CEK machine).
+
+- [x] Fix `filter_dict_step` consecutive-failure depth accumulation — internal loop matching `filter_seq_step` pattern; consecutive rejections no longer consume depth units (`src/builtins.rs` `builtin_filter_dict_step`) [Minor, C68 panel]
+- [x] Add Rust unit test for `filter_dict_step` depth fix — `test_filter_dict_step_no_depth_accumulation` (#[ignore]) [Minor, C68 panel]
+- [x] Add `eval_document` near-MAX_EVAL_DEPTH unit test — `test_eval_document_depth_boundary_error` (#[ignore]) [Minor, C68 panel]
+- [x] Add `drop_seq_step` internal error path unit test — `test_drop_seq_step_non_int_remaining_error` [Minor, C68 panel]
