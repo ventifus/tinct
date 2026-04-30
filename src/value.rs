@@ -223,6 +223,7 @@ pub enum ThunkState {
         args: Vec<Rc<Thunk>>,
         named: IndexMap<String, Rc<Thunk>>,
         call_span: Span,
+        caller_env: Rc<RefCell<Environment>>,
         ctx: Rc<crate::eval::EvalContext>,
     },
     /// Wraps an inner thunk and validates its materialized value against an expected type.
@@ -299,6 +300,7 @@ impl Thunk {
         args: Vec<Rc<Thunk>>,
         named: IndexMap<String, Rc<Thunk>>,
         call_span: Span,
+        caller_env: Rc<RefCell<Environment>>,
         span: Span,
         origin: Cow<'static, str>,
         ctx: Rc<crate::eval::EvalContext>,
@@ -309,6 +311,7 @@ impl Thunk {
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx,
             }),
             span,
@@ -443,6 +446,7 @@ impl Thunk {
         Vec<Rc<Thunk>>,
         IndexMap<String, Rc<Thunk>>,
         Span,
+        Rc<RefCell<Environment>>,
         Rc<crate::eval::EvalContext>,
     )> {
         let mut state = self.state.borrow_mut();
@@ -452,8 +456,9 @@ impl Thunk {
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx,
-            } => Some((func, args, named, call_span, ctx)),
+            } => Some((func, args, named, call_span, caller_env, ctx)),
             other => {
                 *state = other;
                 None
@@ -1138,6 +1143,7 @@ mod tests {
             vec![],
             IndexMap::new(),
             span,
+            Rc::new(RefCell::new(Environment::new())), // caller_env
             span,
             Cow::Borrowed("test call"),
             Rc::clone(&ctx1),
@@ -1155,7 +1161,7 @@ mod tests {
         let taken = thunk.take_pending_call();
         assert!(taken.is_some(), "take_pending_call should succeed");
 
-        let (_func, _args, _named, _call_span, taken_ctx) = taken.unwrap();
+        let (_func, _args, _named, _call_span, _caller_env, taken_ctx) = taken.unwrap();
         assert!(
             Rc::ptr_eq(&taken_ctx, &ctx1),
             "PendingCall should evaluate using captured ctx1"
