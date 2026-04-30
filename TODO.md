@@ -2,7 +2,7 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-- [ ] Update agent files to remove pest PEG grammar references — `.claude/agents/grammar-architect.md`, `test-crafter.md`, `computer-scientist.md`, `security-expert.md`, `performance-expert.md`, `integration-verifier.md` and `.claude/skills/sprint/SKILL.md` all reference pest PEG grammar, compound-atomic rules, grammar.pest — concepts removed in parser-core-c3. Update to reference hand-written iterative parser (src/parser.rs + src/lexer.rs). [Major, grammar-architect C76]
+- [x] Update agent files to remove pest PEG grammar references — all 6 agent files and SKILL.md updated in parser-cleanup sprint C63 (commit 5285f80)
 
 ## iterative-eval: Iterative Evaluator
 
@@ -1022,4 +1022,40 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [x] Update CLAUDE.md, README.md, SPEC.md references — CLAUDE.md and README.md clean; SPEC.md archived to .tmp/
 - [x] Full pest removal audit: all agent files (.claude/agents/*.md) and sprint SKILL.md updated to remove pest PEG grammar references — replaced with hand-written iterative parser (src/parser.rs + src/lexer.rs) [C63]
 - [x] Update agent files to remove pest PEG grammar references — all 6 agent files and SKILL.md updated in parser-cleanup sprint C63
+
+## cycle-findings-c66: Cycle #66 Analysis Findings
+
+Codebase health findings from 9-agent review (2026-04-29).
+
+### Grammar / Parser / Docs
+
+- [x] Fix doc/02-syntax.md §6 "Complete Grammar" — no change needed (already fixed); added colon_ahead note to §Special Form Recognition [cycle-findings-c66 C66]
+- [x] Fix doc/15-ast.md — added §Parser Implementation Overview with Vec<StackFrame> iterative descent description [cycle-findings-c66 C66]
+- [x] Fix doc/17-references.md — pest.rs moved to "Historical" subsection [cycle-findings-c66 C66]
+- [x] Document lexer dual whitespace mechanism — doc comments added to had_whitespace_before and last_significant_token fields in src/lexer.rs [cycle-findings-c66 C66]
+- [x] Add `MAX_LEX_DEPTH` constant to `src/lexer.rs` — MAX_LEX_DEPTH=256 added with bracket_depth check [cycle-findings-c66 C66]
+- [x] Fix doc/02-syntax.md §Special Form Recognition — colon_ahead newline exclusion note added [cycle-findings-c66 C66]
+
+### Test Coverage Gaps
+
+- [x] Add `$error` laziness proof tests — added dict_unused_entry_error, cond_unused_branch_error, merge_unused_arg_error to tests/corpus/eval/laziness/ [cycle-findings-c66 C66]
+- [x] Add bare-word `..` corpus test — added tests/corpus/valid/literals/bare_word_with_dotdot.llt-eval [cycle-findings-c66 C66]
+- [x] Add bare `$` parse error corpus test — added tests/corpus/invalid/syntax_errors/bare_dollar.llt-eval [cycle-findings-c66 C66]
+- [x] Add document separator edge-case corpus tests — already existed (doc_separator_not_bare_word.llt-eval), no duplicate added [cycle-findings-c66 C66]
+- [x] Add VarRef colon-ahead dict key corpus test — added tests/corpus/valid/simple/varref_colon_dict_key.llt-eval [cycle-findings-c66 C66]
+
+### Type System
+
+- [ ] Fix `resolve_type_name` outer-scope path using raw annotation names — when `ann_mapping` is `None` (outside function scope), raw user names like `"a"` are inserted directly into `state.levels` (typecheck.rs:1929-1936); two separate dict entries with `@a` share the same substitution variable causing unintended unification. Fix: use `state.fresh_type_var()` for the `None` path. [Major, computer-scientist C66]
+- [ ] Fix `ann_mapping` cross-kind collision — `resolve_type_name` maps all annotation names through a single HashMap allowing `@a` (type var) to collide with `...a` (row var) in the same function. Split `ann_mapping` into `type_ann_map` and `row_ann_map`, route by syntactic context. (`src/typecheck.rs:1567-1575`) [Major, type-theorist C66]
+- [ ] Add TypeAssert default type validation — `resolve_type_assert` infers but does not validate the `default:` clause against the asserted type; `[@[type: Number default: "hello"] 42]` should fail at compile time. Add `is_subtype(default_ty, expected_ty)` check after inference. (`src/typecheck.rs:1836-1868`) [Major, type-theorist C66]
+
+### API / Integration
+
+- [ ] Enforce desugar ordering at API boundaries — `eval_file()` and `typecheck_file()` do not call `desugar_file()` internally; callers must remember or get spurious "undefined variable _" errors. Add `eval_file_desugared()` / `typecheck_file_desugared()` safe wrappers, or document the precondition explicitly with a `debug_assert!`. [Major, integration-verifier C66]
+- [x] Extract `should_display_frame()` helper — `infer_materialization_verb` (error.rs:938-962) and Display impl (error.rs:979-996) both filter frames by suffix and `Span::origin()` using different predicates; if the suffix list changes, only one site gets updated. Extract shared `fn should_display_frame(frame: &StackFrame) -> bool` helper. [Major, integration-verifier C66] — implemented in cycle-findings-c66 sprint
+
+### Stdlib Docs
+
+- [x] Fix doc/11-stdlib.md builtin count — updated count from 44 to 46, total to 124 [cycle-findings-c66 C66]
 

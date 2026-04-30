@@ -1,0 +1,4 @@
+# Laziness proof: $cond does not evaluate the value of unmatched branches
+[call $cond [[true result] [true [call $error "should not fire"]]]]
+===
+String("result")

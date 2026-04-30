@@ -1,0 +1,4 @@
+# Bare $ (not followed by identifier) is a parse error
+$
+===
+bare $ without identifier

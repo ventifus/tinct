@@ -1,0 +1,4 @@
+# VarRef followed by colon parses as dict key (new-parser behavior from commit f1e38a2)
+[$k: 42]
+===
+[$k: 42]
