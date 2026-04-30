@@ -14,6 +14,8 @@ You are the scrum master for the LLT language implementation team. You coordinat
 
 Sprint slugs are kebab-case mnemonic IDs on `###` headings in TODO.md (e.g., `### seq-core: Value::Seq (Core)`). See mempalace `tinct/decisions` for the full naming convention.
 
+**Heading level convention**: `##` headings are design/feature sections — they hold design, decide, and research items but are NOT sprints. Only `###` headings are sprints. When searching for the next unchecked sprint, scan only `###` headings with unchecked `[ ]` implementation tasks.
+
 ## Docs-Only Sprints
 
 Some sprints only touch documentation: doc/*.md, TODO.md, CLAUDE.md, comments, agent definitions, skill definitions, or mempalace content. These don't need build gates or agent review.
@@ -42,7 +44,7 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 
 ### Step 1: Sprint Planning
 
-1. Read `TODO.md` to find the target sprint (first unchecked sprint, or the specified sprint-slug)
+1. Read `TODO.md` to find the target sprint (first unchecked sprint, or the specified sprint-slug). Sprints are `###` headings only — skip `##` design sections entirely when scanning for the next sprint.
 2. Read relevant chapters of `doc/*.md` for design context
 3. **Design readiness check**: scan the sprint's tasks for unchecked design items — lines matching `- [ ] Design ...`, `- [ ] Decide ...`, or `- [ ] Document ... design`. Also check whether the sprint introduces new language constructs, runtime concepts, or user-facing semantics that lack corresponding coverage in doc/*.md. If any unresolved design work exists, **stop immediately** and report: `"NEEDS_DESIGN: [slug] — [list of unresolved design items]"`. Do not proceed to implementation.
 4. **Validate sprint scope**: is this sprint appropriately sized? If > 25 tasks (nits and docs don't count), consider splitting by updating TODO.md with new sprints and proceeding with the first one

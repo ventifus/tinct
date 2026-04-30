@@ -145,16 +145,22 @@ After the design is finalized and all agents approve, add implementation tasks t
 1. **Determine placement**: check whether the design item belongs to an existing sprint in TODO.md.
    - If the design item came from a sprint that has other unchecked implementation tasks, **add the new tasks to that same sprint** (after the checked-off design item). The design was one component of a larger sprint — keep the work together.
    - If the design was standalone or the originating sprint is fully checked off, **create a new sprint at the top** of TODO.md (after the file header, before existing sprints).
-2. **New sprint format** (when creating a new sprint): use the standard TODO.md sprint format:
+2. **New sprint format** (when creating a new sprint): sprints are `###` headings nested under a `##` design section. `##` headings hold design/research/decide items; `###` headings hold implementation tasks. Place the new `###` sprint under the `##` section whose design generated it. If no matching `##` section exists, create one first.
    ```
-   ## sprint-slug: Short Description
+   ## Feature Area: Description
+
+   Brief description of the design/feature area.
+
+   - [x] Design [topic] — see doc/[chapter].md §[Section]
+
+   ### sprint-slug: Short Description
 
    Description sentence referencing the relevant doc/*.md chapter.
 
    - [ ] Task with file path hint (`src/file.rs`)
    - [ ] Task with file path hint (`src/file.rs:line`)
    ```
-   Each task should name the source file(s) it touches in parentheses. Include a one-line description sentence after the heading that references the relevant doc/*.md chapter (e.g., "See doc/08-evaluation.md §Section Name."). Dependencies go on a separate line: `**Depends on:** \`other-slug\``.
+   Each task should name the source file(s) it touches in parentheses. Include a one-line description sentence after the `###` heading that references the relevant doc/*.md chapter (e.g., "See doc/08-evaluation.md §Section Name."). Dependencies go on a separate line: `**Depends on:** \`other-slug\``.
 3. **Derive tasks from the design**: read the finalized doc/*.md chapter and extract concrete implementation steps. Include:
    - Source file changes (new files, modified files)
    - Type/struct changes (new fields, changed signatures)
@@ -306,7 +312,7 @@ For each phase in the **Phased Adoption** section, create a sprint in TODO.md:
 2. **Description sentence**: reference the relevant `doc/*.md` chapter and section
 3. **Tasks**: derive from the phase description — source file changes, type/struct changes, test coverage, migration steps. ≤12 tasks per sprint.
 4. **Dependencies**: add `**Depends on:** \`other-slug\`` between phases if they must be ordered
-5. Place new sprints at the top of TODO.md (after the file header), unless the work clearly belongs inside an existing sprint
+5. Place new `###` sprint headings under the relevant `##` design section in TODO.md. If no matching `##` section exists, create one. If the work spans multiple feature areas, pick the best-fit `##` section or create a new one. Never place sprint headings at `##` level.
 
 #### 5f: Update Index
 

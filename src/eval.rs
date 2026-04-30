@@ -1272,6 +1272,713 @@ fn attach_materialization_context(
     err
 }
 
+/// State restoration data for non-cacheable errors in iterative materialization.
+/// When a non-cacheable error (e.g., DepthExceeded) occurs, the thunk's original
+/// state must be restored so it can be re-evaluated at a shallower depth.
+///
+/// TODO(iterative-eval): RestoreState duplicates ThunkState data. The full CEK
+/// machine (iterative-eval-b) eliminates this by moving PendingBuiltin/PendingCall
+/// state to Cont variants on the stack, making restoration unnecessary.
+enum RestoreState {
+    Unevaluated {
+        expr: Rc<Spanned<Expr>>,
+        env: Rc<RefCell<Environment>>,
+        ctx: Rc<EvalContext>,
+    },
+    PendingBuiltin {
+        func: crate::value::BuiltinFn,
+        args: Vec<Rc<Thunk>>,
+        named: IndexMap<String, Rc<Thunk>>,
+        depth: usize,
+        call_span: Span,
+        ctx: Rc<EvalContext>,
+    },
+    PendingCall {
+        func: Rc<Thunk>,
+        args: Vec<Rc<Thunk>>,
+        named: IndexMap<String, Rc<Thunk>>,
+        call_span: Span,
+        ctx: Rc<EvalContext>,
+    },
+}
+
+impl RestoreState {
+    fn restore(self, thunk: &Thunk) {
+        match self {
+            RestoreState::Unevaluated { expr, env, ctx } => {
+                thunk.set_state(ThunkState::Unevaluated { expr, env, ctx });
+            }
+            RestoreState::PendingBuiltin {
+                func,
+                args,
+                named,
+                depth,
+                call_span,
+                ctx,
+            } => {
+                thunk.set_state(ThunkState::PendingBuiltin {
+                    func,
+                    args,
+                    named,
+                    depth,
+                    call_span,
+                    ctx,
+                });
+            }
+            RestoreState::PendingCall {
+                func,
+                args,
+                named,
+                call_span,
+                ctx,
+            } => {
+                thunk.set_state(ThunkState::PendingCall {
+                    func,
+                    args,
+                    named,
+                    call_span,
+                    ctx,
+                });
+            }
+        }
+    }
+}
+
+/// Continuation variants for iterative materialization. Each represents
+/// "what to do after a sub-thunk has been materialized."
+///
+/// **Naming note:** This enum is named `MatCont` (not `Cont`) because the full
+/// CEK machine design (doc/16-architecture.md §Iterative Evaluator) will unify
+/// materialize() and eval() continuations into a single `Cont` enum with ~18-20
+/// variants. `MatCont` is the materialize-only subset implemented in iterative-eval-a.
+enum MatCont {
+    /// Memoize the result into the parent thunk. Used after materializing
+    /// result thunks from Unevaluated/PendingBuiltin/PendingCall branches.
+    Memoize {
+        thunk: Rc<Thunk>,
+        origin: Cow<'static, str>,
+        thunk_span: Span,
+        mat_span: Option<Span>,
+        restore: RestoreState,
+    },
+    /// Defunctionalized continuation for the PendingCall branch (Reynolds, 1972).
+    /// Corresponds to the recursive call `materialize_rc(func_thunk, ...)` in the old
+    /// `materialize()`: after the function thunk is forced, this continuation inspects the
+    /// resulting `Value::Function` or `Value::Builtin`, invokes it with the captured
+    /// argument thunks, and pushes a `Memoize` continuation for the result thunk.
+    /// Free variables captured: `thunk` (original, for memoization), `func_thunk`
+    /// (for error rollback), `args`, `named`, `call_span`, `ctx`, `origin`,
+    /// `thunk_span`, `mat_span`, `depth`.
+    PendingCallDispatch {
+        thunk: Rc<Thunk>,
+        func_thunk: Rc<Thunk>,
+        args: Vec<Rc<Thunk>>,
+        named: IndexMap<String, Rc<Thunk>>,
+        call_span: Span,
+        ctx: Rc<EvalContext>,
+        origin: Cow<'static, str>,
+        thunk_span: Span,
+        mat_span: Option<Span>,
+        depth: usize,
+    },
+    /// Defunctionalized continuation for the Guarded branch (Reynolds, 1972).
+    /// Corresponds to the recursive call `materialize_rc(inner, ...)` in the old
+    /// `materialize()`: after the inner thunk is forced, this continuation runs
+    /// `validate_and_wrap_record` (for record types) or `value_matches_type` (for
+    /// scalar types), then memoizes the validated value into `thunk`.
+    /// Free variables captured: `thunk` (original, for memoization), `inner`
+    /// (for error rollback), `expected`, `field_path`, `guard_span`, `inner_span`,
+    /// `origin`, `thunk_span`, `mat_span`.
+    GuardedValidate {
+        thunk: Rc<Thunk>,
+        inner: Rc<Thunk>,
+        expected: Type,
+        field_path: Vec<String>,
+        guard_span: Span,
+        inner_span: Span,
+        origin: Cow<'static, str>,
+        thunk_span: Span,
+        mat_span: Option<Span>,
+    },
+}
+
+/// Result of processing one thunk in the iterative loop.
+enum MatStep {
+    /// Thunk produced a final result (value or error).
+    Done(EvalResult<Value>),
+    /// Need to materialize this sub-thunk next (continuation already pushed).
+    Force(Rc<Thunk>, Option<Span>, usize),
+}
+
+/// Result of applying a continuation.
+enum ContResult {
+    /// Continuation produced a final result.
+    Done(EvalResult<Value>),
+    /// Continuation needs another sub-thunk materialized (new continuation pushed).
+    Force(Rc<Thunk>, Option<Span>, usize),
+}
+
+/// Increment the evaluation depth by one unit.
+/// Each level of thunk forcing consumes one depth unit: when `force_step` or
+/// `apply_mat_cont` transitions from a parent thunk to a child sub-thunk, the
+/// depth passed to the child is `next_depth(parent_depth)`. This mirrors the
+/// `depth + 1` in the old recursive `materialize()` calls and ensures
+/// `MAX_EVAL_DEPTH` is enforced uniformly across all sub-thunk dispatch sites.
+#[inline]
+fn next_depth(d: usize) -> usize {
+    d + 1
+}
+
+/// Process one thunk and return either a result or a sub-thunk to force.
+/// This mirrors the logic of `materialize()` but pushes continuations instead of recursing.
+fn force_step(
+    thunk: &Rc<Thunk>,
+    mat_span: Option<Span>,
+    depth: usize,
+    stack: &mut Vec<MatCont>,
+) -> MatStep {
+    let origin = thunk.origin.clone();
+    let thunk_span = thunk.span;
+
+    // Early returns for already-resolved states
+    {
+        let state = thunk.state();
+        match &*state {
+            ThunkState::Materialized(v) => return MatStep::Done(Ok(v.clone())),
+            ThunkState::Failed(ref err) => {
+                let mut cloned = (**err).clone();
+                let mut should_update_cache = false;
+                if let Some(span) = mat_span {
+                    if cloned.materialization_span.is_none() {
+                        cloned.materialization_span = Some(span);
+                        should_update_cache = true;
+                    } else if cloned.materialization_span != Some(span)
+                        && !cloned.stack.iter().any(|f| f.span == span)
+                    {
+                        cloned.push_frame("materialized".to_string(), span);
+                        should_update_cache = true;
+                    }
+                }
+                if should_update_cache && cloned.kind.is_cacheable() {
+                    drop(state);
+                    thunk.set_state(ThunkState::Failed(Box::new(cloned.clone())));
+                }
+                return MatStep::Done(Err(Box::new(cloned)));
+            }
+            ThunkState::InProgress => {
+                let label = if origin.is_empty() { "thunk" } else { &origin };
+                let mut err = EvalError::circular_dependency(label, thunk.span);
+                if let Some(span) = mat_span {
+                    err = err.with_materialization_span(span);
+                }
+                let err_boxed: Box<EvalError> = err.into();
+                drop(state);
+                thunk.cache_failure(&err_boxed);
+                return MatStep::Done(Err(err_boxed));
+            }
+            ThunkState::Unevaluated { .. }
+            | ThunkState::PendingBuiltin { .. }
+            | ThunkState::PendingCall { .. }
+            | ThunkState::Guarded { .. } => {}
+        }
+    }
+
+    // Process deferred states
+    if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
+        if depth > MAX_EVAL_DEPTH {
+            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(span);
+            }
+            thunk.set_state(ThunkState::Unevaluated {
+                expr,
+                env,
+                ctx: thunk_ctx,
+            });
+            return MatStep::Done(Err(err.into()));
+        }
+
+        let restore = RestoreState::Unevaluated {
+            expr: expr.clone(),
+            env: env.clone(),
+            ctx: thunk_ctx.clone(),
+        };
+
+        match eval(&expr, Rc::clone(&env), &thunk_ctx, next_depth(depth)) {
+            Ok(result_thunk) => {
+                stack.push(MatCont::Memoize {
+                    thunk: Rc::clone(thunk),
+                    origin,
+                    thunk_span,
+                    mat_span,
+                    restore,
+                });
+                MatStep::Force(result_thunk, mat_span, next_depth(depth))
+            }
+            Err(e) => {
+                let decorated =
+                    attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
+                if decorated.kind.is_cacheable() {
+                    thunk.cache_failure(&decorated);
+                } else {
+                    restore.restore(thunk);
+                }
+                MatStep::Done(Err(decorated))
+            }
+        }
+    } else if let Some((func, args, named, pending_depth, call_span, thunk_ctx)) =
+        thunk.take_pending_builtin()
+    {
+        if depth > MAX_EVAL_DEPTH {
+            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(span);
+            }
+            thunk.set_state(ThunkState::PendingBuiltin {
+                func,
+                args,
+                named,
+                depth: pending_depth,
+                call_span,
+                ctx: thunk_ctx,
+            });
+            return MatStep::Done(Err(err.into()));
+        }
+
+        let restore = RestoreState::PendingBuiltin {
+            func,
+            args: args.clone(),
+            named: named.clone(),
+            depth: pending_depth,
+            call_span,
+            ctx: thunk_ctx.clone(),
+        };
+
+        let builtin_args = crate::value::BuiltinArgs {
+            args: &args,
+            named: &named,
+            depth: pending_depth,
+            call_span,
+            ctx: Rc::clone(&thunk_ctx),
+        };
+
+        match func(builtin_args) {
+            Ok(result_thunk) => {
+                // Fast path: if the builtin already materialized its result, skip recursion
+                if let Some(value) = result_thunk.try_get_materialized() {
+                    thunk.set_state(ThunkState::Materialized(value.clone()));
+                    MatStep::Done(Ok(value))
+                } else {
+                    stack.push(MatCont::Memoize {
+                        thunk: Rc::clone(thunk),
+                        origin,
+                        thunk_span,
+                        mat_span,
+                        restore,
+                    });
+                    MatStep::Force(result_thunk, mat_span, next_depth(depth))
+                }
+            }
+            Err(e) => {
+                let decorated =
+                    attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
+                if decorated.kind.is_cacheable() {
+                    thunk.cache_failure(&decorated);
+                } else {
+                    restore.restore(thunk);
+                }
+                MatStep::Done(Err(decorated))
+            }
+        }
+    } else if let Some((func_thunk, args, named, call_span, thunk_ctx)) = thunk.take_pending_call()
+    {
+        if depth > MAX_EVAL_DEPTH {
+            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(span);
+            }
+            thunk.set_state(ThunkState::PendingCall {
+                func: func_thunk,
+                args,
+                named,
+                call_span,
+                ctx: thunk_ctx,
+            });
+            return MatStep::Done(Err(err.into()));
+        }
+
+        stack.push(MatCont::PendingCallDispatch {
+            thunk: Rc::clone(thunk),
+            func_thunk: Rc::clone(&func_thunk),
+            args,
+            named,
+            call_span,
+            ctx: thunk_ctx,
+            origin,
+            thunk_span,
+            mat_span,
+            depth,
+        });
+        MatStep::Force(Rc::clone(&func_thunk), Some(call_span), next_depth(depth))
+    } else if let Some((inner, expected, field_path, guard_span)) = thunk.take_guarded() {
+        if depth > MAX_EVAL_DEPTH {
+            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(span);
+            }
+            thunk.set_state(ThunkState::Guarded {
+                inner: inner.clone(),
+                expected: expected.clone(),
+                field_path: field_path.clone(),
+                guard_span,
+            });
+            return MatStep::Done(Err(err.into()));
+        }
+
+        let inner_span = inner.span;
+        stack.push(MatCont::GuardedValidate {
+            thunk: Rc::clone(thunk),
+            inner: Rc::clone(&inner),
+            expected,
+            field_path,
+            guard_span,
+            inner_span,
+            origin,
+            thunk_span,
+            mat_span,
+        });
+        MatStep::Force(Rc::clone(&inner), mat_span, next_depth(depth))
+    } else {
+        unreachable!(
+            "force_step: all ThunkState variants are handled. \
+             Materialized/Failed/InProgress are early-returned at lines 1416-1453, \
+             Unevaluated/PendingBuiltin/PendingCall/Guarded are processed above. \
+             If this fires, a new ThunkState variant was added without updating force_step."
+        )
+    }
+}
+
+/// Apply a continuation to a materialization result.
+fn apply_mat_cont(
+    cont: MatCont,
+    result: EvalResult<Value>,
+    stack: &mut Vec<MatCont>,
+) -> ContResult {
+    match cont {
+        MatCont::Memoize {
+            thunk,
+            origin,
+            thunk_span,
+            mat_span,
+            restore,
+        } => {
+            let decorated_result = result.map_err(|e| {
+                attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span)
+            });
+
+            match decorated_result {
+                Ok(value) => {
+                    thunk.set_state(ThunkState::Materialized(value.clone()));
+                    ContResult::Done(Ok(value))
+                }
+                Err(e) => {
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        restore.restore(&thunk);
+                    }
+                    ContResult::Done(Err(e))
+                }
+            }
+        }
+        MatCont::PendingCallDispatch {
+            thunk,
+            func_thunk,
+            args,
+            named,
+            call_span,
+            ctx: thunk_ctx,
+            origin,
+            thunk_span,
+            mat_span,
+            depth,
+        } => {
+            let decorate =
+                |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
+
+            match result.map_err(&decorate) {
+                Ok(func_value) => match func_value {
+                    Value::Function { params, body, env } => {
+                        let call_ctx = CallContext {
+                            params: &params,
+                            body: &body,
+                            closure_env: &env,
+                            positional: &args,
+                            named: &named,
+                            default_env: &env,
+                            call_span,
+                            depth,
+                            origin: origin.clone(),
+                            ctx: &thunk_ctx,
+                        };
+
+                        match invoke_function(&call_ctx).map_err(&decorate) {
+                            Ok(result_thunk) => {
+                                let restore = RestoreState::PendingCall {
+                                    func: func_thunk.clone(),
+                                    args: args.clone(),
+                                    named: named.clone(),
+                                    call_span,
+                                    ctx: thunk_ctx.clone(),
+                                };
+                                stack.push(MatCont::Memoize {
+                                    thunk: Rc::clone(&thunk),
+                                    origin,
+                                    thunk_span,
+                                    mat_span,
+                                    restore,
+                                });
+                                ContResult::Force(result_thunk, mat_span, next_depth(depth))
+                            }
+                            Err(mut e) => {
+                                e.push_frame(origin.to_string(), call_span);
+                                if e.kind.is_cacheable() {
+                                    thunk.cache_failure(&e);
+                                } else {
+                                    thunk.set_state(ThunkState::PendingCall {
+                                        func: func_thunk,
+                                        args,
+                                        named,
+                                        call_span,
+                                        ctx: thunk_ctx,
+                                    });
+                                }
+                                ContResult::Done(Err(e))
+                            }
+                        }
+                    }
+                    Value::Builtin { func, .. } => {
+                        let builtin_args = crate::value::BuiltinArgs {
+                            args: &args,
+                            named: &named,
+                            depth,
+                            call_span,
+                            ctx: Rc::clone(&thunk_ctx),
+                        };
+                        match func(builtin_args).map_err(&decorate) {
+                            Ok(result_thunk) => {
+                                if let Some(value) = result_thunk.try_get_materialized() {
+                                    thunk.set_state(ThunkState::Materialized(value.clone()));
+                                    ContResult::Done(Ok(value))
+                                } else {
+                                    let restore = RestoreState::PendingCall {
+                                        func: func_thunk.clone(),
+                                        args: args.clone(),
+                                        named: named.clone(),
+                                        call_span,
+                                        ctx: thunk_ctx.clone(),
+                                    };
+                                    stack.push(MatCont::Memoize {
+                                        thunk: Rc::clone(&thunk),
+                                        origin,
+                                        thunk_span,
+                                        mat_span,
+                                        restore,
+                                    });
+                                    ContResult::Force(result_thunk, mat_span, next_depth(depth))
+                                }
+                            }
+                            Err(e) => {
+                                if e.kind.is_cacheable() {
+                                    thunk.cache_failure(&e);
+                                } else {
+                                    thunk.set_state(ThunkState::PendingCall {
+                                        func: func_thunk,
+                                        args,
+                                        named,
+                                        call_span,
+                                        ctx: thunk_ctx,
+                                    });
+                                }
+                                ContResult::Done(Err(e))
+                            }
+                        }
+                    }
+                    other => {
+                        let err = EvalError::type_mismatch(
+                            "Function or Builtin",
+                            other.type_name(),
+                            call_span,
+                        );
+                        let decorated = decorate(Box::new(err));
+                        if decorated.kind.is_cacheable() {
+                            thunk.cache_failure(&decorated);
+                        } else {
+                            thunk.set_state(ThunkState::PendingCall {
+                                func: func_thunk,
+                                args,
+                                named,
+                                call_span,
+                                ctx: thunk_ctx,
+                            });
+                        }
+                        ContResult::Done(Err(decorated))
+                    }
+                },
+                Err(e) => {
+                    // Function materialization failed
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        thunk.set_state(ThunkState::PendingCall {
+                            func: func_thunk,
+                            args,
+                            named,
+                            call_span,
+                            ctx: thunk_ctx,
+                        });
+                    }
+                    ContResult::Done(Err(e))
+                }
+            }
+        }
+        MatCont::GuardedValidate {
+            thunk,
+            inner,
+            expected,
+            field_path,
+            guard_span,
+            inner_span,
+            origin,
+            thunk_span,
+            mat_span,
+        } => {
+            let decorate =
+                |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
+
+            match result {
+                Ok(value) => {
+                    // For Record types, apply proxy contract wrapping
+                    if let Type::Record(ref row) = expected {
+                        if let Value::Dict(ref entries) = value {
+                            match validate_and_wrap_record(
+                                entries, row, field_path, guard_span, inner_span,
+                            ) {
+                                Ok(new_entries) => {
+                                    let guarded_value = Value::Dict(new_entries);
+                                    thunk
+                                        .set_state(ThunkState::Materialized(guarded_value.clone()));
+                                    ContResult::Done(Ok(guarded_value))
+                                }
+                                Err(err) => {
+                                    let err = decorate(err);
+                                    thunk.cache_failure(&err);
+                                    ContResult::Done(Err(err))
+                                }
+                            }
+                        } else {
+                            // Expected Record but got non-Dict
+                            let field_path_prefix = if field_path.is_empty() {
+                                String::new()
+                            } else {
+                                format!("field \"{}\": ", field_path.join("."))
+                            };
+                            let err = EvalError::type_assert_failed(
+                                &format!(
+                                    "{}{}",
+                                    field_path_prefix,
+                                    format_type_for_assert(&expected)
+                                ),
+                                &value.type_name(),
+                                inner_span,
+                            );
+                            let err = decorate(err.into());
+                            thunk.cache_failure(&err);
+                            ContResult::Done(Err(err))
+                        }
+                    } else {
+                        // For non-Record types, simple value check
+                        if value_matches_type(&value, &expected) {
+                            thunk.set_state(ThunkState::Materialized(value.clone()));
+                            ContResult::Done(Ok(value))
+                        } else {
+                            let field_path_prefix = if field_path.is_empty() {
+                                String::new()
+                            } else {
+                                format!("field \"{}\": ", field_path.join("."))
+                            };
+                            let err = EvalError::type_assert_failed(
+                                &format!(
+                                    "{}{}",
+                                    field_path_prefix,
+                                    format_type_for_assert(&expected)
+                                ),
+                                &value.type_name(),
+                                inner_span,
+                            );
+                            let err = decorate(err.into());
+                            thunk.cache_failure(&err);
+                            ContResult::Done(Err(err))
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Inner materialization error propagates
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        thunk.set_state(ThunkState::Guarded {
+                            inner,
+                            expected,
+                            field_path,
+                            guard_span,
+                        });
+                    }
+                    ContResult::Done(Err(e))
+                }
+            }
+        }
+    }
+}
+
+/// Iterative materialization implementation using a continuation stack.
+/// Replaces recursive `materialize()` calls to prevent stack overflow on deeply nested thunks.
+fn materialize_rc(initial: Rc<Thunk>, mat_span: Option<Span>, depth: usize) -> EvalResult<Value> {
+    let mut stack: Vec<MatCont> = Vec::new();
+    let mut current = initial;
+    let mut current_mat_span = mat_span;
+    let mut current_depth = depth;
+
+    'main: loop {
+        let step = force_step(&current, current_mat_span, current_depth, &mut stack);
+
+        match step {
+            MatStep::Force(thunk, span, d) => {
+                current = thunk;
+                current_mat_span = span;
+                current_depth = d;
+                continue 'main;
+            }
+            MatStep::Done(mut result) => loop {
+                match stack.pop() {
+                    None => return result,
+                    Some(cont) => match apply_mat_cont(cont, result, &mut stack) {
+                        ContResult::Done(r) => {
+                            result = r;
+                        }
+                        ContResult::Force(thunk, span, d) => {
+                            current = thunk;
+                            current_mat_span = span;
+                            current_depth = d;
+                            continue 'main;
+                        }
+                    },
+                }
+            },
+        }
+    }
+}
+
 /// Force a thunk to its concrete value, memoizing the result.
 ///
 /// On first materialization, evaluates the thunk and caches the result (or error).
@@ -1383,7 +2090,7 @@ pub fn materialize(
         }
 
         let result = eval(&expr, Rc::clone(&env), &thunk_ctx, depth + 1)
-            .and_then(|result_thunk| materialize(&result_thunk, mat_span, &thunk_ctx, depth + 1))
+            .and_then(|result_thunk| materialize_rc(result_thunk, mat_span.copied(), depth + 1))
             .map_err(&decorate);
 
         match result {
@@ -1444,7 +2151,7 @@ pub fn materialize(
                     thunk.set_state(ThunkState::Materialized(value.clone()));
                     Ok(value)
                 } else {
-                    match materialize(&result_thunk, mat_span, &thunk_ctx, depth + 1)
+                    match materialize_rc(result_thunk, mat_span.copied(), depth + 1)
                         .map_err(&decorate)
                     {
                         Ok(value) => {
@@ -1505,7 +2212,7 @@ pub fn materialize(
         }
 
         // Materialize the function thunk to determine if it's a Function or Builtin
-        let func_value = match materialize(&func_thunk, Some(&call_span), &thunk_ctx, depth + 1)
+        let func_value = match materialize_rc(Rc::clone(&func_thunk), Some(call_span), depth + 1)
             .map_err(&decorate)
         {
             Ok(v) => v,
@@ -1544,7 +2251,7 @@ pub fn materialize(
                 match invoke_function(&call_ctx).map_err(&decorate) {
                     Ok(result_thunk) => {
                         // Materialize the result and memoize
-                        match materialize(&result_thunk, mat_span, &thunk_ctx, depth + 1)
+                        match materialize_rc(result_thunk, mat_span.copied(), depth + 1)
                             .map_err(&decorate)
                         {
                             Ok(value) => {
@@ -1602,7 +2309,7 @@ pub fn materialize(
                             thunk.set_state(ThunkState::Materialized(value.clone()));
                             Ok(value)
                         } else {
-                            match materialize(&result_thunk, mat_span, &thunk_ctx, depth + 1)
+                            match materialize_rc(result_thunk, mat_span.copied(), depth + 1)
                                 .map_err(&decorate)
                             {
                                 Ok(value) => {
@@ -1687,7 +2394,7 @@ pub fn materialize(
         // Capture inner thunk's span before materializing — used as data_span for error reporting
         let inner_span = inner.span;
 
-        let result = materialize(&inner, mat_span, _ctx, depth + 1);
+        let result = materialize_rc(Rc::clone(&inner), mat_span.copied(), depth + 1);
 
         match result {
             Ok(value) => {
@@ -8214,6 +8921,105 @@ mod tests {
         assert!(
             matches!(&*state, ThunkState::Unevaluated { .. }),
             "Expected thunk to remain in Unevaluated state after non-cacheable error"
+        );
+    }
+
+    #[test]
+    fn test_iterative_materialize_deep_chain() {
+        // Create a deep Unevaluated chain to verify the iterative implementation
+        // doesn't stack overflow. Each thunk is an Unevaluated expression that
+        // references the next thunk. This would overflow the Rust stack with
+        // recursive materialize().
+        //
+        // chain_len is set to 3/4 of MAX_EVAL_DEPTH so the chain is long enough
+        // to demonstrate iterative behavior while staying under the depth limit.
+        // The static assertion makes the intent explicit and guards against regressions
+        // if MAX_EVAL_DEPTH is ever lowered.
+        let chain_len = MAX_EVAL_DEPTH * 3 / 4;
+        assert!(
+            chain_len < MAX_EVAL_DEPTH,
+            "chain_len must be below MAX_EVAL_DEPTH to avoid a DepthExceeded error"
+        );
+
+        let ctx = test_ctx();
+        let env = empty_env();
+        let span = test_span(1, 1, 1, 10);
+
+        // Base case: Thunk holding Int(chain_len as i64)
+        let base_thunk = Rc::new(Thunk::new_materialized(Value::Int(chain_len as i64), span));
+        env.borrow_mut()
+            .insert("base".into(), Rc::clone(&base_thunk));
+
+        // Build a chain of chain_len thunks, each just referencing the previous one
+        // var_0 = $base, var_1 = $var_0, ..., var_{chain_len-1} = $var_{chain_len-2}
+        for i in 0..chain_len {
+            let prev_name = if i == 0 {
+                "base".to_string()
+            } else {
+                format!("var_{}", i - 1)
+            };
+            let curr_name = format!("var_{}", i);
+
+            let expr = sp(Expr::VarRef(prev_name.clone()));
+            let thunk = Rc::new(Thunk::new_unevaluated(
+                Rc::new(expr),
+                Rc::clone(&env),
+                Rc::clone(&ctx),
+                span,
+            ));
+            env.borrow_mut().insert(curr_name, thunk);
+        }
+
+        // Materialize the outermost thunk — should succeed with iterative implementation
+        let final_name = format!("var_{}", chain_len - 1);
+        let final_thunk = env.borrow().get(&final_name).unwrap().clone();
+        let result = materialize(&final_thunk, None, &ctx, 0);
+        assert!(
+            result.is_ok(),
+            "Deep chain materialization should succeed, got: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), Value::Int(chain_len as i64));
+    }
+
+    #[test]
+    fn test_iterative_materialize_cycle_detection() {
+        // Verify that the iterative materialize_rc() detects circular dependencies
+        // correctly via InProgress state detection in force_step.
+        let ctx = test_ctx();
+        let env = empty_env();
+
+        // Create a cycle: x references y, y references x
+        // x = $y
+        let x_expr = sp(Expr::VarRef("y".into()));
+        let x_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(x_expr),
+            Rc::clone(&env),
+            Rc::clone(&ctx),
+            test_span(1, 1, 1, 2),
+        ));
+
+        // y = $x
+        let y_expr = sp(Expr::VarRef("x".into()));
+        let y_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(y_expr),
+            Rc::clone(&env),
+            Rc::clone(&ctx),
+            test_span(1, 1, 1, 2),
+        ));
+
+        // Bind x -> x_thunk, y -> y_thunk in env
+        env.borrow_mut().insert("x".into(), Rc::clone(&x_thunk));
+        env.borrow_mut().insert("y".into(), Rc::clone(&y_thunk));
+
+        // Materialize x — should detect cycle
+        let result = materialize(&x_thunk, None, &ctx, 0);
+        assert!(result.is_err(), "Cycle should be detected");
+        let err = result.unwrap_err();
+        assert!(
+            err.message().contains("circular dependency"),
+            "Error should mention circular dependency, got: {}",
+            err.message()
         );
     }
 }

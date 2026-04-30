@@ -2,8 +2,6 @@
 
 Extracted from doc/*.md chapters. Tracks what's next and what's deferred. Completed work is in DONE.md.
 
-- [x] Update agent files to remove pest PEG grammar references — all 6 agent files and SKILL.md updated in parser-cleanup sprint C63 (commit 5285f80)
-
 ## iterative-eval: Iterative Evaluator
 
 Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types. Tinct's recursive approach risks stack overflow on deeply-nested lazy chains and prevents tail-call optimization.
@@ -15,50 +13,60 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [x] Fix doc/16-architecture.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972) (doc/16-architecture.md §Iterative Evaluator) [Minor, computer-scientist]
 - [x] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
 
-### iterative-eval-core: CEK Machine Conversion
+### iterative-eval-b: Convert eval() and TCO
 
-Core CEK machine implementation. Each task is a major architectural change. Requires multi-sprint decomposition — tasks are sequential and each individually large.
+Iterativize `eval()` hot paths and add tail-call optimization. **Depends on iterative-eval-a.**
 
-- [ ] Convert `materialize()` from recursive to iterative with `Vec<Frame>` work stack
 - [ ] Convert `eval()` hot paths (dict construction, access chains) to iterative
 - [ ] Implement tail-call optimization (TCO) for `call` expressions — detect tail position, reuse frame
 - [ ] TCO for recursive stdlib functions (`fold`, `map`, `filter`, `sort-merge`) to avoid stack overflow on large inputs
-- [ ] Benchmark: compare recursive vs iterative on deep chains and large collections
-- [ ] Remove 64MB worker thread stack workaround once iterative eval eliminates deep recursion
-- [ ] Re-enable depth-exceeded unit tests once iterative-eval replaces recursive materialize() — tests require >128MB stack in debug mode (currently marked `#[ignore]`): `collect_max_size_limit_enforced` and `join_seq_size_limit` (src/builtins.rs), `filter_seq_step_no_depth_accumulation_on_consecutive_failures` and `take_large_count_infinite_seq_depth_exceeded` (src/builtins.rs), `test_pending_call_cycle_detection` (src/eval.rs), `test_session_depth_exhaustion` (src/repl.rs)
+
+### iterative-eval-c: Deferred CEK Fixes
+
+Three lazy-evaluation correctness fixes reverted from pre-cek-fixes due to stack overflow under the recursive evaluator. Safe once iterative-eval-b lands. **Depends on iterative-eval-b.**
+
 - [ ] Fix `TypeAssert` forces materialization inside `eval()` — deferred from pre-cek-fixes C69: PendingBuiltin/Guarded approach adds stack depth, causing overflow with recursive evaluator. CEK machine continuation deferral resolves. (`src/eval.rs:164-203`) [Major, eval-engine C47]
 - [ ] Fix eval_call eagerly materializing function value — deferred from pre-cek-fixes C69: PendingCall approach tested and reverted (stack overflow). CEK machine CALL continuation defers function forcing. (`src/eval.rs:462-463`) [Major, computer-scientist C35]
 - [ ] Fix `$apply` eagerly materializing function and args dict — deferred from pre-cek-fixes C69: PendingApply approach tested and reverted (stack overflow). CEK machine resolves. (`src/builtins.rs:858-859`) [Major, eval-engine]
+
+### iterative-eval-d: Verification and Cleanup
+
+Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. **Depends on iterative-eval-c.**
+
 - [ ] Verify thunk lifecycle invariants after CEK migration — sharing preservation (thunk identity via `Rc<Thunk>` must be maintained through continuation dispatch), ThunkState simplification (PendingBuiltin/PendingCall subsumed by Cont variants), MAX_EVAL_DEPTH removal (replace with configurable `--max-depth`), monotonicity proof carries over. See doc/08-evaluation.md §Thunk Lifecycle — Relationship to CEK Machine Migration. [Major, computer-scientist]
+- [ ] Benchmark: compare recursive vs iterative on deep chains and large collections
+- [ ] Remove 64MB worker thread stack workaround once iterative eval eliminates deep recursion
+- [ ] Re-enable depth-exceeded unit tests once iterative-eval replaces recursive materialize() — tests require >128MB stack in debug mode (currently marked `#[ignore]`): `collect_max_size_limit_enforced` and `join_seq_size_limit` (src/builtins.rs), `filter_seq_step_no_depth_accumulation_on_consecutive_failures` and `take_large_count_infinite_seq_depth_exceeded` (src/builtins.rs), `test_pending_call_cycle_detection` (src/eval.rs), `test_session_depth_exhaustion` (src/repl.rs)
+- [ ] Add corpus test for deep evaluation chain through public API — regression guard for iterative materialize correctness (`tests/corpus/eval/eval/deep_chain.llt-eval`) [Minor, test-crafter C70 panel]
+- [ ] Add unit test for PendingBuiltin deep chain (exercises PendingCallDispatch continuation in `materialize_rc`) (`src/eval.rs`) [Minor, test-crafter C70 panel]
+- [ ] Add unit test for GuardedValidate continuation in iterative materialize — verify `[@Int 42]` chain works through `materialize_rc` (`src/eval.rs`) [Minor, test-crafter C70 panel]
+- [ ] Add comment to existing depth limit tests clarifying they test the depth limit policy, not stack-safety (that's tested by `test_iterative_materialize_deep_chain`) (`src/eval.rs`) [Nit, test-crafter C70 panel]
+- [ ] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70 panel]
+- [ ] Box large `MatCont` variants (PendingCallDispatch, GuardedValidate) to stay within ≤96B frame budget when MatCont merges into full `Cont` enum in iterative-eval-b (`src/eval.rs`) [Major, computer-scientist + performance-expert C70 panel]
+- [ ] Update `doc/16-architecture.md` §Iterative Evaluator "implementation pending" note — Phase 1 (materialize) complete via iterative-eval-a; eval() conversion pending in iterative-eval-b (`doc/16-architecture.md:43`) [Minor, computer-scientist C70 panel]
 
 ## parser-rewrite: Parser Rewrite (E2)
 
 **Status:** Phase 1-2 complete (sprints parser-core-a through parser-core-c3). The hand-written iterative parser (`src/parser.rs` + `src/lexer.rs`) is now the production parser. The pest PEG parser was removed in sprint parser-core-c3 (commit cc8333c). Phases 3 (AST formatter) and 4 (error recovery) remain.
 
-### Design
-
 - [x] Write `doc/whatif/parser-rewrite.md` — see doc/whatif/parser-rewrite.md. Immediate pest replacement (no co-existence); `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; `BracketAccess` + `ImmediateAt` lexer tokens; AST-based formatter rewrite; 4-phase adoption. Agent-reviewed: computer-scientist (APPROVE). [Design, grammar-architect]
 
+### parser-fixes: Parser Correctness Fixes
+
+Lexer and parser2 loose ends carried over from parser-core sprints. Completes production readiness before the formatter rewrite.
+
 - [ ] Fix lexer Newline not resetting `had_whitespace_before` flag — `$a\n[0]` emits `BracketAccess` instead of `OpenBracket`; `$a\n.b` emits `Dot`; both are incorrect. Fix: update `skip_whitespace_except_newline` to set `had_whitespace_before = true` when emitting `Newline` tokens, and reset `last_significant_token` to `None` or `Other`. Blocked on Phase 2 parser (current pest parser handles this correctly via compound-atomic rules). Track for Phase 2 integration. (`src/lexer.rs:233-238`) [Minor, computer-scientist C63]
-
-
 - [ ] Fix `push_literal` silently drops expressions when top-of-stack is non-Dict frame — currently unreachable in parser-core-a but will cause silent data loss when Call/Fn/TypeAlias/TypeAssert frames are added in parser-core-b. Add `unreachable!()` or variant-specific handlers. (`src/parser2.rs:28`) [Minor, computer-scientist C64]
 - [ ] Fix unclosed bracket error using `span: None` — each StackFrame stores `span_start` (the opening bracket's offset), so the diagnostic message "unclosed bracket" could point to the opening site instead of EOF. Per design doc, target message is "unclosed bracket opened at line 5:3". (`src/parser2.rs:343`) [Minor, computer-scientist C64]
 - [ ] Replace `CallArg::Named(String, Spanned<Expr>)` with `CallArg::Named(NamedArg)` — eliminates duplication with `ast::NamedArg { name, value }` struct; simplifies call construction in parser-core-b. (`src/parser2.rs:87`) [Minor, grammar-architect C64]
 - [ ] Change `StackFrame::Dict.entries` from `Vec<Entry>` to `Vec<Spanned<Entry>>` — eliminates allocation-then-wrap overhead during dict construction; matches AST's `Expr::Dict(Vec<Spanned<Entry>>)` target type. Address during parser-core-c profiling. (`src/parser2.rs:50,176-186`) [Minor, grammar-architect C64]
 - [ ] Update line tracking TODO in parse2 skeleton — line 191 says "proper line tracking from lexer tokens" but lexer already provides full `Spanned<Token>` with Position (line, column, offset); change to "extract line/column from token spans instead of placeholder (1,1)". (`src/parser2.rs:191`) [Nit, grammar-architect C64]
-
 - [ ] Fix parser2 bracket access error message: "bracket access inside dict/call contexts" should say "bracket access inside nested bracket contexts" — the limitation applies to all non-empty stack frames, not just dict/call. (`src/parser2.rs:339-343`) [Nit, computer-scientist C65]
 - [ ] Restore deleted Phase 2a tests in parser2.rs — test_unmatched_closing_bracket and test_unclosed_bracket ARE present; test_nested_dict_one_level, test_nested_dict_two_levels, test_depth_limit_boundary_succeeds may have been removed. Verify which are missing and re-add them. (`src/parser2.rs`) [Minor, computer-scientist C65]
 - [ ] Fix `[call\n: x]` classified as Dict instead of Call in parser2 — `peek_next_significant` skips Newline tokens, so newline-before-colon makes keyword-colon guard fire incorrectly. Pest grammar's `colon_ahead` uses horizontal-only whitespace. Resolve before parser2 replaces parser.rs. (`src/parser2.rs:17-32`) [Minor, grammar-architect C65]
 - [ ] Support QuotedString and VarRef as dict keys in parser2 — `["key": 1]` and `[$x: 1]` currently produce "colon without key" error; pest grammar allows both as key forms. Implement key detection for these token types in the Colon handler's Dict arm. (`src/parser2.rs:649-651,695-699`) [Minor, computer-scientist C65]
 - [ ] Remove dead Dict/Call match arms in parser2 `push_expr_to_parent` — lines 845-856 are unreachable because `push_value` intercepts Dict/Call frames before delegating. (`src/parser2.rs:845-856`) [Nit, computer-scientist C65]
-
-
-
 - [ ] Document parser2 newlines-after-dot behavior divergence from pest — pest's compound-atomic `${}` rule forbids newlines after `.` in access chains; parser2's `skip_whitespace_tokens` skips newlines. Either fix to match pest or document as an intentional extension ("line continuation"). (`src/parser2.rs:994-995`) [Minor, grammar-architect C66]
-
-- [ ] Remove 64 MB worker thread stack workaround — coordinate with `iterative-eval` sprint; parser is now iterative but eval.rs still recursive (`src/main.rs`) [Deferred from parser-core-c3]
 - [ ] Benchmark iterative parser parse time on large inputs; confirm ≥ pest performance [Deferred from parser-core-c3]
 
 ### parser-formatter: Phase 3 — AST-Based Formatter
@@ -91,6 +99,10 @@ Replace tinct's three-path-op `$include` pattern (`canonicalize()→metadata()�
 
 **Depends on:** `file-sandbox-security` (the companion items in that sprint are subsumed here)
 
+### include-fd-hardening
+
+Replace three-path-op `$include` with fd-based cap-std flow. **Depends on:** `file-sandbox-security`.
+
 - [ ] Add `cap-std = "3"` to `Cargo.toml` (`Cargo.toml`)
 - [ ] Add `base_dir: cap_std::fs::Dir` to `EvalConfig`; open with `Dir::open_ambient(".")` at CLI startup and store in context (`src/main.rs`, `src/eval.rs`)
 - [ ] Replace `canonicalize()→metadata()→read_to_string()` with `base_dir.open(relative_path)?` → `file.metadata()?` → read from the same fd in `builtin_include` — all three ops on one open fd, zero TOCTOU window (`src/builtins.rs:1021-1050`)
@@ -99,22 +111,16 @@ Replace tinct's three-path-op `$include` pattern (`canonicalize()→metadata()�
 - [ ] Update error messages to include both the user-supplied path and the fd-resolved (dev, ino) identity so include cycle errors remain informative after the PathBuf key removal (`src/builtins.rs`, `src/error.rs`)
 - [ ] Add corpus test: two files that include each other via symlinks — verify cycle detection fires with inode-keyed cache (`tests/corpus/eval/`)
 
-## row-unification: Full Row-Variable Unification (Remy-Style)
-
-Replace the current closed-strict/open-lenient record unification with full Remy-style row-variable unification. Row variables become first-class participants in type inference, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
-
-**Benefits from:** `type-extensions` Type::Seq inference (for sequence type support in row polymorphism).
-
-- [x] Design Remy-style row unification model (row variable binding, remainder semantics, occurs check) — see doc/07-type-extensions.md §Row-Variable Unification — Kinded Rémy Model (Dict+Tail Representation)
-
-
-
-
 ## type-extensions: Type System Extensions
 
 Future type system work identified by type-theorist review (2026-04-19). Updated by type-theorist review (2026-04-22).
 
 - [x] Design type system extension roadmap (Seq types, gradual typing, type classes, error recovery) — see doc/06-type-inference.md §Type System Extension Roadmap, `doc/whatif/gradual-typing.md`, `doc/whatif/typeclasses.md`, `doc/whatif/union-types.md`
+
+### type-seq: Type System Core Inference Work
+
+Type::Seq inference, TypeEnv::with_builtins, and core type system correctness.
+
 - [ ] Add Type::Seq inference to typecheck.rs — sequence builtins ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) currently infer as Any; annotate return types in `check_call` for LSP hover and type safety (`src/typecheck.rs`) [Major, type-theorist]
 - [ ] Fix polymorphic call unification for named args — requires extending `Type::Function` to carry param names; after positional unification, named args are not unified (`src/typecheck.rs:389-447`) [Major, type-theorist, deferred from types-major-fixes]
 - [ ] Gradual typing with Any→concrete boundary tracking and blame (TypeScript/Typed Racket model)
@@ -145,6 +151,11 @@ Future type system work identified by type-theorist review (2026-04-19). Updated
 - [x] Fix `TypeScheme::vars` conflating type variable and row variable names — single `Vec<String>` quantifies both; Rémy-style kinded schemes need `type_vars: Vec<String>` + `row_vars: Vec<String>` so `instantiate_scheme()` routes substitutions correctly (type-map vs row-map). Becomes load-bearing when let-gen-inference + row-unification overlap. (`src/types.rs:171-174`) [Minor, type-theorist C39] — done in bidirectional-typing-b
 - [x] Fix `collect_type_vars()` conflating type and row variable names — collects `RowVar` names into the same `BTreeSet<String>` as `TypeVar` names; `instantiate()` then routes all through the type substitution, freshening row variables as TypeVars. Add separate `collect_row_vars()` (Pierce & Turner 2000) or use two-map substitution. (`src/types.rs:129-151`) [Minor, type-theorist C39] — done in bidirectional-typing-b
 - [ ] Fix `check_bracket_access` rejecting `Type::Number` as key type — only `Type::Str | Type::Int | Type::Any` accepted; `Number` is supertype of `Int` and should produce `Any` return like `Int` does. (`src/typecheck.rs:347-348`) [Fix-later, type-theorist C39]
+
+### type-doc-fixes: Type System Doc Accuracy Fixes (doc/05, doc/06, doc/07)
+
+Accuracy fixes for the type system documentation chapters.
+
 - [ ] Fix doc/06 Instantiation section contradicting implementation — lines 350-355 state "Tinct conflates type vars and row vars into a single namespace — both collected by `collect_type_vars()` and renamed by `instantiate()`." This is false since row-unification-b: kinded substitution is fully implemented with separate `collect_type_vars`/`collect_row_vars`, separate `type_map`/`row_map` in `Substitution`, and `instantiate_scheme`/`instantiate_at_level` freshening both independently. Rewrite the block to describe the actual two-namespace kinded design. (`doc/06-type-inference.md:350-355`) [Major, type-theorist C52]
 - [ ] Fix doc/06 TypeScheme code block showing old single-namespace struct — lines 372-384 show `pub struct TypeScheme { pub vars: Vec<String>, pub body: Type }` but actual code has `type_vars: Vec<String>`, `row_vars: Vec<String>`, `body: Type`. Display claim is accurate in spirit but `TypeScheme::fmt` chains `type_vars`+`row_vars` — add note. (`doc/06-type-inference.md:372-384`) [Major, type-theorist C52]
 - [ ] Fix doc/06 grammar listing `Open` as valid ρ variant — `Open` was eliminated in row-unification-b; grammar should read `ρ ::= Closed | RowVar(r)` with a note that anonymous `...` syntax generates fresh `_open{n}` names internally. (`doc/06-type-inference.md:24`) [Major, integration-verifier C52]
@@ -193,6 +204,10 @@ Future type system work identified by type-theorist review (2026-04-19). Updated
 
 Chaperone semantics, elaboration gap, and tests. Split from typeassert-structural.
 
+### typeassert-structural-b: Chaperone Semantics and Structural Enforcement
+
+Remaining implementation work for TypeAssert structural contract checking.
+
 - [x] Fix Guarded thunk stuck in InProgress on non-cacheable error — `take_guarded()` atomically transitions Guarded→InProgress; if inner materialization fails with non-cacheable error (e.g. DepthExceeded), the `Err(e)` branch calls `cache_failure` only when `is_cacheable()` is true, leaving the thunk in InProgress permanently when false. Next access produces spurious CircularDependency. Fix: add `else { thunk.set_state(ThunkState::Guarded { inner, expected, field_path, guard_span }); }` in the non-cacheable branch. All four variables are still alive. Every other thunk state handles this correctly (Unevaluated, PendingBuiltin, PendingCall). Violates Launchbury (1993) Theorem 2 (monotonic heap transitions). (`src/eval.rs:1559-1572`) [Critical, computer-scientist C48; line numbers updated C69]
 - [x] Fix Guarded path type-check failures bypassing `decorate` — all three failure paths in the `ThunkState::Guarded` branch of `materialize()` return errors without calling `decorate`, silently dropping `mat_span` from the outer `materialize()` call. (a) `validate_and_wrap_record` returning `Err` — returned raw (line ~1518); (b) non-Dict value for Record guard — `Err(err.into())` undecorated (line ~1536); (c) non-matching primitive — `Err(err.into())` undecorated (line ~1555). User sees only `guard_span` (the `[@Type ...]` definition site), never the access site. Fix: wrap all three `Err(...)` returns with `Err(decorate(err))`. (`src/eval.rs:1504-1566`) [Critical, span-integrity-checker C49; line numbers updated C62]
 - [x] Add `ThunkState::Guarded` to formal spec in `doc/08-evaluation.md` — state set at line 201, DAG (lines 208-211), transition table (lines 215-224), and FORCE-* rules all enumerate 6 states; Guarded is a live 7th state since typeassert-structural sprint (commit 71686ed). Add Guarded to state set, add `Guarded → InProgress` DAG edge, add `[FORCE-GUARD]` rule, update monotonicity proof sketch; also add note that Guarded carries no `ctx` field by design (inner thunk carries its own). (`doc/08-evaluation.md:201`) [Major, eval-engine + laziness-auditor C49]
@@ -233,22 +248,24 @@ Public API completeness and error quality improvements from the C56 integration-
 - [x] Fix `doc/10-errors.md` `IncludeForbidden` missing from Part 1 Variant Catalog — added IncludeForbidden, ValueNotSerializable, ResourceLimitExceeded; count updated to 31 [api-hygiene C64]
 - [x] Fix `doc/10-errors.md` motivation section stale stats — updated to 46 builtins, 61+ error tests [api-hygiene C64]
 - [x] Fix `EvalContext::with_base_dir()` doc comment misleading — corrected to note new EvalConfig allocation [api-hygiene C64]
+
+### api-hygiene: API and Error Constructor Migration
+
+Remaining API cleanup: migrate raw EvalError constructors to typed variants.
+
 - [ ] Migrate test-code `EvalError::new()` calls to typed constructors — several test helpers in `src/eval.rs` and `src/builtins.rs` use raw `EvalError::new()` (E099). Grep for `EvalError::new` in `#[cfg(test)]` blocks. (`src/eval.rs`, `src/builtins.rs`) [Nit, integration-verifier C63]
-
-## include-desugar: $include Pipeline Fix (C49)
-
-Critical correctness gap: `$include` is the only pipeline entry point that does not call `desugar_file()` between parse and eval. All other entry points (`main.rs`, `lib.rs`, `repl.rs`) call `desugar_file` before eval; `builtin_include` does not. Any included file using `$_` implicit lambda syntax silently produces "undefined variable _" at runtime instead of the correct desugared lambda.
-
-- [x] Fix `builtin_include` missing `desugar_file` call — add `crate::desugar::desugar_file(&mut file.node);` immediately after the `parse()` call at `src/builtins.rs:1057`, before the guard push and `eval_file` call. One-line fix. (`src/builtins.rs:1054-1077`) [Critical, integration-verifier C49] (completed: builtin_include already calls desugar_file at builtins.rs:1217)
-- [x] Add CLI regression test for `$include` + `$_` — added `include_underscore_desugar` to `tests/cli_tests.rs`; justfile `test` recipe now includes CLI tests [include-desugar C65]
-- [x] Update `INCLUDE-EVAL` spec to show desugar step — added `desugar(file)` step and updated Part 6 correspondence table with current line numbers [include-desugar C65]
-- [x] Add `desugar_file` to `typecheck.rs` test helpers — all 5 helpers already had desugar_file; no changes needed [include-desugar C65]
 
 ## file-sandbox-security: $include TOCTOU and File Access Hardening
 
 Security hardening for the `$include` file sandbox. The current implementation uses three separate path operations (canonicalize → metadata → read_to_string) creating a TOCTOU race window where the file can change between the validation and the read. The safe primitive is the file descriptor — once an fd is open, the kernel pins the inode regardless of what happens to the path.
 
 - [x] Research `cap-std` vs `rustix` for fd-based `$include` — decision: **cap-std**. `Dir::open()` provides RESOLVE_BENEATH semantics cross-platform (Linux 5.6+ native, Windows emulated via directory handle pinning) without manual flag assembly. rustix is lighter but cap-std is worth the ~2MB overhead: it is what you would build on top of rustix anyway, and Windows coverage is built in. bytecodealliance-maintained. See sprint `include-fd-hardening`.
+- [x] Design import integrity hashes for `$include` (Dhall model) — see `doc/12-tooling.md` §Import Integrity Hashes. Hash passed as second quoted-string argument: `[call $include "path" "blake3:hexdigest"]`. Raw bytes hashed (no normalization). BLAKE3 default (128-bit quantum security); sha3-256, sha3-512, sha256 also accepted. Cache stores `HashMap<Algo, HexDigest>` per path; hits verify against stored digest, cross-algorithm misses re-read. Check order: cache lookup → cycle detection → read → hash check → cache store. `--require-integrity` flag, `llt hash` subcommand.
+
+### file-sandbox-security: File Access Hardening Implementation
+
+Security hardening implementation tasks for `$include` file sandbox and integrity checking.
+
 - [ ] Switch `include_guard` and `include_cache` keys from `PathBuf` to `(device, inode)` pair — path-keyed caching can be defeated by symlink replacement between validation and cache lookup; keying on `(dev, ino)` from `std::fs::Metadata` makes cycle detection and caching immune to path races. Pairs with the cap-std/fd fix: obtain metadata from the open fd, not a separate stat call. (`src/eval.rs`, `src/builtins.rs:1031,1060`) [Major, security-expert]
 - [x] Add CLI file size limit for `$include` — LSP already rejects files > 10MB (`src/lsp.rs`); the `$include` builtin and CLI entry point have no such limit, so a crafted LLT file can force the process to allocate unbounded memory by including a multi-GB file. Add a `MAX_INCLUDE_BYTES` constant (10MB matching LSP) and return `EvalError` if metadata size exceeds it before `read_to_string`. (`src/builtins.rs:1021-1050`, `src/main.rs`) [Minor, security-expert]
 - [x] Call `pest::parser_state::set_call_limit` — **RESOLVED** by parser-core-c3 (pest removed; iterative parser enforces MAX_PARSE_DEPTH=256 before stack allocation). Archive. [Major, security-expert]
@@ -260,7 +277,6 @@ Security hardening for the `$include` file sandbox. The current implementation u
 - [ ] Add `MAX_SUBST_SIZE` cap to `state.subst` to prevent DoS — `check_dot_access` on an open-record-typed target binds one `RowVar` in `state.subst.row_map` per call; the accumulator is never cleared during a file's type inference. N dot-accesses accumulate N entries; the occurs check at `row_var_occurs_pub` walks all reachable prior bindings, giving O(N²) type-check time total. A crafted file with N open-record dot-accesses can exhaust memory. Add `MAX_SUBST_SIZE: usize = 50_000` constant; before each `subst.type_map.insert` and `subst.row_map.insert`, check `type_map.len() + row_map.len() < MAX_SUBST_SIZE`; return `TypeError::new("type inference resource limit exceeded", span)` if exceeded. (`src/typecheck.rs:635`, `src/types.rs:317-319`) [Major, security-expert C53]
 - [x] Disable or sandbox `$include` in LSP evaluation — implemented: `DocumentStore::new()` sets `no_fs=true` at `src/lsp/document.rs:109`; regression test `test_lsp_include_forbidden_with_no_fs` verifies IncludeForbidden (E042) error fires. CWE-22 mitigated. [Major, security-expert train-4]
 - [ ] Add `cargo audit` as a CI gate — the codebase has no automated dependency vulnerability scanning; add `cargo audit` (from the RustSec Advisory Database) to the CI pipeline so new advisories are surfaced before they accumulate. No known vulnerabilities as of C59. (`Cargo.toml`, CI config) [Minor, security-expert C59]
-- [x] Design import integrity hashes for `$include` (Dhall model) — see `doc/12-tooling.md` §Import Integrity Hashes. Hash passed as second quoted-string argument: `[call $include "path" "blake3:hexdigest"]`. Raw bytes hashed (no normalization). BLAKE3 default (128-bit quantum security); sha3-256, sha3-512, sha256 also accepted. Cache stores `HashMap<Algo, HexDigest>` per path; hits verify against stored digest, cross-algorithm misses re-read. Check order: cache lookup → cycle detection → read → hash check → cache store. `--require-integrity` flag, `llt hash` subcommand.
 - [ ] Add `blake3` and `sha3` crates to `Cargo.toml` for hash verification (`Cargo.toml`)
 - [ ] Extend `builtin_include` to accept optional second positional argument — parse `"algo:hexdigest"` string, validate hex length, hash raw bytes via `std::fs::read` (not `read_to_string`), error on mismatch (`src/builtins.rs`)
 - [ ] Add `HashMap<String, HashMap<String, String>>` hash map field to include cache (outer key: canonical path, inner key: algo name, value: hex digest); populate on first verified read; compare on cache hit (`src/eval.rs`, `src/builtins.rs`)
@@ -277,6 +293,10 @@ Security hardening for the `$include` file sandbox. The current implementation u
 
 Replace eager dict merge with lazy overlay representation. See doc/08-evaluation.md §Selective Materialization.
 
+### merge-lazy-overlay: Lazy Overlay Implementation
+
+Implement lazy overlay representation for `$merge`. See doc/08-evaluation.md §Selective Materialization.
+
 - [ ] Implement `Overlay(L, R)` representation for `Value::Dict` — O(1) construction without materializing L or R
 - [ ] Access semantics: check R first, then L
 - [ ] Iteration: flatten to concrete `IndexMap` on demand
@@ -284,14 +304,13 @@ Replace eager dict merge with lazy overlay representation. See doc/08-evaluation
 - [ ] Verify behavioral equivalence: same values, same iteration order, same errors, same sharing
 - [ ] Benchmark: compare eager merge vs lazy overlay on large dicts
 
-## sequences-remaining: Sequences and Fully Lazy Operations (remaining)
-
-
 ## perf-stdlib: Performance: Stdlib Rust Reimplementations
 
 Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append` materializing and cloning the growing accumulator IndexMap on every iteration. Sort is O(n^2 log n) because `sort-merge` uses `cons` (O(n)) per element.
 
 **Note:** The Sequences milestone addresses much of this by moving `map`, `filter`, `range`, `take`, `drop`, `reduce` to Rust builtins with lazy dispatch. The items below track remaining performance work not covered by that milestone.
+
+### perf-stdlib: Stdlib Rust Reimplementations
 
 Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 - [ ] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning). Note: `concat` Seq path is also a correctness issue (hits depth limit at ~256 elements), tracked separately in seq-resource-safety
@@ -304,6 +323,11 @@ Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 Performance improvements identified by performance-expert review (2026-04-19) that don't depend on the Parser Rewrite.
 
 - [x] Design allocation strategy (arena vs Rc, flat env vs chain) — see doc/16-architecture.md §Allocation Strategy — Phased Approach
+
+### perf-foundations: Performance Foundations Implementation
+
+Performance improvements that don't depend on the Parser Rewrite.
+
 - [ ] Arena allocation for thunks/environments — reduce per-thunk Rc<RefCell<ThunkState>> overhead, improve cache locality
 - [ ] Flat environment with slot indices — replace O(n) chain walk with O(1) slot lookup (requires compile-time slot assignment)
 - [ ] String interning for dict keys and small strings — reduce allocation pressure, improve key comparison
@@ -387,11 +411,14 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 
 Design and implement four unprivileged sandboxing layers. See doc/12-tooling.md §Sandboxing & Security for full design.
 
-**Depends on:** `evalcontext-refactor` for filesystem allowlist in EvalConfig.
-
 - [x] Design sandboxing model — see doc/12-tooling.md §Sandboxing & Security
 - [x] Decide policy for absolute paths — allowed if within any --allow-path
 - [x] Decide policy for symlinks — canonicalize, then check against allowlist
+
+### sandbox: Sandboxing Implementation
+
+**Depends on:** `evalcontext-refactor` for filesystem allowlist in EvalConfig.
+
 - [ ] Implement filesystem allowlist in `EvalConfig` (depends on evalcontext-refactor)
 - [ ] Add path-ancestor allowlist check in `builtin_include` (after canonicalize, before cache)
 - [ ] Add `--allow-path` global CLI flag (default: `.`)
@@ -409,27 +436,6 @@ Design and implement four unprivileged sandboxing layers. See doc/12-tooling.md 
 ## theoretical-foundations: Theoretical Foundations (Computer-Scientist Review)
 
 Findings from formal audit of doc/*.md theoretical claims (2026-04-21). Covers type theory, evaluation semantics, and research grounding.
-
-### Design work (requires design loop)
-
-- [x] Design type inference algorithm specification — see doc/06-type-inference.md §Type Inference Algorithm. Semi-formal spec with judgment rules: type grammar, 14 inference rules (INT, FLOAT, BOOL, STR, VAR, DICT, FN, CALL-MONO, CALL-POLY, CALL-ANY, DOT, BRACKET, RANGE, ASSERT, ALIAS, ANNOTATED), unification rules (Robinson-style + silent coercions), subtyping rules (S-ANY-TOP/BOT, S-REC, S-FN with variance), instantiation with row variable renaming, 8 documented limitations. Agent-reviewed: computer-scientist + type-theorist. [Critical, computer-scientist]
-- [x] Design let-generalization for proper HM inference — see doc/06-type-inference.md §Let-Generalization (Levels-Based). Kiselyov (2013) levels-based approach with InferState, symmetric level lowering, Any-unification level zeroing, TypeScheme in TypeEnv, RowVar levels, document-level scheme threading. Agent-reviewed: computer-scientist + type-theorist + integration-verifier (18 findings, all applied). [Major, computer-scientist]
-- [x] Design literal promotion semantics in unify() — see doc/06-type-inference.md §Bidirectional Typing + §Unification [U-SUBSUME]. Bidirectional type checking (Pierce & Turner 2000; Dunfield & Krishnaswami 2021): synthesis/checking modes, check_expr for concrete positions (CALL-MONO, TypeAssert, return annotations), unify with [U-SUBSUME] for CALL-POLY. Pure Robinson unification + bidirectional subsumptive fallback for concrete pairs. Singleton literal types (not refinement types). Agent-reviewed: computer-scientist + type-theorist (confluence fix applied). [Critical, computer-scientist]
-- [x] Design TypeAssert static/runtime consistency — see doc/05-type-annotations.md §TypeAssert Runtime Validation. Full structural convergence: elaboration (Dunfield & Krishnaswami 2021) embeds resolved type in AST node, proxy contracts (Findler & Felleisen 2002) wrap record field thunks in guards for lazy type validation on access. New ThunkState::Guarded variant. Consistency invariant qualified for deeply checkable types. Agent-reviewed: computer-scientist + type-theorist + eval-engine (2 rounds, all findings applied). [Major, computer-scientist]
-- [x] Design `$_` desugaring as formal transformation — see doc/04-functions.md §`$_` Desugaring — Formal Specification. Pre-typecheck AST pass (parse → desugar → typecheck → eval). Top-down WRAP check on raw children with DIRECT predicate, depth-based lexical shadowing replaces eval-time env check. Corrected traversal avoids greedy-wrapping (Visser 1998). Type visibility qualified for current (Any → T) and future (bidirectional, row-polymorphic) inference. Agent-reviewed: computer-scientist + type-theorist + eval-engine + grammar-architect + integration-verifier (2 rounds, all findings applied). [Minor, computer-scientist]
-- [x] Design sequence productivity obligations — see doc/08-evaluation.md §Productivity Obligations. Pragmatic approach: no static guarantee (Haskell/Nix model), three-layer runtime protection (blackholing, depth limit, tail discipline), productive-by-construction combinators as primary API, documented user obligations for `$seq`. Static checking rejected: totality (Turner 2004) sacrifices Turing-completeness, sized types (Abel & Pientka 2013) incompatible with HM. Agent-reviewed: computer-scientist + type-theorist + eval-engine (1 round, all findings applied). [Minor, computer-scientist]
-
-### Formal specifications (additional)
-
-- [x] Design formal specification of thunk lifecycle — see doc/08-evaluation.md §Thunk Lifecycle — Formal Specification. State transition DAG with monotonicity proof, 9 forcing rules (including FORCE-CALL-BUILTIN), 6 semantic properties, 4 explicit semantic commitments, adequacy argument for PendingBuiltin/PendingCall via defunctionalization (Reynolds 1972). Agent-reviewed: computer-scientist + type-theorist + eval-engine (all findings applied). [Major, computer-scientist]
-- [x] Design formal specification of selective materialization — see doc/08-evaluation.md §Selective Materialization — Formal Specification. Two-tier spec: strictness signature table (Mycroft 1981) for all 44 builtins with S/L/Sc per-argument annotations + delta rules (Plotkin 1981 SOS) for 10 non-trivial builtins (14 rules). Five result classifications (→ V/D/Θ/LT/⊥), dual-dispatch pattern for 6 collection builtins, derived selectivity for 7 stdlib functions with inheritance proof sketch via DELTA-IF inlining. Four properties: branch isolation, strictness monotonicity, sharing preservation, dual-dispatch consistency. Agent-reviewed: computer-scientist + type-theorist + eval-engine + laziness-auditor (14 findings applied). [Major, computer-scientist]
-- [x] Design formal specification of call convention — see doc/04-functions.md §Call Convention — Formal Specification. Dual-layer spec: declarative binding constraints + phased algorithm + complete correctness proof (uniqueness, soundness, completeness by case analysis). Kotlin model: any param nameable, interleaved required/optional allowed, per-parameter coverage check (C-COVERAGE) replaces count-based arity. Garrigue (1995) default-env separation. 6 constraints, 5 phased rules, 4 error classes, worked example. Agent-reviewed: computer-scientist + type-theorist + eval-engine (17 findings applied, including critical C-ARITY→C-COVERAGE rewrite). [Major, computer-scientist]
-- [x] Design formal specification of scope chain semantics — see doc/08-evaluation.md §Scope Chain Semantics — Formal Specification. Launchbury (1993) natural semantics + Nakata & Hasegawa (2009) cyclic call-by-need. Three construction rules (DICT-SCOPE letrec, SEQ-SCOPE let*, DOC-PIPELINE $$) + LOOKUP with parent-chain walk. Five properties with proof sketches: shadowing correctness, mutual visibility (letrec sharing + construction-time non-forcing invariant), heap monotonicity, scope chain acyclicity (parent chain vs Rc capture graph distinction), determinism (Ariola-Felleisen confluence via Launchbury adequacy). Referential integrity corollary: scope-chain and dict-field access share same Rc<Thunk>. Type system parallel cross-reference to TypeEnv/let-generalization. Agent-reviewed: computer-scientist + type-theorist + eval-engine + laziness-auditor (all findings applied, including construction-time non-forcing invariant, DOC-PIPELINE depth parameterization, FORCE-DEPTH context-sensitivity). [Major, computer-scientist]
-- [x] Design formal specification of access chain evaluation — see doc/08-evaluation.md §Access Chain Evaluation — Formal Specification. Access algebra with compositional chain semantics: projections (dot, bracket, range) composed left-to-right, parser produces nested AST nodes reduced inside-out. FORCE-DICT shared forcing step + three projection rules. Five chain properties: step-wise forcing, result laziness, error short-circuiting, depth consumption, sharing preservation (Launchbury). Type system correspondence: direct lookup (not constraint generation), type variable access is error (pre-row-unification), open record → Any via gradual typing, range type preservation sound by structural subtyping. Agent-reviewed: computer-scientist + type-theorist + eval-engine (all findings applied). [Minor, computer-scientist]
-- [x] Design formal specification of equality and comparison — see doc/11-stdlib.md §Equality and Comparison — Formal Specification. Two primitive relations: EQ (total, cross-type Int/Float promotion via `as f64`) and LT (partial, errors on incompatible types). Type-dispatch tables with 7 rules each, derived relations ($>, $<=, $>=) via negation in stdlib. IEEE 754 NaN analysis with documented $<= / $>= anomaly (negation-based derivation), NaN entry path via $from-json → Infinity → arithmetic. Key::PartialOrd as pre-materialization optimization. Value::PartialEq vs $= divergence with implementation guidance. 10 algebraic properties including P3 transitivity WARNING at 2⁵³ boundary, P7 cross-type trichotomy failure. Agent-reviewed: computer-scientist + type-theorist + eval-engine (12 fixes applied, 6 deferred to type-extensions/float-nan-infinity/row-unification). [Minor, computer-scientist]
-- [x] Design formal specification of $merge — see doc/11-stdlib.md §Merge — Formal Specification. Right-biased merge (L ⊕ R) with insertion-order preservation. Typing rules: T-MERGE for closed records (Record(F_L ⊕ F_R, Closed)), T-MERGE-ANY gradual fallback, forward-compatibility for row variables with 3 constraints (closed-record preservation, common-tail preservation, principality). 8 algebraic properties including associativity on both content and iteration order (with proof), monoid over ordered maps (Dict, ⊕, ∅), value preservation (Rc::clone). Lazy overlay compatibility: 3 behavioral equivalence constraints, 2 documented observable differences (error timing, error ordering), overlay chain depth exempt from MAX_EVAL_DEPTH. Harper & Pierce (1991) disjointness relaxed to right-bias, Rémy (1994) presence/absence alternative noted. Agent-reviewed: computer-scientist + type-theorist + laziness-auditor (13 fixes applied: P4a wrong iteration-order caveat removed with proof, Key type corrected, list-dict behavior noted, T-MERGE closed-record restriction explicit, TypeVar fallback specified, row-variable constraints strengthened, T-MERGE-ANY rationale documented, overlay error timing/ordering corrected, overlay strictness dual-noted, chain depth exemption specified, sharing constraint strengthened to Rc::ptr_eq, error message format matched). [Minor, computer-scientist]
-- [x] Design formal specification of error semantics — see doc/10-errors.md §Error Semantics — Formal Specification. Dual-span error model (def_span + mat_span + stack). 6 error constructors. DECORATE rules with deduplication guards (expanded notation ∄f ∈ ε.stack) + idempotence property (E8) + origin cross-reference to §Scope Chain Semantics. 6 propagation rules: PROP-EVAL (with recursive materialize note), PROP-BUILTIN, PROP-RESULT (with PendingCall coverage note for 4 error paths), PROP-CYCLE (circular dependency, bypasses DECORATE — inline construction), PROP-DEPTH (non-caching). MEMO-CACHE + MEMO-REACCESS with mat_span=None case. $try catching boundary with typing (Any → Any, Phase 3+ for union result type). $error typing (Str → Any, no bottom type). 8 properties (E1-E8). Runtime vs static error distinction (EvalError vs Type::Error). Error structure with dual-span example, display format with frame ordering clarification, 9 exhaustive error categories with stability disclaimer, representative builtin-specific errors table with operator prefix note, $try catching, lazy error behavior, 6 span assignment corrections. Agent-reviewed: computer-scientist + type-theorist + eval-engine + span-integrity-checker (17 fixes applied: PROP-CYCLE added, DECORATE bypass noted, PendingCall 4-path coverage, PROP-EVAL conflation note, MEMO-REACCESS None case, E2 Option notation, DECORATE notation expanded, E8 idempotence, origin cross-ref, $try/$error typing, Type::Error clarification, operator prefixes, representative table note, 2 additional findings, row 3 fix, example, frame order). [Major, computer-scientist]
-- [x] Design formal specification of document pipeline and $include — see doc/09-documents.md §Document Pipeline and $include — Formal Specification. Cross-references DOC-PIPELINE and SEQ-SCOPE (§Scope Chain Semantics). Include state Σ = ⟨base_dir, guard, cache, stdlib_env⟩ with thread-local model and EvalContext migration note. RESOLVE rule with canonicalization. Three include rules: INCLUDE-HIT (cache, Jsonnet-style memoization), INCLUDE-CYCLE (guard set detection), INCLUDE-EVAL (fresh eval with file size check, guard push/pop, base_dir save/restore, eager materialization). Allowlist forward reference to §Sandboxing (planned INCLUDE-DENY). Eager materialization invariant: $include is one of three builtins ($eval, $try) that eagerly materialize — required because guard/base_dir are stack-scoped but thunks outlive stack frames; 3 failure modes documented (cycle detection, path resolution, cache coherence). materialize vs deep_materialize distinction. 5 properties: P1 cycle detection termination (well-foundedness), P2 cache determinism with failure non-caching note (two independent caching levels), P3 guard restoration with known defect (materialize error path), P4 include determinism (conditional on filesystem, SC-2), P5 include isolation (stdlib_env only, empty $$). Agent-reviewed: computer-scientist + eval-engine + laziness-auditor (11 fixes applied: SC-5→SC-2, allowlist forward ref, file size check, parameter s defined, failure non-caching, no-eval window note, materialize error path defect documented, line range fix, builtin count corrected, materialize/deep_materialize distinction, $$ indirection clarified). [Major, computer-scientist]
 
 ### Proof obligations
 
@@ -505,22 +511,13 @@ Minor wording and span improvements.
 - [x] Improve Fn type expression error message for keyed params — now "function type parameter at position N: expected a type name, got key 'X'" (`src/typecheck.rs`) [Minor, type-theorist]
 - [ ] Thread `call_site_span` through `deep_materialize()` — all 3 nested `materialize()` calls at lines 1231, 1251, 1264 pass `None` for mat_span, losing materialization context. Add `call_site_span: Span` parameter and pass `Some(&call_site_span)` to nested calls. Update callers in `src/builtins.rs:738`, `src/repl.rs:171`, `src/main.rs:149,168`, `src/lib.rs:88` to pass appropriate span or `Span::origin()`. (`src/eval.rs:1204,1231,1251,1264`) [Minor, span-integrity-checker]
 
-### span-builtins: Builtin Span and Error Kind Quality
-
-Span and error kind gaps in builtin functions. Found by span-integrity-checker C43 review.
-
-- [x] Fix `ok_val()` hardcoding `Span::origin()` — all ~65 builtin call sites now pass `call_span` to `ok_val()`; result thunks carry the call-site span as definition_span. (`src/builtins.rs`) [Critical, span-integrity-checker C43]
-- [x] Fix `expect_one_arg()` passes `None` as mat_span — `call_span: Span` parameter added; passes `Some(&call_span)` to `materialize()`; covers `upper`, `lower`, `trim`, `floor`, `round`, `to-int`, `to-float`, `type-of`, `eval`, `error`, `head`, `tail`, `collect`, `seq?`, `from-json`, `include`. (`src/builtins.rs:61`) [Major, span-integrity-checker C43]
-- [x] Fix `extract_num_pair()` passes `None` as mat_span — passes `Some(&call_span)` to both `materialize` calls; covers `+`, `-`, `*`, `/`. (`src/builtins.rs:97-99`) [Major, span-integrity-checker C43]
-- [x] Fix `$try` arity mismatch message missing context prefix — changed to `EvalError::type_mismatch_ctx("try", "zero-argument function", &format!("{}-parameter function", params.len()), call_span)`. (`src/builtins.rs`) [Major, span-integrity-checker C43]
-- [x] Fix `$collect` size-limit error using `ErrorKind::Internal` — already uses `EvalError::resource_limit_exceeded` (E043). (`src/builtins.rs`) [Minor, span-integrity-checker C43]
-- [x] Fix `concat` Dict+non-Dict mismatch using `ErrorKind::Internal` — already uses `EvalError::type_mismatch_ctx`. (`src/builtins.rs`) [Minor, span-integrity-checker C43]
-- [x] Fix `$try` materializes body with `None` mat_span — `materialize(&body_thunk, Some(&call_span), ...)` and `materialize(&result_thunk, Some(&call_span), ...)` now pass call-site span. (`src/builtins.rs`) [Minor, span-integrity-checker C43]
-- [x] Fix `lib.rs` serialization depth exceeded — now uses `EvalError::depth_exceeded(MAX_EVAL_DEPTH, Span::origin())` (E040); value_to_display_string now matches value_to_json (`src/lib.rs`) [Minor, span-integrity-checker C43]
-
 ## stdlib-docs: Stdlib Documentation
 
 Add type signatures and inline examples to all stdlib functions, serving as both documentation and executable tests.
+
+### stdlib-docs: Stdlib Documentation Implementation
+
+Add type signatures, inline examples, and fix documentation accuracy across stdlib and doc/11-stdlib.md.
 
 - [ ] Add type annotations to all `stdlib/prelude.llt` function definitions
 - [ ] Add inline assertion examples to each function (Dhall pattern: `assert` examples serve as tests AND docs)
@@ -750,12 +747,13 @@ Consolidated from: test-tooling, test-tooling-b
 - [ ] Add lib.rs EvalContext doc comment mentioning include cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs`) [Minor, integration-verifier]
 - [ ] Add doc/16-architecture.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
 
-
-
-
 ## call-convention-fixes: Call Convention Doc and Code Fixes (C48)
 
 Documentation and code quality fixes following the call-convention-kotlin sprint. Found by grammar-architect, eval-engine, integration-verifier, and stdlib-author C48 reviews.
+
+### call-convention-fixes: Call Convention Doc and Code Fixes
+
+Documentation and code fixes following the call-convention-kotlin sprint.
 
 - [ ] Fix `doc/04-functions.md:90` "Positional first, then named. Like Python." — contradicts the Kotlin model; any parameter can be named. Replace with "Named args supported for any parameter (Kotlin model)." (`doc/04-functions.md:90`) [Major, grammar-architect C48]
 - [ ] Fix `doc/02-syntax.md:981` stale comment "default: makes them named" — since call-convention-kotlin, any parameter can be passed by name. Update: "named args work for any parameter (Kotlin model)". (`doc/02-syntax.md:981`) [Major, grammar-architect C48]
@@ -766,34 +764,9 @@ Documentation and code quality fixes following the call-convention-kotlin sprint
 - [ ] Fix `ArityBound::Exact` used for optional-param overarity — when any param has a default, `src/eval.rs:636` should use `Range(required_count, required_count + optional_count)` not `Exact(required_count)`. Note: ArityBound::AtMost was removed in api-hygiene C64; use Range instead. (`src/eval.rs:636`) [Major, eval-engine C48]
 - [ ] Replace raw `EvalError` struct literals with named constructors in `bind_args_thunks` — three sites at `src/eval.rs:622, 666, 681` bypass the constructor API. Replace with `EvalError::missing_required_param`, `EvalError::unknown_named_arg`, or equivalent named constructors. (`src/eval.rs:622, 666, 681`) [Minor, eval-engine C48]
 
-
-
 ## doc-divergences: Documentation Divergences (doc/*.md / Code)
 
 Found by systematic comparison of DESIGN.md, SPEC.md, and source code (2026-04-18). DESIGN.md and SPEC.md archived to .tmp/; all references updated to doc/*.md.
-
-### docs-vs-code-syntax: doc/02-syntax.md vs Code Accuracy
-
-Split from docs-vs-code. All items target doc/02-syntax.md.
-
-- [x] **doc/02-syntax.md `bare_word_char` prose terminator list missing `$`** [Nit, grammar-architect]
-- [x] **doc/02-syntax.md §access chains missing dot exclusion clarity** [Major, grammar-architect]
-- [x] **doc/02-syntax.md `annotation_value` comment doesn't reference parent rule** [Nit, grammar-architect]
-- [x] **doc/02-syntax.md intro describes parser only, not eval semantics** [Nit, integration-verifier]
-- [x] **doc/02-syntax.md call/dict disambiguation colon lookahead only matches horizontal whitespace** [Major, grammar-architect]
-- [x] **doc/02-syntax.md or doc/03-data-model.md duplicate key detection contradicts parser** — already accurate [Major, grammar-architect]
-- [x] **doc/02-syntax.md tree-sitter divergence note references nonexistent grammar** — tree-sitter-llt/grammar.js exists; finding was incorrect [Major, grammar-architect]
-- [x] **doc/02-syntax.md token precedence section missing structural punctuation** [Minor, grammar-architect]
-- [x] **doc/02-syntax.md whitespace significance section lacks lexer cross-reference** [Minor, grammar-architect]
-- [x] **doc/02-syntax.md access chains and complete grammar sections need dual parser/lexer implementation notes** [Minor, grammar-architect]
-- [x] **doc/02-syntax.md `---` syntax section missing cross-reference to evaluation semantics** [Minor, integration-verifier]
-- [x] **doc/02-syntax.md dot-in-bare-word pest/tree-sitter divergence lacks rationale** [Critical, grammar-architect]
-- [x] **doc/02-syntax.md unrecorded decision: dot excluded from `bare_word_char` in tree-sitter** [Critical, grammar-architect]
-- [x] **doc/02-syntax.md Tokenization Rules section missing `---` document separator** — already present [Major, grammar-architect]
-- [x] **doc/02-syntax.md Tokenization Rules tables have inconsistent column headers** [Nit, grammar-architect]
-- [x] **doc/02-syntax.md "Bare Word Character Set" header doesn't follow section naming pattern** — already correct [Nit, grammar-architect]
-- [x] **doc/02-syntax.md §Literal Recognition references "tokenizer" but should reference "lexer"** [Major, grammar-architect]
-
 
 ### docs-vs-code-stdlib-misc: doc/11, doc/03, doc/13, doc/15, doc/17, CLAUDE.md, and Code Accuracy
 
@@ -819,43 +792,6 @@ Split from docs-vs-code. Items targeting stdlib docs, data model, examples, AST,
 - [ ] **src/formatter.rs `is_fn_params` heuristic fragile** — operates on flat token stream without AST context; heuristics at `src/formatter.rs:418-450` can misfire on comments containing "fn" before brackets. Either pass AST to formatter or document best-effort nature. (`src/formatter.rs:418-450`) [Major, grammar-architect]
 - [ ] **doc/15-ast.md `desugared: bool` field documentation missing** — `Expr::Fn` has a `desugared: bool` origin tag (Pombrio & Krishnamurthi 2014) set by `wrap_expr_in_lambda()`, but the `$_` Desugaring section doesn't mention it. Add paragraph explaining origin tracking motivation and tooling use cases. (`doc/15-ast.md`, `src/ast.rs:106-110`) [Nit, grammar-architect + computer-scientist C32]
 - [ ] **src/eval.rs `with_base_dir()` docstring inaccurate** — says "Avoids allocating a new EvalConfig" but it does allocate a new `EvalConfig`; it avoids allocating a new `EvalState`. (`src/eval.rs:63-64`) [Nit, computer-scientist C35]
-
-### doc-ast-fixes: doc/15-ast.md Accuracy Fixes
-
-Found by grammar-architect codebase review (2026-04-23, Cycle #39).
-
-- [x] Fix `doc/15-ast.md` `Fn` node missing `desugared: bool` field — doc shows 3 fields; actual `src/ast.rs` has 4 including `desugared: bool` (origin tag from Pombrio & Krishnamurthi 2014). Every downstream pass that pattern-matches `Expr::Fn` is affected by this omission. (`doc/15-ast.md:77-81`) [Critical, grammar-architect C39]
-- [x] Fix `doc/15-ast.md` `TypeAssert` fictional `resolved_type: Option<Type>` field — field does not exist in `src/ast.rs`; it is a planned addition from the `typeassert-structural` sprint, not a current field. Remove or mark as `// planned: typeassert-structural sprint`. (`doc/15-ast.md:85-89`) [Major, grammar-architect C39]
-- [x] Fix `doc/13-examples.md` §8.9 and §8.10 TypeAssert AST examples showing fictional `resolved_type: None` field — same phantom field appears at lines 201-204 (§8.9) and 221-224 (§8.10). Remove from both examples. (`doc/13-examples.md:201-204, 221-224`) [Major, grammar-architect C40]
-- [x] Fix `doc/15-ast.md` nesting depth section describing non-existent iterative parser — reads "The iterative parser enforces `MAX_PARSE_DEPTH` at the stack frame level, avoiding native stack overflow" but the current parser is still pest-based; `src/parser.rs:14` says the opposite. Revert to accurate pest description. (`doc/15-ast.md:204-206`) [Major, grammar-architect C39]
-
-
-### builtins-message-polish: Builtin Error Message Polish
-
-Found by computer-scientist codebase review (2026-04-22).
-
-- [x] Fix `$to-float` error message for NaN/Infinity — changed to `EvalError::internal` with `"to-float: \"{s}\" parses to a non-finite value (NaN/Infinity not allowed)"`, referencing the original input string. Unit tests updated. (`src/builtins.rs`) [Minor, computer-scientist]
-- [x] Add `$eq`/`$<` precision loss documentation for integers > 2^53 — Jsonnet does NOT add a runtime guard for comparison (only for bitwise ops via `safeDoubleToInt64`); silent `as f64` promotion matches Jsonnet's approach. Added code comments in `builtin_eq` and `builtin_lt` referencing doc/11-stdlib.md §Equality P3 and P6. No runtime check added. (`src/builtins.rs:317-322, 355-360`) [Minor, computer-scientist]
-
-### test-corpus-efg: Corpus Coverage (Parts 5–7 + Type Errors)
-
-Consolidated from: test-corpus-e, test-corpus-f, test-corpus-g, type-error-corpus
-
-- [x] Add corpus test for `$to-float` NaN/Inf input — to_float_nan_input.llt-eval added [Major, test-crafter C46]
-- [x] Add corpus test for `$filter` non-Bool predicate — filter_non_bool_predicate.llt-eval added (E010) [Major, test-crafter C46]
-- [x] Add corpus test for CALL-ANY arity mismatch — call_arity_mismatch.llt-eval added (E020) [Major, test-crafter C46]
-- [x] Add corpus test for let-gen polymorphism — let_gen_polymorphism.llt-eval added [Major, test-crafter C46]
-- [x] Add corpus tests for typecheck errors — return_annotation_mismatch.llt-eval and lambda_param_incompatible.llt-eval added to type_errors/ [Major, test-crafter C46]
-- [x] Add corpus tests for `$/`, `$error`, `$try` builtins — div_float_by_zero.llt-eval, error_propagation.llt-eval, try_catches_error.llt-eval added [Major, test-crafter C48]
-- [x] Add `$map` Seq-path laziness corpus test — map_seq_lazy.llt-eval added (uses $take 0) [Minor, test-crafter C48]
-- [x] Fix `test_valid_corpus` runner rejecting parse-only test files — single-section files now pass via `continue` after successful parse (`tests/corpus_tests.rs`) [Critical, test-crafter C49]
-- [x] Add bidirectional typing error corpus tests — return_annotation_mismatch.llt-eval and lambda_param_incompatible.llt-eval added [Major, test-crafter C49]
-- [x] Fix `eval_source` silently discarding type errors — added `test_typecheck_error_corpus_eval` runner + `tests/corpus/eval/type_errors/` directory + wrong_return_type.llt-eval test [Critical, test-crafter C47]
-- [x] Fix `doc/06-type-inference.md:50-63` `check_expr` pseudocode materially incomplete — replaced with prose note + source reference — 6-line implementation shown but actual `check_expr` is 130+ lines with lambda checking mode, param arity, annotated param checks, etc. Fix: replace code block with prose + source reference. (`doc/06-type-inference.md:50-63`) [Major, test-crafter C47]
-- [x] Add `test_check_call_with_scheme_non_function_scheme` — unit test added — `typecheck.rs:728` (`_ => Err(not_a_function)`) fires when polymorphic scheme body is not Function type after instantiation. Existing `test_call_non_function` uses monomorphic scheme (routes through `check_call`, not `check_call_with_scheme`). (`src/typecheck.rs:728`) [Major, test-crafter C47]
-- [x] Add `test_unify_int_literal_with_float` and `test_unify_float_with_int_literal` — IntLiteral-Float promotion arm removed (unsound); [U-SUBSUME] now correctly rejects this pair. No dedicated test needed since the arm no longer exists. (`src/types.rs`) [Minor, test-crafter C47]
-- [x] Add `test_check_expr_lambda_arity_mismatch` — unit test added to typecheck.rs [Minor, test-crafter C47]
-- [x] Add laziness corpus proof tests — and_short_circuit.llt-eval and or_short_circuit.llt-eval already existed [Minor, test-crafter C47]
 
 ### misc-nits-c: Miscellaneous Nits (Part 3)
 
@@ -961,6 +897,10 @@ Doc and behavior nits from codebase reviews. Requires misc-nits-b.
 
 Cross-cutting integration gaps identified by integration-verifier agent (2026-04-24). Items span pipeline boundaries, circular dependencies, and serialization contracts.
 
+### integration: Integration and Pipeline Implementation
+
+Cross-cutting integration implementation tasks spanning pipeline boundaries.
+
 - [ ] Unify serializer logic via visitor pattern — `value_to_json` and `value_to_display_string` in `src/lib.rs` duplicate dict/seq traversal logic; extract a shared `ValueVisitor` trait or generic traversal helper to eliminate the duplication
 - [ ] Make deep_materialize→serialize contract explicit — document or enforce (via assertion or type-level marker) that all values must be fully materialized before serialization; currently an implicit caller obligation with no enforcement at the `value_to_json` / `value_to_display_string` boundary (`src/lib.rs`)
 - [ ] Break eval↔builtins circular dependency — `src/eval.rs` and `src/builtins.rs` mutually depend on each other (builtins call `materialize`/`eval_call`, eval calls `standard_builtins`); extract a `src/eval_core.rs` interface or use trait objects to break the cycle and enable independent testing
@@ -970,80 +910,3 @@ Cross-cutting integration gaps identified by integration-verifier agent (2026-04
 - [ ] Add integration test for row-unification-b Type substitution flowing through full pipeline — add `tests/corpus/eval/typecheck/row_unification_pipeline.llt-eval` exercising a row-polymorphic function from parser input through typecheck (row variable unification), eval, and JSON serialization output to catch cross-layer regressions
 - [ ] Add builtin signature macro to prevent duplication across BuiltinFn registrations — `standard_builtins()` at `src/builtins.rs:2619-2676` repeats the same `(name, arity, fn)` tuple structure for 45 entries; extract a `builtin!` macro or builder that enforces consistent arity/name/fn-pointer registration and prevents name/arity drift
 - [ ] Split `Type::Any` into `Type::AnyGradual` (escape hatch) and `Type::AnyPoly` (polymorphic placeholder) for gradual typing correctness — current `Type::Any` serves two conflicting roles: dynamic escape hatch (gradual typing, Siek & Taha 2006) and polymorphic placeholder (pre-generalization TypeVar stand-in); splitting prevents `Any`-poisoning of let-generalization level zeroing and aligns with `doc/whatif/gradual-typing.md` three-phase recommendation (`src/types.rs`)
-
-## future-features: Future Features
-
-Deferred features moved from DESIGN.md. Evaluate when triggered.
-
-- [x] Research pattern matching — see doc/whatif/pattern-matching.md. Recommends [match] special form (Approach A) with 5-phase adoption: type predicates → basic match → dict/seq destructuring → guards/or-patterns → exhaustiveness checking. Nickel is the only lazy config lang with full PM; Nix/Jsonnet skip it
-- [x] Research parameterized type aliases — see doc/whatif/parameterized-type-aliases.md. Recommends hybrid approach (C): keep current non-parameterized behavior, add explicit `[type [a b] body]` syntax for aliases that need fresh instantiation. Deferred until variable name collision becomes a real problem
-- [x] Research `let` binding form — see doc/whatif/let-binding.md. Recommends sequential expressions in function bodies (Approach B): extend existing document-level sequential scoping to work inside `[fn ...]` bodies. No new keywords, consistent mental model, enables pattern matching arm bodies
-- [x] Research quasiquoting — see doc/whatif/quasiquoting.md. Recommends quote/unquote/unquote-splice as special form keywords (Approach A), phased with macro system. AST-as-dict schema mirrors Expr enum. Gated on macro system adoption
-- [x] Research custom call aliases — see doc/whatif/call-aliases.md. Recommends custom call forms via procedural macros (Approach C): `call` remains the only built-in form (Principle 3), but macros can define `[timed $f ...]`, `[traced $f ...]`, etc. that expand to `call` at compile time. Gated on macro system
-- [x] Research gradual typing — see doc/whatif/gradual-typing.md. Three-phase adoption (formalize → split Any → blame tracking). Gated on Any-as-top-and-bottom causing a real soundness bug or union types/type classes forcing the split
-- [x] Research `list?` vs `dict?` predicates — see doc/whatif/type-predicates.md. Recommends type predicates for Value variants ($int?, $dict?, etc.) WITHOUT $list? (lists are dicts, Principle 1). Part of pattern matching Phase 1
-- [x] Research string interpolation — see doc/whatif/string-interpolation.md. Recommends `i"..."` prefix syntax (Approach B): `i"Hello $name"` desugars to `[call $str ...]`. 3-phase: simple `$identifier` → dot access → expression interpolation `${...}`. Key enabler for formatter ergonomics
-- [x] Research float dict keys — see doc/whatif/float-dict-keys.md. Recommends Decimal keys alongside Decimal type (Approach B): IEEE 754 floats remain unsound as keys, but Decimal provides exact base-10 arithmetic where `0.1+0.2==0.3`. 2-phase: Decimal type → Decimal keys. Gated on Decimal type adoption
-- [x] Research width-specific numeric types — see doc/whatif/numeric-types.md. Recommends range contracts with automatic internal representation sizing (Approach B): `@[min: 0 max: 65535]` → runtime chooses u16 internally. 4-phase: range annotations (validation only) → Decimal type → auto representation sizing → BigInt. Ada range types as precedent
-- [x] Research typeclasses — see doc/whatif/typeclasses.md. Two-phase adoption (constrained type vars → full Haskell-style classes). Gated on Any typing for dual-dispatch causing false positives or user-defined types needing protocols
-- [x] Research union types — see doc/whatif/union-types.md. Three-phase path: type classes → annotation-only unions → inferred unions via Simple-sub. Gated on nullable types or tagged union patterns becoming common
-- [x] Research nominal variants — see doc/whatif/nominal-variants.md. Nominal (constructor-based) variants layered on top of structural ADTs. Uppercase entries in [union ...] = nominal constructors; lowercase = structural. New Value::Variant runtime type. Construction via [call Ok $v], unit constructors as bare uppercase words. Pattern syntax [Ok $v] vs structural [ok: $v] distinguished by case and colon. Serializes as tagged dicts. Builds on algebraic-data-types.md (Type::Union prerequisite) and pattern-matching.md (Phase 2+)
-- [x] Research algebraic data types (ADTs) — see doc/whatif/algebraic-data-types.md. Structural tagged records: ADTs are unions of closed record types discriminated by key set, using `[union ...]` special form. Dicts-are-fundamental means no new Value variant; $try already implements the pattern. Tag-only variants are StringLiteral types (bare words). Recursive ADTs deferred to Phase 4 (requires parameterized-type-aliases + equi-recursive unfolding). Builds on union-types.md (Type::Union prerequisite), pattern-matching.md (Phase 3 destructuring + Phase 5 exhaustiveness), algebraic-subtypes.md (Simple-sub makes unions inferred in Phase 3)
-- [x] Research algebraic subtyping — see doc/whatif/algebraic-subtypes.md. Simple-sub (Parreaux 2020) replacement for [U-SUBSUME] + Robinson. 4-step migration path. Gated on union types being insufficient without inferred unions or Any-as-top-and-bottom causing soundness problems
-- [x] Research macros — see doc/whatif/macros.md. Recommends procedural AST macros (Approach B). Laziness reduces need; gated on second syntactic desugaring or user-requested domain-specific syntax
-- [x] Research templating — see doc/whatif/templating.md. Three-part design: (1) data-first formatters (`$emit`, multi-file pipeline, stdlib/fmt/), (2) literate tinct (code blocks in Markdown, tangle/weave/eval), (3) template-polarity embedding (Jinja-style, deferred Phase 5). tinct's bracket syntax creates friction in template delimiters; `i"..."` + formatters + literate mode cover the design space without template embedding
-- [x] Research structural contracts — see doc/whatif/structural-contracts.md. Hybrid: `$$@Type` for static pipeline boundary checking + `$validate` schema-as-dict for runtime constraints. 4-phase: $$@Type → $validate → tinct describe → pipeline blame
-- [x] Research implied `call` — see doc/whatif/implied-call.md. Head-position `$` heuristic: if first unkeyed element is a `$`-reference, treat `[]` as a call. `call` remains valid (backwards compatible). Requires `seq` keyword for list-of-references. Critically depends on `$` sigil — incompatible with bare-word references in simplest form
-- [x] Research bare-word references — see doc/whatif/bare-word-references.md. Nix/Jsonnet model: bare words in value position are references, keys stay as strings, strings must be quoted. Removes `$` sigil. Significant config ergonomic regression (must quote all strings). 4-phase adoption with dual-mode parser. Must be coordinated with implied call
-- [x] Research secure sandboxed execution mode for attacker-supplied tinct programs — extend `llt eval` with `--no-fs` (empty allowlist, disables `$include`), `--timeout <duration>` (wall-clock limit via `alarm(2)` + SIGALRM), and structured exit codes (0=success, 1=eval/parse/type error, 2=timeout, 3=resource limit). No separate `llt sandbox` subcommand — caller is the parent process, `llt eval` is the sandboxed child. See `doc/12-tooling.md` §Adversarial Evaluation.
-- [x] Research supplemental stdlib modules — see doc/whatif/lib-supplemental.md. 3-phase plan: (1) pure-tinct string utilities (`stdlib/strings.llt`, 0–1 Rust builtins); (2) math builtins (13 f64 wrappers, no new crate; pi/e as Float literals); (3) bitwise primitives (9 Rust builtins: band/bor/bxor/shl/shr/char-code/chr/str-bytes/bytes-str; base64+hex in pure-tinct `stdlib/encoding.llt`). Regex split into doc/whatif/lib-regex.md (Thompson NFA, pure-tinct, depends on Phases 1+3). Zero new crates across all phases.
-- [x] Research tinct-to-SQL translation — see doc/whatif/lib-sql.md. Lazy SQL source model: `$sql-open` returns `Value::SqlQuery`; `$filter`/`$map`/`$take`/`$reduce` detect `SqlQuery` and accumulate SQL ops via proxy row translation; dispatch at first observation (`$collect`, `$take`, `$head`, `$reduce`); results as cursor-backed lazy `Seq`. Untranslatable predicates fall back to tinct-side evaluation. Phase 1: SQLite + basic filter/map/take. Phase 2: multi-driver + `$reduce` aggregation + joins. Phase 3: row-type schema annotation. Phase 4: write operations.
-- [x] Research general I/O model (file, network, stdin, env) — see doc/whatif/io.md. Capability-based I/O: `Value::DirCap` (wraps cap_std::fs::Dir, RESOLVE_BENEATH enforced), `Value::NetCap` (host/CIDR allowlist), `Value::Handle` (opened file/socket — IS the capability). `$open`, `$connect`, `$tls`, `$narrow`, `$revocable` produce caps/handles. `$slurp`, `$write` (returns handle for data-dependency chaining), `$lines` (lazy coinductive Seq). `$env` gated under `--no-caps`/`--allow-env`. CLI injects caps via `--cap-fs`, `--cap-net`. IO monad, algebraic effects, linear types rejected. Phase 1: full handle+cap layer. Phase 2: `$connect`/`$tls` + `stdlib/net.llt`. Phase 3: atomic writes + streaming fetch. Phase 4: cap types in type checker.
-- [x] Research TLS/PKI/HTTP configuration — see `doc/whatif/lib-tls.md`. `$tls` extended with optional opts dict: `ca-bundle` (Handle to PEM, DirCap-gated), `client-cert`/`client-key` (mTLS, Handle-based), `pin-sha256` (SPKI hash list), `alpn` (protocol negotiation). Default: compiled-in `webpki-roots`. `$tls-peer-cert handle` exposes cert metadata. HTTP/2 and HTTP/3 require Rust-level `$fetch` builtin (Phase 3); Handle byte-stream model is insufficient for multiplexed protocols. HTTP/3/QUIC (Phase 4) via reqwest+quinn. Cert+key Handles flow through DirCap for auditability.
-## parser-cleanup: Cleanup (post-graduation)
-
-- [x] Remove `pest` and `pest_derive` dependencies from Cargo.toml — already done in parser-core-c3
-- [x] Remove `src/grammar.pest` — already done in parser-core-c3
-- [x] Remove pest-specific code from `src/parser.rs` — parser.rs is the hand-written iterative parser
-- [x] Remove pest-specific test code and helpers from `src/parser.rs` — no pest test helpers remain
-- [x] Rename `src/parser2.rs` to `src/parser.rs` — parser2.rs removed; parser.rs is production parser
-- [x] Update CLAUDE.md, README.md, SPEC.md references — CLAUDE.md and README.md clean; SPEC.md archived to .tmp/
-- [x] Full pest removal audit: all agent files (.claude/agents/*.md) and sprint SKILL.md updated to remove pest PEG grammar references — replaced with hand-written iterative parser (src/parser.rs + src/lexer.rs) [C63]
-- [x] Update agent files to remove pest PEG grammar references — all 6 agent files and SKILL.md updated in parser-cleanup sprint C63
-
-## cycle-findings-c66: Cycle #66 Analysis Findings
-
-Codebase health findings from 9-agent review (2026-04-29).
-
-### Grammar / Parser / Docs
-
-- [x] Fix doc/02-syntax.md §6 "Complete Grammar" — no change needed (already fixed); added colon_ahead note to §Special Form Recognition [cycle-findings-c66 C66]
-- [x] Fix doc/15-ast.md — added §Parser Implementation Overview with Vec<StackFrame> iterative descent description [cycle-findings-c66 C66]
-- [x] Fix doc/17-references.md — pest.rs moved to "Historical" subsection [cycle-findings-c66 C66]
-- [x] Document lexer dual whitespace mechanism — doc comments added to had_whitespace_before and last_significant_token fields in src/lexer.rs [cycle-findings-c66 C66]
-- [x] Add `MAX_LEX_DEPTH` constant to `src/lexer.rs` — MAX_LEX_DEPTH=256 added with bracket_depth check [cycle-findings-c66 C66]
-- [x] Fix doc/02-syntax.md §Special Form Recognition — colon_ahead newline exclusion note added [cycle-findings-c66 C66]
-
-### Test Coverage Gaps
-
-- [x] Add `$error` laziness proof tests — added dict_unused_entry_error, cond_unused_branch_error, merge_unused_arg_error to tests/corpus/eval/laziness/ [cycle-findings-c66 C66]
-- [x] Add bare-word `..` corpus test — added tests/corpus/valid/literals/bare_word_with_dotdot.llt-eval [cycle-findings-c66 C66]
-- [x] Add bare `$` parse error corpus test — added tests/corpus/invalid/syntax_errors/bare_dollar.llt-eval [cycle-findings-c66 C66]
-- [x] Add document separator edge-case corpus tests — already existed (doc_separator_not_bare_word.llt-eval), no duplicate added [cycle-findings-c66 C66]
-- [x] Add VarRef colon-ahead dict key corpus test — added tests/corpus/valid/simple/varref_colon_dict_key.llt-eval [cycle-findings-c66 C66]
-
-### Type System
-
-- [x] Fix `resolve_type_name` outer-scope path — outer-scope `@a` now calls `state.fresh_type_var()` instead of raw name; fresh mapping per type alias call site [cycle-findings-c66 C67]
-- [x] Fix `ann_mapping` cross-kind collision — added `row_ann_mapping` 6th param to `resolve_type_name`; cross-kind error emitted [cycle-findings-c66 C67]
-- [x] Add TypeAssert default type validation — was already implemented in prior sprint [cycle-findings-c66 C67]
-
-### API / Integration
-
-- [x] Enforce desugar ordering at API boundaries — added `# Precondition` doc sections to eval_file/eval_file_with_input/typecheck_file/typecheck_file_with_types; all 6 active call sites already satisfy the precondition [cycle-findings-c66 C67]
-- [x] Extract `should_display_frame()` helper — `infer_materialization_verb` (error.rs:938-962) and Display impl (error.rs:979-996) both filter frames by suffix and `Span::origin()` using different predicates; if the suffix list changes, only one site gets updated. Extract shared `fn should_display_frame(frame: &StackFrame) -> bool` helper. [Major, integration-verifier C66] — implemented in cycle-findings-c66 sprint
-
-### Stdlib Docs
-
-- [x] Fix doc/11-stdlib.md builtin count — updated count from 44 to 46, total to 124 [cycle-findings-c66 C66]
-

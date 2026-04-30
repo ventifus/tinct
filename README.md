@@ -2,6 +2,8 @@
 
 A **unified data representation and transformation language** that combines JSON-like simplicity with lazy functional programming power.
 
+Also: a testbed for fully automated *agentic virtuous-loop* software development.
+
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
 **Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter, LSP server with diagnostics and hover, comprehensive test suite.
