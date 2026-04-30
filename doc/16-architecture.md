@@ -40,7 +40,7 @@
 
 ### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
 
-> **Status:** Design complete (agent-reviewed); implementation pending. See `iterative-eval` sprint in TODO.md.
+> **Status:** Phase 1 (materialize) complete via iterative-eval-a — `materialize_rc` replaced by iterative `run()` loop with `Vec<Cont>` stack. Phase 2 (PendingCall lazy dispatch) complete via iterative-eval-b1 — `eval_call` returns PendingCall thunks. Phase 3 (access chains) complete via iterative-eval-b2 — DotAccessForce/BracketForceTarget continuations. Phase 4 (structural cleanup) complete via iterative-eval-b3 — MatCont→Cont rename, Action enum, run() function. eval() step conversion pending in iterative-eval-b4.
 
 The iterative evaluator replaces the recursive `eval()` / `materialize()` call stack with an explicit continuation stack. The design follows Reynolds (1972) defunctionalization: each recursive call becomes a first-class `Cont` value pushed onto a `Vec<Cont>` stack. The main loop is a two-register machine `(action: Action, stack: Vec<Cont>)`.
 

@@ -52,9 +52,9 @@ Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. *
 
 `src/eval.rs` is ~9000 lines. Extract focused modules so agents work in smaller files. Each sprint is a pure `mod` extraction — no behavior change, all tests pass. Splitting eval-split-b before iterative-eval-b3 is recommended since b3+ modify that section heavily.
 
-### eval-split-a: Extract eval_call.rs
+### ~~eval-split-a: Extract eval_call.rs~~ DONE
 
-- [ ] Move `func_label()`, `func_path()`, `eval_call()`, `CallContext`, `invoke_function()`, `bind_args_thunks()` to `src/eval_call.rs`; re-export via `pub(crate) use` in `eval.rs` (`src/eval.rs:738-1000`, ~280 lines) [Minor]
+- [x] Move `func_label()`, `func_path()`, `eval_call()`, `CallContext`, `invoke_function()`, `bind_args_thunks()` to `src/eval_call.rs`; re-export via `pub(crate) use` in `eval.rs` (`src/eval.rs:738-1000`, ~280 lines) [Minor]
 
 ### eval-split-b: Extract eval_materialize.rs
 

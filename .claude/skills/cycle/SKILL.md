@@ -51,7 +51,7 @@ Only edit TODO.md — do not create other files. If no changes are needed, move 
 3. **Resumption anchor** — after `/sprint` completes and returns control, you are the **cycle coordinator**. The sprint is done. Proceed to step 4, then Phase 4 (Commit).
 4. Check the sprint's response for the `NEEDS_DESIGN` signal. If the sprint reports `NEEDS_DESIGN: [slug] — [items]`:
    - Log to mempalace: `"Cycle #N | Sprint: [slug] | HALTED: unresolved design work"`
-   - Stop the cycle and report: `"Cycle halted: sprint [slug] has unresolved design work. Run /design [slug] first, then resume /cycle."`
+   - Stop the cycle and report: `"Cycle halted: sprint [slug] has unresolved design work. Run /rnd [slug] first, then resume /cycle."`
    - Do NOT proceed to Phase 4 or loop back to Phase 1
 5. Otherwise the sprint implements all tasks, gates through the sprint-reviewer (inner loop), then runs the specialist panel review with a fix loop until all agents approve
 

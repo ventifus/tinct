@@ -387,8 +387,8 @@ The type checker mirrors the access algebra with type-level projections:
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
 | FORCE-DICT | Inlined in each access function (`eval` + `materialize` on target) | `eval.rs:1022-1143` |
-| ACCESS-DOT | `eval_dot_access()` | `eval.rs:1022-1056` |
-| ACCESS-BRACKET | `eval_bracket_access()` | `eval.rs:1059-1094` |
+| ACCESS-DOT | `eval()` returns `Unevaluated` thunk; `force_step()` via `DotAccessForce` continuation | `eval.rs` |
+| ACCESS-BRACKET | `eval()` returns `Unevaluated` thunk; `force_step()` via `BracketForceTarget` continuation | `eval.rs` |
 | ACCESS-RANGE | `eval_range_access()` | `eval.rs:1099-1143` |
 | `key_in_range` | `key_in_range()` | `eval.rs:26-46` |
 | `Key::PartialOrd` | `impl PartialOrd for Key` | `value.rs:34-42` |
