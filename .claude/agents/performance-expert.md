@@ -18,7 +18,7 @@ You are a performance expert for the tinct language runtime. You understand Rust
 - **Thunk overhead** (`src/value.rs`): every value is wrapped in `Rc<RefCell<ThunkState>>` — creation cost, RefCell borrow overhead, memoization cache hit rates
 - **Dict operations** (`src/eval.rs`, `src/builtins.rs`): IndexMap insertion/lookup, `$merge` cloning both sides, `$keys`/`$values` allocation, letrec shared-env construction
 - **Deep materialization** (`src/eval.rs`): recursive forcing in `deep_materialize()` — stack depth, redundant re-materialization, allocation during traversal
-- **Parser throughput** (`src/parser.rs`): pest PEG backtracking cost, AST construction allocation, Spanned wrapper overhead
+- **Parser throughput** (`src/parser.rs`, `src/lexer.rs`): full tokenization upfront, StackFrame allocation per bracket, colon-ahead scanning per token, Spanned wrapper overhead
 - **Type checker scaling** (`src/typecheck.rs`): substitution application cost (walks entire type tree), four-pass dict inference, unification with occurs check
 - **Memory footprint**: thunk retention preventing GC of parent environments, Rc reference cycles (prevented by DAG invariant but worth monitoring), environment chain depth in deeply nested scopes
 - **Builtin efficiency** (`src/builtins.rs`): per-builtin allocation patterns, unnecessary intermediate collections, materialization of unused arguments
@@ -31,7 +31,8 @@ You are a performance expert for the tinct language runtime. You understand Rust
 | `src/value.rs` | Thunk allocation, Environment::get() traversal, Rc<RefCell> overhead, clone frequency |
 | `src/builtins.rs` | Per-builtin allocation, intermediate collections, argument materialization patterns |
 | `src/typecheck.rs` | Substitution application scaling, four-pass dict inference, unification cost |
-| `src/parser.rs` | pest parse time, AST construction allocation, Spanned wrapper boxing |
+| `src/parser.rs` | Iterative parse time, StackFrame allocation, colon-ahead scan per token, Spanned wrapper boxing |
+| `src/lexer.rs` | Full tokenization upfront, Position tracking overhead, BracketAccess detection |
 | `src/types.rs` | Type tree traversal in apply/unify, Row variant matching overhead |
 | `stdlib/prelude.llt` | Recursive function depth, intermediate dict construction, pipeline length |
 
@@ -40,7 +41,7 @@ You are a performance expert for the tinct language runtime. You understand Rust
 1. **Environment::get() is O(depth)**: every variable lookup walks the parent chain. Deeply nested scopes (common in document pipelines with many expressions) compound this.
 2. **Every value is triple-boxed**: `Rc<RefCell<ThunkState>>` wrapping every value adds indirection. PendingBuiltin adds a fourth layer (Vec of thunk args).
 3. **IndexMap preserves insertion order**: required for dict semantics but ~20% slower than HashMap for lookup. Dict-heavy workloads pay this tax on every access.
-4. **pest parses eagerly**: the entire input is parsed before any evaluation begins. Large files pay full parse cost even if only a small portion is evaluated.
+4. **Parser tokenizes eagerly**: the entire input is tokenized before parsing begins (`lexer::tokenize`), then parsed iteratively into a full AST. Large files pay full parse cost even if only a small portion is evaluated.
 5. **Substitution::apply() clones type trees**: each application walks and potentially clones the entire type. Chained unifications on large types compound this.
 6. **deep_materialize() is recursive**: can stack-overflow on deeply nested structures independently of the eval depth limit.
 7. **String operations allocate**: `$concat`, `$upper`, `$lower`, etc. all create new String allocations. No string interning or rope structure.
@@ -115,7 +116,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 3. **Thunk overhead**: creation/materialization cost per operation, memoization effectiveness
 4. **Dict operations**: IndexMap allocation patterns, merge/spread efficiency, letrec construction cost
 5. **Type inference scaling**: substitution application cost, unification with large types, pass count
-6. **Parser throughput**: pest backtracking on ambiguous inputs, AST boxing overhead
+6. **Parser throughput**: iterative parser StackFrame allocation, colon-ahead scan frequency, token vector size, AST boxing overhead
 7. **String operations**: allocation per operation, concatenation patterns, interning opportunities
 8. **Memory retention**: thunk/environment lifetimes, Rc reference chains preventing deallocation
 9. **O(n²) patterns**: nested iteration over dicts/environments, repeated type tree walks

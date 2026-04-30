@@ -20,7 +20,7 @@ LLT is a lazy configuration language implemented in Rust. Its threat model inclu
 - **Integer overflow and arithmetic safety** (`src/builtins.rs`): unchecked arithmetic in builtins like `$add`, `$sub`, `$mul`, `$div`, `$mod` — Rust's debug mode panics but release mode wraps silently
 - **Unsafe Rust**: any `unsafe` block must be audited for soundness — memory safety holes can undermine the entire security model
 - **Resource exhaustion in type inference** (`src/typecheck.rs`): crafted type annotations that cause exponential unification or substitution application blowup
-- **Parser amplification** (`src/parser.rs`, `src/grammar.pest`): PEG ordered choices that cause exponential backtracking on adversarial input; large inputs with deep nesting that amplify memory allocation
+- **Parser amplification** (`src/parser.rs`, `src/lexer.rs`): inputs with deep nesting that amplify memory allocation in the `Vec<StackFrame>` stack; adversarial token streams that trigger pathological colon-ahead scanning
 - **LSP attack surface** (`src/lsp/`): the LSP server processes document content from editors — untrusted document text, large files, malformed UTF-8, and adversarial document boundaries. The LSP calls `eval_file()` on every document open/change (`src/lsp/document.rs:55`), which can trigger `$include` with user-controlled paths (CWE-22). With `panic = "abort"` in release mode, `catch_unwind` cannot recover from panics.
 - **REPL security** (`src/repl.rs`): interactive shell processing of user input — readline injection, history file exposure
 - **Dependency hygiene** (`Cargo.toml`): transitive dependency vulnerabilities; `cargo audit` findings; yanked or unmaintained crates
@@ -33,8 +33,8 @@ LLT is a lazy configuration language implemented in Rust. Its threat model inclu
 | `src/builtins.rs` | Path traversal (`$include`), integer overflow, resource exhaustion in string ops |
 | `src/eval.rs` | Depth limit enforcement, cycle detection completeness, `deep_materialize()` stack depth |
 | `src/value.rs` | InProgress sentinel correctness, thunk state transitions — missed cycle → infinite loop |
-| `src/parser.rs` | PEG backtracking on adversarial input, stack depth during parsing |
-| `src/grammar.pest` | Ambiguous or exponential ordered choices, deeply nested rule recursion |
+| `src/parser.rs` | Iterative parser: MAX_PARSE_DEPTH enforcement, StackFrame exhaustion on adversarial input |
+| `src/lexer.rs` | Token stream length, colon-ahead scanning complexity |
 | `src/typecheck.rs` | Substitution blowup, unification depth, occurs check completeness |
 | `src/types.rs` | Row unification (`unify_rows`) mutual recursion with `unify` — both lack explicit depth guards (safe because bounded by `MAX_PARSE_DEPTH`); `name_counter: u32` in `InferState` wraps on overflow |
 | `src/lsp/server.rs` | Untrusted document content, large file handling, crash on malformed input |
@@ -85,11 +85,10 @@ Transitive dependencies may have known CVEs. `cargo audit` should pass cleanly. 
 3. **`deep_materialize()` with no depth limit**: this recursive function can overflow the Rust stack independently of the eval depth limit. *Status (train-4): verified — deep_materialize_impl checks MAX_EVAL_DEPTH at entry (line 1535). Also has HashMap cycle detection (line 1580).*
 4. **Panic paths reachable from user input**: `unreachable!()`, `panic!()`, or `todo!()` inside match arms that cover user-controlled values
 
-### In parser.rs / grammar.pest
-1. **Ordered choices with common prefixes**: `rule = a | ab` causes `a` to match and commit before trying `ab`, or backtracks expensively
-2. **No input size limit before parsing**: parsing a 1 GB file allocates a full AST
-3. **Deep nesting in grammar rules**: recursive rules with no depth limit can stack-overflow the PEG parser
-4. **`pest::parser_state::set_call_limit` not called**: pest provides a global call-limit API that caps total parser rule invocations; without it, nested input can exhaust the thread stack before `MAX_PARSE_DEPTH` fires — check `src/parser.rs` for `set_call_limit` call
+### In parser.rs / lexer.rs
+1. **No input size limit before parsing**: parsing a 1 GB file allocates a full token vector and StackFrame vec
+2. **Deep nesting exceeding MAX_PARSE_DEPTH**: the iterative parser enforces MAX_PARSE_DEPTH (256) via StackFrame depth; verify this check fires before the token vector becomes too large
+3. **Colon-ahead scanning complexity**: `peek_next_significant` scans forward on each BareWord/VarRef/Int token; adversarial inputs with many tokens between the current position and next colon may cause O(n²) scan behavior
 
 ### In typecheck.rs
 1. **Occurs check gaps**: if the occurs check is incomplete for row variables, unification loops
@@ -112,7 +111,7 @@ Transitive dependencies may have known CVEs. `cargo audit` should pass cleanly. 
 6. **Audit `deep_materialize()`**: does it have its own depth limit independent of the eval depth limit?
 7. **Check Cargo.lock for advisories**: run `cargo audit` (or read the output if provided)
 8. **Review LSP error handling**: are all error paths caught and converted to LSP error responses, or can panics propagate?
-9. **Check `pest::parser_state::set_call_limit`**: pest provides a per-parse call limit to prevent stack exhaustion on adversarial input — verify it's called in `src/parser.rs` before `LltParser::parse`
+9. **Check MAX_PARSE_DEPTH enforcement**: the iterative parser enforces a 256-frame StackFrame depth limit — verify it fires on deep nesting before token vector exhaustion
 10. **Audit `validate_and_wrap_record` depth**: the structural TypeAssert validation wraps fields in `Guarded` thunks — confirm guards are lazy (not recursive at wrap time) to avoid depth amplification. *Status (train-4): verified lazy — guards are deferred thunks, no recursion at wrap time.*
 11. **Check LSP evaluation side effects**: does `DocumentState::new()` call `eval_file()`? If so, can side-effecting builtins (`$include`, `$from-json`) be triggered by opening an untrusted file?
 12. **Compare with reference implementations**: check Nix's AllowListSourceAccessor (`.training/nix/src/libexpr/eval.cc:282`), Dhall's import integrity hashes (`.training/dhall-haskell/dhall/src/Dhall/Import.hs:534`), and Nickel's import resolution (`.training/nickel/core/src/cache.rs:1939`) for established security patterns
@@ -209,7 +208,7 @@ All repos are cloned to `.training/`. Skip the clone step if the directory alrea
 - **nickel-lang/nickel** (`.training/nickel`) — Focus: import system (no explicit sandboxing), iterative eval (call_stack_size), INFER_RECORD_MAX_DEPTH=4. Key file: `core/src/cache.rs:1939` (ImportResolver trait).
 - **dhall-lang/dhall-haskell** (`.training/dhall-haskell`) — Focus: semantic integrity hashes on imports, import sandboxing. Key file: `dhall/src/Dhall/Import.hs:534` (loadImportWithSemanticCache). Dhall's security model is the gold standard for untrusted config.
 - **NixOS/nix** (`.training/nix`) — Focus: AllowListSourceAccessor pattern for path confinement, `--restrict-eval`/`--pure-eval` modes. Key file: `src/libexpr/eval.cc:282` (accessor wrapping). Key file: `src/libexpr/eval-settings.hh:169-224` (restrictEval, pureEval, allowed-uris settings).
-- **pest** (`.training/pest`) — Focus: `set_call_limit` API for parser DoS prevention. Key file: `pest/src/parser_state.rs:91-105`. Pest's own fuzz targets use 5000-8000 call limits.
+- **rust-lang/rust** (compiler security) — Focus: how rustc handles adversarial inputs in its hand-written parser, depth limit enforcement patterns. Key: src/rustc_parse/.
 - **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. Key files: `src/behavior-considered-undefined.md` (UB catalog), `src/interior-mutability.md` (RefCell borrow rules — critical for `Rc<RefCell<ThunkState>>`), `src/panic.md` (catch_unwind is a no-op with `panic = "abort"` in release), `src/destructors.md` (drop order for Rc/RefCell), `src/unsafe-keyword.md` (forward reference).
 
 ### Web Downloads

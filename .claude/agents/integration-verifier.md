@@ -18,7 +18,7 @@ You are an integration and error-quality specialist for the LLT language. You un
 Source text (.llt file)
     │
     ▼
-Parser (grammar.pest → parser.rs → ast.rs)
+Parser (lexer.rs → parser.rs → ast.rs)
     │  Produces: Spanned<File> (AST with source spans)
     ▼
 Desugarer (desugar.rs)  [always runs, pre-typecheck]
