@@ -1118,6 +1118,38 @@ fn include_path_traversal_parent_dir() {
     assert_eq!(json, serde_json::json!({"data": {"greeting": "hello"}}));
 }
 
+#[test]
+fn include_underscore_desugar() {
+    // Regression test for $include + $_ (implicit lambda) desugaring.
+    // The helper file contains $_ syntax which must be desugared before eval.
+    // This verifies that builtin_include calls desugar_file() correctly.
+    let dir = make_include_dir("underscore_desugar");
+
+    // Helper file: an implicit lambda that accesses the "name" field
+    fs::write(dir.path().join("mapper.llt"), "$_.name").unwrap();
+
+    // Main file: use a scope chain to include the helper, bind it to a variable
+    // in the first expression, then call it in the second expression and only
+    // return the result (not the function, since functions aren't JSON-serializable)
+    let main_src = r#"[get_name: [call $include "mapper.llt"]]
+[result: [call $get_name [name: "Alice"]]]"#;
+    fs::write(dir.path().join("main.llt"), main_src).unwrap();
+
+    let output = Command::new(tinct_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"result": "Alice"}));
+}
+
 // ---------------------------------------------------------------------------
 // --no-fs flag (sandbox filesystem access)
 // ---------------------------------------------------------------------------

@@ -538,6 +538,7 @@ canonical ∉ Σ.guard
 assert file_size(canonical) ≤ MAX_FILE_SIZE             (10 MB; prevents resource exhaustion)
 source = read_file(canonical)                           (I/O: file read)
 file = parse(source)                                    (parse tinct source)
+desugar(file)                                           (AST transformation: $_ implicit lambdas)
 
 Σ.guard ← Σ.guard ∪ {canonical}                        (push guard)
 saved_base = Σ.base_dir
@@ -620,17 +621,17 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 
 | Spec element | Implementation |
 |-------------|----------------|
-| Σ (IncludeContext) | `builtins.rs:46-55` |
-| Thread-local storage | `INCLUDE_CTX` (`builtins.rs:57-59`) |
-| set / clear | `set_include_context` / `clear_include_context` (`builtins.rs:65-79`) |
-| RESOLVE | `builtins.rs:1044-1058` (resolve + canonicalize) |
-| INCLUDE-HIT | `builtins.rs:1061-1063` (cache lookup + Rc::clone) |
-| INCLUDE-CYCLE | `builtins.rs:1066-1072` (guard check) |
-| INCLUDE-EVAL | `builtins.rs:1074-1161` (read, parse, guard push, eval, materialize, cache) |
-| Eager materialization | `builtins.rs:1142` (`materialize(&thunk, None, depth + 1)`) |
-| Guard push | `builtins.rs:1110` (`include_guard.borrow_mut().insert`) |
-| Guard pop + base_dir restore | `builtins.rs:1129-1135` (`restore` closure) |
-| Cache store | `builtins.rs:1147-1153` |
+| Σ (EvalState) | `eval.rs:41-45` (`include_guard`, `include_cache`) |
+| Σ context | `EvalContext` (`eval.rs:52-55`) |
+| RESOLVE | `builtins.rs:1248-1260` (resolve + canonicalize) |
+| INCLUDE-HIT | `builtins.rs:1263-1265` (cache lookup + Rc::clone) |
+| INCLUDE-CYCLE | `builtins.rs:1268-1270` (guard check) |
+| INCLUDE-EVAL | `builtins.rs:1231-1357` (read, parse, desugar, guard push, eval, materialize, cache) |
+| `desugar(file)` | `builtins.rs:1297` (`desugar_file(&mut file.node)`) |
+| Eager materialization | `builtins.rs:1331` (`materialize(&thunk, None, &included_ctx, depth + 1)`) |
+| Guard push | `builtins.rs:1300-1303` (`include_guard.insert`) |
+| Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
+| Cache store | `builtins.rs:1345-1348` |
 | DOC-PIPELINE (cross-ref) | `eval_file_with_input` (`eval.rs:281-307`) |
 | SEQ-SCOPE (cross-ref) | `eval_document` (`eval.rs:199-249`) |
 

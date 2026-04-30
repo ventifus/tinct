@@ -32,11 +32,12 @@ build-release:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo build --release
 
 # Run all tests: lib tests (single-threaded to prevent parallel 128MB-thread exhaustion)
-# followed by corpus integration tests, in separate containers.
+# followed by corpus integration tests and CLI integration tests, in separate containers.
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --lib -- --test-threads=1
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test corpus_tests
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test cli_tests
 
 # Run tests with output
 test-verbose:
