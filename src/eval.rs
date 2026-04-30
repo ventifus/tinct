@@ -1260,16 +1260,16 @@ enum RestoreState {
     },
     PendingBuiltin {
         func: crate::value::BuiltinFn,
-        args: Vec<Rc<Thunk>>,
-        named: IndexMap<String, Rc<Thunk>>,
+        args: Box<Vec<Rc<Thunk>>>,
+        named: Box<IndexMap<String, Rc<Thunk>>>,
         depth: usize,
         call_span: Span,
         ctx: Rc<EvalContext>,
     },
     PendingCall {
         func: Rc<Thunk>,
-        args: Vec<Rc<Thunk>>,
-        named: IndexMap<String, Rc<Thunk>>,
+        args: Box<Vec<Rc<Thunk>>>,
+        named: Box<IndexMap<String, Rc<Thunk>>>,
         call_span: Span,
         caller_env: Rc<RefCell<Environment>>,
         ctx: Rc<EvalContext>,
@@ -1320,6 +1320,58 @@ impl RestoreState {
     }
 }
 
+/// Payload for MatCont::Memoize. Boxed to keep the MatCont enum ≤96 bytes.
+struct MemoizeData {
+    thunk: Rc<Thunk>,
+    origin: Cow<'static, str>,
+    thunk_span: Span,
+    mat_span: Option<Span>,
+    restore: RestoreState,
+}
+
+/// Payload for MatCont::PendingCallDispatch. Boxed to keep the MatCont enum ≤96 bytes.
+struct PendingCallDispatchData {
+    thunk: Rc<Thunk>,
+    func_thunk: Rc<Thunk>,
+    args: Box<Vec<Rc<Thunk>>>,
+    named: Box<IndexMap<String, Rc<Thunk>>>,
+    call_span: Span,
+    caller_env: Rc<RefCell<Environment>>,
+    ctx: Rc<EvalContext>,
+    origin: Cow<'static, str>,
+    thunk_span: Span,
+    mat_span: Option<Span>,
+    depth: usize,
+}
+
+/// Payload for MatCont::GuardedValidate. Boxed to keep the MatCont enum ≤96 bytes.
+struct GuardedValidateData {
+    thunk: Rc<Thunk>,
+    inner: Rc<Thunk>,
+    expected: Type,
+    field_path: Box<Vec<String>>,
+    guard_span: Span,
+    inner_span: Span,
+    origin: Cow<'static, str>,
+    thunk_span: Span,
+    mat_span: Option<Span>,
+}
+
+/// Payload for MatCont::BuiltinForceArg. Boxed to keep the MatCont enum ≤96 bytes.
+struct BuiltinForceArgData {
+    thunk: Rc<Thunk>,
+    func: crate::value::BuiltinFn,
+    args: Box<Vec<Rc<Thunk>>>,
+    named: Box<IndexMap<String, Rc<Thunk>>>,
+    depth: usize,
+    call_span: Span,
+    ctx: Rc<EvalContext>,
+    origin: Cow<'static, str>,
+    thunk_span: Span,
+    mat_span: Option<Span>,
+    restore: RestoreState,
+}
+
 /// Continuation variants for iterative materialization. Each represents
 /// "what to do after a sub-thunk has been materialized."
 ///
@@ -1327,75 +1379,50 @@ impl RestoreState {
 /// CEK machine design (doc/16-architecture.md §Iterative Evaluator) will unify
 /// materialize() and eval() continuations into a single `Cont` enum with ~18-20
 /// variants. `MatCont` is the materialize-only subset implemented in iterative-eval-a.
+///
+/// **Size budget:** Large variants are boxed so the enum fits within 96 bytes
+/// (one cache line), keeping the continuation stack cache-friendly.
 enum MatCont {
     /// Memoize the result into the parent thunk. Used after materializing
     /// result thunks from Unevaluated/PendingBuiltin/PendingCall branches.
-    Memoize {
-        thunk: Rc<Thunk>,
-        origin: Cow<'static, str>,
-        thunk_span: Span,
-        mat_span: Option<Span>,
-        restore: RestoreState,
-    },
+    Memoize(Box<MemoizeData>),
     /// Defunctionalized continuation for the PendingCall branch (Reynolds, 1972).
     /// Corresponds to the recursive call `materialize_rc(func_thunk, ...)` in the old
     /// `materialize()`: after the function thunk is forced, this continuation inspects the
     /// resulting `Value::Function` or `Value::Builtin`, invokes it with the captured
     /// argument thunks, and pushes a `Memoize` continuation for the result thunk.
-    /// Free variables captured: `thunk` (original, for memoization), `func_thunk`
-    /// (for error rollback), `args`, `named`, `call_span`, `caller_env`, `ctx`,
-    /// `origin`, `thunk_span`, `mat_span`, `depth`.
-    PendingCallDispatch {
-        thunk: Rc<Thunk>,
-        func_thunk: Rc<Thunk>,
-        args: Vec<Rc<Thunk>>,
-        named: IndexMap<String, Rc<Thunk>>,
-        call_span: Span,
-        caller_env: Rc<RefCell<Environment>>,
-        ctx: Rc<EvalContext>,
-        origin: Cow<'static, str>,
-        thunk_span: Span,
-        mat_span: Option<Span>,
-        depth: usize,
-    },
+    PendingCallDispatch(Box<PendingCallDispatchData>),
     /// Defunctionalized continuation for the Guarded branch (Reynolds, 1972).
     /// Corresponds to the recursive call `materialize_rc(inner, ...)` in the old
     /// `materialize()`: after the inner thunk is forced, this continuation runs
     /// `validate_and_wrap_record` (for record types) or `value_matches_type` (for
     /// scalar types), then memoizes the validated value into `thunk`.
-    /// Free variables captured: `thunk` (original, for memoization), `inner`
-    /// (for error rollback), `expected`, `field_path`, `guard_span`, `inner_span`,
-    /// `origin`, `thunk_span`, `mat_span`.
-    GuardedValidate {
-        thunk: Rc<Thunk>,
-        inner: Rc<Thunk>,
-        expected: Type,
-        field_path: Vec<String>,
-        guard_span: Span,
-        inner_span: Span,
-        origin: Cow<'static, str>,
-        thunk_span: Span,
-        mat_span: Option<Span>,
-    },
+    GuardedValidate(Box<GuardedValidateData>),
     /// Resume a PendingBuiltin call after iteratively materializing arg[0].
     /// This prevents Rust stack growth from chains like $- → materialize → $- → ...
     /// where each builtin synchronously materializes its first arg. By pre-materializing
     /// arg[0] in the iterative loop, the chain stays on the continuation stack instead
     /// of the Rust call stack.
-    BuiltinForceArg {
-        thunk: Rc<Thunk>,
-        func: crate::value::BuiltinFn,
-        args: Vec<Rc<Thunk>>,
-        named: IndexMap<String, Rc<Thunk>>,
-        depth: usize,
-        call_span: Span,
+    BuiltinForceArg(Box<BuiltinForceArgData>),
+    /// Access a field from a materialized dict. Pushed after target thunk is materialized.
+    DotAccessForce {
+        field: String,
+        access_span: Span,
         ctx: Rc<EvalContext>,
-        origin: Cow<'static, str>,
-        thunk_span: Span,
-        mat_span: Option<Span>,
-        restore: RestoreState,
+        depth: usize,
+    },
+    /// Access a key from a materialized dict via bracket notation. Pushed after target is materialized.
+    BracketForceTarget {
+        key_expr: Rc<Spanned<Expr>>,
+        access_span: Span,
+        env: Rc<RefCell<Environment>>,
+        ctx: Rc<EvalContext>,
+        depth: usize,
     },
 }
+
+// Compile-time assertion: MatCont must be ≤96 bytes to fit in one cache line.
+const _: () = assert!(std::mem::size_of::<MatCont>() <= 96);
 
 /// Result of processing one thunk in the iterative loop.
 enum MatStep {
@@ -1499,15 +1526,93 @@ fn force_step(
             ctx: thunk_ctx.clone(),
         };
 
+        // Handle DotAccess and BracketAccess inline to enable iterative access chains
+        if let Expr::DotAccess {
+            expr: target,
+            field,
+        } = &expr.node
+        {
+            // Evaluate target expression
+            match eval(target, Rc::clone(&env), &thunk_ctx, next_depth(depth)) {
+                Ok(target_thunk) => {
+                    // Push Memoize for the outer thunk (the access result)
+                    stack.push(MatCont::Memoize(Box::new(MemoizeData {
+                        thunk: Rc::clone(thunk),
+                        origin,
+                        thunk_span,
+                        mat_span,
+                        restore,
+                    })));
+                    // Push DotAccessForce to handle field lookup after target materializes
+                    stack.push(MatCont::DotAccessForce {
+                        field: field.clone(),
+                        access_span: expr.span,
+                        ctx: Rc::clone(&thunk_ctx),
+                        depth: next_depth(depth),
+                    });
+                    // Force the target
+                    return MatStep::Force(target_thunk, Some(expr.span), next_depth(depth));
+                }
+                Err(mut e) => {
+                    e.push_frame(format!("accessing .{field}"), expr.span);
+                    let decorated =
+                        attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
+                    if decorated.kind.is_cacheable() {
+                        thunk.cache_failure(&decorated);
+                    } else {
+                        restore.restore(thunk);
+                    }
+                    return MatStep::Done(Err(decorated));
+                }
+            }
+        }
+
+        if let Expr::BracketAccess { expr: target, key } = &expr.node {
+            // Evaluate target expression
+            match eval(target, Rc::clone(&env), &thunk_ctx, next_depth(depth)) {
+                Ok(target_thunk) => {
+                    // Push Memoize for the outer thunk (the access result)
+                    stack.push(MatCont::Memoize(Box::new(MemoizeData {
+                        thunk: Rc::clone(thunk),
+                        origin,
+                        thunk_span,
+                        mat_span,
+                        restore,
+                    })));
+                    // Push BracketForceTarget to handle key lookup after target materializes
+                    stack.push(MatCont::BracketForceTarget {
+                        key_expr: Rc::from(key.as_ref().clone()),
+                        access_span: expr.span,
+                        env: Rc::clone(&env),
+                        ctx: Rc::clone(&thunk_ctx),
+                        depth: next_depth(depth),
+                    });
+                    // Force the target
+                    return MatStep::Force(target_thunk, Some(expr.span), next_depth(depth));
+                }
+                Err(mut e) => {
+                    e.push_frame("accessing [..]".to_string(), expr.span);
+                    let decorated =
+                        attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
+                    if decorated.kind.is_cacheable() {
+                        thunk.cache_failure(&decorated);
+                    } else {
+                        restore.restore(thunk);
+                    }
+                    return MatStep::Done(Err(decorated));
+                }
+            }
+        }
+
         match eval(&expr, Rc::clone(&env), &thunk_ctx, next_depth(depth)) {
             Ok(result_thunk) => {
-                stack.push(MatCont::Memoize {
+                stack.push(MatCont::Memoize(Box::new(MemoizeData {
                     thunk: Rc::clone(thunk),
                     origin,
                     thunk_span,
                     mat_span,
                     restore,
-                });
+                })));
                 MatStep::Force(result_thunk, mat_span, next_depth(depth))
             }
             Err(e) => {
@@ -1531,8 +1636,8 @@ fn force_step(
             }
             thunk.set_state(ThunkState::PendingBuiltin {
                 func,
-                args,
-                named,
+                args: Box::new(args),
+                named: Box::new(named),
                 depth: pending_depth,
                 call_span,
                 ctx: thunk_ctx,
@@ -1542,8 +1647,8 @@ fn force_step(
 
         let restore = RestoreState::PendingBuiltin {
             func,
-            args: args.clone(),
-            named: named.clone(),
+            args: Box::new(args.clone()),
+            named: Box::new(named.clone()),
             depth: pending_depth,
             call_span,
             ctx: thunk_ctx.clone(),
@@ -1555,11 +1660,11 @@ fn force_step(
         // arg[0] through the continuation stack, the chain stays iterative.
         if !args.is_empty() && args[0].try_get_materialized().is_none() {
             let arg0 = Rc::clone(&args[0]);
-            stack.push(MatCont::BuiltinForceArg {
+            stack.push(MatCont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                 thunk: Rc::clone(thunk),
                 func,
-                args,
-                named,
+                args: Box::new(args),
+                named: Box::new(named),
                 depth,
                 call_span,
                 ctx: thunk_ctx,
@@ -1567,7 +1672,7 @@ fn force_step(
                 thunk_span,
                 mat_span,
                 restore,
-            });
+            })));
             return MatStep::Force(arg0, None, depth);
         }
 
@@ -1586,13 +1691,13 @@ fn force_step(
                     thunk.set_state(ThunkState::Materialized(value.clone()));
                     MatStep::Done(Ok(value))
                 } else {
-                    stack.push(MatCont::Memoize {
+                    stack.push(MatCont::Memoize(Box::new(MemoizeData {
                         thunk: Rc::clone(thunk),
                         origin,
                         thunk_span,
                         mat_span,
                         restore,
-                    });
+                    })));
                     // TCO: force result at same depth
                     MatStep::Force(result_thunk, mat_span, depth)
                 }
@@ -1617,9 +1722,9 @@ fn force_step(
                 err = err.with_materialization_span(span);
             }
             thunk.set_state(ThunkState::PendingCall {
-                func: func_thunk,
-                args,
-                named,
+                func: func_thunk.clone(),
+                args: Box::new(args.clone()),
+                named: Box::new(named.clone()),
                 call_span,
                 caller_env,
                 ctx: thunk_ctx,
@@ -1627,19 +1732,21 @@ fn force_step(
             return MatStep::Done(Err(err.into()));
         }
 
-        stack.push(MatCont::PendingCallDispatch {
-            thunk: Rc::clone(thunk),
-            func_thunk: Rc::clone(&func_thunk),
-            args,
-            named,
-            call_span,
-            caller_env,
-            ctx: thunk_ctx,
-            origin,
-            thunk_span,
-            mat_span,
-            depth,
-        });
+        stack.push(MatCont::PendingCallDispatch(Box::new(
+            PendingCallDispatchData {
+                thunk: Rc::clone(thunk),
+                func_thunk: Rc::clone(&func_thunk),
+                args: Box::new(args),
+                named: Box::new(named),
+                call_span,
+                caller_env,
+                ctx: thunk_ctx,
+                origin,
+                thunk_span,
+                mat_span,
+                depth,
+            },
+        )));
         // TCO: if function is already materialized (cached from prior call),
         // don't increment depth — enables tail recursion to same function.
         let func_depth = if func_thunk.try_get_materialized().is_some() {
@@ -1657,24 +1764,24 @@ fn force_step(
             thunk.set_state(ThunkState::Guarded {
                 inner: inner.clone(),
                 expected: expected.clone(),
-                field_path: field_path.clone(),
+                field_path: Box::new(field_path.clone()),
                 guard_span,
             });
             return MatStep::Done(Err(err.into()));
         }
 
         let inner_span = inner.span;
-        stack.push(MatCont::GuardedValidate {
+        stack.push(MatCont::GuardedValidate(Box::new(GuardedValidateData {
             thunk: Rc::clone(thunk),
             inner: Rc::clone(&inner),
-            expected,
-            field_path,
+            expected: expected.clone(),
+            field_path: Box::new(field_path),
             guard_span,
             inner_span,
             origin,
             thunk_span,
             mat_span,
-        });
+        })));
         MatStep::Force(Rc::clone(&inner), mat_span, next_depth(depth))
     } else {
         unreachable!(
@@ -1693,13 +1800,14 @@ fn apply_mat_cont(
     stack: &mut Vec<MatCont>,
 ) -> ContResult {
     match cont {
-        MatCont::Memoize {
-            thunk,
-            origin,
-            thunk_span,
-            mat_span,
-            restore,
-        } => {
+        MatCont::Memoize(data) => {
+            let MemoizeData {
+                thunk,
+                origin,
+                thunk_span,
+                mat_span,
+                restore,
+            } = *data;
             let decorated_result = result.map_err(|e| {
                 attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span)
             });
@@ -1719,19 +1827,20 @@ fn apply_mat_cont(
                 }
             }
         }
-        MatCont::PendingCallDispatch {
-            thunk,
-            func_thunk,
-            args,
-            named,
-            call_span,
-            caller_env,
-            ctx: thunk_ctx,
-            origin,
-            thunk_span,
-            mat_span,
-            depth,
-        } => {
+        MatCont::PendingCallDispatch(data) => {
+            let PendingCallDispatchData {
+                thunk,
+                func_thunk,
+                args,
+                named,
+                call_span,
+                caller_env,
+                ctx: thunk_ctx,
+                origin,
+                thunk_span,
+                mat_span,
+                depth,
+            } = *data;
             let decorate =
                 |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
 
@@ -1761,13 +1870,13 @@ fn apply_mat_cont(
                                     caller_env: caller_env.clone(),
                                     ctx: thunk_ctx.clone(),
                                 };
-                                stack.push(MatCont::Memoize {
+                                stack.push(MatCont::Memoize(Box::new(MemoizeData {
                                     thunk: Rc::clone(&thunk),
                                     origin,
                                     thunk_span,
                                     mat_span,
                                     restore,
-                                });
+                                })));
                                 // TCO: function return value forced at caller's depth
                                 ContResult::Force(result_thunk, mat_span, depth)
                             }
@@ -1778,8 +1887,8 @@ fn apply_mat_cont(
                                 } else {
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk,
-                                        args,
-                                        named,
+                                        args: Box::new((*args).clone()),
+                                        named: Box::new((*named).clone()),
                                         call_span,
                                         caller_env,
                                         ctx: thunk_ctx,
@@ -1812,13 +1921,13 @@ fn apply_mat_cont(
                                         caller_env: caller_env.clone(),
                                         ctx: thunk_ctx.clone(),
                                     };
-                                    stack.push(MatCont::Memoize {
+                                    stack.push(MatCont::Memoize(Box::new(MemoizeData {
                                         thunk: Rc::clone(&thunk),
                                         origin,
                                         thunk_span,
                                         mat_span,
                                         restore,
-                                    });
+                                    })));
                                     // TCO: builtin return value forced at caller's depth
                                     ContResult::Force(result_thunk, mat_span, depth)
                                 }
@@ -1829,8 +1938,8 @@ fn apply_mat_cont(
                                 } else {
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk,
-                                        args,
-                                        named,
+                                        args: Box::new((*args).clone()),
+                                        named: Box::new((*named).clone()),
                                         call_span,
                                         caller_env,
                                         ctx: thunk_ctx,
@@ -1852,8 +1961,8 @@ fn apply_mat_cont(
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk,
-                                args,
-                                named,
+                                args: Box::new((*args).clone()),
+                                named: Box::new((*named).clone()),
                                 call_span,
                                 caller_env,
                                 ctx: thunk_ctx,
@@ -1869,8 +1978,8 @@ fn apply_mat_cont(
                     } else {
                         thunk.set_state(ThunkState::PendingCall {
                             func: func_thunk,
-                            args,
-                            named,
+                            args: Box::new((*args).clone()),
+                            named: Box::new((*named).clone()),
                             call_span,
                             caller_env,
                             ctx: thunk_ctx,
@@ -1880,17 +1989,18 @@ fn apply_mat_cont(
                 }
             }
         }
-        MatCont::GuardedValidate {
-            thunk,
-            inner,
-            expected,
-            field_path,
-            guard_span,
-            inner_span,
-            origin,
-            thunk_span,
-            mat_span,
-        } => {
+        MatCont::GuardedValidate(data) => {
+            let GuardedValidateData {
+                thunk,
+                inner,
+                expected,
+                field_path,
+                guard_span,
+                inner_span,
+                origin,
+                thunk_span,
+                mat_span,
+            } = *data;
             let decorate =
                 |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
 
@@ -1900,7 +2010,11 @@ fn apply_mat_cont(
                     if let Type::Record(ref row) = expected {
                         if let Value::Dict(ref entries) = value {
                             match validate_and_wrap_record(
-                                entries, row, field_path, guard_span, inner_span,
+                                entries,
+                                row,
+                                *field_path,
+                                guard_span,
+                                inner_span,
                             ) {
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict(new_entries);
@@ -1968,7 +2082,7 @@ fn apply_mat_cont(
                         thunk.set_state(ThunkState::Guarded {
                             inner,
                             expected,
-                            field_path,
+                            field_path: Box::new((*field_path).clone()),
                             guard_span,
                         });
                     }
@@ -1976,19 +2090,20 @@ fn apply_mat_cont(
                 }
             }
         }
-        MatCont::BuiltinForceArg {
-            thunk,
-            func,
-            args,
-            named,
-            depth,
-            call_span,
-            ctx: thunk_ctx,
-            origin,
-            thunk_span,
-            mat_span,
-            restore,
-        } => {
+        MatCont::BuiltinForceArg(data) => {
+            let BuiltinForceArgData {
+                thunk,
+                func,
+                args,
+                named,
+                depth,
+                call_span,
+                ctx: thunk_ctx,
+                origin,
+                thunk_span,
+                mat_span,
+                restore,
+            } = *data;
             let decorate =
                 |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
 
@@ -2010,13 +2125,13 @@ fn apply_mat_cont(
                                 thunk.set_state(ThunkState::Materialized(value.clone()));
                                 ContResult::Done(Ok(value))
                             } else {
-                                stack.push(MatCont::Memoize {
+                                stack.push(MatCont::Memoize(Box::new(MemoizeData {
                                     thunk: Rc::clone(&thunk),
                                     origin,
                                     thunk_span,
                                     mat_span,
                                     restore,
-                                });
+                                })));
                                 ContResult::Force(result_thunk, mat_span, depth)
                             }
                         }
@@ -2037,6 +2152,157 @@ fn apply_mat_cont(
                     } else {
                         restore.restore(&thunk);
                     }
+                    ContResult::Done(Err(e))
+                }
+            }
+        }
+        MatCont::DotAccessForce {
+            field,
+            access_span,
+            ctx,
+            depth,
+        } => {
+            // Result is the materialized target value
+            match result {
+                Ok(target_val) => match target_val {
+                    Value::Dict(map) => {
+                        // Use StrKey wrapper to avoid allocating Key::String
+                        match map.get(&crate::value::StrKey(&field)) {
+                            Some(thunk) => {
+                                // Field found - need to materialize it
+                                ContResult::Force(Rc::clone(thunk), Some(access_span), depth)
+                            }
+                            None => {
+                                // Key not found
+                                let available_keys: Vec<String> =
+                                    map.keys().map(|k| k.to_string()).collect();
+                                let mut err = EvalError::key_not_found(
+                                    &field,
+                                    available_keys,
+                                    access_span, // Use access_span as thunk span
+                                )
+                                .with_materialization_span(access_span);
+                                err.push_frame(format!("accessing .{field}"), access_span);
+                                ContResult::Done(Err(err.into()))
+                            }
+                        }
+                    }
+                    Value::Proxy { handler } => {
+                        // Proxy handler invocation
+                        match invoke_proxy_handler(
+                            &handler,
+                            Value::String(field.clone()),
+                            &ctx,
+                            &access_span,
+                            depth,
+                        ) {
+                            Ok(thunk) => ContResult::Force(thunk, Some(access_span), depth),
+                            Err(mut e) => {
+                                e.push_frame(format!("accessing .{field}"), access_span);
+                                ContResult::Done(Err(e))
+                            }
+                        }
+                    }
+                    other => {
+                        // Type mismatch
+                        let mut err = EvalError::type_mismatch_ctx(
+                            "dot access".to_string(),
+                            "Dict or Proxy",
+                            other.type_name(),
+                            access_span, // Use access_span as thunk span
+                        )
+                        .with_materialization_span(access_span);
+                        err.push_frame(format!("accessing .{field}"), access_span);
+                        ContResult::Done(Err(err.into()))
+                    }
+                },
+                Err(mut e) => {
+                    // Target materialization failed
+                    e.push_frame(format!("accessing .{field}"), access_span);
+                    ContResult::Done(Err(e))
+                }
+            }
+        }
+        MatCont::BracketForceTarget {
+            key_expr,
+            access_span,
+            env,
+            ctx,
+            depth,
+        } => {
+            // Result is the materialized target value
+            match result {
+                Ok(target_val) => match target_val {
+                    Value::Dict(map) => {
+                        // Evaluate the key expression (synchronous for now)
+                        match eval_key(&key_expr, &env, &ctx, depth) {
+                            Ok(key) => match map.get(&key) {
+                                Some(thunk) => {
+                                    // Field found - return it to be forced
+                                    ContResult::Force(Rc::clone(thunk), Some(access_span), depth)
+                                }
+                                None => {
+                                    let available_keys: Vec<String> =
+                                        map.keys().map(|k| k.to_string()).collect();
+                                    let mut err = EvalError::key_not_found(
+                                        &key.to_string(),
+                                        available_keys,
+                                        access_span,
+                                    )
+                                    .with_materialization_span(access_span);
+                                    err.push_frame("accessing [..]".to_string(), access_span);
+                                    ContResult::Done(Err(err.into()))
+                                }
+                            },
+                            Err(mut e) => {
+                                e.push_frame("accessing [..]".to_string(), access_span);
+                                ContResult::Done(Err(e))
+                            }
+                        }
+                    }
+                    Value::Proxy { handler } => {
+                        // Evaluate the key and call proxy handler
+                        match eval_key(&key_expr, &env, &ctx, depth) {
+                            Ok(key) => {
+                                let key_val = match key {
+                                    Key::Int(n) => Value::Int(n),
+                                    Key::String(s) => Value::String(s),
+                                };
+                                match invoke_proxy_handler(
+                                    &handler,
+                                    key_val,
+                                    &ctx,
+                                    &access_span,
+                                    depth,
+                                ) {
+                                    Ok(thunk) => ContResult::Force(thunk, Some(access_span), depth),
+                                    Err(mut e) => {
+                                        e.push_frame("accessing [..]".to_string(), access_span);
+                                        ContResult::Done(Err(e))
+                                    }
+                                }
+                            }
+                            Err(mut e) => {
+                                e.push_frame("accessing [..]".to_string(), access_span);
+                                ContResult::Done(Err(e))
+                            }
+                        }
+                    }
+                    other => {
+                        let mut err = EvalError::type_mismatch_ctx(
+                            "bracket access".to_string(),
+                            "Dict or Proxy",
+                            other.type_name(),
+                            access_span,
+                        )
+                        .with_materialization_span(access_span);
+                        err.push_frame("accessing [..]".to_string(), access_span);
+                        ContResult::Done(Err(err.into()))
+                    }
+                },
+                Err(mut e) => {
+                    // Target materialization failed
+                    e.push_frame("accessing [..]".to_string(), access_span);
                     ContResult::Done(Err(e))
                 }
             }
@@ -2231,11 +2497,11 @@ pub fn materialize(
             // Restore state for non-cacheable error
             thunk.set_state(ThunkState::PendingBuiltin {
                 func,
-                args,
-                named,
+                args: Box::new(args.clone()),
+                named: Box::new(named.clone()),
                 depth: pending_depth,
                 call_span,
-                ctx: thunk_ctx,
+                ctx: thunk_ctx.clone(),
             });
             return Err(err.into());
         }
@@ -2270,8 +2536,8 @@ pub fn materialize(
                             } else {
                                 thunk.set_state(ThunkState::PendingBuiltin {
                                     func,
-                                    args,
-                                    named,
+                                    args: Box::new(args),
+                                    named: Box::new(named),
                                     depth: pending_depth,
                                     call_span,
                                     ctx: thunk_ctx,
@@ -2288,8 +2554,8 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingBuiltin {
                         func,
-                        args,
-                        named,
+                        args: Box::new(args),
+                        named: Box::new(named),
                         depth: pending_depth,
                         call_span,
                         ctx: thunk_ctx,
@@ -2309,12 +2575,12 @@ pub fn materialize(
             }
             // Restore state for non-cacheable error
             thunk.set_state(ThunkState::PendingCall {
-                func: func_thunk,
-                args,
-                named,
+                func: func_thunk.clone(),
+                args: Box::new(args.clone()),
+                named: Box::new(named.clone()),
                 call_span,
-                caller_env,
-                ctx: thunk_ctx,
+                caller_env: caller_env.clone(),
+                ctx: thunk_ctx.clone(),
             });
             return Err(err.into());
         }
@@ -2330,8 +2596,8 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingCall {
                         func: func_thunk,
-                        args,
-                        named,
+                        args: Box::new(args),
+                        named: Box::new(named),
                         call_span,
                         caller_env,
                         ctx: thunk_ctx,
@@ -2373,8 +2639,8 @@ pub fn materialize(
                                 } else {
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk.clone(),
-                                        args: args.clone(),
-                                        named: named.clone(),
+                                        args: Box::new(args.clone()),
+                                        named: Box::new(named.clone()),
                                         call_span,
                                         caller_env: caller_env.clone(),
                                         ctx: thunk_ctx.clone(),
@@ -2395,8 +2661,8 @@ pub fn materialize(
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk.clone(),
-                                args: args.clone(),
-                                named: named.clone(),
+                                args: Box::new(args.clone()),
+                                named: Box::new(named.clone()),
                                 call_span,
                                 caller_env: caller_env.clone(),
                                 ctx: thunk_ctx.clone(),
@@ -2433,8 +2699,8 @@ pub fn materialize(
                                     } else {
                                         thunk.set_state(ThunkState::PendingCall {
                                             func: func_thunk.clone(),
-                                            args: args.clone(),
-                                            named: named.clone(),
+                                            args: Box::new(args.clone()),
+                                            named: Box::new(named.clone()),
                                             call_span,
                                             caller_env: caller_env.clone(),
                                             ctx: thunk_ctx.clone(),
@@ -2451,8 +2717,8 @@ pub fn materialize(
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk.clone(),
-                                args: args.clone(),
-                                named: named.clone(),
+                                args: Box::new(args.clone()),
+                                named: Box::new(named.clone()),
                                 call_span,
                                 caller_env: caller_env.clone(),
                                 ctx: thunk_ctx.clone(),
@@ -2471,8 +2737,8 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingCall {
                         func: func_thunk,
-                        args,
-                        named,
+                        args: Box::new(args),
+                        named: Box::new(named),
                         call_span,
                         caller_env,
                         ctx: thunk_ctx,
@@ -2492,7 +2758,7 @@ pub fn materialize(
             thunk.set_state(ThunkState::Guarded {
                 inner: inner.clone(),
                 expected: expected.clone(),
-                field_path: field_path.clone(),
+                field_path: Box::new(field_path.clone()),
                 guard_span,
             });
             return Err(err.into());
@@ -2578,7 +2844,7 @@ pub fn materialize(
                     thunk.set_state(ThunkState::Guarded {
                         inner,
                         expected,
-                        field_path,
+                        field_path: Box::new(field_path),
                         guard_span,
                     });
                 }
@@ -7828,7 +8094,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(expected, &expected_type);
-                assert_eq!(fp, &vec!["test".to_string()]);
+                assert_eq!(fp.as_ref(), &vec!["test".to_string()]);
             }
             ThunkState::Failed(_) => panic!("DepthExceeded should not cache in Guarded state"),
             ThunkState::InProgress => panic!("Guarded thunk stuck in InProgress - BUG NOT FIXED"),

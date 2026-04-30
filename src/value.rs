@@ -212,16 +212,16 @@ pub enum ThunkState {
     },
     PendingBuiltin {
         func: BuiltinFn,
-        args: Vec<Rc<Thunk>>,
-        named: IndexMap<String, Rc<Thunk>>,
+        args: Box<Vec<Rc<Thunk>>>,
+        named: Box<IndexMap<String, Rc<Thunk>>>,
         depth: usize,
         call_span: Span,
         ctx: Rc<crate::eval::EvalContext>,
     },
     PendingCall {
         func: Rc<Thunk>,
-        args: Vec<Rc<Thunk>>,
-        named: IndexMap<String, Rc<Thunk>>,
+        args: Box<Vec<Rc<Thunk>>>,
+        named: Box<IndexMap<String, Rc<Thunk>>>,
         call_span: Span,
         caller_env: Rc<RefCell<Environment>>,
         ctx: Rc<crate::eval::EvalContext>,
@@ -232,7 +232,7 @@ pub enum ThunkState {
     Guarded {
         inner: Rc<Thunk>,
         expected: Type,
-        field_path: Vec<String>,
+        field_path: Box<Vec<String>>,
         guard_span: Span,
     },
     InProgress,
@@ -284,8 +284,8 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::PendingBuiltin {
                 func,
-                args,
-                named,
+                args: Box::new(args),
+                named: Box::new(named),
                 depth,
                 call_span: span,
                 ctx,
@@ -308,8 +308,8 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::PendingCall {
                 func,
-                args,
-                named,
+                args: Box::new(args),
+                named: Box::new(named),
                 call_span,
                 caller_env,
                 ctx,
@@ -330,7 +330,7 @@ impl Thunk {
             state: RefCell::new(ThunkState::Guarded {
                 inner,
                 expected,
-                field_path,
+                field_path: Box::new(field_path),
                 guard_span,
             }),
             span: guard_span,
@@ -430,7 +430,7 @@ impl Thunk {
                 depth,
                 call_span,
                 ctx,
-            } => Some((func, args, named, depth, call_span, ctx)),
+            } => Some((func, *args, *named, depth, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -458,7 +458,7 @@ impl Thunk {
                 call_span,
                 caller_env,
                 ctx,
-            } => Some((func, args, named, call_span, caller_env, ctx)),
+            } => Some((func, *args, *named, call_span, caller_env, ctx)),
             other => {
                 *state = other;
                 None
@@ -482,7 +482,7 @@ impl Thunk {
                 expected,
                 field_path,
                 guard_span,
-            } => Some((inner, expected, field_path, guard_span)),
+            } => Some((inner, expected, *field_path, guard_span)),
             other => {
                 *state = other;
                 None
@@ -1251,7 +1251,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*expected, Type::Int);
-                assert_eq!(field_path, &["field".to_string()]);
+                assert_eq!(field_path.as_ref(), &vec!["field".to_string()]);
             }
             other => panic!("expected Guarded state, got {other:?}"),
         }

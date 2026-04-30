@@ -37,7 +37,7 @@ build-release:
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --lib -- --test-threads=1
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
+    {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test cli_tests
 
 # Run tests with output

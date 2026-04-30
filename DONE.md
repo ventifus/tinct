@@ -2222,3 +2222,13 @@ Make `eval_call()` return a `PendingCall` thunk instead of calling `materialize(
 - [x] In `eval_call()` (`src/eval.rs:756-840`): remove the `materialize(&func_thunk, ...)` call and the `match func_val { ... }` dispatch block; return `Rc::new(Thunk::new_pending_call(func_thunk, pos_thunks, named_thunks, *call_span, *call_span, label, Rc::clone(ctx)))` — `PendingCallDispatch` already handles dispatch and TCO (`src/eval.rs`) [Major, eval-engine]
 - [x] Add corpus test: 1000-deep tail-recursive fold that previously crashed the Rust stack now completes (`tests/corpus/eval/eval/tco_fold_deep.llt-eval`) [Minor, test-crafter]
 - [x] Commit note: `default_env` for default params switches from caller scope to closure scope (consistent with `$apply`; defaults are literals in practice); type-mismatch message for calling a non-function changes from "expected Function" to "expected Function or Builtin" — update any corpus tests matching that exact string [Nit]
+
+### iterative-eval-b2: Access chain continuations
+
+Convert `eval_dot_access()` and `eval_bracket_access()` from calling `materialize()` synchronously to pushing `MatCont` variants. **Depends on iterative-eval-b1. Scope: `src/eval.rs`, ~120 lines.**
+
+- [x] Box large `MatCont` variants before adding more: `PendingCallDispatch.args` → `Box<Vec<Rc<Thunk>>>`, `PendingCallDispatch.named` → `Box<IndexMap<String, Rc<Thunk>>>`, same for `GuardedValidate.field_path` — keeps frame size ≤96B per `doc/16-architecture.md` budget (`src/eval.rs`) [Major, performance-expert]
+- [x] Add `MatCont::DotAccessForce { thunk: Rc<Thunk>, field: String, access_span: Span, origin: String, thunk_span: Span, mat_span: Option<Span> }` — when target resolves, look up `field` in materialized dict or call proxy handler; error framing mirrors current `eval_dot_access` push_frame closure (`src/eval.rs`) [Major, eval-engine]
+- [x] Add `MatCont::BracketForceTarget { thunk: Rc<Thunk>, key_thunk: Rc<Thunk>, access_span: Span, origin: String, thunk_span: Span, mat_span: Option<Span> }` — when target resolves, force key_thunk then dispatch (`src/eval.rs`) [Major, eval-engine]
+- [x] Convert `eval_dot_access()` to push `DotAccessForce` continuation and return target thunk to force, instead of calling `materialize()` directly (`src/eval.rs:1075-1122`) [Major, eval-engine]
+- [x] Convert `eval_bracket_access()` to push `BracketForceTarget` continuation similarly (`src/eval.rs:1125-1175`) [Major, eval-engine]
