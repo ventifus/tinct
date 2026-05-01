@@ -438,21 +438,21 @@ Consolidated from: test-corpus-c, test-corpus-d
 
 Consolidated from: test-critical-a, test-critical-b
 
-- [ ] PendingBuiltin state transition unit tests — verify Unevaluated→PendingBuiltin→Materialized lifecycle, error recovery, cycle detection in isolation (`src/value.rs`, `src/eval.rs`) [Critical, test-crafter]
+- [x] PendingBuiltin state transition unit tests — verify Unevaluated→PendingBuiltin→Materialized lifecycle, error recovery, cycle detection in isolation (`src/value.rs`, `src/eval.rs`) [Critical, test-crafter]
 - [ ] Add error corpus tests with span assertions — current tests check message content only, not definition_span, materialization_span, or stack frame accuracy (`tests/corpus/eval/errors/`) [Critical, test-crafter + span-integrity-checker]
-- [ ] Add selective materialization unit tests — use mock/panic functions to prove unused branches stay unevaluated (`src/eval.rs`) [Critical, test-crafter]
+- [x] Add selective materialization unit tests — use mock/panic functions to prove unused branches stay unevaluated (`src/eval.rs`) [Critical, test-crafter]
 - [x] Add formatter error path tests — 3 tests: unterminated string, bare $, invalid escape (`src/formatter.rs`) [Critical, test-crafter]
 - [x] Add sequence constructor error path corpus tests — range_start_non_int, iterate_non_function, unfold_invalid_return added [Critical, test-crafter]
-- [ ] Add laziness proof tests for map/filter — `map_preserves_thunks.txt`, `filter_selective_materialization.txt` proving unused values stay unevaluated (`tests/corpus/eval/laziness/`) [Critical, test-crafter]
-- [ ] Expand `tests/corpus/eval/laziness/` with more negative tests proving unused expressions are NOT evaluated (current: 9 tests, target: 15+)
+- [x] Add laziness proof tests for map/filter — `map_preserves_thunks.txt`, `filter_selective_materialization.txt` proving unused values stay unevaluated (`tests/corpus/eval/laziness/`) [Critical, test-crafter]
+- [x] Expand `tests/corpus/eval/laziness/` with more negative tests proving unused expressions are NOT evaluated (current: 9 tests, target: 15+)
 - [x] Add `TypeVar`/`RowVar` PartialEq level-blindness test — test_u_refl_fast_path_level_blind added (`src/types.rs`) [Major, test-crafter C39] — tests added in let-gen-types sprint verify level-ignored equality in isolation but not whether the `[U-REFL]` fast path `if a == b { return Ok(()) }` is safe when same-name vars exist at different levels in a substitution; add test verifying this does not cause incorrect generalization. (`src/types.rs:339`) [Major, test-crafter C39]
-- [ ] Add builtins.rs unit tests for additional edge cases — NaN, overflow, Unicode, cycle detection (337 tests exist, expand for special values) (`src/builtins.rs`) [Major, test-crafter]
-- [ ] Add typecheck corpus tests (currently zero; Nickel has 90+ granular typecheck test files)
-- [ ] Add `deep_materialize` corpus tests through the public API
-- [ ] Materialization behavior corpus tests proving stdlib laziness categories (test-crafter review)
+- [x] Add builtins.rs unit tests for additional edge cases — NaN, overflow, Unicode, cycle detection (337 tests exist, expand for special values) (`src/builtins.rs`) [Major, test-crafter]
+- [x] Add typecheck corpus tests (currently zero; Nickel has 90+ granular typecheck test files)
+- [x] Add `deep_materialize` corpus tests through the public API
+- [x] Materialization behavior corpus tests proving stdlib laziness categories (test-crafter review)
 - [x] Add `test_type_of_seq()` unit test — added, returns "Seq" correctly (`src/builtins.rs`) [Major, integration-verifier] — all other Value variants have type-of tests but Seq is missing (`src/builtins.rs`) [Major, integration-verifier]
-- [ ] Add laziness materialization ORDER tests — verify left-to-right argument evaluation in builtins, predicate-before-body ordering in conditionals, dict entry insertion order preservation; current tests prove "unused = not evaluated" but not evaluation order (`tests/corpus/eval/laziness/`) [Major, test-crafter C31]
-- [ ] Add Seq deep_materialize cycle corpus test — end-to-end corpus test for `--eval` forcing cyclic Seq structure (unit test exists at `src/eval.rs`, no corpus test) (`tests/corpus/eval/`) [Major, test-crafter + eval-engine]
+- [x] Add laziness materialization ORDER tests — verify left-to-right argument evaluation in builtins, predicate-before-body ordering in conditionals, dict entry insertion order preservation; current tests prove "unused = not evaluated" but not evaluation order (`tests/corpus/eval/laziness/`) [Major, test-crafter C31]
+- [x] Add Seq deep_materialize cycle corpus test — end-to-end corpus test for `--eval` forcing cyclic Seq structure (unit test exists at `src/eval.rs`, no corpus test) (`tests/corpus/eval/`) [Major, test-crafter + eval-engine]
 ### test-critical-cd: Critical Test Coverage (Parts C–D)
 
 Consolidated from: test-critical-c, test-critical-d
