@@ -724,6 +724,12 @@ fn unify_tails(
             } else {
                 // Bind rho1 to Row { fields: {}, tail: RowVar(rho2) }
                 // Lower levels symmetrically
+                //
+                // The level asymmetry is safe: rho1 is bound to Row({}, RowVar(rho2)), eliminating it
+                // from the constraint set. Only rho2 remains free, so only its level needs lowering to
+                // prevent unsound generalization (Kiselyov 2013). However, we lower rho2's level to
+                // min(rho1_level, rho2_level) to maintain the invariant that binding eliminates the
+                // higher-level variable.
                 let rho1_level = state.levels.get(rho1).copied().unwrap_or(0);
                 let rho2_level = state.levels.get(rho2).copied().unwrap_or(0);
                 state
