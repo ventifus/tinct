@@ -670,6 +670,8 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
 /// Both `Function` and `Builtin` return "Function" (from the user's perspective).
+/// Returns "Dict" for all dicts, with no distinction between list-like (sequential int keys)
+/// and map-like dicts — the type system does not track key structure at runtime.
 /// Inherently materializing: must inspect value variant to determine type.
 fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {

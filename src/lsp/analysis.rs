@@ -452,11 +452,11 @@ mod tests {
     #[test]
     fn test_hover_type_not_shown_on_error() {
         let env = test_env();
-        // $undefined has no type -- hover should show syntactic info only.
+        // $undefined has type Any when inference fails -- LSP hover shows it for completeness.
         let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 1);
         assert!(hover.is_some());
         let text = hover.unwrap();
-        assert_eq!(text, "Variable: $undefined");
+        assert_eq!(text, "Variable: $undefined (Any)");
     }
 }

@@ -46,6 +46,11 @@ pub enum Type {
     Str,
     StringLiteral(String),
     Bool,
+    /// Supertype of both `Int` and `Float` — represents any numeric value.
+    /// No `NumberLiteral` variant exists (unlike `IntLiteral`/`StringLiteral`) because:
+    /// - Literals parse to concrete types (`IntLiteral` or `Float`)
+    /// - `Number` only appears in user annotations (`[@Number ...]`) and subtyping relations
+    /// - There is no runtime value that is "a number but neither int nor float"
     Number,
     Record(Row),
     Function {
@@ -304,6 +309,9 @@ impl fmt::Display for TypeScheme {
 /// Inference state for levels-based let-generalization
 #[derive(Debug, Clone)]
 pub struct InferState {
+    /// Monotonic counter for fresh type/row variable names (_t0, _t1, ...).
+    /// Uses u32 instead of u64 — assumes no single inference run creates >4B type variables.
+    /// (In practice, programs with >1M type variables exhaust memory first via substitution map growth.)
     pub name_counter: u32,
     pub level: u32,
     pub levels: HashMap<String, u32>,
@@ -529,7 +537,9 @@ impl Substitution {
         }
     }
 
-    // Used in type checker tests; not yet called from production code.
+    /// Test-only introspection: lookup a type variable binding in the type_map.
+    /// Used in type checker tests for asserting substitution contents; not called from production code.
+    /// For production access to substitution results, use `apply()` instead.
     #[cfg(test)]
     pub fn get(&self, name: &str) -> Option<&Type> {
         self.type_map.get(name)
@@ -1452,12 +1462,20 @@ impl fmt::Display for Type {
                 write!(f, "]")
             }
             Type::Function { params, ret } => {
-                write!(f, "Fn@{ret} [")?;
+                // Parenthesize nested function types in return position for clarity
+                match **ret {
+                    Type::Function { .. } => write!(f, "Fn@({ret}) [")?,
+                    _ => write!(f, "Fn@{ret} [")?,
+                }
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, " ")?;
                     }
-                    write!(f, "{p}")?;
+                    // Parenthesize nested function types in parameter position
+                    match p {
+                        Type::Function { .. } => write!(f, "({p})")?,
+                        _ => write!(f, "{p}")?,
+                    }
                 }
                 write!(f, "]")
             }
@@ -1499,7 +1517,10 @@ impl TypeEnv {
         self.lookup_type_alias(|env| env.type_aliases.get(name))
     }
 
-    fn lookup(&self, field: impl Fn(&TypeEnv) -> Option<&TypeScheme>) -> Option<&TypeScheme> {
+    pub(crate) fn lookup(
+        &self,
+        field: impl Fn(&TypeEnv) -> Option<&TypeScheme>,
+    ) -> Option<&TypeScheme> {
         if let Some(scheme) = field(self) {
             return Some(scheme);
         }
@@ -1537,6 +1558,417 @@ impl TypeEnv {
 
     pub fn insert_type_alias(&mut self, name: String, ty: Type) {
         self.type_aliases.insert(name, ty);
+    }
+
+    /// Create a `TypeEnv` pre-registered with builtin function type signatures.
+    ///
+    /// This enables the type checker to validate user code that calls builtins.
+    /// Polymorphic parameters use `Any` as the escape hatch; precise return types
+    /// are specified where known.
+    ///
+    /// **Type signature conventions:**
+    /// - `Any → Any → T`: binary operator returning type `T`
+    /// - `Any → T`: unary operator returning type `T`
+    /// - `Fn@Any [Any]`: higher-order function (e.g. map, filter) with `Any` for callbacks
+    ///
+    /// **Coverage:** All 44 builtins from `standard_builtins()` (src/builtins.rs:1020-1081)
+    pub fn with_builtins() -> Self {
+        let mut env = Self::new();
+
+        // Arithmetic: Number → Number → Number (auto-promotion handled at runtime)
+        // We use Number instead of Any to allow the type checker to catch non-numeric arguments
+        for name in ["+", "-", "*"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Number, Type::Number],
+                    ret: Box::new(Type::Number),
+                },
+            );
+        }
+
+        // Division: always returns Float
+        env.insert(
+            "/".to_string(),
+            Type::Function {
+                params: vec![Type::Number, Type::Number],
+                ret: Box::new(Type::Float),
+            },
+        );
+
+        // Comparison: Any → Any → Bool (cross-type comparison allowed at runtime)
+        for name in ["=", "<"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    ret: Box::new(Type::Bool),
+                },
+            );
+        }
+
+        // Control flow: if takes Bool, returns Any (type depends on branches)
+        env.insert(
+            "if".to_string(),
+            Type::Function {
+                params: vec![Type::Bool, Type::Any, Type::Any],
+                ret: Box::new(Type::Any),
+            },
+        );
+
+        // Dict primitives
+        env.insert(
+            "keys".to_string(),
+            Type::Function {
+                params: vec![Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_dict".to_string(), 0),
+                })],
+                ret: Box::new(Type::Seq(Box::new(Type::Str))),
+            },
+        );
+        env.insert(
+            "length".to_string(),
+            Type::Function {
+                params: vec![Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_dict".to_string(), 0),
+                })],
+                ret: Box::new(Type::Int),
+            },
+        );
+        env.insert(
+            "merge".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_dict".to_string(), 0),
+                    }),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_dict".to_string(), 0),
+                    }),
+                ],
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_dict".to_string(), 0),
+                })),
+            },
+        );
+        env.insert(
+            "append".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_dict".to_string(), 0),
+                    }),
+                    Type::Any,
+                ],
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_dict".to_string(), 0),
+                })),
+            },
+        );
+
+        // String operations
+        env.insert(
+            "str".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Str),
+            },
+        );
+        for name in ["split", "replace"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Str, Type::Str],
+                    ret: Box::new(if name == "split" {
+                        Type::Seq(Box::new(Type::Str))
+                    } else {
+                        Type::Str
+                    }),
+                },
+            );
+        }
+        for name in ["upper", "lower", "trim"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Str],
+                    ret: Box::new(Type::Str),
+                },
+            );
+        }
+
+        // Numeric operations
+        for name in ["floor", "round"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Number],
+                    ret: Box::new(Type::Int),
+                },
+            );
+        }
+
+        // Parsing
+        env.insert(
+            "to-int".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Int),
+            },
+        );
+        env.insert(
+            "to-float".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Float),
+            },
+        );
+
+        // Evaluation control
+        env.insert(
+            "eval".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Any),
+            },
+        );
+        env.insert(
+            "error".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Any),
+            },
+        );
+        env.insert(
+            "try".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                ret: Box::new(Type::Any),
+            },
+        );
+        env.insert(
+            "apply".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Function {
+                        params: vec![Type::Any],
+                        ret: Box::new(Type::Any),
+                    },
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_dict".to_string(), 0),
+                    }),
+                ],
+                ret: Box::new(Type::Any),
+            },
+        );
+
+        // Type introspection
+        env.insert(
+            "type-of".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Str),
+            },
+        );
+
+        // I/O
+        env.insert(
+            "from-json".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Any),
+            },
+        );
+        env.insert(
+            "include".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Any),
+            },
+        );
+
+        // Sequences: primitives
+        env.insert(
+            "seq".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+        env.insert(
+            "head".to_string(),
+            Type::Function {
+                params: vec![Type::Seq(Box::new(Type::Any))],
+                ret: Box::new(Type::Any),
+            },
+        );
+        env.insert(
+            "tail".to_string(),
+            Type::Function {
+                params: vec![Type::Seq(Box::new(Type::Any))],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+        env.insert(
+            "collect".to_string(),
+            Type::Function {
+                params: vec![Type::Seq(Box::new(Type::Any))],
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_dict".to_string(), 0),
+                })),
+            },
+        );
+        env.insert(
+            "seq?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+            },
+        );
+
+        // Sequences: generators
+        env.insert(
+            "range".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                ret: Box::new(Type::Seq(Box::new(Type::Int))),
+            },
+        );
+        env.insert(
+            "repeat".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+        env.insert(
+            "cycle".to_string(),
+            Type::Function {
+                params: vec![Type::Seq(Box::new(Type::Any))],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+        env.insert(
+            "iterate".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Function {
+                        params: vec![Type::Any],
+                        ret: Box::new(Type::Any),
+                    },
+                    Type::Any,
+                ],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+        env.insert(
+            "unfold".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Function {
+                        params: vec![Type::Any],
+                        ret: Box::new(Type::Any),
+                    },
+                    Type::Any,
+                ],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+
+        // Sequences: transforms
+        env.insert(
+            "map".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Function {
+                        params: vec![Type::Any],
+                        ret: Box::new(Type::Any),
+                    },
+                    Type::Any,
+                ],
+                ret: Box::new(Type::Any),
+            },
+        );
+        env.insert(
+            "filter".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Function {
+                        params: vec![Type::Any],
+                        ret: Box::new(Type::Bool),
+                    },
+                    Type::Any,
+                ],
+                ret: Box::new(Type::Any),
+            },
+        );
+        env.insert(
+            "take".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Seq(Box::new(Type::Any))],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+        env.insert(
+            "drop".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Seq(Box::new(Type::Any))],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+
+        // Sequences: reductions
+        env.insert(
+            "reduce".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        ret: Box::new(Type::Any),
+                    },
+                    Type::Any,
+                    Type::Seq(Box::new(Type::Any)),
+                ],
+                ret: Box::new(Type::Any),
+            },
+        );
+        env.insert(
+            "join".to_string(),
+            Type::Function {
+                params: vec![Type::Str, Type::Seq(Box::new(Type::Any))],
+                ret: Box::new(Type::Str),
+            },
+        );
+        env.insert(
+            "concat".to_string(),
+            Type::Function {
+                params: vec![Type::Seq(Box::new(Type::Seq(Box::new(Type::Any))))],
+                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+            },
+        );
+
+        // Proxy
+        env.insert(
+            "proxy".to_string(),
+            Type::Function {
+                params: vec![Type::Function {
+                    params: vec![Type::Str],
+                    ret: Box::new(Type::Any),
+                }],
+                ret: Box::new(Type::Proxy),
+            },
+        );
+
+        env
     }
 }
 
@@ -2270,6 +2702,77 @@ mod tests {
         let mut child = TypeEnv::with_parent(&parent_rc);
         child.insert_type_alias("T".into(), Type::Str);
         assert_eq!(child.get_type_alias("T"), Some(&Type::Str));
+    }
+
+    #[test]
+    fn test_with_builtins_registers_all_builtins() {
+        let env = TypeEnv::with_builtins();
+
+        // Arithmetic
+        assert!(env.get("+").is_some());
+        assert!(env.get("-").is_some());
+        assert!(env.get("*").is_some());
+        assert!(env.get("/").is_some());
+
+        // Comparison
+        assert!(env.get("=").is_some());
+        assert!(env.get("<").is_some());
+
+        // Control flow
+        assert!(env.get("if").is_some());
+
+        // Dict primitives
+        assert!(env.get("keys").is_some());
+        assert!(env.get("length").is_some());
+        assert!(env.get("merge").is_some());
+        assert!(env.get("append").is_some());
+
+        // Sequences
+        assert!(env.get("map").is_some());
+        assert!(env.get("filter").is_some());
+        assert!(env.get("reduce").is_some());
+    }
+
+    #[test]
+    fn test_with_builtins_arithmetic_signature() {
+        let env = TypeEnv::with_builtins();
+        let add_scheme = env.get("+").expect("+ should be registered");
+        match &add_scheme.body {
+            Type::Function { params, ret } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0], Type::Number);
+                assert_eq!(params[1], Type::Number);
+                assert_eq!(&**ret, &Type::Number);
+            }
+            other => panic!("expected Function type for +, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_with_builtins_division_returns_float() {
+        let env = TypeEnv::with_builtins();
+        let div_scheme = env.get("/").expect("/ should be registered");
+        match &div_scheme.body {
+            Type::Function { ret, .. } => {
+                assert_eq!(&**ret, &Type::Float);
+            }
+            other => panic!("expected Function type for /, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_with_builtins_comparison_signature() {
+        let env = TypeEnv::with_builtins();
+        let eq_scheme = env.get("=").expect("= should be registered");
+        match &eq_scheme.body {
+            Type::Function { params, ret } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0], Type::Any);
+                assert_eq!(params[1], Type::Any);
+                assert_eq!(&**ret, &Type::Bool);
+            }
+            other => panic!("expected Function type for =, got {other}"),
+        }
     }
 
     #[test]

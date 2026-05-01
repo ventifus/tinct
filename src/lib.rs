@@ -143,10 +143,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
 /// error message if type errors are found. Each error includes the error message
 /// and the source span where it occurred.
 ///
-/// **Note**: This function type-checks with an empty type environment. Stdlib
-/// builtins (like `$+`, `$merge`, etc.) are not in scope and will produce
-/// "undefined variable" errors. This is a known limitation — the type system
-/// does not yet have type signatures for builtins.
+/// The type environment is pre-populated with builtin type signatures via
+/// `TypeEnv::with_builtins()`, so stdlib builtins (`$+`, `$merge`, etc.) are
+/// in scope for type checking.
 ///
 /// This function is primarily used for testing and corpus validation to ensure
 /// type checking regressions are caught. The main `eval_source` function treats
