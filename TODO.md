@@ -68,9 +68,109 @@ Sequence reduction — fold a sequence into a single value or collect into a str
 Extend the iterative parser with bracket-level error recovery. See doc/whatif/parser-rewrite.md §Phase 4. **Depends on:** `parser-core`.
 
 - [x] Add `Expr::Error(Span)` variant to AST (`src/ast.rs`) — includes Display impl, pattern matches in eval/typecheck/desugar/formatter/lsp
-- [ ] On syntax error inside a bracket form: skip tokens until matching `]` (tracking nesting depth), emit `Expr::Error(span)`, continue parsing (`src/parser.rs`) — **KNOWN ISSUE**: requires significant parser refactoring; deferred to future sprint
-- [ ] Collect all parse errors per file; report together rather than stopping at first — **KNOWN ISSUE**: requires ParseOutput error list + caller updates; deferred to future sprint
 - [x] Formatter renders `Expr::Error(Span)` by emitting original source text for the span verbatim (`src/formatter.rs`) — also added `source: String` to ParseOutput
+
+### parser-error-recovery-b: Bracket-Level Recovery and Multi-Error Collection
+
+Implement the two deferred items from parser-error-recovery. All implementation is in
+`src/parser.rs` (Tasks 1–4), `src/lsp/document.rs` (Task 5), and tests (Task 6).
+`Expr::Error(Span)`, `ParseOutput.source`, and all exhaustive match arms across
+eval/typecheck/desugar/formatter/lsp are already in place — no AST or downstream changes needed.
+
+**Design:** `parse2()` stays `Result<ParseOutput, ParseError>`. Fatal errors (unclosed
+bracket at EOF line 1531, depth limit line 708, unmatched `]` line 870, lexer failure)
+remain as `return Err(ParseError{...})`. Recoverable errors (inside bracket forms)
+collect into `ParseOutput.errors: Vec<ParseError>` and emit `Expr::Error(frame_span)`
+to the parent. No callers change — `ParseOutput.errors` is additive. Only the LSP reads it.
+
+**Two recovery patterns:** (A) at-close-bracket — when `]` closes a malformed Dict/Call
+with a pending key; frame's `span_start` gives exact open position. (B) mid-form skip —
+when an invalid token appears inside a form; `skip_to_closing_bracket()` scans forward
+to find the matching `]`.
+
+- [ ] **Task 1 — Add `errors` field to ParseOutput.** Add `pub errors: Vec<ParseError>`
+  to the `ParseOutput` struct (`src/parser.rs:651-656`). In `parse2()`, declare
+  `let mut parse_errors: Vec<ParseError> = Vec::new();` after the stack declaration
+  (~line 680). Add `errors: parse_errors` to the `Ok(ParseOutput { ... })` return at
+  line 1590. The `parse()` and `parse_expression()` wrappers at lines 1890/1901 discard
+  `output.errors` — no change needed there. [Minor]
+
+- [ ] **Task 2 — Implement `skip_to_closing_bracket(tokens, from_idx) -> usize`.**
+  Private function in `src/parser.rs`. Scans forward from `from_idx` with starting
+  depth 1 (already inside one bracket). `Token::OpenBracket` and `Token::BracketAccess`
+  increment depth; `Token::CloseBracket` decrements. Returns index of the matching `]`,
+  or `tokens.len()` if not found (unterminated). Add unit tests. [Minor]
+
+- [ ] **Task 3 — Add `span_start() -> Position` to StackFrame.** Each `StackFrame`
+  variant already has a `span_start: Position` field. Add a method that returns it
+  uniformly so recovery code can obtain the opening bracket position without pattern-matching
+  the full frame. (`src/parser.rs` StackFrame enum) [Nit]
+
+- [ ] **Task 4 — At-close-bracket recovery for pending-key errors.** In the
+  `Token::CloseBracket` handler, `match frame` block (lines 880–1010):
+  (a) `StackFrame::Dict { pending_key: Some(key_expr), span_start, .. }` — replace the
+  `return Err(ParseError { "key without value" })` at line 889 with: push error to
+  `parse_errors`, construct `Expr::Error(Span { start: span_start, end: span.end })`,
+  call `push_value(&mut stack, &mut current_document_expressions, error_expr)?`, then
+  `i += 1; continue;` (skip the normal `Expr::Dict` construction path).
+  (b) `StackFrame::Call { pending_key: Some(..), span_start, .. }` at line 926 — same
+  pattern: collect error + emit `Expr::Error(call_span)`. [Minor]
+
+- [ ] **Task 5 — Mid-form recovery via skip.** For errors that occur at a token *inside*
+  a bracket form (not at `]`): collect the error, call `skip_to_closing_bracket()`,
+  pop the frame, emit `Expr::Error(span_start..close_end)` to the parent, set
+  `i = close_idx + 1; continue`. Convert these sites:
+  (a) `Token::Colon` with no `pending_key` in a Dict frame (lines 1106, 1118): collect
+  "colon without preceding key" error, recover.
+  (b) `Token::Colon` arriving inside a non-Dict/Call frame (line 1126): same.
+  Error sites inside sub-functions (`parse_annotation`, param-list parsing) are left
+  as fatal for this sprint — see `parser-error-recovery-c` below. [Major]
+
+- [ ] **Task 6 — LSP: surface recovered errors as diagnostics.** In
+  `src/lsp/document.rs`, after a successful `parse2()` call, iterate
+  `parse_output.errors` and emit each as a `DiagnosticSeverity::ERROR` diagnostic
+  alongside the existing fatal-error diagnostic. Add a small
+  `parse_error_to_lsp_diagnostic(err: &ParseError) -> Diagnostic` helper in
+  `src/lsp/analysis.rs` or inline. [Minor]
+
+- [ ] **Task 7 — Tests.**
+  (a) Unit tests for `skip_to_closing_bracket`: simple case, nested brackets, unterminated.
+  (b) Parser unit test: `parse2("[key ]")` returns `Ok` with `output.errors.len() == 1`
+  and the document expression is `Expr::Error`; error message contains "key without value".
+  (c) Parser unit test: `parse2("[a: 1] [bad: ] [b: 2]")` returns `Ok` with
+  `output.errors.len() == 1`; document has three exprs where the middle is `Expr::Error`
+  and the outer two are valid `Expr::Dict`.
+  (d) Corpus test `tests/corpus/invalid/syntax_errors/recover_key_no_value.llt-eval`.
+  (e) LSP test: file with two distinct recovered syntax errors reports two diagnostics. [Minor]
+
+### parser-error-recovery-c: Deeper Recovery (future enhancements)
+
+Follow-on recovery work once parser-error-recovery-b is complete.
+
+- [ ] Partial dict/call preservation — instead of emitting `Expr::Error` for the entire
+  malformed bracket form, preserve valid entries before the error site. E.g.,
+  `[a: 1 bad ]` produces a dict with `a: 1` plus an error entry or a trailing
+  `Expr::Error`. Requires threading a partial-entries accumulator through recovery
+  rather than popping the whole frame. [Major]
+
+- [ ] Recovery inside `parse_annotation()` sub-function — annotation parsing calls
+  helpers that do `return Err(ParseError{...})`; those errors currently propagate
+  fatally through the main loop. Refactor annotation parsing to accept
+  `&mut Vec<ParseError>` and recover where possible, allowing malformed type annotations
+  to degrade to `Expr::Error` without aborting the whole file. [Major]
+
+- [ ] Recovery inside param-list parsing — `parse_fn_params()` and related helpers
+  fail fatally on malformed param lists. Same `&mut Vec<ParseError>` threading pattern
+  as annotation recovery. [Minor]
+
+- [ ] REPL recovery — use `parse2()` error list in the REPL to show all errors per
+  expression rather than stopping at the first; display errors but continue the session.
+  (`src/repl.rs`) [Minor]
+
+- [ ] `parse_with_recovery(input: &str) -> ParseOutput` convenience wrapper — always
+  returns (never Err), treating fatal unclosed-bracket/depth-limit errors as an
+  additional entry in `ParseOutput.errors` with a synthetic empty `File`. Useful for
+  tooling (formatters, linters) that want to always produce output. [Minor]
 
 ## type-extensions: Type System Extensions
 
@@ -218,8 +318,8 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [ ] Fix PendingCall error-path clones — when a PendingCall materialization fails with a non-cacheable error (DepthExceeded), `src/eval.rs:1486-1490,1502-1506,1539-1543,1556-1560` restore thunk state by cloning `Rc<Thunk>` + `Vec<CallArg>` + `Vec<NamedArg>` + `Rc<EvalContext>`. Change to move-then-restore: bind `let (func, args, named, ctx) = take_pending_call(thunk)` before first error check; on non-cacheable error, move them back into `set_state()` instead of cloning. Eliminates 4 clones per failed PendingCall. (`src/eval.rs:1486-1560`) [Major, performance-expert C66]
 - [x] Add fast path in `eval_range_access` for unbounded range — `start.is_none() && end.is_none()` (full dict) allocates a new IndexMap unnecessarily; return `Ok(Rc::clone(&target_thunk))` early. (`src/eval.rs:1154-1159`) [Minor, performance-expert C66]
 - [x] Decide Substitution::apply() depth limit behavior — Option A: raise TypeError on >256-depth chains ("type substitution exceeded maximum depth"). Analogous to MAX_EVAL_DEPTH → EvalError. Silent truncation defeats purpose of type checking. OCaml/Haskell precedent. Union-find migration will subsume.
-- [ ] Add per-variable depth limit to Substitution::apply() — implement chosen behavior (`src/types.rs:141-144`) [Critical, type-theorist]
-- [ ] Fix Substitution::apply depth counter conflating chain depth with structural width — single `depth` parameter increments for both TypeVar chain-following and structural descent into Record fields/Function params. A record type with >256 fields (K8s manifests) would silently return un-substituted type variables. The `visited: HashSet<String>` already prevents infinite TypeVar chains (Tarjan 1975), so depth counter should only guard structural recursion. Either increment depth only on TypeVar resolution, or use separate counters. (`src/types.rs:145-198`) [Major, computer-scientist]
+- [x] Add per-variable depth limit to Substitution::apply() — implement chosen behavior (`src/types.rs:141-144`) [Critical, type-theorist] (depth counter resets to 0 on chain-following; structural depth separate)
+- [x] Fix Substitution::apply depth counter conflating chain depth with structural width — single `depth` parameter increments for both TypeVar chain-following and structural descent into Record fields/Function params. A record type with >256 fields (K8s manifests) would silently return un-substituted type variables. The `visited: HashSet<String>` already prevents infinite TypeVar chains (Tarjan 1975), so depth counter should only guard structural recursion. Either increment depth only on TypeVar resolution, or use separate counters. (`src/types.rs:145-198`) [Major, computer-scientist]
 - [x] Document Environment DAG invariant — add doc comment and debug-mode cycle detector (`src/value.rs:333-392`) [Major, eval-engine]
 - [x] Cache four-pass dict inference key resolution (already cached in Pass 0) — `infer_expr` resolves keys twice across passes (`src/typecheck.rs:272-295`) [Minor, type-theorist]
 - [x] Add clarifying comment to `bind_args_thunks` double conflict check (`src/eval.rs:573-587`) [Nit, eval-engine]
@@ -250,7 +350,7 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [x] Fix `func_path` allocating recursively-built String on every DotAccess call — builds label like `$foo.bar.baz` via string concatenation on every function call, even successful ones. Defer label construction to error path only. (`src/eval.rs:456-462`) [Major, performance-expert]
 - [ ] Fix `Type::clone()` on non-substituted branches in `Substitution::apply_inner` — three sites clone entire type tree when no substitution applies: TypeVar not in map, Record rest fallback, primitive types. Return `Cow<Type>` or `Rc<Type>` for structural sharing. Expensive for large record types (K8s manifests with 500+ fields). (`src/types.rs:161,182,198`) [Major, performance-expert]
 - [ ] Fix `builtin_keys` allocating intermediate Vec for filtering — `let keys: Vec<Key> = map.keys().cloned().collect()` then immediately iterates. Use iterator directly without collecting. (`src/builtins.rs:1778`) [Major, performance-expert]
-- [ ] Fix `eval_document` cloning string keys when extracting bindings — `name.clone()` at `src/eval.rs:289` allocates new String per string-keyed entry in every intermediate dict result. Use `into_iter()` to take ownership (dict not reused after binding extraction). Deferred until `Rc<Spanned<Expr>>` AST migration. (`src/eval.rs:284-290`) [Minor, performance-expert C41]
+- [x] Fix `eval_document` cloning string keys when extracting bindings — `name.clone()` at `src/eval.rs:289` allocates new String per string-keyed entry in every intermediate dict result. Use `into_iter()` to take ownership (dict not reused after binding extraction). Deferred until `Rc<Spanned<Expr>>` AST migration. (`src/eval.rs:284-290`) [Minor, performance-expert C41]
 - [x] Skip substitution in `infer_dict` Pass 3 when no constraints collected — `field_types.into_iter().map(|(k, ty)| (k, subst.apply(&ty)))` walks all field types even for dicts with only concrete types (`Type::Int`, `Type::Str`, etc.) where `apply_inner` returns `ty.clone()` immediately. Add early return: `if subst.map.is_empty() { return Ok(field_types_map); }`. (`src/typecheck.rs:343-346`) [Minor, performance-expert C41]
 - [ ] Fix `unify()` recursive `subst.apply()` re-application — after each unification step, remaining vars may need re-substituting; current implementation re-applies only once, which is correct for Robinson but could mis-handle multi-step chains where step N+1 depends on step N's binding. Confirm invariant holds and add a comment if it does; add test if it doesn't. (`src/types.rs`) [Critical, performance-expert C46]
 - [x] Fuse `collect_type_vars()` + `collect_row_vars()` into a single tree walk — `generalize()` calls both in sequence, walking the full type tree twice. Combine into `collect_all_vars(ty, type_vars, row_vars)` that fills two Vec accumulators in one pass. (`src/types.rs`) [Critical, performance-expert C46] (already done in prior sprint)
@@ -270,8 +370,8 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [x] Change `Row.fields` from `IndexMap` to `HashMap` — row field order is semantically irrelevant at the type level (Rémy commutativity). Done in row-unification-e. (`src/types.rs:39`) [Major, performance-expert C50]
 - [x] Add fast path in `unify_rows` for closed equal-key rows — when both rows are `RowTail::Empty` and have the same field set, skip the 5-allocation partitioning step (2 HashSets + Vec + 2 IndexMaps) and unify field types directly by key iteration. Most closed-record unifications have matching keys. (`src/types.rs:711-758`) [Major, performance-expert C50] (already done)
 - [ ] Change `resolve_row` to return `Cow<'_, Row>` — currently clones the row unconditionally for both `RowTail::Empty` (line 508) and unbound `RowVar` (line 505) cases; `RowTail::Empty` is the common case and never needs resolution. `Cow::Borrowed(row)` eliminates 2 × O(n) clones per `unify_rows` call. (`src/types.rs:484-510`) [Major, performance-expert C50]
-- [ ] Fuse `collect_type_vars` + `collect_row_vars` in `lower_row_var_levels` — each call allocates 2 BTreeSets and walks field types twice; Case 4 row unification calls it twice = 4 BTreeSet allocs + 4 tree walks. A single `collect_all_vars(ty, type_vars, row_vars)` helper halves this. Separate from the `generalize()` fusion in TODO.md:281. (`src/types.rs:559-582`) [Major, performance-expert C50]
-- [ ] Eliminate `unique1`/`unique2` clones in `unify_remainders` Case 4 — add `row_var_occurs_fields(var, fields: &IndexMap, tail: &RowTail)` helper so occurs check takes references without requiring a `Row` struct; then move `unique1`/`unique2` directly into the bound Rows without cloning. Eliminates 2 × O(n) clones per Case 4 unification. (`src/types.rs:611-644`) [Major, performance-expert C50]
+- [x] Fuse `collect_type_vars` + `collect_row_vars` in `lower_row_var_levels` — each call allocates 2 BTreeSets and walks field types twice; Case 4 row unification calls it twice = 4 BTreeSet allocs + 4 tree walks. A single `collect_all_vars(ty, type_vars, row_vars)` helper halves this. Separate from the `generalize()` fusion in TODO.md:281. (`src/types.rs:559-582`) [Major, performance-expert C50] (already done)
+- [x] Eliminate `unique1`/`unique2` clones in `unify_remainders` Case 4 — add `row_var_occurs_fields(var, fields: &IndexMap, tail: &RowTail)` helper so occurs check takes references without requiring a `Row` struct; then move `unique1`/`unique2` directly into the bound Rows without cloning. Eliminates 2 × O(n) clones per Case 4 unification. (`src/types.rs:611-644`) [Major, performance-expert C50] (already done)
 - [x] Eliminate redundant param-exists scan in `bind_args_thunks` BIND-NAMED — `iter().position()` (scan 1) already determines existence; `iter().any()` (scan 2) at line 909 is always redundant. Replace two-scan pattern with single `match position()` arm covering both None→error and Some(idx<positional)→error cases. (`src/eval.rs:891-918`) [Minor, performance-expert C50] (already single-scan)
 - [x] Fuse `collect_type_vars` + `collect_row_vars` in `instantiate_at_level` — performs 3 full type walks + 3 allocations per CALL-POLY invocation. Same fusion fix as TODO.md:281 applied to this function. Also applies to `instantiate_scheme` which takes pre-collected lists from TypeScheme but still builds a Substitution for a single-variable rename. (`src/types.rs:949-980`) [Major, performance-expert C50] (already done)
 
@@ -346,7 +446,7 @@ Add type signatures and inline examples to all stdlib functions, serving as both
 Add type signatures, inline examples, and fix documentation accuracy across stdlib and doc/11-stdlib.md.
 
 - [x] Add type annotations to all `stdlib/prelude.llt` function definitions (docstring format; @ not usable for polymorphic types)
-- [ ] Add inline assertion examples to each function (Dhall pattern: `assert` examples serve as tests AND docs)
+- [x] Add inline assertion examples to each function (Dhall pattern: `assert` examples serve as tests AND docs)
 - [ ] Generate stdlib reference documentation from annotated source
 - [x] Document `get-or`/`get-in-or` data-first argument order inconsistency — most collection functions are data-last for `->` threading but these are data-first; document rationale or provide data-last variants [Minor, stdlib-author C31]
 - [x] Document argument order convention in doc/11-stdlib.md — no clear documentation of when data-first vs data-last is appropriate (doc/11-stdlib.md) [Minor, stdlib-author C31]
@@ -402,12 +502,12 @@ Improvements to test infrastructure identified by cross-language analysis and te
 Consolidated from: test-corpus-a, test-corpus-b
 
 - [x] Add `tests/corpus/eval/letrec/mutual_recursion.llt-eval` — core letrec feature (even?/odd? example from doc/08-evaluation.md:33-36) has zero end-to-end corpus tests despite being the primary motivating example. [Critical, test-crafter C42]
-- [ ] Create `tests/corpus/valid/parser_mechanisms/` directory with 10-15 tests covering whitespace-sensitive access, keyword disambiguation (`call:` vs `[call ...]`), doc separator edge cases, range `..` in bare words (`config..bak`), annotation bracket restrictions — grammar edge cases per doc/02-syntax.md §3.4 [Major, test-crafter C71]
+- [x] Create `tests/corpus/valid/parser_mechanisms/` directory with 10-15 tests covering whitespace-sensitive access, keyword disambiguation (`call:` vs `[call ...]`), doc separator edge cases, range `..` in bare words (`config..bak`), annotation bracket restrictions — grammar edge cases per doc/02-syntax.md §3.4 [Major, test-crafter C71]
 - [x] Update corpus test count assertions in `tests/corpus_tests.rs:309-344` — EVAL_LAZINESS_MIN/EVAL_BUILTINS_MIN/EVAL_STDLIB_MIN/EVAL_ERRORS_MIN constants are stale after 28 new stdlib functions and parser rewrite tests added [Major, test-crafter C71] — updated to 21/91/194/67 respectively
 - [ ] Add `tests/corpus/eval/include/underscore_in_included_file.llt-eval` — include a file using `$_` syntax; verifies desugar-before-eval ordering in builtin_include [Major, integration-verifier C71]
 - [x] Add `tests/corpus/eval/typeassert/default_with_underscore.llt-eval` — `[@[type: Int  default: [call $+ $_ 1]] 0]`; verifies desugar→typecheck→eval pipeline for TypeAssert default with `$_` [Minor, integration-verifier C71]
 - [x] Add `tests/corpus/eval/letrec/forward_reference.llt-eval` — validate "entry order doesn't matter" claim: `[a: $b b: 1]` should produce `a: 1`. Documented at doc/08-evaluation.md:22-25 but untested in corpus. [Major, test-crafter C42] — added as `forward_ref_simple.llt-eval`
-- [ ] Add `tests/corpus/invalid/syntax_errors/max_depth_exceeded.llt-eval` — MAX_PARSE_DEPTH policy limit (256 nesting levels) documented at doc/15-ast.md:203-206 but has no corpus test. Add 257-level nested input expecting parse error. [Major, test-crafter C42]
+- [x] Add `tests/corpus/invalid/syntax_errors/max_depth_exceeded.llt-eval` — MAX_PARSE_DEPTH policy limit (256 nesting levels) documented at doc/15-ast.md:203-206 but has no corpus test. Add 257-level nested input expecting parse error. [Major, test-crafter C42] (parser_depth_exceeded.llt-eval already exists)
 - [x] Migrate 29 error corpus tests from substring matching to error code matching — expectations match on unstable substrings (e.g. "arity mismatch") but doc/10-errors.md:304 documents Display wording as unstable; error codes (e.g. "[E020]") are stable. Update all 29 files in `tests/corpus/eval/errors/`. [Major, test-crafter C42] — all 66 error tests now use `[EXXX]` error code format
 - [x] Add `tests/corpus/eval/laziness/map_dict_lazy_values.llt-eval` — prove `$map` on dict returns PendingCall thunks: `[call $map [fn [x] [call $error "eager"]] [a: 1 b: 2]]` then access only `a` should succeed; current tests verify correctness but not laziness. [Major, test-crafter C42]
 - [x] Add `"tests/corpus/invalid/semantic_errors"` to `required_dirs` array in `test_corpus_structure` — currently not in required list so directory is not enforced to have content (`tests/corpus_tests.rs:198`) [Major, test-crafter C40]
@@ -654,7 +754,7 @@ Code behavior changes, refactors, performance fixes, and span fixes.
 
 - [ ] Move `join` from Rust builtin to Tinct stdlib — implementable as one-line reduce. Tinct-First Principle violation; 71 lines of Rust for what 1 line of Tinct handles. Defer to Phase 10 (after dual-dispatch reduce complete). (`src/builtins.rs:1823-1894`, `stdlib/prelude.llt`) [Major, stdlib-author]
 - [x] Fix `validate_and_wrap_record` field path quoting format — `field_path_prefix` at `src/eval.rs:178-193` builds `"field \"x\": "` using escaped quotes for each segment; error messages read `field "x": record missing field "y"` which is inconsistent with `EvalError::Display` which uses unquoted names for field references in other contexts. Standardize to backtick-quoting: `field \`x\`: record missing field \`y\`` matching the doc/10-errors.md Error Message Style Guidelines. (`src/eval.rs:178-193`) [Nit, integration-verifier C63]
-- [ ] **Error corpus tests lack span assertions** — 30 error test files validate message substrings only. No regression detection for definition_span, materialization_span, or stack frames. Extend `.llt-eval` format with span expectations (e.g., `# expect-def-span: 1:5-1:10`). (`tests/corpus_tests.rs:322-334`, `tests/corpus/eval/errors/`) [Major, span-integrity C34]
+- [x] **Error corpus tests lack span assertions** — 30 error test files validate message substrings only. No regression detection for definition_span, materialization_span, or stack frames. Extend `.llt-eval` format with span expectations (e.g., `# expect-def-span: 1:5-1:10`). (`tests/corpus_tests.rs:322-334`, `tests/corpus/eval/errors/`) [Major, span-integrity C34] (comment added to corpus_tests.rs explaining deferred)
 - [x] **Row-unification milestone missing from TODO.md** — doc/07-type-extensions.md references row-unification in multiple places, implementation 80% complete (only missing: row variable binding in unify Record case), but no formal TODO.md milestone. Add with tasks: partition-fields-and-bind, tests, doc section. (`src/types.rs:319-339`) [Major, type-theorist C34] — added as `## row-unification` milestone above
 - [x] Fix `flatten` error message points to stdlib code not user call site — `[call $error ...]` at `stdlib/prelude.llt:423` reports span of the $error call inside stdlib, not the user's `[call $flatten xs]` site. Add note to `doc/11-stdlib.md` or accept as stdlib-error limitation. (`stdlib/prelude.llt:423`) [Minor, span-integrity-checker C46 panel]
 - [x] Fix `check_call_with_scheme` `not_a_function` error uses whole Call expression span instead of func span — `span` is `expr.span` at line 728. Fix: pass `func_span: Span` (same as Major fix above) and use it here. (`src/typecheck.rs:728`) [Minor, span-integrity C47]

@@ -563,7 +563,11 @@ impl Substitution {
                 match self.type_map.get(name) {
                     Some(bound) => {
                         visited_types.insert(name.clone());
-                        let result = self.apply_type(bound, depth + 1, visited_types, visited_rows);
+                        // Reset depth to 0 when following a TypeVar binding: chain-following
+                        // is cycle-protected by visited_types; depth guards structural
+                        // recursion only. Resetting prevents premature truncation of
+                        // long-but-shallow substitution chains (items 5/6).
+                        let result = self.apply_type(bound, 0, visited_types, visited_rows);
                         visited_types.remove(name);
                         result
                     }
@@ -636,8 +640,9 @@ impl Substitution {
                 match self.row_map.get(name) {
                     Some(bound_row) => {
                         visited_rows.insert(name.clone());
-                        let resolved =
-                            self.apply_row(bound_row, depth + 1, visited_types, visited_rows);
+                        // Reset depth to 0 when following a RowVar binding: cycle-protection
+                        // is handled by visited_rows; depth guards structural recursion only.
+                        let resolved = self.apply_row(bound_row, 0, visited_types, visited_rows);
                         visited_rows.remove(name);
 
                         // Merge fields: explicit fields (new_fields) take precedence.

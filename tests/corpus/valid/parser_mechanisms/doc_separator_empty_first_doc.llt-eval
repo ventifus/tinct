@@ -1,0 +1,7 @@
+# Doc separator with an empty first document.
+# An empty document (before ---) is valid and produces an empty Dict [].
+# parse_expression() compares the first expression of the first document.
+# Since the first doc is empty, there are no expressions — parse_expression()
+# falls back to the whole file; this tests parse() accepts it (no expected section).
+---
+[x: 1]

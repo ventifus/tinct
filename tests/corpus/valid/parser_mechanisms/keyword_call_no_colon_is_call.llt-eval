@@ -1,0 +1,5 @@
+# "call" not followed by ":" is the call special form keyword.
+# The call keyword triggers CallExpr parsing: [call func arg...].
+[call $f 42]
+===
+[call $f 42]

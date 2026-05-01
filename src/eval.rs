@@ -685,12 +685,13 @@ pub fn eval_document(
             let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
                 &current_env,
             ))));
-            for (key, val_thunk) in &map {
+            for (key, val_thunk) in map {
                 // Only string keys become scope bindings; int keys are positional, not named.
+                // Owned iteration (into_iter): Key::String(name) moves the String rather than
+                // cloning it, and val_thunk is moved directly — saves one String clone + one
+                // Rc clone per string-keyed entry in each document pipeline step.
                 if let Key::String(name) = key {
-                    child_env
-                        .borrow_mut()
-                        .insert(name.clone(), Rc::clone(val_thunk));
+                    child_env.borrow_mut().insert(name, val_thunk);
                 }
             }
             current_env = child_env;

@@ -294,6 +294,7 @@ fn test_corpus_structure() {
         "tests/corpus/valid/documents",
         "tests/corpus/valid/edge_cases",
         "tests/corpus/valid/literals",
+        "tests/corpus/valid/parser_mechanisms",
         "tests/corpus/valid/simple",
         "tests/corpus/valid/special_forms",
     ];
@@ -485,6 +486,37 @@ fn test_eval_error_corpus() {
             .join()
             .unwrap();
 
+        // TODO(deferred): Span assertions in error corpus tests.
+        //
+        // Current state: error tests validate that eval fails and that the error message
+        // contains the expected substring (which must include an [EXXX] error code prefix,
+        // enforced by test_eval_error_corpus_has_error_codes). This catches most regressions.
+        //
+        // What would be needed for span assertions:
+        // 1. Extend the test file format to carry span expectations, e.g.:
+        //      [call $+ 1]
+        //      ===
+        //      [E005] arity mismatch
+        //      SPAN: 1:1-1:13
+        //
+        // 2. Parse the SPAN: directive in split_test_file(), storing it in TestFile.
+        //    The span format would need a stable text representation (line:col-line:col).
+        //
+        // 3. After catching the Err, extract definition_span / materialization_span from
+        //    EvalError (already public fields) and format them as "line:col-line:col" using
+        //    the source text byte offsets + line-number index.
+        //
+        // 4. Compare the formatted spans against the expected SPAN: value.
+        //
+        // Why deferred: The primary value of span testing is regression protection — catching
+        // when a parser or evaluator change accidentally moves an error pointer off by one.
+        // The current substring match on error codes already catches message regressions.
+        // Span testing adds significant infrastructure complexity (text → line/col mapping,
+        // test file format extension, brittle to whitespace-only formatting changes in tests)
+        // for moderate incremental benefit. The right time to implement this is when a
+        // span regression is actually caught in review and needs a reproducible test case.
+        //
+        // Tracked in TODO.md under test-infra.
         match eval_result {
             Ok(actual) => {
                 failed.push((

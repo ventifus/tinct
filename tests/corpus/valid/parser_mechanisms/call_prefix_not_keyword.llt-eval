@@ -1,0 +1,5 @@
+# "mycall" is not a recognized keyword — only "call", "fn", "type" are special.
+# This is a Dict with positional entry "mycall" followed by $f and $x.
+[mycall $f $x]
+===
+["mycall"  $f  $x]
