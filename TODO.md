@@ -184,7 +184,9 @@ Type::Seq inference, TypeEnv::with_builtins, and core type system correctness.
 
 - [x] Add Type::Seq inference to typecheck.rs — sequence builtins ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) currently infer as Any; annotate return types in `check_call` for LSP hover and type safety (`src/typecheck.rs`) (stubs registered in TypeEnv::with_builtins(); full inference is future work for seq builtins returning Seq type) [Major, type-theorist]
 - [x] Fix polymorphic call unification for named args — PARTIAL: arity check now counts named args toward total (positional + named vs params.len()); named arg value types are inferred for LSP hover; but type mismatches in named args are not caught because `Type::Function` carries no param names. Full fix requires extending `Type::Function` to `params: Vec<(String, Type)>`, updating `infer_fn`, `Display`, subtyping, unification, generalization, and instantiation. See `TODO(named-arg-types)` comments in `check_call_with_scheme` and `check_call`. (`src/typecheck.rs`) [Major, type-theorist, deferred from types-major-fixes] (partial: named args now counted in arity; full type-checking blocked on extending Type::Function with param names)
+- [ ] Decide: begin gradual typing Phase 1 from doc/whatif/gradual-typing.md — Phase 1 is "formalize Any semantics": document blame tracking, decide the `Type::AnyGradual` / `Type::AnyPoly` split (see integration TODO), and pin the boundary between static and dynamic checking; the whatif doc recommends a three-phase adoption; decide whether Phase 1 is independent enough to start now, or should wait for type classes or union types to clarify the type lattice. [decide, type-theorist]
 - [ ] Gradual typing with Any→concrete boundary tracking and blame (TypeScript/Typed Racket model) (deferred — major research project, tracked in doc/whatif/gradual-typing.md)
+- [ ] Decide: begin type class constraints Phase 1 from doc/whatif/typeclasses.md — Phase 1 adds `Eq` and `Ord` constrained row variables so `$=` and `$<` can express their true domain (Eq-incompatible types like Dict and Fn would be caught at inference time rather than runtime); assess whether this depends on union types or algebraic-subtypes first; decide adoption order relative to gradual typing. [decide, type-theorist]
 - [x] Research polymorphic recursion detection — moot without algebraic data types. Polymorphic recursion requires parametric recursive type constructors (e.g., `Nested a → Nested [a]`); tinct has none and none are planned. The monomorphic letrec restriction (Limitation #6) is correct. Revisit only if sum types or user-defined recursive type constructors are added.
 - [x] Type error recovery with `Type::Error` sentinel that doesn't unify (prevents cascading errors, improves LSP)
 - [ ] Type class constraints for arithmetic/comparison (needed if user-defined types get custom operators) (deferred — tracked in doc/whatif/typeclasses.md)
@@ -292,6 +294,10 @@ Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 Performance improvements identified by performance-expert review (2026-04-19) that don't depend on the Parser Rewrite.
 
 - [x] Design allocation strategy (arena vs Rc, flat env vs chain) — see doc/16-architecture.md §Allocation Strategy — Phased Approach
+- [ ] Decide: begin arena allocation Phase 1 — design in doc/16-architecture.md §Allocation Strategy recommends `Vec<Thunk> + ThunkId(u32)` (cranelift entity pattern); iterative-eval is complete; decide whether to start with ThunkId migration in `Value::Dict` (replacing `Rc<Thunk>` values) as a first adoption site, or defer until flat environments are also ready to avoid a double migration. [decide, performance-expert]
+- [ ] Research: flat environment slot assignment for tinct's letrec scoping — O(depth) chain walk in `Environment::get()` can become O(1) with compile-time slot indices; determine whether tinct's letrec dict scoping (siblings see each other via a shared env at construction time) is compatible with closed-over slot indices (Lua 5.4 upvalue model); survey how Nix (rnix-eval) and Jsonnet handle this; see doc/16-architecture.md §Allocation Strategy §Phased Approach for planned adoption sequence. [research, performance-expert]
+- [ ] Research: string interning for dict keys — profile whether dict key `String` allocation and comparison is a measurable hotspot (most keys are short ASCII bare words); compare `string-interner` crate (Spur type, fast intern lookup), `lasso` (concurrent), or hand-rolled `HashMap<String, u32>` index; estimate allocation reduction vs. interning cost at creation time. [research, performance-expert]
+- [ ] Research: path-compressed union-find for `Substitution::apply()` — profile actual TypeVar chain depth in practice on real programs (are chains >2 common?); union-find gives O(α(n)) amortized if so; survey `union-find` and `petgraph` Rust crates; assess migration cost given current `HashMap<String, Type>` storage in `Substitution`. [research, performance-expert]
 
 ### perf-foundations: Performance Foundations Implementation
 
@@ -305,7 +311,7 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [ ] Key cloning reduction in eval_dict — string keys cloned 2× per entry (once into dict_env bindings, once into dict_map). Use entry_mut() pattern or restructure insert order. ~30% of dict allocation cost. (`src/eval.rs:346-352`) [Major, performance-expert, design-review]
 - [x] func_label allocation reduction — `format!("${name}")` on every PendingCall creation → `Cow<'static, str>` for VarRef case (most common), only allocate for DotAccess. ~5-10% call overhead. (`src/eval.rs:387-396`) [Minor, performance-expert, design-review]
 - [x] Capacity hints for hot-path allocations — `IndexMap::with_capacity(entries.len())` in dict construction, `String::with_capacity()` in `builtin_str` [Minor, performance-expert]
-- [ ] Reduce bind_args_thunks allocation — deferred to iterative-eval: env reuse is unsafe in current `Rc<RefCell<Environment>>` model (recursive calls share closure_env, param bindings leak between calls). Flat environments in Phase 2 make reuse trivially safe. (`src/eval.rs:527-529`) [Major, performance-expert, deferred]
+- [ ] Reduce bind_args_thunks allocation — deferred to flat-environments sprint: env reuse is unsafe in current `Rc<RefCell<Environment>>` model (recursive calls share closure_env, param bindings leak between calls). Flat environments make reuse trivially safe (iterative-eval is done; flat-env Research item above is the next prerequisite). (`src/eval_call.rs:176-177`) [Major, performance-expert, deferred]
 - [x] Bounded Display depth for Value — limit `Value::Dict` Display impl to max 3 levels, print `...` beyond that to prevent deep traversal in error messages (`src/value.rs:113-143`) [Minor, performance-expert]
 - [x] Optimize `infer_dict` Pass 3b row_map merge — the merge loop at `src/typecheck.rs:543-556` allocates a `HashMap` (`applied_fields`) per row binding; apply subst to the whole row via `subst.apply(&Type::Record(row.clone()))` to share one visited-set pass, or rely on Pass 3c's `subst.apply()` which already corrects merged field types. (`src/typecheck.rs:543-556`) [Minor, performance-expert C60]
 - [ ] Eliminate BTreeSet from level-lowering in unify() — U-VAR-LEVEL and U-VAR-LEVEL-SYM each allocate TWO BTreeSets (type vars + row vars) and perform TWO full tree walks per TypeVar-to-complex-type binding: 4 BTreeSet allocs + 4 tree walks total per binding. Replace with inline recursive helper `lower_levels_in(ty, cap_level, state)` that walks the type tree once and min-lowers both TypeVar and RowVar levels inline without materializing any set. (`src/types.rs:843-855, 869-880`) [Major, performance-expert C40, updated C52]
@@ -324,9 +330,41 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [x] Cache four-pass dict inference key resolution (already cached in Pass 0) — `infer_expr` resolves keys twice across passes (`src/typecheck.rs:272-295`) [Minor, type-theorist]
 - [x] Add clarifying comment to `bind_args_thunks` double conflict check (`src/eval.rs:573-587`) [Nit, eval-engine]
 - [x] Extract `MAX_APPLY_DEPTH` constant to shared location — duplicated in `src/types.rs:127` and `src/eval.rs:42` [Nit, performance-expert] (not duplicated; types.rs only)
-- [ ] Avoid AST clone in eval_call argument thunk creation — change `CallExpr` args to `Rc<Spanned<Expr>>` so eval_call does `Rc::clone` instead of deep-cloning AST subtrees per argument. Internal refactor to ast.rs/parser.rs, backward-compatible at public API. ~20-40% call overhead reduction. (`src/eval.rs:416-435`) [Major, performance-expert, design-review promoted]
-- [ ] Avoid AST clone in `Expr::Fn` body — `body.as_ref().clone()` deep-clones entire body AST subtree on every function creation. For closures in loops (lambda args to `$map`/`$filter`), repeated allocation cost. Change `Expr::Fn.body` from `Box<Spanned<Expr>>` to `Rc<Spanned<Expr>>` in AST definition, then `Rc::clone(body)` instead of deep-cloning. Consolidate with call-arg Rc migration above. (`src/eval.rs:170-171`, `src/ast.rs:106`) [Major, computer-scientist]
-- [ ] Avoid AST clone in `eval_dict` entry body — `Rc::new(entry.node.value.clone())` at `src/eval.rs:633` deep-clones the entire AST expression subtree for every dict entry on every `eval_dict` invocation; for a 20-entry config dict evaluated once per `$map` step over 1000 elements, this is 20,000 subtree clones. Fix as part of the `Rc<Spanned<Expr>>` AST migration above — this is the third major call site alongside eval_call args and Expr::Fn body. (`src/eval.rs:633`) [Major, performance-expert C53]
+- [ ] Avoid AST clone in eval_call argument thunk creation — see perf-ast-rc sprint below [Major, performance-expert, design-review promoted]
+- [ ] Avoid AST clone in `Expr::Fn` body — see perf-ast-rc sprint below [Major, computer-scientist]
+- [ ] Avoid AST clone in `eval_dict` entry body — see perf-ast-rc sprint below [Major, performance-expert C53]
+
+### perf-ast-rc: AST `Rc<Spanned<Expr>>` Migration
+
+Replace the three deep-clone sites with `Rc::clone`. All three sites share the same root
+cause (AST fields are `Box<...>` / owned, not reference-counted) and the same fix
+(`Rc<Spanned<Expr>>`). They must land together because the parser produces the AST and
+eval consumes it — changing the field type in `ast.rs` touches both.
+
+**Three sites and their current cost:**
+- `eval_call` args: `CallExpr.args` entries each deep-clone their `Spanned<Expr>` on every `[call ...]` evaluation — ~20-40% of call overhead for hot code paths like `$map`/`$filter` lambdas
+- `Expr::Fn` body: `body.as_ref().clone()` at `src/eval.rs:170-171` deep-clones the full body subtree on every function value creation
+- `eval_dict` entry body: `Rc::new(entry.node.value.clone())` at `src/eval.rs:633` — 20K clones for a 20-entry dict mapped over 1000 elements
+
+- [ ] Change `Entry.value` in `src/ast.rs` from `Spanned<Expr>` to `Rc<Spanned<Expr>>` —
+  `Entry` is `{ key: Option<Spanned<Expr>>, value: Spanned<Expr> }`; change `value` to
+  `Rc<Spanned<Expr>>`; update all construction sites in `src/parser.rs` to wrap with
+  `Rc::new(...)`. Update pattern matches across eval/typecheck/desugar/formatter. [Major]
+- [ ] Change `Expr::Fn.body` in `src/ast.rs` from `Box<Spanned<Expr>>` to `Rc<Spanned<Expr>>`
+  — update `src/parser.rs` construction, `src/eval.rs:170-171` to use `Rc::clone(body)`,
+  and exhaustive Expr matches. [Minor]
+- [ ] Change `CallExpr.args` element type — `CallArg::Positional(Spanned<Expr>)` and
+  `CallArg::Named(String, Spanned<Expr>)` to use `Rc<Spanned<Expr>>`; update parser construction
+  and eval_call consumption in `src/eval_call.rs`. [Minor]
+- [ ] Update `src/eval.rs:633` dict entry body evaluation — replace
+  `Rc::new(entry.node.value.clone())` with `Rc::clone(&entry.node.value)` (now an `Rc`). [Nit]
+- [ ] Update `src/desugar.rs` — desugar.rs mutates the AST in-place; `Rc<Spanned<Expr>>`
+  fields may need `Rc::make_mut()` or clone-on-write if desugar needs to modify them;
+  since desugar runs once before eval, an `Arc`-free clone at desugar sites is acceptable. [Minor]
+- [ ] Update `src/formatter.rs` — formatter reads AST immutably; `Rc<Spanned<Expr>>` access
+  is transparent (deref to `&Spanned<Expr>`). [Nit]
+- [ ] Benchmark before and after: run `cargo bench` on a dict-heavy corpus file and a
+  function-call-heavy file; confirm allocations drop for both hot paths. [Nit]
 - [x] Reduce materialize() return-path cloning — `value.clone()` on every return stores into `Materialized(value.clone())` then returns the original; could instead store `Materialized(value)` then clone from cached state via `try_get_materialized()`. For Dict, eliminates O(n) Rc::clone of entries on the return path. (`src/eval.rs:918,939,944,990,1014,1020`) [Major, performance-expert]
 - [x] Optimize `cache_failure` to skip clone when already Failed — `cache_failure()` always creates fresh Failed state with `Box::new(err.clone())`, even if thunk is already Failed with identical error. Common in deep call chains where same error propagates through multiple layers. Check current state and skip clone if already `Failed`. (`src/value.rs:384-386`) [Major, eval-engine]
 - [x] Avoid intermediate Vec in value_to_display_string — collects all formatted entries into Vec<String> then joins; write directly to String with_capacity instead (`src/lib.rs:194-204`) [Minor, performance-expert]
@@ -341,6 +379,7 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [x] Add capacity hint to variadic dict allocation — exact size known at allocation time (`src/eval.rs:610`) [Minor, performance-expert]
 - [ ] Use static empty IndexMap for PendingCall named args — eliminates allocation on every PendingCall with no named args (`src/eval.rs:976`) [Nit, performance-expert]
 - [x] Use static empty dict thunk for default `$$` — eliminates allocation on every file eval without stdin (`src/eval.rs:287-291`) [Nit, performance-expert]
+- [ ] Design: builtin argument strictness annotation model — design the data representation (an array of `Strictness` enum per builtin entry in `standard_builtins()`), how `eval_call` uses it to skip `Unevaluated` thunk wrapping for strict positional args, and whether named args participate; precedent: Mycroft (1981) strictness analysis; existing `with_builtins()` type signatures provide a template for the registration pattern. (`src/eval_call.rs:70-100`, `src/builtins.rs:2619-2676`) [design, computer-scientist]
 - [ ] Builtin strictness annotations — classify each builtin's argument strictness (strict/lazy per position); arithmetic, comparison, and string builtins are strict in all args, `$if` strict in condition only, `$seq` lazy in both. Strict args can skip thunk allocation in eval_call. Level 1 optimization per Mycroft (1981). (`src/eval.rs:414-438`, `src/builtins.rs`) [Major, computer-scientist]
 - [x] Research Rc cycle leak mitigation strategy — resolved by arena allocation design in doc/16-architecture.md §Allocation Strategy. Section-scoped arenas eliminate Rc cycles within evaluation; selective migration at `---` boundaries handles cross-section values. No separate proposal needed.
 - [x] Fix `materialize()` PendingCall branch pre-cloning 4 values before function resolution — `func_thunk`, `args`, `named`, and `thunk_ctx` are unconditionally pre-cloned at lines 1031-1034 to support state restoration on non-cacheable errors. On the hot path (successful call), all 4 clones are wasted (~8 atomic increments + 1 IndexMap::clone per call). Defer clones inside the `!e.kind.is_cacheable()` branches only. (`src/eval.rs:1031-1034`) [Major, performance-expert C39]
@@ -383,23 +422,50 @@ Design and implement four unprivileged sandboxing layers. See doc/12-tooling.md 
 - [x] Decide policy for absolute paths — allowed if within any --allow-path
 - [x] Decide policy for symlinks — canonicalize, then check against allowlist
 
-### sandbox: Sandboxing Implementation
+### sandbox-a: Filesystem Allowlist and `--allow-path` flag
 
-**Depends on:** `evalcontext-refactor` for filesystem allowlist in EvalConfig.
+Path-ancestor allowlist check in `builtin_include` with `--allow-path` CLI flag.
+`EvalContext` is already done; `EvalConfig` has `base_dir: cap_std::fs::Dir`,
+`no_fs: bool`, `require_integrity: bool` — just needs `allowed_paths`.
 
-- [ ] Implement filesystem allowlist in `EvalConfig` (depends on evalcontext-refactor)
-- [ ] Add path-ancestor allowlist check in `builtin_include` (after canonicalize, before cache)
-- [ ] Add `--allow-path` global CLI flag (default: `.`)
-- [ ] Implement Landlock filesystem ACLs (Linux 5.13+, graceful degradation)
-- [ ] Implement seccomp-bpf network sandbox (block socket/connect/bind/listen/accept)
-- [ ] Implement seccomp-bpf process sandbox (block fork/execve/execveat, allow clone)
-- [ ] Implement rlimit resource caps (RLIMIT_AS, RLIMIT_CPU eval-only, RLIMIT_NOFILE, RLIMIT_FSIZE)
-- [ ] Add `--allow-network`, `--max-memory`, `--max-cpu`, `--max-fds` global CLI flags
-- [ ] Test: relative paths within allowlist succeed
-- [ ] Test: `../` traversal beyond allowlist fails
-- [ ] Test: absolute paths outside allowlist fail
-- [ ] Test: symlinks pointing outside allowlist fail
-- [ ] Test: graceful degradation when Landlock/seccomp unavailable
+- [ ] Add `allowed_paths: Vec<std::path::PathBuf>` to `EvalConfig` in `src/eval.rs` — empty
+  means "allow all" (current behavior); populated via `--allow-path` flags. [Minor]
+- [ ] Add `--allow-path <path>` argument to the `eval` subcommand in `src/main.rs` — accepts
+  multiple values (`clap` `action = ArgAction::Append`); canonicalize each path at startup
+  via `std::fs::canonicalize` and store in `EvalConfig::allowed_paths`. Default: empty
+  (unrestricted). [Minor]
+- [ ] Add allowlist check in `builtin_include` (`src/builtins.rs`) — after the fd is opened
+  and the canonical path is known (inode-keyed cache lookup), check that the canonical path
+  starts with at least one entry in `ctx.config.allowed_paths`; if not, return
+  `EvalError::include_forbidden` (same as `no_fs=true`). [Minor]
+- [ ] Update `EvalContext::with_base_dir()` to inherit `allowed_paths` from parent config —
+  nested `$include` calls share the same allowlist as the top-level invocation. (`src/eval.rs:155-165`) [Nit]
+- [ ] CLI test: `--allow-path .` permits include of a file in the current dir; `--allow-path /tmp` rejects include of a file in current dir. (`tests/cli_tests.rs`) [Minor]
+- [ ] CLI test: `../` traversal — a file in the cwd tries to include `../sibling.llt`; rejected when `--allow-path .` (because canonical path is outside `.`). [Minor]
+- [ ] CLI test: absolute path outside allowlist fails; symlink that resolves outside allowlist fails (symlink resolution is already done by cap-std). [Minor]
+- [ ] LSP: set `allowed_paths` to empty (unrestricted) in `DocumentStore::new()` since LSP already sets `no_fs=true`; document that `no_fs` takes priority. [Nit]
+
+### sandbox-b: Landlock Filesystem ACLs
+
+Linux 5.13+ Landlock enforcement with graceful degradation. **Depends on sandbox-a.**
+
+- [ ] Add `landlock` crate to `Cargo.toml` — `landlock = "0.4"` (latest stable); gates behind `#[cfg(target_os = "linux")]`. [Nit]
+- [ ] In `src/main.rs` `run_eval()`, after CLI arg parsing and before eval: construct a `landlock::Ruleset` restricting `FS_READ_FILE` to each `--allow-path` entry (and its subdirs) plus the stdlib env path; apply via `ruleset.restrict_self()`; wrap in `if landlock::ABI::new_current().is_supported()` for graceful degradation on pre-5.13 kernels. [Major]
+- [ ] Add `--no-landlock` flag to `eval` subcommand for escape hatch (debugging, CI environments without Landlock). [Minor]
+- [ ] CLI test: verify Landlock enforcement fires when `--allow-path` excludes an included path; skip test on kernels without Landlock support via `cfg(target_os = "linux")` + version check. [Minor]
+
+### sandbox-c: seccomp-bpf and rlimit Resource Caps
+
+Process and network isolation. **Depends on sandbox-b.**
+
+- [ ] Add `syscallz` or `seccompiler` crate to `Cargo.toml` — `syscallz = "0.17"` (simpler API); gates behind `#[cfg(target_os = "linux")]`. [Nit]
+- [ ] Install seccomp-bpf filter in `run_eval()` after Landlock setup: block `socket`, `connect`, `bind`, `listen`, `accept`, `accept4` (network sandbox); block `fork`, `execve`, `execveat` (process sandbox); allow `clone` with `CLONE_THREAD` flag only (needed by Rust runtime). [Major]
+- [ ] Add `RLIMIT_AS` cap via `libc::setrlimit` — `--max-memory <bytes>` flag (default: 512MB); set before eval. [Minor]
+- [ ] Add `RLIMIT_CPU` cap via `libc::setrlimit` — `--max-cpu <seconds>` (eval-time CPU only, not wall clock); pairs with existing `--timeout` SIGALRM. [Minor]
+- [ ] Add `RLIMIT_NOFILE` and `RLIMIT_FSIZE` caps — `--max-fds` (default: 64) and `--max-filesize` (default: 64MB write limit). [Minor]
+- [ ] Add `--allow-network`, `--max-memory`, `--max-cpu`, `--max-fds` global CLI flags wired to the above. [Minor]
+- [ ] CLI test: graceful degradation when seccomp unavailable (non-Linux or insufficient privilege). [Minor]
+- [ ] Test: graceful degradation when Landlock/seccomp unavailable. [Minor]
 
 ## theoretical-foundations: Theoretical Foundations (Computer-Scientist Review)
 
@@ -407,6 +473,8 @@ Findings from formal audit of doc/*.md theoretical claims (2026-04-21). Covers t
 
 ### Proof obligations
 
+- [ ] Research: property-based testing approach for thunk lifecycle adequacy — before Coq/Isabelle formalization, design a `proptest` suite covering the key bisimulation properties: (1) any PendingBuiltin reduction produces the same final value as the equivalent Unevaluated→materialize path, (2) PendingCall reduction is observationally equivalent to inlining the fn body; determine which random program generators are needed; see doc/08-evaluation.md §Thunk Lifecycle — Adequacy for the formal statement. [research, computer-scientist]
+- [ ] Research: confluence proof strategy for the pure tinct subset — the diamond property (Ariola & Felleisen 1997) requires any two reduction paths to converge; PendingCall/PendingBuiltin add new reduction paths not in the original call-by-need calculus; identify which Ariola-Felleisen lemmas need extension and whether proof-by-diagram or proof-by-operational-equivalence is more tractable; see doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties. [research, computer-scientist]
 - [ ] Mechanized proof of thunk lifecycle adequacy — formalize bisimulation between PendingBuiltin/PendingCall and equivalent Unevaluated thunks, confirming defunctionalization preserves semantics (Reynolds 1972, Danvy & Nielsen 2003). Property-based testing (QuickCheck-style) as a first step; full Coq/Isabelle/HOL formalization as stretch goal. See doc/08-evaluation.md §Thunk Lifecycle — Adequacy. [Minor, computer-scientist]
 - [ ] Confluence proof sketch for pure subset — show that forcing order does not affect final values in tinct programs without `$include`. The PendingBuiltin/PendingCall extensions add new reduction paths that must preserve the Ariola & Felleisen (1997) diamond property. See doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties. [Minor, computer-scientist]
 
@@ -421,8 +489,10 @@ Richer error context for debugging.
 - [x] Add available keys to `key_not_found` errors for "did you mean?" suggestions (use `strsim` crate for edit-distance matching) (completed in error-context sprint — strsim Jaro-Winkler > 0.8 threshold, available_keys field on KeyNotFound, fallback to listing up to 5 keys)
 - [x] Filter `Span::origin()` frames from user-facing stack trace output — stdlib calls and synthetic values produce frames with `Span::origin()` (0:0-0:0) that are noise in error output. Filter in `EvalError::Display`: skip frames where `frame.span == Span::origin()`. Derived from Nickel's `group_by_calls()` stdlib-frame filtering pattern. (`src/error.rs:788-791`) [Minor, span-integrity-checker T4] (completed in cycle-findings-c46-a)
 - [x] Filter stdlib/prelude.llt frames from user-facing stack traces (Nickel `group_by_calls` pattern) (completed in error-context sprint — label-suffix filter: frames ending in -impl/-step/-check are hidden from Display output; note: this is label-convention-based, not file-path-based like Nickel's group_by_calls; a future file-path-based approach remains possible)
-- [ ] Build `$include` chain threading — nested include errors should show the full include path ("included from A at line X")
+- [ ] Build `$include` chain threading — nested include errors should show the full include path ("included from A at line X") — see `error-context-include-chain` sprint below
+- [ ] Design: secondary span model in EvalError — Nickel's dual-position pattern attaches a second labeled span ("this value evaluated to...") to evaluation errors; design the field addition to `EvalError` (e.g., `secondary_span: Option<(Span, String)>`), which eval sites would populate it (lazy evaluation where definition and use sites diverge far), and how `EvalError::Display` renders both; see doc/10-errors.md §Error Representation and Nickel's `EvaluationError` type. [design, span-integrity-checker]
 - [ ] Add secondary span support for "evaluated to this" labels on lazy evaluation errors (Nickel dual-position pattern)
+- [ ] Research: circular dependency error path reconstruction — when `ThunkState::InProgress` cycle is detected, tinct reports only the blackholed thunk's span; to show the full A→B→A chain, the evaluator needs to record the current evaluation stack at cycle detection time; survey how Nix (`callPackage` cycle errors) and GHC present circular dependency errors; assess whether `EvalState` should carry a call stack `Vec<Span>` alongside `include_guard`. [research, eval-engine]
 - [ ] Reconstruct multi-hop cycle paths for circular dependency errors (show the full cycle chain, not just the blackholed thunk)
 - [x] Elide repeating frame cycles in `DepthExceeded` stack traces — recursive and mutually-recursive functions produce 256 near-identical stack frames, overwhelming agents parsing test output. In `EvalError::Display`, when `kind == DepthExceeded`, collect visible frames, detect the minimal repeating period P (try P=1..len/3; confirm frames[i].label == frames[i%P].label && frames[i].span == frames[i%P].span for all i < P*(len/P); require at least 3 full repetitions), print one period copy then emit `[... N more repetitions of the above M frame(s) ...]`. No change to the stack data model — display-only. Add a unit test covering P=1 (self-recursion) and P=2 (mutual recursion). (`src/error.rs`) [Minor, integration-verifier]
 
@@ -430,12 +500,37 @@ Richer error context for debugging.
 
 User-facing error presentation improvements.
 
+- [ ] Research: source text availability at EvalError display time — `EvalError` carries a `Span` but not the source text; options: (a) add `source: Option<Arc<String>>` to EvalError (every error carries source), (b) thread source through `EvalError::fmt` via a formatting context object, (c) require callers to pair EvalError with source at the display boundary; survey rustc `SourceMap` and Nickel `EvaluationError::Display` patterns; decide before implementing source snippets. [research, span-integrity-checker]
 - [ ] Source snippets in error output — include source context with carets like rustc (span-integrity-checker review)
+- [ ] Design: REPL source snippet display — the REPL stores the full input string for the current expression; when `eval_input()` returns an `EvalError` with a `Span`, design how to extract the relevant source line and render a caret (`^`) under the span; consider multi-line expressions where the span crosses newlines; see `src/repl.rs` and the source-text availability research item above. [design, eval-engine]
 - [ ] Span-aware error recovery in REPL — show source line with caret pointing to error span (span-integrity-checker review)
+- [ ] Design: `tinct explain <error-code>` command — Elm-inspired; design how extended help text is stored (static `match ErrorKind` arms, a `lazy_static` map, or a Markdown file per error code), the CLI subcommand interface (`tinct explain E010`), and whether help includes an example program. (`src/error.rs`, `src/main.rs`) [design, integration-verifier]
 - [ ] `tinct explain <error-code>` command for extended help on error categories (span-integrity-checker review, Elm-inspired)
 - [ ] Add LSP `related_information` for materialization-site spans and stack frames (currently discarded)
 - [x] Use `ErrorKind::code()` for LSP diagnostic error code — eval_error_to_diagnostic now sets `code: Some(NumberOrString::String(kind.code()))` (`src/lsp/analysis.rs`) [Minor, span-integrity-checker C32]
 - [x] Add `desugar_file()` call to LSP `DocumentState::new()` — pipeline is parse→typecheck→eval, missing the desugar step. User code containing `$_` will see un-desugared ASTs in LSP. (`src/lsp/document.rs:54`) [Minor, computer-scientist C32; fix applied C69]
+
+### error-context-include-chain: $include Chain Threading
+
+Show the full include path in nested include errors: "included from A at line X, included from B at line Y".
+`EvalState` already has `include_guard: HashSet<(u64, u64)>` and `include_cache` — just needs a chain.
+
+- [ ] Add `include_chain: Vec<(String, Span)>` to `EvalState` in `src/eval.rs` — each entry is
+  `(display_path, call_span)` where `display_path` is the user-visible file path string and
+  `call_span` is the span of the `[call $include ...]` expression that triggered it. [Minor]
+- [ ] In `builtin_include` (`src/builtins.rs`), push `(path_display, call_span)` onto
+  `ctx.state.borrow_mut().include_chain` before calling `eval_file` (after cycle detection
+  succeeds), and pop on exit (both success and error paths, using a scope guard or explicit
+  cleanup in the match). [Minor]
+- [ ] In `builtin_include` error paths, when `eval_file` returns `Err(e)`, annotate the error
+  with the include chain: iterate `include_chain` in reverse and call
+  `e.push_frame(StackFrame { label: format!("included from {} at ...", path), span })` for
+  each entry. This surfaces "included from A → B → error site" in the stack trace without
+  changing `EvalError`'s data model. (`src/builtins.rs`, `src/error.rs`) [Minor]
+- [ ] Unit test: nested include (A includes B includes C where C errors) shows A and B in stack
+  frames; non-nested include shows no extra frames. (`src/builtins.rs` or CLI test) [Minor]
+- [ ] Update `doc/09-documents.md` §$include INCLUDE-EVAL rule — add note that the include
+  chain is available for error annotation; update the `Σ` include state definition. [Nit]
 
 ## stdlib-docs: Stdlib Documentation
 
@@ -762,7 +857,7 @@ Code behavior changes, refactors, performance fixes, and span fixes.
 - [x] Extract `rho_display` helper function from the 5 duplicated `starts_with('_')` display-hiding sites in `unify_remainders` (`src/types.rs:813-937`) [Nit, test-crafter C72 panel]
 - [ ] Fix definition-site span lost in access chain continuations — DotAccessForce/BracketForceTarget use access_span for both definition and materialization spans; add target_thunk: Rc<Thunk> field to capture the dict's definition span for better error messages (`src/eval.rs:2161-2163,2193-2194`) [Minor, integration-verifier C74 panel]
 - [x] Eliminate Rc::from(key.as_ref().clone()) extra allocation in BracketAccess force_step handler — use Rc::new((*key).clone()) or restructure to avoid the clone (`src/eval.rs:1572`) [Nit, computer-scientist C74 panel]
-- [ ] Fix eval_step VarRef eager materialization before Action::Eval is wired live — VarRef returns Action::Materialize (forces immediately) but eval_recursive returns Ok(thunk) (lazy); must match before CEK migration advances (`src/eval.rs:2079-2086`) [Major, computer-scientist C81]
+- [x] Fix eval_step VarRef eager materialization before Action::Eval is wired live — VarRef returns Action::Materialize (forces immediately) but eval_recursive returns Ok(thunk) (lazy); must match before CEK migration advances (`src/eval.rs:2079-2086`) [Major, computer-scientist C81] — Fixed in eval_materialize.rs: changed VarRef arm to use `wrap_thunk(Ok(thunk))` instead of `Action::Materialize`; already-materialized thunks now take fast path via `Action::Continue(Ok(value))`, unevaluated thunks pass through to `force_step` which handles them iteratively; matches `eval_recursive`'s lazy contract
 - [x] Change resolve_row to return Cow<'_, Row> — RowTail::Empty case clones unconditionally even when row is unchanged; use Cow::Borrowed to avoid allocation (`src/types.rs:680,683`) [Major, performance-expert C81]
 - [x] Guard ann_mapping HashMap allocation in infer_fn — every function literal allocates HashMap even when no annotations exist (common for $map/$filter lambdas); add early return for unannotated functions (`src/typecheck.rs`) [Major, performance-expert C81]
 - [x] Prevent cross-kind annotation name collision in type inference — same `@a` used as both TypeVar and RowVar annotation in same function silently corrupts kinded substitution; add validation in resolve_type_name/resolve_row_name (`src/typecheck.rs`) [Minor, type-theorist C91]
@@ -779,13 +874,16 @@ Cross-cutting integration gaps identified by integration-verifier agent (2026-04
 
 Cross-cutting integration implementation tasks spanning pipeline boundaries.
 
+- [ ] Research: value serializer visitor pattern — `value_to_json` and `value_to_display_string` in `src/lib.rs` share dict/seq traversal structure but diverge at leaf rendering (JSON vs. display) and error handling; estimate whether a `ValueVisitor<Output>` trait actually reduces code or just adds indirection; compare with Nickel's Display impl strategy; benchmark if traversal is a hotspot before investing. (`src/lib.rs:112-211`) [research, integration-verifier]
 - [ ] Unify serializer logic via visitor pattern — `value_to_json` and `value_to_display_string` in `src/lib.rs` duplicate dict/seq traversal logic; extract a shared `ValueVisitor` trait or generic traversal helper to eliminate the duplication
 - [x] Make deep_materialize→serialize contract explicit — document or enforce (via assertion or type-level marker) that all values must be fully materialized before serialization; currently an implicit caller obligation with no enforcement at the `value_to_json` / `value_to_display_string` boundary (`src/lib.rs`)
+- [ ] Research: eval↔builtins dependency audit — map exactly what `builtins.rs` imports from `eval.rs` (likely: `materialize`, `eval_call`, `invoke_function`, `EvalContext`, `EvalResult`) and what `eval.rs` imports from `builtins.rs` (likely: `standard_builtins`, `create_stdlib_env`); determine whether a thin `src/eval_core.rs` interface module, a trait object, or feature-flag isolation is the right boundary; estimate diff size before committing to the refactor. (`src/eval.rs`, `src/builtins.rs`) [research, integration-verifier]
 - [ ] Break eval↔builtins circular dependency — `src/eval.rs` and `src/builtins.rs` mutually depend on each other (builtins call `materialize`/`eval_call`, eval calls `standard_builtins`); extract a `src/eval_core.rs` interface or use trait objects to break the cycle and enable independent testing
 - [x] Add depth guard to desugar pass or document invariant — `desugar_file` is always called before `eval` but there is no guard ensuring desugaring depth cannot exceed `MAX_EVAL_DEPTH`; add a MAX_DESUGAR_DEPTH check matching the eval limit, or add a comment documenting why desugar nesting is always shallower than the eval depth limit (`src/desugar.rs`)
 - [x] Document TypeAssert AST mutation threading implications — elaboration in `resolve_type_assert()` modifies the AST in place by setting `resolved_type` on `Expr::TypeAssert` nodes; this is unsafe for concurrent use (e.g., LSP running typecheck and eval concurrently on shared AST). Document the single-threaded assumption or add `Arc<Mutex<...>>` wrapping for the LSP path (`src/typecheck.rs:503-523`, `src/ast.rs`)
 - [x] Document nested dict let-polymorphism limitation — nested dicts do not receive full let-polymorphism: only top-level dict entries are generalized in Pass 4; inner dict entries (e.g., `[outer: [inner: [fn [x@a] $x]]]`) remain at the outer level and are not independently generalized. Add to doc/06-type-inference.md §Limitations and doc/05-type-annotations.md (`src/typecheck.rs`)
 - [x] Add integration test for row-unification-b Type substitution flowing through full pipeline — add `tests/corpus/eval/typecheck/row_unification_pipeline.llt-eval` exercising a row-polymorphic function from parser input through typecheck (row variable unification), eval, and JSON serialization output to catch cross-layer regressions
 - [x] Add builtin signature macro to prevent duplication across BuiltinFn registrations — `standard_builtins()` at `src/builtins.rs:2619-2676` repeats the same `(name, arity, fn)` tuple structure for 45 entries; extract a `builtin!` macro or builder that enforces consistent arity/name/fn-pointer registration and prevents name/arity drift
+- [ ] Decide: `Type::AnyGradual` / `Type::AnyPoly` split timing — the split (Siek & Taha 2006) prevents `Any`-poisoning of let-generalization level zeroing; decide whether to do this as a standalone refactor now (before gradual typing work begins, as it changes no observable behavior for current programs) or as Phase 1 of the gradual typing adoption plan in `doc/whatif/gradual-typing.md`; consult the gradual-typing Decide item in type-extensions. (`src/types.rs`) [decide, type-theorist]
 - [ ] Split `Type::Any` into `Type::AnyGradual` (escape hatch) and `Type::AnyPoly` (polymorphic placeholder) for gradual typing correctness — current `Type::Any` serves two conflicting roles: dynamic escape hatch (gradual typing, Siek & Taha 2006) and polymorphic placeholder (pre-generalization TypeVar stand-in); splitting prevents `Any`-poisoning of let-generalization level zeroing and aligns with `doc/whatif/gradual-typing.md` three-phase recommendation (`src/types.rs`)
 - [ ] Add cargo audit CI gate — serde_core/zmij are legitimate (investigated C69); run cargo audit for new advisories (`Cargo.toml`, CI config) [Minor, security-expert C91]
