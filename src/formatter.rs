@@ -1,3 +1,10 @@
+// Source code pretty-printer. This module reformats LLT source for human reading,
+// preserving structure while normalizing whitespace and indentation.
+//
+// **NOT for error messages.** For rendering an `Expr` node in a diagnostic, use
+// `impl Display for Expr` in `src/ast.rs` — that is the normative representation
+// for error output. This `Formatter` operates on the raw parse output (token spans)
+// to reconstruct well-formatted source, not to describe what an expression means.
 use crate::ast::{Annotation, Document, Entry, Expr, NamedArg, Param, Spanned};
 use crate::parser::{parse2, ParseError, ParseOutput};
 

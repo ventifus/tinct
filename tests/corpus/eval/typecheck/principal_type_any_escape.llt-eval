@@ -1,0 +1,11 @@
+# Principal type violation: Any acts as both top and bottom of the type lattice.
+# $f has type Fn(Any -> Any) because x is unannotated. Calling $f returns Any.
+# The type system infers result: Any, which is a subtype of every concrete type.
+# This means the type checker cannot distinguish well-typed from ill-typed code
+# when Any flows through -- it accepts everything, losing the Damas-Milner
+# principal type guarantee (doc/06 Limitation #2).
+# At eval time, $f is the identity function, so the result is "hello" (a string).
+[f: [fn [x] $x]
+ result: [call $f hello]]
+===
+Dict({"f": Function(x), "result": String("hello")})

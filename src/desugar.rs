@@ -158,7 +158,7 @@ fn wrap_expr_in_lambda(expr: &mut Spanned<Expr>) {
     let span = expr.span;
     let original_node = std::mem::replace(
         &mut expr.node,
-        Expr::Int(0), // Temporary placeholder
+        Expr::Int(0), // Dummy value; immediately overwritten after original_node is captured.
     );
 
     expr.node = Expr::Fn {
@@ -266,6 +266,10 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         }
 
         // TypeAlias: recurse into the aliased expression
+        //
+        // TypeAlias bodies are type expressions, not runtime expressions. $_ desugaring applies
+        // here for consistency — `[type X $_.field]` desugars the implicit lambda — but this is
+        // likely a user error since type expressions don't evaluate.
         Expr::TypeAlias(inner) => {
             desugar(inner, depth);
         }
