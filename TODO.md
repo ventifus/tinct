@@ -250,6 +250,7 @@ Security hardening implementation tasks for `$include` file sandbox and integrit
 - [ ] Add corpus test: include with correct hash passes; incorrect hash errors (`tests/corpus/eval/`)
 - [ ] Add corpus test: `--require-integrity` errors on hashless include (`tests/corpus/eval/`)
 - [x] Add `$split` parts-count limit — implemented: `MAX_SPLIT_PARTS=1_000_000` at `src/builtins.rs:44`, enforced at lines 588-594 with `.take(MAX_SPLIT_PARTS + 1)` before allocating and `EvalError` on excess. [Minor, security-expert C63]
+- [x] Add compile-time assertion `MAX_DOCUMENT_SIZE == MAX_FILE_SIZE` — `const _: () = assert!(MAX_DOCUMENT_SIZE == crate::builtins::MAX_FILE_SIZE as usize, ...)` added to `src/lsp/server.rs:25-29`; ensures LSP and CLI enforce the same 10 MB limit without silent drift. (already done in C96; test updated with compile-time const assert) [Minor, security-expert C97]
 - [ ] Fix TOCTOU in `read_source` CLI file size check — `read_source()` at `src/main.rs:360-369` calls `std::fs::metadata(file_path)` then `std::fs::read_to_string(file_path)` in two separate operations. If the file grows between the two calls, `read_to_string` allocates more than `MAX_FILE_SIZE` bytes of heap. Fix: open the file with `File::open()`, call `file.metadata()?` on the open fd, check size, then `read_to_string` on the same fd (or use `file.take(MAX_FILE_SIZE + 1)` to limit reads at the OS level). Same two-op pattern exists in `builtin_include` and is tracked separately under `include-fd-hardening`. (`src/main.rs:360-369`) [Minor, security-expert C76]
 
 

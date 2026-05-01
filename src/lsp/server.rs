@@ -19,7 +19,14 @@ use crate::lsp::convert::lsp_position_to_offset;
 use crate::lsp::document::DocumentStore;
 
 /// Maximum document size the LSP server will process: 10 MB (matches `MAX_FILE_SIZE` in builtins).
-const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
+
+// Compile-time assertion: MAX_DOCUMENT_SIZE must equal MAX_FILE_SIZE so both
+// code paths enforce the same limit without requiring runtime coordination.
+const _: () = assert!(
+    MAX_DOCUMENT_SIZE == crate::builtins::MAX_FILE_SIZE as usize,
+    "MAX_DOCUMENT_SIZE and MAX_FILE_SIZE must be equal"
+);
 
 /// Maximum length of an LSP method name that will be echoed in error responses.
 /// Prevents heap exhaustion from malicious clients sending arbitrarily long method names.
@@ -430,6 +437,13 @@ mod tests {
 
     #[test]
     fn test_max_document_size_constant() {
+        // Compile-time assertion: MAX_DOCUMENT_SIZE must equal MAX_FILE_SIZE (both are 10 MB).
+        // These two constants guard the same resource limit at different layers (LSP vs. $include).
+        // A mismatch would mean the LSP accepts documents that $include would reject, or vice versa.
+        const _: () = assert!(
+            MAX_DOCUMENT_SIZE == crate::builtins::MAX_FILE_SIZE as usize,
+            "MAX_DOCUMENT_SIZE and MAX_FILE_SIZE must be equal"
+        );
         assert_eq!(MAX_DOCUMENT_SIZE, 10 * 1024 * 1024);
     }
 
