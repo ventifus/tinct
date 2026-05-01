@@ -2,4 +2,4 @@
 # @Any inner wrapper lets the type checker pass; guard fires lazily on field access
 [@[person: [name: String]] [@Any [person: 42]]].person
 ===
-[E011] type assertion failed: expected field "person": [name: String], got Int
+[E011] type assertion failed: expected field `person`: [name: String], got Int

@@ -2,6 +2,7 @@
 //! substitutions/unification for Hindley-Milner polymorphism,
 //! and type error definitions for the type checker.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
@@ -56,6 +57,7 @@ pub enum Type {
     Function {
         params: Vec<Type>,
         ret: Box<Type>,
+        variadic: bool,
     },
     Seq(Box<Type>),
     Proxy,
@@ -86,10 +88,12 @@ impl PartialEq for Type {
                 Type::Function {
                     params: p1,
                     ret: r1,
+                    variadic: _,
                 },
                 Type::Function {
                     params: p2,
                     ret: r2,
+                    variadic: _,
                 },
             ) => p1 == p2 && r1 == r2,
             (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
@@ -174,10 +178,12 @@ impl Type {
                 Type::Function {
                     params: sub_p,
                     ret: sub_r,
+                    variadic: _,
                 },
                 Type::Function {
                     params: sup_p,
                     ret: sup_r,
+                    variadic: _,
                 },
             ) => {
                 sub_p.len() == sup_p.len()
@@ -202,7 +208,7 @@ impl Type {
                 }
                 // Row tail contains no type variables (only RowVar or Empty)
             }
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 for p in params {
                     p.collect_type_vars(vars);
                 }
@@ -222,7 +228,7 @@ impl Type {
                 matches!(row.tail, RowTail::RowVar(_, _))
                     || row.fields.values().any(|ty| ty.has_inference_vars())
             }
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 params.iter().any(|p| p.has_inference_vars()) || ret.has_inference_vars()
             }
             Type::Seq(elem) => elem.has_inference_vars(),
@@ -242,7 +248,7 @@ impl Type {
                     vars.insert(name.clone());
                 }
             }
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 for p in params {
                     p.collect_row_vars(vars);
                 }
@@ -272,7 +278,7 @@ impl Type {
                     row_vars.insert(name.clone());
                 }
             }
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 for p in params {
                     p.collect_all_vars(type_vars, row_vars);
                 }
@@ -461,12 +467,13 @@ impl Substitution {
                 let applied_row = self.apply_row(row, depth + 1, visited_types, visited_rows);
                 Type::Record(applied_row)
             }
-            Type::Function { params, ret } => Type::Function {
+            Type::Function { params, ret, variadic } => Type::Function {
                 params: params
                     .iter()
                     .map(|p| self.apply_type(p, depth + 1, visited_types, visited_rows))
                     .collect(),
                 ret: Box::new(self.apply_type(ret, depth + 1, visited_types, visited_rows)),
+                variadic: *variadic,
             },
             Type::Seq(elem) => Type::Seq(Box::new(self.apply_type(
                 elem,
@@ -570,7 +577,7 @@ fn type_var_occurs(var_name: &str, ty: &Type) -> bool {
     match ty {
         Type::TypeVar(name, _) => name == var_name,
         Type::Record(row) => type_var_occurs_in_row(var_name, row),
-        Type::Function { params, ret } => {
+        Type::Function { params, ret, variadic: _ } => {
             params.iter().any(|p| type_var_occurs(var_name, p)) || type_var_occurs(var_name, ret)
         }
         Type::Seq(elem) => type_var_occurs(var_name, elem),
@@ -644,7 +651,7 @@ fn row_var_occurs_in_type_impl(
 ) -> bool {
     match ty {
         Type::Record(row) => row_var_occurs(var_name, row, subst),
-        Type::Function { params, ret } => {
+        Type::Function { params, ret, variadic: _ } => {
             params
                 .iter()
                 .any(|p| row_var_occurs_in_type_impl(var_name, p, subst, visited))
@@ -676,8 +683,13 @@ fn row_var_occurs_in_type_impl(
     }
 }
 
+/// Check if a row variable name should be hidden from display (starts with '_')
+fn is_display_hidden(name: &str) -> bool {
+    name.starts_with('_')
+}
+
 /// Resolve a row by following bound row variables in the substitution
-fn resolve_row(row: &Row, subst: &Substitution) -> Row {
+fn resolve_row<'a>(row: &'a Row, subst: &Substitution) -> Cow<'a, Row> {
     match &row.tail {
         RowTail::RowVar(name, _level) => {
             if let Some(bound) = subst.row_map.get(name) {
@@ -695,15 +707,15 @@ fn resolve_row(row: &Row, subst: &Substitution) -> Row {
                         merged.insert(key, value);
                     }
                 }
-                Row {
+                Cow::Owned(Row {
                     fields: merged,
                     tail: resolved.tail,
-                }
+                })
             } else {
-                row.clone()
+                Cow::Borrowed(row)
             }
         }
-        RowTail::Empty => row.clone(),
+        RowTail::Empty => Cow::Borrowed(row),
     }
 }
 
@@ -839,7 +851,7 @@ fn unify_remainders(
                 tail: fresh_tail.clone(),
             };
             if row_var_occurs(rho1, &row2_with_fresh, subst) {
-                let rho1_display = if rho1.starts_with('_') {
+                let rho1_display = if is_display_hidden(rho1) {
                     "an anonymous open row".to_string()
                 } else {
                     rho1.clone()
@@ -856,7 +868,7 @@ fn unify_remainders(
                 tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
             };
             if row_var_occurs(rho2, &row1_with_fresh, subst) {
-                let rho2_display = if rho2.starts_with('_') {
+                let rho2_display = if is_display_hidden(rho2) {
                     "an anonymous open row".to_string()
                 } else {
                     rho2.clone()
@@ -891,7 +903,7 @@ fn unify_remainders(
                 tail: tail1,
             };
             if row_var_occurs(rho2, &row_to_bind, subst) {
-                let rho2_display = if rho2.starts_with('_') {
+                let rho2_display = if is_display_hidden(rho2) {
                     "an anonymous open row".to_string()
                 } else {
                     rho2.clone()
@@ -918,7 +930,7 @@ fn unify_remainders(
                 tail: tail2,
             };
             if row_var_occurs(rho1, &row_to_bind, subst) {
-                let rho1_display = if rho1.starts_with('_') {
+                let rho1_display = if is_display_hidden(rho1) {
                     "an anonymous open row".to_string()
                 } else {
                     rho1.clone()
@@ -991,8 +1003,8 @@ fn unify_rows(
     span: Span,
 ) -> Result<(), TypeError> {
     // Step 1: Resolve bound row variables
-    let resolved1 = resolve_row(row1, subst);
-    let resolved2 = resolve_row(row2, subst);
+    let resolved1 = resolve_row(row1, subst).into_owned();
+    let resolved2 = resolve_row(row2, subst).into_owned();
 
     // Fast-path: both rows are closed and have identical key sets — the common case
     // for checking an inferred closed record against an annotated closed record.
@@ -1051,9 +1063,9 @@ fn unify_rows(
     if resolved1.tail == RowTail::Empty && resolved2.tail == RowTail::Empty {
         return unify_remainders(
             unique1,
-            resolved1.tail,
+            resolved1.tail.clone(),
             unique2,
-            resolved2.tail,
+            resolved2.tail.clone(),
             subst,
             state,
             span,
@@ -1063,17 +1075,17 @@ fn unify_rows(
     let re_resolved1 = resolve_row(
         &Row {
             fields: unique1,
-            tail: resolved1.tail,
+            tail: resolved1.tail.clone(),
         },
         subst,
-    );
+    ).into_owned();
     let re_resolved2 = resolve_row(
         &Row {
             fields: unique2,
-            tail: resolved2.tail,
+            tail: resolved2.tail.clone(),
         },
         subst,
-    );
+    ).into_owned();
 
     // Step 3.6: Re-partition after re-resolution
     // Re-resolution may surface new fields from row variable bindings that overlap
@@ -1233,10 +1245,12 @@ pub fn unify(
             Type::Function {
                 params: p1,
                 ret: r1,
+                variadic: _,
             },
             Type::Function {
                 params: p2,
                 ret: r2,
+                variadic: _,
             },
         ) => {
             if p1.len() != p2.len() {
@@ -1489,7 +1503,7 @@ impl fmt::Display for Type {
                 }
                 write!(f, "]")
             }
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 // Parenthesize nested function types in return position for clarity
                 match **ret {
                     Type::Function { .. } => write!(f, "Fn@({ret}) [")?,
@@ -1612,6 +1626,7 @@ impl TypeEnv {
                 Type::Function {
                     params: vec![Type::Number, Type::Number],
                     ret: Box::new(Type::Number),
+                    variadic: false,
                 },
             );
         }
@@ -1622,6 +1637,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Number, Type::Number],
                 ret: Box::new(Type::Float),
+                    variadic: false,
             },
         );
 
@@ -1632,6 +1648,7 @@ impl TypeEnv {
                 Type::Function {
                     params: vec![Type::Any, Type::Any],
                     ret: Box::new(Type::Bool),
+                    variadic: false,
                 },
             );
         }
@@ -1642,6 +1659,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Bool, Type::Any, Type::Any],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
 
@@ -1654,6 +1672,7 @@ impl TypeEnv {
                     tail: RowTail::RowVar("_dict".to_string(), 0),
                 })],
                 ret: Box::new(Type::Seq(Box::new(Type::Str))),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1664,6 +1683,7 @@ impl TypeEnv {
                     tail: RowTail::RowVar("_dict".to_string(), 0),
                 })],
                 ret: Box::new(Type::Int),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1683,6 +1703,7 @@ impl TypeEnv {
                     fields: HashMap::new(),
                     tail: RowTail::RowVar("_merge_r".to_string(), 0),
                 })),
+                variadic: false,
             },
         );
         env.insert(
@@ -1699,6 +1720,7 @@ impl TypeEnv {
                     fields: HashMap::new(),
                     tail: RowTail::RowVar("_append_r".to_string(), 0),
                 })),
+                variadic: false,
             },
         );
 
@@ -1708,6 +1730,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Any],
                 ret: Box::new(Type::Str),
+                    variadic: false,
             },
         );
         for name in ["split", "replace"] {
@@ -1720,6 +1743,7 @@ impl TypeEnv {
                     } else {
                         Type::Str
                     }),
+                    variadic: false,
                 },
             );
         }
@@ -1729,6 +1753,7 @@ impl TypeEnv {
                 Type::Function {
                     params: vec![Type::Str],
                     ret: Box::new(Type::Str),
+                    variadic: false,
                 },
             );
         }
@@ -1740,6 +1765,7 @@ impl TypeEnv {
                 Type::Function {
                     params: vec![Type::Number],
                     ret: Box::new(Type::Int),
+                    variadic: false,
                 },
             );
         }
@@ -1750,6 +1776,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Str],
                 ret: Box::new(Type::Int),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1757,6 +1784,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Str],
                 ret: Box::new(Type::Float),
+                    variadic: false,
             },
         );
 
@@ -1766,6 +1794,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Any],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1773,6 +1802,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Str],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1780,6 +1810,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Any, Type::Any],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1789,6 +1820,7 @@ impl TypeEnv {
                     Type::Function {
                         params: vec![Type::Any],
                         ret: Box::new(Type::Any),
+                        variadic: false,
                     },
                     Type::Record(Row {
                         fields: HashMap::new(),
@@ -1796,6 +1828,7 @@ impl TypeEnv {
                     }),
                 ],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
 
@@ -1805,6 +1838,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Any],
                 ret: Box::new(Type::Str),
+                    variadic: false,
             },
         );
 
@@ -1814,6 +1848,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Str],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1821,6 +1856,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Str],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
 
@@ -1830,6 +1866,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Any, Type::Any],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1837,6 +1874,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Seq(Box::new(Type::Any))],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1844,6 +1882,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Seq(Box::new(Type::Any))],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1854,6 +1893,7 @@ impl TypeEnv {
                     fields: HashMap::new(),
                     tail: RowTail::RowVar("_dict".to_string(), 0),
                 })),
+                variadic: false,
             },
         );
         env.insert(
@@ -1861,6 +1901,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Any],
                 ret: Box::new(Type::Bool),
+                    variadic: false,
             },
         );
 
@@ -1870,6 +1911,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Int, Type::Int],
                 ret: Box::new(Type::Seq(Box::new(Type::Int))),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1877,6 +1919,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Any],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1884,6 +1927,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Seq(Box::new(Type::Any))],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1893,10 +1937,12 @@ impl TypeEnv {
                     Type::Function {
                         params: vec![Type::Any],
                         ret: Box::new(Type::Any),
+                        variadic: false,
                     },
                     Type::Any,
                 ],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1906,10 +1952,12 @@ impl TypeEnv {
                     Type::Function {
                         params: vec![Type::Any],
                         ret: Box::new(Type::Any),
+                        variadic: false,
                     },
                     Type::Any,
                 ],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
 
@@ -1921,10 +1969,12 @@ impl TypeEnv {
                     Type::Function {
                         params: vec![Type::Any],
                         ret: Box::new(Type::Any),
+                        variadic: false,
                     },
                     Type::Any,
                 ],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1934,10 +1984,12 @@ impl TypeEnv {
                     Type::Function {
                         params: vec![Type::Any],
                         ret: Box::new(Type::Bool),
+                        variadic: false,
                     },
                     Type::Any,
                 ],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1945,6 +1997,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Int, Type::Seq(Box::new(Type::Any))],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1952,6 +2005,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Int, Type::Seq(Box::new(Type::Any))],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
 
@@ -1963,11 +2017,13 @@ impl TypeEnv {
                     Type::Function {
                         params: vec![Type::Any, Type::Any],
                         ret: Box::new(Type::Any),
+                        variadic: false,
                     },
                     Type::Any,
                     Type::Seq(Box::new(Type::Any)),
                 ],
                 ret: Box::new(Type::Any),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1975,6 +2031,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Str, Type::Seq(Box::new(Type::Any))],
                 ret: Box::new(Type::Str),
+                    variadic: false,
             },
         );
         env.insert(
@@ -1982,6 +2039,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Seq(Box::new(Type::Seq(Box::new(Type::Any))))],
                 ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                    variadic: false,
             },
         );
 
@@ -1992,8 +2050,10 @@ impl TypeEnv {
                 params: vec![Type::Function {
                     params: vec![Type::Str],
                     ret: Box::new(Type::Any),
+                    variadic: false,
                 }],
                 ret: Box::new(Type::Proxy),
+                    variadic: false,
             },
         );
 
@@ -2153,6 +2213,7 @@ mod tests {
         let ty = Type::Function {
             params: vec![Type::Int, Type::Str],
             ret: Box::new(Type::Bool),
+            variadic: false,
         };
         assert_eq!(format!("{ty}"), "Fn@Bool [Int String]");
     }
@@ -2162,6 +2223,7 @@ mod tests {
         let ty = Type::Function {
             params: vec![],
             ret: Box::new(Type::Int),
+            variadic: false,
         };
         assert_eq!(format!("{ty}"), "Fn@Int []");
     }
@@ -2323,10 +2385,12 @@ mod tests {
         let sub = Type::Function {
             params: vec![Type::Number],
             ret: Box::new(Type::Int),
+            variadic: false,
         };
         let sup = Type::Function {
             params: vec![Type::Number],
             ret: Box::new(Type::Number),
+            variadic: false,
         };
         assert!(Type::is_subtype(&sub, &sup));
     }
@@ -2380,10 +2444,12 @@ mod tests {
         let sub = Type::Function {
             params: vec![Type::Number],
             ret: Box::new(Type::Bool),
+            variadic: false,
         };
         let sup = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Bool),
+            variadic: false,
         };
         assert!(Type::is_subtype(&sub, &sup));
     }
@@ -2393,10 +2459,12 @@ mod tests {
         let sub = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Bool),
+            variadic: false,
         };
         let sup = Type::Function {
             params: vec![Type::Int, Type::Int],
             ret: Box::new(Type::Bool),
+            variadic: false,
         };
         assert!(!Type::is_subtype(&sub, &sup));
     }
@@ -2579,10 +2647,12 @@ mod tests {
         let with = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::Int),
+            variadic: false,
         };
         let without = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Str),
+            variadic: false,
         };
         assert!(with.has_inference_vars());
         assert!(!without.has_inference_vars());
@@ -2600,6 +2670,7 @@ mod tests {
         let ty = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
             ret: Box::new(Type::TypeVar("a".into(), 0)),
+            variadic: false,
         };
         let mut vars = HashSet::new();
         ty.collect_type_vars(&mut vars);
@@ -2638,6 +2709,7 @@ mod tests {
         let ty = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
             ret: Box::new(Type::TypeVar("c".into(), 0)),
+            variadic: false,
         };
         let mut type_vars = HashSet::new();
         let mut row_vars = HashSet::new();
@@ -2767,7 +2839,7 @@ mod tests {
         let env = TypeEnv::with_builtins();
         let add_scheme = env.get("+").expect("+ should be registered");
         match &add_scheme.body {
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0], Type::Number);
                 assert_eq!(params[1], Type::Number);
@@ -2794,7 +2866,7 @@ mod tests {
         let env = TypeEnv::with_builtins();
         let eq_scheme = env.get("=").expect("= should be registered");
         match &eq_scheme.body {
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0], Type::Any);
                 assert_eq!(params[1], Type::Any);
@@ -2890,12 +2962,14 @@ mod tests {
         let ty = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::TypeVar("b".into(), 0)),
+            variadic: false,
         };
         assert_eq!(
             subst.apply(&ty),
             Type::Function {
                 params: vec![Type::Int],
                 ret: Box::new(Type::Str),
+                variadic: false,
             }
         );
     }
@@ -3067,10 +3141,12 @@ mod tests {
         let f1 = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::TypeVar("b".into(), 0)),
+            variadic: false,
         };
         let f2 = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Str),
+            variadic: false,
         };
         unify(&f1, &f2, &mut subst, &mut state, span).unwrap();
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
@@ -3085,10 +3161,12 @@ mod tests {
         let f1 = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Bool),
+            variadic: false,
         };
         let f2 = Type::Function {
             params: vec![Type::Int, Type::Int],
             ret: Box::new(Type::Bool),
+            variadic: false,
         };
         let result = unify(&f1, &f2, &mut subst, &mut state, span);
         assert!(result.is_err());
@@ -3381,6 +3459,7 @@ mod tests {
         let ty = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Str),
+            variadic: false,
         };
         let mut counter = 0;
         let (result, _) = instantiate(&ty, &mut counter);
@@ -3393,6 +3472,7 @@ mod tests {
         let ty = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0)],
             ret: Box::new(Type::TypeVar("a".into(), 0)),
+            variadic: false,
         };
         let mut counter = 0;
         let (result, _) = instantiate(&ty, &mut counter);
@@ -3400,7 +3480,7 @@ mod tests {
         assert!(!matches!(&result, Type::Function { params, .. }
             if params[0] == Type::TypeVar("a".into(), 0)));
         match &result {
-            Type::Function { params, ret } => assert_eq!(params[0], **ret),
+            Type::Function { params, ret, variadic: _ } => assert_eq!(params[0], **ret),
             _ => panic!("expected Function"),
         }
     }
@@ -3410,12 +3490,13 @@ mod tests {
         let ty = Type::Function {
             params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
             ret: Box::new(Type::TypeVar("a".into(), 0)),
+            variadic: false,
         };
         let mut counter = 0;
         let (result, _) = instantiate(&ty, &mut counter);
         assert_eq!(counter, 2);
         match &result {
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 assert_ne!(params[0], params[1]);
                 assert_eq!(params[0], **ret);
             }
@@ -3442,14 +3523,18 @@ mod tests {
             ret: Box::new(Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0)],
                 ret: Box::new(Type::TypeVar("b".into(), 0)),
+                variadic: false,
             }),
+            variadic: false,
         };
         let f2 = Type::Function {
             params: vec![Type::Int],
             ret: Box::new(Type::Function {
                 params: vec![Type::Int],
                 ret: Box::new(Type::Str),
+                variadic: false,
             }),
+            variadic: false,
         };
         unify(&f1, &f2, &mut subst, &mut state, span).unwrap();
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
@@ -3466,6 +3551,7 @@ mod tests {
             &Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0)],
                 ret: Box::new(Type::Int),
+                variadic: false,
             },
             &mut subst,
             &mut state,
@@ -3502,6 +3588,7 @@ mod tests {
             &Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0)],
                 ret: Box::new(Type::Int),
+                variadic: false,
             },
             &Type::TypeVar("a".into(), 0),
             &mut subst,
@@ -3875,6 +3962,7 @@ mod tests {
         let body = Type::Function {
             params: vec![Type::Str],
             ret: Box::new(Type::Bool),
+            variadic: false,
         };
         let scheme = TypeScheme::mono(body.clone());
         assert!(scheme.type_vars.is_empty());
@@ -3896,6 +3984,7 @@ mod tests {
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
+                variadic: false,
             },
         };
         assert_eq!(format!("{scheme}"), "∀a b. Fn@a [a b]");
@@ -4074,6 +4163,7 @@ mod tests {
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0)],
                 ret: Box::new(Type::TypeVar("b".into(), 0)),
+                variadic: false,
             },
         };
         let mut state = InferState::new();
@@ -4082,7 +4172,7 @@ mod tests {
 
         // Should get fresh variables at level 3
         match &result {
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 match &params[0] {
                     Type::TypeVar(name, level) => {
                         assert_eq!(*level, 3);
@@ -4175,6 +4265,7 @@ mod tests {
         let ty = Type::Function {
             params: vec![Type::TypeVar("a".into(), 2), Type::TypeVar("b".into(), 1)],
             ret: Box::new(Type::TypeVar("c".into(), 3)),
+            variadic: false,
         };
         let scheme = generalize(1, &ty, &state);
         // Only a (level 2 > 1) and c (level 3 > 1) should be generalized
@@ -4266,6 +4357,7 @@ mod tests {
         let complex = Type::Function {
             params: vec![Type::TypeVar("b".into(), 3)],
             ret: Box::new(Type::TypeVar("c".into(), 4)),
+            variadic: false,
         };
 
         // Unify a (level 1) with complex type containing b (3) and c (4)
@@ -4333,6 +4425,7 @@ mod tests {
         let fn_ty = Type::Function {
             params: vec![Type::TypeVar("b".into(), 3)],
             ret: Box::new(Type::Int),
+            variadic: false,
         };
 
         let mut subst = Substitution::new();
@@ -4386,6 +4479,7 @@ mod tests {
         let fn_ty = Type::Function {
             params: vec![Type::TypeVar("d".into(), 4)],
             ret: Box::new(Type::Seq(Box::new(Type::TypeVar("e".into(), 4)))),
+            variadic: false,
         };
 
         let mut subst = Substitution::new();
@@ -4469,6 +4563,7 @@ mod tests {
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 1)],
                 ret: Box::new(Type::TypeVar("b".into(), 1)),
+                variadic: false,
             },
         };
 
@@ -4477,7 +4572,7 @@ mod tests {
         let result = instantiate_scheme(&scheme, 3, &mut state);
 
         match result {
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, variadic: _ } => {
                 // "a" should get a fresh name (e.g., "_t0")
                 match &params[0] {
                     Type::TypeVar(a_name, a_level) => {
