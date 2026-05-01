@@ -62,9 +62,6 @@ Move the CEK continuation machinery — the active area for iterative-eval-b spr
 
 - [ ] Move `Cont`, `Action`, `RestoreState`, `attach_materialization_context()`, `next_depth()`, `force_step()`, `run()`, `apply_cont()` to `src/eval_materialize.rs` (`src/eval.rs:1245-2100`, ~860 lines) [Minor]
 
-### eval-split-c: Extract eval_access.rs
-
-- [ ] Move `eval_range_access()`, `invoke_proxy_handler()` and their helpers to `src/eval_access.rs` (note: `eval_dot_access()` and `eval_bracket_access()` were deleted in iterative-eval-b3 — dot/bracket access is now fully iterative via `DotAccessForce`/`BracketForceTarget` continuations in `force_step`) [Minor]
 
 ### eval-split-d: Extract eval_deep.rs
 
