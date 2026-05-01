@@ -14,6 +14,8 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 - [x] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost). (`doc/whatif/arena-patterns.md:258-266`) [Minor, computer-scientist]
 ### iterative-eval-b5: ThunkState simplification
 
+**BLOCKED (C94):** PendingBuiltin/PendingCall are persistent ThunkState storage (in Rc<Thunk>), while Cont variants are ephemeral (on the continuation stack during one run() call). Removal requires completing the full CEK migration — all eval/materialize paths must go through the iterative loop so that no persistent deferred state is needed. Depends on: (1) converting all recursive materialize() calls to go through run(), (2) redesigning lazy sequence constructors to not rely on persistent PendingBuiltin storage, (3) adding an Expr variant or closure mechanism for deferred builtin calls.
+
 Remove `PendingBuiltin` and `PendingCall` from `ThunkState`; these are fully subsumed by `Cont` variants on the stack. **Depends on iterative-eval-b4. Files: `src/value.rs` + `src/eval.rs` + `src/builtins.rs`.**
 
 - [ ] Remove `ThunkState::PendingBuiltin` — subsumed by `Cont::PendingBuiltinForceResult`; update all creation sites in `builtins.rs` (sequence constructors) and force handling in `force_step` to use the Cont variant instead (`src/value.rs`, `src/eval.rs`) [Major, eval-engine]
