@@ -2017,14 +2017,17 @@ Update all documentation that still references the pest parser. The iterative pa
 - [x] Update STATUS.md — Parser Rewrite moved to Completed
 - [x] Update TODO.md parser-rewrite section header — Phase 1-2 complete noted
 
-### error-message-polish: Error Message Polish (6/7 tasks — 1 deferred)
+### error-message-polish: Error Message Polish (Minor)
 
-- [x] Improve document pipeline non-Dict error message — type_mismatch_ctx("document pipeline", ...)
-- [x] Fix Span::origin() for non-origin errors — validate_and_wrap_record uses data_span
-- [x] Add call-site span to depth limit errors — deep_materialize_thunk passes thunk span
-- [x] Enhance "materialized at" verb — infer_materialization_verb() for called/accessed/materialized
-- [x] Change unification error wording — "cannot unify X with Y" in TypeError
-- [x] Improve Fn type expression error — "function type parameter at position N: got key 'X'"
+Minor wording and span improvements.
+
+- [x] Improve document pipeline non-Dict error message — now uses type_mismatch_ctx("document pipeline", ...) for clear user-facing context (`src/eval.rs`) [Minor, eval-engine]
+- [x] Fix `Span::origin()` used for non-origin errors — validate_and_wrap_record now uses data_span not guard_span; data_span fallback to origin documented (`src/eval.rs`) [Minor, span-integrity-checker]
+- [x] Add call-site span to depth limit errors — deep_materialize_thunk now passes Some(&thunk_span) to materialize and adds "deep-materializing" frame (`src/eval.rs`) [Minor, span-integrity-checker]
+- [x] Enhance "materialized at" error message — added infer_materialization_verb() helper using frame labels; now shows "called at" / "accessed at" / "materialized at" (`src/error.rs`) [Minor, span-integrity-checker]
+- [x] Change unification error wording — TypeError message now "cannot unify {expected} with {got}"; 15 test assertions updated (`src/types.rs`, `src/typecheck.rs`) [Minor, type-theorist]
+- [x] Improve Fn type expression error message for keyed params — now "function type parameter at position N: expected a type name, got key 'X'" (`src/typecheck.rs`) [Minor, type-theorist]
+- [x] Thread `call_site_span` through `deep_materialize()` — all 3 nested `materialize()` calls at lines 1231, 1251, 1264 pass `None` for mat_span, losing materialization context. Add `call_site_span: Span` parameter and pass `Some(&call_site_span)` to nested calls. Update callers in `src/builtins.rs:738`, `src/repl.rs:171`, `src/main.rs:149,168`, `src/lib.rs:88` to pass appropriate span or `Span::origin()`. (`src/eval.rs:1204,1231,1251,1264`) [Minor, span-integrity-checker]
 
 ### span-builtins: Builtin Span and Error Kind Quality
 

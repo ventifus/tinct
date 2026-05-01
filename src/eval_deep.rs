@@ -29,9 +29,19 @@ use crate::value::{Key, Thunk, Value};
 /// deeply nested structures. Cycle detection and sharing preservation are handled
 /// via a `HashMap<*const Thunk, Option<Rc<Thunk>>>` cache; see the
 /// dual-purpose cache semantics in `force_thunk`.
-pub fn deep_materialize(val: &Value, ctx: &Rc<EvalContext>, depth: usize) -> EvalResult<Value> {
+///
+/// `call_site_span` is the span of the call site (e.g., a builtin call) that
+/// triggered deep materialization. If provided, it is attached to errors as the
+/// materialization-site span. If `None`, the thunk's own span is used.
+pub fn deep_materialize(
+    val: &Value,
+    ctx: &Rc<EvalContext>,
+    depth: usize,
+    call_site_span: Option<&Span>,
+) -> EvalResult<Value> {
     let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
-    deep_materialize_impl(val, ctx, depth, &mut cache, 0, Span::origin())
+    let initial_span = call_site_span.copied().unwrap_or_else(Span::origin);
+    deep_materialize_impl(val, ctx, depth, &mut cache, 0, initial_span)
 }
 
 // Benchmark note (iterative-eval-d): The iterative work-stack deep_materialize_impl
@@ -69,6 +79,9 @@ enum WorkItem {
         thunk: Rc<Thunk>,
         seq_depth: usize,
         depth: usize,
+        /// The span to use for materialization errors. Either the original
+        /// call-site span from `deep_materialize` or the thunk's own span.
+        mat_span: Span,
     },
     /// Collect `keys.len()` thunks from `value_stack`, assemble a `Value::Dict`,
     /// wrap as a `Materialized` thunk, and push onto `value_stack`.
@@ -132,7 +145,8 @@ fn deep_materialize_impl(
         cache,
         seq_depth,
         current_span,
-        None, // root has no thunk pointer
+        None,         // root has no thunk pointer
+        current_span, // propagate call-site span
         &mut work_stack,
         &mut value_stack,
     )?;
@@ -144,6 +158,7 @@ fn deep_materialize_impl(
                 thunk,
                 seq_depth: item_seq_depth,
                 depth: item_depth,
+                mat_span,
             } => {
                 process_force(
                     &thunk,
@@ -151,6 +166,7 @@ fn deep_materialize_impl(
                     item_depth,
                     cache,
                     item_seq_depth,
+                    mat_span,
                     &mut work_stack,
                     &mut value_stack,
                 )?;
@@ -232,6 +248,8 @@ fn deep_materialize_impl(
 /// `thunk_ptr` is the cache key for the parent thunk (if any), forwarded to
 /// the `Build*` collector so it can update the sharing cache after assembly.
 ///
+/// `mat_span` is the materialization-site span to thread through nested materializations.
+///
 /// Returns `Err` if the Seq spine guard fires (seq_depth >= MAX_EVAL_DEPTH).
 fn push_structural(
     val: &Value,
@@ -240,6 +258,7 @@ fn push_structural(
     seq_depth: usize,
     span: Span,
     thunk_ptr: Option<*const Thunk>,
+    mat_span: Span,
     work_stack: &mut Vec<WorkItem>,
     value_stack: &mut Vec<Rc<Thunk>>,
 ) -> EvalResult<()> {
@@ -269,6 +288,7 @@ fn push_structural(
                     thunk: entry_thunk,
                     seq_depth: 0, // dict entries reset seq_depth
                     depth,
+                    mat_span, // propagate call-site span through nested materializations
                 });
             }
         }
@@ -290,6 +310,7 @@ fn push_structural(
                 thunk: Rc::clone(tail),
                 seq_depth: seq_depth + 1,
                 depth,
+                mat_span, // propagate call-site span through nested materializations
             });
             // Push head LAST on work_stack → processed first → result BELOW
             // tail on value_stack → BuildSeq pops head after tail.
@@ -297,6 +318,7 @@ fn push_structural(
                 thunk: Rc::clone(head),
                 seq_depth: 0, // head resets seq_depth
                 depth,
+                mat_span, // propagate call-site span through nested materializations
             });
         }
         Value::Proxy { handler } => {
@@ -305,6 +327,7 @@ fn push_structural(
                 thunk: Rc::clone(handler),
                 seq_depth: 0,
                 depth,
+                mat_span, // propagate call-site span through nested materializations
             });
         }
         // Primitives and functions: no children.
@@ -335,6 +358,7 @@ fn process_force(
     depth: usize,
     cache: &mut HashMap<*const Thunk, Option<Rc<Thunk>>>,
     seq_depth: usize,
+    mat_span: Span,
     work_stack: &mut Vec<WorkItem>,
     value_stack: &mut Vec<Rc<Thunk>>,
 ) -> EvalResult<()> {
@@ -368,9 +392,9 @@ fn process_force(
     cache.insert(thunk_ptr, None);
 
     // Materialize the thunk one level.
-    // Pass thunk.span as mat_span so errors carry the thunk's source location as
-    // the call-site span, matching the old deep_materialize_thunk behavior.
-    let v = match materialize(thunk, Some(&thunk_span), ctx, depth) {
+    // Use the mat_span from the WorkItem::Force, which is either the original
+    // call-site span from deep_materialize or the thunk's own span.
+    let v = match materialize(thunk, Some(&mat_span), ctx, depth) {
         Ok(v) => v,
         Err(e) => {
             // Clean up sentinel on error (same as old deep_materialize_thunk).
@@ -390,6 +414,7 @@ fn process_force(
         seq_depth,
         thunk_span,
         Some(thunk_ptr),
+        mat_span, // propagate call-site span through nested materializations
         work_stack,
         value_stack,
     )
@@ -452,6 +477,7 @@ mod tests {
             0,
             &mut cache,
             0,
+            span, // mat_span
             &mut work_stack,
             &mut value_stack,
         )
@@ -486,7 +512,7 @@ mod tests {
         let val = Value::Dict(map);
 
         // Deep materialize the container
-        let result = deep_materialize(&val, &ctx, 0).unwrap();
+        let result = deep_materialize(&val, &ctx, 0, None).unwrap();
 
         match result {
             Value::Dict(map) => {
@@ -572,7 +598,7 @@ mod tests {
         let dict_value = Value::Dict(dict_map);
 
         // Materialize at MAX_EVAL_DEPTH so the inner recursive call exceeds the limit.
-        let err1 = deep_materialize(&dict_value, &ctx, MAX_EVAL_DEPTH - 1).unwrap_err();
+        let err1 = deep_materialize(&dict_value, &ctx, MAX_EVAL_DEPTH - 1, None).unwrap_err();
         assert!(
             err1.message().contains("maximum evaluation depth exceeded"),
             "expected depth exceeded error, got: {}",
@@ -595,7 +621,7 @@ mod tests {
 
         // Property 2: a second deep_materialize (fresh cache) fails with DepthExceeded again,
         // not a cycle error -- confirming no permanent state corruption from the sentinel.
-        let err2 = deep_materialize(&dict_value, &ctx, MAX_EVAL_DEPTH - 1).unwrap_err();
+        let err2 = deep_materialize(&dict_value, &ctx, MAX_EVAL_DEPTH - 1, None).unwrap_err();
         assert!(
             err2.message().contains("maximum evaluation depth exceeded"),
             "expected depth exceeded on retry, got: {}",

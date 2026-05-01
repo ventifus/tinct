@@ -326,18 +326,6 @@ User-facing error presentation improvements.
 - [x] Use `ErrorKind::code()` for LSP diagnostic error code — eval_error_to_diagnostic now sets `code: Some(NumberOrString::String(kind.code()))` (`src/lsp/analysis.rs`) [Minor, span-integrity-checker C32]
 - [x] Add `desugar_file()` call to LSP `DocumentState::new()` — pipeline is parse→typecheck→eval, missing the desugar step. User code containing `$_` will see un-desugared ASTs in LSP. (`src/lsp/document.rs:54`) [Minor, computer-scientist C32; fix applied C69]
 
-### error-message-polish: Error Message Polish (Minor)
-
-Minor wording and span improvements.
-
-- [x] Improve document pipeline non-Dict error message — now uses type_mismatch_ctx("document pipeline", ...) for clear user-facing context (`src/eval.rs`) [Minor, eval-engine]
-- [x] Fix `Span::origin()` used for non-origin errors — validate_and_wrap_record now uses data_span not guard_span; data_span fallback to origin documented (`src/eval.rs`) [Minor, span-integrity-checker]
-- [x] Add call-site span to depth limit errors — deep_materialize_thunk now passes Some(&thunk_span) to materialize and adds "deep-materializing" frame (`src/eval.rs`) [Minor, span-integrity-checker]
-- [x] Enhance "materialized at" error message — added infer_materialization_verb() helper using frame labels; now shows "called at" / "accessed at" / "materialized at" (`src/error.rs`) [Minor, span-integrity-checker]
-- [x] Change unification error wording — TypeError message now "cannot unify {expected} with {got}"; 15 test assertions updated (`src/types.rs`, `src/typecheck.rs`) [Minor, type-theorist]
-- [x] Improve Fn type expression error message for keyed params — now "function type parameter at position N: expected a type name, got key 'X'" (`src/typecheck.rs`) [Minor, type-theorist]
-- [ ] Thread `call_site_span` through `deep_materialize()` — all 3 nested `materialize()` calls at lines 1231, 1251, 1264 pass `None` for mat_span, losing materialization context. Add `call_site_span: Span` parameter and pass `Some(&call_site_span)` to nested calls. Update callers in `src/builtins.rs:738`, `src/repl.rs:171`, `src/main.rs:149,168`, `src/lib.rs:88` to pass appropriate span or `Span::origin()`. (`src/eval.rs:1204,1231,1251,1264`) [Minor, span-integrity-checker]
-
 ## stdlib-docs: Stdlib Documentation
 
 Add type signatures and inline examples to all stdlib functions, serving as both documentation and executable tests.

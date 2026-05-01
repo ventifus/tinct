@@ -133,7 +133,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let thunk =
         eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(|e| format!("{e}"))?;
     let val = eval::materialize(&thunk, None, &ctx, 0).map_err(|e| format!("{e}"))?;
-    let forced = eval::deep_materialize(&val, &ctx, 0).map_err(|e| format!("{e}"))?;
+    let forced = eval::deep_materialize(&val, &ctx, 0, None).map_err(|e| format!("{e}"))?;
     value_to_display_string(&forced, &ctx, 0).map_err(|e| format!("{e}"))
 }
 
@@ -707,7 +707,7 @@ mod tests {
         let ctx = test_ctx();
         let thunk = eval::eval_file(&file.node, env, &ctx, 0).expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx, 0).expect("materialize failed");
-        let forced = eval::deep_materialize(&val, &ctx, 0).expect("deep_materialize failed");
+        let forced = eval::deep_materialize(&val, &ctx, 0, None).expect("deep_materialize failed");
         let json = value_to_json(&forced, &ctx, 0).expect("value_to_json failed");
         assert_eq!(json, serde_json::json!({"a": {"b": {"c": 42}}}));
     }
@@ -721,7 +721,7 @@ mod tests {
         let ctx = test_ctx();
         let thunk = eval::eval_file(&file.node, env, &ctx, 0).expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx, 0).expect("materialize failed");
-        let forced = eval::deep_materialize(&val, &ctx, 0).expect("deep_materialize failed");
+        let forced = eval::deep_materialize(&val, &ctx, 0, None).expect("deep_materialize failed");
         let display = value_to_display_string(&forced, &ctx, 0).expect("display failed");
         assert_eq!(display, "Dict({\"x\": Int(42)})");
     }

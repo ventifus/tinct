@@ -171,7 +171,7 @@ impl ReplSession {
         .map_err(|e| format!("{e}"))?;
 
         let val = materialize(&result_thunk, None, &self.ctx, 0).map_err(|e| format!("{e}"))?;
-        let forced = deep_materialize(&val, &self.ctx, 0).map_err(|e| format!("{e}"))?;
+        let forced = deep_materialize(&val, &self.ctx, 0, None).map_err(|e| format!("{e}"))?;
         let display = value_to_display_string(&forced, &self.ctx, 0).map_err(|e| format!("{e}"))?;
 
         // Success: commit the result to session state.
