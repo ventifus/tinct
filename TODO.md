@@ -664,31 +664,6 @@ Doc and behavior nits from codebase reviews. Requires misc-nits-b.
 - [x] Add substitution size check to unify_tails RowVar-to-RowVar binding — `src/types.rs:717` missing `subst.check_size(span)?` after row_map insert, unlike the RowVar-to-Empty binding at lines 728-731 [Minor, type-theorist C91]
 - [x] Fix doc/16-architecture.md CEK status — says "Phase 4 (structural cleanup) complete via iterative-eval-b3" but Phase 4 (eval_step conversion) is only partially done: TypeAssertCheck Cont added (b4 tasks 2+4), $apply deferred (task 5 above), DictEntries/DocumentPipeline/DictBuildKey/BindArgDefault not yet added; update §Iterative Evaluator status note to reflect partial b4 completion (`doc/16-architecture.md:43`) [Minor, integration-verifier C91]
 
-### misc-nits-c-tests: Test Coverage Additions
-
-Corpus tests, unit tests, and regression tests. No code behavior change.
-
-- [ ] Add `check_call_with_scheme` error path tests — arity mismatch for polymorphic schemes, type mismatch in CALL-MONO path, calling a non-function scheme. (`src/typecheck.rs`) [Minor, test-crafter C46 panel]
-- [ ] Add test for Case 5 `unify_remainders` display-hiding with `_`-prefixed row var name [Nit, test-crafter C72 panel]
-- [ ] Add RestoreState::PendingCall unit test in eval_materialize.rs — Unevaluated and PendingBuiltin are tested but PendingCall is not [Minor, eval-engine C71 panel]
-- [ ] Add corpus tests verifying Type::Seq for remaining 6 sequence builtins ($seq, $repeat, $cycle, $iterate, $unfold, $take) — only $range and $keys are tested [Minor, test-crafter C71 panel]
-- [ ] Add bracket-form span regression tests for Call, Fn, TypeAlias, TypeAssert, BracketAccessKey variants — only Dict bracket form is tested [Minor, test-crafter C71 panel]
-- [ ] Add regression tests for $merge/$append distinct RowVar fix — behavioral change could regress silently [Minor, test-crafter C71 panel]
-- [ ] Add unit tests verifying boxed args/named preserved correctly in PendingBuiltin/PendingCall error restoration paths — existing tests verify error messages but not state restoration contents [Nit, test-crafter C74 panel]
-- [ ] Add corpus tests for newline edge cases: call_newline_colon.llt-eval ([call\n: x] → error), newline_breaks_bracket_access.llt-eval ($a\n[0] → two expressions), newline_breaks_dot_access.llt-eval ($a\n.b → two expressions) (`tests/corpus/invalid/`) [Minor, grammar-architect C81]
-- [ ] **Depth limit corpus tests** — no corpus error test for 257-level nested calls triggering `[E040]`. No test verifying `---` document separator resets depth. (`tests/corpus/eval/errors/`) [Major, test-crafter C34]
-- [ ] Add unit tests for extracted modules: eval_call.rs, eval_access.rs — functions invoke_function, bind_args_thunks, key_in_range, eval_range_access extracted but 0 unit tests moved with them; add test_func_label_extraction, test_bind_args_required_param, test_key_in_range_mixed_types [Major, test-crafter C91]
-- [ ] Add corpus test for TypeAssert elaboration gap fallback path — non-Dict value fails when annotation has structural fields but resolved_type is None (annotation_has_structural_fields returns true but type resolution fails); verify correct error is surfaced (`tests/corpus/eval/errors/`) [Minor, test-crafter typeassert-structural-b]
-- [ ] Add corpus test for multi-segment field path format in TypeAssert errors — nested record type assertion with 2+ path segments (e.g. "user"."address"."zip") should produce correctly quoted multi-segment prefix in error message (`tests/corpus/eval/errors/`) [Minor, test-crafter typeassert-structural-b]
-- [ ] Add corpus test for TypeAssert with type alias mismatch — verify that asserting a concrete type alias (e.g. `@MyAlias`) against a value of an incompatible type produces a TypeAssert error with the alias name in the message (`tests/corpus/eval/errors/`) [Minor, test-crafter typeassert-structural-b]
-- [ ] Add 3 resource limit corpus tests: collect_size_limit.llt-eval (>1M elements → E014), string_size_limit.llt-eval (>64MB string → E014), split_max_parts.llt-eval (>1M parts → E014) (`tests/corpus/eval/errors/`) [Critical, test-crafter C91]
-- [ ] Add caller_env correctness corpus test: fn_default_caller_scope.llt-eval verifying default params evaluate in caller's scope (not closure scope) after iterative-eval-b1 change (`tests/corpus/eval/functions/`) [Major, test-crafter C91]
-- [ ] Add deep_materialize infinite Seq depth guard unit test in eval_deep.rs — test_deep_materialize_infinite_seq_depth_guard verifying seq spine depth limit fires before Rust stack overflow [Major, test-crafter C91]
-- [ ] Add corpus tests for bracket access and range access — no eval-level corpus tests cover the dot-access, bracket-access, or range-access code paths end-to-end. (`tests/corpus/eval/access/`) [Minor, grammar-architect C71]
-- [ ] Add laziness proof corpus tests for $reduce/$join/$concat — these sequence builtins have no tests proving unused tail elements are NOT forced. (`tests/corpus/eval/laziness/`) [Minor, test-crafter C71]
-- [ ] Add parser unit test for `[call\n: x]` edge case — doc/15-ast.md documents this as producing Call (not Dict) but no parser test covers it [Minor, test-crafter C71 panel]
-- [ ] Add partition cross-feature corpus tests (partition with type annotations, partition in nested contexts) [Minor, test-crafter C71 panel]
-
 ### misc-nits-c-code: Code Behavior Fixes
 
 Code behavior changes, refactors, performance fixes, and span fixes.

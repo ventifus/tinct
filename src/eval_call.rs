@@ -296,3 +296,43 @@ pub(crate) fn get_default(param: &Param) -> Option<Spanned<Expr>> {
         .and_then(|ann| ann.node.get_property(DEFAULT_ANNOTATION_KEY))
         .cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::sp;
+
+    #[test]
+    fn test_func_label_varref() {
+        // Test func_label with a VarRef expression
+        let expr = Expr::VarRef("my_func".to_string());
+        let label = func_label(&expr);
+        assert_eq!(label, "call $my_func");
+    }
+
+    #[test]
+    fn test_func_label_desugared_lambda() {
+        // Test func_label with a desugared lambda
+        let expr = Expr::Fn {
+            return_ann: None,
+            params: vec![],
+            body: Box::new(sp(Expr::Int(42))),
+            desugared: true,
+        };
+        let label = func_label(&expr);
+        assert!(label.contains("auto-generated lambda"));
+    }
+
+    #[test]
+    fn test_func_label_regular_lambda() {
+        // Test func_label with a regular (non-desugared) lambda
+        let expr = Expr::Fn {
+            return_ann: None,
+            params: vec![],
+            body: Box::new(sp(Expr::Int(42))),
+            desugared: false,
+        };
+        let label = func_label(&expr);
+        assert_eq!(label, "call <anonymous>");
+    }
+}
