@@ -20,10 +20,17 @@ use crate::eval::{eval, EvalContext};
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
 /// Extract a human-readable label from a function expression for stack frames.
+///
+/// When the expression is a desugared `$_` lambda (synthesized by `desugar.rs`),
+/// " (auto-generated lambda)" is appended so stack traces distinguish sugar-generated
+/// closures from user-written `[fn ...]` forms.
 pub(crate) fn func_label(expr: &Expr) -> Cow<'static, str> {
     // Fast path for common VarRef case: build label directly to avoid intermediate format! in func_path
     match expr {
         Expr::VarRef(name) => Cow::Owned(format!("call ${name}")),
+        Expr::Fn {
+            desugared: true, ..
+        } => Cow::Owned(format!("call {} (auto-generated lambda)", func_path(expr))),
         _ => Cow::Owned(format!("call {}", func_path(expr))),
     }
 }
@@ -37,8 +44,15 @@ pub(crate) fn func_path(expr: &Expr) -> String {
 }
 
 /// Evaluate a call expression: return a PendingCall thunk that defers function dispatch.
-/// The function is NOT materialized at call time — dispatch happens iteratively in
-/// run()'s PendingCallDispatch continuation, enabling unlimited tail-call optimization.
+///
+/// Now returns a PendingCall thunk; function dispatch is deferred to the PendingCallDispatch
+/// continuation in `run()`. This diverges from the [FORCE-CALL] rule in doc/08-evaluation.md,
+/// which described the old eager dispatch model — the rule has been updated to reflect the
+/// current lazy dispatch design that enables unlimited tail-call optimization.
+///
+/// Neither the function nor any argument is materialized here. The PendingCallDispatch
+/// continuation forces `func_thunk` when the result is needed, then dispatches to
+/// `invoke_function` (user functions) or the builtin handler.
 pub(crate) fn eval_call(
     func_expr: &Spanned<Expr>,
     args: &[Spanned<Expr>],
@@ -233,8 +247,11 @@ pub(crate) fn bind_args_thunks(
             None => {
                 // C-NAMED-VALID: named arg must target an existing parameter
                 // (Kotlin model: ANY param can be named, not just optional params)
+                let valid_params: Vec<String> =
+                    regular_params.iter().map(|p| p.name.clone()).collect();
                 return Err(Box::new(EvalError::unknown_named_arg(
                     name.clone(),
+                    valid_params,
                     *call_span,
                 )));
             }

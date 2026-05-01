@@ -439,7 +439,10 @@ fn infer_expr(
                         )
                     }
                     Some(_) => {
-                        // Monomorphic scheme: use normal path which handles TypeVar during letrec
+                        // TypeVar: handles letrec forward-references where Pass 1 assigns TypeVar
+                        // placeholders not yet generalized. The monomorphic path (check_call) reaches
+                        // the TypeVar arm which infers args for side effects and returns Any, deferring
+                        // type resolution until all letrec bindings have been inferred.
                         check_call(func, args, named_args, env, expr.span, state, type_map)
                     }
                     None => {
@@ -1304,7 +1307,10 @@ fn check_call_with_scheme(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    // Instantiate the scheme once at the current level
+    // Instantiate the scheme once at the current level.
+    // instantiate_at_level uses the call-site level (state.level) to ensure fresh type vars
+    // are created at the correct generalization depth: vars at depth > enclosing_level will
+    // be generalized by the enclosing let binding, while vars at shallower depth won't be.
     let func_ty = instantiate_scheme(scheme, state.level, state);
 
     // Record the function expression's type in the type map for LSP hover.
@@ -1381,7 +1387,9 @@ fn check_call_with_scheme(
                     Ok(state.subst.apply(&subst.apply(ret)))
                 }
             } else {
-                // Zero-param function: return the return type
+                // Zero-param: no arguments to unify, return type needs no substitution applied
+                // from local argument unification (there are no arguments). Apply state.subst
+                // for access-chain constraints that may bind type vars in the return type.
                 if state.subst.is_empty() {
                     Ok((**ret).clone())
                 } else {
@@ -1446,6 +1454,14 @@ fn check_call(
 
             // CALL-MONO: function type is fully concrete (no type variables)
             // Use bidirectional checking for arguments via [SUB] rule (doc/06 line 152-157)
+            //
+            // ASYMMETRY: CALL-MONO collects all argument errors before returning (errors Vec
+            // accumulates then is returned at once), while CALL-POLY (below) stops at the first
+            // unification failure (map_err returns immediately). CALL-MONO's multi-error approach
+            // is preferred for user-facing type errors; CALL-POLY's early-exit is a limitation of
+            // sequential unification where later argument types may be meaningless if earlier
+            // unification fails (type variables left unbound). A future improvement would
+            // collect CALL-POLY errors too, but requires constraint-based solving (see comment below).
             if !func_ty.has_inference_vars() {
                 let mut errors = Vec::new();
                 for (arg, param_ty) in args.iter().zip(params.iter()) {

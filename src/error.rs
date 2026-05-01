@@ -81,6 +81,8 @@ pub enum ErrorKind {
     },
     UnknownNamedArg {
         name: String,
+        /// Names of all valid named parameters for this function (for error hint).
+        valid_params: Vec<String>,
     },
     NamedArgRejected {
         builtin: String,
@@ -346,7 +348,20 @@ impl fmt::Display for ErrorKind {
                 f,
                 "parameter '{param}' received both positional and named argument"
             ),
-            Self::UnknownNamedArg { name } => write!(f, "unexpected named argument: {name}"),
+            Self::UnknownNamedArg { name, valid_params } => {
+                if valid_params.is_empty() {
+                    write!(
+                        f,
+                        "unexpected named argument: {name} (function has no parameters)"
+                    )
+                } else {
+                    let valid = valid_params.join(", ");
+                    write!(
+                        f,
+                        "unexpected named argument: {name} (valid parameter names: {valid})"
+                    )
+                }
+            }
             Self::NamedArgRejected { builtin } => {
                 write!(f, "{builtin} does not accept named arguments")
             }
@@ -445,7 +460,9 @@ impl PartialEq for ErrorKind {
             (Self::NamedArgConflict { param: p1 }, Self::NamedArgConflict { param: p2 }) => {
                 p1 == p2
             }
-            (Self::UnknownNamedArg { name: n1 }, Self::UnknownNamedArg { name: n2 }) => n1 == n2,
+            (Self::UnknownNamedArg { name: n1, .. }, Self::UnknownNamedArg { name: n2, .. }) => {
+                n1 == n2
+            }
             (Self::NamedArgRejected { builtin: b1 }, Self::NamedArgRejected { builtin: b2 }) => {
                 b1 == b2
             }
@@ -793,9 +810,13 @@ impl EvalError {
         }
     }
 
-    pub fn unknown_named_arg(name: String, definition_span: Span) -> Self {
+    pub fn unknown_named_arg(
+        name: String,
+        valid_params: Vec<String>,
+        definition_span: Span,
+    ) -> Self {
         Self {
-            kind: ErrorKind::UnknownNamedArg { name },
+            kind: ErrorKind::UnknownNamedArg { name, valid_params },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -1231,6 +1252,7 @@ mod tests {
             },
             ErrorKind::UnknownNamedArg {
                 name: "x".to_string(),
+                valid_params: vec![],
             },
             ErrorKind::NamedArgRejected {
                 builtin: "test".to_string(),
@@ -1494,10 +1516,21 @@ mod tests {
             format!(
                 "{}",
                 ErrorKind::UnknownNamedArg {
-                    name: "foo".to_string()
+                    name: "foo".to_string(),
+                    valid_params: vec!["x".to_string(), "y".to_string()],
                 }
             ),
-            "unexpected named argument: foo"
+            "unexpected named argument: foo (valid parameter names: x, y)"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::UnknownNamedArg {
+                    name: "foo".to_string(),
+                    valid_params: vec![],
+                }
+            ),
+            "unexpected named argument: foo (function has no parameters)"
         );
         assert_eq!(
             format!(

@@ -639,8 +639,13 @@ impl fmt::Display for ErrorKind {
                 write!(f, "missing argument for required parameter '{param}'"),
             Self::NamedArgConflict { param } =>
                 write!(f, "parameter '{param}' received both positional and named argument"),
-            Self::UnknownNamedArg { name } =>
-                write!(f, "unexpected named argument: {name}"),
+            Self::UnknownNamedArg { name, valid_params } =>
+                if valid_params.is_empty() {
+                    write!(f, "unexpected named argument: {name} (function has no parameters)")
+                } else {
+                    write!(f, "unexpected named argument: {name} (valid parameter names: {})",
+                           valid_params.join(", "))
+                },
             Self::NamedArgRejected { builtin } =>
                 write!(f, "{builtin} does not accept named arguments"),
             Self::DuplicateKey { key } =>
@@ -856,7 +861,7 @@ All 31 `ErrorKind` variants map to stable error codes and human-readable message
 | **TypeAssertFailed** | E011 | `"type assertion failed: expected {expected}, got {got}"` | Type assertion expression (`[@Type expr]`) |
 | **ArityMismatch** | E020 | `"arity mismatch: expected {bound}, got {n}"` | Call expression |
 | **NamedArgConflict** | E021 | `"parameter '{param}' received both positional and named argument"` | Call expression |
-| **UnknownNamedArg** | E022 | `"unexpected named argument: {name}"` | Call expression |
+| **UnknownNamedArg** | E022 | `"unexpected named argument: {name} (valid parameter names: {params})"` or `"unexpected named argument: {name} (function has no parameters)"` | Call expression |
 | **NamedArgRejected** | E023 | `"{builtin} does not accept named arguments"` | Call expression |
 | **MissingRequiredParam** | E024 | `"missing argument for required parameter '{param}'"` | Call expression |
 | **DuplicateKey** | E030 | `"duplicate key: {key}"` | Second occurrence of the key |
