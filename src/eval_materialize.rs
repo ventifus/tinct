@@ -73,7 +73,7 @@ pub(crate) enum RestoreState {
         name: &'static str,
         func: crate::value::BuiltinFn,
         args: Box<Vec<Rc<Thunk>>>,
-        named: Box<IndexMap<String, Rc<Thunk>>>,
+        named: Option<IndexMap<String, Rc<Thunk>>>,
         depth: usize,
         call_span: Span,
         ctx: Rc<EvalContext>,
@@ -194,7 +194,7 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) builtin_name: &'static str,
     pub(crate) func: crate::value::BuiltinFn,
     pub(crate) args: Box<Vec<Rc<Thunk>>>,
-    pub(crate) named: Box<IndexMap<String, Rc<Thunk>>>,
+    pub(crate) named: Option<IndexMap<String, Rc<Thunk>>>,
     pub(crate) depth: usize,
     pub(crate) call_span: Span,
     pub(crate) ctx: Rc<EvalContext>,
@@ -537,7 +537,7 @@ pub(crate) fn force_step(
                 name,
                 func,
                 args: Box::new(args),
-                named: Box::new(named),
+                named,
                 depth: pending_depth,
                 call_span,
                 ctx: thunk_ctx,
@@ -549,7 +549,7 @@ pub(crate) fn force_step(
             name,
             func,
             args: Box::new(args.clone()),
-            named: Box::new(named.clone()),
+            named: named.clone(),
             depth: pending_depth,
             call_span,
             ctx: thunk_ctx.clone(),
@@ -566,7 +566,7 @@ pub(crate) fn force_step(
                 builtin_name: name,
                 func,
                 args: Box::new(args),
-                named: Box::new(named),
+                named,
                 depth,
                 call_span,
                 ctx: thunk_ctx,
@@ -582,9 +582,13 @@ pub(crate) fn force_step(
             };
         }
 
+        // `named` is None for internally-created thunks (common case); only $apply
+        // passes named args through. Use an empty map ref for the None case.
+        let empty_named = IndexMap::new();
+        let named_ref = named.as_ref().unwrap_or(&empty_named);
         let builtin_args = crate::value::BuiltinArgs {
             args: &args,
-            named: &named,
+            named: named_ref,
             depth,
             call_span,
             ctx: Rc::clone(&thunk_ctx),
@@ -1137,10 +1141,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         };
                     }
 
-                    // Use loop depth for builtin arg materialization (TCO)
+                    // Use loop depth for builtin arg materialization (TCO).
+                    // `named` is None for internally-created thunks; unwrap_or with an
+                    // empty map (stack-only, no allocation for empty IndexMap) for the None case.
+                    let empty_named = IndexMap::new();
+                    let named_ref = named.as_ref().unwrap_or(&empty_named);
                     let builtin_args = crate::value::BuiltinArgs {
                         args: &args,
-                        named: &named,
+                        named: named_ref,
                         depth,
                         call_span,
                         ctx: Rc::clone(&thunk_ctx),
@@ -1865,14 +1873,13 @@ mod tests {
         };
 
         let args = vec![Rc::clone(&thunk)];
-        let named = IndexMap::new();
         let ctx = test_ctx();
 
         let pending_thunk = Thunk::new_pending_builtin(
             "dummy",
             dummy_func,
             args.clone(),
-            named.clone(),
+            None,
             0,
             span,
             "test_origin".into(),
@@ -1888,7 +1895,7 @@ mod tests {
             name: "dummy",
             func: dummy_func,
             args: Box::new(args),
-            named: Box::new(named),
+            named: None,
             depth: 0,
             call_span: span,
             ctx: ctx.clone(),

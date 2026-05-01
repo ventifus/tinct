@@ -634,6 +634,9 @@ pub struct EvalError {
     pub definition_span: Span,
     pub materialization_span: Option<Span>,
     pub stack: Vec<StackFrame>,
+    /// Optional secondary span with a label, e.g. "evaluated to Bool" pointing at a value site.
+    /// Displayed after the primary error line when present.
+    pub secondary_span: Option<(Span, String)>,
 }
 
 impl EvalError {
@@ -651,6 +654,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -675,6 +679,14 @@ impl EvalError {
         self.stack.push(StackFrame { label, span });
     }
 
+    /// Builder for attaching a secondary span label, e.g. `"evaluated to Bool"`.
+    /// The secondary span is displayed on a separate line after the primary error,
+    /// pointing at a related source location (e.g. where a value was defined).
+    pub fn with_secondary_span(mut self, span: Span, label: impl Into<String>) -> Self {
+        self.secondary_span = Some((span, label.into()));
+        self
+    }
+
     pub fn key_not_found(key: &str, available_keys: Vec<String>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::KeyNotFound {
@@ -684,6 +696,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -697,6 +710,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -709,6 +723,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -718,6 +733,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -729,6 +745,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -738,6 +755,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -747,6 +765,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -756,6 +775,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -765,6 +785,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -783,6 +804,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -792,6 +814,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -801,6 +824,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -810,6 +834,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -819,6 +844,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -828,6 +854,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -837,6 +864,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -849,6 +877,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -858,6 +887,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -871,6 +901,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -882,6 +913,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -891,6 +923,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -900,6 +933,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -911,6 +945,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -920,6 +955,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -929,6 +965,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -938,6 +975,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -947,6 +985,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -961,6 +1000,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -979,6 +1019,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -988,6 +1029,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -997,6 +1039,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -1015,6 +1058,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -1024,6 +1068,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -1033,6 +1078,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 
@@ -1044,6 +1090,7 @@ impl EvalError {
             definition_span: span,
             materialization_span: None,
             stack: Vec::new(),
+            secondary_span: None,
         }
     }
 }
@@ -1142,6 +1189,11 @@ impl fmt::Display for EvalError {
                 let verb = infer_materialization_verb(&self.stack);
                 write!(f, " ({verb} {mat_span})")?;
             }
+        }
+
+        // Secondary span: "evaluated to X" label pointing at a related source location.
+        if let Some((ref sec_span, ref sec_label)) = self.secondary_span {
+            write!(f, "\n  note: {sec_label} at {sec_span}")?;
         }
 
         // For DepthExceeded errors, detect and elide repeating frame cycles
@@ -2413,6 +2465,7 @@ mod tests {
                     definition_span: test_span(1, 1, 1, 5),
                     materialization_span: None,
                     stack: Vec::new(),
+                    secondary_span: None,
                 },
                 "[E002]",
             ),

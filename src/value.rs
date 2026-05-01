@@ -248,7 +248,10 @@ pub enum ThunkState {
         name: &'static str,
         func: BuiltinFn,
         args: Box<Vec<Rc<Thunk>>>,
-        named: Box<IndexMap<String, Rc<Thunk>>>,
+        /// Named args for this builtin call. `None` means no named args (the common case);
+        /// avoids allocating an empty `IndexMap` for the many internal `PendingBuiltin`
+        /// thunks created by sequence generators and transforms.
+        named: Option<IndexMap<String, Rc<Thunk>>>,
         depth: usize,
         call_span: Span,
         ctx: Rc<crate::eval::EvalContext>,
@@ -307,11 +310,13 @@ impl Thunk {
         }
     }
 
+    /// `named`: pass `None` when there are no named args (the common case for internal
+    /// thunks); pass `Some(map)` only when named args are actually present.
     pub fn new_pending_builtin(
         name: &'static str,
         func: BuiltinFn,
         args: Vec<Rc<Thunk>>,
-        named: IndexMap<String, Rc<Thunk>>,
+        named: Option<IndexMap<String, Rc<Thunk>>>,
         depth: usize,
         span: Span,
         origin: Cow<'static, str>,
@@ -322,7 +327,7 @@ impl Thunk {
                 name,
                 func,
                 args: Box::new(args),
-                named: Box::new(named),
+                named,
                 depth,
                 call_span: span,
                 ctx,
@@ -454,7 +459,7 @@ impl Thunk {
         &'static str,
         BuiltinFn,
         Vec<Rc<Thunk>>,
-        IndexMap<String, Rc<Thunk>>,
+        Option<IndexMap<String, Rc<Thunk>>>,
         usize,
         Span,
         Rc<crate::eval::EvalContext>,
@@ -469,7 +474,7 @@ impl Thunk {
                 depth,
                 call_span,
                 ctx,
-            } => Some((name, func, *args, *named, depth, call_span, ctx)),
+            } => Some((name, func, *args, named, depth, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -1158,7 +1163,7 @@ mod tests {
             "test-builtin",
             dummy_builtin,
             vec![],
-            IndexMap::new(),
+            None,
             0,
             span,
             Cow::Borrowed("test builtin call"),
@@ -1432,7 +1437,6 @@ mod tests {
         // Verify PendingBuiltin thunk can be created and transitions correctly
         use crate::eval::EvalContext;
         use crate::test_util::test_span;
-        use indexmap::IndexMap;
 
         let span = test_span(1, 1, 1, 10);
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
@@ -1456,7 +1460,7 @@ mod tests {
             "dummy",
             dummy_builtin,
             vec![],
-            IndexMap::new(),
+            None,
             0,
             span,
             Cow::Borrowed("test"),
@@ -1489,7 +1493,6 @@ mod tests {
         use crate::error::EvalError;
         use crate::eval::EvalContext;
         use crate::test_util::test_span;
-        use indexmap::IndexMap;
 
         let span = test_span(1, 1, 1, 10);
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
@@ -1511,7 +1514,7 @@ mod tests {
             "error_builtin",
             error_builtin,
             vec![],
-            IndexMap::new(),
+            None,
             0,
             span,
             Cow::Borrowed("test"),

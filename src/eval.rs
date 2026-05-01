@@ -1083,7 +1083,7 @@ pub fn materialize(
                 name,
                 func,
                 args: Box::new(args.clone()),
-                named: Box::new(named.clone()),
+                named: named.clone(),
                 depth: pending_depth,
                 call_span,
                 ctx: thunk_ctx.clone(),
@@ -1094,9 +1094,13 @@ pub fn materialize(
         // TCO: use caller's depth for builtin arg materialization, not the stored
         // pending_depth. This prevents depth accumulation through builtin chains
         // (e.g., $- → materialize → $- → materialize).
+        // `named` is None for internally-created thunks (common case); only $apply
+        // passes named args through. Use an empty map ref for the None case.
+        let empty_named = IndexMap::new();
+        let named_ref = named.as_ref().unwrap_or(&empty_named);
         let builtin_args = crate::value::BuiltinArgs {
             args: &args,
-            named: &named,
+            named: named_ref,
             depth,
             call_span,
             ctx: Rc::clone(&thunk_ctx),
@@ -1130,7 +1134,7 @@ pub fn materialize(
                                     name,
                                     func,
                                     args: Box::new(args),
-                                    named: Box::new(named),
+                                    named,
                                     depth: pending_depth,
                                     call_span,
                                     ctx: thunk_ctx,
@@ -1149,7 +1153,7 @@ pub fn materialize(
                         name,
                         func,
                         args: Box::new(args),
-                        named: Box::new(named),
+                        named,
                         depth: pending_depth,
                         call_span,
                         ctx: thunk_ctx,

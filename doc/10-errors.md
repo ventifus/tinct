@@ -57,14 +57,15 @@ This section formalizes how errors are represented, propagated, decorated, memoi
 
 ### Part 1: Error Representation
 
-An evaluation error `ε` is a record with four fields:
+An evaluation error `ε` is a record with five fields:
 
 ```
-ε = ⟨kind, def_span, mat_span?, stack⟩  where
-  kind      : ErrorKind       — structured error variant with domain-specific data
-  def_span  : Span            — where the problematic value was defined
-  mat_span  : Option<Span>    — where the value was first forced (if different)
-  stack     : [StackFrame]    — chain of materialization contexts, outermost last
+ε = ⟨kind, def_span, mat_span?, sec_span?, stack⟩  where
+  kind      : ErrorKind              — structured error variant with domain-specific data
+  def_span  : Span                   — where the problematic value was defined
+  mat_span  : Option<Span>           — where the value was first forced (if different)
+  sec_span  : Option<(Span, String)> — secondary "value origin" span with label (see below)
+  stack     : [StackFrame]           — chain of materialization contexts, outermost last
 ```
 
 **Dual-span model:** Every error carries two source locations: the **definition site** (where the error-producing expression was written) and the **materialization site** (where a consumer forced the thunk that failed). When these coincide, `mat_span` is `None`. When a Failed thunk is re-accessed from a third location, the new access site is pushed onto `stack` as a frame — `def_span` and `mat_span` are never overwritten after initial assignment.
@@ -72,6 +73,18 @@ An evaluation error `ε` is a record with four fields:
 The **definition site** and **materialization site** form a dual-span model: "the error was *defined* here but *triggered* there." When both sites are the same (e.g., an immediate expression like `[call $/ 1 0]`), the materialization site is omitted.
 
 Example: given `[x: [call $/ 1 0]  y: $x]`, accessing `y` produces an error with definition site at `[call $/ 1 0]` (where the division was written) and materialization site at `$x` (where the thunk was first forced).
+
+**Secondary span — value origin (Nickel dual-position pattern):** For lazy evaluation errors where the **value that caused the failure** was produced far from the error site, `sec_span` carries a labeled pointer to the value's creation span. This is the Nickel `EvaluationError` dual-position pattern: "error triggered here, but the offending value came from there." The `Thunk.span` field (set at thunk creation time) provides this origin span without requiring any additional storage.
+
+`sec_span` is populated at three specific eval sites:
+
+| Site | `def_span` (error site) | `sec_span` (value origin) | Label |
+|------|------------------------|--------------------------|-------|
+| `ThunkState::Guarded` validation failure | TypeAssert annotation span (`guard_span`) | `inner.span` (the annotated expression's creation span) | `"value produced here"` |
+| Builtin argument type mismatch (`require_num`, `require_string`, `require_dict`, `require_bool`) | Call expression span (`call_span`) | `args[i].span` (failing argument's creation span) | `"argument produced here"` |
+| `$if` condition type mismatch (non-Bool condition) | Condition expression span | condition thunk's `span` | `"condition evaluated to {type} here"` |
+
+`sec_span` is always optional and never overwrites `def_span`/`mat_span`. When the secondary span equals `def_span`, it is suppressed (no duplicate location notes). Display format: `"\n  note: {label} at {span}"`.
 
 **Stack frames:** Each frame is `⟨label, span⟩` where `label` identifies the context (e.g., the thunk's origin name, `"materialized"` for re-access) and `span` is the source location. Frames are added by `attach_materialization_context` during propagation and by the Failed state handler during re-access.
 

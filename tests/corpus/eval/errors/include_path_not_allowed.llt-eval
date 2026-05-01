@@ -1,0 +1,4 @@
+# no_fs
+[call $include "restricted/secret.llt"]
+===
+[E042] filesystem access is disabled
