@@ -1,0 +1,8 @@
+# Structural TypeAssert: type alias defined in dict entry is available across documents
+# [MyType: [type Int]] registers MyType as an alias for Int in the type environment.
+# Document 2: [@MyType 42] uses the alias; type checker resolves it to Type::Int.
+[MyType: [type Int]]
+---
+[@MyType 42]
+===
+Int(42)

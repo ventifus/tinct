@@ -1,0 +1,6 @@
+# TypeAssert: closed record annotation rejects dict with extra keys
+# [@Any ...] wrapper bypasses inner typecheck so resolved_type is set on the outer TypeAssert.
+# At runtime, validate_and_wrap_record rejects "extra" since the record is closed (no rest tail).
+[@[name: String] [@Any [name: hello  extra: world]]]
+===
+[E011] type assertion failed: expected closed record (no extra fields), got record with unexpected field "extra"

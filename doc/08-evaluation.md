@@ -206,9 +206,9 @@ Extends Launchbury (1993) natural semantics for call-by-need with four additiona
 
 **State set:** `S = { Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed }`
 
-### Part 1: State Transition DAG
+### Part 1: State Transition Graph
 
-The valid state transitions form a directed acyclic graph. Monotonicity theorem: all transitions move forward; no state ever reverts to a prior state.
+The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with one backward edge exception: non-cacheable errors (DepthExceeded) restore `InProgress → Guarded` to allow retry at a shallower depth (see Exception below).
 
 ```
 Unevaluated ──────────┐
@@ -217,7 +217,7 @@ PendingCall ───────────┼──→ InProgress ──┬�
 Guarded ──────────────┘                 └──→ Failed ⟲
 ```
 
-The DAG governs state *transitions*, not construction. Thunks may be constructed directly in Unevaluated, PendingBuiltin, PendingCall, Guarded, or Materialized state (via `Thunk::new_materialized`). The DAG applies only to subsequent state changes.
+The transition graph governs state *transitions*, not construction. Thunks may be constructed directly in Unevaluated, PendingBuiltin, PendingCall, Guarded, or Materialized state (via `Thunk::new_materialized`). The transition graph applies only to subsequent state changes.
 
 Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs`):
 
@@ -229,11 +229,12 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 | Guarded → InProgress | `take_guarded()` | Atomic (`mem::replace`) |
 | InProgress → Materialized | `set_state(Materialized(v))` | Direct write |
 | InProgress → Failed | `cache_failure(err)` | Via `transition()` |
+| InProgress → Guarded | `set_state(Guarded(...))` | Direct write — **backward edge**, non-cacheable DepthExceeded only; restores original state to allow retry at lower depth (see [FORCE-GUARD-DEPTH]) |
 | Failed → Failed | `set_state(Failed(e'))` | Direct write (diagnostic refinement only) |
 
-**Monotonicity proof sketch:** The DAG has no cycles. Each source state (Unevaluated, PendingBuiltin, PendingCall, Guarded) transitions only to InProgress. InProgress transitions only to Materialized or Failed. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
+**Monotonicity proof sketch:** The graph has no cycles (the single backward edge is acyclic: InProgress cannot return to itself through Guarded). Each source state (Unevaluated, PendingBuiltin, PendingCall, Guarded) transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the backward `InProgress → Guarded` edge for non-cacheable DepthExceeded errors (see Exception below); this preserves semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
 
-**Exception — retryable non-cacheable errors:** The `InProgress → Guarded` backward edge occurs when the `[FORCE-GUARD]` rule's inner thunk materialization fails with `DepthExceeded`. Because `DepthExceeded` is a transient resource-bound error (not a semantic error), it is non-cacheable — `cache_failure` is skipped and the thunk is restored to `Guarded` state so the computation can be retried at a shallower call depth. This `InProgress → Guarded` backward restoration means strict state-order monotonicity does not hold for the `DepthExceeded` path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval.rs`, in the `ThunkState::Guarded` arm of `materialize()`)
+**Exception — retryable non-cacheable errors:** The `InProgress → Guarded` backward edge occurs under two conditions documented by `[FORCE-GUARD-OUTER-DEPTH]` (depth already at limit before inner thunk is forced) and `[FORCE-GUARD-DEPTH]` (inner thunk materialization fails with a non-cacheable error). Because `DepthExceeded` is a transient resource-bound error (not a semantic error), it is non-cacheable — `cache_failure` is skipped and the thunk is restored to `Guarded` state so the computation can be retried at a shallower call depth. This `InProgress → Guarded` backward restoration means strict state-order monotonicity does not hold for the `DepthExceeded` path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval.rs`, in the `ThunkState::Guarded` arm of `materialize()`)
 
 **Atomicity invariant:** Each `take_*` method atomically swaps the thunk state to InProgress before returning the captured data. This ensures no observer can see the old state after the transition begins. The atomicity is provided by `std::mem::replace` under an exclusive `borrow_mut()` — Rust's borrow checker prevents double borrows within a single thread.
 
@@ -296,7 +297,51 @@ v ∈ τ                                          (validate)
 force(θ, d) ⇒ v
 ```
 
-Guarded thunks implement proxy contracts (Findler & Felleisen 2002) for TypeAssert record field validation. The inner thunk is forced, the result is validated against the expected type τ, and the validated value is memoized. If validation fails, the thunk transitions to Failed with a type assertion error decorated with the field path. Guard memoization ensures each field is validated at most once.
+**[FORCE-GUARD-INNER-ERR]** — inner thunk materialization fails with a cacheable error:
+```
+θ.state = Guarded(θ_inner, τ, path, span)
+θ.state ← InProgress
+force(θ_inner, d+1) ⇒ error(e)    where e.is_cacheable()
+θ.state ← Failed(e)                           (memoize; propagation error, not type mismatch)
+───────────────────────────
+force(θ, d) ⇒ error(e)
+```
+
+**[FORCE-GUARD-DEPTH]** — inner thunk materialization fails with DepthExceeded (non-cacheable):
+```
+θ.state = Guarded(θ_inner, τ, path, span)
+θ.state ← InProgress
+force(θ_inner, d+1) ⇒ error(e)               where ¬e.is_cacheable()
+θ.state ← Guarded(θ_inner, τ, path, span)     (restore — retry possible at lower depth)
+───────────────────────────
+force(θ, d) ⇒ error(e)
+```
+
+**[FORCE-GUARD-OUTER-DEPTH]** — outer thunk depth check fires before inner thunk is forced (Path A):
+```
+θ.state = Guarded(θ_inner, τ, path, span)
+d ≥ MAX_EVAL_DEPTH
+θ.state ← InProgress                          (via take_guarded)
+θ.state ← Guarded(θ_inner, τ, path, span)     (restore — retry possible at lower depth)
+───────────────────────────
+force(θ, d) ⇒ error(DepthExceeded)
+```
+
+[FORCE-GUARD-DEPTH] fires when the *inner* thunk exhausts depth during forcing (Path B). [FORCE-GUARD-OUTER-DEPTH] fires when depth is already at the limit before the inner thunk is forced at all (Path A). Both paths restore `Guarded` state for the same reason: DepthExceeded is a transient resource-bound error, not a semantic one. (`src/eval.rs`, after `take_guarded()`, before calling `run()`, in the `ThunkState::Guarded` arm of `materialize()`)
+
+**[FORCE-GUARD-TYPE-ERR]** — inner thunk succeeds but value does not inhabit the expected type:
+```
+θ.state = Guarded(θ_inner, τ, path, span)
+θ.state ← InProgress
+force(θ_inner, d+1) ⇒ v
+v ∉ τ                                          (validation fails)
+e = type_assert_failed(path, τ, typeof(v), span)
+θ.state ← Failed(e)                           (memoize type assertion error)
+───────────────────────────
+force(θ, d) ⇒ error(e)
+```
+
+Guarded thunks implement proxy contracts (Findler & Felleisen 2002) for TypeAssert record field validation. The inner thunk is forced, the result is validated against the expected type τ, and the validated value is memoized. If validation fails, the thunk transitions to Failed with a type assertion error decorated with the field path. Guard memoization ensures each field is validated at most once. Computation errors (inner thunk fails for non-type reasons) propagate directly and are cached; they do not trigger the `default:` fallback — only type assertion failures do. DepthExceeded is unique in restoring the Guarded state instead of transitioning to Failed, since it is a transient resource-bound condition rather than a semantic error.
 
 **[FORCE-EVAL]**
 ```
@@ -381,7 +426,7 @@ Six properties essential for call-by-need soundness (Launchbury 1993, Ariola & F
 |----------|--------|---------------|
 | **Determinism** | Satisfied | Pure subset only; `$include` introduces external state dependence. FORCE-DEPTH is also context-dependent (same thunk may succeed at different depths) |
 | **Sharing (evaluate-at-most-once)** | Satisfied | Materialized and Failed are semantically terminal — subsequent forces return cached result (Failed may refine diagnostic metadata) |
-| **Monotonicity** | Satisfied | DAG has no backward edges; Failed self-edge refines diagnostics only (proven above) |
+| **Monotonicity** | Satisfied with exception | transition graph has no backward edges except `InProgress → Guarded` for non-cacheable DepthExceeded errors (retry semantics); Failed self-edge refines diagnostics only (proven above) |
 | **Adequacy** | Holds for extensions | PendingBuiltin/PendingCall are observationally equivalent to Unevaluated (defunctionalization preserves semantics). Guarded is observationally equivalent to an Unevaluated thunk that forces and validates (proxy contract). Failed extends the codomain from Value⊥ to Value + Error⊥ (absorbing, deterministic) |
 | **Confluence** | Pure subset only | `$include` makes evaluation order observable; in the pure subset, forcing order does not affect final values |
 | **Sharing preservation** | Satisfied | `Rc<Thunk>` ensures identity-based sharing; the CEK machine preserves thunk identity through continuation dispatch |
@@ -416,7 +461,7 @@ The iterative evaluator (§Iterative Evaluator) uses explicit `Cont` variants on
 
 - **PendingBuiltin** stores deferred builtin calls for lazy sequences (`$map`, `$filter`, `$fold_step`, etc.) and proxy handler dispatch. Cannot be replaced by Unevaluated because builtin function pointers (`BuiltinFn`) have no AST representation. Lazy sequences need persistent storage for deferred steps.
 - **PendingCall** stores deferred function calls for lazy dispatch and tail-call optimization. Represents work already done by `eval_call` (evaluated func_expr, wrapped args) that Unevaluated would duplicate.
-- The monotonicity proof and semantic properties remain unchanged — the 7-state DAG (Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed) is the stable design.
+- The monotonicity proof and semantic properties remain unchanged — the 7-state transition graph (Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed) is the stable design.
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Rc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
 - MAX_EVAL_DEPTH is replaced by configurable resource limits (`--max-depth`, `--max-memory`) rather than hardcoded safety bounds
 

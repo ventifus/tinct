@@ -1,0 +1,5 @@
+# Structural TypeAssert: open record annotation accepts dict with extra keys
+# [@[name: String ...]] has a rest marker (open tail), so extra fields are allowed.
+[@[name: String  ...] [name: hello  extra: world  count: 42]]
+===
+Dict({"name": String("hello"), "extra": String("world"), "count": Int(42)})

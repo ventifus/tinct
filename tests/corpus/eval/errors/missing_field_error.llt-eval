@@ -1,0 +1,6 @@
+# TypeAssert: closed record annotation rejects dict missing a required field
+# [@Any ...] wrapper bypasses inner typecheck so resolved_type is set on the outer TypeAssert.
+# At runtime, validate_and_wrap_record rejects because "age" is missing.
+[@[name: String  age: Int] [@Any [name: hello]]]
+===
+[E011] type assertion failed: expected record with field "age", got record missing field "age"

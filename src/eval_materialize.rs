@@ -13,8 +13,9 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, Expr, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    eval, eval_dict, eval_key, eval_recursive, format_type_for_assert, validate_and_wrap_record,
-    value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY, MAX_EVAL_DEPTH,
+    annotation_has_structural_fields, eval, eval_dict, eval_key, eval_recursive,
+    format_type_for_assert, validate_and_wrap_record, value_matches_type, EvalContext,
+    DEFAULT_ANNOTATION_KEY, MAX_EVAL_DEPTH,
 };
 use crate::eval_access::{eval_range_access, invoke_proxy_handler};
 use crate::eval_call::{eval_call, invoke_function, CallContext};
@@ -914,7 +915,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             let field_path_prefix = if field_path.is_empty() {
                                 String::new()
                             } else {
-                                format!("field \"{}\": ", field_path.join("."))
+                                format!(
+                                    "field {}: ",
+                                    field_path
+                                        .iter()
+                                        .map(|s| format!("\"{}\"", s))
+                                        .collect::<Vec<_>>()
+                                        .join(".")
+                                )
                             };
                             let err = EvalError::type_assert_failed(
                                 &format!(
@@ -939,7 +947,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             let field_path_prefix = if field_path.is_empty() {
                                 String::new()
                             } else {
-                                format!("field \"{}\": ", field_path.join("."))
+                                format!(
+                                    "field {}: ",
+                                    field_path
+                                        .iter()
+                                        .map(|s| format!("\"{}\"", s))
+                                        .collect::<Vec<_>>()
+                                        .join(".")
+                                )
                             };
                             let err = EvalError::type_assert_failed(
                                 &format!(
@@ -1334,6 +1349,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     },
                     None => {
                         // --no-typecheck FALLBACK (nominal validation)
+                        // Per doc/07-type-extensions.md §--no-typecheck mode:
+                        // - Primitive type assertions still work (nominal string comparison)
+                        // - Structural type assertions degrade to tag-only checks (Dict tag)
                         let expected_name: Option<String> = match &annotation.node {
                             Annotation::Simple(name) => Some(name.clone()),
                             Annotation::PropertyDict(_) => annotation
@@ -1367,6 +1385,33 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 }
                                 return Action::Continue(Err(EvalError::type_assert_failed(
                                     &expected, actual, thunk_span,
+                                )
+                                .with_materialization_span(expr_span)
+                                .into()));
+                            }
+                        } else if annotation_has_structural_fields(&annotation.node) {
+                            // Structural record annotation without resolved_type — degrade
+                            // to Dict tag check. Without elaboration we cannot validate
+                            // field names or types, but we can verify the value is a Dict
+                            // (the carrier type for records). This closes the elaboration
+                            // gap for eval-only mode (doc/07 §--no-typecheck mode).
+                            if !matches!(value, Value::Dict(_)) {
+                                let actual = value.type_name();
+                                if let Some(default_expr) =
+                                    annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                                {
+                                    return match eval_recursive(default_expr, env, &ctx, depth + 1)
+                                    {
+                                        Ok(t) => Action::Materialize {
+                                            thunk: t,
+                                            mat_span: None,
+                                            depth,
+                                        },
+                                        Err(e) => Action::Continue(Err(e)),
+                                    };
+                                }
+                                return Action::Continue(Err(EvalError::type_assert_failed(
+                                    "Record", actual, thunk_span,
                                 )
                                 .with_materialization_span(expr_span)
                                 .into()));
@@ -1477,12 +1522,17 @@ pub(crate) fn eval_step(
 
             // Fast path: if there is no type to check, skip materialization entirely.
             // This applies when resolved_type is None (--no-typecheck mode) and the
-            // annotation has no "type" property — e.g. [@[default: 0] $x] where only
-            // a default is provided. A Simple annotation always carries a type name;
-            // a PropertyDict without a "type" key has nothing to validate against.
+            // annotation has no "type" property AND no structural field declarations —
+            // e.g. [@[default: 0] $x] where only a default is provided.
+            // A Simple annotation always carries a type name.
+            // A PropertyDict with structural fields (e.g., [@[name: String] $x]) needs
+            // at least a Dict tag check even without elaboration (doc/07 §--no-typecheck).
             let has_type = match &annotation.node {
                 Annotation::Simple(_) => true,
-                Annotation::PropertyDict(_) => annotation.node.get_property("type").is_some(),
+                Annotation::PropertyDict(_) => {
+                    annotation.node.get_property("type").is_some()
+                        || annotation_has_structural_fields(&annotation.node)
+                }
             };
             if resolved.is_none() && !has_type {
                 return wrap_thunk(Ok(inner_thunk));

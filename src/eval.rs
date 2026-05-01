@@ -30,6 +30,39 @@ use crate::value::{Environment, Key, Thunk, ThunkState, Value};
 pub const MAX_EVAL_DEPTH: usize = 256;
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 
+/// Reserved annotation meta-keys that are NOT structural field declarations.
+/// A PropertyDict annotation whose entries are all meta-keys (e.g., `[@[default: 0] $x]`)
+/// is metadata-only and has no type to validate. A PropertyDict with at least one
+/// non-meta-key entry (e.g., `[@[name: String age: Int] $x]`) is a structural record
+/// annotation that should enforce at minimum a Dict tag check when `resolved_type` is `None`.
+const ANNOTATION_META_KEYS: &[&str] = &["type", "default"];
+
+/// Check whether a PropertyDict annotation contains structural field declarations.
+///
+/// Returns `true` if the annotation has at least one entry with a string key that
+/// is NOT a reserved annotation meta-key ("type", "default"). This indicates the
+/// annotation describes a record structure (e.g., `[@[name: String age: Int] $x]`).
+///
+/// Used by the `--no-typecheck` fallback to distinguish structural record annotations
+/// (which should enforce a Dict tag check per doc/07-type-extensions.md §--no-typecheck mode)
+/// from metadata-only annotations (which have nothing to validate against).
+pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool {
+    match annotation {
+        Annotation::Simple(_) => false,
+        Annotation::PropertyDict(entries) => entries.iter().any(|entry| {
+            entry
+                .node
+                .key
+                .as_ref()
+                .and_then(|k| match &k.node {
+                    Expr::Str(name) => Some(name.as_str()),
+                    _ => None,
+                })
+                .is_some_and(|name| !ANNOTATION_META_KEYS.contains(&name))
+        }),
+    }
+}
+
 /// Immutable session configuration shared across evaluation.
 #[derive(Debug)]
 pub struct EvalConfig {
@@ -141,6 +174,15 @@ pub(crate) fn format_type_for_assert(ty: &Type) -> String {
 /// 2. Cardinality check: verify no extra fields for closed records
 /// 3. Guard wrapping: wrap each typed field with a Guarded thunk
 ///
+/// This function implements **chaperone semantics** (Strickland et al., 2012):
+/// the proxy (guarded dict) is observationally equivalent to the original dict at
+/// all type-correct uses. Each field's guard can only (a) return the original value
+/// unchanged, or (b) raise a contract error — it cannot change the value. Field
+/// types are checked lazily when accessed, not eagerly at the assertion site,
+/// preserving call-by-need evaluation (Launchbury, 1993). A field that is never
+/// accessed is never validated, matching Findler & Felleisen's (2002) principle
+/// that compound contracts defer checking to the point of observation.
+///
 /// # Parameters
 /// - `entries`: the dict entries to validate
 /// - `row`: the expected record row type (fields + tail)
@@ -177,7 +219,14 @@ pub(crate) fn validate_and_wrap_record(
             let field_path_prefix = if field_path.is_empty() {
                 String::new()
             } else {
-                format!("field \"{}\": ", field_path.join("."))
+                format!(
+                    "field {}: ",
+                    field_path
+                        .iter()
+                        .map(|s| format!("\"{}\"", s))
+                        .collect::<Vec<_>>()
+                        .join(".")
+                )
             };
 
             return Err(EvalError::type_assert_failed(
@@ -218,7 +267,14 @@ pub(crate) fn validate_and_wrap_record(
                 let field_path_prefix = if field_path.is_empty() {
                     String::new()
                 } else {
-                    format!("field \"{}\": ", field_path.join("."))
+                    format!(
+                        "field {}: ",
+                        field_path
+                            .iter()
+                            .map(|s| format!("\"{}\"", s))
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    )
                 };
 
                 return Err(EvalError::type_assert_failed(
@@ -403,7 +459,7 @@ pub(crate) fn eval_recursive(
                     _ => {
                         // Non-Record type: immediate validation per spec (line 22)
                         // "For primitive types, validation is immediate"
-                        // TODO: This is a laziness violation - should defer to PendingBuiltin-style deferred check (see TODO.md pre-cek-fixes task 5)
+                        // TODO(iterative-eval): This is a laziness violation — defer to CEK machine once migration is complete.
                         let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
                         if value_matches_type(&value, &expected) {
                             Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
@@ -425,6 +481,9 @@ pub(crate) fn eval_recursive(
                 }
             } else {
                 // --no-typecheck FALLBACK (nominal validation)
+                // Per doc/07-type-extensions.md §--no-typecheck mode:
+                // - Primitive type assertions still work (nominal string comparison)
+                // - Structural type assertions degrade to tag-only checks (Dict tag)
                 let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
 
                 let expected_type =
@@ -453,6 +512,22 @@ pub(crate) fn eval_recursive(
                             return eval_recursive(default_expr, env, ctx, depth + 1);
                         }
                         return Err(EvalError::type_assert_failed(expected, actual, thunk.span)
+                            .with_materialization_span(expr.span)
+                            .into());
+                    }
+                } else if annotation_has_structural_fields(&annotation.node) {
+                    // Structural record annotation without resolved_type — degrade to Dict
+                    // tag check. Without elaboration we cannot validate field names or types,
+                    // but we can at least verify the value is a Dict (the carrier type for
+                    // records). This closes the elaboration gap for eval-only mode.
+                    if !matches!(value, Value::Dict(_)) {
+                        let actual = value.type_name();
+                        if let Some(default_expr) =
+                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                        {
+                            return eval_recursive(default_expr, env, ctx, depth + 1);
+                        }
+                        return Err(EvalError::type_assert_failed("Record", actual, thunk.span)
                             .with_materialization_span(expr.span)
                             .into());
                     }
@@ -1247,7 +1322,14 @@ pub fn materialize(
                         let field_path_prefix = if field_path.is_empty() {
                             String::new()
                         } else {
-                            format!("field \"{}\": ", field_path.join("."))
+                            format!(
+                                "field {}: ",
+                                field_path
+                                    .iter()
+                                    .map(|s| format!("\"{}\"", s))
+                                    .collect::<Vec<_>>()
+                                    .join(".")
+                            )
                         };
                         let err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
@@ -1267,7 +1349,14 @@ pub fn materialize(
                         let field_path_prefix = if field_path.is_empty() {
                             String::new()
                         } else {
-                            format!("field \"{}\": ", field_path.join("."))
+                            format!(
+                                "field {}: ",
+                                field_path
+                                    .iter()
+                                    .map(|s| format!("\"{}\"", s))
+                                    .collect::<Vec<_>>()
+                                    .join(".")
+                            )
                         };
                         let err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
@@ -7004,6 +7093,183 @@ mod tests {
         assert_eq!(val, Value::Int(999));
     }
 
+    // ── annotation_has_structural_fields unit tests ────────────────────
+    // Tests for the helper that distinguishes structural record annotations
+    // (e.g. [@[name: String] $x]) from metadata-only annotations (e.g.
+    // [@[default: 0] $x]) in the --no-typecheck fallback path.
+
+    #[test]
+    fn test_annotation_has_structural_fields_simple_returns_false() {
+        // Simple annotations like @Int have no structural fields
+        assert!(!annotation_has_structural_fields(&Annotation::Simple(
+            "Int".into()
+        )));
+    }
+
+    #[test]
+    fn test_annotation_has_structural_fields_empty_property_dict() {
+        // Empty PropertyDict has no structural fields
+        assert!(!annotation_has_structural_fields(
+            &Annotation::PropertyDict(vec![])
+        ));
+    }
+
+    #[test]
+    fn test_annotation_has_structural_fields_default_only() {
+        // [@[default: 0] $x] — default-only, no structural fields
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("default".into()))),
+            value: sp(Expr::Int(0)),
+        })];
+        assert!(!annotation_has_structural_fields(
+            &Annotation::PropertyDict(entries)
+        ));
+    }
+
+    #[test]
+    fn test_annotation_has_structural_fields_type_only() {
+        // [@[type: Int] $x] — type-only, no structural fields
+        let entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("type".into()))),
+            value: sp(Expr::Str("Int".into())),
+        })];
+        assert!(!annotation_has_structural_fields(
+            &Annotation::PropertyDict(entries)
+        ));
+    }
+
+    #[test]
+    fn test_annotation_has_structural_fields_record_annotation() {
+        // [@[name: String age: Int] $x] — has structural fields
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("name".into()))),
+                value: sp(Expr::Str("String".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("age".into()))),
+                value: sp(Expr::Str("Int".into())),
+            }),
+        ];
+        assert!(annotation_has_structural_fields(&Annotation::PropertyDict(
+            entries
+        )));
+    }
+
+    #[test]
+    fn test_annotation_has_structural_fields_mixed_meta_and_record() {
+        // [@[name: String default: []] $x] — has structural field "name"
+        let entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("name".into()))),
+                value: sp(Expr::Str("String".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("default".into()))),
+                value: sp(Expr::Dict(vec![])),
+            }),
+        ];
+        assert!(annotation_has_structural_fields(&Annotation::PropertyDict(
+            entries
+        )));
+    }
+
+    // ── elaboration gap tests ────────────────────────────────────────────
+    // Tests for the --no-typecheck fallback path when resolved_type is None
+    // and the annotation has structural fields (Dict tag check).
+
+    #[test]
+    fn test_elaboration_gap_structural_annotation_dict_passes() {
+        // [@[name: String] [name: hello]] with resolved_type=None (no typecheck)
+        // Should pass: value is a Dict (tag check succeeds)
+        let ann_entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("name".into()))),
+            value: sp(Expr::Str("String".into())),
+        })];
+        let dict_entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("name".into()))),
+            value: sp(Expr::Str("hello".into())),
+        })];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(ann_entries)),
+            expr: Box::new(sp(Expr::Dict(dict_entries))),
+            resolved_type: RefCell::new(None),
+        });
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert!(
+            matches!(val, Value::Dict(_)),
+            "Structural annotation with Dict value should pass tag check"
+        );
+    }
+
+    #[test]
+    fn test_elaboration_gap_structural_annotation_non_dict_fails() {
+        // [@[name: String] 42] with resolved_type=None (no typecheck)
+        // Should fail: value is Int, not Dict
+        let ann_entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("name".into()))),
+            value: sp(Expr::Str("String".into())),
+        })];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(ann_entries)),
+            expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
+        });
+        let err = eval(&expr, empty_env(), &test_ctx(), 0).unwrap_err();
+        assert!(
+            err.message()
+                .contains("type assertion failed: expected Record, got Int"),
+            "Structural annotation with non-Dict value should fail; got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_elaboration_gap_structural_annotation_non_dict_with_default() {
+        // [@[name: String default: []] 42] with resolved_type=None (no typecheck)
+        // Should use default: value is Int (not Dict), default is available
+        let ann_entries = vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("name".into()))),
+                value: sp(Expr::Str("String".into())),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("default".into()))),
+                value: sp(Expr::Dict(vec![])),
+            }),
+        ];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(ann_entries)),
+            expr: Box::new(sp(Expr::Int(42))),
+            resolved_type: RefCell::new(None),
+        });
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert!(
+            matches!(val, Value::Dict(_)),
+            "Should use default when tag check fails; got: {val:?}"
+        );
+    }
+
+    #[test]
+    fn test_elaboration_gap_default_only_no_structural_check() {
+        // [@[default: 0] "hello"] with resolved_type=None
+        // Should pass through without validation (no type, no structural fields)
+        let ann_entries = vec![sp(Entry {
+            key: Some(sp(Expr::Str("default".into()))),
+            value: sp(Expr::Int(0)),
+        })];
+        let expr = sp(Expr::TypeAssert {
+            annotation: sp(Annotation::PropertyDict(ann_entries)),
+            expr: Box::new(sp(Expr::Str("hello".into()))),
+            resolved_type: RefCell::new(None),
+        });
+        let thunk = eval(&expr, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        assert_eq!(val, Value::String("hello".into()));
+    }
+
     // ── value_matches_type unit tests ────────────────────────────────────
     // Direct tests of the value_matches_type() helper function, which is
     // called in the structural TypeAssert handler for non-Record types.
@@ -7148,8 +7414,8 @@ mod tests {
         // Test that validate_and_wrap_record generates correct error messages
         // when field_path is non-empty (nested record validation).
         //
-        // This exercises the code path at eval.rs:178-193 where field_path_prefix
-        // is built as `format!("field \"{}\": ", field_path.join("."))`.
+        // This exercises the code path where field_path_prefix is built with each
+        // segment separately quoted per doc/07-type-extensions.md:162.
 
         // Create a row type requiring field "y"
         let mut fields = HashMap::new();
@@ -7182,9 +7448,11 @@ mod tests {
         );
 
         // Verify the error message contains the field path prefix
+        // doc/07-type-extensions.md:162 specifies each segment separately quoted:
+        // field "outer"."inner": (not field "outer.inner":)
         assert!(
-            msg.contains("field \"outer.inner\":"),
-            "Expected field path prefix 'field \"outer.inner\":' in error message, got: {}",
+            msg.contains("field \"outer\".\"inner\":"),
+            "Expected field path prefix 'field \"outer\".\"inner\":' in error message, got: {}",
             msg
         );
 
@@ -7443,6 +7711,128 @@ mod tests {
             error.message().contains("type mismatch"),
             "Expected cached type mismatch error, got: {}",
             error.message()
+        );
+    }
+
+    #[test]
+    fn test_thunk_guarded_memoizes_on_success() {
+        // Task 3(3): Guarded thunk memoization — after successful validation, the
+        // thunk transitions to Materialized and the second access returns the cached
+        // value without re-running the type guard.
+        use crate::types::Type;
+
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 10);
+
+        // Inner thunk: a materialized Int(42) — passes the Int guard.
+        let inner = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+
+        // Wrap it in a Guarded thunk expecting Int.
+        let guarded = Rc::new(Thunk::new_guarded(
+            Rc::clone(&inner),
+            Type::Int,
+            vec!["value".to_string()],
+            span,
+        ));
+
+        // Initial state must be Guarded.
+        {
+            let state = guarded.state();
+            assert!(
+                matches!(&*state, ThunkState::Guarded { .. }),
+                "initial state should be Guarded"
+            );
+        }
+
+        // First materialization: triggers guard, validates Int(42) against Type::Int → pass.
+        let result1 = materialize(&guarded, None, &ctx, 0);
+        assert!(result1.is_ok(), "first materialization should succeed");
+        assert_eq!(result1.unwrap(), Value::Int(42));
+
+        // After successful validation, thunk must be in Materialized state (memoized).
+        {
+            let state = guarded.state();
+            assert!(
+                matches!(&*state, ThunkState::Materialized(Value::Int(42))),
+                "after first materialization thunk should be Materialized(Int(42)), got {:?}",
+                &*state
+            );
+        }
+
+        // Second materialization: must return cached value, not re-run the guard.
+        let result2 = materialize(&guarded, None, &ctx, 0);
+        assert!(
+            result2.is_ok(),
+            "second materialization should succeed (cached)"
+        );
+        assert_eq!(result2.unwrap(), Value::Int(42));
+
+        // State is still Materialized (not changed by second access).
+        {
+            let state = guarded.state();
+            assert!(
+                matches!(&*state, ThunkState::Materialized(Value::Int(42))),
+                "state should still be Materialized after second access"
+            );
+        }
+    }
+
+    #[test]
+    fn test_guarded_thunk_failure_path() {
+        // Task 3(2): Guarded thunk failure path — when the inner value fails the type guard,
+        // the thunk transitions to Failed (cacheable) and subsequent access returns the
+        // cached error without re-running the guard.
+        use crate::types::Type;
+
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 10);
+
+        // Inner thunk: a String value — fails the Int guard.
+        let inner = Rc::new(Thunk::new_materialized(Value::String("hello".into()), span));
+
+        // Wrap it in a Guarded thunk expecting Int.
+        let guarded = Rc::new(Thunk::new_guarded(
+            Rc::clone(&inner),
+            Type::Int,
+            vec!["field".to_string()],
+            span,
+        ));
+
+        // First materialization: triggers guard, validates String against Type::Int → fail.
+        let result1 = materialize(&guarded, None, &ctx, 0);
+        assert!(
+            result1.is_err(),
+            "materialization should fail: String does not satisfy Int guard"
+        );
+        let err = result1.unwrap_err();
+        assert!(
+            err.message().contains("type assertion failed"),
+            "error should say 'type assertion failed', got: {}",
+            err.message()
+        );
+
+        // After failure, thunk must be in Failed state (cacheable memoization of error).
+        {
+            let state = guarded.state();
+            assert!(
+                matches!(&*state, ThunkState::Failed(_)),
+                "after type guard failure thunk should be Failed, got {:?}",
+                &*state
+            );
+        }
+
+        // Second materialization: returns the cached error, not re-runs the guard.
+        let result2 = materialize(&guarded, None, &ctx, 0);
+        assert!(
+            result2.is_err(),
+            "second materialization should also fail (cached)"
+        );
+        assert!(
+            result2
+                .unwrap_err()
+                .message()
+                .contains("type assertion failed"),
+            "cached error should still say 'type assertion failed'"
         );
     }
 
