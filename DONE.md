@@ -2394,6 +2394,16 @@ Remaining items from the error-typeassert sprint (earlier items already in DONE.
 - [x] Fix Guarded materialize path missing `.with_materialization_span(guard_span)` in two error branches — Record/non-Dict and non-Record type mismatch in `apply_cont` for `GuardedValidate`. Both now chain `.with_materialization_span(guard_span)` before `decorate()`. (`src/eval.rs`) [Minor, integration-verifier C62]
 - [x] Add compile-time assertion that `lsp/server.rs::MAX_DOCUMENT_SIZE == builtins.rs::MAX_FILE_SIZE` — currently two independent constants with a comment stating they should match; silent divergence risk. [Nit, integration-verifier C62]
 
+### iterative-eval-b5: ThunkState documentation and invariant verification
+
+**Reframing (was BLOCKED C94):** The original goal — removing `ThunkState::PendingBuiltin` and `PendingCall` — was a wrong premise. These are the correct persistent lazy-state mechanism for call-by-need evaluation. `eval_call.rs` intentionally creates `PendingCall` thunks (comment: "Return PendingCall thunk — function dispatch happens iteratively in run()"). Sequence constructors (`map_step`, `filter_step`, etc.) need persistent deferred state that ephemeral Cont variants cannot provide — Cont variants live only during one `run()` call, while lazy sequence steps must survive across multiple forced elements. B5 is now a docs and verification sprint with one optional rename.
+
+**Depends on iterative-eval-b4.**
+
+- [x] Decide: rename `ThunkState::PendingBuiltin` → `SequenceStep` for clarity — `PendingBuiltin` is a misnomer; this state is only used by lazy sequence constructors (map_step, filter_step, fold_step, iterate_step, unfold_step, range_step), not by arbitrary "pending builtins." 8 creation sites + force_step/apply_cont handling need updating. (`src/value.rs`, `src/eval.rs`, `src/builtins_seq_xform.rs`, `src/builtins_seq_gen.rs`, `src/builtins_seq_reduce.rs`, `src/builtins.rs`) [Decide, eval-engine] (Decided: NO — PendingBuiltin also used by proxy handlers and $apply, not just sequences; name is accurate)
+- [x] Update `doc/08-evaluation.md §Thunk Lifecycle` — current text implies a 5-state model and uses "Relationship to CEK Machine Migration" language suggesting PendingBuiltin/PendingCall will be removed. Correct to 7-state model; these two states are permanent design elements, not transitional artifacts. (`doc/08-evaluation.md`) [Minor]
+- [x] Verify thunk lifecycle invariants post-b4 — sharing preservation (Rc<Thunk> identity through Cont dispatch), monotonicity (state transitions still one-way except DepthExceeded rollback), cycle detection (InProgress blackholing unchanged across all 7 states). (`src/eval.rs`) [Major, computer-scientist]
+
 ### iterative-eval-d: Verification and Cleanup
 
 Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. **Depends on iterative-eval-b5 (docs/verification items only).**
