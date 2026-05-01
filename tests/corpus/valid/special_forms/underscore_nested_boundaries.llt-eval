@@ -1,0 +1,8 @@
+# Multiple $_ at different nesting levels in the parse tree.
+# Outer $_ is in arg position → will desugar to lambda wrapping the outer call.
+# Inner $_ is inside the wrapped body and also a direct arg.
+# This test verifies the parse-level AST is correctly formed
+# (before desugaring applies any transformation).
+[call $f [call $g $_]]
+===
+[call $f [call $g $_]]

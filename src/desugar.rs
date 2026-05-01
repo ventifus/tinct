@@ -974,6 +974,144 @@ mod tests {
         }
     }
 
+    /// Shadowing test: `_` is NOT bound by a param named `x` — `$_` in call arg wraps.
+    ///
+    /// `[fn [x] [call $f $_]]` — `x` is bound, but `_` is NOT a param.
+    /// At depth 0 for the outer Fn body, `$_` in call arg is DIRECT → wraps inner call.
+    /// Contrast with `test_no_double_wrap_shadowing` where `_` IS the param name.
+    #[test]
+    fn test_shadowing_only_applies_to_underscore_param() {
+        let mut expr = sp(Expr::Fn {
+            return_ann: None,
+            params: vec![sp(Param {
+                name: "x".into(), // NOT "_" — does not shadow `$_`
+                annotation: None,
+                variadic: false,
+            })],
+            body: Box::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::VarRef("f".into()))),
+                args: vec![sp(Expr::VarRef("_".into()))], // $_ in arg position
+                named_args: vec![],
+            })),
+            desugared: false,
+        });
+
+        desugar_expr(&mut expr, 0);
+
+        // Outer Fn: user-written, body should be a Fn wrapper for the inner $_ call
+        match &expr.node {
+            Expr::Fn {
+                params,
+                body,
+                desugared,
+                ..
+            } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "x");
+                assert!(!desugared, "outer fn should keep desugared=false");
+
+                // Body should now be wrapped: [fn [_] [call $f $_]]
+                match &body.node {
+                    Expr::Fn {
+                        params: inner_params,
+                        body: inner_body,
+                        desugared: inner_desugared,
+                        ..
+                    } => {
+                        assert_eq!(inner_params.len(), 1);
+                        assert_eq!(inner_params[0].node.name, "_");
+                        assert!(inner_desugared, "inner lambda should be desugared=true");
+
+                        match &inner_body.node {
+                            Expr::Call { func, args, .. } => {
+                                assert!(matches!(func.node, Expr::VarRef(ref name) if name == "f"));
+                                assert_eq!(args.len(), 1);
+                                assert!(
+                                    matches!(args[0].node, Expr::VarRef(ref name) if name == "_")
+                                );
+                            }
+                            _ => panic!("Expected Call in inner lambda body"),
+                        }
+                    }
+                    _ => panic!(
+                        "Expected inner Fn wrapper from $_ desugaring, got {:?}",
+                        body.node
+                    ),
+                }
+            }
+            _ => panic!("Expected outer Fn, got {:?}", expr.node),
+        }
+    }
+
+    /// Dict entry value desugaring vs call arg desugaring: both wrap independently.
+    ///
+    /// `[a: $_ b: [call $f $_]]` at depth 0:
+    /// - The dict has DIRECT value in entry `a:` → WRAP-DICT fires, wraps entire dict.
+    /// - After wrapping, the body (at depth 1) recurses into the inner call.
+    /// - The inner `[call $f $_]` at depth 1 has a DIRECT arg but depth > 0 → no further wrap.
+    ///
+    /// This tests the interaction between WRAP-DICT and nested call arg desugaring.
+    #[test]
+    fn test_dict_value_and_nested_call_arg_desugar() {
+        let mut expr = sp(Expr::Dict(vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("a".into()))),
+                value: sp(Expr::VarRef("_".into())), // DIRECT value → WRAP-DICT fires
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("b".into()))),
+                value: sp(Expr::Call {
+                    func: Box::new(sp(Expr::VarRef("f".into()))),
+                    args: vec![sp(Expr::VarRef("_".into()))],
+                    named_args: vec![],
+                }),
+            }),
+        ]));
+
+        desugar_expr(&mut expr, 0);
+
+        // WRAP-DICT should fire: entire dict is wrapped in [fn [_] ...]
+        match &expr.node {
+            Expr::Fn {
+                params,
+                body,
+                desugared,
+                ..
+            } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "_");
+                assert!(desugared, "wrapping Fn should be desugared=true");
+
+                match &body.node {
+                    Expr::Dict(entries) => {
+                        assert_eq!(entries.len(), 2);
+                        // Entry a: $_  (still VarRef at depth 1, not wrapped further)
+                        assert!(
+                            matches!(entries[0].node.value.node, Expr::VarRef(ref name) if name == "_")
+                        );
+                        // Entry b: inner call at depth 1 — $_ is bound at depth 1,
+                        // no further wrapping (WRAP-CALL only fires at depth 0)
+                        match &entries[1].node.value.node {
+                            Expr::Call { func, args, .. } => {
+                                assert!(matches!(func.node, Expr::VarRef(ref name) if name == "f"));
+                                assert_eq!(args.len(), 1);
+                                assert!(
+                                    matches!(args[0].node, Expr::VarRef(ref name) if name == "_")
+                                );
+                            }
+                            _ => panic!(
+                                "Expected Call in dict entry b, got {:?}",
+                                entries[1].node.value.node
+                            ),
+                        }
+                    }
+                    _ => panic!("Expected Dict in Fn body, got {:?}", body.node),
+                }
+            }
+            _ => panic!("Expected Fn wrapper from WRAP-DICT, got {:?}", expr.node),
+        }
+    }
+
     /// Test $_ inside annotation within shadowing function
     ///
     /// `[fn [_] [fn [x: [@Number $_]] $x]]` — the outer `[fn [_] ...]` shadows `$_`,

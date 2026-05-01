@@ -1,0 +1,8 @@
+# Multiple $_ at different nesting levels.
+# [call $map [call $+ $_ 10] [0: 1 1: 2 2: 3]]
+# Inner call [call $+ $_ 10] has DIRECT $_ arg → wraps to [fn [_] [call $+ $_ 10]]
+# Outer call passes that wrapped function to $map.
+# Result: each value has 10 added: 1+10=11, 2+10=12, 3+10=13
+[call $map [call $+ $_ 10] [0: 1 1: 2 2: 3]]
+===
+Dict({0: Int(11), 1: Int(12), 2: Int(13)})

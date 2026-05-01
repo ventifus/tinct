@@ -303,6 +303,51 @@ impl Type {
         }
     }
 
+    /// Fused occurs check + variable collection: checks whether `occurs_name` appears
+    /// in the type tree and simultaneously collects all type vars and row vars.
+    /// Returns `true` if `occurs_name` was found (infinite-type guard for U-VAR arms).
+    ///
+    /// This replaces the double-walk pattern of calling `type_var_occurs()` then
+    /// `collect_all_vars()` separately in each U-VAR arm of `unify()`.
+    pub fn collect_all_vars_check_occurs(
+        &self,
+        occurs_name: &str,
+        type_vars: &mut HashSet<String>,
+        row_vars: &mut HashSet<String>,
+    ) -> bool {
+        match self {
+            Type::TypeVar(name, _) => {
+                let found = name == occurs_name;
+                type_vars.insert(name.clone());
+                found
+            }
+            Type::Record(row) => {
+                let mut found = false;
+                for ty in row.fields.values() {
+                    found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                if let RowTail::RowVar(name, _) = &row.tail {
+                    row_vars.insert(name.clone());
+                }
+                found
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                let mut found = false;
+                for p in params {
+                    found |= p.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found |= ret.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found
+            }
+            Type::Seq(elem) => elem.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars),
+            _ => false,
+        }
+    }
+
     /// Collect variables into Vecs (allows duplicates). Used in test-only instantiate().
     /// Cheaper than HashSet allocation when deduplication isn't needed.
     pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>, row_vars: &mut Vec<String>) {
@@ -636,27 +681,6 @@ impl Default for Substitution {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Type variable occurs check: does type variable α occur in type τ?
-fn type_var_occurs(var_name: &str, ty: &Type) -> bool {
-    match ty {
-        Type::TypeVar(name, _) => name == var_name,
-        Type::Record(row) => type_var_occurs_in_row(var_name, row),
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-        } => params.iter().any(|p| type_var_occurs(var_name, p)) || type_var_occurs(var_name, ret),
-        Type::Seq(elem) => type_var_occurs(var_name, elem),
-        _ => false,
-    }
-}
-
-/// Type variable occurs check in row: does α occur in row field types?
-fn type_var_occurs_in_row(var_name: &str, row: &Row) -> bool {
-    row.fields.values().any(|t| type_var_occurs(var_name, t))
-    // Note: row tail is a RowVar or Empty, neither contains type variables
 }
 
 /// Row variable occurs check: does row variable ρ occur in row r?
@@ -1240,17 +1264,19 @@ pub fn unify(
 
         // U-VAR-LEVEL: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (Type::TypeVar(name, _), _) => {
-            if type_var_occurs(name, &b) {
+            // Fused occurs check + variable collection: one tree walk instead of two.
+            // collect_all_vars_check_occurs returns true if `name` appears in the type tree
+            // (infinite-type guard), and simultaneously populates type_vars and row_vars.
+            let mut type_vars_in_b = HashSet::new();
+            let mut row_vars_in_b = HashSet::new();
+            if b.collect_all_vars_check_occurs(name, &mut type_vars_in_b, &mut row_vars_in_b) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {b}"),
                     span,
                 ));
             }
             let alpha_level = state.levels.get(name).copied().unwrap_or(0);
-            // Lower all type vars and row vars in b to min(their level, α's level) — single tree walk
-            let mut type_vars_in_b = HashSet::new();
-            let mut row_vars_in_b = HashSet::new();
-            b.collect_all_vars(&mut type_vars_in_b, &mut row_vars_in_b);
+            // Lower all type vars and row vars in b to min(their level, α's level)
             for beta in type_vars_in_b {
                 let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
                 state.levels.insert(beta, beta_level.min(alpha_level));
@@ -1265,17 +1291,17 @@ pub fn unify(
         }
         // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (_, Type::TypeVar(name, _)) => {
-            if type_var_occurs(name, &a) {
+            // Fused occurs check + variable collection: one tree walk instead of two.
+            let mut type_vars_in_a = HashSet::new();
+            let mut row_vars_in_a = HashSet::new();
+            if a.collect_all_vars_check_occurs(name, &mut type_vars_in_a, &mut row_vars_in_a) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {a}"),
                     span,
                 ));
             }
             let alpha_level = state.levels.get(name).copied().unwrap_or(0);
-            // Lower all type vars and row vars in a to min(their level, α's level) — single tree walk
-            let mut type_vars_in_a = HashSet::new();
-            let mut row_vars_in_a = HashSet::new();
-            a.collect_all_vars(&mut type_vars_in_a, &mut row_vars_in_a);
+            // Lower all type vars and row vars in a to min(their level, α's level)
             for beta in type_vars_in_a {
                 let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
                 state.levels.insert(beta, beta_level.min(alpha_level));
@@ -2861,6 +2887,74 @@ mod tests {
             "[name: Str, age: Int | Open] should NOT be subtype of [name: Str | Closed]: \
              sub has extra field 'age' not in Closed sup"
         );
+    }
+
+    /// Function subtyping is contravariant in params and covariant in return.
+    /// Transitivity: if P <: Q and Q <: R, then P <: R.
+    ///
+    /// P = Fn(Number → Int)
+    /// Q = Fn(Int → Int)
+    /// R = Fn(Int → Number)
+    ///
+    /// P <: Q: contravariant param (Int <: Number ✓), covariant return (Int <: Int ✓).
+    /// Q <: R: contravariant param (Int <: Int ✓),  covariant return (Int <: Number ✓).
+    /// P <: R: contravariant param (Int <: Number ✓), covariant return (Int <: Number ✓).
+    #[test]
+    fn test_function_variance_transitivity() {
+        let p = Type::Function {
+            params: vec![Type::Number],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+        let q = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+        let r = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Number),
+            variadic: false,
+        };
+
+        assert!(
+            Type::is_subtype(&p, &q),
+            "P <: Q should hold (contravariant param, covariant return)"
+        );
+        assert!(
+            Type::is_subtype(&q, &r),
+            "Q <: R should hold (covariant return Int <: Number)"
+        );
+        assert!(
+            Type::is_subtype(&p, &r),
+            "P <: R should hold by transitivity"
+        );
+    }
+
+    /// Function subtyping is NOT symmetric: the contravariance of params means
+    /// Fn(A → B) <: Fn(A' → B') does not imply Fn(A' → B') <: Fn(A → B).
+    ///
+    /// This is a sanity check that the transitivity test above is testing
+    /// a genuine directional constraint, not accidental reflexivity.
+    #[test]
+    fn test_function_variance_not_symmetric() {
+        // Fn(Number → Int) <: Fn(Int → Int) but NOT vice versa
+        let broader_param = Type::Function {
+            params: vec![Type::Number],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+        let narrower_param = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+        assert!(
+            Type::is_subtype(&broader_param, &narrower_param),
+            "Fn(Number → Int) should be a subtype of Fn(Int → Int)"
+        );
+        assert!(!Type::is_subtype(&narrower_param, &broader_param),
+            "Fn(Int → Int) should NOT be a subtype of Fn(Number → Int): param Number is not a subtype of Int");
     }
 
     #[test]

@@ -811,4 +811,94 @@ mod tests {
         let result = eval_to_json("3.14");
         assert_eq!(result, serde_json::json!(3.14));
     }
+
+    // --- Integration tests: typecheck→eval interaction ---
+
+    /// Type errors are advisory: eval proceeds even when the type checker reports an error.
+    ///
+    /// This exercises the `let _ = typecheck::typecheck_file(&file.node)` line in
+    /// `eval_source_with_config` (src/lib.rs:123). The type checker flags a mismatch
+    /// (Int param given a String), but the evaluator sees the unannotated value and
+    /// returns it unchanged.
+    #[test]
+    fn test_typecheck_advisory_eval_proceeds() {
+        // Type annotation on param (x@Int) is advisory only.
+        // Passing "hello" (String) should still evaluate successfully.
+        let result = eval_source("[f: [fn [x@Int] $x]  result: [call $f \"hello\"]]");
+        assert!(
+            result.is_ok(),
+            "expected eval to succeed despite type mismatch, got: {:?}",
+            result
+        );
+        let output = result.unwrap();
+        assert!(
+            output.contains("String(\"hello\")"),
+            "expected result to contain String(\"hello\"), got: {output}"
+        );
+        assert!(
+            output.contains("Function(x)"),
+            "expected result to contain Function(x), got: {output}"
+        );
+    }
+
+    /// Advisory check: typecheck_source reports the error while eval_source succeeds.
+    ///
+    /// The same input should fail typecheck but succeed eval, proving the two pipelines
+    /// are independent and type errors are not blocking.
+    #[test]
+    fn test_typecheck_vs_eval_source_independence() {
+        let source = "[f: [fn [x@Int] $x]  result: [call $f \"hello\"]]";
+        // typecheck_source should report a type error
+        let tc_result = typecheck_source(source);
+        assert!(
+            tc_result.is_err(),
+            "typecheck should fail on param type mismatch"
+        );
+        // eval_source should succeed despite the type error
+        let eval_result = eval_source(source);
+        assert!(
+            eval_result.is_ok(),
+            "eval should succeed despite type error"
+        );
+    }
+
+    /// TypeAssert with `default:` fallback works end-to-end.
+    ///
+    /// When the main expression doesn't match the asserted type and a `default:`
+    /// is provided, the default value is used instead of raising an error.
+    #[test]
+    fn test_typeassert_default_fallback_end_to_end() {
+        // "hello" is a String, not a Number — default 42 should be returned.
+        let result = eval_source("[@[type: Number  default: 42] hello]");
+        assert!(
+            result.is_ok(),
+            "expected eval to succeed with default fallback, got: {:?}",
+            result
+        );
+        let output = result.unwrap();
+        assert_eq!(
+            output, "Int(42)",
+            "expected default value Int(42), got: {output}"
+        );
+    }
+
+    /// TypeAssert with `default:` when main expression DOES match — uses main value.
+    ///
+    /// The default is only a fallback; if the main expression satisfies the assertion,
+    /// the main value is returned unchanged.
+    #[test]
+    fn test_typeassert_default_not_used_when_main_matches() {
+        // 99 is a Number — main value should be returned, not the default.
+        let result = eval_source("[@[type: Number  default: 0] 99]");
+        assert!(
+            result.is_ok(),
+            "expected eval to succeed, got: {:?}",
+            result
+        );
+        let output = result.unwrap();
+        assert_eq!(
+            output, "Int(99)",
+            "expected main value Int(99), got: {output}"
+        );
+    }
 }
