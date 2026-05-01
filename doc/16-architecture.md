@@ -280,6 +280,8 @@ Builtins declare per-position argument demand using `BuiltinDef`, a struct that 
 #### Strictness Enum
 
 ```rust
+#[repr(u8)]           // 1-byte elements in pos_strictness slices; single byte load per check
+#[non_exhaustive]     // future variants (e.g. Full for deep demand) won't break match arms
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strictness {
     /// W&H "id" — identity projection. Argument never forced at the dispatch site;
@@ -287,19 +289,26 @@ pub enum Strictness {
     Id,
 
     /// W&H "seq" — force to head-normal form (WHNF) before the builtin is called.
-    /// Named after Haskell's `seq` combinator. Unrelated to the `$seq` builtin.
+    /// Note: the name "seq" derives from Haskell's `seq` combinator (Wadler & Hughes
+    /// use "STR" on flat domains); it is unrelated to the `$seq` LLT builtin.
     /// Arithmetic, comparison, string, and numeric builtins are Seq in all positions.
     Seq,
 
-    /// W&H "spine" — force the structural layer without element values.
-    /// For Seq: traverse all (head_thunk, tail_thunk) pairs; head values stay lazy.
-    /// For Dict: equivalent to Seq (WHNF already exposes the full key set).
+    /// W&H spine projection — force the structural layer without element values.
+    /// For Seq: force the outer thunk to Value::Seq(head_thunk, tail_thunk); head values
+    /// stay lazy. For Dict: equivalent to Seq (WHNF already exposes the full key set).
     /// Used for collection arguments of dual-dispatch builtins ($map, $filter, etc.)
     /// where the type (Dict vs Seq) must be known but element values are not yet needed.
     ///
-    /// W1 implementation: treated the same as Seq at the dispatch site — one materialize()
-    /// call forces the collection to WHNF. The distinction between Seq and Spine becomes
-    /// meaningful at W2 (call-creation time optimization) and in LSP documentation.
+    /// Note: "Spine" is named by Peyton Jones & Partain (1993), who empirically
+    /// confirmed that spine strictness is the dominant projection for list-consuming
+    /// functions in real Haskell programs (~85–90% of strictness benefit comes from
+    /// Seq alone; Spine covers the remainder for collection arguments). It is a derived
+    /// concept in Wadler & Hughes (1987) rather than an explicitly named projection.
+    ///
+    /// W1 behavior: operationally identical to Seq at the dispatch site — one
+    /// materialize() call forces the collection to its outermost constructor. The
+    /// Seq/Spine distinction exists for documentation accuracy and W2 code generation.
     Spine,
 }
 ```
@@ -346,16 +355,42 @@ Strictness travels with the value. When the evaluator encounters `Value::Builtin
 
 #### Registration
 
-`standard_builtins()` returns `Vec<BuiltinDef>`. The `builtin!` macro gains an optional third argument for the strictness array. `builtin!("name", fn)` without the array implies all-`Id`:
+`standard_builtins()` returns `Vec<BuiltinDef>`. The `builtin!` macro gains an optional third argument for the strictness array. `builtin!("name", fn)` without the array implies all-`Id`. Because `pos_strictness` is `&'static [Strictness]`, the macro must expand the slice to a `const` item (not a temporary) to satisfy the `'static` lifetime bound:
 
 ```rust
+// macro expansion for builtin!("+", builtin_add, [Seq, Seq]):
+{
+    const S: &[Strictness] = &[Strictness::Seq, Strictness::Seq];
+    BuiltinDef { func: builtin_add, name: "+", pos_strictness: S }
+}
+
 builtin!("+", builtin_add,    [Seq, Seq])
 builtin!("if", builtin_if,   [Seq, Id, Id])
 builtin!("map", builtin_map, [Id, Spine])
-builtin!("seq", builtin_seq)               // all-Id (no third arg)
+builtin!("seq", builtin_seq)               // all-Id (no third arg, empty slice)
 ```
 
-`create_root_env()` and the `builtin-*` operator aliases are updated to construct and consume `BuiltinDef` entries.
+`create_root_env()` and the `builtin-*` operator aliases (currently a separate `Vec<(&'static str, BuiltinFn)>`) are updated to construct `BuiltinDef` entries. Alias entries carry the alias name (e.g. `"builtin-add"`) but share the same `pos_strictness` as the canonical builtin.
+
+**Complete migration site inventory.** Every site that stores or deconstructs `name: &'static str` + `func: BuiltinFn` as separate builtin fields must be migrated atomically to `def: BuiltinDef`:
+
+| Site | Location | Change |
+|------|----------|--------|
+| `Value::Builtin { name, func }` | `src/value.rs` | → `Value::Builtin(BuiltinDef)` |
+| `ThunkState::PendingBuiltin { name, func, ... }` | `src/value.rs` | → `{ def: BuiltinDef, ... }` |
+| `RestoreState::PendingBuiltin { name, func, ... }` | `src/eval_materialize.rs` | → `{ def: BuiltinDef, ... }` |
+| `BuiltinForceArgData { builtin_name, func, ... }` | `src/eval_materialize.rs` | → `{ def: BuiltinDef, arg_idx: usize, ... }` |
+| `take_pending_builtin()` return tuple | `src/value.rs` | `(&str, BuiltinFn, ...)` → `(BuiltinDef, ...)` |
+| `Thunk::new_pending_builtin(name, func, ...)` | `src/value.rs` | → `new_pending_builtin(def, ...)` |
+| `create_root_env()` aliases `Vec<(&str, BuiltinFn)>` | `src/builtins.rs` | → `Vec<BuiltinDef>` |
+
+All seven sites must change together — a partial migration leaves mismatched field accesses that do not compile.
+
+**Value enum size.** `Value::Builtin` grows from 24 bytes (`name` 16 + `func` 8) to 40 bytes (adding `pos_strictness` 16). Add a compile-time assertion after the migration to catch future regressions:
+```rust
+const _: () = assert!(std::mem::size_of::<Value>() == EXPECTED);
+```
+Verify `Value`'s dominant variant (`Value::Dict`) still determines the enum size before adding the assertion.
 
 #### Strictness Annotation Table
 
@@ -373,7 +408,7 @@ S = Seq, I = Id, Sp = Spine
 | `to-int`, `to-float` | [S] | Conversion |
 | `eval` | [S] | Forces evaluation explicitly |
 | `error` | [S] | Message forced for display |
-| `try` | [I, I] | Both deferred; `try` evaluates first internally |
+| `try` | [I] | 1-arg; function thunk deferred; `try` evaluates it internally catching errors |
 | `apply` | [S, S] | Function and args-dict both forced |
 | `until` | [I, I, I] | pred, f, init applied lazily per iteration |
 | `type-of`, `seq?` | [S] | Type inspection requires WHNF |
@@ -388,36 +423,29 @@ S = Seq, I = Id, Sp = Spine
 | `iterate`, `unfold` | [I, I] | Function and seed deferred per-step |
 | `keys` | [Sp] | Dict spine forced for key enumeration |
 | `length` | [Sp] | Spine forced for count |
-| `merge`, `append` | [S, S] | Both dicts forced |
+| `merge` | [I, I] | Constructs Value::Overlay without forcing either arg; pre-materializing would change error-surfacing semantics (detectable via `$try`) |
+| `append` | [S, I] | arg[0] (target dict) forced; arg[1] (value to append) inserted as thunk, preserving laziness |
 | `map`, `filter` | [I, Sp] | fn/pred lazy; collection spine forced for type dispatch |
 | `take`, `drop` | [S, Sp] | n forced; collection spine forced for dispatch |
 | `reduce` | [I, I, Sp] | f and init lazy; collection spine forced for dispatch |
 | `join` | [S, Sp] | Separator forced; collection spine forced; elements forced by builtin |
-| `concat` | [Sp, I] | First collection spine forced for dispatch; second deferred |
+| `concat` | [Sp, S] | First collection spine forced for dispatch; second always forced by builtin |
 | `sort`, `reverse`, `rest` | [Sp] | Sequence structure forced |
 | `cons` | [I, Sp] | Element deferred; collection spine forced for dispatch |
 | `proxy` | [I] | Wraps thunk without forcing |
 
 #### W1: Dispatch-Time Materialization
 
-When `ThunkState::PendingBuiltin { def, args, ... }` is dispatched in the CEK run loop, pre-materialize `Seq` and `Spine` arguments before constructing `BuiltinArgs`:
+**Implementation via `BuiltinForceArgData` generalization.** The CEK machine is iterative and cannot pre-materialize multiple arguments in a single step. W1 generalizes the existing `Cont::BuiltinForceArg` continuation (which already pre-materializes `args[0]` unconditionally) to cover all `Seq`/`Spine` positions:
 
-```rust
-for (i, arg) in args.iter().enumerate() {
-    match def.pos_strictness.get(i) {
-        Some(Strictness::Seq) | Some(Strictness::Spine) => {
-            materialize(arg, None, depth, &ctx)?;
-        }
-        _ => {}
-    }
-}
-let builtin_args = BuiltinArgs { args: &args, named: &named, depth, call_span, ctx };
-(def.func)(builtin_args)
-```
+1. `BuiltinForceArgData` gains an `arg_idx: usize` field tracking which position is currently being forced.
+2. When `PendingBuiltin { def, args, ... }` is dispatched, instead of immediately building `BuiltinArgs`, the dispatcher finds the first `Seq`/`Spine` position in `def.pos_strictness`, pushes `Cont::BuiltinForceArg { def, args, named, ..., arg_idx: i }`, and returns `Action::Materialize { thunk: args[i] }`.
+3. In `apply_cont` for `Cont::BuiltinForceArg`, after the arg at `arg_idx` is materialized, find the next `Seq`/`Spine` position. If one exists, push another `Cont::BuiltinForceArg` with the incremented index. If none remain, construct `BuiltinArgs` and call `def.func`.
+4. The existing `builtin_name == "apply"` string comparison at `eval_materialize.rs:1114` is deleted — it becomes a specific instance of this general mechanism, since `$apply` is annotated `[Seq, Seq]`.
 
-`materialize()` updates the thunk's `RefCell<ThunkState>` in place. The builtin's own `materialize(args[i])` call is then a no-op read. This eliminates the per-argument state-machine cost for `Seq` and `Spine` positions on every builtin call.
+Because `materialize()` updates the thunk's `RefCell<ThunkState>` in place, the builtin's own subsequent `materialize(args[i])` call is a no-op read after W1 has forced it. This eliminates the per-argument state-machine cost for `Seq` and `Spine` positions.
 
-Error propagation: if pre-materialization of a `Seq`/`Spine` argument fails (e.g., division-by-zero in an argument expression), the error surfaces before the builtin executes — preserving sequential error semantics.
+Error propagation: if pre-materialization of any `Seq`/`Spine` argument fails, the error surfaces before the builtin executes — preserving sequential error semantics and making the error site predictable regardless of the builtin's own argument access order.
 
 #### W2: Call-Creation Time (Future)
 

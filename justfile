@@ -185,6 +185,13 @@ doc:
 doc-open:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo doc --no-deps --open
 
+# Generate stdlib reference documentation from annotated source (stdlib/prelude.llt).
+# TODO: implement a real generator that reads @doc annotations and produces doc/11-stdlib.md entries.
+# Currently a stub that confirms the annotated source is present.
+docs:
+    @echo "stdlib reference docs: not yet implemented (stub)"
+    @test -f stdlib/prelude.llt && echo "stdlib/prelude.llt present ($(wc -l < stdlib/prelude.llt) lines)" || (echo "ERROR: stdlib/prelude.llt missing" && exit 1)
+
 # Run cargo bench (if benchmarks exist)
 bench:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo bench
@@ -193,6 +200,18 @@ bench:
 # Opens the HTML report in the default browser after generation.
 coverage:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add llvm-tools-preview 2>/dev/null; cargo llvm-cov --open"
+
+# Property-based testing via proptest (future addition — install proptest crate first)
+proptest:
+    @echo "proptest: add proptest to Cargo.toml dependencies, then add fuzz targets under fuzz/fuzz_targets/"
+
+# Generate stdlib reference docs from annotations
+# TODO: implement — parse doc comments from stdlib/prelude.llt and src/builtins.rs,
+#   merge by category, emit to doc/11-stdlib-reference.md
+stdlib-docs:
+    @echo "TODO: stdlib doc generation not yet implemented."
+    @echo "Planned: parse ## comments from stdlib/prelude.llt + /// from src/builtins.rs"
+    @echo "Output target: doc/11-stdlib-reference.md"
 
 # Audit dependencies for security vulnerabilities
 audit:

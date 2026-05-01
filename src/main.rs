@@ -82,6 +82,11 @@ enum Commands {
     /// Start the LSP server (stdio transport).
     #[cfg(feature = "lsp")]
     Lsp,
+    /// Show a detailed explanation for an error code (e.g. E001).
+    Explain {
+        /// Error code to explain (e.g. E001, E010, E070).
+        code: String,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -125,6 +130,7 @@ fn main() {
         Commands::Repl => tinct::repl::run_repl(),
         #[cfg(feature = "lsp")]
         Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
+        Commands::Explain { code } => run_explain(&code),
     };
 
     match result {
@@ -481,6 +487,405 @@ fn read_stdin_json() -> Result<Option<Rc<Thunk>>, String> {
 
     let val = json_to_value(&json, 0, Span::origin()).map_err(|e| format!("{e}"))?;
     Ok(Some(val))
+}
+
+/// Print a detailed explanation for the given error code string (e.g. "E001").
+/// The code is matched case-insensitively after stripping leading/trailing whitespace.
+fn run_explain(code: &str) -> Result<(), String> {
+    let code = code.trim().to_ascii_uppercase();
+    let explanation = match code.as_str() {
+        "E001" => {
+            "\
+E001: Key not found
+
+A field access used a key that does not exist in the dict. For example,
+  { a: 1 }.b
+will produce E001 because the key 'b' is not in the dict.
+
+When a similar key exists (within an edit distance threshold), the error
+message includes a 'did you mean' suggestion. When no close match is found,
+it lists up to five available keys.
+
+Fix: check the key name for typos, or access the key conditionally with
+$get or a default pattern."
+        }
+
+        "E002" => {
+            "\
+E002: Undefined variable
+
+A variable reference (e.g. $x) could not be resolved in any enclosing
+scope. This usually means the variable was not bound in any enclosing dict,
+let expression, or function parameter, or was referenced before its binding
+in a non-letrec context.
+
+Fix: define the variable in an enclosing scope, or check for a typo in the
+variable name."
+        }
+
+        "E010" => {
+            "\
+E010: Type mismatch
+
+An operation received a value of the wrong type. For example, adding a
+string to an integer, or calling a string as a function.
+
+The error message shows the expected type and the type that was found.
+
+Fix: convert the value to the expected type (e.g. $to-string, $to-int) or
+ensure the input has the correct type."
+        }
+
+        "E011" => {
+            "\
+E011: Type assertion failed
+
+A runtime type assertion written as [@Type value] evaluated the value and
+found a type different from the annotated type.
+
+Fix: ensure the value actually produces the declared type, or update the
+type annotation to match the runtime type."
+        }
+
+        "E020" => {
+            "\
+E020: Arity mismatch
+
+A function was called with the wrong number of positional arguments. For
+example, calling a one-argument function with two arguments.
+
+The error message shows how many arguments were expected and how many were
+passed.
+
+Fix: supply the correct number of arguments, or update the function
+definition if the arity is intentionally changing."
+        }
+
+        "E021" => {
+            "\
+E021: Named argument conflict
+
+A function parameter received both a positional argument and a named
+argument in the same call. Only one form can supply a parameter.
+
+Fix: pass the argument either positionally or as a named argument, not both."
+        }
+
+        "E022" => {
+            "\
+E022: Unknown named argument
+
+A named argument was passed to a function that does not declare a parameter
+with that name. The error message lists the valid parameter names.
+
+Fix: check the parameter name for typos, or remove the unknown named
+argument."
+        }
+
+        "E023" => {
+            "\
+E023: Named argument rejected
+
+A built-in function received a named argument but does not accept named
+arguments (built-ins take only positional arguments unless documented
+otherwise).
+
+Fix: pass the argument positionally."
+        }
+
+        "E024" => {
+            "\
+E024: Missing required parameter
+
+A function was called without supplying a value for a required parameter
+(one without a default). The error message names the missing parameter.
+
+Fix: supply the missing argument positionally or as a named argument."
+        }
+
+        "E030" => {
+            "\
+E030: Duplicate key
+
+A dict literal contained the same key more than once. LLT does not allow
+duplicate keys in dict literals; the second definition would silently
+shadow the first.
+
+Fix: remove the duplicate key, or merge the values explicitly."
+        }
+
+        "E031" => {
+            "\
+E031: Division by zero
+
+An integer or float division (or modulo) operation had a zero divisor.
+
+Fix: guard the divisor with an if expression, or ensure the denominator
+is never zero."
+        }
+
+        "E032" => {
+            "\
+E032: Integer overflow
+
+An arithmetic operation on integers produced a result outside the i64
+range (-9223372036854775808 to 9223372036854775807).
+
+Fix: use float arithmetic if the values may be large, or add range checks."
+        }
+
+        "E033" => {
+            "\
+E033: Float not finite
+
+An operation produced or received a non-finite float value (NaN, Infinity,
+or -Infinity). LLT does not allow non-finite floats in contexts requiring
+well-defined numeric values.
+
+Fix: add guards for division by zero and for inputs that might be NaN or
+infinite. Use $is-finite to check a float before converting or comparing."
+        }
+
+        "E034" => {
+            "\
+E034: Empty collection
+
+An operation that requires a non-empty collection (such as $head, $tail,
+$min, or $max) was applied to an empty sequence or string.
+
+Fix: check that the collection is non-empty before applying the operation,
+or provide a default with $if."
+        }
+
+        "E035" => {
+            "\
+E035: Value not serializable
+
+A value that cannot be represented in JSON (Function, Builtin, or Proxy)
+reached the serialization step.
+
+Fix: ensure all values in the output dict are JSON-compatible (strings,
+numbers, booleans, null, lists, and dicts). Functions must be applied to
+produce a data value before output."
+        }
+
+        "E036" => {
+            "\
+E036: Float out of range for Int
+
+A float-to-integer conversion ($to-int or similar) was attempted on a
+finite float whose value is outside the i64 range.
+
+Fix: check the float value before converting, or use a float output type."
+        }
+
+        "E040" => {
+            "\
+E040: Maximum evaluation depth exceeded
+
+The evaluator exceeded its recursion limit. This usually indicates infinite
+or very deep mutual recursion.
+
+Fix: restructure the computation to avoid deep recursion. Use iterative
+patterns ($fold, $map) instead of recursive function calls where possible.
+If the recursion is intentional but bounded, the limit may be raised with
+--depth (if supported)."
+        }
+
+        "E041" => {
+            "\
+E041: Maximum JSON nesting depth exceeded
+
+A $from-json call was given a JSON document nested more deeply than the
+allowed limit.
+
+Fix: ensure the JSON input does not have excessive nesting, or pre-process
+deeply nested JSON before passing it to tinct."
+        }
+
+        "E042" => {
+            "\
+E042: Filesystem access disabled
+
+A $include call was made but the --no-fs flag was passed on the command
+line, disabling all filesystem access.
+
+Fix: remove --no-fs if filesystem access is intended, or provide the
+included data through stdin JSON ($$) instead."
+        }
+
+        "E043" => {
+            "\
+E043: Resource limit exceeded
+
+An operation exceeded a configured resource limit (such as collection
+size or string length).
+
+Fix: reduce the size of the collection or string, or check whether the
+limit can be raised for your use case."
+        }
+
+        "E050" => {
+            "\
+E050: Include not available in this context
+
+$include was used in a context where the include subsystem is not
+initialised (for example, in a unit test or REPL context that does not
+set up a base directory).
+
+Fix: run the file with 'tinct eval' rather than in a context that does not
+support $include."
+        }
+
+        "E051" => {
+            "\
+E051: Include I/O error
+
+A $include call could not open or read the target file. The error message
+includes the OS-level error detail.
+
+Fix: check that the file path is correct and that the file is readable."
+        }
+
+        "E052" => {
+            "\
+E052: Circular include
+
+A $include call would create a cycle: file A includes file B which (directly
+or transitively) includes file A again.
+
+Fix: restructure the files to break the include cycle."
+        }
+
+        "E053" => {
+            "\
+E053: Include parse error
+
+A $include call succeeded in reading the file but the file contains invalid
+LLT syntax. The error message includes the parser error detail.
+
+Fix: correct the syntax error in the included file."
+        }
+
+        "E054" => {
+            "\
+E054: Included file too large
+
+The file passed to $include exceeds the 10 MB size limit.
+
+Fix: split the file, or load it through an external pre-processing step
+that feeds the data through stdin JSON."
+        }
+
+        "E055" => {
+            "\
+E055: Include integrity hash mismatch
+
+The file passed to $include was successfully read but its blake3 hash does
+not match the expected hash supplied as the second argument to $include.
+
+Fix: recompute the expected hash with 'tinct hash <file>' and update the
+$include call."
+        }
+
+        "E056" => {
+            "\
+E056: Include integrity hash required
+
+The --require-integrity flag was passed on the command line, but a $include
+call was made without supplying an expected hash as the second argument.
+
+Fix: pass the blake3 hash of the included file as the second argument, e.g.
+  $include \"config.llt\" \"blake3:abc123...\""
+        }
+
+        "E057" => {
+            "\
+E057: Include path not permitted
+
+A $include call attempted to access a path that is not a descendant of any
+directory listed with --allow-path.
+
+Fix: add the required directory to the --allow-path allowlist, or ensure
+$include only accesses files within the already-allowed directories."
+        }
+
+        "E060" => {
+            "\
+E060: Parse conversion failed
+
+A $to-int or $to-float call could not parse the supplied string.
+
+Fix: ensure the string is a valid integer or floating-point literal before
+converting, or use $try to handle the error gracefully."
+        }
+
+        "E061" => {
+            "\
+E061: Invalid JSON
+
+A $from-json call received a string that is not valid JSON.
+
+Fix: ensure the input to $from-json is a well-formed JSON string."
+        }
+
+        "E062" => {
+            "\
+E062: JSON number out of range
+
+A JSON number in a $from-json call is outside the representable range for
+LLT's numeric types.
+
+Fix: pre-process the JSON to reduce large numbers, or represent them as
+strings."
+        }
+
+        "E070" => {
+            "\
+E070: Circular dependency
+
+Two or more values in a letrec scope (dict or document) depend on each other
+in a cycle, making it impossible to evaluate either. For example:
+  { a: $b, b: $a }
+cannot be evaluated because 'a' depends on 'b' which depends on 'a'.
+
+Fix: break the cycle by introducing at least one value that does not depend
+on the others, or restructure the computation to be non-circular."
+        }
+
+        "E080" => {
+            "\
+E080: User error
+
+The $error built-in was called explicitly in user code. This is an
+intentional error raised by the program logic.
+
+Fix: check the conditions under which $error is called and ensure the
+calling code supplies valid input."
+        }
+
+        "E099" => {
+            "\
+E099: Internal error
+
+An unexpected internal condition occurred in the evaluator. This should not
+happen in normal use.
+
+Fix: file a bug report with the full error message and the LLT source file
+that triggered the error."
+        }
+
+        _ => {
+            return Err(format!(
+                "unknown error code: {code}\n\
+                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099.\n\
+                 Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
+                 E040-E043, E050-E057, E060-E062, E070, E080, E099."
+            ));
+        }
+    };
+    println!("{explanation}");
+    Ok(())
 }
 
 #[cfg(test)]

@@ -815,11 +815,18 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // When materialized, the PendingBuiltin handler will use BuiltinForceArg
     // to pre-materialize both args[0] and args[1] iteratively, avoiding
     // Rust stack growth.
+    // Pass named args through: $apply may forward named args to the target function.
+    // Use None when named is empty to skip the IndexMap allocation.
+    let named_opt = if named.is_empty() {
+        None
+    } else {
+        Some(named.clone())
+    };
     Ok(Rc::new(Thunk::new_pending_builtin(
         "apply",
         builtin_apply_impl,
         args.to_vec(),
-        named.clone(),
+        named_opt,
         depth,
         call_span,
         Cow::Borrowed("call $apply"),
@@ -998,6 +1005,17 @@ fn blake3_hex(bytes: &[u8]) -> String {
 /// directory. Absolute paths are used as-is. Cycle detection prevents A→B→A
 /// circular includes. The included file gets an empty `$$` and sees the stdlib
 /// environment but NOT the caller's scope.
+///
+/// ## Argument strictness
+///
+/// - `args[0]` (path): **strict** — materialized immediately before any filesystem
+///   access. The path string must be known before the file can be opened.
+/// - `args[1]` (integrity hash, optional): **strict** — materialized immediately after
+///   `args[0]` so the hash string is available for comparison against the file bytes.
+///
+/// Both arguments are forced eagerly; `$include` does not participate in lazy evaluation
+/// of its path. This is intentional: lazily resolving the path would defer filesystem
+/// errors and make cycle detection unreliable.
 fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -10663,7 +10681,7 @@ mod tests {
             "drop",
             builtin_drop_seq_step,
             vec![n_remaining, seq],
-            IndexMap::new(),
+            None,
             0,
             call_span(),
             Cow::Borrowed("test drop_seq_step"),

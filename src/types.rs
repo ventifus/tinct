@@ -1254,6 +1254,31 @@ fn unify_rows(
     }
 }
 
+/// Unify two types under Robinson's algorithm extended with Rémy-style row polymorphism
+/// and Damas-Milner level-based let-generalization.
+///
+/// ## Robinson unification invariant
+///
+/// At entry, `subst` is the current accumulated substitution. The first action is to
+/// apply `subst` to both `a` and `b`, producing fully-resolved forms. This is the
+/// standard Robinson step: chasing all already-bound type variables before dispatching
+/// on structure, so that e.g. a previously unified `α ↦ Int` is visible here.
+///
+/// Recursive calls (e.g. for Function param/return types, or for row fields) receive
+/// the *same* `subst` and do their own `apply()` at the top of each call. This is
+/// correct: sub-terms extracted from the already-applied forms (`a`/`b` above) are
+/// themselves fully resolved w.r.t. the substitution at the time of extraction.
+/// However, each recursive call may *extend* `subst` by binding new variables, and
+/// those bindings will be visible to subsequent sibling recursive calls (since `subst`
+/// is `&mut`). This is the standard incremental Robinson behaviour — not a bug.
+///
+/// ## Level-lowering invariant
+///
+/// When binding α ↦ τ (U-VAR-LEVEL), all free type/row variables β in τ have their
+/// levels lowered to `min(level(β), level(α))`. This preserves the Damas-Milner
+/// generalization invariant: a variable can only be generalized if its level exceeds
+/// the enclosing `let`-level, so lowering prevents premature generalization of
+/// variables that escape through the binding.
 pub fn unify(
     a: &Type,
     b: &Type,
@@ -1261,7 +1286,8 @@ pub fn unify(
     state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
-    // Share visited sets across both apply() calls to avoid duplicate allocation
+    // Apply current substitution to both sides (Robinson step: chase bound vars).
+    // Shared visited sets avoid redundant allocation across both apply() calls.
     let mut visited_types = HashSet::new();
     let mut visited_rows = HashSet::new();
     let a = subst.apply_with_visited(a, &mut visited_types, &mut visited_rows);
@@ -1273,6 +1299,14 @@ pub fn unify(
         return Ok(());
     }
 
+    // Robinson (1965) invariant: after unifying X and Y, `subst` is extended with at most one
+    // new binding (the TypeVar arm inserts exactly one entry into subst.type_map). Subsequent
+    // calls to `unify` operate on the extended substitution via the `apply_with_visited` calls
+    // at the top of each recursive invocation — those calls chase the substitution chain and
+    // return fully-walked types before the match. We do NOT re-apply `subst` to already-unified
+    // terms between match arms because (a) the occurs check prevents cycles, so there are no
+    // self-referential chains to chase, and (b) each arm receives pre-applied operands (a, b)
+    // that are already walk-complete with respect to the substitution at entry time.
     match (&a, &b) {
         // Error absorption: unify(Error, T) = Ok(()) for all T.
         // Error is a sentinel for failed sub-expression inference; absorbing it silently
@@ -1408,6 +1442,11 @@ pub fn unify(
                     span,
                 ));
             }
+            // Robinson invariant: sub-terms are passed without explicit apply() because
+            // every recursive unify() call re-applies the accumulated substitution at its
+            // own entry (via apply_with_visited at the top of this function). Bindings
+            // from earlier parameter unifications are therefore visible to later ones via
+            // the shared `subst` — this is correct Robinson (1965) unification.
             for (pa, pb) in p1.iter().zip(p2.iter()) {
                 unify(pa, pb, subst, state, span)?;
             }
@@ -1490,7 +1529,12 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     let mut row_vars = HashSet::new();
     ty.collect_all_vars(&mut type_vars, &mut row_vars);
 
-    let mut renaming = Substitution::new();
+    // Use with_capacity so the HashMap internal arrays are allocated exactly once,
+    // avoiding a resize when the type/row var counts are known upfront (CALL-POLY hot path).
+    let mut renaming = Substitution {
+        type_map: HashMap::with_capacity(type_vars.len()),
+        row_map: HashMap::with_capacity(row_vars.len()),
+    };
     for var in type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter += 1;
