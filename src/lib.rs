@@ -19,6 +19,7 @@
 pub mod ast;
 pub(crate) mod error;
 pub(crate) mod eval;
+pub(crate) mod eval_access;
 pub(crate) mod eval_call;
 pub(crate) mod eval_deep;
 pub mod formatter;
@@ -31,6 +32,10 @@ pub(crate) mod types;
 pub(crate) mod value;
 // Rust-native builtin functions (stdlib-1 sprint).
 pub(crate) mod builtins;
+// Seq primitive builtins: seq, head, tail, collect, seq?.
+pub(crate) mod builtins_seq_prim;
+// Sequence generator builtins: range, repeat, cycle, iterate, unfold.
+pub(crate) mod builtins_seq_gen;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // REPL (Read-Eval-Print Loop).

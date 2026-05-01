@@ -2260,3 +2260,9 @@ Pure structural rename and type additions preparing for the full CEK loop. **No 
 Core linked-list primitives — the four operations that construct and destructure sequences.
 
 - [x] Move `builtin_seq`, `builtin_head`, `builtin_tail`, `builtin_collect` to `src/builtins_seq_prim.rs` (`src/builtins.rs:1365-1549`, ~185 lines) [Minor]
+
+## builtins-split-b: Extract builtins_seq_gen.rs
+
+Sequence generators — create new infinite or finite sequences from seeds or ranges.
+
+- [x] Move `builtin_range`+`range_step`, `builtin_repeat`, `builtin_cycle`+`cycle_step`, `builtin_iterate`, `builtin_unfold`+`unfold_step` to `src/builtins_seq_gen.rs` (`src/builtins.rs:1550-1975`, ~425 lines) [Minor]
