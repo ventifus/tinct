@@ -95,21 +95,21 @@ Type::Seq inference, TypeEnv::with_builtins, and core type system correctness.
 - [ ] Define hash consistency requirements for Dict key equality — `hash(a) == hash(b)` whenever `Value::PartialEq` says `a == b` (NOT `$=` user-facing equality). Int and Float use separate hash paths even when numerically equal via promotion, so `[1: x]` and `[1.0: y]` are distinct keys. Document before implementing Dict key deduplication or Set types. [Minor, type-theorist]
 - [x] Decide type alias shadowing policy — allow lexical scope shadowing (inner alias shadows outer). Consistent with value binding semantics. Same-dict redefinition already caught by duplicate key check. OCaml/Haskell/TypeScript precedent.
 - [ ] Type environment alias registry shadowing policy — implement chosen policy (`src/types.rs:433-435`) [Major, type-theorist]
-- [ ] `type-of` returns "Dict" for all dicts, no list discrimination — document in Future Features (`src/builtins.rs`, doc/11-stdlib.md) [Minor, stdlib-author]
-- [ ] Make `TypeEnv::lookup` `pub(crate)` — currently private but useful for testing (`src/types.rs:415-427`) [Minor, type-theorist]
-- [ ] Document `Substitution::get` being `cfg(test)` only — either make always-public or explain opaqueness (`src/types.rs:198-202`) [Minor, type-theorist]
-- [ ] Fix instantiation counter overflow — `u32` theoretically overflows; use `u64` or document assumption (`src/types.rs:318-330`) [Minor, type-theorist]
-- [ ] Document `Type::Number` having no literal variant — asymmetry with Int/String is due to dict key constraint (`src/types.rs:21-37`) [Minor, type-theorist]
-- [ ] Fix `Type::Function` Display for nested types — add parentheses for nested function annotations (`src/types.rs:369-378`) [Minor, type-theorist]
+- [x] `type-of` returns "Dict" for all dicts, no list discrimination — document in Future Features (`src/builtins.rs`, doc/11-stdlib.md) [Minor, stdlib-author]
+- [x] Make `TypeEnv::lookup` `pub(crate)` — currently private but useful for testing (`src/types.rs:415-427`) [Minor, type-theorist]
+- [x] Document `Substitution::get` being `cfg(test)` only — either make always-public or explain opaqueness (`src/types.rs:198-202`) [Minor, type-theorist]
+- [x] Fix instantiation counter overflow — `u32` theoretically overflows; use `u64` or document assumption (`src/types.rs:318-330`) [Minor, type-theorist]
+- [x] Document `Type::Number` having no literal variant — asymmetry with Int/String is due to dict key constraint (`src/types.rs:21-37`) [Minor, type-theorist]
+- [x] Fix `Type::Function` Display for nested types — add parentheses for nested function annotations (`src/types.rs:369-378`) [Minor, type-theorist]
 - [x] Decide variadic param annotation semantics — forbid annotations on `...args`. Row types use string keys but variadic collects into Int-keyed Dict; annotation can't participate in type inference. Revisit when Seq types land (variadic may collect into `Seq<T>` instead of Dict).
 - [x] Fix variadic param type from `Record([], Closed)` to `Any` — no annotation to resolve, just correct the type (`src/typecheck.rs:469-473`) [Minor, type-theorist] — already fixed: code at typecheck.rs:1480-1483 types variadic as Any; doc/06 Limitation #4 updated to match
-- [ ] Clarify `resolve_annotated` interpreting all Fn annotations as function types (`src/typecheck.rs:522-533`) [Minor, type-theorist]
+- [x] Clarify `resolve_annotated` interpreting all Fn annotations as function types (`src/typecheck.rs:522-533`) [Minor, type-theorist]
 - [ ] Populate type map on errors — record `Type::Any` for failed subexpressions to improve LSP hover (`src/typecheck.rs:200-206`) [Minor, type-theorist]
 - [ ] Fix annotation TypeVar aliasing — same `@a` in two sibling dict entries overwrites `state.levels["a"]`; e.g., `[f: [fn [x@a] $x]  g: [fn [y@a] $y]]` — `g`'s inference overwrites `f`'s level, causing incorrect generalization of `f`'s scheme at Pass 4. Fix: use `state.fresh_var()` for annotation-derived TypeVars (fresh name with counter) instead of the bare annotation name. (`src/typecheck.rs:738`) [Major, type-theorist C40]
 - [ ] Fix `doc/05-type-annotations.md` letrec dict description — line 201 says "bind all resolved key names to Any" (old Pass 1 behavior) and mentions "four passes" but since let-gen-inference, Pass 1 binds to fresh TypeVar at state.level (not Any) and there are now five passes (Pass 0-4). Forward references see a TypeVar, not Any. (`doc/05-type-annotations.md:201`) [Minor, type-theorist C40]
 - [x] Fix `TypeScheme::vars` conflating type variable and row variable names — single `Vec<String>` quantifies both; Rémy-style kinded schemes need `type_vars: Vec<String>` + `row_vars: Vec<String>` so `instantiate_scheme()` routes substitutions correctly (type-map vs row-map). Becomes load-bearing when let-gen-inference + row-unification overlap. (`src/types.rs:171-174`) [Minor, type-theorist C39] — done in bidirectional-typing-b
 - [x] Fix `collect_type_vars()` conflating type and row variable names — collects `RowVar` names into the same `BTreeSet<String>` as `TypeVar` names; `instantiate()` then routes all through the type substitution, freshening row variables as TypeVars. Add separate `collect_row_vars()` (Pierce & Turner 2000) or use two-map substitution. (`src/types.rs:129-151`) [Minor, type-theorist C39] — done in bidirectional-typing-b
-- [ ] Fix `check_bracket_access` rejecting `Type::Number` as key type — only `Type::Str | Type::Int | Type::Any` accepted; `Number` is supertype of `Int` and should produce `Any` return like `Int` does. (`src/typecheck.rs:347-348`) [Fix-later, type-theorist C39]
+- [x] Fix `check_bracket_access` rejecting `Type::Number` as key type — only `Type::Str | Type::Int | Type::Any` accepted; `Number` is supertype of `Int` and should produce `Any` return like `Int` does. (`src/typecheck.rs:347-348`) [Fix-later, type-theorist C39]
 
 
 ## typeassert-structural-b: TypeAssert Structural Contract Checking (Part 2)
