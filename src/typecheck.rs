@@ -278,10 +278,14 @@ fn typecheck_document(
                     Err(mut errs) => {
                         state.level = enclosing_level;
                         errors.append(&mut errs);
-                        // Populate type_map with Any for LSP hover on failed expressions
+                        // Populate type_map with Error for LSP hover on failed expressions.
+                        // infer_expr already inserts Type::Error into type_map before returning Err,
+                        // but typecheck_document re-inserts here for the outer span (the document-level
+                        // expression span may differ from the inner sub-expression span that infer_expr
+                        // recorded). Use Type::Error (not Any) so LSP shows <error> not Any.
                         if let Some(ref mut map) = type_map {
                             let key = (expr.span.start.offset, expr.span.end.offset);
-                            map.insert(key, Type::Any);
+                            map.insert(key, Type::Error);
                         }
                     }
                 }
@@ -318,10 +322,12 @@ fn typecheck_document(
                     Err(mut errs) => {
                         state.level = enclosing_level; // Restore even on error
                         errors.append(&mut errs);
-                        // Populate type_map with Any for LSP hover on failed expressions
+                        // Populate type_map with Error for LSP hover on failed expressions.
+                        // Use Type::Error (not Any) so LSP shows <error> not Any (see comment
+                        // in the last-expression error path above).
                         if let Some(ref mut map) = type_map {
                             let key = (expr.span.start.offset, expr.span.end.offset);
-                            map.insert(key, Type::Any);
+                            map.insert(key, Type::Error);
                         }
                     }
                 }
@@ -529,10 +535,18 @@ fn infer_expr(
     };
 
     // Record the inferred type in the type map (if collecting).
-    if let Ok(ref ty) = result {
-        if let Some(ref mut map) = type_map {
-            let key = (expr.span.start.offset, expr.span.end.offset);
-            map.insert(key, ty.clone());
+    // On error, record Type::Error as a sentinel so that LSP hover shows <error>
+    // rather than no type at all, and parent expressions can see Error via the type_map
+    // rather than inferring from a missing entry.
+    if let Some(ref mut map) = type_map {
+        let key = (expr.span.start.offset, expr.span.end.offset);
+        match &result {
+            Ok(ty) => {
+                map.insert(key, ty.clone());
+            }
+            Err(_) => {
+                map.insert(key, Type::Error);
+            }
         }
     }
 
@@ -1365,9 +1379,19 @@ fn check_call_with_scheme(
         tm.insert(key, func_ty.clone());
     }
 
-    // Infer named args for type map population and error detection
+    // Infer named args for type map population and error propagation.
+    // Named arg errors (e.g., undefined variable in a named arg value) must be propagated —
+    // cascade prevention only applies to positional args where an Error arg would cause
+    // spurious "wrong argument type" unification errors. Named args don't participate in
+    // param type unification, so their errors can be reported directly.
+    let mut named_arg_errors: Vec<TypeError> = Vec::new();
     for na in named_args {
-        let _ = infer_expr(&na.node.value, env, state, type_map)?;
+        if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
+            named_arg_errors.append(&mut errs);
+        }
+    }
+    if !named_arg_errors.is_empty() {
+        return Err(named_arg_errors);
     }
 
     match &func_ty {
@@ -1390,9 +1414,22 @@ fn check_call_with_scheme(
             // quantifies variables that appear in the body, the instantiated type must contain
             // those fresh variables, so has_inference_vars() is always true.
             // Synthesize arguments and unify (doc/06 §[CALL-POLY])
+            //
+            // Cascade prevention: if an argument fails inference, use Type::Error as its type
+            // (the error has already been recorded in type_map by infer_expr) rather than
+            // propagating the error immediately. Collect all argument errors, then report them.
+            // unify(Error, param_ty) = Ok(()) by the Error-absorption rule in unify(), so the
+            // rest of argument unification continues without spurious additional errors.
             let mut arg_types = Vec::with_capacity(args.len());
+            let mut arg_errors: Vec<TypeError> = Vec::new();
             for a in args {
-                arg_types.push(infer_expr(a, env, state, type_map)?);
+                match infer_expr(a, env, state, type_map) {
+                    Ok(ty) => arg_types.push(ty),
+                    Err(mut errs) => {
+                        arg_errors.append(&mut errs);
+                        arg_types.push(Type::Error);
+                    }
+                }
             }
 
             if !params.is_empty() {
@@ -1408,7 +1445,14 @@ fn check_call_with_scheme(
                     row_map: state.subst.row_map.clone(),
                 };
                 for (param_ty, arg_ty) in params.iter().zip(arg_types.iter()) {
-                    unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
+                    // Error-typed args absorb silently (unify(Error, T) = Ok(())),
+                    // so we only propagate unification errors from non-Error args.
+                    if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span) {
+                        arg_errors.push(e);
+                    }
+                }
+                if !arg_errors.is_empty() {
+                    return Err(arg_errors);
                 }
                 // Merge local subst back into state.subst so that constraints from this
                 // polymorphic call site are visible to subsequent inference steps. Without
@@ -1445,8 +1489,9 @@ fn check_call_with_scheme(
             // already inferred exactly once in CALL-POLY (infer_expr at line 934).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
             // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
+            // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_expr(arg, env, state, type_map)?;
+                let _ = infer_expr(arg, env, state, type_map);
             }
             Ok(Type::Any)
         }
@@ -1486,9 +1531,19 @@ fn check_call(
         state.subst.apply(&func_ty)
     };
 
-    // Infer named args for type map population and error detection
+    // Infer named args for type map population and error propagation.
+    // Named arg errors (e.g., undefined variable in a named arg value) must be propagated —
+    // cascade prevention only applies to positional args where an Error arg would cause
+    // spurious "wrong argument type" unification errors. Named args don't participate in
+    // param type unification, so their errors can be reported directly.
+    let mut named_arg_errors: Vec<TypeError> = Vec::new();
     for na in named_args {
-        let _ = infer_expr(&na.node.value, env, state, type_map)?;
+        if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
+            named_arg_errors.append(&mut errs);
+        }
+    }
+    if !named_arg_errors.is_empty() {
+        return Err(named_arg_errors);
     }
 
     match &func_ty {
@@ -1540,10 +1595,22 @@ fn check_call(
                 _ => unreachable!("instantiate_at_level preserves Function variant"),
             };
 
-            // Synthesize argument types for CALL-POLY (not checking mode)
+            // Synthesize argument types for CALL-POLY (not checking mode).
+            // Cascade prevention: if an argument fails inference, use Type::Error as its type
+            // (the error has already been recorded in type_map by infer_expr) rather than
+            // propagating the error immediately. Collect all argument errors, then report them.
+            // unify(Error, param_ty) = Ok(()) by the Error-absorption rule in unify(), so the
+            // rest of argument unification continues without spurious additional errors.
             let mut arg_types = Vec::with_capacity(args.len());
+            let mut arg_errors: Vec<TypeError> = Vec::new();
             for a in args {
-                arg_types.push(infer_expr(a, env, state, type_map)?);
+                match infer_expr(a, env, state, type_map) {
+                    Ok(ty) => arg_types.push(ty),
+                    Err(mut errs) => {
+                        arg_errors.append(&mut errs);
+                        arg_types.push(Type::Error);
+                    }
+                }
             }
 
             if !params.is_empty() {
@@ -1605,7 +1672,14 @@ fn check_call(
                     row_map: state.subst.row_map.clone(),
                 };
                 for (param_ty, arg_ty) in inst_params.iter().zip(arg_types.iter()) {
-                    unify(param_ty, arg_ty, &mut subst, state, span).map_err(|e| vec![e])?;
+                    // Error-typed args absorb silently (unify(Error, T) = Ok(())),
+                    // so we only propagate unification errors from non-Error args.
+                    if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span) {
+                        arg_errors.push(e);
+                    }
+                }
+                if !arg_errors.is_empty() {
+                    return Err(arg_errors);
                 }
                 // Merge local subst back into state.subst so that constraints from this
                 // polymorphic call site are visible to subsequent inference steps. Without
@@ -1641,8 +1715,9 @@ fn check_call(
             // inferred). state.subst.apply already resolved bound TypeVars (line 1140-1144),
             // so reaching here means alpha is genuinely unbound. Conservative fallback:
             // infer args for side effects and return Any.
+            // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_expr(arg, env, state, type_map)?;
+                let _ = infer_expr(arg, env, state, type_map);
             }
             Ok(Type::Any)
         }
@@ -1652,8 +1727,9 @@ fn check_call(
             // already inferred exactly once in CALL-MONO (check_expr at line 1011) or CALL-POLY (infer_expr).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
             // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
+            // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_expr(arg, env, state, type_map)?;
+                let _ = infer_expr(arg, env, state, type_map);
             }
             Ok(Type::Any)
         }
@@ -6912,6 +6988,97 @@ mod tests {
         assert!(
             errors3.is_empty() || errors3.iter().all(|e| !e.message.contains("panic")),
             "Third typecheck should not panic"
+        );
+    }
+
+    // -- Type::Error cascade prevention --
+
+    #[test]
+    fn test_error_recorded_in_type_map_on_failure() {
+        // When infer_expr fails on a sub-expression, Type::Error must be recorded in the
+        // type_map for LSP hover so the parent expression sees <error> rather than nothing.
+        //
+        // Test via typecheck_file_with_types: $undefined is a VarRef that fails, so the
+        // type_map entry for its span must be Type::Error.
+        let input = "$undefined";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let (errors, type_map) = typecheck_file_with_types(&file.node);
+
+        // Must have an error (undefined variable)
+        assert!(!errors.is_empty(), "expected type error for $undefined");
+
+        // The type_map should contain at least one Type::Error entry
+        let has_error = type_map.values().any(|ty| matches!(ty, Type::Error));
+        assert!(
+            has_error,
+            "type_map should contain Type::Error for failed sub-expression ($undefined), \
+             got entries: {:?}",
+            type_map.values().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_cascade_prevention_error_does_not_multiply_errors() {
+        // Cascade prevention: when a call argument fails inference, only the original
+        // error should be reported — not a cascade of "wrong argument type" errors on top.
+        //
+        // [f: [fn [x@Int] $x]] called with $undefined (an undefined variable).
+        // Without cascade prevention: two errors — (1) undefined variable, (2) arg type mismatch.
+        // With cascade prevention: only one error — undefined variable.
+        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f $undefined]]");
+
+        // Must have at least one error
+        assert!(!errors.is_empty(), "expected at least one type error");
+
+        // The error should be about the undefined variable
+        let has_undefined_err = errors
+            .iter()
+            .any(|e| e.message.contains("undefined variable"));
+        assert!(
+            has_undefined_err,
+            "expected undefined variable error, got: {:?}",
+            errors
+        );
+
+        // Should NOT have a spurious "cannot unify" error about Int vs the arg type.
+        // The Error sentinel absorbs the param type without generating a new mismatch.
+        let has_cascade_err = errors
+            .iter()
+            .any(|e| e.message.contains("cannot unify") && e.message.contains("Int"));
+        assert!(
+            !has_cascade_err,
+            "cascade error about Int unification should be suppressed by Error absorption, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
+        // Verifies that unify(Error, TypeVar) does not bind the TypeVar, which would corrupt
+        // subsequent inference. After cascade prevention records Error as an arg type, the
+        // unification step must absorb it without touching the substitution.
+        //
+        // If Error were to bind a TypeVar (e.g., _t0 ↦ Error), the return type of the
+        // polymorphic call would resolve to Error, suppressing valid type information
+        // for the surrounding context.
+        let span = Span::origin();
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 1);
+
+        // Simulate: polymorphic param type is TypeVar("a"), arg type is Error
+        let result = unify(
+            &Type::TypeVar("a".into(), 1),
+            &Type::Error,
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(result.is_ok(), "unify(TypeVar, Error) must succeed");
+        assert!(
+            subst.type_map.is_empty(),
+            "TypeVar must NOT be bound when unified with Error (Error carries no type info)"
         );
     }
 }

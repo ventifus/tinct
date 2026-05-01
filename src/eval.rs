@@ -118,6 +118,9 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::TypeVar(_, _) => true,
         Type::Record(_) => true, // Records handled separately via proxy wrapping
         Type::Proxy => matches!(value, Value::Proxy { .. }),
+        // Error is a type-inference sentinel — at runtime, treat it like Any (all values pass).
+        // Type errors are advisory; the evaluator proceeds regardless of type-checking failures.
+        Type::Error => true,
     }
 }
 

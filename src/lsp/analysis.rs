@@ -452,11 +452,12 @@ mod tests {
     #[test]
     fn test_hover_type_not_shown_on_error() {
         let env = test_env();
-        // $undefined has type Any when inference fails -- LSP hover shows it for completeness.
+        // $undefined has type <error> when inference fails -- LSP hover shows the sentinel
+        // so users can see that the expression has a type error rather than seeing Any.
         let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx());
         let hover = hover_at(&doc, 1);
         assert!(hover.is_some());
         let text = hover.unwrap();
-        assert_eq!(text, "Variable: $undefined (Any)");
+        assert_eq!(text, "Variable: $undefined (<error>)");
     }
 }
