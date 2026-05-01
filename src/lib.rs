@@ -47,6 +47,7 @@ pub(crate) mod builtins_math;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // REPL (Read-Eval-Print Loop).
+#[cfg(feature = "repl")]
 pub mod repl;
 // LSP (Language Server Protocol).
 #[cfg(feature = "lsp")]
@@ -250,9 +251,11 @@ pub fn value_to_display_string(
     depth: usize,
 ) -> Result<String, Box<error::EvalError>> {
     if depth > eval::MAX_EVAL_DEPTH {
-        return Err(
-            error::EvalError::depth_exceeded(eval::MAX_EVAL_DEPTH, ast::Span::origin()).into(),
-        );
+        return Err(error::EvalError::internal(
+            "display depth exceeded (this is a display recursion limit, not an evaluation depth limit)".to_string(),
+            ast::Span::origin(),
+        )
+        .into());
     }
     match val {
         value::Value::Int(n) => Ok(format!("Int({n})")),

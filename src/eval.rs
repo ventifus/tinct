@@ -776,6 +776,7 @@ enum RestoreState {
         ctx: Rc<EvalContext>,
     },
     PendingBuiltin {
+        name: &'static str,
         func: crate::value::BuiltinFn,
         args: Box<Vec<Rc<Thunk>>>,
         named: Box<IndexMap<String, Rc<Thunk>>>,
@@ -800,6 +801,7 @@ impl RestoreState {
                 thunk.set_state(ThunkState::Unevaluated { expr, env, ctx });
             }
             RestoreState::PendingBuiltin {
+                name,
                 func,
                 args,
                 named,
@@ -808,6 +810,7 @@ impl RestoreState {
                 ctx,
             } => {
                 thunk.set_state(ThunkState::PendingBuiltin {
+                    name,
                     func,
                     args,
                     named,
@@ -888,6 +891,7 @@ struct TypeAssertCheckData {
 /// Payload for Cont::BuiltinForceArg. Boxed to keep the Cont enum ≤96 bytes.
 struct BuiltinForceArgData {
     thunk: Rc<Thunk>,
+    builtin_name: &'static str,
     func: crate::value::BuiltinFn,
     args: Box<Vec<Rc<Thunk>>>,
     named: Box<IndexMap<String, Rc<Thunk>>>,
@@ -1168,7 +1172,7 @@ fn force_step(
                 Action::Continue(Err(decorated))
             }
         }
-    } else if let Some((func, args, named, pending_depth, call_span, thunk_ctx)) =
+    } else if let Some((name, func, args, named, pending_depth, call_span, thunk_ctx)) =
         thunk.take_pending_builtin()
     {
         if depth > MAX_EVAL_DEPTH {
@@ -1177,6 +1181,7 @@ fn force_step(
                 err = err.with_materialization_span(span);
             }
             thunk.set_state(ThunkState::PendingBuiltin {
+                name,
                 func,
                 args: Box::new(args),
                 named: Box::new(named),
@@ -1188,6 +1193,7 @@ fn force_step(
         }
 
         let restore = RestoreState::PendingBuiltin {
+            name,
             func,
             args: Box::new(args.clone()),
             named: Box::new(named.clone()),
@@ -1204,6 +1210,7 @@ fn force_step(
             let arg0 = Rc::clone(&args[0]);
             stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                 thunk: Rc::clone(thunk),
+                builtin_name: name,
                 func,
                 args: Box::new(args),
                 named: Box::new(named),
@@ -1657,6 +1664,7 @@ fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<Cont>) -> A
         Cont::BuiltinForceArg(data) => {
             let BuiltinForceArgData {
                 thunk,
+                builtin_name,
                 func,
                 args,
                 named,
@@ -1672,9 +1680,37 @@ fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<Cont>) -> A
                 |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
 
             // arg[0] has been materialized by the iterative loop (thunk memoization).
-            // Now call the builtin with all args — the builtin will find arg[0] cached.
+            // For $apply specifically, also check if arg[1] needs materialization.
             match result {
                 Ok(_) => {
+                    // Special case: $apply needs both args[0] (function) and args[1] (args dict)
+                    // pre-materialized to avoid Rust stack growth.
+                    if builtin_name == "apply"
+                        && args.len() >= 2
+                        && args[1].try_get_materialized().is_none()
+                    {
+                        let arg1 = Rc::clone(&args[1]);
+                        stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
+                            thunk,
+                            builtin_name,
+                            func,
+                            args,
+                            named,
+                            depth,
+                            call_span,
+                            ctx: thunk_ctx,
+                            origin,
+                            thunk_span,
+                            mat_span,
+                            restore,
+                        })));
+                        return Action::Materialize {
+                            thunk: arg1,
+                            mat_span: None,
+                            depth,
+                        };
+                    }
+
                     // Use loop depth for builtin arg materialization (TCO)
                     let builtin_args = crate::value::BuiltinArgs {
                         args: &args,
@@ -2007,12 +2043,8 @@ fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<Cont>) -> A
                                 if let Some(default_expr) =
                                     annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                                 {
-                                    return match eval_recursive(
-                                        default_expr,
-                                        env,
-                                        &ctx,
-                                        depth + 1,
-                                    ) {
+                                    return match eval_recursive(default_expr, env, &ctx, depth + 1)
+                                    {
                                         Ok(t) => Action::Materialize {
                                             thunk: t,
                                             mat_span: None,
@@ -2022,9 +2054,7 @@ fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<Cont>) -> A
                                     };
                                 }
                                 return Action::Continue(Err(EvalError::type_assert_failed(
-                                    &expected,
-                                    actual,
-                                    thunk_span,
+                                    &expected, actual, thunk_span,
                                 )
                                 .with_materialization_span(expr_span)
                                 .into()));
@@ -2366,7 +2396,7 @@ pub fn materialize(
                 Err(e)
             }
         }
-    } else if let Some((func, args, named, pending_depth, call_span, thunk_ctx)) =
+    } else if let Some((name, func, args, named, pending_depth, call_span, thunk_ctx)) =
         thunk.take_pending_builtin()
     {
         // Check depth limit only for deferred states that require evaluation
@@ -2377,6 +2407,7 @@ pub fn materialize(
             }
             // Restore state for non-cacheable error
             thunk.set_state(ThunkState::PendingBuiltin {
+                name,
                 func,
                 args: Box::new(args.clone()),
                 named: Box::new(named.clone()),
@@ -2423,6 +2454,7 @@ pub fn materialize(
                                 thunk.cache_failure(&e);
                             } else {
                                 thunk.set_state(ThunkState::PendingBuiltin {
+                                    name,
                                     func,
                                     args: Box::new(args),
                                     named: Box::new(named),
@@ -2441,6 +2473,7 @@ pub fn materialize(
                     thunk.cache_failure(&e);
                 } else {
                     thunk.set_state(ThunkState::PendingBuiltin {
+                        name,
                         func,
                         args: Box::new(args),
                         named: Box::new(named),
@@ -4667,6 +4700,8 @@ mod tests {
 
     #[test]
     fn test_eval_depth_limit() {
+        // POLICY TEST: This tests the depth-limit POLICY (MAX_EVAL_DEPTH enforcement),
+        // not stack-safety. Stack-safety is tested by test_iterative_materialize_deep_chain.
         let expr = sp(Expr::Int(42));
         let err = eval(&expr, empty_env(), &test_ctx(), MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(
@@ -4678,6 +4713,9 @@ mod tests {
 
     #[test]
     fn test_materialize_depth_limit() {
+        // POLICY TEST: This tests the depth-limit POLICY (MAX_EVAL_DEPTH enforcement),
+        // not stack-safety. Stack-safety is tested by test_iterative_materialize_deep_chain.
+        //
         // Depth check fires INSIDE deferred-state arms, not before early-returns.
         // Materialized thunks should succeed even at high depth (no evaluation needed).
         // Test with an Unevaluated thunk instead to verify depth check still works.
@@ -4695,6 +4733,9 @@ mod tests {
 
     #[test]
     fn test_proxy_invoke_depth_limit() {
+        // POLICY TEST: This tests the depth-limit POLICY (MAX_EVAL_DEPTH enforcement),
+        // not stack-safety. Stack-safety is tested by test_iterative_materialize_deep_chain.
+        //
         // Verify that accessing a proxy field at depth >= MAX_EVAL_DEPTH triggers
         // the depth exceeded error rather than a Rust stack overflow.
         //
@@ -5909,6 +5950,8 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_depth_limit() {
+        // POLICY TEST: This tests the depth-limit POLICY (MAX_EVAL_DEPTH enforcement),
+        // not stack-safety. Stack-safety is tested by test_iterative_materialize_deep_chain.
         let err = deep_materialize(&Value::Int(1), &test_ctx(), MAX_EVAL_DEPTH + 1).unwrap_err();
         assert!(
             err.message().contains("maximum evaluation depth exceeded"),
@@ -6144,6 +6187,9 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_seq_depth_limit() {
+        // POLICY TEST: This tests the depth-limit POLICY (MAX_EVAL_DEPTH enforcement),
+        // not stack-safety. Stack-safety is tested by test_iterative_materialize_deep_chain.
+        //
         // Build a deeply nested Seq structure exceeding MAX_EVAL_DEPTH.
         // The seq_depth counter fires before the generic depth limit,
         // giving a targeted error message for infinite sequences.
@@ -8994,7 +9040,7 @@ mod tests {
         env.borrow_mut().insert("x".into(), Rc::clone(&x_thunk));
         env.borrow_mut().insert("y".into(), Rc::clone(&y_thunk));
 
-        // Materialize x — should detect cycle
+        // Materialize x — should detect cycle (2-node cycle)
         let result = materialize(&x_thunk, None, &ctx, 0);
         assert!(result.is_err(), "Cycle should be detected");
         let err = result.unwrap_err();
@@ -9002,6 +9048,70 @@ mod tests {
             err.message().contains("circular dependency"),
             "Error should mention circular dependency, got: {}",
             err.message()
+        );
+
+        // Test 3-node cycle: a→b→c→a
+        let env3 = empty_env();
+
+        let a_expr = sp(Expr::VarRef("b".into()));
+        let a_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(a_expr),
+            Rc::clone(&env3),
+            Rc::clone(&ctx),
+            test_span(1, 1, 1, 2),
+        ));
+
+        let b_expr = sp(Expr::VarRef("c".into()));
+        let b_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(b_expr),
+            Rc::clone(&env3),
+            Rc::clone(&ctx),
+            test_span(1, 1, 1, 2),
+        ));
+
+        let c_expr = sp(Expr::VarRef("a".into()));
+        let c_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(c_expr),
+            Rc::clone(&env3),
+            Rc::clone(&ctx),
+            test_span(1, 1, 1, 2),
+        ));
+
+        env3.borrow_mut().insert("a".into(), Rc::clone(&a_thunk));
+        env3.borrow_mut().insert("b".into(), Rc::clone(&b_thunk));
+        env3.borrow_mut().insert("c".into(), Rc::clone(&c_thunk));
+
+        let result3 = materialize(&a_thunk, None, &ctx, 0);
+        assert!(result3.is_err(), "3-node cycle should be detected");
+        let err3 = result3.unwrap_err();
+        assert!(
+            err3.message().contains("circular dependency"),
+            "3-node cycle error should mention circular dependency, got: {}",
+            err3.message()
+        );
+
+        // Test self-reference: x→x
+        let env_self = empty_env();
+
+        let self_expr = sp(Expr::VarRef("x".into()));
+        let self_thunk = Rc::new(Thunk::new_unevaluated(
+            Rc::new(self_expr),
+            Rc::clone(&env_self),
+            Rc::clone(&ctx),
+            test_span(1, 1, 1, 2),
+        ));
+
+        env_self
+            .borrow_mut()
+            .insert("x".into(), Rc::clone(&self_thunk));
+
+        let result_self = materialize(&self_thunk, None, &ctx, 0);
+        assert!(result_self.is_err(), "Self-reference should be detected");
+        let err_self = result_self.unwrap_err();
+        assert!(
+            err_self.message().contains("circular dependency"),
+            "Self-reference error should mention circular dependency, got: {}",
+            err_self.message()
         );
     }
 

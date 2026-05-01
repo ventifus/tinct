@@ -74,6 +74,7 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ));
             let tail_args = vec![Rc::clone(&f_thunk), Rc::clone(&tail)];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
+                "map",
                 builtin_map,
                 tail_args,
                 IndexMap::new(),
@@ -154,6 +155,7 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let filter_args = vec![Rc::clone(&pred_thunk), dict_thunk, keys_thunk, idx_thunk];
 
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
+                "filter",
                 builtin_filter_dict_step,
                 filter_args,
                 IndexMap::new(),
@@ -172,6 +174,7 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // recursive tail PendingBuiltins.
             let filter_args = vec![Rc::clone(&pred_thunk), Rc::clone(&args[1])];
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
+                "filter",
                 builtin_filter_seq_step,
                 filter_args,
                 IndexMap::new(),
@@ -341,6 +344,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
                 next_idx_thunk,
             ];
             let tail = Rc::new(Thunk::new_pending_builtin(
+                "filter",
                 builtin_filter_dict_step,
                 tail_args,
                 IndexMap::new(),
@@ -426,6 +430,7 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                     // Include this element; defer the rest lazily
                     let tail_args = vec![Rc::clone(&pred_thunk), tail];
                     let new_tail = Rc::new(Thunk::new_pending_builtin(
+                        "filter",
                         builtin_filter_seq_step,
                         tail_args,
                         IndexMap::new(),
@@ -512,6 +517,7 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let new_head = Rc::clone(&head);
             let tail_args = vec![ok_val(Value::Int(n_int - 1), call_span)?, Rc::clone(&tail)];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
+                "take",
                 builtin_take,
                 tail_args,
                 IndexMap::new(),
@@ -592,6 +598,7 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let n_minus_1 = Rc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
             let step_args = vec![n_minus_1, tail];
             Ok(Rc::new(Thunk::new_pending_builtin(
+                "drop",
                 builtin_drop_seq_step,
                 step_args,
                 IndexMap::new(),
@@ -654,6 +661,7 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
             let n_minus_1 = Rc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
             let step_args = vec![n_minus_1, tail];
             Ok(Rc::new(Thunk::new_pending_builtin(
+                "drop",
                 builtin_drop_seq_step,
                 step_args,
                 IndexMap::new(),

@@ -92,9 +92,10 @@ pub(crate) fn invoke_proxy_handler(
                 ctx,
             })
         }),
-        Value::Builtin { func, .. } => {
+        Value::Builtin { name, func } => {
             // Create a fresh empty IndexMap for named args (0 capacity, no allocation)
             Ok(Rc::new(Thunk::new_pending_builtin(
+                name,
                 func,
                 vec![key_arg],
                 IndexMap::new(),
