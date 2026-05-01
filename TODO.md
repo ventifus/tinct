@@ -230,33 +230,6 @@ Remaining implementation work for TypeAssert structural contract checking.
 - [ ] Add error variant to [FORCE-GUARD] rule in doc/08-evaluation.md — every other FORCE-* rule has an error case; [FORCE-GUARD]'s failure paths (guard check fails, inner materialize fails) are described only in prose. [Minor, sprint-reviewer C62 round 6, KNOWN ISSUE]
 - [ ] Add InProgress→Guarded edge to formal transition table in doc/08-evaluation.md — the backward restoration edge is documented in the monotonicity exception paragraph but not in the transition table at lines 224-232. [Nit, sprint-reviewer C62 round 6, KNOWN ISSUE]
 
-## api-hygiene: API Surface and Error Quality (C56)
-
-Public API completeness and error quality improvements from the C56 integration-verifier review.
-
-- [x] Fix `Expr::Rest` error using raw `EvalError` struct literal — replaced with `EvalError::internal(...).into()` [api-hygiene C64]
-- [x] Add `EvalError::resource_limit_exceeded(message, span)` convenience constructor — added with `impl Into<String>` signature [api-hygiene C64]
-- [x] Fix `eval_source_with_config` using relative `PathBuf::from(".")` for base_dir — changed to `current_dir().canonicalize()` fallback [api-hygiene C64]
-- [x] Add divergence documentation for `is_cacheable` and `is_catchable` — INVARIANT comments added with cross-references [api-hygiene C64]
-- [x] Re-export `ErrorKind` and `ArityBound` from `lib.rs` — added `pub use error::{ArityBound, ErrorKind, EvalError, StackFrame}` [api-hygiene C64]
-- [x] Re-export `EvalConfig` and `EvalState` from `lib.rs` — added to `pub use eval::{...}` block [api-hygiene C64]
-- [x] Fix `ArityBound::Exact(1)` formatting — was already correct; AtMost removed [api-hygiene C64]
-- [x] Migrate `checked_f64_to_i64` to structured error — added `ErrorKind::FloatOutOfRange` as E036 [api-hygiene C64]
-- [x] Migrate `filter` predicate type mismatch to structured error — was already done in previous sprint [api-hygiene C64]
-- [x] Migrate `value_to_json` serialization errors to structured types — was already done [api-hygiene C64]
-- [x] Normalize lambda-checking arity message — normalized to "arity mismatch: expected {} arguments, got {}" [api-hygiene C64]
-- [x] Add `typecheck_source` to crate-level doc comment — `src/lib.rs:7-15` lists `eval_source`, `eval_file`, `eval_source_pretty`, `run_eval` but omits `typecheck_source` (added in row-unification-g-b). Add it alongside `eval_source` with note: "parse-and-typecheck only, no evaluation; stdlib builtins lack type signatures until typecheck-stdlib-types sprint". (`src/lib.rs:7-15`) [Nit, integration-verifier C57]
-- [x] Remove unused `ArityBound::AtMost` variant — deleted from enum and Display impl [api-hygiene C64]
-- [x] Fix `doc/10-errors.md` `IncludeForbidden` missing from Part 1 Variant Catalog — added IncludeForbidden, ValueNotSerializable, ResourceLimitExceeded; count updated to 31 [api-hygiene C64]
-- [x] Fix `doc/10-errors.md` motivation section stale stats — updated to 46 builtins, 61+ error tests [api-hygiene C64]
-- [x] Fix `EvalContext::with_base_dir()` doc comment misleading — corrected to note new EvalConfig allocation [api-hygiene C64]
-
-### api-hygiene: API and Error Constructor Migration
-
-Remaining API cleanup: migrate raw EvalError constructors to typed variants.
-
-- [ ] Migrate test-code `EvalError::new()` calls to typed constructors — several test helpers in `src/eval.rs` and `src/builtins.rs` use raw `EvalError::new()` (E099). Grep for `EvalError::new` in `#[cfg(test)]` blocks. (`src/eval.rs`, `src/builtins.rs`) [Nit, integration-verifier C63]
-
 ## file-sandbox-security: $include TOCTOU and File Access Hardening
 
 Security hardening for the `$include` file sandbox. The current implementation uses three separate path operations (canonicalize → metadata → read_to_string) creating a TOCTOU race window where the file can change between the validation and the read. The safe primitive is the file descriptor — once an fd is open, the kernel pins the inode regardless of what happens to the path.
