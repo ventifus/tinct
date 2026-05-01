@@ -266,6 +266,10 @@ pub fn value_to_json(
 ///
 /// `depth` tracks recursion depth to prevent stack overflow from deeply nested
 /// dict-of-dicts structures. Uses the same limit as `eval::MAX_EVAL_DEPTH`.
+/// Maximum display recursion depth (3 levels).
+/// Prevents deep traversal of nested structures in error messages.
+const MAX_DISPLAY_DEPTH: usize = 3;
+
 pub fn value_to_display_string(
     val: &value::Value,
     ctx: &std::rc::Rc<eval::EvalContext>,
@@ -278,23 +282,35 @@ pub fn value_to_display_string(
         )
         .into());
     }
+
+    // Bound display depth to prevent deep traversal in error messages
+    if depth >= MAX_DISPLAY_DEPTH {
+        return Ok("...".to_string());
+    }
+
     match val {
         value::Value::Int(n) => Ok(format!("Int({n})")),
         value::Value::Float(f) => Ok(format!("Float({f})")),
         value::Value::String(s) => Ok(format!("String({s:?})")),
         value::Value::Bool(b) => Ok(format!("Bool({b})")),
         value::Value::Dict(map) => {
-            let mut parts = Vec::new();
-            for (key, thunk) in map {
+            use std::fmt::Write;
+            let mut result = String::from("Dict({");
+            for (i, (key, thunk)) in map.iter().enumerate() {
+                if i > 0 {
+                    result.push_str(", ");
+                }
                 let v = eval::materialize(thunk, None, ctx, depth)?;
-                let key_str = match key {
-                    value::Key::Int(n) => format!("{n}"),
-                    value::Key::String(s) => format!("{s:?}"),
+                match key {
+                    value::Key::Int(n) => write!(&mut result, "{n}").unwrap(),
+                    value::Key::String(s) => write!(&mut result, "{s:?}").unwrap(),
                 };
+                result.push_str(": ");
                 let val_str = value_to_display_string(&v, ctx, depth + 1)?;
-                parts.push(format!("{key_str}: {val_str}"));
+                result.push_str(&val_str);
             }
-            Ok(format!("Dict({{{}}})", parts.join(", ")))
+            result.push_str("})");
+            Ok(result)
         }
         value::Value::Function { params, .. } => {
             let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
