@@ -273,6 +273,156 @@ struct Environment {
 
 **Explicit materialization:** Use `$eval` to materialize a value eagerly at binding time. A syntax-level `[! expr]` force annotation is not part of the language — `$eval` serves this purpose.
 
+### Builtin Argument Strictness Annotations
+
+Builtins declare per-position argument demand using `BuiltinDef`, a struct that replaces the bare `BuiltinFn` function pointer everywhere it appears. Strictness annotations follow Wadler & Hughes (1987) projections.
+
+#### Strictness Enum
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Strictness {
+    /// W&H "id" — identity projection. Argument never forced at the dispatch site;
+    /// the builtin receives the thunk and decides whether and when to force it.
+    Id,
+
+    /// W&H "seq" — force to head-normal form (WHNF) before the builtin is called.
+    /// Named after Haskell's `seq` combinator. Unrelated to the `$seq` builtin.
+    /// Arithmetic, comparison, string, and numeric builtins are Seq in all positions.
+    Seq,
+
+    /// W&H "spine" — force the structural layer without element values.
+    /// For Seq: traverse all (head_thunk, tail_thunk) pairs; head values stay lazy.
+    /// For Dict: equivalent to Seq (WHNF already exposes the full key set).
+    /// Used for collection arguments of dual-dispatch builtins ($map, $filter, etc.)
+    /// where the type (Dict vs Seq) must be known but element values are not yet needed.
+    ///
+    /// W1 implementation: treated the same as Seq at the dispatch site — one materialize()
+    /// call forces the collection to WHNF. The distinction between Seq and Spine becomes
+    /// meaningful at W2 (call-creation time optimization) and in LSP documentation.
+    Spine,
+}
+```
+
+`BOT` (absent — argument never needed) and `BOTH`/`Full` (full recursive demand, equivalent to `deep_materialize`) are excluded: no tinct builtin has a truly dead argument, and full demand is a serialization concern, not a dispatch-site annotation.
+
+#### BuiltinDef Struct
+
+```rust
+#[derive(Clone, Copy)]
+pub struct BuiltinDef {
+    /// The raw function pointer.
+    pub func: BuiltinFn,
+    /// Display name (also the LLT identifier without the `$` prefix).
+    pub name: &'static str,
+    /// Per-position argument demand. Empty slice means all arguments are `Id`.
+    /// Positions beyond the slice length are implicitly `Id`.
+    pub pos_strictness: &'static [Strictness],
+}
+```
+
+`BuiltinDef` is `Copy` at zero cost: `func` is an 8-byte fn pointer, `name` and `pos_strictness` are fat pointers to static data. No heap allocation.
+
+This struct replaces `BuiltinFn` at every site where a builtin is stored or dispatched:
+
+```rust
+// Value:
+enum Value {
+    Builtin(BuiltinDef),          // was: Builtin { name: &'static str, func: BuiltinFn }
+}
+
+// ThunkState:
+ThunkState::PendingBuiltin {
+    def: BuiltinDef,              // replaces separate name + func fields
+    args: Box<Vec<Rc<Thunk>>>,
+    named: Box<IndexMap<String, Rc<Thunk>>>,
+    depth: usize,
+    call_span: Span,
+    ctx: Rc<EvalContext>,
+}
+```
+
+Strictness travels with the value. When the evaluator encounters `Value::Builtin(def)` or dispatches `ThunkState::PendingBuiltin { def, ... }`, `def.pos_strictness` is immediately available with no hash lookup and no secondary table. This matches the STG machine's info-table model (Peyton Jones 1992) and is required for efficient dispatch in the eval/apply model (Marlow & Peyton Jones 2004).
+
+#### Registration
+
+`standard_builtins()` returns `Vec<BuiltinDef>`. The `builtin!` macro gains an optional third argument for the strictness array. `builtin!("name", fn)` without the array implies all-`Id`:
+
+```rust
+builtin!("+", builtin_add,    [Seq, Seq])
+builtin!("if", builtin_if,   [Seq, Id, Id])
+builtin!("map", builtin_map, [Id, Spine])
+builtin!("seq", builtin_seq)               // all-Id (no third arg)
+```
+
+`create_root_env()` and the `builtin-*` operator aliases are updated to construct and consume `BuiltinDef` entries.
+
+#### Strictness Annotation Table
+
+S = Seq, I = Id, Sp = Spine
+
+| Builtin | Strictness | Notes |
+|---------|-----------|-------|
+| `+`, `-`, `*`, `/` | [S, S] | Both operands always forced |
+| `=`, `<` | [S, S] | Both operands forced for comparison |
+| `if` | [S, I, I] | Condition only; branches returned as thunks |
+| `str`, `upper`, `lower`, `trim` | [S] | String forced for operation |
+| `split` | [S, S] | String and separator |
+| `replace` | [S, S, S] | String, pattern, replacement |
+| `floor`, `round` | [S] | Numeric forced |
+| `to-int`, `to-float` | [S] | Conversion |
+| `eval` | [S] | Forces evaluation explicitly |
+| `error` | [S] | Message forced for display |
+| `try` | [I, I] | Both deferred; `try` evaluates first internally |
+| `apply` | [S, S] | Function and args-dict both forced |
+| `until` | [I, I, I] | pred, f, init applied lazily per iteration |
+| `type-of`, `seq?` | [S] | Type inspection requires WHNF |
+| `from-json` | [S] | String parsed |
+| `include` | [S] | Path forced; hash named arg is `Id` (excluded) |
+| `seq` | [I, I] | Both head and tail deferred (constructor) |
+| `head`, `tail` | [S] | Seq forced to expose structure |
+| `collect` | [Sp] | Spine forced; element values forced by builtin loop |
+| `range` | [S, S] | Both bounds forced |
+| `repeat` | [I] | Element deferred (infinite repetition without forcing) |
+| `cycle` | [Sp] | Base collection spine traversed |
+| `iterate`, `unfold` | [I, I] | Function and seed deferred per-step |
+| `keys` | [Sp] | Dict spine forced for key enumeration |
+| `length` | [Sp] | Spine forced for count |
+| `merge`, `append` | [S, S] | Both dicts forced |
+| `map`, `filter` | [I, Sp] | fn/pred lazy; collection spine forced for type dispatch |
+| `take`, `drop` | [S, Sp] | n forced; collection spine forced for dispatch |
+| `reduce` | [I, I, Sp] | f and init lazy; collection spine forced for dispatch |
+| `join` | [S, Sp] | Separator forced; collection spine forced; elements forced by builtin |
+| `concat` | [Sp, I] | First collection spine forced for dispatch; second deferred |
+| `sort`, `reverse`, `rest` | [Sp] | Sequence structure forced |
+| `cons` | [I, Sp] | Element deferred; collection spine forced for dispatch |
+| `proxy` | [I] | Wraps thunk without forcing |
+
+#### W1: Dispatch-Time Materialization
+
+When `ThunkState::PendingBuiltin { def, args, ... }` is dispatched in the CEK run loop, pre-materialize `Seq` and `Spine` arguments before constructing `BuiltinArgs`:
+
+```rust
+for (i, arg) in args.iter().enumerate() {
+    match def.pos_strictness.get(i) {
+        Some(Strictness::Seq) | Some(Strictness::Spine) => {
+            materialize(arg, None, depth, &ctx)?;
+        }
+        _ => {}
+    }
+}
+let builtin_args = BuiltinArgs { args: &args, named: &named, depth, call_span, ctx };
+(def.func)(builtin_args)
+```
+
+`materialize()` updates the thunk's `RefCell<ThunkState>` in place. The builtin's own `materialize(args[i])` call is then a no-op read. This eliminates the per-argument state-machine cost for `Seq` and `Spine` positions on every builtin call.
+
+Error propagation: if pre-materialization of a `Seq`/`Spine` argument fails (e.g., division-by-zero in an argument expression), the error surfaces before the builtin executes — preserving sequential error semantics.
+
+#### W2: Call-Creation Time (Future)
+
+When the function expression in a call is a `VarRef` that immediately resolves to `Value::Builtin(def)`, evaluate `Seq`-position argument expressions eagerly (inline eval rather than `Thunk::new_unevaluated`), creating `Thunk::new_materialized(value)`. This eliminates the `Rc<Thunk>` allocation for `Seq` args on common hot paths like `[call $+ $x $y]`. Gated on: confirmed benchmark showing allocation savings exceed early-resolution overhead; arena migration (which changes the cost model for thunk creation).
+
 ### Performance Note: Operator Wrapper Overhead
 
 The stdlib defines 12 LLT wrapper functions for the shadowable operators (`$<`, `$=`, `$+`, `$-`, `$*`, `$/`, `$if`, `$filter`, `$map`, `$reduce`, `$take`, `$drop`). Each wrapper function invocation adds:

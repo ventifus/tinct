@@ -176,8 +176,13 @@ pub fn diagnostics_for(doc: &DocumentState) -> Vec<Diagnostic> {
     let source = &doc.text;
     let mut diagnostics = Vec::new();
 
-    // Parse errors -> Error severity
+    // Fatal parse error (lexer failure or unclosed brackets) -> Error severity
     if let Err(ref err) = doc.ast {
+        diagnostics.push(parse_error_to_diagnostic(err, source));
+    }
+
+    // Recovered parse errors (bracket-level recovery) -> Error severity
+    for err in &doc.parse_errors {
         diagnostics.push(parse_error_to_diagnostic(err, source));
     }
 

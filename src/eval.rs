@@ -94,6 +94,13 @@ pub struct EvalConfig {
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
     pub require_integrity: bool,
+    /// Filesystem allowlist for `$include`. When non-empty, only canonical paths
+    /// that are descendants of at least one entry in this list are permitted.
+    /// When empty (the default), all paths are unrestricted.
+    ///
+    /// In LSP mode `no_fs=true` is set, so this field is never consulted — the
+    /// `no_fs` check fires first and blocks all includes unconditionally.
+    pub allowed_paths: Vec<std::path::PathBuf>,
 }
 
 /// Mutable evaluation state (include guard, caching).
@@ -140,12 +147,23 @@ impl EvalContext {
         no_fs: bool,
         require_integrity: bool,
     ) -> Rc<Self> {
+        Self::new_with_all_options(base_dir, stdlib_env, no_fs, require_integrity, Vec::new())
+    }
+
+    pub fn new_with_all_options(
+        base_dir: cap_std::fs::Dir,
+        stdlib_env: Rc<RefCell<Environment>>,
+        no_fs: bool,
+        require_integrity: bool,
+        allowed_paths: Vec<std::path::PathBuf>,
+    ) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
                 no_fs,
                 require_integrity,
+                allowed_paths,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -159,6 +177,9 @@ impl EvalContext {
     /// state (include guard, cache) and stdlib_env. Avoids allocating a new
     /// EvalState; shares the underlying stdlib_env and state Rc allocations
     /// (e.g., during $include).
+    ///
+    /// Inherits `no_fs`, `require_integrity`, and `allowed_paths` from the parent
+    /// config so that sandbox restrictions are preserved across directory changes.
     pub fn with_base_dir(&self, base_dir: cap_std::fs::Dir) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
@@ -166,6 +187,7 @@ impl EvalContext {
                 stdlib_env: Rc::clone(&self.config.stdlib_env),
                 no_fs: self.config.no_fs,
                 require_integrity: self.config.require_integrity,
+                allowed_paths: self.config.allowed_paths.clone(),
             }),
             state: Rc::clone(&self.state),
         })
@@ -839,6 +861,13 @@ pub(crate) fn eval_dict(
                 entry.node.value.span,
             )),
             _ => Rc::new(Thunk::new_unevaluated(
+                // TODO(ast-rc): `entry.node.value` is `Spanned<Expr>` (owned), so
+                // `Rc::new(...clone())` deep-clones the AST subtree on every
+                // eval_dict invocation.  Eliminating this requires migrating
+                // `Entry::value` to `Rc<Spanned<Expr>>` in ast.rs and updating
+                // the parser, formatter, typecheck, lsp/analysis, and all eval
+                // call sites (~36 occurrences across 6 files).  Deferred to a
+                // dedicated AST-RC migration sprint.
                 Rc::new(entry.node.value.clone()),
                 Rc::clone(&dict_env),
                 Rc::clone(ctx),
