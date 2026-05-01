@@ -1185,6 +1185,88 @@ fn no_fs_flag_blocks_include() {
 }
 
 // ---------------------------------------------------------------------------
+// --allow-path flag (filesystem allowlist)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn allow_path_permits_include_from_allowed_dir() {
+    // With --allow-path <dir>, $include from that directory succeeds.
+    let dir = TempDir::new("allow_path_permit");
+    let included_path = dir.path().join("lib.llt");
+    fs::write(&included_path, "[value: 42]").expect("failed to write lib.llt");
+    let main_path = dir.path().join("allow_path_permit.llt");
+    fs::write(&main_path, "[call $include \"lib.llt\"]").expect("failed to write main llt");
+
+    let dir_str = dir.path().to_str().unwrap();
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--allow-path", dir_str, main_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success with --allow-path pointing to the include directory; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"value": 42}));
+}
+
+#[test]
+fn allow_path_blocks_include_outside_allowed_dir() {
+    // With --allow-path pointing to a different directory, $include from the
+    // main file's directory is blocked (E057).
+    //
+    // Two separate temp dirs are used:
+    //   - `allowed_dir`: the directory passed to --allow-path (not where the
+    //     include target lives)
+    //   - `main_dir`: where both the main LLT file and the included file live
+    //     (outside the allowed dir)
+    //
+    // Since `allowed_dir` is not a prefix of `main_dir`, $include is blocked.
+    let allowed_dir = TempDir::new("allow_path_allowed");
+    let main_dir = TempDir::new("allow_path_block");
+
+    // Write the included file into main_dir (outside allowed_dir).
+    let included_path = main_dir.path().join("secret.llt");
+    fs::write(&included_path, "[secret: true]").expect("failed to write secret.llt");
+
+    // Write the main file into main_dir.
+    let main_path = main_dir.path().join("allow_path_block.llt");
+    fs::write(&main_path, "[call $include \"secret.llt\"]").expect("failed to write main llt");
+
+    // Canonicalize allowed_dir so the comparison is stable even under symlinks.
+    let allowed_canonical =
+        fs::canonicalize(allowed_dir.path()).expect("failed to canonicalize allowed_dir");
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "eval",
+            "--allow-path",
+            allowed_canonical.to_str().unwrap(),
+            main_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when $include is outside --allow-path"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1 (error) for allowlist violation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not permitted by the --allow-path allowlist") || stderr.contains("E057"),
+        "expected allowlist error message, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --timeout flag (wall-clock timeout)
 // ---------------------------------------------------------------------------
 

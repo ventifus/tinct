@@ -10,7 +10,7 @@ use crate::ast::{File, Spanned};
 use crate::builtins::create_stdlib_env;
 use crate::error::EvalError;
 use crate::eval::{eval_file, materialize};
-use crate::parser::{parse, ParseError};
+use crate::parser::{parse2, ParseError};
 use crate::typecheck::{typecheck_file_with_types, TypeMap};
 use crate::types::TypeError;
 use crate::value::Environment;
@@ -22,6 +22,10 @@ pub struct DocumentState {
     pub text: String,
     /// Parsed AST (if parsing succeeded).
     pub ast: Result<Spanned<File>, ParseError>,
+    /// Recovered parse errors from inside bracket forms (non-fatal; collected even when `ast` is Ok).
+    /// These come from `ParseOutput.errors` and represent errors where the parser substituted
+    /// an `Expr::Error` node and continued rather than stopping.
+    pub parse_errors: Vec<ParseError>,
     /// Type errors (advisory; evaluation proceeds regardless).
     pub type_errors: Vec<TypeError>,
     /// Evaluation errors (if eval was attempted and failed).
@@ -41,7 +45,16 @@ impl DocumentState {
         stdlib_env: &Rc<RefCell<Environment>>,
         eval_ctx: &Rc<crate::eval::EvalContext>,
     ) -> Self {
-        let mut ast = parse(&text);
+        // Use parse2() to capture both the AST and any recovered parse errors.
+        let parse_result = parse2(&text);
+        let mut parse_errors = Vec::new();
+        let mut ast: Result<Spanned<File>, ParseError> = match parse_result {
+            Ok(output) => {
+                parse_errors = output.errors;
+                Ok(output.file)
+            }
+            Err(err) => Err(err),
+        };
         let mut type_errors = Vec::new();
         let mut eval_errors = Vec::new();
         let mut type_map = TypeMap::new();
@@ -74,6 +87,7 @@ impl DocumentState {
         Self {
             text,
             ast,
+            parse_errors,
             type_errors,
             eval_errors,
             type_map,
@@ -103,6 +117,8 @@ impl DocumentStore {
         // Create base evaluation context.
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
+        // allowed_paths is left empty (default: unrestricted) because the no_fs guard
+        // fires first and blocks all $include calls before the allowlist is ever consulted.
         //
         // Fallback chain for base_dir: try "." first, then temp_dir, then "/" as last resort.
         // This handles systemd socket activation, chroots, and containers where CWD or

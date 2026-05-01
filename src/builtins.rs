@@ -1047,6 +1047,26 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
     })?;
 
+    // Allowlist check: if allowed_paths is non-empty, the canonical path of the
+    // included file must be a descendant of at least one allowed root.
+    // This check runs after cap-std has already confirmed the file is within base_dir
+    // (RESOLVE_BENEATH), so canonicalize() here is safe — the file exists and is accessible.
+    if !ctx.config.allowed_paths.is_empty() {
+        let canonical = base_dir.canonicalize(&file_path_str).map_err(|e| {
+            EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
+        })?;
+        let permitted = ctx
+            .config
+            .allowed_paths
+            .iter()
+            .any(|allowed| canonical.starts_with(allowed));
+        if !permitted {
+            return Err(
+                EvalError::include_path_not_allowed(file_path_str.clone(), call_span).into(),
+            );
+        }
+    }
+
     // Get metadata from the fd (single operation, no TOCTOU).
     let metadata = fd.metadata().map_err(|e| {
         EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)

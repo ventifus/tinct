@@ -2,6 +2,7 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, IsTerminal, Read};
+use std::path::PathBuf;
 use std::process;
 use std::rc::Rc;
 use tinct::{
@@ -46,6 +47,13 @@ enum Commands {
         /// Wall-clock timeout (e.g. "5s", "500ms", "2m"). Exit code 2 on expiry.
         #[arg(long)]
         timeout: Option<String>,
+
+        /// Restrict $include to files under the given directory (may be repeated).
+        /// When any --allow-path flag is present, $include may only access paths
+        /// that are descendants of at least one allowed root. Paths are canonicalized
+        /// at startup. Use `.` to allow the current working directory.
+        #[arg(long, value_name = "PATH")]
+        allow_path: Vec<PathBuf>,
 
         /// Input LLT file. Use `-` to read LLT source from stdin.
         file: String,
@@ -96,6 +104,7 @@ fn main() {
             no_fs,
             require_integrity,
             timeout,
+            allow_path,
             file,
         } => run_eval(
             &file,
@@ -104,6 +113,7 @@ fn main() {
             no_fs,
             require_integrity,
             timeout.as_deref(),
+            allow_path,
         ),
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
@@ -218,6 +228,7 @@ fn run_eval(
     no_fs: bool,
     require_integrity: bool,
     timeout: Option<&str>,
+    allow_path: Vec<PathBuf>,
 ) -> Result<(), String> {
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
@@ -275,9 +286,29 @@ fn run_eval(
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
 
+    // Canonicalize --allow-path entries at startup so comparisons are stable.
+    // Non-existent paths are rejected immediately with a clear error message.
+    let canonical_allowed_paths: Vec<PathBuf> = allow_path
+        .iter()
+        .map(|p| {
+            p.canonicalize().map_err(|e| {
+                format!(
+                    "--allow-path: cannot canonicalize \"{}\": {}",
+                    p.display(),
+                    e
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
-    let eval_ctx =
-        EvalContext::new_with_options(base_dir, Rc::clone(&env), no_fs, require_integrity);
+    let eval_ctx = EvalContext::new_with_all_options(
+        base_dir,
+        Rc::clone(&env),
+        no_fs,
+        require_integrity,
+        canonical_allowed_paths,
+    );
 
     let initial_input = stdin_input;
 

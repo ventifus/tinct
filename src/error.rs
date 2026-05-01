@@ -167,6 +167,11 @@ pub enum ErrorKind {
     IncludeHashRequired {
         path: String,
     },
+    /// Path not permitted by the `--allow-path` allowlist.
+    /// Includes the user-supplied path and the list of allowed roots for the error message.
+    IncludePathNotAllowed {
+        path: String,
+    },
 
     // --- Conversion errors (E060-E069) ---
     ParseConversion {
@@ -226,6 +231,7 @@ impl ErrorKind {
             Self::IncludeFileTooLarge { .. } => "E054",
             Self::IncludeHashMismatch { .. } => "E055",
             Self::IncludeHashRequired { .. } => "E056",
+            Self::IncludePathNotAllowed { .. } => "E057",
             Self::ParseConversion { .. } => "E060",
             Self::JsonParse { .. } => "E061",
             Self::JsonRange => "E062",
@@ -420,6 +426,10 @@ impl fmt::Display for ErrorKind {
                 f,
                 "include: integrity hash required for \"{path}\" (--require-integrity)"
             ),
+            Self::IncludePathNotAllowed { path } => write!(
+                f,
+                "include: path \"{path}\" is not permitted by the --allow-path allowlist"
+            ),
             Self::ParseConversion {
                 builtin,
                 input,
@@ -575,6 +585,10 @@ impl PartialEq for ErrorKind {
             (Self::IncludeHashRequired { path: p1 }, Self::IncludeHashRequired { path: p2 }) => {
                 p1 == p2
             }
+            (
+                Self::IncludePathNotAllowed { path: p1 },
+                Self::IncludePathNotAllowed { path: p2 },
+            ) => p1 == p2,
             (
                 Self::ParseConversion {
                     builtin: b1,
@@ -977,6 +991,15 @@ impl EvalError {
         }
     }
 
+    pub fn include_path_not_allowed(path: String, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::IncludePathNotAllowed { path },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
     pub fn parse_conversion(
         builtin: String,
         input: String,
@@ -1299,7 +1322,7 @@ mod tests {
         }
         .is_catchable());
 
-        // All other 31 variants ARE catchable
+        // All other 32 variants ARE catchable
         assert!(ErrorKind::KeyNotFound {
             key: "foo".to_string(),
             available_keys: vec![],
@@ -1403,6 +1426,10 @@ mod tests {
         .is_catchable());
         assert!(ErrorKind::IncludeHashRequired {
             path: "x.llt".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::IncludePathNotAllowed {
+            path: "/etc/passwd".to_string()
         }
         .is_catchable());
         assert!(ErrorKind::ParseConversion {
@@ -1553,6 +1580,9 @@ mod tests {
             ErrorKind::IncludeHashRequired {
                 path: "x".to_string(),
             },
+            ErrorKind::IncludePathNotAllowed {
+                path: "/etc/passwd".to_string(),
+            },
             ErrorKind::ParseConversion {
                 builtin: "to-int".to_string(),
                 input: "x".to_string(),
@@ -1612,7 +1642,7 @@ mod tests {
         // DepthExceeded is NOT cacheable (must retry at different depth)
         assert!(!ErrorKind::DepthExceeded { limit: 256 }.is_cacheable());
 
-        // All other 32 variants ARE cacheable (can be stored in Failed thunk state).
+        // All other 33 variants ARE cacheable (can be stored in Failed thunk state).
         // ResourceLimitExceeded IS cacheable (unlike DepthExceeded, resource limits
         // are not context-dependent on call depth — a failed resource limit check
         // will fail consistently regardless of when it's retried).
@@ -1723,6 +1753,10 @@ mod tests {
         .is_cacheable());
         assert!(ErrorKind::IncludeHashRequired {
             path: "x.llt".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::IncludePathNotAllowed {
+            path: "/etc/passwd".to_string()
         }
         .is_cacheable());
         assert!(ErrorKind::ParseConversion {
@@ -2062,6 +2096,15 @@ mod tests {
                 }
             ),
             "include: integrity hash required for \"config.llt\" (--require-integrity)"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::IncludePathNotAllowed {
+                    path: "/etc/passwd".to_string()
+                }
+            ),
+            "include: path \"/etc/passwd\" is not permitted by the --allow-path allowlist"
         );
 
         // Conversion errors (E060-E069)
@@ -3218,6 +3261,20 @@ mod tests {
     }
 
     #[test]
+    fn test_eval_error_include_path_not_allowed_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::include_path_not_allowed("/etc/passwd".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::IncludePathNotAllowed { .. }));
+        assert_eq!(err.kind.code(), "E057");
+        assert!(err
+            .message()
+            .contains("not permitted by the --allow-path allowlist"));
+        assert!(err.message().contains("/etc/passwd"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
     fn test_eval_error_parse_conversion_constructor() {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::parse_conversion(
@@ -3297,7 +3354,7 @@ mod tests {
         );
     }
 
-    /// Verify error code uniqueness across all 26 ErrorKind variants.
+    /// Verify error code uniqueness across all 34 ErrorKind variants.
     /// Each variant must have a distinct error code — no two variants share a code.
     #[test]
     fn test_all_error_codes_are_unique_and_valid() {
@@ -3323,11 +3380,11 @@ mod tests {
         }
         // Verify the count matches all_error_kind_variants() — the canonical list.
         // If variants are added or removed, update all_error_kind_variants() to match.
-        // Current count: 33 variants (verified against the ErrorKind enum definition).
+        // Current count: 34 variants (verified against the ErrorKind enum definition).
         assert_eq!(
             variants.len(),
-            33,
-            "Expected 33 ErrorKind variants in all_error_kind_variants(); got {}. \
+            34,
+            "Expected 34 ErrorKind variants in all_error_kind_variants(); got {}. \
              Update all_error_kind_variants() if variants were added or removed.",
             variants.len()
         );

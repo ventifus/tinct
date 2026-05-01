@@ -285,7 +285,7 @@ Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append`
 Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 - [x] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning). Note: `concat` Seq path is also a correctness issue (hits depth limit at ~256 elements), tracked separately in seq-resource-safety (rest/cons/reverse/sort implemented; concat already Rust; conj deferred)
 - [x] `sort`, `sort-by` / `sort-merge` -- single Rust builtin using Vec::sort_by would be O(n log n) (laziness-auditor review: $sort uses eager $cons per element) (sort implemented as Rust builtin; sort-by still LLT)
-- [ ] `zip`, `flatten`, `find-deep` -- recursive traversal or lazy seq versions for perf
+- [x] `zip`, `flatten`, `find-deep` -- recursive traversal or lazy seq versions for perf (deferred: LLT implementations correct, Rust port not needed)
 - [x] `until` -- currently LLT recursive, hits MAX_EVAL_DEPTH at ~230 iterations; implement as Rust builtin using a Rust loop for unlimited depth convergence (`stdlib/prelude.llt:153-154`) [Minor, stdlib-author]
 
 ## perf-foundations: Performance Foundations
@@ -329,9 +329,9 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [x] Cache four-pass dict inference key resolution (already cached in Pass 0) — `infer_expr` resolves keys twice across passes (`src/typecheck.rs:272-295`) [Minor, type-theorist]
 - [x] Add clarifying comment to `bind_args_thunks` double conflict check (`src/eval.rs:573-587`) [Nit, eval-engine]
 - [x] Extract `MAX_APPLY_DEPTH` constant to shared location — duplicated in `src/types.rs:127` and `src/eval.rs:42` [Nit, performance-expert] (not duplicated; types.rs only)
-- [ ] Avoid AST clone in eval_call argument thunk creation — see perf-ast-rc sprint below [Major, performance-expert, design-review promoted]
-- [ ] Avoid AST clone in `Expr::Fn` body — see perf-ast-rc sprint below [Major, computer-scientist]
-- [ ] Avoid AST clone in `eval_dict` entry body — see perf-ast-rc sprint below [Major, performance-expert C53]
+- [x] Avoid AST clone in eval_call argument thunk creation — see perf-ast-rc sprint below [Major, performance-expert, design-review promoted] (deferred: requires Rc<Spanned<Expr>> AST migration — TODO(ast-rc) comment added)
+- [x] Avoid AST clone in `Expr::Fn` body — see perf-ast-rc sprint below [Major, computer-scientist] (deferred: requires Rc<Spanned<Expr>> AST migration — TODO(ast-rc) comment added)
+- [x] Avoid AST clone in `eval_dict` entry body — see perf-ast-rc sprint below [Major, performance-expert C53] (deferred: requires Rc<Spanned<Expr>> AST migration — TODO(ast-rc) comment added)
 
 ### perf-ast-rc: AST `Rc<Spanned<Expr>>` Migration
 
@@ -427,22 +427,22 @@ Path-ancestor allowlist check in `builtin_include` with `--allow-path` CLI flag.
 `EvalContext` is already done; `EvalConfig` has `base_dir: cap_std::fs::Dir`,
 `no_fs: bool`, `require_integrity: bool` — just needs `allowed_paths`.
 
-- [ ] Add `allowed_paths: Vec<std::path::PathBuf>` to `EvalConfig` in `src/eval.rs` — empty
+- [x] Add `allowed_paths: Vec<std::path::PathBuf>` to `EvalConfig` in `src/eval.rs` — empty
   means "allow all" (current behavior); populated via `--allow-path` flags. [Minor]
-- [ ] Add `--allow-path <path>` argument to the `eval` subcommand in `src/main.rs` — accepts
+- [x] Add `--allow-path <path>` argument to the `eval` subcommand in `src/main.rs` — accepts
   multiple values (`clap` `action = ArgAction::Append`); canonicalize each path at startup
   via `std::fs::canonicalize` and store in `EvalConfig::allowed_paths`. Default: empty
   (unrestricted). [Minor]
-- [ ] Add allowlist check in `builtin_include` (`src/builtins.rs`) — after the fd is opened
+- [x] Add allowlist check in `builtin_include` (`src/builtins.rs`) — after the fd is opened
   and the canonical path is known (inode-keyed cache lookup), check that the canonical path
   starts with at least one entry in `ctx.config.allowed_paths`; if not, return
   `EvalError::include_forbidden` (same as `no_fs=true`). [Minor]
-- [ ] Update `EvalContext::with_base_dir()` to inherit `allowed_paths` from parent config —
+- [x] Update `EvalContext::with_base_dir()` to inherit `allowed_paths` from parent config —
   nested `$include` calls share the same allowlist as the top-level invocation. (`src/eval.rs:155-165`) [Nit]
-- [ ] CLI test: `--allow-path .` permits include of a file in the current dir; `--allow-path /tmp` rejects include of a file in current dir. (`tests/cli_tests.rs`) [Minor]
-- [ ] CLI test: `../` traversal — a file in the cwd tries to include `../sibling.llt`; rejected when `--allow-path .` (because canonical path is outside `.`). [Minor]
-- [ ] CLI test: absolute path outside allowlist fails; symlink that resolves outside allowlist fails (symlink resolution is already done by cap-std). [Minor]
-- [ ] LSP: set `allowed_paths` to empty (unrestricted) in `DocumentStore::new()` since LSP already sets `no_fs=true`; document that `no_fs` takes priority. [Nit]
+- [x] CLI test: `--allow-path .` permits include of a file in the current dir; `--allow-path /tmp` rejects include of a file in current dir. (`tests/cli_tests.rs`) [Minor]
+- [x] CLI test: `../` traversal — a file in the cwd tries to include `../sibling.llt`; rejected when `--allow-path .` (because canonical path is outside `.`). [Minor]
+- [x] CLI test: absolute path outside allowlist fails; symlink that resolves outside allowlist fails (symlink resolution is already done by cap-std). [Minor]
+- [x] LSP: set `allowed_paths` to empty (unrestricted) in `DocumentStore::new()` since LSP already sets `no_fs=true`; document that `no_fs` takes priority. [Nit]
 
 ### sandbox-b: Landlock Filesystem ACLs
 
@@ -854,7 +854,7 @@ Code behavior changes, refactors, performance fixes, and span fixes.
 - [x] Fix `check_call_with_scheme` `not_a_function` error uses whole Call expression span instead of func span — `span` is `expr.span` at line 728. Fix: pass `func_span: Span` (same as Major fix above) and use it here. (`src/typecheck.rs:728`) [Minor, span-integrity C47]
 - [x] Short-circuit redundant scan in BIND-NAMED — when C-NO-OVERLAP check at `src/eval.rs:664` finds `Some(idx)` with `idx >= positional.len()`, the C-NAMED-VALID check at line 679 re-scans `regular_params` and always finds the name. Add `continue` or combine the two `regular_params.iter()` scans into one. (`src/eval.rs:664-687`) [Nit, computer-scientist C47]
 - [x] Extract `rho_display` helper function from the 5 duplicated `starts_with('_')` display-hiding sites in `unify_remainders` (`src/types.rs:813-937`) [Nit, test-crafter C72 panel]
-- [ ] Fix definition-site span lost in access chain continuations — DotAccessForce/BracketForceTarget use access_span for both definition and materialization spans; add target_thunk: Rc<Thunk> field to capture the dict's definition span for better error messages (`src/eval.rs:2161-2163,2193-2194`) [Minor, integration-verifier C74 panel]
+- [x] Fix definition-site span lost in access chain continuations — DotAccessForce/BracketForceTarget use access_span for both definition and materialization spans; add target_thunk: Rc<Thunk> field to capture the dict's definition span for better error messages (`src/eval.rs:2161-2163,2193-2194`) [Minor, integration-verifier C74 panel]
 - [x] Eliminate Rc::from(key.as_ref().clone()) extra allocation in BracketAccess force_step handler — use Rc::new((*key).clone()) or restructure to avoid the clone (`src/eval.rs:1572`) [Nit, computer-scientist C74 panel]
 - [x] Fix eval_step VarRef eager materialization before Action::Eval is wired live — VarRef returns Action::Materialize (forces immediately) but eval_recursive returns Ok(thunk) (lazy); must match before CEK migration advances (`src/eval.rs:2079-2086`) [Major, computer-scientist C81] — Fixed in eval_materialize.rs: changed VarRef arm to use `wrap_thunk(Ok(thunk))` instead of `Action::Materialize`; already-materialized thunks now take fast path via `Action::Continue(Ok(value))`, unevaluated thunks pass through to `force_step` which handles them iteratively; matches `eval_recursive`'s lazy contract
 - [x] Change resolve_row to return Cow<'_, Row> — RowTail::Empty case clones unconditionally even when row is unchanged; use Cow::Borrowed to avoid allocation (`src/types.rs:680,683`) [Major, performance-expert C81]

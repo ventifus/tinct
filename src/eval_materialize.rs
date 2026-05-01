@@ -204,6 +204,33 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) restore: RestoreState,
 }
 
+/// Payload for Cont::DotAccessForce. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct DotAccessForceData {
+    pub(crate) field: String,
+    /// Span of the entire dot-access expression (e.g. `dict.field`).
+    pub(crate) access_span: Span,
+    /// Definition-site span of the target expression (the dict being accessed).
+    /// Used to annotate key-not-found and type-mismatch errors with where the
+    /// bad value was defined, complementing `access_span` (where it was accessed).
+    pub(crate) target_def_span: Span,
+    pub(crate) ctx: Rc<EvalContext>,
+    pub(crate) depth: usize,
+}
+
+/// Payload for Cont::BracketForceTarget. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct BracketForceTargetData {
+    pub(crate) key_expr: Rc<Spanned<Expr>>,
+    /// Span of the entire bracket-access expression (e.g. `dict[key]`).
+    pub(crate) access_span: Span,
+    /// Definition-site span of the target expression (the dict being accessed).
+    /// Used to annotate key-not-found and type-mismatch errors with where the
+    /// bad value was defined, complementing `access_span` (where it was accessed).
+    pub(crate) target_def_span: Span,
+    pub(crate) env: Rc<RefCell<Environment>>,
+    pub(crate) ctx: Rc<EvalContext>,
+    pub(crate) depth: usize,
+}
+
 /// Continuation variants for iterative materialization. Each represents
 /// "what to do after a sub-thunk has been materialized."
 ///
@@ -235,20 +262,9 @@ pub(crate) enum Cont {
     /// of the Rust call stack.
     BuiltinForceArg(Box<BuiltinForceArgData>),
     /// Access a field from a materialized dict. Pushed after target thunk is materialized.
-    DotAccessForce {
-        field: String,
-        access_span: Span,
-        ctx: Rc<EvalContext>,
-        depth: usize,
-    },
+    DotAccessForce(Box<DotAccessForceData>),
     /// Access a key from a materialized dict via bracket notation. Pushed after target is materialized.
-    BracketForceTarget {
-        key_expr: Rc<Spanned<Expr>>,
-        access_span: Span,
-        env: Rc<RefCell<Environment>>,
-        ctx: Rc<EvalContext>,
-        depth: usize,
-    },
+    BracketForceTarget(Box<BracketForceTargetData>),
     /// Validate a materialized value against a TypeAssert annotation.
     /// Pushed by eval_step() after evaluating the inner expression thunk; replaces the
     /// synchronous materialize() call that was the laziness violation in the TypeAssert branch.
@@ -407,13 +423,17 @@ pub(crate) fn force_step(
                         mat_span,
                         restore: Some(restore),
                     })));
-                    // Push DotAccessForce to handle field lookup after target materializes
-                    stack.push(Cont::DotAccessForce {
+                    // Push DotAccessForce to handle field lookup after target materializes.
+                    // Capture the target thunk's definition span so that key-not-found and
+                    // type-mismatch errors can report both where the dict was defined and
+                    // where it was accessed.
+                    stack.push(Cont::DotAccessForce(Box::new(DotAccessForceData {
                         field: field.clone(),
                         access_span: expr.span,
+                        target_def_span: target_thunk.span,
                         ctx: Rc::clone(&thunk_ctx),
                         depth: next_depth(depth),
-                    });
+                    })));
                     // Force the target
                     return Action::Materialize {
                         thunk: target_thunk,
@@ -447,14 +467,18 @@ pub(crate) fn force_step(
                         mat_span,
                         restore: Some(restore),
                     })));
-                    // Push BracketForceTarget to handle key lookup after target materializes
-                    stack.push(Cont::BracketForceTarget {
+                    // Push BracketForceTarget to handle key lookup after target materializes.
+                    // Capture the target thunk's definition span so that key-not-found and
+                    // type-mismatch errors can report both where the dict was defined and
+                    // where it was accessed.
+                    stack.push(Cont::BracketForceTarget(Box::new(BracketForceTargetData {
                         key_expr: Rc::new((**key).clone()),
                         access_span: expr.span,
+                        target_def_span: target_thunk.span,
                         env: Rc::clone(&env),
                         ctx: Rc::clone(&thunk_ctx),
                         depth: next_depth(depth),
-                    });
+                    })));
                     // Force the target
                     return Action::Materialize {
                         thunk: target_thunk,
@@ -1162,12 +1186,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 }
             }
         }
-        Cont::DotAccessForce {
-            field,
-            access_span,
-            ctx,
-            depth,
-        } => {
+        Cont::DotAccessForce(data) => {
+            let DotAccessForceData {
+                field,
+                access_span,
+                target_def_span,
+                ctx,
+                depth,
+            } = *data;
             // Result is the materialized target value
             match result {
                 Ok(target_val) => {
@@ -1204,13 +1230,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     }
                                 }
                                 None => {
-                                    // Key not found
+                                    // Key not found: report definition site and access site.
                                     let available_keys: Vec<String> =
                                         map.keys().map(|k| k.to_string()).collect();
                                     let mut err = EvalError::key_not_found(
                                         &field,
                                         available_keys,
-                                        access_span, // Use access_span as thunk span
+                                        target_def_span,
                                     )
                                     .with_materialization_span(access_span);
                                     err.push_frame(format!("accessing .{field}"), access_span);
@@ -1239,12 +1265,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             }
                         }
                         other => {
-                            // Type mismatch
+                            // Type mismatch: report definition site and access site.
                             let mut err = EvalError::type_mismatch_ctx(
                                 "dot access".to_string(),
                                 "Dict or Proxy",
                                 other.type_name(),
-                                access_span, // Use access_span as thunk span
+                                target_def_span,
                             )
                             .with_materialization_span(access_span);
                             err.push_frame(format!("accessing .{field}"), access_span);
@@ -1259,13 +1285,15 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 }
             }
         }
-        Cont::BracketForceTarget {
-            key_expr,
-            access_span,
-            env,
-            ctx,
-            depth,
-        } => {
+        Cont::BracketForceTarget(data) => {
+            let BracketForceTargetData {
+                key_expr,
+                access_span,
+                target_def_span,
+                env,
+                ctx,
+                depth,
+            } = *data;
             // Result is the materialized target value
             match result {
                 Ok(target_val) => {
@@ -1303,12 +1331,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         }
                                     }
                                     None => {
+                                        // Key not found: report definition site and access site.
                                         let available_keys: Vec<String> =
                                             map.keys().map(|k| k.to_string()).collect();
                                         let mut err = EvalError::key_not_found(
                                             &key.to_string(),
                                             available_keys,
-                                            access_span,
+                                            target_def_span,
                                         )
                                         .with_materialization_span(access_span);
                                         err.push_frame("accessing [..]".to_string(), access_span);
@@ -1354,11 +1383,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             }
                         }
                         other => {
+                            // Type mismatch: report definition site and access site.
                             let mut err = EvalError::type_mismatch_ctx(
                                 "bracket access".to_string(),
                                 "Dict or Proxy",
                                 other.type_name(),
-                                access_span,
+                                target_def_span,
                             )
                             .with_materialization_span(access_span);
                             err.push_frame("accessing [..]".to_string(), access_span);
