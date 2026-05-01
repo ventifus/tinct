@@ -13,7 +13,7 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, Expr, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    annotation_has_structural_fields, eval, eval_dict, eval_key, eval_recursive,
+    annotation_has_structural_fields, eval, eval_dict, eval_key, eval_recursive, format_field_path,
     format_type_for_assert, validate_and_wrap_record, value_matches_type, EvalContext,
     DEFAULT_ANNOTATION_KEY, MAX_EVAL_DEPTH,
 };
@@ -355,16 +355,17 @@ pub(crate) fn force_step(
     // Process deferred states
     if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
         if depth > MAX_EVAL_DEPTH {
-            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
-            if let Some(span) = mat_span {
-                err = err.with_materialization_span(span);
-            }
+            // All four deferred-state depth-exceeded paths (Unevaluated, PendingBuiltin,
+            // PendingCall, Guarded) must call attach_materialization_context for uniform error reporting.
+            let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            let err =
+                attach_materialization_context(err.into(), mat_span.as_ref(), &origin, thunk_span);
             thunk.set_state(ThunkState::Unevaluated {
                 expr,
                 env,
                 ctx: thunk_ctx,
             });
-            return Action::Continue(Err(err.into()));
+            return Action::Continue(Err(err));
         }
 
         let restore = RestoreState::Unevaluated {
@@ -489,10 +490,9 @@ pub(crate) fn force_step(
         thunk.take_pending_builtin()
     {
         if depth > MAX_EVAL_DEPTH {
-            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
-            if let Some(span) = mat_span {
-                err = err.with_materialization_span(span);
-            }
+            let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            let err =
+                attach_materialization_context(err.into(), mat_span.as_ref(), &origin, thunk_span);
             thunk.set_state(ThunkState::PendingBuiltin {
                 name,
                 func,
@@ -502,7 +502,7 @@ pub(crate) fn force_step(
                 call_span,
                 ctx: thunk_ctx,
             });
-            return Action::Continue(Err(err.into()));
+            return Action::Continue(Err(err));
         }
 
         let restore = RestoreState::PendingBuiltin {
@@ -587,10 +587,9 @@ pub(crate) fn force_step(
         thunk.take_pending_call()
     {
         if depth > MAX_EVAL_DEPTH {
-            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
-            if let Some(span) = mat_span {
-                err = err.with_materialization_span(span);
-            }
+            let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            let err =
+                attach_materialization_context(err.into(), mat_span.as_ref(), &origin, thunk_span);
             thunk.set_state(ThunkState::PendingCall {
                 func: func_thunk.clone(),
                 args: Box::new(args.clone()),
@@ -599,7 +598,7 @@ pub(crate) fn force_step(
                 caller_env,
                 ctx: thunk_ctx,
             });
-            return Action::Continue(Err(err.into()));
+            return Action::Continue(Err(err));
         }
 
         stack.push(Cont::PendingCallDispatch(Box::new(
@@ -631,17 +630,16 @@ pub(crate) fn force_step(
         }
     } else if let Some((inner, expected, field_path, guard_span)) = thunk.take_guarded() {
         if depth > MAX_EVAL_DEPTH {
-            let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
-            if let Some(span) = mat_span {
-                err = err.with_materialization_span(span);
-            }
+            let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
+            let err =
+                attach_materialization_context(err.into(), mat_span.as_ref(), &origin, thunk_span);
             thunk.set_state(ThunkState::Guarded {
                 inner: inner.clone(),
                 expected: expected.clone(),
                 field_path: Box::new(field_path.clone()),
                 guard_span,
             });
-            return Action::Continue(Err(err.into()));
+            return Action::Continue(Err(err));
         }
 
         let inner_span = inner.span;
@@ -915,14 +913,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             let field_path_prefix = if field_path.is_empty() {
                                 String::new()
                             } else {
-                                format!(
-                                    "field {}: ",
-                                    field_path
-                                        .iter()
-                                        .map(|s| format!("\"{}\"", s))
-                                        .collect::<Vec<_>>()
-                                        .join(".")
-                                )
+                                format!("field {}: ", format_field_path(&field_path))
                             };
                             let err = EvalError::type_assert_failed(
                                 &format!(
@@ -947,14 +938,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             let field_path_prefix = if field_path.is_empty() {
                                 String::new()
                             } else {
-                                format!(
-                                    "field {}: ",
-                                    field_path
-                                        .iter()
-                                        .map(|s| format!("\"{}\"", s))
-                                        .collect::<Vec<_>>()
-                                        .join(".")
-                                )
+                                format!("field {}: ", format_field_path(&field_path))
                             };
                             let err = EvalError::type_assert_failed(
                                 &format!(
@@ -1634,5 +1618,130 @@ pub(crate) fn run(initial: Action, _ctx: &Rc<EvalContext>) -> EvalResult<Value> 
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Expr;
+    use crate::test_util::{sp, test_span};
+    use crate::value::{Environment, Thunk, ThunkState};
+
+    fn empty_env() -> Rc<RefCell<Environment>> {
+        Rc::new(RefCell::new(Environment::new()))
+    }
+
+    fn test_ctx() -> Rc<EvalContext> {
+        let env = empty_env();
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        EvalContext::new(base_dir, env, false)
+    }
+
+    #[test]
+    fn test_restore_state_unevaluated() {
+        let expr = Rc::new(sp(Expr::Int(42)));
+        let env = empty_env();
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 10);
+
+        let thunk = Thunk::new_unevaluated(expr.clone(), env.clone(), ctx.clone(), span);
+
+        // Take the state (transitions to InProgress)
+        let taken = thunk.take_unevaluated();
+        assert!(taken.is_some());
+
+        // Create RestoreState and restore
+        let restore = RestoreState::Unevaluated {
+            expr: expr.clone(),
+            env: env.clone(),
+            ctx: ctx.clone(),
+        };
+        restore.restore(&thunk);
+
+        // Verify state is restored
+        let state = thunk.state();
+        match &*state {
+            ThunkState::Unevaluated { .. } => {} // Success
+            other => panic!("Expected Unevaluated state, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_restore_state_pending_builtin() {
+        use crate::value::BuiltinFn;
+
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+
+        // Create a dummy builtin function
+        let dummy_func: BuiltinFn = |_args| {
+            let span = test_span(1, 1, 1, 10);
+            Ok(Rc::new(Thunk::new_materialized(Value::Int(99), span)))
+        };
+
+        let args = vec![Rc::clone(&thunk)];
+        let named = IndexMap::new();
+        let ctx = test_ctx();
+
+        let pending_thunk = Thunk::new_pending_builtin(
+            "dummy",
+            dummy_func,
+            args.clone(),
+            named.clone(),
+            0,
+            span,
+            "test_origin".into(),
+            ctx.clone(),
+        );
+
+        // Take the state (transitions to InProgress)
+        let taken = pending_thunk.take_pending_builtin();
+        assert!(taken.is_some());
+
+        // Create RestoreState and restore
+        let restore = RestoreState::PendingBuiltin {
+            name: "dummy",
+            func: dummy_func,
+            args: Box::new(args),
+            named: Box::new(named),
+            depth: 0,
+            call_span: span,
+            ctx: ctx.clone(),
+        };
+        restore.restore(&pending_thunk);
+
+        // Verify state is restored
+        let state = pending_thunk.state();
+        match &*state {
+            ThunkState::PendingBuiltin { .. } => {} // Success
+            other => panic!("Expected PendingBuiltin state, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_attach_materialization_context_adds_frame() {
+        let thunk_span = test_span(1, 1, 1, 10);
+        let err = EvalError::undefined_variable("x".to_string(), thunk_span);
+        let mat_span = test_span(10, 5, 10, 6);
+        let origin = "test_origin";
+
+        let decorated =
+            attach_materialization_context(err.into(), Some(&mat_span), origin, thunk_span);
+
+        // Verify materialization_span is set
+        assert_eq!(decorated.materialization_span, Some(mat_span));
+
+        // Verify origin frame is added
+        assert!(
+            decorated
+                .stack
+                .iter()
+                .any(|f| f.label == origin && f.span == thunk_span),
+            "Expected origin frame with label '{}' and thunk_span, but stack frames were: {:?}",
+            origin,
+            decorated.stack
+        );
     }
 }
