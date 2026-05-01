@@ -1,0 +1,5 @@
+# Keyword followed by colon is a dict key, not a special form
+# "call:" is a dict key, not a call expression
+[call: 42]
+===
+Dict({"call": Int(42)})

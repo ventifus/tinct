@@ -1,0 +1,6 @@
+# Lazy evaluation: nested dict entry with error in unused subfield not triggered
+[data: [inner: [boom: [call $error "nested error"]  safe: 99]]  result: 42]
+---
+$$.result
+===
+Int(42)

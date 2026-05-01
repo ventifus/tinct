@@ -1,0 +1,4 @@
+# String containing === should not confuse test runner
+[msg: "This === is part of the string"]
+===
+["msg": "This === is part of the string"]

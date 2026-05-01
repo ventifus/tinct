@@ -6093,7 +6093,7 @@ mod tests {
     // -- CALL-POLY state.subst constraint test --
 
     #[test]
-    fn test_call_poly_state_subst_applied() {
+    fn test_call_poly_end_to_end_dot_access_resolution() {
         // Task 7: Regression test for `state.subst.apply()` in the CALL-POLY arm of
         // check_call_with_scheme and check_call.
         //
@@ -6166,10 +6166,11 @@ mod tests {
     fn test_call_poly_state_subst_isolation() {
         // Cross-document regression test for `state.subst.apply()` in the CALL-POLY arm.
         //
-        // SCENARIO: Two documents separated by `---`. Document 1 defines a polymorphic identity
-        // function `id` and a concrete record `data` — there is no dot-access in Document 1.
-        // Document 2 accesses `$data.name` (direct field lookup) and calls `[call $id $data.name]`
-        // via CALL-POLY, whose argument type is resolved through the cross-document env lookup.
+        // SCENARIO: Two documents separated by `---`. Document 1 contains a single dict with
+        // two entries: `id` (a polymorphic identity function) and `data` (a concrete record).
+        // There is no dot-access in Document 1. Document 2 contains a single dict with entry
+        // `result`, which accesses `$data.name` (direct field lookup) and calls `[call $id $data.name]`
+        // via CALL-POLY. The argument type is resolved through cross-document env lookup.
         //
         // Unlike test_call_poly_state_subst_applied (which uses `\n` in a single document),
         // this test crosses a true document boundary (`---`). The `state` object (including

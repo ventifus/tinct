@@ -1,0 +1,10 @@
+# Lazy evaluation: chained $map operations remain lazy
+# Three maps, only access one key - none of the intermediate errors should fire
+[call $map [fn [x] [call $+ $x 100]]
+  [call $map [fn [y] [call $+ $y 10]]
+    [call $map [fn [z] [call $+ $z 1]]
+      [a: 1  b: [call $error "map chain should not force"]]]]]
+---
+$$[a]
+===
+Int(112)

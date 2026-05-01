@@ -1,0 +1,5 @@
+# Function return type annotation: return value is checked
+[f: [fn [x] [@Int [call $+ $x 1]]]
+ result: [call $f 41]]
+===
+Dict({"f": Function(x), "result": Int(42)})

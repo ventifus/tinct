@@ -865,6 +865,15 @@ pub fn materialize(
         let state = thunk.state();
         match &*state {
             ThunkState::Materialized(v) => return Ok(v.clone()),
+            // Failed state: dual-span error caching model.
+            //
+            // First failure sets both definition_span and materialization_span.
+            // Subsequent accesses with a new mat_span conditionally update:
+            // - If materialization_span is None (edge case: cached error had no mat_span),
+            //   set it to the current mat_span.
+            // - If materialization_span differs from current mat_span and current mat_span
+            //   is not already in the stack, add current mat_span as a stack frame.
+            //   The original materialization_span is preserved.
             ThunkState::Failed(ref err) => {
                 let mut cloned = (**err).clone();
                 let mut should_update_cache = false;
@@ -4826,6 +4835,7 @@ mod tests {
     fn test_deep_materialize_preserves_seq_sharing() {
         // Head and tail share the same Rc<Thunk>. After deep_materialize,
         // they must still be Rc::ptr_eq.
+        // Intentionally invalid Seq tail (Int instead of Seq/Dict) — tests sharing preservation without needing valid continuation
         let span = test_span(1, 1, 1, 5);
         let shared_thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
 
@@ -4897,6 +4907,9 @@ mod tests {
                     Rc::ptr_eq(&nested_shared, &seq_shared),
                     "deep_materialize must preserve sharing across nested dicts and seqs"
                 );
+                // Also verify the shared value is correct
+                let v = materialize(&nested_shared, None, &test_ctx(), 0).unwrap();
+                assert_eq!(v, Value::String("shared".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -6159,6 +6172,77 @@ mod tests {
         assert!(err2
             .message()
             .contains("undefined variable: $undefined_var"));
+    }
+
+    #[test]
+    fn test_failed_state_same_span_no_duplicate() {
+        // Accessing a Failed thunk twice with the same mat_span should not duplicate frames.
+        // Use DotAccess (deferred thunk) so eval returns Ok and failure happens on materialize.
+        let env = empty_env();
+
+        let expr = sp(Expr::DotAccess {
+            expr: Box::new(sp(Expr::VarRef("undefined_var".into()))),
+            field: "field".into(),
+        });
+        let thunk = eval(&expr, env, &test_ctx(), 0).unwrap();
+
+        // First materialization: error with a specific mat_span
+        let mat_span = test_span(10, 5, 10, 15);
+        let err1 = materialize(&thunk, Some(&mat_span), &test_ctx(), 0).unwrap_err();
+        assert!(err1
+            .message()
+            .contains("undefined variable: $undefined_var"));
+        let frame_count1 = err1.stack.len();
+
+        // Second materialization: same mat_span
+        let err2 = materialize(&thunk, Some(&mat_span), &test_ctx(), 0).unwrap_err();
+        assert_eq!(
+            err2.stack.len(),
+            frame_count1,
+            "same mat_span should not duplicate frames"
+        );
+    }
+
+    #[test]
+    fn test_failed_state_none_then_some_mat_span() {
+        // First access with None mat_span, then Some(span1), then Some(span2).
+        // Use DotAccess (deferred thunk) so eval returns Ok and failure happens on materialize.
+        let env = empty_env();
+
+        let expr = sp(Expr::DotAccess {
+            expr: Box::new(sp(Expr::VarRef("undefined_var".into()))),
+            field: "field".into(),
+        });
+        let thunk = eval(&expr, env, &test_ctx(), 0).unwrap();
+
+        // First access: None mat_span
+        let err1 = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
+        assert!(err1
+            .message()
+            .contains("undefined variable: $undefined_var"));
+        assert!(err1.materialization_span.is_none());
+
+        // Second access: Some(span1) — should update materialization_span
+        let span1 = test_span(10, 5, 10, 15);
+        let err2 = materialize(&thunk, Some(&span1), &test_ctx(), 0).unwrap_err();
+        assert_eq!(
+            err2.materialization_span,
+            Some(span1),
+            "mat_span should be set on second access with Some"
+        );
+
+        // Third access: Some(span2) — should add as stack frame, preserve span1 as mat_span
+        let span2 = test_span(20, 5, 20, 15);
+        let err3 = materialize(&thunk, Some(&span2), &test_ctx(), 0).unwrap_err();
+        assert_eq!(
+            err3.materialization_span,
+            Some(span1),
+            "original mat_span should be preserved"
+        );
+        assert!(
+            err3.stack.iter().any(|f| f.span == span2),
+            "span2 should be in stack frames"
+        );
     }
 
     #[test]
@@ -8208,5 +8292,55 @@ mod tests {
             ctx_no_fs.config.no_fs,
             "no_fs should be true when created with true"
         );
+    }
+
+    #[test]
+    fn test_selective_materialization_unused_branch() {
+        // Verify that accessing only one dict entry doesn't materialize unused entries
+        use crate::parser::parse_expression;
+
+        let input = r#"[used: 1  unused: [call $error "should not materialize"]]"#;
+        let parsed = parse_expression(input).expect("parse failed");
+        let env = empty_env();
+        let thunk = eval(&parsed, Rc::clone(&env), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+
+        // Extract the dict
+        match val {
+            Value::Dict(map) => {
+                // Access only the "used" key
+                let used_key = Key::String("used".into());
+                let used_thunk = map.get(&used_key).expect("used key should exist");
+                let used_val =
+                    materialize(used_thunk, None, &test_ctx(), 0).expect("used should materialize");
+                assert_eq!(used_val, Value::Int(1));
+
+                // Verify the "unused" key exists but is NOT materialized
+                let unused_key = Key::String("unused".into());
+                let unused_thunk = map.get(&unused_key).expect("unused key should exist");
+
+                // Check that the unused thunk is still in an unevaluated state
+                // (it should not be Materialized, InProgress, or Failed)
+                let state = unused_thunk.state();
+                match &*state {
+                    ThunkState::Unevaluated { .. } => {
+                        // Good, it's still unevaluated
+                    }
+                    ThunkState::Materialized(_) => {
+                        panic!("unused thunk should not be materialized")
+                    }
+                    ThunkState::Failed(_) => {
+                        panic!("unused thunk should not be in Failed state (error should not have triggered)")
+                    }
+                    ThunkState::InProgress => {
+                        panic!("unused thunk should not be InProgress")
+                    }
+                    _ => {
+                        // Other states like PendingCall are also acceptable (function not yet invoked)
+                    }
+                }
+            }
+            _ => panic!("expected Dict value, got {:?}", val),
+        }
     }
 }

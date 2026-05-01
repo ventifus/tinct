@@ -709,6 +709,10 @@ The parser treats `[key: value1 value2 value3]` such that `key` has value `value
 
 ---
 
+### Testing Requirements
+
+Each static constraint should have at least one test in `tests/corpus/invalid/syntax_errors/` demonstrating parser rejection. The six constraints are: Mixed Positional/Named Ordering (allowed, no constraint), Special Form Arity (function position required), Duplicate Key Detection (runtime), Fn Parameter List Structure (no positional after variadic), Bracket Nesting Depth Limit (MAX_PARSE_DEPTH), and Annotation Bracket Restriction (no nested brackets in annotations).
+
 ## 5. Document Separator Grammar
 
 The `---` separator is recognized at the file level only. It must appear on its own (not as part of a bare word like `----` or `---foo`):

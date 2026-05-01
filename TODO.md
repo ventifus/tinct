@@ -174,7 +174,7 @@ Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
 - [ ] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning). Note: `concat` Seq path is also a correctness issue (hits depth limit at ~256 elements), tracked separately in seq-resource-safety
 - [ ] `sort`, `sort-by` / `sort-merge` -- single Rust builtin using Vec::sort_by would be O(n log n) (laziness-auditor review: $sort uses eager $cons per element)
 - [ ] `zip`, `flatten`, `find-deep` -- recursive traversal or lazy seq versions for perf
-- [ ] `until` -- currently LLT recursive, hits MAX_EVAL_DEPTH at ~230 iterations; implement as Rust builtin using a Rust loop for unlimited depth convergence (`stdlib/prelude.llt:153-154`) [Minor, stdlib-author]
+- [x] `until` -- currently LLT recursive, hits MAX_EVAL_DEPTH at ~230 iterations; implement as Rust builtin using a Rust loop for unlimited depth convergence (`stdlib/prelude.llt:153-154`) [Minor, stdlib-author]
 
 ## perf-foundations: Performance Foundations
 

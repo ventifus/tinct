@@ -1,0 +1,4 @@
+# Simple type annotation: Int value passes Int assertion
+[@Int 42]
+===
+Int(42)

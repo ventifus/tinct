@@ -38,6 +38,24 @@
 
 > **Note:** The type checker runs after desugaring but type errors are advisory — evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
 
+### Implementation Architecture
+
+**Pipeline phases:** Source text → Parser → Desugar → TypeCheck → Evaluator → Serializer → Output
+
+**Key contracts:**
+- `BuiltinFn` signature: `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>` where `BuiltinArgs` carries `args: &[Rc<Thunk>]`, `named: &IndexMap<String, Rc<Thunk>>`, `depth: usize`, `call_span: Span`, `ctx: Rc<EvalContext>`
+- `Value` serialization: every `Value` variant must have handlers in both `value_to_json()` and `value_to_display_string()` (src/lib.rs)
+- Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
+- AST coverage: every `Expr` variant requires both an `eval` handler (src/eval.rs) and a `typecheck` handler (src/typecheck.rs)
+- Builtin registration: all builtins must appear in `standard_builtins()` (src/builtins.rs) — this is the authoritative list
+- Environment chain: builtins → stdlib → user code (root env contains Rust-native builtins; stdlib env wraps root and loads prelude.llt; user code inherits from stdlib)
+- Desugar ordering: `desugar_file()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_file_with_input, CLI, REPL, stdlib loading)
+
+**Cross-module coupling:**
+- Circular dependency: builtins.rs calls `materialize`/`invoke_function` (eval.rs); eval.rs calls `standard_builtins()` (builtins.rs). Safe because dependency is at function-call level, not module init.
+- Elaboration write-once: typecheck writes `TypeAssert.resolved_type` (RefCell) exactly once; re-typechecking the same AST panics. Parse a fresh AST for each typecheck run.
+- Include cache: `EvalContext.state.include_cache` (HashMap keyed by file identity) memoizes `$include` results — same file included twice returns the cached thunk without re-evaluation.
+
 ### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
 
 > **Status:** Phase 1 (materialize) complete via iterative-eval-a — `materialize_rc` replaced by iterative `run()` loop with `Vec<Cont>` stack. Phase 2 (PendingCall lazy dispatch) complete via iterative-eval-b1 — `eval_call` returns PendingCall thunks. Phase 3 (access chains) complete via iterative-eval-b2 — DotAccessForce/BracketForceTarget continuations. Phase 4 (eval step conversion) PARTIALLY COMPLETE and BLOCKED via iterative-eval-b4 — `eval_step()` stub delegates to `eval_recursive()`; tasks 2/4/5 blocked (DictEntries, TypeAssertCheck, $apply Cont variants require AST redesign). Phase 5 (structural cleanup) complete via iterative-eval-b3 — MatCont→Cont rename, Action enum, run() function. Module extractions: `eval_call.rs` (eval-split-a), `eval_deep.rs` (eval-split-d), `eval_access.rs` (eval-split-d).
@@ -366,8 +384,9 @@ Tinct uses a multi-layer testing approach that matches the component architectur
 - LSP protocol tests — document sync, hover, diagnostics, incremental updates
 - File I/O sandboxing tests — `--no-fs` flag, include guards, path canonicalization
 
-**Testing discipline**:
-- New language features require both unit tests (isolated behavior) and corpus tests (end-to-end)
-- Error paths must have corpus tests with substring matching (resilient to internal error message changes)
-- Whitespace variations and access chain interactions should be tested for grammar changes
-- Depth limit tests must use 16MB stack threads to avoid Rust stack overflow before LLT depth limit
+**Testing philosophy**:
+- **Unit tests** — per module isolation (src/parser.rs, src/eval.rs, src/types.rs, src/builtins.rs). Test individual functions, error paths, edge cases, state transitions.
+- **Corpus tests** — end-to-end validation (tests/corpus/valid/, tests/corpus/invalid/). Test language features in combination; verify error messages match expected output.
+- **CLI integration tests** — REPL session tests, LSP protocol tests, file I/O sandboxing tests (--no-fs flag, include guards).
+- **Coverage invariant** — new language features require BOTH unit tests (isolated) and corpus tests (end-to-end). Error paths must have corpus tests with substring matching.
+- **Depth limit discipline** — tests that exercise MAX_EVAL_DEPTH must use 16MB stack threads to avoid Rust stack overflow before LLT depth limit is reached.

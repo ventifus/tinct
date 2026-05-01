@@ -174,6 +174,10 @@ Violating these produces a runtime error (cycle detection or depth limit) for th
 
 **Error quality matters more than static checking.** Nix's biggest user-facing pain point with non-productive definitions is not the lack of static checking but the poor diagnostics ("infinite recursion encountered" with no useful context). tinct's error reporting should include: the thunk origin (which binding diverged), the materialization chain (who forced it), and the depth at which the limit was hit.
 
+#### Testing Requirements
+
+Corpus tests are required for each sequence constructor (`$range`, `$repeat`, `$cycle`, `$iterate`, `$unfold`), malformed tail errors (Seq tail evaluating to non-Seq, non-`[]` value), and depth limit behavior on diverging sequences. Tests should demonstrate the three runtime protection layers: blackholing (direct cycles), depth limit (runaway recursion), and tail discipline (type checking in `$collect`/`$head`/`$tail`).
+
 ### Dual-Dispatch for `$map` and `$filter`
 
 `$map` and `$filter` accept both dicts and sequences, with behavior determined by input type:
@@ -199,6 +203,10 @@ expensive: [call $collect [call $filter [fn [p] [call $> $p 100]] $prices-eur]]
 doubled: [call $map [fn [n] [call $* $n 2]] [call $range 0]]
 # nothing computed until $take/$collect
 ```
+
+#### Testing Requirements
+
+Each dual-dispatch builtin (`map`, `filter`, `take`, `drop`, `reduce`, `join`) requires corpus tests for both Dict and Seq input paths. Tests should verify the dispatch logic (Dict input produces Dict/Seq output as specified) and that the results are semantically equivalent regardless of input type.
 
 ## Thunk Lifecycle — Formal Specification
 

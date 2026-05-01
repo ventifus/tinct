@@ -1393,4 +1393,107 @@ mod tests {
         let cached = thunk.try_get_materialized();
         assert_eq!(cached, Some(Value::Int(100)));
     }
+
+    #[test]
+    fn test_pending_builtin_lifecycle() {
+        // Verify PendingBuiltin thunk can be created and transitions correctly
+        use crate::eval::EvalContext;
+        use crate::test_util::test_span;
+        use indexmap::IndexMap;
+
+        let span = test_span(1, 1, 1, 10);
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        let ctx = Rc::new(EvalContext::new(
+            base_dir,
+            Rc::new(RefCell::new(Environment::new())),
+            false,
+        ));
+
+        // Create a PendingBuiltin thunk (using a dummy builtin function)
+        fn dummy_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Rc<Thunk>> {
+            let _ = args; // silence unused warning
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(42),
+                test_span(1, 1, 1, 1),
+            )))
+        }
+
+        let thunk = Thunk::new_pending_builtin(
+            "dummy",
+            dummy_builtin,
+            vec![],
+            IndexMap::new(),
+            0,
+            span,
+            Cow::Borrowed("test"),
+            Rc::clone(&ctx),
+        );
+
+        // Verify initial state is PendingBuiltin
+        {
+            let state = thunk.state();
+            assert!(
+                matches!(&*state, ThunkState::PendingBuiltin { .. }),
+                "initial state should be PendingBuiltin"
+            );
+        }
+
+        // Transition to Materialized
+        thunk.set_state(ThunkState::Materialized(Value::Int(42)));
+
+        // Verify final state is Materialized
+        let state = thunk.state();
+        match &*state {
+            ThunkState::Materialized(v) => assert_eq!(*v, Value::Int(42)),
+            other => panic!("expected Materialized after builtin execution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pending_builtin_error_recovery() {
+        // Verify PendingBuiltin thunk transitions to Failed state on error
+        use crate::error::EvalError;
+        use crate::eval::EvalContext;
+        use crate::test_util::test_span;
+        use indexmap::IndexMap;
+
+        let span = test_span(1, 1, 1, 10);
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        let ctx = Rc::new(EvalContext::new(
+            base_dir,
+            Rc::new(RefCell::new(Environment::new())),
+            false,
+        ));
+
+        fn error_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Rc<Thunk>> {
+            Err(Box::new(EvalError::new(
+                "test error".into(),
+                args.call_span,
+            )))
+        }
+
+        let thunk = Thunk::new_pending_builtin(
+            "error_builtin",
+            error_builtin,
+            vec![],
+            IndexMap::new(),
+            0,
+            span,
+            Cow::Borrowed("test"),
+            Rc::clone(&ctx),
+        );
+
+        // Transition to Failed
+        let err = Box::new(EvalError::new("test error".into(), span));
+        thunk.set_state(ThunkState::Failed(err));
+
+        // Verify final state is Failed
+        let state = thunk.state();
+        match &*state {
+            ThunkState::Failed(e) => assert!(e.message().contains("test error")),
+            other => panic!("expected Failed state, got {other:?}"),
+        }
+    }
 }

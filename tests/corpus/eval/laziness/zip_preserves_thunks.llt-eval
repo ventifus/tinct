@@ -1,0 +1,8 @@
+# Lazy evaluation: $zip preserves thunks in both sequences
+# Zip two sequences with errors in tail, only take 1 element
+[call $collect [call $take 1
+  [call $zip
+    [call $seq 1 [call $seq [call $error "first seq tail"] []]]
+    [call $seq 10 [call $seq [call $error "second seq tail"] []]]]]]
+===
+Dict({0: Dict({0: Int(1), 1: Int(10)})})

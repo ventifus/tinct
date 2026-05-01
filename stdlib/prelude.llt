@@ -72,27 +72,27 @@ or: [fn [a b] [call $builtin-if $a $a $b]]
 any?: [fn [pred xs]
     [call $builtin-if [call $seq? $xs]
         [call $error "any?: expected Dict, got Seq -- collect the Seq first"]
-        [call $any?-impl $pred $xs [call $keys $xs] 0]]]
+        [call $any?-impl $pred $xs [call $keys $xs] 0 [call $length $xs]]]]
 
-any?-impl: [fn [pred xs ks i]
-    [call $builtin-if [call $>= $i [call $length $ks]]
+any?-impl: [fn [pred xs ks i len]
+    [call $builtin-if [call $>= $i $len]
         false
         [call $builtin-if [call $pred $xs[$ks[$i]]]
             true
-            [call $any?-impl $pred $xs $ks [call $builtin-add $i 1]]]]]
+            [call $any?-impl $pred $xs $ks [call $builtin-add $i 1] $len]]]]
 
 # Short-circuit predicate test: returns true if all elements satisfy pred.
 # Inherently materializing: short-circuits but materializes elements until condition failed.
 all?: [fn [pred xs]
     [call $builtin-if [call $seq? $xs]
         [call $error "all?: expected Dict, got Seq -- collect the Seq first"]
-        [call $all?-impl $pred $xs [call $keys $xs] 0]]]
+        [call $all?-impl $pred $xs [call $keys $xs] 0 [call $length $xs]]]]
 
-all?-impl: [fn [pred xs ks i]
-    [call $builtin-if [call $>= $i [call $length $ks]]
+all?-impl: [fn [pred xs ks i len]
+    [call $builtin-if [call $>= $i $len]
         true
         [call $builtin-if [call $pred $xs[$ks[$i]]]
-            [call $all?-impl $pred $xs $ks [call $builtin-add $i 1]]
+            [call $all?-impl $pred $xs $ks [call $builtin-add $i 1] $len]
             false]]]
 
 # ============================================================================
@@ -198,9 +198,9 @@ cond-check: [fn [pairs i condition result]
         $result
         [call $cond-impl $pairs [call $builtin-add $i 1]]]]
 
-# Recursive; hits MAX_EVAL_DEPTH (256) on large inputs.
-# Iterate function until predicate holds. Applies f repeatedly to x until pred(x) is true.
-until: [fn [pred f x] [call $builtin-if [call $pred $x] $x [call $until $pred $f [call $f $x]]]]
+# until: Moved to Rust builtin to avoid recursion depth limit.
+# The LLT recursive version hit MAX_EVAL_DEPTH at ~230 iterations.
+# Now implemented as $until in src/builtins.rs with unlimited iterations.
 
 # ============================================================================
 # Dict Utilities

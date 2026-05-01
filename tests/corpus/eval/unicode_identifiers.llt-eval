@@ -1,0 +1,4 @@
+# Unicode identifiers in bare words
+[café: espresso  年: 2026]
+===
+Dict({"café": Str("espresso"), "年": Int(2026)})

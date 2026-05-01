@@ -1,0 +1,9 @@
+# Lazy evaluation: $merge overlay doesn't force replaced values
+# The right dict's error is in a key that exists in left, so it should never be accessed
+[call $merge
+  [a: 1  b: 2]
+  [a: [call $error "replaced value, should not force"]  c: 3]]
+---
+$$.b
+===
+Int(2)

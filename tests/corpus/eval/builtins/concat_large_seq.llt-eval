@@ -1,6 +1,6 @@
 # concat: concatenate large sequences without hitting depth limit
-# This test verifies that concat uses lazy evaluation and doesn't hit
-# the MAX_EVAL_DEPTH (256) limit that the old LLT implementation had.
+# This test verifies concat's depth behavior: the lazy PendingBuiltin chain
+# allows processing 300 elements without hitting the MAX_EVAL_DEPTH (256) limit.
 # Should produce 0..299 in a Dict with integer keys.
 [call $collect [call $concat [call $take 200 [call $range 0]] [call $take 100 [call $range 200]]]]
 ===

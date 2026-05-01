@@ -28,6 +28,10 @@ use crate::error::{EvalError, EvalResult};
 // Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
+// SAFETY: builtins.rs and eval.rs have a circular dependency at the value level — builtins call
+// materialize/invoke_function (eval.rs), and eval calls standard_builtins (builtins.rs). This is
+// safe because the dependency is at function-call level, not at module initialization level.
+// Rust modules can call each other's pub functions after initialization without deadlock.
 use crate::eval::{invoke_function, materialize, CallContext, MAX_EVAL_DEPTH};
 use crate::value::{BuiltinArgs, BuiltinFn, Environment, Key, Thunk, Value};
 
@@ -556,6 +560,83 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
+/// `until`: Iterate a function until a predicate holds.
+/// Takes 3 args: (pred, f, init)
+/// Applies f repeatedly to init until pred(val) returns true, then returns val.
+///
+/// This is a Rust builtin to avoid the recursion depth limit of the LLT version.
+/// The LLT recursive version hits MAX_EVAL_DEPTH at ~230 iterations.
+///
+/// This implementation uses a Rust loop with eager materialization at each step,
+/// avoiding both depth limits and stack overflow from long thunk chains.
+fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("until", named, call_span)?;
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+
+    let pred_thunk = Rc::clone(&args[0]);
+    let f_thunk = Rc::clone(&args[1]);
+    let mut val_thunk = Rc::clone(&args[2]);
+
+    loop {
+        // Create a pending call to pred(val) and materialize it
+        let pred_result = Rc::new(Thunk::new_pending_call(
+            Rc::clone(&pred_thunk),
+            vec![Rc::clone(&val_thunk)],
+            IndexMap::new(),
+            call_span,
+            Rc::clone(&ctx.config.stdlib_env),
+            val_thunk.span,
+            Cow::Borrowed("until"),
+            Rc::clone(&ctx),
+        ));
+
+        let pred_val = materialize(&pred_result, Some(&call_span), &ctx, depth)?;
+
+        match pred_val {
+            Value::Bool(true) => {
+                // Predicate holds, return the current value (as thunk)
+                return Ok(val_thunk);
+            }
+            Value::Bool(false) => {
+                // Predicate doesn't hold yet, apply f and materialize to get next value
+                let f_result = Rc::new(Thunk::new_pending_call(
+                    Rc::clone(&f_thunk),
+                    vec![val_thunk],
+                    IndexMap::new(),
+                    call_span,
+                    Rc::clone(&ctx.config.stdlib_env),
+                    call_span,
+                    Cow::Borrowed("until"),
+                    Rc::clone(&ctx),
+                ));
+
+                // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
+                // This breaks the thunk chain and prevents stack overflow
+                let f_val = materialize(&f_result, Some(&call_span), &ctx, depth)?;
+                val_thunk = Rc::new(Thunk::new_materialized(f_val, call_span));
+            }
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "until".to_string(),
+                    "Bool",
+                    pred_val.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        }
+    }
+}
+
 /// `apply`: takes 2 args (function, dict/list). Spreads the dict's values as
 /// positional arguments to the function call.
 ///
@@ -1056,6 +1137,7 @@ pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
         ("error", builtin_error),
         ("try", builtin_try),
         ("apply", builtin_apply),
+        ("until", builtin_until),
         // Type introspection
         ("type-of", builtin_type_of),
         // I/O
@@ -4843,6 +4925,30 @@ mod tests {
     }
 
     #[test]
+    fn upper_unicode() {
+        let result = mat(builtin_upper(BuiltinArgs {
+            args: &[thunk(Value::String("café résumé".into()))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        assert_eq!(result, Value::String("CAFÉ RÉSUMÉ".into()));
+    }
+
+    #[test]
+    fn lower_unicode() {
+        let result = mat(builtin_lower(BuiltinArgs {
+            args: &[thunk(Value::String("ZÜRICH МОСКВА".into()))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        assert_eq!(result, Value::String("zürich москва".into()));
+    }
+
+    #[test]
     fn trim_basic() {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(Value::String("  hello  ".into()))],
@@ -5927,6 +6033,23 @@ mod tests {
     fn add_overflow_error() {
         let err = builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(i64::MAX)), thunk(Value::Int(1))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("integer overflow"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn sub_overflow_error() {
+        let err = builtin_sub(BuiltinArgs {
+            args: &[thunk(Value::Int(i64::MIN)), thunk(Value::Int(1))],
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
@@ -9753,5 +9876,237 @@ mod tests {
                 "stdlib is missing expected binding: {name}"
             );
         }
+    }
+
+    // === drop/reduce/join PendingCall chain construction tests ===
+
+    #[test]
+    fn drop_constructs_pending_call() {
+        // drop(2, seq) should return a PendingBuiltin wrapping a chain of drop_seq_step calls
+        let seq = mat(builtin_range(BuiltinArgs {
+            args: &[thunk(Value::Int(0)), thunk(Value::Int(10))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+
+        let result = mat(builtin_drop(BuiltinArgs {
+            args: &[thunk(Value::Int(2)), thunk(seq)],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+
+        // Result should be a PendingBuiltin (can't inspect internal state, but can verify it materializes correctly)
+        match result {
+            Value::Seq { head, .. } => {
+                // First element after dropping 2 should be 2
+                assert_eq!(
+                    materialize(&head, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(2)
+                );
+            }
+            other => panic!("expected Seq from drop, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reduce_constructs_pending_call() {
+        // reduce(+, 0, [1, 2]) should create a PendingCall chain
+        let seq_val = {
+            let dict_entries = vec![
+                (Key::Int(0), thunk(Value::Int(1))),
+                (Key::Int(1), thunk(Value::Int(2))),
+            ];
+            let map = dict_entries.into_iter().collect();
+            Value::Dict(map)
+        };
+
+        let add_builtin = standard_builtins()
+            .into_iter()
+            .find(|(name, _)| *name == "+")
+            .map(|(_, f)| Value::Builtin { name: "+", func: f })
+            .unwrap();
+
+        let result = mat(builtin_reduce(BuiltinArgs {
+            args: &[thunk(add_builtin), thunk(Value::Int(0)), thunk(seq_val)],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+
+        // Result should be 3 (0 + 1 + 2)
+        assert_eq!(result, Value::Int(3));
+    }
+
+    #[test]
+    fn join_constructs_pending_call() {
+        // join(",", ["a", "b"]) should create a PendingCall chain
+        let seq_val = {
+            let dict_entries = vec![
+                (Key::Int(0), thunk(Value::String("a".into()))),
+                (Key::Int(1), thunk(Value::String("b".into()))),
+            ];
+            let map = dict_entries.into_iter().collect();
+            Value::Dict(map)
+        };
+
+        let result = mat(builtin_join(BuiltinArgs {
+            args: &[thunk(Value::String(",".into())), thunk(seq_val)],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+
+        // Result should be "a,b"
+        assert_eq!(result, Value::String("a,b".into()));
+    }
+
+    #[test]
+    fn test_builtin_until_basic() {
+        // Count from 0 to 10 using until
+        // pred: [fn [x] [call $builtin-eq $x 10]]
+        // f: [fn [x] [call $builtin-add $x 1]]
+        // init: 0
+        std::thread::Builder::new()
+            .stack_size(TEST_STACK_SIZE)
+            .spawn(|| {
+                let pred = n_arg_fn(
+                    &["x"],
+                    Expr::Call {
+                        func: Box::new(Spanned::new(
+                            Expr::VarRef("builtin-eq".to_string()),
+                            test_span(1, 1, 1, 10),
+                        )),
+                        args: vec![
+                            Spanned::new(Expr::VarRef("x".to_string()), test_span(1, 1, 1, 2)),
+                            Spanned::new(Expr::Int(10), test_span(1, 1, 1, 2)),
+                        ],
+                        named_args: vec![],
+                    },
+                );
+                let f = n_arg_fn(
+                    &["x"],
+                    Expr::Call {
+                        func: Box::new(Spanned::new(
+                            Expr::VarRef("builtin-add".to_string()),
+                            test_span(1, 1, 1, 10),
+                        )),
+                        args: vec![
+                            Spanned::new(Expr::VarRef("x".to_string()), test_span(1, 1, 1, 2)),
+                            Spanned::new(Expr::Int(1), test_span(1, 1, 1, 2)),
+                        ],
+                        named_args: vec![],
+                    },
+                );
+
+                let result = mat(builtin_until(BuiltinArgs {
+                    args: &[thunk(pred), thunk(f), thunk(Value::Int(0))],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                }));
+
+                assert_eq!(result, Value::Int(10));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_builtin_until_already_true() {
+        // Predicate is true immediately, should return init unchanged
+        // pred: [fn [x] true]
+        // f: [fn [x] [call $error "should not be called"]]
+        // init: 42
+        std::thread::Builder::new()
+            .stack_size(TEST_STACK_SIZE)
+            .spawn(|| {
+                let pred = n_arg_fn(&["x"], Expr::Bool(true));
+                let f = n_arg_fn(
+                    &["x"],
+                    Expr::Call {
+                        func: Box::new(Spanned::new(
+                            Expr::VarRef("error".to_string()),
+                            test_span(1, 1, 1, 5),
+                        )),
+                        args: vec![Spanned::new(
+                            Expr::Str("should not be called".to_string()),
+                            test_span(1, 1, 1, 20),
+                        )],
+                        named_args: vec![],
+                    },
+                );
+
+                let result = mat(builtin_until(BuiltinArgs {
+                    args: &[thunk(pred), thunk(f), thunk(Value::Int(42))],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                }));
+
+                assert_eq!(result, Value::Int(42));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_builtin_until_many_iterations() {
+        // Test that we can exceed MAX_EVAL_DEPTH (256) iterations
+        // Count from 0 to 300
+        std::thread::Builder::new()
+            .stack_size(TEST_STACK_SIZE)
+            .spawn(|| {
+                let pred = n_arg_fn(
+                    &["x"],
+                    Expr::Call {
+                        func: Box::new(Spanned::new(
+                            Expr::VarRef("builtin-eq".to_string()),
+                            test_span(1, 1, 1, 10),
+                        )),
+                        args: vec![
+                            Spanned::new(Expr::VarRef("x".to_string()), test_span(1, 1, 1, 2)),
+                            Spanned::new(Expr::Int(300), test_span(1, 1, 1, 3)),
+                        ],
+                        named_args: vec![],
+                    },
+                );
+                let f = n_arg_fn(
+                    &["x"],
+                    Expr::Call {
+                        func: Box::new(Spanned::new(
+                            Expr::VarRef("builtin-add".to_string()),
+                            test_span(1, 1, 1, 10),
+                        )),
+                        args: vec![
+                            Spanned::new(Expr::VarRef("x".to_string()), test_span(1, 1, 1, 2)),
+                            Spanned::new(Expr::Int(1), test_span(1, 1, 1, 2)),
+                        ],
+                        named_args: vec![],
+                    },
+                );
+
+                let result = mat(builtin_until(BuiltinArgs {
+                    args: &[thunk(pred), thunk(f), thunk(Value::Int(0))],
+                    named: &no_named(),
+                    depth: 0,
+                    call_span: call_span(),
+                    ctx: test_ctx(),
+                }));
+
+                assert_eq!(result, Value::Int(300));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

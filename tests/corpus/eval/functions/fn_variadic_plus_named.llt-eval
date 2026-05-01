@@ -1,0 +1,6 @@
+# Function with positional, variadic, and named args combined
+# Positional arg x, variadic ...rest, named arg with default
+[f: [fn [x ...rest default: 10] [call $+ $x $default [call $count $rest]]]
+ result: [call $f 5 1 2 3 default: 100]]
+===
+Dict({"f": Function(x, rest, default), "result": Int(108)})
