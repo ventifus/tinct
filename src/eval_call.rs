@@ -7,7 +7,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::{Expr, NamedArg, Param, Span, Spanned};
-use crate::error::{EvalError, EvalResult};
+use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::value::{Environment, Key, Thunk, Value};
 
 // Import eval function and context from eval module
@@ -171,9 +171,11 @@ pub(crate) fn bind_args_thunks(
 
     // BIND-ARITY: Per-parameter coverage check (Kotlin model)
     // Each required parameter must be reachable via positional index OR named argument
+    let mut required_count = 0;
     for (i, param) in regular_params.iter().enumerate() {
         let is_required = get_default(param).is_none();
         if is_required {
+            required_count += 1;
             let covered_positionally = i < positional.len();
             let covered_by_name = named.contains_key(&param.name);
             if !covered_positionally && !covered_by_name {
@@ -186,7 +188,13 @@ pub(crate) fn bind_args_thunks(
 
     // Without variadic: positional args must not exceed max_positional
     if variadic_param.is_none() && positional.len() > max_positional {
-        return Err(EvalError::arity_mismatch(max_positional, positional.len(), *call_span).into());
+        // Use Range when there are optional params, Exact when all params are required
+        let expected = if required_count < max_positional {
+            ArityBound::Range(required_count, max_positional)
+        } else {
+            ArityBound::Exact(max_positional)
+        };
+        return Err(EvalError::arity_mismatch_bound(expected, positional.len(), *call_span).into());
     }
 
     // BIND-POSITIONAL: Bind args to params following C-PRIORITY chain

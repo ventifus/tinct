@@ -824,7 +824,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$filter` on dict | Returns Seq (must evaluate predicates) | Predicates must run to know which keys to keep |
 | `$filter` on seq | Returns seq filtering elements (lazy) | Lazy sequence filtering |
 | `$reduce`, `$fold` on dict | Builds lazy PendingCall chain (acc₀=init, acc₁=PendingCall(f,[acc₀,v₀]), ...) | Fully lazy — no materialization during chain construction |
-| `$reduce`, `$fold` on seq | Accumulator stays lazy via PendingCall chain; materializes tail at each step for control flow | Must check tail to detect sequence end, but accumulator builds same lazy chain as Dict path |
+| `$reduce`, `$fold` on seq | Builds lazy PendingCall accumulator chain; materializes tail at each step for Seq path only | Must check tail to detect sequence end, but accumulator builds same lazy chain as Dict path |
 | `$map-entries` | Returns dict with PendingCall thunks on transformed entries | Same as `$map` on dicts |
 | `$from-entries` | Eagerly reduces entry pairs into dict | Must construct concrete dict |
 | `$any?`, `$all?` | Short-circuit: materializes elements until condition met/failed | Predicates must run |
@@ -1039,7 +1039,7 @@ enum Cont {
     // eval() continuations — access chains
     DotAccessForce { field: String, span: Span, depth: usize },
     BracketForceTarget { key_expr: Rc<Spanned<Expr>>, env: ..., span: Span, depth: usize },
-    BracketForceKey { target: Value, span: Span },
+    BracketForceKey { target: Value, span: Span },  // not yet implemented; key eval is synchronous via eval_key()
     RangeForceTarget { start_expr: ..., end_expr: ..., env: ..., span: Span, depth: usize },
     RangeForceStart { target: Value, end_expr: ..., env: ..., span: Span, depth: usize },
     RangeForceEnd { target: Value, start: Value, span: Span },
@@ -1123,7 +1123,7 @@ fn run(initial: Action) -> Result<Value, Box<EvalError>> {
 
 This is **structurally determined** by the `Cont` variant on the stack, not inferred at runtime. Each `Cont` variant statically knows whether it needs a materialized value or accepts a thunk. The strictness signature table (§Selective Materialization — Formal Specification) declares per-argument strictness for builtin *inputs*; the continuation context determines strictness for builtin *outputs*. Builtins like `$if` and `$get` return lazy thunks that must not be auto-materialized when used as dict values or function arguments.
 
-**deep_materialize:** Not a separate recursive function — it is expressed as `DeepEntries` and `DeepSeqTail` continuations within the same CEK loop. No separate recursive helper.
+**deep_materialize:** Currently implemented as a separate recursive function in `eval_deep.rs`, calling `materialize()` per dict entry and seq element with cycle detection and sharing preservation via a `HashMap` cache. The target architecture expresses this as `DeepEntries` and `DeepSeqTail` continuations within the CEK loop, eliminating the separate recursive helper. Migration is planned for after `materialize()` is subsumed by `run()` (iterative-eval-b5).
 
 **Tail-call optimization:** In tail position (e.g., last expression in a function body), set `action = Action::Eval { body, ... }` without pushing a `Cont`. The current frame is reused. TCO for recursive stdlib functions (`fold`, `map`, `filter`) follows the same pattern: detect tail calls during the variable resolution pass, mark them, and skip the continuation push. TCO applies to user-defined function calls only. Builtin calls always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
 

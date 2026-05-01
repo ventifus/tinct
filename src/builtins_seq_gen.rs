@@ -13,7 +13,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::builtins::{ok_val, reject_named};
-use crate::error::{ArityBound, ErrorKind, EvalError, EvalResult};
+use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
@@ -34,15 +34,11 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     reject_named("range", named, call_span)?;
     if args.len() != 1 && args.len() != 2 {
-        return Err(EvalError {
-            kind: ErrorKind::ArityMismatch {
-                expected: ArityBound::Range(1, 2),
-                got: args.len(),
-            },
-            definition_span: call_span,
-            materialization_span: None,
-            stack: Vec::new(),
-        }
+        return Err(EvalError::arity_mismatch_bound(
+            ArityBound::Range(1, 2),
+            args.len(),
+            call_span,
+        )
         .into());
     }
 

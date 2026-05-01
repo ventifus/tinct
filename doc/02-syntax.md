@@ -219,6 +219,8 @@ inner_string  = @{ (escape_seq | !("\"" | "\\") ~ ANY)* }
 escape_seq    = @{ "\\" ~ ("\"" | "\\" | "n" | "t" | "r") }
 ```
 
+Currently supports these 5 sequences. Unicode escapes (`\uXXXX`) are not yet supported — use `$from-json` for full Unicode string parsing.
+
 The parser handles quoted strings as atomic units — no implicit whitespace skipping between the quotes and content.
 
 Quoting forces string interpretation: `"true"` is the string `"true"`, `"42"` is the string `"42"`.
@@ -310,10 +312,16 @@ These characters have context-dependent meaning and require careful disambiguati
 
 `.` with whitespace before it is part of a bare word string — it has no special meaning.
 
+Whitespace (including newlines) after `.` is permitted — the field name may appear on the next line for readability.
+
 ```tinct
 $person.name             # Dot access: get key "name" from $person
 $config.database.host    # Chained dot access: $config -> "database" -> "host"
 $data[0].name            # Dot access after bracket access
+
+$config
+  .database              # Line-continuation: same as $config.database
+  .host                  # Chained: $config.database.host
 
 some.file.txt            # Bare word string: "some.file.txt" (no $ prefix)
 $x . y                   # $x is a VarRef, ". y" is not dot access (whitespace before .)
@@ -961,7 +969,7 @@ $config.services[0].host        # mixed chaining
 add: [fn@Number [x@Number  y@Number]
   [call $+ $x $y]]
 
-# Named parameters (default: makes them named)
+# Named parameters (Kotlin model: any parameter can be named)
 fetch: [fn@String [url@String  timeout@[type: Number  default: 30]]
   ...]
 

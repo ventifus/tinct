@@ -644,6 +644,15 @@ impl EvalError {
         }
     }
 
+    pub fn arity_mismatch_bound(expected: ArityBound, got: usize, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::ArityMismatch { expected, got },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
     pub fn circular_dependency(name: &str, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::CircularDependency {
@@ -1019,8 +1028,8 @@ mod tests {
     fn test_eval_error_with_materialization_span() {
         let def_span = test_span(1, 1, 1, 5);
         let mat_span = test_span(10, 3, 10, 8);
-        let err =
-            EvalError::new("lazy fail".to_string(), def_span).with_materialization_span(mat_span);
+        let err = EvalError::internal("lazy fail".to_string(), def_span)
+            .with_materialization_span(mat_span);
         assert_eq!(err.materialization_span, Some(mat_span));
     }
 
@@ -1028,7 +1037,7 @@ mod tests {
     fn test_eval_error_with_frame() {
         let span = test_span(1, 1, 1, 5);
         let frame_span = test_span(5, 1, 5, 10);
-        let err = EvalError::new("err".to_string(), span)
+        let err = EvalError::internal("err".to_string(), span)
             .with_frame("my_function".to_string(), frame_span);
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "my_function");
@@ -1069,7 +1078,7 @@ mod tests {
     #[test]
     fn test_eval_error_display_basic() {
         let span = test_span(3, 5, 3, 10);
-        let err = EvalError::new("oops".to_string(), span);
+        let err = EvalError::internal("oops".to_string(), span);
         let display = format!("{err}");
         assert_eq!(display, "[E099] oops (defined at 3:5-3:10)");
     }
@@ -1080,7 +1089,7 @@ mod tests {
         let mat_span = test_span(20, 1, 20, 5);
         let frame1_span = test_span(10, 2, 10, 8);
         let frame2_span = test_span(15, 1, 15, 12);
-        let err = EvalError::new("bad value".to_string(), def_span)
+        let err = EvalError::internal("bad value".to_string(), def_span)
             .with_materialization_span(mat_span)
             .with_frame("outer".to_string(), frame1_span)
             .with_frame("inner".to_string(), frame2_span);
@@ -1095,7 +1104,7 @@ mod tests {
     #[test]
     fn test_eval_error_push_frame() {
         let span = test_span(1, 1, 1, 5);
-        let mut err = EvalError::new("error".to_string(), span);
+        let mut err = EvalError::internal("error".to_string(), span);
 
         assert!(err.stack.is_empty());
 
@@ -1909,8 +1918,8 @@ mod tests {
         let mat_span = test_span(20, 1, 20, 5);
         let real_frame_span = test_span(10, 2, 10, 8);
 
-        let mut err =
-            EvalError::new("bad value".to_string(), def_span).with_materialization_span(mat_span);
+        let mut err = EvalError::internal("bad value".to_string(), def_span)
+            .with_materialization_span(mat_span);
 
         // Add a real user frame
         err.push_frame("user_function".to_string(), real_frame_span);
@@ -2064,7 +2073,7 @@ mod tests {
         let def_span = test_span(5, 1, 5, 10);
         let mat_span = test_span(10, 1, 10, 5);
 
-        let mut err = EvalError::new("error in stdlib".to_string(), def_span)
+        let mut err = EvalError::internal("error in stdlib".to_string(), def_span)
             .with_materialization_span(mat_span);
 
         // Add user-facing stdlib function (should be visible)
