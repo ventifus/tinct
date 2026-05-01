@@ -2282,3 +2282,7 @@ Sequence reduction — fold a sequence into a single value or collect into a str
 ## builtins-split-e: Extract builtins_string.rs
 
 - [x] Move `builtin_str`, `builtin_split`, `builtin_replace`, `builtin_upper`, `builtin_lower`, `builtin_trim` to `src/builtins_string.rs` (~250 lines) [Minor]
+
+## builtins-split-f: Extract builtins_math.rs
+
+- [x] Move `builtin_add`, `builtin_sub`, `builtin_mul`, `builtin_div_float`, `builtin_eq`, `builtin_lt`, `builtin_if` to `src/builtins_math.rs` (~200 lines) [Minor]

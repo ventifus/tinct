@@ -42,6 +42,8 @@ pub(crate) mod builtins_seq_xform;
 pub(crate) mod builtins_seq_reduce;
 // String builtins: str, split, replace, upper, lower, trim.
 pub(crate) mod builtins_string;
+// Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
+pub(crate) mod builtins_math;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // REPL (Read-Eval-Print Loop).
