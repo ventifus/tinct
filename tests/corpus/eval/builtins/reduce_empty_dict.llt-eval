@@ -1,0 +1,4 @@
+# reduce on empty Dict returns init value unchanged
+[call $reduce [fn [acc x] [call $+ $acc $x]] 99 []]
+===
+Int(99)

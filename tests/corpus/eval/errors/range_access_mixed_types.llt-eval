@@ -1,0 +1,6 @@
+# Range access with mixed key types (Int and String) produces type mismatch.
+# The dict has an Int key (0:) and a String key (x:). The range [0.."x"] has
+# an Int start bound and a String end bound, which are incomparable.
+[0: a  x: b][0.."x"]
+===
+[E010]

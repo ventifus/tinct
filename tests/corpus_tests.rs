@@ -285,6 +285,7 @@ fn test_corpus_structure() {
         "tests/corpus/eval/typecheck",
         "tests/corpus/eval/underscore",
         // Invalid corpus
+        "tests/corpus/invalid/semantic_errors",
         "tests/corpus/invalid/syntax_errors",
         // Valid corpus
         "tests/corpus/valid/access",
@@ -305,9 +306,9 @@ fn test_corpus_structure() {
 
     // Minimum test count assertions for key directories
     const EVAL_LAZINESS_MIN: usize = 21;
-    const EVAL_BUILTINS_MIN: usize = 90;
+    const EVAL_BUILTINS_MIN: usize = 100;
     const EVAL_STDLIB_MIN: usize = 194;
-    const EVAL_ERRORS_MIN: usize = 67;
+    const EVAL_ERRORS_MIN: usize = 85;
 
     let laziness_count = find_test_files(&manifest_dir.join("tests/corpus/eval/laziness")).len();
     assert!(

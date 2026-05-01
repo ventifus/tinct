@@ -1,0 +1,6 @@
+# Row polymorphism: open record annotation accepts dict with extra fields.
+# [@[name: String  ...]] uses a row tail (...) making the record open.
+# A dict with required field "name" plus extra field "extra" passes the assertion.
+[@[name: String  ...] [name: "hello"  extra: 42]]
+===
+Dict({"name": String("hello"), "extra": Int(42)})

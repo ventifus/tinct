@@ -1,0 +1,8 @@
+# Mutual recursion via letrec dict scope.
+# even? and odd? reference each other within the same dict; the intermediate
+# dict expression makes them available in the second expression's scope.
+[even?: [fn [n] [call $if [call $= $n 0] true [call $odd? [call $- $n 1]]]]
+ odd?: [fn [n] [call $if [call $= $n 0] false [call $even? [call $- $n 1]]]]]
+[r: [call $even? 4]]
+===
+Dict({"r": Bool(true)})

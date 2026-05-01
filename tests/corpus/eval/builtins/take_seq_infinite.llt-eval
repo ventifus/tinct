@@ -1,0 +1,4 @@
+# take on infinite Seq: only materializes n elements (laziness proof via finite result)
+[call $collect [call $take 4 [call $range 5]]]
+===
+Dict({0: Int(5), 1: Int(6), 2: Int(7), 3: Int(8)})

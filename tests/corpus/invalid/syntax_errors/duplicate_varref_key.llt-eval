@@ -1,0 +1,5 @@
+# Duplicate VarRef key: same $k appears twice as a dict key.
+# Parse-time duplicate key detection covers VarRef keys (treated as "$k").
+[$k: a  $k: b]
+===
+duplicate key

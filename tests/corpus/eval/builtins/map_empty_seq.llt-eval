@@ -1,0 +1,4 @@
+# map on Seq with collect: full Seq-path pipeline check
+[call $collect [call $map [fn [x] [call $str $x]] [call $take 2 [call $range 10]]]]
+===
+Dict({0: String("10"), 1: String("11")})

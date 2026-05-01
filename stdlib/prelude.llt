@@ -25,7 +25,27 @@
 #     Sequences:   seq?  seq  head  tail  collect  concat
 #     List ops:    rest  cons  reverse  sort
 #
-# Helper functions use a -impl suffix to distinguish them from public API.
+# Naming conventions:
+#   -impl   Internal recursive helper, not part of the public API. Takes extra
+#           state arguments (index, length, accumulator) that public callers
+#           should not pass directly.
+#   -step   Continuation passed to a Rust sequence builtin (e.g. builtin-reduce)
+#           as a per-element callback. Called once per element; not for direct use.
+#   -check  Predicate helper that inspects an intermediate result and branches.
+#           Usually paired with an -impl or -step function.
+#
+# Design patterns:
+#   Shadowable wrappers — functions like $<, $=, $+, $if, $filter, $map etc.
+#     wrap the corresponding builtin-* alias so domain stdlib modules can shadow
+#     the primary name via $include without breaking the prelude's own code.
+#     See doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary.
+#
+#   O(n²) accumulator limitation — LLT-implemented accumulators (e.g. concat via
+#     $merge inside a fold) are O(n²) because each merge copies the growing
+#     accumulator dict. Functions that must be O(n) are implemented as Rust
+#     builtins (e.g. builtin_concat, reverse, sort). Prefer the Rust builtins
+#     for large collections; the LLT wrappers are for composability and shadowing.
+#
 # All functions in this dict can reference each other (letrec semantics).
 # ============================================================================
 
