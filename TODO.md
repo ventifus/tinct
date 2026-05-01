@@ -63,24 +63,6 @@ Sequence reduction — fold a sequence into a single value or collect into a str
 **Status:** Phase 1-2 complete (sprints parser-core-a through parser-core-c3). The hand-written iterative parser (`src/parser.rs` + `src/lexer.rs`) is now the production parser. The pest PEG parser was removed in sprint parser-core-c3 (commit cc8333c). Phases 3 (AST formatter) and 4 (error recovery) remain.
 
 - [x] Write `doc/whatif/parser-rewrite.md` — see doc/whatif/parser-rewrite.md. Immediate pest replacement (no co-existence); `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; `BracketAccess` + `ImmediateAt` lexer tokens; AST-based formatter rewrite; 4-phase adoption. Agent-reviewed: computer-scientist (APPROVE). [Design, grammar-architect]
-
-### parser-fixes: Parser Correctness Fixes
-
-Lexer and parser2 loose ends carried over from parser-core sprints. Completes production readiness before the formatter rewrite.
-
-- [ ] Fix lexer Newline not resetting `had_whitespace_before` flag — `$a\n[0]` emits `BracketAccess` instead of `OpenBracket`; `$a\n.b` emits `Dot`; both are incorrect. Fix: update `skip_whitespace_except_newline` to set `had_whitespace_before = true` when emitting `Newline` tokens, and reset `last_significant_token` to `None` or `Other`. (`src/lexer.rs:233-238`) [Minor, computer-scientist C63]
-- [ ] Fix unclosed bracket error using `span: None` — each StackFrame stores `span_start` (the opening bracket's offset), so the diagnostic message "unclosed bracket" could point to the opening site instead of EOF. Per design doc, target message is "unclosed bracket opened at line 5:3". (`src/parser2.rs:343`) [Minor, computer-scientist C64]
-- [ ] Replace `CallArg::Named(String, Spanned<Expr>)` with `CallArg::Named(NamedArg)` — eliminates duplication with `ast::NamedArg { name, value }` struct; simplifies call construction in parser-core-b. (`src/parser2.rs:87`) [Minor, grammar-architect C64]
-- [ ] Change `StackFrame::Dict.entries` from `Vec<Entry>` to `Vec<Spanned<Entry>>` — eliminates allocation-then-wrap overhead during dict construction; matches AST's `Expr::Dict(Vec<Spanned<Entry>>)` target type. Address during parser-core-c profiling. (`src/parser2.rs:50,176-186`) [Minor, grammar-architect C64]
-- [ ] Update line tracking TODO in parse2 skeleton — line 191 says "proper line tracking from lexer tokens" but lexer already provides full `Spanned<Token>` with Position (line, column, offset); change to "extract line/column from token spans instead of placeholder (1,1)". (`src/parser2.rs:191`) [Nit, grammar-architect C64]
-- [ ] Fix parser2 bracket access error message: "bracket access inside dict/call contexts" should say "bracket access inside nested bracket contexts" — the limitation applies to all non-empty stack frames, not just dict/call. (`src/parser2.rs:339-343`) [Nit, computer-scientist C65]
-- [ ] Restore deleted Phase 2a tests in parser2.rs — test_unmatched_closing_bracket and test_unclosed_bracket ARE present; test_nested_dict_one_level, test_nested_dict_two_levels, test_depth_limit_boundary_succeeds may have been removed. Verify which are missing and re-add them. (`src/parser2.rs`) [Minor, computer-scientist C65]
-- [ ] Fix `[call\n: x]` classified as Dict instead of Call — `peek_next_significant` skips Newline tokens, so newline-before-colon makes keyword-colon guard fire incorrectly. Fix: `peek_next_significant` should not skip Newlines when checking for colon (horizontal-only whitespace). (`src/parser.rs:17-32`) [Minor, grammar-architect C65]
-- [ ] Support QuotedString and VarRef as dict keys in parser2 — `["key": 1]` and `[$x: 1]` currently produce "colon without key" error; pest grammar allows both as key forms. Implement key detection for these token types in the Colon handler's Dict arm. (`src/parser2.rs:649-651,695-699`) [Minor, computer-scientist C65]
-- [ ] Remove dead Dict/Call match arms in parser2 `push_expr_to_parent` — lines 845-856 are unreachable because `push_value` intercepts Dict/Call frames before delegating. (`src/parser2.rs:845-856`) [Nit, computer-scientist C65]
-- [x] Decide: newlines-after-dot in access chains — document as intentional line-continuation: newlines after `.` are permitted (`expr\n.field` → `expr.field`), improving readability without ambiguity. See doc/02-syntax.md §Dot Access.
-- [ ] Benchmark iterative parser parse time on large inputs [Deferred from parser-core-c3]
-
 ### parser-formatter: Phase 3 — AST-Based Formatter
 
 Rewrite `src/formatter.rs` to walk `ParseOutput`. See doc/whatif/parser-rewrite.md §Phase 3. **Depends on:** `parser-core`.
