@@ -1450,6 +1450,56 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     renaming.apply(ty)
 }
 
+/// Rename a single type variable `old_name -> Type::TypeVar(fresh_name, level)` inline.
+///
+/// This is equivalent to `Substitution { type_map: {old_name -> TypeVar(fresh,level)},
+/// row_map: {} }.apply(ty)` but avoids allocating 2 HashMaps and 2 HashSets.
+/// Safe to use without cycle detection because scheme bodies from `generalize` are
+/// acyclic with respect to quantified type variables (no self-referential TypeVar bindings
+/// can appear in a scheme body — TypeVars in a scheme are free variables, not bound ones).
+fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u32) -> Type {
+    match ty {
+        Type::TypeVar(name, _) if name == old_name => Type::TypeVar(fresh_name.to_owned(), level),
+        Type::TypeVar(_, _) => ty.clone(),
+        Type::Record(row) => Type::Record(rename_single_type_var_in_row(
+            row, old_name, fresh_name, level,
+        )),
+        Type::Function {
+            params,
+            ret,
+            variadic,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| rename_single_type_var(p, old_name, fresh_name, level))
+                .collect(),
+            ret: Box::new(rename_single_type_var(ret, old_name, fresh_name, level)),
+            variadic: *variadic,
+        },
+        Type::Seq(elem) => Type::Seq(Box::new(rename_single_type_var(
+            elem, old_name, fresh_name, level,
+        ))),
+        // Primitives, Any, Error, Number, Proxy: no type variables inside.
+        _ => ty.clone(),
+    }
+}
+
+fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, level: u32) -> Row {
+    Row {
+        fields: row
+            .fields
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    rename_single_type_var(v, old_name, fresh_name, level),
+                )
+            })
+            .collect(),
+        tail: row.tail.clone(),
+    }
+}
+
 /// Instantiate a type scheme by creating fresh type variables at the given level.
 /// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
 pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferState) -> Type {
@@ -1458,6 +1508,17 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         return scheme.body.clone();
     }
 
+    // Fast path: single type variable, no row variables — avoid building Substitution
+    // (2 HashMaps) and the apply() HashSet pair. Inline rename is allocation-free
+    // aside from the string format for the fresh name.
+    if scheme.type_vars.len() == 1 && scheme.row_vars.is_empty() {
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter += 1;
+        state.levels.insert(fresh_name.clone(), level);
+        return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
+    }
+
+    // General path: multiple variables or row variables — build a full Substitution.
     // Create fresh type variables at the specified level for each quantified var
     let mut renaming = Substitution {
         type_map: HashMap::with_capacity(scheme.type_vars.len()),

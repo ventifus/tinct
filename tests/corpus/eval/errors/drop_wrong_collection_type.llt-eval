@@ -1,0 +1,4 @@
+# drop: error when xs is not a Dict or Seq (n is valid Int)
+[call $drop 2 "hello"]
+===
+[E010] drop: expected Dict or Seq, got String

@@ -1,0 +1,4 @@
+# reduce on Dict: multiply all values (Dict path, product accumulator)
+[call $reduce [fn [acc x] [call $* $acc $x]] 1 [2 3 4]]
+===
+Int(24)

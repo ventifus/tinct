@@ -1,0 +1,6 @@
+# TypeAssert with default: fallback used when main expression type mismatches.
+# "hello" is a String, expected Int. Since default: 0 is provided and the
+# main expression fails the type assertion, the default value 0 is returned.
+[@[type: Int  default: 0] "hello"]
+===
+Int(0)

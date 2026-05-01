@@ -1,0 +1,5 @@
+# Incomplete variable reference: bare $ without identifier is a parse error.
+# (Runtime undefined variable errors are in tests/corpus/eval/errors/)
+[x: $]
+===
+bare $ without identifier

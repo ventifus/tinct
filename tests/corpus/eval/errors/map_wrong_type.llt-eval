@@ -1,0 +1,4 @@
+# map: error when xs is not a Dict or Seq
+[call $map [fn [x] $x] "hello"]
+===
+[E010] map: expected Dict or Seq, got String

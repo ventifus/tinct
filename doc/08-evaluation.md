@@ -489,7 +489,7 @@ Error semantics are specified in [Error Handling](10-errors.md). This section su
 
 ## Selective Materialization — Formal Specification
 
-Specifies which arguments each Rust-native builtin forces (materializes) before execution and how the result is constructed. This is a two-tier specification: a **strictness signature table** covering all 46 builtins (auditable summary), plus **delta rules** for builtins whose forcing behavior cannot be captured by a flat per-argument annotation.
+Specifies which arguments each Rust-native builtin forces (materializes) before execution and how the result is constructed. This is a two-tier specification: a **strictness signature table** covering all 51 builtins (auditable summary), plus **delta rules** for builtins whose forcing behavior cannot be captured by a flat per-argument annotation.
 
 The signature notation draws on Mycroft's (1981) abstract interpretation framework for strictness analysis. The delta rules follow Plotkin's (1981) structural operational semantics, using the same judgment style as §Thunk Lifecycle — Formal Specification.
 
@@ -527,7 +527,7 @@ For dual-dispatch builtins, the result classification refers to the more interes
 
 ### Part 2: Strictness Signature Table
 
-All 46 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Seq (delta rule required). Builtins marked `‡` have non-trivial forcing patterns (delta rule required).
+All 51 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Seq (delta rule required). Builtins marked `‡` have non-trivial forcing patterns (delta rule required).
 
 **Arithmetic** (all materializing):
 

@@ -1,0 +1,4 @@
+# take: error when xs is not a Dict or Seq
+[call $take 3 "hello"]
+===
+[E010] take: expected Dict or Seq, got String

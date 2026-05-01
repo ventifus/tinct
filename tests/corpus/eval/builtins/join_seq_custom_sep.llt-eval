@@ -1,0 +1,4 @@
+# join on Seq of strings with custom separator (Seq path)
+[call $join " | " [call $take 3 [call $map [fn [x] [call $str $x]] [call $range 1]]]]
+===
+String("1 | 2 | 3")

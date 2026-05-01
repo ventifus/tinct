@@ -40,6 +40,18 @@ pub fn deep_materialize(
     depth: usize,
     call_site_span: Option<&Span>,
 ) -> EvalResult<Value> {
+    // Fast path: primitives and functions need no traversal and no cache allocation.
+    // This avoids a HashMap heap allocation for the common case where the top-level
+    // value is already a scalar (Int, Float, Bool, String) or a function.
+    match val {
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::Bool(_)
+        | Value::Function { .. }
+        | Value::Builtin { .. } => return Ok(val.clone()),
+        _ => {}
+    }
     let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
     let initial_span = call_site_span.copied().unwrap_or_else(Span::origin);
     deep_materialize_impl(val, ctx, depth, &mut cache, 0, initial_span)

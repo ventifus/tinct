@@ -1,0 +1,7 @@
+# Dict key evaluation scope: computed keys evaluate in parent scope, not dict scope.
+# $x is used as a computed dict key; "x" is also a sibling value entry.
+# The key expression $x evaluates in parent scope where x is NOT bound,
+# so this raises E002 undefined variable: $x.
+[x: 1  $x: 2]
+===
+[E002]

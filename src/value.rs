@@ -531,8 +531,15 @@ impl Thunk {
 
     /// Cache a failed evaluation by transitioning to the Failed state.
     /// Used to memoize errors so failed thunks don't re-evaluate on subsequent access.
+    ///
+    /// Skips the clone and state write if the thunk is already in the Failed state
+    /// (e.g., when a shared thunk is encountered a second time during error propagation).
     pub fn cache_failure(&self, err: &EvalError) {
-        self.transition(|_| ThunkState::Failed(Box::new(err.clone())));
+        // Fast path: if already Failed, no work needed — avoid the clone.
+        if matches!(&*self.state.borrow(), ThunkState::Failed(_)) {
+            return;
+        }
+        self.set_state(ThunkState::Failed(Box::new(err.clone())));
     }
 }
 
@@ -563,6 +570,25 @@ impl fmt::Debug for Thunk {
 /// Uses `HashMap` (not `IndexMap`) because bindings are looked up by name only — insertion
 /// order carries no semantic meaning for lexical scoping. This is the hottest lookup path
 /// in the evaluator (every VarRef walks this chain).
+///
+/// # DAG invariant
+///
+/// The parent chain forms a directed acyclic graph (DAG), not a cyclic graph. This
+/// invariant is guaranteed structurally by lexical scoping: each `Environment` is created
+/// from a parent that already exists (the enclosing scope at the time of evaluation), so
+/// no environment can transitively point back to itself. Specifically:
+///
+/// - `eval()` creates a child env by calling `Environment::with_parent(env)` on the
+///   **current** scope before evaluating the body. The body is evaluated in the child;
+///   the parent cannot reference the child.
+/// - `letrec` dict bindings share a single pre-allocated environment, but all thunks in
+///   that env point to the same env — a self-referential structure that is still acyclic
+///   in the parent chain (no environment has itself as an ancestor).
+/// - `$include` creates a fresh child env from the stdlib root; it cannot create cycles.
+///
+/// The absence of cycles means `Environment::get()` always terminates. It also means
+/// environments form a tree rooted at the stdlib environment, enabling safe stack-free
+/// traversal via iterative parent-pointer walking.
 #[derive(Debug, Clone)]
 pub struct Environment {
     pub(crate) bindings: HashMap<String, Rc<Thunk>>,
