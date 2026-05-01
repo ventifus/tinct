@@ -537,7 +537,7 @@ fn infer_expr(
 /// Per doc/06-type-inference.md §Bidirectional Typing, this is the [SUB] rule:
 /// if `Γ ⊢ e ⇒ σ` and `σ <: τ`, then `Γ ⊢ e ⇐ τ`.
 ///
-/// Special case for lambdas (doc/06 line 136-146): when checking a function expression
+/// Special case for lambdas (doc/06 §[CHECK-FN]): when checking a function expression
 /// against an expected function type, propagate the expected parameter types into the
 /// lambda's parameter inference (Pierce & Turner 2000 lambda checking mode).
 ///
@@ -553,7 +553,7 @@ fn check_expr(
     // Lambda checking mode: when checking a function expression against a function type,
     // propagate expected parameter types into the lambda.
     // Only applies when expected type is fully concrete after applying state.subst
-    // (no unbound type variables) per doc/06 line 66.
+    // (no unbound type variables) per doc/06 §[CHECK-FN].
     if let Expr::Fn {
         return_ann,
         params,
@@ -1046,7 +1046,7 @@ fn check_dot_access(
                 RowTail::RowVar(rho, rho_level_creation) => {
                     // Get the current level from state.levels (the source of truth after level lowering).
                     // The level in RowTail is the creation-time level; state.levels is the current (possibly lowered) level.
-                    // See doc/06-type-inference.md lines 413-414.
+                    // See doc/06-type-inference.md §Let-Generalization (Levels-Based).
                     let rho_level = state.levels.get(rho).copied().unwrap_or(0);
 
                     // Invariant check: current level should be ≤ creation-time level (level lowering can only decrease levels)
@@ -1380,7 +1380,7 @@ fn check_call_with_scheme(
             // produces fresh TypeVars/RowVars for each quantified variable. Since generalize only
             // quantifies variables that appear in the body, the instantiated type must contain
             // those fresh variables, so has_inference_vars() is always true.
-            // Synthesize arguments and unify (doc/06 line 162-170)
+            // Synthesize arguments and unify (doc/06 §[CALL-POLY])
             let mut arg_types = Vec::with_capacity(args.len());
             for a in args {
                 arg_types.push(infer_expr(a, env, state, type_map)?);
@@ -1496,7 +1496,7 @@ fn check_call(
             }
 
             // CALL-MONO: function type is fully concrete (no type variables)
-            // Use bidirectional checking for arguments via [SUB] rule (doc/06 line 152-157)
+            // Use bidirectional checking for arguments via [SUB] rule (doc/06 §[CALL-MONO])
             //
             // ASYMMETRY: CALL-MONO collects all argument errors before returning (errors Vec
             // accumulates then is returned at once), while CALL-POLY (below) stops at the first
@@ -1523,7 +1523,7 @@ fn check_call(
             }
 
             // CALL-POLY: function type has type variables
-            // Instantiate the function type, synthesize arguments, then unify (doc/06 line 162-170)
+            // Instantiate the function type, synthesize arguments, then unify (doc/06 §[CALL-POLY])
             let inst_ty = instantiate_at_level(&func_ty, state);
 
             let (inst_params, inst_ret) = match &inst_ty {
@@ -1728,7 +1728,7 @@ fn infer_fn(
             .map_err(|e| vec![e])?;
 
             // When declared return type contains type variables, switch to unification mode
-            // (doc/06 line 136-146, Damas & Milner 1982, Pierce & Turner 2000 §3.2).
+            // (doc/06 §[CHECK-FN], Damas & Milner 1982, Pierce & Turner 2000 §3.2).
             // TypeVars in is_subtype only match via reflexive equality, so
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
@@ -1795,7 +1795,7 @@ fn resolve_type_assert(
 
     // resolved_type will be stored after substitution application below (write-once invariant).
 
-    // Use checking mode for TypeAssert inner expression (doc/06 line 214-226)
+    // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing)
     let check_result = check_expr(inner, &expected, env, state, type_map);
 
     // If checking fails and there's a default, suppress the error (ASSERT-DEFAULT rule)
@@ -2202,13 +2202,9 @@ fn resolve_type_dict(
                         }
                     } else {
                         // Outside of function scope, use the row variable name directly
-                        // Check if already exists to avoid resetting level
-                        if let Some(&existing_level) = state.levels.get(n) {
-                            RowTail::RowVar(n.clone(), existing_level)
-                        } else {
-                            state.levels.insert(n.clone(), state.level);
-                            RowTail::RowVar(n.clone(), state.level)
-                        }
+                        // Use or_insert to atomically lookup-or-create, avoiding level reset
+                        let level = *state.levels.entry(n.clone()).or_insert(state.level);
+                        RowTail::RowVar(n.clone(), level)
                     }
                 }
             };
@@ -5428,7 +5424,8 @@ mod tests {
 
     #[test]
     fn test_lambda_param_inference_preserves_annotation() {
-        // Annotated param @Int is compatible with expected Number (Int <: Number for contravariant)
+        // Annotated param @Int is compatible with expected Number (annotation Int <: Number,
+        // so Int values satisfy the Number expected type).
         assert!(check("[result: [@[Fn [Number] [Number]] [fn [x@Int] $x]]]").is_ok());
     }
 
