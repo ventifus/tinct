@@ -266,3 +266,81 @@ The stdlib defines 12 LLT wrapper functions for the shadowable operators (`$<`, 
 These costs are negligible for ordinary use but can accumulate in tight recursive loops that use operator builtins via their `$`-prefixed names (e.g., `[call $reduce $+ 0 $list]`).
 
 **Prelude internal optimization:** The prelude itself uses `$builtin-add`, `$builtin-sub`, etc. (the raw Rust-native builtins registered in `standard_builtins()`) rather than the LLT wrapper aliases. This avoids the wrapper overhead for stdlib-internal implementations. User code that needs maximum throughput in hot paths can do the same.
+
+## Security & Threat Model
+
+### Trust Boundaries
+
+LLT source files are **untrusted input**. The parser, type checker, and evaluator must handle malicious or pathological input gracefully without crashing, exhausting system resources, or allowing unauthorized file system access. Trust boundaries include:
+
+- **Developer-facing**: LLT files in version control, build tools, CI pipelines
+- **End-user-facing**: LSP server processing document content from editors
+- **Embedded use**: LLT runtime embedded in other applications
+
+### Current Security Posture
+
+**What IS restricted:**
+
+| Resource | Limit | Enforcement Point | Rationale |
+|----------|-------|------------------|-----------|
+| **Parse depth** | `MAX_PARSE_DEPTH = 256` | `src/parser.rs:41` | Prevents stack exhaustion from deeply nested syntax (iterative parser with explicit depth counter) |
+| **Lexer depth** | `MAX_LEX_DEPTH = 256` | `src/lexer.rs:106` | Prevents stack overflow from deeply nested bracket expressions |
+| **Eval depth** | `MAX_EVAL_DEPTH = 256` | `src/eval.rs:30` | Prevents infinite recursion and stack overflow during evaluation |
+| **Type inference** | `MAX_SUBST_SIZE = 50,000` | `src/types.rs:386` | Prevents O(N²) type inference DoS from deeply chained dot-accesses |
+| **Type unification** | `MAX_APPLY_DEPTH = 256` | `src/types.rs:382` | Caps substitution application depth to prevent exponential blowup |
+| **File size** | `MAX_FILE_SIZE = 10 MB` | `src/builtins.rs:47` | Caps `$include` file reads and LSP document size |
+| **Collection size** | `MAX_COLLECT_SIZE = 1,000,000` | `src/builtins.rs:36` | Prevents memory exhaustion from `$collect` on infinite sequences |
+| **String size** | `MAX_STRING_SIZE = 64 MB` | `src/builtins.rs:40` | Caps string output from `$replace`, `$upper`, `$lower`, `$join` |
+| **Split parts** | `MAX_SPLIT_PARTS = 1,000,000` | `src/builtins_string.rs:23` | Prevents memory exhaustion from adversarial `$split` patterns |
+| **LSP document size** | `MAX_DOCUMENT_SIZE = 10 MB` | `src/lsp/server.rs:22` | Rejects oversized documents before parsing (equals `MAX_FILE_SIZE`) |
+| **LSP method names** | `MAX_METHOD_NAME_LEN = 256` | `src/lsp/server.rs:33` | Prevents pathological LSP method name allocation |
+| **File I/O** | `--no-fs` flag, LSP default | `src/main.rs:39`, `src/lsp/document.rs:109` | Disables `$include` and `$from-json` file reads; LSP enables by default (CWE-22 mitigation) |
+| **Eval timeout** | `--timeout` flag (Unix only) | `src/main.rs:43` | Wall-clock timeout with SIGALRM; exits with code 2 on expiry |
+
+**What is NOT restricted:**
+
+- **CPU time**: No hard limit by default except `--timeout` flag on Unix platforms
+- **Memory**: No heap usage cap; bounded only by collection/string/file size limits
+- **Network**: Not applicable — LLT has no network builtins (future expansion would require explicit sandboxing)
+
+### Mitigations in Place
+
+1. **Integer overflow**: All arithmetic builtins (`$+`, `$-`, `$*`, `$/`) use checked arithmetic (`checked_add`, `checked_sub`, `checked_mul`) to prevent silent wraparound in release mode
+2. **Cycle detection**: `InProgress` thunk state sentinel prevents infinite loops from circular data structures
+3. **Error memoization**: Failed thunks cache errors in `ThunkState::Failed` to prevent repeated evaluation of broken computations
+4. **Depth tracking**: All recursive eval/materialize/typecheck paths check depth limits **before** recursion, not after
+5. **LSP crash prevention**: Document size limit, method name cap, `no_fs=true` by default, panic-safe error handling
+
+### Planned Hardening (Roadmap)
+
+The following security features are documented in `doc/12-tooling.md` and tracked in `TODO.md` but **not yet implemented**:
+
+- **Landlock filesystem ACLs** (Linux 5.13+): Confine `$include` to allowed directory trees with graceful degradation on older kernels
+- **seccomp-bpf syscall filtering**: Block network syscalls (socket, connect, bind) and process creation (fork, execve)
+- **rlimit resource caps**: `RLIMIT_AS` (address space), `RLIMIT_CPU` (eval-only), `RLIMIT_NOFILE`, `RLIMIT_FSIZE`
+- **Import integrity hashes**: `$include` with optional hash verification (Dhall-inspired) to detect file tampering; `--require-integrity` flag to enforce hashes on all includes
+- **File descriptor-based `$include`**: Eliminate TOCTOU race (canonicalize → metadata → read) by using `cap-std` for fd-based path resolution with `RESOLVE_BENEATH` semantics
+- **Dependency scanning**: `cargo audit` as CI gate to surface RustSec advisories before they accumulate
+
+### Attack Surface Analysis
+
+**DoS via crafted inputs** (mitigated):
+- Deep nesting: MAX_PARSE_DEPTH, MAX_EVAL_DEPTH, MAX_LEX_DEPTH enforce limits before stack overflow
+- Infinite sequences: MAX_COLLECT_SIZE bounds materialization; lazy evaluation makes unbounded data safe
+- Type inference explosion: MAX_SUBST_SIZE caps substitution growth from pathological type annotations
+- String amplification: MAX_STRING_SIZE caps output from `$replace`, `$join`, `$upper`, `$lower`
+
+**Path traversal** (partially mitigated):
+- LSP mode: `no_fs=true` disables all file I/O, preventing CWE-22 attacks via malicious document content
+- CLI mode: `$include` uses `canonicalize()` to resolve symlinks and relative paths but has no root confinement; `--no-fs` flag disables file I/O entirely
+- TOCTOU race: canonicalize → metadata → read creates race window (future: cap-std fd-based reads)
+
+**Panic hygiene**:
+- All user-reachable code paths return `Err(...)`, not `panic!()`
+- Two `expect("collection too large")` sites remain on index casts after MAX_COLLECT_SIZE check (tracked as nit in TODO.md)
+- `unsafe` blocks limited to SIGALRM handler setup and alarm cancellation (`src/main.rs:168,176-190,302-304`) — audited and sound
+
+**Dependency hygiene**:
+- All dependencies are actively maintained stable crates (clap, indexmap, serde_json, lsp-server, lsp-types, rustyline)
+- No known CVEs as of last audit (April 2026)
+- `cargo audit` not yet automated in CI (planned)

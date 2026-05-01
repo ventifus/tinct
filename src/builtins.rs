@@ -179,7 +179,9 @@ fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Key::String(s) => Value::String(s.clone()),
         };
         result.insert(
-            Key::Int(i64::try_from(i).expect("collection too large")),
+            Key::Int(i64::try_from(i).map_err(|_| {
+                EvalError::internal("collection index overflow".to_string(), call_span)
+            })?),
             Rc::new(Thunk::new_materialized(key_value, origin)),
         );
     }
@@ -735,7 +737,9 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
             for (i, item) in arr.iter().enumerate() {
                 let thunk = json_to_value(item, depth + 1, span)?;
                 map.insert(
-                    Key::Int(i64::try_from(i).expect("collection too large")),
+                    Key::Int(i64::try_from(i).map_err(|_| {
+                        EvalError::internal("collection index overflow".to_string(), span)
+                    })?),
                     thunk,
                 );
             }
