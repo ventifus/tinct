@@ -1609,11 +1609,12 @@ pub(crate) fn eval_step(
         Expr::VarRef(name) => {
             let found = env.borrow().get(name);
             match found {
-                Some(thunk) => Action::Materialize {
-                    thunk,
-                    mat_span: Some(expr.span),
-                    depth,
-                },
+                // Return the thunk from the environment without forcing it.
+                // Uses the same fast-path as wrap_thunk: if already materialized,
+                // return the value directly; otherwise pass through as-is so the
+                // caller decides whether to force. This matches eval_recursive's
+                // lazy behavior (Ok(thunk) without materializing).
+                Some(thunk) => wrap_thunk(Ok(thunk)),
                 None => {
                     Action::Continue(Err(
                         EvalError::undefined_variable(name.clone(), expr.span).into()
