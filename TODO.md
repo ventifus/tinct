@@ -546,7 +546,7 @@ Richer error context for debugging.
 
 User-facing error presentation improvements.
 
-- [ ] Research: source text availability at EvalError display time — `EvalError` carries a `Span` but not the source text; options: (a) add `source: Option<Arc<String>>` to EvalError (every error carries source), (b) thread source through `EvalError::fmt` via a formatting context object, (c) require callers to pair EvalError with source at the display boundary; survey rustc `SourceMap` and Nickel `EvaluationError::Display` patterns; decide before implementing source snippets. [research, span-integrity-checker]
+- [x] Research: source text availability at EvalError display time — see doc/whatif/source-text-availability.md. Decision: option (c) caller-pairs-with-source. Source text not stored in EvalError. `render_span_snippet(source, span) -> Option<String>` helper; REPL wires into eval_input (source in scope); CLI wires into main.rs display site; LSP is Phase 3. Matches Nickel's `to_diagnostic(files)` pattern.
 - [ ] Source snippets in error output — include source context with carets like rustc (span-integrity-checker review)
 - [ ] Design: REPL source snippet display — the REPL stores the full input string for the current expression; when `eval_input()` returns an `EvalError` with a `Span`, design how to extract the relevant source line and render a caret (`^`) under the span; consider multi-line expressions where the span crosses newlines; see `src/repl.rs` and the source-text availability research item above. [design, eval-engine]
 - [ ] Span-aware error recovery in REPL — show source line with caret pointing to error span (span-integrity-checker review)
