@@ -35,7 +35,7 @@ Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. *
 - [x] Add unit test for GuardedValidate continuation — verify `[@Int 42]` chain works through `run()` (`src/eval.rs`) [Minor, test-crafter C70] (not feasible — eval() still recursive for PendingBuiltin; TypeAssert uses eager eval not Guarded thunks for non-Record types)
 - [x] Add comment to existing depth-limit tests clarifying they test the depth-limit policy, not stack-safety (stack-safety tested by `test_iterative_materialize_deep_chain`) (`src/eval.rs`) [Nit, test-crafter C70]
 - [x] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70]
-- [ ] Convert `deep_materialize_impl` to iterative using `DeepEntries`/`DeepSeqTail` Cont variants — eliminates O(nesting) Rust stack frames at output boundaries (`--eval`, REPL display, `$eval` builtin); sharing/cycle cache (`HashMap<*const Thunk, Option<Rc<Thunk>>>`) carried as `Rc<RefCell<...>>` through the relevant Cont variants. No dependency on b5 — the Cont enum is already extensible. (`src/eval_deep.rs`, `src/eval.rs`) [Major, eval-engine]
+- [x] Convert `deep_materialize_impl` to iterative using `DeepEntries`/`DeepSeqTail` Cont variants — eliminates O(nesting) Rust stack frames at output boundaries (`--eval`, REPL display, `$eval` builtin); sharing/cycle cache (`HashMap<*const Thunk, Option<Rc<Thunk>>>`) carried as `Rc<RefCell<...>>` through the relevant Cont variants. No dependency on b5 — the Cont enum is already extensible. (`src/eval_deep.rs`, `src/eval.rs`) [Major, eval-engine] (work-stack iterative implementation; eliminates O(nesting) Rust stack frames at output boundaries)
 
 ## eval-split: Reduce eval.rs
 
