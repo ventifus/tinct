@@ -117,7 +117,7 @@ Lexer and parser2 loose ends carried over from parser-core sprints. Completes pr
 - [ ] Fix `[call\n: x]` classified as Dict instead of Call — `peek_next_significant` skips Newline tokens, so newline-before-colon makes keyword-colon guard fire incorrectly. Fix: `peek_next_significant` should not skip Newlines when checking for colon (horizontal-only whitespace). (`src/parser.rs:17-32`) [Minor, grammar-architect C65]
 - [ ] Support QuotedString and VarRef as dict keys in parser2 — `["key": 1]` and `[$x: 1]` currently produce "colon without key" error; pest grammar allows both as key forms. Implement key detection for these token types in the Colon handler's Dict arm. (`src/parser2.rs:649-651,695-699`) [Minor, computer-scientist C65]
 - [ ] Remove dead Dict/Call match arms in parser2 `push_expr_to_parent` — lines 845-856 are unreachable because `push_value` intercepts Dict/Call frames before delegating. (`src/parser2.rs:845-856`) [Nit, computer-scientist C65]
-- [ ] Decide: newlines-after-dot in access chains — `skip_whitespace_tokens` skips newlines, so `expr\n.field` parses as `expr.field`. Either fix (only skip horizontal whitespace after `.`) or document as an intentional line-continuation extension. (`src/parser.rs:994-995`) [Minor, grammar-architect C66]
+- [x] Decide: newlines-after-dot in access chains — document as intentional line-continuation: newlines after `.` are permitted (`expr\n.field` → `expr.field`), improving readability without ambiguity. See doc/02-syntax.md §Dot Access.
 - [ ] Benchmark iterative parser parse time on large inputs [Deferred from parser-core-c3]
 
 ### parser-formatter: Phase 3 — AST-Based Formatter
@@ -721,23 +721,6 @@ Consolidated from: test-tooling, test-tooling-b
 - [ ] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference — add test for display_string with NaN/Inf (`src/lib.rs:112-125, 176-211`) [Minor, integration-verifier]
 - [ ] Add lib.rs EvalContext doc comment mentioning include cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs`) [Minor, integration-verifier]
 - [ ] Add doc/16-architecture.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
-
-## call-convention-fixes: Call Convention Doc and Code Fixes (C48)
-
-Documentation and code quality fixes following the call-convention-kotlin sprint. Found by grammar-architect, eval-engine, integration-verifier, and stdlib-author C48 reviews.
-
-### call-convention-fixes: Call Convention Doc and Code Fixes
-
-Documentation and code fixes following the call-convention-kotlin sprint.
-
-- [ ] Fix `doc/04-functions.md:90` "Positional first, then named. Like Python." — contradicts the Kotlin model; any parameter can be named. Replace with "Named args supported for any parameter (Kotlin model)." (`doc/04-functions.md:90`) [Major, grammar-architect C48]
-- [ ] Fix `doc/02-syntax.md:981` stale comment "default: makes them named" — since call-convention-kotlin, any parameter can be passed by name. Update: "named args work for any parameter (Kotlin model)". (`doc/02-syntax.md:981`) [Major, grammar-architect C48]
-- [ ] Fix `doc/10-errors.md` "26 ErrorKind variants" stale at lines 98 and 763 — MissingRequiredParam (E024) added in call-convention-kotlin makes it 27 variants. Update both occurrences. (`doc/10-errors.md:98, 763`) [Major, grammar-architect + integration-verifier C48]
-- [ ] Fix `doc/10-errors.md` Part 3 Display code block missing MissingRequiredParam arm — Display implementation block jumps from ArityMismatch to NamedArgConflict, skipping E024. Add the missing match arm. (`doc/10-errors.md`) [Major, grammar-architect C48]
-- [ ] Fix `doc/11-stdlib.md:117,176` describing `$apply` as "positional only" — call-convention-kotlin added named-arg support (Key::String → named, Key::Int sorted → positional). Update both occurrences. (`doc/11-stdlib.md:117, 176`) [Major, stdlib-author C48]
-- [ ] Add `EvalError::missing_required_param(param: &str, span: Span)` named constructor — `MissingRequiredParam` is constructed as a raw struct literal at `src/eval.rs:622`; add named constructor to `src/error.rs` following the `arity_mismatch` pattern. (`src/eval.rs:622`, `src/error.rs`) [Minor, integration-verifier C48]
-- [ ] Fix `ArityBound::Exact` used for optional-param overarity — when any param has a default, `src/eval.rs:636` should use `Range(required_count, required_count + optional_count)` not `Exact(required_count)`. Note: ArityBound::AtMost was removed in api-hygiene C64; use Range instead. (`src/eval.rs:636`) [Major, eval-engine C48]
-- [ ] Replace raw `EvalError` struct literals with named constructors in `bind_args_thunks` — three sites at `src/eval.rs:622, 666, 681` bypass the constructor API. Replace with `EvalError::missing_required_param`, `EvalError::unknown_named_arg`, or equivalent named constructors. (`src/eval.rs:622, 666, 681`) [Minor, eval-engine C48]
 
 ## doc-divergences: Documentation Divergences (doc/*.md / Code)
 

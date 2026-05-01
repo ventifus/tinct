@@ -2313,3 +2313,20 @@ Public API completeness and error quality improvements from the C56 integration-
 Remaining API cleanup: migrate raw EvalError constructors to typed variants.
 
 - [x] Migrate test-code `EvalError::new()` calls to typed constructors — several test helpers in `src/eval.rs` and `src/builtins.rs` use raw `EvalError::new()` (E099). Grep for `EvalError::new` in `#[cfg(test)]` blocks. (`src/eval.rs`, `src/builtins.rs`) [Nit, integration-verifier C63]
+
+## call-convention-fixes: Call Convention Doc and Code Fixes (C48)
+
+Documentation and code quality fixes following the call-convention-kotlin sprint. Found by grammar-architect, eval-engine, integration-verifier, and stdlib-author C48 reviews.
+
+### call-convention-fixes: Call Convention Doc and Code Fixes
+
+Documentation and code fixes following the call-convention-kotlin sprint.
+
+- [x] Fix `doc/04-functions.md:90` "Positional first, then named. Like Python." — contradicts the Kotlin model; any parameter can be named. Replace with "Named args supported for any parameter (Kotlin model)." (`doc/04-functions.md:90`) [Major, grammar-architect C48]
+- [x] Fix `doc/02-syntax.md:981` stale comment "default: makes them named" — since call-convention-kotlin, any parameter can be passed by name. Update: "named args work for any parameter (Kotlin model)". (`doc/02-syntax.md:981`) [Major, grammar-architect C48]
+- [x] Fix `doc/10-errors.md` "26 ErrorKind variants" stale at lines 98 and 763 — MissingRequiredParam (E024) added in call-convention-kotlin makes it 27 variants. Update both occurrences. (`doc/10-errors.md:98, 763`) [Major, grammar-architect + integration-verifier C48]
+- [x] Fix `doc/10-errors.md` Part 3 Display code block missing MissingRequiredParam arm — Display implementation block jumps from ArityMismatch to NamedArgConflict, skipping E024. Add the missing match arm. (`doc/10-errors.md`) [Major, grammar-architect C48]
+- [x] Fix `doc/11-stdlib.md:117,176` describing `$apply` as "positional only" — call-convention-kotlin added named-arg support (Key::String → named, Key::Int sorted → positional). Update both occurrences. (`doc/11-stdlib.md:117, 176`) [Major, stdlib-author C48]
+- [x] Add `EvalError::missing_required_param(param: &str, span: Span)` named constructor — `MissingRequiredParam` is constructed as a raw struct literal at `src/eval.rs:622`; add named constructor to `src/error.rs` following the `arity_mismatch` pattern. (`src/eval.rs:622`, `src/error.rs`) [Minor, integration-verifier C48]
+- [x] Fix `ArityBound::Exact` used for optional-param overarity — when any param has a default, `src/eval.rs:636` should use `Range(required_count, required_count + optional_count)` not `Exact(required_count)`. Note: ArityBound::AtMost was removed in api-hygiene C64; use Range instead. (`src/eval.rs:636`) [Major, eval-engine C48]
+- [x] Replace raw `EvalError` struct literals with named constructors in `bind_args_thunks` — three sites at `src/eval.rs:622, 666, 681` bypass the constructor API. Replace with `EvalError::missing_required_param`, `EvalError::unknown_named_arg`, or equivalent named constructors. (`src/eval.rs:622, 666, 681`) [Minor, eval-engine C48]
