@@ -1,0 +1,5 @@
+# TypeAssert Record/non-Dict: resolved_type is Record but runtime value is a scalar
+# @Any inner wrapper lets the type checker pass; outer Record check fires at runtime
+[@[name: String] [@Any 42]]
+===
+[E011] type assertion failed: expected [name: String], got Int

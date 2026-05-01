@@ -39,7 +39,10 @@ pub struct EvalConfig {
 /// Mutable evaluation state (include guard, caching).
 #[derive(Debug)]
 pub struct EvalState {
+    /// Canonical paths currently being evaluated by $include (cycle detection).
     pub include_guard: HashSet<PathBuf>,
+    /// Canonical path -> materialized result thunk (include result caching).
+    /// Only successful evaluations are cached; errors are not cached.
     pub include_cache: HashMap<PathBuf, Rc<Thunk>>,
     // future: trace_log, eval_stats
 }
@@ -70,9 +73,9 @@ impl EvalContext {
     }
 
     /// Create a new EvalContext with a different base_dir but sharing the same
-    /// state (include guard, cache) and stdlib_env. Note: this allocates a new
-    /// EvalConfig wrapper but shares the underlying stdlib_env and state Rc
-    /// allocations (e.g., during $include).
+    /// state (include guard, cache) and stdlib_env. Avoids allocating a new
+    /// EvalState; shares the underlying stdlib_env and state Rc allocations
+    /// (e.g., during $include).
     pub fn with_base_dir(&self, base_dir: PathBuf) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
@@ -384,6 +387,7 @@ fn eval_recursive(
                                 &value.type_name(),
                                 thunk.span, // value's definition site, not annotation site
                             )
+                            .with_materialization_span(expr.span)
                             .into())
                         }
                     }
@@ -1586,7 +1590,8 @@ fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<Cont>) -> A
                                 ),
                                 &value.type_name(),
                                 inner_span,
-                            );
+                            )
+                            .with_materialization_span(guard_span);
                             let err = decorate(err.into());
                             thunk.cache_failure(&err);
                             Action::Continue(Err(err))
@@ -1610,7 +1615,8 @@ fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<Cont>) -> A
                                 ),
                                 &value.type_name(),
                                 inner_span,
-                            );
+                            )
+                            .with_materialization_span(guard_span);
                             let err = decorate(err.into());
                             thunk.cache_failure(&err);
                             Action::Continue(Err(err))
@@ -2025,6 +2031,7 @@ fn eval_step(
                                 &value.type_name(),
                                 thunk.span, // value's definition site, not annotation site
                             )
+                            .with_materialization_span(expr.span)
                             .into()))
                         }
                     }
@@ -6721,7 +6728,7 @@ mod tests {
     #[test]
     fn test_error_display_with_full_stack() {
         // Integration test: verify the Display output includes all stack frames
-        let err = EvalError::new("something broke".to_string(), test_span(1, 5, 1, 12))
+        let err = EvalError::internal("something broke".to_string(), test_span(1, 5, 1, 12))
             .with_materialization_span(test_span(10, 1, 10, 5))
             .with_frame("call $inner".to_string(), test_span(5, 1, 5, 20))
             .with_frame("call $outer".to_string(), test_span(8, 1, 8, 25));
@@ -7300,7 +7307,7 @@ mod tests {
         // When a PendingBuiltin fails, it should transition to Failed state
         fn failing_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let crate::value::BuiltinArgs { call_span, .. } = ctx;
-            Err(EvalError::new("builtin intentionally failed".to_string(), call_span).into())
+            Err(EvalError::internal("builtin intentionally failed".to_string(), call_span).into())
         }
 
         let env = empty_env();
