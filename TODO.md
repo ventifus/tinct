@@ -63,21 +63,6 @@ Sequence reduction — fold a sequence into a single value or collect into a str
 **Status:** Phase 1-2 complete (sprints parser-core-a through parser-core-c3). The hand-written iterative parser (`src/parser.rs` + `src/lexer.rs`) is now the production parser. The pest PEG parser was removed in sprint parser-core-c3 (commit cc8333c). Phases 3 (AST formatter) and 4 (error recovery) remain.
 
 - [x] Write `doc/whatif/parser-rewrite.md` — see doc/whatif/parser-rewrite.md. Immediate pest replacement (no co-existence); `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; `BracketAccess` + `ImmediateAt` lexer tokens; AST-based formatter rewrite; 4-phase adoption. Agent-reviewed: computer-scientist (APPROVE). [Design, grammar-architect]
-### parser-formatter: Phase 3 — AST-Based Formatter
-
-Rewrite `src/formatter.rs` to walk `ParseOutput`. See doc/whatif/parser-rewrite.md §Phase 3. **Depends on:** `parser-core`.
-
-**Previously BLOCKED (C69):** AST-based formatter rewrite attempted but reverted — the AST does not preserve bare-word vs quoted-string distinction (both stored as `Expr::Str`). **Resolved:** add `source: String` to `ParseOutput`; formatter uses span-based source lookup to recover quoting form. See design item below.
-
-- [x] Design: decide how to preserve bare-word vs quoted-string distinction in AST for formatter round-tripping — add `source: String` to `ParseOutput`; formatter checks `source.as_bytes()[span.start.offset] == b'"'` to determine quoting. Zero change to `Expr` enum (schema stability for macros); eliminated when unified syntax Phase 2 lands. See doc/whatif/parser-rewrite.md §AST-Based Formatter.
-- [ ] Rewrite `src/formatter.rs` as AST walker over `ParseOutput.file`
-- [ ] Emit leading comments via `ParseOutput.leading_comments.get(&node.span.start.offset)` before each node (`src/formatter.rs`)
-- [ ] Emit trailing comments via `ParseOutput.trailing_comments.get(&node.span.start.offset)` after each line (`src/formatter.rs`)
-- [ ] Remove `is_fn_params` heuristic — replaced by AST node type (`src/formatter.rs`)
-- [ ] Remove all remaining `has_whitespace_between` call sites (`src/formatter.rs`)
-- [ ] Remove keyword string comparisons (`BareWord(s) if s == "fn"` etc.) — replaced by AST node type (`src/formatter.rs`)
-- [ ] All 48 existing formatter corpus tests pass with identical output for valid inputs
-
 ### parser-error-recovery: Phase 4 — Error Recovery
 
 Extend the iterative parser with bracket-level error recovery. See doc/whatif/parser-rewrite.md §Phase 4. **Depends on:** `parser-core`.

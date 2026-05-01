@@ -103,11 +103,17 @@ impl DocumentStore {
         // Create base evaluation context.
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
-        let base_eval_ctx = crate::eval::EvalContext::new(
-            std::path::PathBuf::from("."),
-            Rc::clone(&stdlib_env),
-            true,
-        );
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .unwrap_or_else(|_| {
+                // Fallback: if we can't open ".", try to open a temp directory
+                // This should never happen in practice, but ensures we always have a valid Dir
+                cap_std::fs::Dir::open_ambient_dir(
+                    std::env::temp_dir(),
+                    cap_std::ambient_authority(),
+                )
+                .expect("failed to open fallback base_dir")
+            });
+        let base_eval_ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), true);
         Self {
             docs: HashMap::new(),
             stdlib_env,
@@ -119,11 +125,16 @@ impl DocumentStore {
     pub fn update_document(&mut self, url: Url, text: String) {
         // Create evaluation context with document's directory as base_dir.
         // $include paths should resolve against the document's directory, not editor cwd.
-        let base_dir = url
+        let base_path = url
             .to_file_path()
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_path, cap_std::ambient_authority())
+            .unwrap_or_else(|_| {
+                cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+                    .expect("cannot open current directory")
+            });
         let eval_ctx = self.base_eval_ctx.with_base_dir(base_dir);
 
         self.docs
@@ -157,7 +168,9 @@ mod tests {
     }
 
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new(std::path::PathBuf::from("."), test_env(), true)
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        crate::eval::EvalContext::new(base_dir, test_env(), true)
     }
 
     #[test]

@@ -412,11 +412,11 @@ The difference is operational: PendingBuiltin/PendingCall avoid constructing AST
 
 ### Relationship to CEK Machine Migration
 
-The iterative evaluator (§Iterative Evaluator) subsumes PendingBuiltin and PendingCall into explicit `Cont` variants on the continuation stack. After migration:
+The iterative evaluator (§Iterative Evaluator) uses explicit `Cont` variants on the continuation stack to process ThunkState transitions. The CEK machine does not remove PendingBuiltin and PendingCall from ThunkState — these are permanent design elements representing persistent deferred computation:
 
-- The ThunkState enum simplifies to `{Unevaluated, Guarded, InProgress, Materialized, Failed}`
-- PendingBuiltin and PendingCall become `Cont::BuiltinDispatch` and `Cont::CallForceFunc` on the explicit stack; both must handle Function and Builtin dispatch after forcing. Guarded remains in ThunkState (it wraps an inner thunk, not a continuation).
-- The monotonicity proof and semantic properties carry over unchanged — the state DAG loses two source nodes but gains no new transitions
+- **PendingBuiltin** stores deferred builtin calls for lazy sequences (`$map`, `$filter`, `$fold_step`, etc.) and proxy handler dispatch. Cannot be replaced by Unevaluated because builtin function pointers (`BuiltinFn`) have no AST representation. Lazy sequences need persistent storage for deferred steps.
+- **PendingCall** stores deferred function calls for lazy dispatch and tail-call optimization. Represents work already done by `eval_call` (evaluated func_expr, wrapped args) that Unevaluated would duplicate.
+- The monotonicity proof and semantic properties remain unchanged — the 7-state DAG (Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed) is the stable design.
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Rc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
 - MAX_EVAL_DEPTH is replaced by configurable resource limits (`--max-depth`, `--max-memory`) rather than hardcoded safety bounds
 

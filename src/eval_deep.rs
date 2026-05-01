@@ -414,11 +414,9 @@ mod tests {
     use std::cell::RefCell;
 
     fn test_ctx() -> Rc<EvalContext> {
-        EvalContext::new(
-            std::path::PathBuf::from("."),
-            crate::builtins::create_root_env(),
-            false,
-        )
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        EvalContext::new(base_dir, crate::builtins::create_root_env(), false)
     }
 
     fn empty_env() -> Rc<RefCell<Environment>> {

@@ -1,0 +1,4 @@
+[fn
+: something]
+===
+ERROR: `:` can only appear in dict or call forms
