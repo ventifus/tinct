@@ -243,7 +243,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 
 ## Summary
 
-**Total:** 46 Rust-native builtins + 12 stable aliases = 58 registered names.
+**Total:** 51 Rust-native builtins + 12 stable aliases = 63 registered names.
 
 **By category:**
 - Arithmetic: 4
@@ -252,10 +252,11 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 - Dict primitives: 4
 - Strings: 6
 - Numeric: 4 (floor, round, to-int, to-float)
-- Evaluation: 4
+- Evaluation: 5 (eval, error, try, apply, until)
 - Type introspection: 1 (type-of)
 - I/O: 2
 - Sequences: 17 (6 constructors, 3 destructors, 7 higher-order ops, 1 predicate)
+- List operations: 4 (rest, cons, reverse, sort)
 - Proxy: 1
 
 **Design principle:** These builtins are the minimal set of primitives that **cannot be expressed in LLT itself**. Everything else (sorting, logic operators, dict utilities, composition functions) is implemented in the [Standard Library](11-stdlib.md) using only these primitives plus LLT's syntax and lazy evaluation.

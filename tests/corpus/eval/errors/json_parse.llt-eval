@@ -1,0 +1,4 @@
+# E061: JsonParse — from-json rejects invalid JSON syntax.
+[call $from-json "{not valid json}"]
+===
+[E061]
