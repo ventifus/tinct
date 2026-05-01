@@ -328,13 +328,16 @@ impl fmt::Display for TypeScheme {
         if self.type_vars.is_empty() && self.row_vars.is_empty() {
             write!(f, "{}", self.body)
         } else {
-            let all_vars: Vec<String> = self
-                .type_vars
-                .iter()
-                .chain(self.row_vars.iter())
-                .cloned()
-                .collect();
-            write!(f, "∀{}. {}", all_vars.join(" "), self.body)
+            write!(f, "∀")?;
+            let mut first = true;
+            for var in self.type_vars.iter().chain(self.row_vars.iter()) {
+                if !first {
+                    write!(f, " ")?;
+                }
+                write!(f, "{var}")?;
+                first = false;
+            }
+            write!(f, ". {}", self.body)
         }
     }
 }

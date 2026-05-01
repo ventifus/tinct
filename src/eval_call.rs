@@ -25,7 +25,6 @@ const DEFAULT_ANNOTATION_KEY: &str = "default";
 /// " (auto-generated lambda)" is appended so stack traces distinguish sugar-generated
 /// closures from user-written `[fn ...]` forms.
 pub(crate) fn func_label(expr: &Expr) -> Cow<'static, str> {
-    // Fast path for common VarRef case: build label directly to avoid intermediate format! in func_path
     match expr {
         Expr::VarRef(name) => Cow::Owned(format!("call ${name}")),
         Expr::Fn {
@@ -234,6 +233,12 @@ pub(crate) fn bind_args_thunks(
     }
 
     // BIND-NAMED: Validation only (all bindings were already done in BIND-POSITIONAL)
+    //
+    // Why two checks? BIND-POSITIONAL silently resolves conflicts via priority
+    // (positional wins over named), but the caller likely made a mistake if they
+    // supplied both. This second pass detects that mistake and reports it as an
+    // error (C-NO-OVERLAP), while also catching named args that don't match any
+    // parameter at all (C-NAMED-VALID).
     for (name, _) in named {
         // Single scan: C-NO-OVERLAP and C-NAMED-VALID in one position() call
         match regular_params.iter().position(|p| &p.name == name) {

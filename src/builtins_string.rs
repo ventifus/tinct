@@ -36,7 +36,10 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("str", named, call_span)?;
-    let mut result = String::new();
+    // Estimate capacity: average string ~20 bytes, typical config keys ~10 bytes.
+    // Conservative underestimate better than zero capacity.
+    let estimated_capacity = args.len() * 10;
+    let mut result = String::with_capacity(estimated_capacity);
     for arg in args {
         let val = materialize(arg, Some(&call_span), &ctx, depth)?;
         result.push_str(&stringify(&val));
@@ -73,19 +76,19 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Bound allocation before the guard fires: take at most MAX_SPLIT_PARTS + 1 entries
     // so that adversarial input (e.g., splitting a large string by empty separator) cannot
     // heap-exhaust the process before the check.
-    let parts: Vec<&str> = input
+    let mut map = IndexMap::new();
+    for (i, part) in input
         .split(sep.as_str())
         .take(MAX_SPLIT_PARTS + 1)
-        .collect();
-    if parts.len() > MAX_SPLIT_PARTS {
-        return Err(EvalError::resource_limit_exceeded(
-            format!("$split: input produces more than {MAX_SPLIT_PARTS} parts"),
-            call_span,
-        )
-        .into());
-    }
-    let mut map = IndexMap::with_capacity(parts.len());
-    for (i, part) in parts.into_iter().enumerate() {
+        .enumerate()
+    {
+        if i >= MAX_SPLIT_PARTS {
+            return Err(EvalError::resource_limit_exceeded(
+                format!("$split: input produces more than {MAX_SPLIT_PARTS} parts"),
+                call_span,
+            )
+            .into());
+        }
         map.insert(
             Key::Int(i64::try_from(i).map_err(|_| {
                 EvalError::resource_limit_exceeded(

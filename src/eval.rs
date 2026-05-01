@@ -19,6 +19,15 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, Param, Span, Spanned};
+
+thread_local! {
+    /// Cached empty dict thunk used as the default `$$` when no stdin is provided.
+    /// Avoids allocating a fresh `Rc<Thunk>` on every `eval_file_with_input` call.
+    static EMPTY_DICT_THUNK: Rc<Thunk> = Rc::new(Thunk::new_materialized(
+        Value::Dict(IndexMap::new()),
+        Span::origin(),
+    ));
+}
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, RowTail, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
@@ -712,12 +721,7 @@ pub fn eval_file_with_input(
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     // $$ starts as the provided input, or empty dict if none given
-    let mut prev_output = initial_input.unwrap_or_else(|| {
-        Rc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
-            Span::origin(),
-        ))
-    });
+    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Rc::clone(t)));
 
     for doc in &file.documents {
         // Each document gets a fresh scope with only $$ bound
@@ -743,7 +747,7 @@ pub(crate) fn eval_dict(
     let dict_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
         parent_env,
     ))));
-    let mut dict_map: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
+    let mut dict_map: IndexMap<Key, Rc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
     for entry in entries {

@@ -169,6 +169,11 @@ pub(crate) fn eval_range_access(
     let start_key = start.map(|e| eval_key(e, env, ctx, depth)).transpose()?;
     let end_key = end.map(|e| eval_key(e, env, ctx, depth)).transpose()?;
 
+    // Fast path: unbounded range [..] returns the dict unchanged
+    if start_key.is_none() && end_key.is_none() {
+        return Ok(Rc::clone(&target_thunk));
+    }
+
     let mut result: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
     for (k, v) in &map {
         if key_in_range(k, start_key.as_ref(), end_key.as_ref(), *access_span)? {

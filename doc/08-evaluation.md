@@ -992,7 +992,7 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 | Thunks | `Rc<Thunk>` with `RefCell<ThunkState>` | Individual heap alloc per thunk, triple indirection |
 | Environments | `Rc<RefCell<Environment>>` with `IndexMap<String, Rc<Thunk>>` + parent chain | O(depth) variable lookup |
 | Dict keys | `Key::String(String)` | Cloned 2× per dict entry (env bindings + dict_map) |
-| Thunk origin | `origin: String` | Allocated per thunk, usually empty |
+| Thunk origin | `origin: Cow<'static, str>` | Zero-cost for empty/static origins (`Cow::Borrowed`); allocates only for dynamic labels |
 | Type inference sets | `HashSet<String>` in `collect_type_vars`, `collect_row_vars`, `collect_all_vars`, `instantiate_scheme`, `instantiate_at_level`, `generalize` | Transient per-call allocations in `src/types.rs`; each call allocates a fresh `HashSet`, collects variable names via tree traversal, then drops the set. Hot paths during type inference — `instantiate_scheme` is called per polymorphic variable reference, `generalize` per dict entry at Pass 4. Planned elimination: Phase 2's flat environments with de Bruijn indices remove the need for name-based variable collection entirely. Phase 1 mitigation: pre-sized `HashSet::with_capacity` based on scheme quantifier count, or `SmallVec`-backed collection for schemes with few variables (the common case). |
 
 **Phase 1:** Backward-compatible optimizations. Baseline: ~113 `Rc::new(Thunk)` calls in eval.rs, ~142 `IndexMap::new()` calls in builtins.rs. Expected impact: 75-85% of addressable allocation cost.
@@ -1164,11 +1164,16 @@ fn run(initial: Action) -> Result<Value, Box<EvalError>> {
             Action::Materialize { thunk, mat_span, depth } => {
                 match /* thunk state */ {
                     Materialized(v) => Action::Continue(Ok(v.clone())),
+                    Failed(e) => Action::Continue(Err(e.clone())),
                     Unevaluated { expr, env } => {
                         stack.push(Cont::Memoize { thunk, mat_span, origin });
                         Action::Eval { expr, env, depth: depth + 1 }
                     }
-                    // ...
+                    PendingCall { func, args, named, call_span, caller_env, ctx } => {
+                        stack.push(Cont::PendingCallDispatch { thunk, args, named, call_span, caller_env, ctx });
+                        Action::Materialize { thunk: func, mat_span, depth: depth + 1 }
+                    }
+                    // ... (PendingBuiltin, Guarded, InProgress)
                 }
             }
             Action::Continue(result) => {
