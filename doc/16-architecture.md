@@ -285,6 +285,19 @@ These costs are negligible for ordinary use but can accumulate in tight recursiv
 
 **Prelude internal optimization:** The prelude itself uses `$builtin-add`, `$builtin-sub`, etc. (the raw Rust-native builtins registered in `standard_builtins()`) rather than the LLT wrapper aliases. This avoids the wrapper overhead for stdlib-internal implementations. User code that needs maximum throughput in hot paths can do the same.
 
+### Performance Characteristics
+
+**Hot path allocation patterns:**
+- **Environment lookup is O(depth)**: `Environment::get()` walks the parent chain on every variable reference. Deeply nested scopes compound this cost.
+- **IndexMap ~20% slower than HashMap**: Dict operations use `IndexMap` to preserve insertion order (required for dict semantics). Type-level `Substitution.type_map`/`row_map` also use `IndexMap` but could be `HashMap` (order irrelevant).
+- **Thunk boxing cost**: Every value is wrapped in `Rc<RefCell<ThunkState>>`. Lazy evaluation requires this indirection but adds allocation and refcounting overhead.
+- **Substitution::apply() is O(type_size)**: Type inference calls `apply()` per unification. Each call allocates a `HashSet<String>` for cycle detection and walks the entire type tree.
+
+**Known bottlenecks** (see `TODO.md` for roadmap):
+- Rc clone frequency in dict construction loops
+- AST deep-clone per call argument (until AST nodes become Rc)
+- Type tree traversal during multi-pass dict inference
+
 ## Security & Threat Model
 
 ### Trust Boundaries

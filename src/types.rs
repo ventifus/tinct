@@ -302,6 +302,36 @@ impl Type {
             _ => {}
         }
     }
+
+    /// Collect variables into Vecs (allows duplicates). Used in test-only instantiate().
+    /// Cheaper than HashSet allocation when deduplication isn't needed.
+    pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>, row_vars: &mut Vec<String>) {
+        match self {
+            Type::TypeVar(name, _) => {
+                type_vars.push(name.clone());
+            }
+            Type::Record(row) => {
+                for ty in row.fields.values() {
+                    ty.collect_all_vars_vec(type_vars, row_vars);
+                }
+                if let RowTail::RowVar(name, _) = &row.tail {
+                    row_vars.push(name.clone());
+                }
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                for p in params {
+                    p.collect_all_vars_vec(type_vars, row_vars);
+                }
+                ret.collect_all_vars_vec(type_vars, row_vars);
+            }
+            Type::Seq(elem) => elem.collect_all_vars_vec(type_vars, row_vars),
+            _ => {}
+        }
+    }
 }
 
 /// Type scheme for let-generalization (∀α₁...αₙ. τ)
@@ -453,6 +483,21 @@ impl Substitution {
         let mut visited_types = HashSet::new();
         let mut visited_rows = HashSet::new();
         self.apply_type(ty, 0, &mut visited_types, &mut visited_rows)
+    }
+
+    /// Apply substitution with externally-supplied visited sets.
+    /// Allows sharing visited sets across multiple apply() calls to avoid repeated allocation.
+    /// The caller must clear the visited sets between uses.
+    pub fn apply_with_visited(
+        &self,
+        ty: &Type,
+        visited_types: &mut HashSet<String>,
+        visited_rows: &mut HashSet<String>,
+    ) -> Type {
+        if self.is_empty() {
+            return ty.clone();
+        }
+        self.apply_type(ty, 0, visited_types, visited_rows)
     }
 
     fn apply_type(
@@ -1152,8 +1197,13 @@ pub fn unify(
     state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
-    let a = subst.apply(a);
-    let b = subst.apply(b);
+    // Share visited sets across both apply() calls to avoid duplicate allocation
+    let mut visited_types = HashSet::new();
+    let mut visited_rows = HashSet::new();
+    let a = subst.apply_with_visited(a, &mut visited_types, &mut visited_rows);
+    visited_types.clear();
+    visited_rows.clear();
+    let b = subst.apply_with_visited(b, &mut visited_types, &mut visited_rows);
 
     if a == b {
         return Ok(());
@@ -1336,9 +1386,9 @@ pub fn unify(
 /// (allows inspection of which type/row vars were renamed to which fresh vars).
 #[cfg(test)]
 pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
-    let mut type_vars = HashSet::new();
-    let mut row_vars = HashSet::new();
-    ty.collect_all_vars(&mut type_vars, &mut row_vars);
+    let mut type_vars = Vec::new();
+    let mut row_vars = Vec::new();
+    ty.collect_all_vars_vec(&mut type_vars, &mut row_vars);
 
     let mut renaming = Substitution::new();
     for var in type_vars {
