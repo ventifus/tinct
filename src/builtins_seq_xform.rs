@@ -127,9 +127,7 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref map) => {
             // Dict path: iterate entries by key order, building a Seq of values
             // that pass the predicate
-            let keys: Vec<Key> = map.keys().cloned().collect();
-
-            if keys.is_empty() {
+            if map.is_empty() {
                 return ok_val(Value::Dict(IndexMap::new()), call_span);
             }
 
@@ -138,21 +136,9 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // IndexMap (O(n)) — each step's materialize() call is still O(1) because
             // the thunk is already in Materialized state.
             let dict_thunk = Rc::clone(&args[1]);
-            let mut keys_map = IndexMap::with_capacity(keys.len());
-            for (i, k) in keys.into_iter().enumerate() {
-                let key_value = match k {
-                    Key::Int(n) => Value::Int(n),
-                    Key::String(s) => Value::String(s),
-                };
-                keys_map.insert(
-                    Key::Int(i64::try_from(i).expect("collection too large")),
-                    Rc::new(Thunk::new_materialized(key_value, call_span)),
-                );
-            }
-            let keys_thunk = Rc::new(Thunk::new_materialized(Value::Dict(keys_map), call_span));
             let idx_thunk = ok_val(Value::Int(0), call_span)?;
 
-            let filter_args = vec![Rc::clone(&pred_thunk), dict_thunk, keys_thunk, idx_thunk];
+            let filter_args = vec![Rc::clone(&pred_thunk), dict_thunk, idx_thunk];
 
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
                 "filter",
@@ -197,7 +183,7 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// Helper for filter on Dict: iterates through dict entries, building a Seq.
 ///
-/// Args: (pred, dict, keys, idx)
+/// Args: (pred, dict, idx)
 ///
 /// Consecutive predicate failures are handled by an internal loop rather than
 /// chaining PendingBuiltin thunks. A PendingBuiltin-per-failure would consume
@@ -215,30 +201,13 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
     } = ctx_arg;
     let pred_thunk = Rc::clone(&args[0]);
     let dict_thunk = Rc::clone(&args[1]);
-    let keys_thunk = Rc::clone(&args[2]);
 
-    let mut idx_int = match materialize(&args[3], None, &ctx, depth)? {
+    let mut idx_int = match materialize(&args[2], None, &ctx, depth)? {
         Value::Int(i) => i,
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 "filter".to_string(),
                 "Int",
-                other.type_name(),
-                call_span,
-            )
-            .into())
-        }
-    };
-
-    // keys_thunk is pre-wrapped as Materialized at the filter call site
-    debug_assert!(matches!(&*keys_thunk.state(), ThunkState::Materialized(_)));
-    let keys = materialize(&keys_thunk, None, &ctx, depth)?;
-    let keys_map = match keys {
-        Value::Dict(ref m) => m,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "filter".to_string(),
-                "Dict",
                 other.type_name(),
                 call_span,
             )
@@ -267,41 +236,17 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
     // of the emitted Seq node) so depth counts emitted elements, not rejections.
     loop {
         // Check if we've reached the end
-        if idx_int >= keys_map.len() as i64 {
+        let idx_usize = usize::try_from(idx_int).ok();
+        if idx_usize.is_none() || idx_int >= dict_map.len() as i64 {
             return ok_val(Value::Dict(IndexMap::new()), call_span);
         }
 
-        // Get the current key
-        let key_value = match keys_map.get(&Key::Int(idx_int)) {
-            Some(thunk) => materialize(thunk, None, &ctx, depth)?,
+        // Get the current entry by index (avoids secondary keys map)
+        let (current_key, value_thunk) = match dict_map.get_index(idx_usize.unwrap()) {
+            Some((k, v)) => (k.clone(), Rc::clone(v)),
             None => {
                 return Err(EvalError::internal(
-                    format!("filter: key at index {} not found", idx_int),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        let current_key = match key_value {
-            Value::Int(n) => Key::Int(n),
-            Value::String(s) => Key::String(s),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "filter".to_string(),
-                    "Int or String",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        let value_thunk = match dict_map.get(&current_key) {
-            Some(v) => Rc::clone(v),
-            None => {
-                return Err(EvalError::internal(
-                    format!("filter: key {} not found in dict", current_key),
+                    format!("filter: entry at index {} not found", idx_int),
                     call_span,
                 )
                 .into())
@@ -340,7 +285,6 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
             let tail_args = vec![
                 Rc::clone(&pred_thunk),
                 Rc::clone(&dict_thunk),
-                Rc::clone(&keys_thunk),
                 next_idx_thunk,
             ];
             let tail = Rc::new(Thunk::new_pending_builtin(

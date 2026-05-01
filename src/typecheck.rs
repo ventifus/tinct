@@ -985,10 +985,15 @@ fn infer_dict(
     }
 
     // Pass 3c: Apply the merged substitution to all field types
-    let field_types: HashMap<String, Type> = field_types
-        .into_iter()
-        .map(|(k, ty)| (k, subst.apply(&ty)))
-        .collect();
+    let field_types: HashMap<String, Type> = if subst.is_empty() {
+        // Fast path: no substitution needed, avoid O(n) apply() calls
+        field_types
+    } else {
+        field_types
+            .into_iter()
+            .map(|(k, ty)| (k, subst.apply(&ty)))
+            .collect()
+    };
 
     // Pass 3d: Merge local subst back into state.subst so that subsequent dict entries
     // in the same document can see the letrec bindings from this dict.
