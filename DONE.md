@@ -2254,3 +2254,9 @@ Pure structural rename and type additions preparing for the full CEK loop. **No 
 ## eval-split-d: Extract eval_deep.rs
 
 - [x] Move `deep_materialize()`, `deep_materialize_impl()`, `deep_materialize_thunk()` to `src/eval_deep.rs` (`src/eval.rs:2618-2772`, ~155 lines) [Minor]
+
+## builtins-split-a: Extract builtins_seq_prim.rs
+
+Core linked-list primitives — the four operations that construct and destructure sequences.
+
+- [x] Move `builtin_seq`, `builtin_head`, `builtin_tail`, `builtin_collect` to `src/builtins_seq_prim.rs` (`src/builtins.rs:1365-1549`, ~185 lines) [Minor]

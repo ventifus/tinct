@@ -75,7 +75,7 @@ Move the CEK continuation machinery — the active area for iterative-eval-b spr
 
 Core linked-list primitives — the four operations that construct and destructure sequences.
 
-- [ ] Move `builtin_seq`, `builtin_head`, `builtin_tail`, `builtin_collect` to `src/builtins_seq_prim.rs` (`src/builtins.rs:1365-1549`, ~185 lines) [Minor]
+- [x] Move `builtin_seq`, `builtin_head`, `builtin_tail`, `builtin_collect` to `src/builtins_seq_prim.rs` (`src/builtins.rs:1365-1549`, ~185 lines) [Minor]
 
 ### builtins-split-b: Extract builtins_seq_gen.rs
 
