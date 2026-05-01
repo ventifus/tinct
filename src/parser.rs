@@ -57,6 +57,24 @@ fn peek_next_significant<'a>(
     None
 }
 
+/// Helper: peek at the next horizontally adjacent token (skip comments and semicolons, but NOT newlines).
+/// Used for keyword-colon lookahead where `[call\n: x]` must NOT be classified as a dict entry.
+fn peek_next_horizontal<'a>(
+    tokens: &'a [Spanned<Token>],
+    current_index: usize,
+) -> Option<(&'a Token, usize)> {
+    let mut idx = current_index + 1;
+    while idx < tokens.len() {
+        match &tokens[idx].node {
+            Token::Semicolon | Token::Comment(_) => {
+                idx += 1;
+            }
+            token => return Some((token, idx)),
+        }
+    }
+    None
+}
+
 /// Extract a comparable string from a key expression for duplicate detection.
 /// Returns None for complex expressions where comparison isn't meaningful.
 ///
@@ -706,7 +724,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     Some((Token::BareWord(s), keyword_idx))
                         if s == "call"
                             && !matches!(
-                                peek_next_significant(&token_vec, keyword_idx),
+                                peek_next_horizontal(&token_vec, keyword_idx),
                                 Some((Token::Colon, _))
                             ) =>
                     {
@@ -727,7 +745,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     Some((Token::BareWord(s), keyword_idx))
                         if s == "fn"
                             && !matches!(
-                                peek_next_significant(&token_vec, keyword_idx),
+                                peek_next_horizontal(&token_vec, keyword_idx),
                                 Some((Token::Colon, _))
                             ) =>
                     {
@@ -772,7 +790,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     Some((Token::BareWord(s), keyword_idx))
                         if s == "type"
                             && !matches!(
-                                peek_next_significant(&token_vec, keyword_idx),
+                                peek_next_horizontal(&token_vec, keyword_idx),
                                 Some((Token::Colon, _))
                             ) =>
                     {

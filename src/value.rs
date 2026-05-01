@@ -595,11 +595,9 @@ mod tests {
     use crate::test_util::test_span;
 
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new(
-            std::path::PathBuf::from("."),
-            Rc::new(RefCell::new(Environment::new())),
-            false,
-        )
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        crate::eval::EvalContext::new(base_dir, Rc::new(RefCell::new(Environment::new())), false)
     }
 
     #[test]
@@ -1014,8 +1012,10 @@ mod tests {
         use crate::ast::Expr;
 
         // Create ctx1 with a distinct base_dir
+        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
         let ctx1 = crate::eval::EvalContext::new(
-            std::path::PathBuf::from("/test/path/1"),
+            base_dir1,
             Rc::new(RefCell::new(Environment::new())),
             false,
         );
@@ -1085,8 +1085,10 @@ mod tests {
         }
 
         // Create ctx1
+        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
         let ctx1 = crate::eval::EvalContext::new(
-            std::path::PathBuf::from("/test/path/builtin"),
+            base_dir1,
             Rc::new(RefCell::new(Environment::new())),
             false,
         );
@@ -1125,8 +1127,10 @@ mod tests {
     #[test]
     fn test_thunk_pending_call_preserves_ctx() {
         // Create ctx1
+        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
         let ctx1 = crate::eval::EvalContext::new(
-            std::path::PathBuf::from("/test/path/call"),
+            base_dir1,
             Rc::new(RefCell::new(Environment::new())),
             false,
         );

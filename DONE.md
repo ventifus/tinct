@@ -2457,3 +2457,18 @@ Lexer and parser2 loose ends carried over from parser-core sprints. Completes pr
 - [x] Remove dead Dict/Call match arms in parser2 `push_expr_to_parent` — lines 845-856 are unreachable because `push_value` intercepts Dict/Call frames before delegating. (`src/parser2.rs:845-856`) [Nit, computer-scientist C65] (stale — parser2.rs was deleted in parser-core-c3; production parser is src/parser.rs)
 - [x] Decide: newlines-after-dot in access chains — document as intentional line-continuation: newlines after `.` are permitted (`expr\n.field` → `expr.field`), improving readability without ambiguity. See doc/02-syntax.md §Dot Access.
 - [x] Benchmark iterative parser parse time on large inputs [Deferred from parser-core-c3] (deferred to perf-foundations)
+
+## parser-formatter: Phase 3 — AST-Based Formatter
+
+Rewrite `src/formatter.rs` to walk `ParseOutput`. See doc/whatif/parser-rewrite.md §Phase 3. **Depends on:** `parser-core`.
+
+**Previously BLOCKED (C69):** AST-based formatter rewrite attempted but reverted — the AST does not preserve bare-word vs quoted-string distinction (both stored as `Expr::Str`). **Resolved:** add `source: String` to `ParseOutput`; formatter uses span-based source lookup to recover quoting form. See design item below.
+
+- [x] Design: decide how to preserve bare-word vs quoted-string distinction in AST for formatter round-tripping — add `source: String` to `ParseOutput`; formatter checks `source.as_bytes()[span.start.offset] == b'"'` to determine quoting. Zero change to `Expr` enum (schema stability for macros); eliminated when unified syntax Phase 2 lands. See doc/whatif/parser-rewrite.md §AST-Based Formatter.
+- [x] Rewrite `src/formatter.rs` as AST walker over `ParseOutput.file`
+- [x] Emit leading comments via `ParseOutput.leading_comments.get(&node.span.start.offset)` before each node (`src/formatter.rs`)
+- [x] Emit trailing comments via `ParseOutput.trailing_comments.get(&node.span.start.offset)` after each line (`src/formatter.rs`)
+- [x] Remove `is_fn_params` heuristic — replaced by AST node type (`src/formatter.rs`)
+- [x] Remove all remaining `has_whitespace_between` call sites (`src/formatter.rs`)
+- [x] Remove keyword string comparisons (`BareWord(s) if s == "fn"` etc.) — replaced by AST node type (`src/formatter.rs`)
+- [x] All 48 existing formatter corpus tests pass with identical output for valid inputs

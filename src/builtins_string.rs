@@ -61,7 +61,10 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
+    // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
     let sep_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    // arg[1] is forced synchronously; BuiltinForceArg only covers arg[0].
+    // Acceptable: the input string is typically a small literal or bound variable.
     let input_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
 
     let sep = require_string("split", sep_val, args[0].span)?;
@@ -116,7 +119,10 @@ pub(crate) fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
+    // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
     let pattern_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    // args[1] and args[2] are forced synchronously; BuiltinForceArg only covers arg[0].
+    // Acceptable: replacement and input strings are typically small literals or bound variables.
     let replacement_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
     let input_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
 

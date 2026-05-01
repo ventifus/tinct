@@ -1092,7 +1092,9 @@ fn include_llt_format_output() {
 
 #[test]
 fn include_path_traversal_parent_dir() {
-    // child.llt in a subdirectory includes ../parent.llt via path traversal
+    // child.llt in a subdirectory tries to include ../parent.llt via path traversal.
+    // cap-std's RESOLVE_BENEATH sandbox correctly rejects parent-directory escapes,
+    // so this should produce an error (not succeed).
     let dir = make_include_dir("path_traversal");
     let subdir = dir.path().join("subdir");
     fs::create_dir_all(&subdir).unwrap();
@@ -1109,13 +1111,15 @@ fn include_path_traversal_parent_dir() {
         .expect("failed to run tinct");
 
     assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "parent-directory traversal should be rejected by sandbox"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(json, serde_json::json!({"data": {"greeting": "hello"}}));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot access") || stderr.contains("outside"),
+        "expected sandbox error, got: {}",
+        stderr
+    );
 }
 
 #[test]

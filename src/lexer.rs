@@ -233,6 +233,7 @@ impl<'a> Lexer<'a> {
                     // for bracket-access detection: `[` on the next line is never a
                     // BracketAccess on the previous line's value.
                     self.had_whitespace_before = true;
+                    self.last_significant_token = None;
                     let start = self.current_position();
                     self.advance();
                     if self.peek_char() == Some('\n') {
@@ -251,6 +252,7 @@ impl<'a> Lexer<'a> {
                     // A newline acts as whitespace for bracket-access detection: `[` on
                     // the next line is never a BracketAccess on the previous line's value.
                     self.had_whitespace_before = true;
+                    self.last_significant_token = None;
                     let start = self.current_position();
                     self.advance();
                     let end = self.current_position();

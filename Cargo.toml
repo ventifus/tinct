@@ -25,6 +25,7 @@ repl = ["dep:rustyline"]
 lsp = ["dep:lsp-server", "dep:lsp-types"]
 
 [dependencies]
+cap-std = "3"
 clap = { version = "4.6", features = ["derive"], optional = true }
 indexmap = "2.7"
 libc = "0.2"  # Used for POSIX signal handling (SIGALRM timeout) in src/main.rs

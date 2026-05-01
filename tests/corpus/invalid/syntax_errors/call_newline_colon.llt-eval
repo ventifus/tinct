@@ -1,0 +1,4 @@
+[call
+: something]
+===
+ERROR: `:` without a name

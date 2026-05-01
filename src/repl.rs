@@ -97,14 +97,14 @@ impl ReplSession {
     /// Returns an error if the stdlib fails to load (e.g., prelude parse error).
     pub fn new() -> Result<Self, String> {
         let stdlib_env = create_stdlib_env().map_err(|e| format!("{e}"))?;
-        Ok(Self::with_env(stdlib_env))
+        Self::with_env(stdlib_env)
     }
 
     /// Create a new REPL session using a pre-created stdlib environment.
     ///
     /// This allows the caller to share the same `stdlib_env` with other
     /// infrastructure (e.g., `EvalContext`).
-    pub fn with_env(stdlib_env: Rc<RefCell<Environment>>) -> Self {
+    pub fn with_env(stdlib_env: Rc<RefCell<Environment>>) -> Result<Self, String> {
         // Create a session env as a child of stdlib, with $$ = empty dict.
         let session_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
             &stdlib_env,
@@ -119,17 +119,15 @@ impl ReplSession {
             .insert("$".to_string(), Rc::clone(&empty_dict));
 
         // Create REPL session context (REPL runs in current directory, no sandbox)
-        let ctx = crate::eval::EvalContext::new(
-            std::path::PathBuf::from("."),
-            Rc::clone(&stdlib_env),
-            false,
-        );
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open current directory: {e}"))?;
+        let ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
 
-        Self {
+        Ok(Self {
             env: session_env,
             prev_result: empty_dict,
             ctx,
-        }
+        })
     }
 
     /// Evaluate a complete input string (one or more expressions forming a scope chain).
@@ -223,7 +221,7 @@ pub fn run_repl() -> Result<(), String> {
 
     // Create the stdlib env once and share it between the session and $include context.
     let stdlib_env = create_stdlib_env().map_err(|e| format!("{e}"))?;
-    let mut session = ReplSession::with_env(Rc::clone(&stdlib_env));
+    let mut session = ReplSession::with_env(Rc::clone(&stdlib_env))?;
 
     // The ReplSession already has an EvalContext set up with CWD as base_dir,
     // so $include will work correctly using the context threading.
@@ -754,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB stack in debug mode; permanent fix is iterative-eval sprint (CEK machine)"]
+    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. Stack safety is guaranteed by the iterative materialize_rc loop; these tests verify the depth-limit POLICY only."]
     fn test_session_depth_exhaustion() {
         // 256 levels of LLT recursion needs more than the default 8MB Rust stack.
         let result = std::thread::Builder::new()

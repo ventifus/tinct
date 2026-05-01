@@ -9,10 +9,6 @@ use tinct::{
     materialize, parse, value_to_display_string, value_to_json, Span, Thunk, MAX_FILE_SIZE,
 };
 
-// Parser is now iterative (no stack risk); this workaround remains for eval.rs deep recursion
-// until the iterative-eval sprint.
-const WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
-
 // Exit codes for llt eval
 const EXIT_ERROR: i32 = 1;
 const EXIT_TIMEOUT: i32 = 2;
@@ -81,38 +77,31 @@ enum OutputFormat {
 fn main() {
     let cli = Cli::parse();
 
-    let result = std::thread::Builder::new()
-        .stack_size(WORKER_STACK_SIZE)
-        .spawn(move || match cli.command {
-            Commands::Eval {
-                format,
-                eval,
-                no_fs,
-                timeout,
-                file,
-            } => run_eval(&file, &format, eval, no_fs, timeout.as_deref()),
-            Commands::Fmt {
-                check,
-                in_place,
-                file,
-            } => run_fmt(&file, check, in_place),
-            #[cfg(feature = "repl")]
-            Commands::Repl => tinct::repl::run_repl(),
-            #[cfg(feature = "lsp")]
-            Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
-        })
-        .expect("failed to spawn worker thread")
-        .join();
+    // Materialize is iterative (materialize_rc loop); no large worker stack needed.
+    // The REPL spawns its own 128MB thread for eval when needed (src/repl.rs).
+    let result = match cli.command {
+        Commands::Eval {
+            format,
+            eval,
+            no_fs,
+            timeout,
+            file,
+        } => run_eval(&file, &format, eval, no_fs, timeout.as_deref()),
+        Commands::Fmt {
+            check,
+            in_place,
+            file,
+        } => run_fmt(&file, check, in_place),
+        #[cfg(feature = "repl")]
+        Commands::Repl => tinct::repl::run_repl(),
+        #[cfg(feature = "lsp")]
+        Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
+    };
 
     match result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
+        Ok(()) => {}
+        Err(e) => {
             eprintln!("{e}");
-            process::exit(EXIT_ERROR);
-        }
-        Err(_) => {
-            eprintln!("internal error: worker thread panicked");
-            // Exit code 2 reserved for --timeout (SIGALRM); panics are general errors (code 1)
             process::exit(EXIT_ERROR);
         }
     }
@@ -247,7 +236,7 @@ fn run_eval(
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
 
     // Determine base directory for $include resolution
-    let base_dir = if file_path == "-" {
+    let base_dir_path = if file_path == "-" {
         std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
     } else {
         let p = std::path::Path::new(file_path);
@@ -261,6 +250,10 @@ fn run_eval(
                 .map_err(|e| format!("cannot determine working directory: {e}"))?,
         }
     };
+
+    // Open base_dir as a cap-std Dir
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open base directory: {e}"))?;
 
     // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
     let eval_ctx = tinct::EvalContext::new(base_dir, Rc::clone(&env), no_fs);

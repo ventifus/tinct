@@ -22,6 +22,7 @@ pub(crate) mod eval;
 pub(crate) mod eval_access;
 pub(crate) mod eval_call;
 pub(crate) mod eval_deep;
+pub(crate) mod eval_materialize;
 pub mod formatter;
 pub mod lexer;
 pub mod parser;
@@ -58,7 +59,7 @@ use std::rc::Rc;
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
 /// Parser entry points and error type.
-pub use parser::{parse, parse_expression, ParseError};
+pub use parser::{parse, parse2, parse_expression, ParseError, ParseOutput};
 
 /// Evaluation functions and depth limit.
 pub use eval::{
@@ -122,10 +123,12 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let _ = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
     // Create evaluation context (current directory, configurable sandbox)
-    let base_dir = std::env::current_dir()
+    let base_dir_path = std::env::current_dir()
         .ok()
         .and_then(|d| d.canonicalize().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
     let thunk =
         eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(|e| format!("{e}"))?;
@@ -317,11 +320,9 @@ mod tests {
     }
 
     fn test_ctx() -> Rc<eval::EvalContext> {
-        eval::EvalContext::new(
-            std::path::PathBuf::from("."),
-            builtins::create_root_env(),
-            false,
-        )
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        eval::EvalContext::new(base_dir, builtins::create_root_env(), false)
     }
 
     #[test]

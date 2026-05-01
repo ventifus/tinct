@@ -271,7 +271,9 @@ mod tests {
 
     /// Helper: create an EvalContext for tests.
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new(std::path::PathBuf::from("."), test_env(), true)
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        crate::eval::EvalContext::new(base_dir, test_env(), true)
     }
 
     #[test]
