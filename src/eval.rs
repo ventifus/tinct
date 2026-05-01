@@ -874,6 +874,17 @@ struct GuardedValidateData {
     mat_span: Option<Span>,
 }
 
+/// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
+struct TypeAssertCheckData {
+    annotation: Box<Spanned<Annotation>>,
+    resolved: Box<Option<Type>>,
+    expr_span: Span,
+    thunk_span: Span,
+    env: Rc<RefCell<Environment>>,
+    ctx: Rc<EvalContext>,
+    depth: usize,
+}
+
 /// Payload for Cont::BuiltinForceArg. Boxed to keep the Cont enum ≤96 bytes.
 struct BuiltinForceArgData {
     thunk: Rc<Thunk>,
@@ -929,6 +940,10 @@ enum Cont {
         ctx: Rc<EvalContext>,
         depth: usize,
     },
+    /// Validate a materialized value against a TypeAssert annotation.
+    /// Pushed by eval_step() after evaluating the inner expression thunk; replaces the
+    /// synchronous materialize() call that was the laziness violation in the TypeAssert branch.
+    TypeAssertCheck(Box<TypeAssertCheckData>),
 }
 
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
@@ -1876,6 +1891,150 @@ fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<Cont>) -> A
                 }
             }
         }
+        Cont::TypeAssertCheck(data) => {
+            let TypeAssertCheckData {
+                annotation,
+                resolved,
+                expr_span,
+                thunk_span,
+                env,
+                ctx,
+                depth,
+            } = *data;
+            match result {
+                Err(e) => Action::Continue(Err(e)),
+                Ok(value) => match *resolved {
+                    Some(expected) => match &expected {
+                        Type::Record(row) => {
+                            if let Value::Dict(entries) = &value {
+                                let default_opt = annotation
+                                    .node
+                                    .get_property(DEFAULT_ANNOTATION_KEY)
+                                    .map(|expr| (expr.clone(), Rc::clone(&env)));
+                                match validate_and_wrap_record(
+                                    entries,
+                                    row,
+                                    vec![],
+                                    expr_span,
+                                    thunk_span,
+                                ) {
+                                    Ok(new_entries) => {
+                                        Action::Continue(Ok(Value::Dict(new_entries)))
+                                    }
+                                    Err(err) => {
+                                        if let Some((default, env)) = default_opt {
+                                            match eval_recursive(&default, env, &ctx, depth + 1) {
+                                                Ok(t) => Action::Materialize {
+                                                    thunk: t,
+                                                    mat_span: None,
+                                                    depth,
+                                                },
+                                                Err(e) => Action::Continue(Err(e)),
+                                            }
+                                        } else {
+                                            Action::Continue(Err(err))
+                                        }
+                                    }
+                                }
+                            } else {
+                                if let Some(default_expr) =
+                                    annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                                {
+                                    match eval_recursive(default_expr, env, &ctx, depth + 1) {
+                                        Ok(t) => Action::Materialize {
+                                            thunk: t,
+                                            mat_span: None,
+                                            depth,
+                                        },
+                                        Err(e) => Action::Continue(Err(e)),
+                                    }
+                                } else {
+                                    Action::Continue(Err(EvalError::type_assert_failed(
+                                        &format_type_for_assert(&expected),
+                                        &value.type_name(),
+                                        thunk_span,
+                                    )
+                                    .with_materialization_span(expr_span)
+                                    .into()))
+                                }
+                            }
+                        }
+                        _ => {
+                            if value_matches_type(&value, &expected) {
+                                Action::Continue(Ok(value))
+                            } else if let Some(default_expr) =
+                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                            {
+                                match eval_recursive(default_expr, env, &ctx, depth + 1) {
+                                    Ok(t) => Action::Materialize {
+                                        thunk: t,
+                                        mat_span: None,
+                                        depth,
+                                    },
+                                    Err(e) => Action::Continue(Err(e)),
+                                }
+                            } else {
+                                Action::Continue(Err(EvalError::type_assert_failed(
+                                    &format_type_for_assert(&expected),
+                                    &value.type_name(),
+                                    thunk_span,
+                                )
+                                .with_materialization_span(expr_span)
+                                .into()))
+                            }
+                        }
+                    },
+                    None => {
+                        // --no-typecheck FALLBACK (nominal validation)
+                        let expected_name: Option<String> = match &annotation.node {
+                            Annotation::Simple(name) => Some(name.clone()),
+                            Annotation::PropertyDict(_) => annotation
+                                .node
+                                .get_property("type")
+                                .and_then(|type_expr| match &type_expr.node {
+                                    Expr::Str(s) => Some(s.clone()),
+                                    _ => None,
+                                }),
+                        };
+                        if let Some(expected) = expected_name {
+                            let actual = value.type_name();
+                            let matches = if expected == "Number" {
+                                actual == "Int" || actual == "Float"
+                            } else {
+                                actual == expected.as_str()
+                            };
+                            if !matches {
+                                if let Some(default_expr) =
+                                    annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                                {
+                                    return match eval_recursive(
+                                        default_expr,
+                                        env,
+                                        &ctx,
+                                        depth + 1,
+                                    ) {
+                                        Ok(t) => Action::Materialize {
+                                            thunk: t,
+                                            mat_span: None,
+                                            depth,
+                                        },
+                                        Err(e) => Action::Continue(Err(e)),
+                                    };
+                                }
+                                return Action::Continue(Err(EvalError::type_assert_failed(
+                                    &expected,
+                                    actual,
+                                    thunk_span,
+                                )
+                                .with_materialization_span(expr_span)
+                                .into()));
+                            }
+                        }
+                        Action::Continue(Ok(value))
+                    }
+                },
+            }
+        }
     }
 }
 
@@ -1892,7 +2051,7 @@ fn eval_step(
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
     depth: usize,
-    _stack: &mut Vec<Cont>,
+    stack: &mut Vec<Cont>,
 ) -> Action {
     // Depth check at entry point
     if depth > MAX_EVAL_DEPTH {
@@ -1968,145 +2127,25 @@ fn eval_step(
             annotation,
             resolved_type,
         } => {
-            // TypeAssert is complex and calls eval_recursive() for defaults.
-            // We use eval_recursive here instead of going through the CEK machine
-            // to avoid the complexity of continuation-passing style for this case.
-            let thunk = match eval_recursive(inner, Rc::clone(&env), ctx, depth + 1) {
+            let inner_thunk = match eval_recursive(inner, Rc::clone(&env), ctx, depth + 1) {
                 Ok(t) => t,
                 Err(e) => return Action::Continue(Err(e)),
             };
-
-            // Check if elaboration provided a resolved type
             let resolved = resolved_type.borrow().clone();
-
-            if let Some(expected) = resolved {
-                // STRUCTURAL VALIDATION (type checker succeeded and provided elaboration)
-
-                match &expected {
-                    Type::Record(row) => {
-                        // [VM-RECORD-PROXY]: shape check + guard wrapping
-                        // Must materialize eagerly to perform shape check
-                        let value = match materialize(&thunk, Some(&expr.span), ctx, depth + 1) {
-                            Ok(v) => v,
-                            Err(e) => return Action::Continue(Err(e)),
-                        };
-                        if let Value::Dict(entries) = &value {
-                            // Use helper to validate and wrap record
-                            // If validation fails and default: is present, use default
-                            let default_opt = annotation
-                                .node
-                                .get_property(DEFAULT_ANNOTATION_KEY)
-                                .map(|expr| (expr.clone(), Rc::clone(&env)));
-
-                            match validate_and_wrap_record(
-                                entries,
-                                row,
-                                vec![],
-                                expr.span,
-                                thunk.span,
-                            ) {
-                                Ok(new_entries) => Action::Continue(Ok(Value::Dict(new_entries))),
-                                Err(err) => {
-                                    if let Some((default, env)) = default_opt {
-                                        wrap_thunk(eval_recursive(&default, env, ctx, depth + 1))
-                                    } else {
-                                        Action::Continue(Err(err))
-                                    }
-                                }
-                            }
-                        } else {
-                            // Expected Record but got non-Dict
-                            if let Some(default_expr) =
-                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                            {
-                                return wrap_thunk(eval_recursive(
-                                    default_expr,
-                                    env,
-                                    ctx,
-                                    depth + 1,
-                                ));
-                            }
-                            Action::Continue(Err(EvalError::type_assert_failed(
-                                &format_type_for_assert(&expected),
-                                &value.type_name(),
-                                thunk.span, // value's definition site, not annotation site
-                            )
-                            .with_materialization_span(expr.span)
-                            .into()))
-                        }
-                    }
-                    _ => {
-                        // Non-Record type: immediate validation per spec (line 22)
-                        // "For primitive types, validation is immediate"
-                        // TODO: This is a laziness violation - should defer to PendingBuiltin-style deferred check (see TODO.md pre-cek-fixes task 5)
-                        let value = match materialize(&thunk, Some(&expr.span), ctx, depth + 1) {
-                            Ok(v) => v,
-                            Err(e) => return Action::Continue(Err(e)),
-                        };
-                        if value_matches_type(&value, &expected) {
-                            Action::Continue(Ok(value))
-                        } else {
-                            if let Some(default_expr) =
-                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                            {
-                                return wrap_thunk(eval_recursive(
-                                    default_expr,
-                                    env,
-                                    ctx,
-                                    depth + 1,
-                                ));
-                            }
-                            Action::Continue(Err(EvalError::type_assert_failed(
-                                &format_type_for_assert(&expected),
-                                &value.type_name(),
-                                thunk.span, // value's definition site, not annotation site
-                            )
-                            .with_materialization_span(expr.span)
-                            .into()))
-                        }
-                    }
-                }
-            } else {
-                // --no-typecheck FALLBACK (nominal validation)
-                let value = match materialize(&thunk, Some(&expr.span), ctx, depth + 1) {
-                    Ok(v) => v,
-                    Err(e) => return Action::Continue(Err(e)),
-                };
-
-                let expected_type =
-                    match &annotation.node {
-                        Annotation::Simple(name) => Some(name.as_str()),
-                        Annotation::PropertyDict(_) => annotation
-                            .node
-                            .get_property("type")
-                            .and_then(|type_expr| match &type_expr.node {
-                                Expr::Str(s) => Some(s.as_str()),
-                                _ => None,
-                            }),
-                    };
-
-                if let Some(expected) = expected_type {
-                    let actual = value.type_name();
-                    let matches = if expected == "Number" {
-                        actual == "Int" || actual == "Float"
-                    } else {
-                        actual == expected
-                    };
-                    if !matches {
-                        if let Some(default_expr) =
-                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                        {
-                            return wrap_thunk(eval_recursive(default_expr, env, ctx, depth + 1));
-                        }
-                        return Action::Continue(Err(EvalError::type_assert_failed(
-                            expected, actual, thunk.span,
-                        )
-                        .with_materialization_span(expr.span)
-                        .into()));
-                    }
-                }
-
-                Action::Continue(Ok(value))
+            let thunk_span = inner_thunk.span;
+            stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
+                annotation: Box::new(annotation.clone()),
+                resolved: Box::new(resolved),
+                expr_span: expr.span,
+                thunk_span,
+                env,
+                ctx: Rc::clone(ctx),
+                depth,
+            })));
+            Action::Materialize {
+                thunk: inner_thunk,
+                mat_span: Some(expr.span),
+                depth: depth + 1,
             }
         }
         Expr::Annotated { name, .. } => {
