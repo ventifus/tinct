@@ -2266,3 +2266,9 @@ Core linked-list primitives — the four operations that construct and destructu
 Sequence generators — create new infinite or finite sequences from seeds or ranges.
 
 - [x] Move `builtin_range`+`range_step`, `builtin_repeat`, `builtin_cycle`+`cycle_step`, `builtin_iterate`, `builtin_unfold`+`unfold_step` to `src/builtins_seq_gen.rs` (`src/builtins.rs:1550-1975`, ~425 lines) [Minor]
+
+## builtins-split-c: Extract builtins_seq_xform.rs
+
+Sequence transforms — consume a sequence and produce a new one element-by-element.
+
+- [x] Move `builtin_map`+`map_step`, `builtin_filter`+`filter_step`, `builtin_take`, `builtin_drop` to `src/builtins_seq_xform.rs` (`src/builtins.rs:1976-2628`, ~650 lines) [Minor]
