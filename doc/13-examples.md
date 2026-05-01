@@ -15,6 +15,8 @@ Dict([
 ])
 ```
 
+Note: Entries with explicit `key:` syntax produce `Entry { key: Some(...), value: ... }` nodes. The dict preserves insertion order for iteration.
+
 ### 8.2 Simple List
 
 **Input:**
@@ -30,6 +32,8 @@ Dict([
     Entry { key: None, value: Str("c") },
 ])
 ```
+
+Note: Unkeyed entries produce `Entry { key: None, value: ... }` nodes. The evaluator assigns auto-incrementing integer keys `0, 1, 2, ...` during evaluation.
 
 ### 8.3 Nested Dict
 
@@ -60,6 +64,8 @@ Dict([
 ])
 ```
 
+Note: Nested dicts are simply `Dict` expressions appearing as entry values. Letrec scoping allows entries to reference each other at any nesting level.
+
 ### 8.4 Function Call with Named Args
 
 **Input:**
@@ -78,6 +84,8 @@ Call {
     ],
 }
 ```
+
+Note: Named arguments appear in a separate `named_args` list in the Call AST node. The evaluator binds named args after positional args via the C-PRIORITY chain.
 
 ### 8.5 Function Definition with Annotations
 
@@ -104,6 +112,8 @@ Fn {
     },
 }
 ```
+
+Note: Parameter annotations can be simple type names (`Simple("Number")`) or property dicts containing `type`, `default`, or `description` fields. The type checker validates annotations against the inferred parameter types.
 
 ### 8.6 Pipeline with `$_` Shorthand
 
@@ -152,6 +162,8 @@ Call {
 }
 ```
 
+Note: After desugaring, `$_`-containing expressions become `Fn { params: [Param { name: "_", ... }], body: ... }` nodes. The desugaring happens before type checking.
+
 ### 8.7 Access Chains
 
 **Input:**
@@ -173,6 +185,8 @@ DotAccess {
 }
 ```
 
+Note: Access chains parse as nested AST nodes. The evaluator reduces inside-out: `VarRef("config")` → dot "services" → bracket 0 → dot "host", forcing each target before the next projection.
+
 ### 8.8 Range Access
 
 **Input:**
@@ -189,6 +203,8 @@ RangeAccess {
 }
 ```
 
+Note: Range access uses half-open interval semantics `[start, end)`. `None` bounds mean unbounded. The evaluator materializes the target dict and filters entries by key comparison.
+
 ### 8.9 Type Assertion
 
 **Input:**
@@ -203,6 +219,8 @@ TypeAssert {
     expr: VarRef("expr"),
 }
 ```
+
+Note: `TypeAssert` nodes materialize the inner expression and check its type. Type assertions are strict — they force evaluation immediately.
 
 ### 8.10 Type Assertion with Fallback
 
@@ -221,6 +239,8 @@ TypeAssert {
     expr: DotAccess { expr: VarRef("config"), field: "port" },
 }
 ```
+
+Note: Property dict annotations allow fallback defaults. If type checking fails, the evaluator uses the `default` value instead of erroring.
 
 ### 8.11 Type Alias
 
@@ -263,7 +283,7 @@ Dict([
 ])
 ```
 
-Comments are discarded during tokenization and do not appear in the AST.
+Note: Comments are discarded during tokenization and do not appear in the AST.
 
 ### 8.13 Variadic Function
 
@@ -288,6 +308,8 @@ Fn {
 }
 ```
 
+Note: Variadic parameters (marked with `...`) collect all remaining positional arguments into a dict. The `variadic: true` flag signals this to the evaluator.
+
 ### 8.14 Mixed Positional and Named Entries
 
 **Input:**
@@ -305,6 +327,8 @@ Call {
     ],
 }
 ```
+
+Note: Call syntax distinguishes positional (`args`) and named (`named_args`) arguments. The parser places keyed arguments in `named_args`, unkeyed arguments in `args`.
 
 ### 8.15 Multi-Expression Document
 
@@ -328,6 +352,8 @@ File {
     ]
 }
 ```
+
+Note: Multiple top-level expressions in a document are merged into a single dict during evaluation. Each expression is evaluated in the merged environment.
 
 ### 8.16 Multi-Document File
 
@@ -355,3 +381,5 @@ File {
     ]
 }
 ```
+
+Note: The `---` separator creates separate documents. The `$$` pipeline reference accesses the result of the previous document. Each document is evaluated independently.

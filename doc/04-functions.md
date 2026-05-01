@@ -89,7 +89,7 @@ Examples:
 
 ## Function Arguments
 
-**Positional first, then named.** Like Python.
+**Named args supported for any parameter (Kotlin model).**
 
 ```tinct
 [call $fetch "https://example.com" timeout: 30  retries: 3]

@@ -11,7 +11,9 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::builtins::{expect_one_arg, ok_val, reject_named, require_string, stringify, MAX_STRING_SIZE};
+use crate::builtins::{
+    expect_one_arg, ok_val, reject_named, require_string, stringify, MAX_STRING_SIZE,
+};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Key, Thunk, Value};

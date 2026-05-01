@@ -115,7 +115,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Composition** (structural — builds function pipelines, no values materialized):
 - `->` (threading)
 - `compose`
-- `apply` — call function with list spread as positional args
+- `apply` — call function with dict spread (Key::String → named args, Key::Int sorted → positional args)
 
 **Sequences** (lazy computation -- produce `Seq` values):
 - `range`, `repeat`, `cycle`, `iterate`, `unfold` -- constructors (finite or infinite)
@@ -175,7 +175,7 @@ first-ten: [call $collect [call $take 10 $squares]]
 | Strings | — | `str`, `split`, `replace`, `upper`, `lower`, `trim` | Strings are opaque; all content operations require Rust. |
 | Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
-| Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-forces; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict as positional args. |
+| Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-forces; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). |
 | Type introspection | — | `type-of` | Inspects the Value enum variant. |
 | Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join` (no stable aliases needed). |
 | I/O | — | `from-json`, `include` | serde_json, filesystem access. |
@@ -229,9 +229,18 @@ Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-f
               └── User predicates and programs
 ```
 
-## Stdlib Function Reference (~124 total: 46 Rust builtins + 12 stable builtin-* aliases + 66 LLT functions (54 public API + 12 shadowable wrappers))
+## Stdlib Function Reference (~127 total user-facing: 93 LLT functions + 34 unwrapped Rust builtins)
 
-Functions available to all user code. About half are implemented in Tinct in `stdlib/prelude.llt`. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`) are omitted.
+**Architecture:** 46 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + 93 LLT-implemented functions in `stdlib/prelude.llt` (81 public API + 12 shadowable wrappers). Of the 46 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). Total user-facing functions: 93 LLT + 34 unwrapped Rust = 127.
+
+Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
+
+**New stdlib categories (added in recent cycles):**
+- **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
+- **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
+- **Type predicates** (`int?`, `str?`, `float?`, `bool?`, `dict?`, `fn?`) — runtime type inspection for dynamic dispatch and validation
+
+These additions bring Tinct's stdlib coverage closer to mature configuration languages while maintaining the LLT-first principle — all implemented in LLT itself, building on Rust primitives.
 
 > **Note:** Overrides apply to the initial dispatch only; Seq corecursion steps always call the underlying Rust implementation directly.
 
@@ -281,6 +290,9 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `ceil` | `[fn [x] ...]` | Ceiling: smallest integer >= x. Derived as `-floor(-x)` |
 | `trunc` | `[fn [x] ...]` | Truncate toward zero: `floor` for positive, `ceil` for negative |
+| `abs` | `[fn [x] ...]` | Absolute value: returns non-negative magnitude of a number |
+| `sign` | `[fn [x] ...]` | Sign of a number: -1 for negative, 0 for zero, 1 for positive |
+| `clamp` | `[fn [lo hi x] ...]` | Clamp a value between lo and hi bounds (inclusive) |
 
 **String (derived from `str`, `split`, `filter`):**
 
@@ -351,12 +363,42 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `filter` | `[fn [pred xs] ...]` | Keep values where predicate returns true (returns Seq) |
 | `reduce` | `[fn [f init xs] ...]` | Left fold (Rust builtin; dual-dispatch Dict/Seq) |
 | `fold` | `[fn [f init xs] ...]` | Alias for `reduce` |
+| `foldr` | `[fn [f acc xs] ...]` | Right fold: fold from the right, equivalent to `fold(f, acc, reverse(xs))` |
 | `slice` | `[fn [xs start end] ...]` | Positional slice (start inclusive, end exclusive) |
 | `take` | `[fn [n xs] ...]` | Take the first n entries, preserving keys |
+| `take-while` | `[fn [pred xs] ...]` | Take elements from beginning while predicate holds; stop at first failure |
 | `drop` | `[fn [n xs] ...]` | Skip first n entries (Rust builtin; dual-dispatch Dict/Seq) |
+| `drop-while` | `[fn [pred xs] ...]` | Drop elements from beginning while predicate holds; return remaining suffix |
 | `zip` | `[fn [xs ys] ...]` | Pair entries from two collections by position |
+| `unzip` | `[fn [pairs] ...]` | Unzip a list of pairs into a pair of lists |
 | `flatten` | `[fn [xs] ...]` | Flatten nested lists one level deep |
 | `find-deep` | `[fn [xs target] ...]` | Recursively search for a key in nested dicts |
+
+**Higher-Order Dict/List Utilities:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `with-entries` | `[fn [xs f] ...]` | Transform a dict via entries: `entries → map(f) → from-entries` |
+| `partition` | `[fn [pred xs] ...]` | Split into two groups: elements satisfying pred (`x`) and those that don't (`not-x`) |
+| `flat-map` | `[fn [f xs] ...]` | Map function over collection and flatten (concatenate) the results |
+| `find-first` | `[fn [pred xs] ...]` | Return the first element satisfying pred, or error if none found |
+| `find-first-or` | `[fn [pred default xs] ...]` | Return the first element satisfying pred, or default if none found |
+| `group-by` | `[fn [f xs] ...]` | Group elements into a dict of lists, keyed by the result of applying f |
+| `deep-merge` | `[fn [a b] ...]` | Merge two dicts recursively; sub-dicts are merged depth-first, other values from b override a |
+| `walk` | `[fn [f xs] ...]` | Apply function bottom-up to every node in nested dict structure |
+| `transpose` | `[fn [rows] ...]` | Transpose a 2D dict structure (flip rows and columns) |
+
+**Aggregates:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `sum` | `[fn [xs] ...]` | Sum all elements of a numeric collection |
+| `product` | `[fn [xs] ...]` | Product of all elements in a numeric collection |
+| `min` | `[fn [xs] ...]` | Return the minimum element (errors on empty collection) |
+| `max` | `[fn [xs] ...]` | Return the maximum element (errors on empty collection) |
+| `count` | `[fn [pred xs] ...]` | Count elements satisfying predicate |
+| `contains?` | `[fn [xs val] ...]` | Check if a collection contains val (structural equality) |
+| `uniq` | `[fn [xs] ...]` | Remove duplicate elements, keeping the first occurrence of each |
 
 **Composition:**
 
@@ -364,6 +406,17 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `compose` | `[fn [f g] ...]` | Compose two functions: `(compose f g)(x) = f(g(x))` |
 | `->` | `[fn [x ...stages] ...]` | Thread a value through a series of functions |
+
+**Type Predicates:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `int?` | `[fn [x] ...]` | Check if value is an Int |
+| `str?` | `[fn [x] ...]` | Check if value is a String |
+| `float?` | `[fn [x] ...]` | Check if value is a Float |
+| `bool?` | `[fn [x] ...]` | Check if value is a Bool |
+| `dict?` | `[fn [x] ...]` | Check if value is a Dict |
+| `fn?` | `[fn [x] ...]` | Check if value is a Function |
 
 **Error Handling:**
 

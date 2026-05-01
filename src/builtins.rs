@@ -283,9 +283,10 @@ fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 // String builtins: str, split, replace, upper, lower, trim.
 // Implementations live in builtins_string.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
+#[cfg(test)]
+pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
 pub(crate) use crate::builtins_string::{
     builtin_lower, builtin_replace, builtin_split, builtin_str, builtin_trim, builtin_upper,
-    MAX_SPLIT_PARTS,
 };
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
@@ -776,12 +777,14 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         EvalError::include_io_error(resolved.display().to_string(), e.to_string(), call_span)
     })?;
 
-    // Check cache first: if we've already evaluated this file, return the cached thunk.
+    // Check cache: if we've already evaluated this file, return the cached result
+    // immediately. This bypasses file I/O, parsing, evaluation, AND the include_guard
+    // check (cached results are already materialized, so re-entry is safe).
     if let Some(cached) = ctx.state.borrow().include_cache.get(&canonical) {
         return Ok(Rc::clone(cached));
     }
 
-    // Cycle detection.
+    // Cycle detection: check if this canonical path is currently being evaluated.
     if ctx.state.borrow().include_guard.contains(&canonical) {
         return Err(EvalError::include_cycle(canonical.display().to_string(), call_span).into());
     }
@@ -2632,7 +2635,7 @@ mod tests {
     fn try_with_builtin_failure() {
         fn err_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let BuiltinArgs { call_span, .. } = ctx;
-            Err(EvalError::new("builtin error".to_string(), call_span).into())
+            Err(EvalError::internal("builtin error".to_string(), call_span).into())
         }
         let b = Value::Builtin {
             name: "fail",
@@ -2787,7 +2790,7 @@ mod tests {
             let b = materialize(&args[1], None, &ctx, 0)?;
             match (a, b) {
                 (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
-                _ => Err(EvalError::new("expected ints".to_string(), call_span).into()),
+                _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
             }
         }
         let func = Value::Builtin {

@@ -635,6 +635,8 @@ impl fmt::Display for ErrorKind {
                 write!(f, "type assertion failed: expected {expected}, got {got}"),
             Self::ArityMismatch { expected, got } =>
                 write!(f, "arity mismatch: expected {expected}, got {got}"),
+            Self::MissingRequiredParam { param } =>
+                write!(f, "missing argument for required parameter '{param}'"),
             Self::NamedArgConflict { param } =>
                 write!(f, "parameter '{param}' received both positional and named argument"),
             Self::UnknownNamedArg { name } =>

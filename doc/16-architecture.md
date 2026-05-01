@@ -40,7 +40,7 @@
 
 ### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
 
-> **Status:** Phase 1 (materialize) complete via iterative-eval-a — `materialize_rc` replaced by iterative `run()` loop with `Vec<Cont>` stack. Phase 2 (PendingCall lazy dispatch) complete via iterative-eval-b1 — `eval_call` returns PendingCall thunks. Phase 3 (access chains) complete via iterative-eval-b2 — DotAccessForce/BracketForceTarget continuations. Phase 4 (structural cleanup) complete via iterative-eval-b3 — MatCont→Cont rename, Action enum, run() function. eval() step conversion pending in iterative-eval-b4.
+> **Status:** Phase 1 (materialize) complete via iterative-eval-a — `materialize_rc` replaced by iterative `run()` loop with `Vec<Cont>` stack. Phase 2 (PendingCall lazy dispatch) complete via iterative-eval-b1 — `eval_call` returns PendingCall thunks. Phase 3 (access chains) complete via iterative-eval-b2 — DotAccessForce/BracketForceTarget continuations. Phase 4 (structural cleanup) complete via iterative-eval-b3 — MatCont→Cont rename, Action enum, run() function. Phase 5 (eval step stub) partially complete via iterative-eval-b4 — `eval_step()` delegates to `eval_recursive()`; tasks 2/4/5 blocked (DictEntries, TypeAssertCheck, $apply Cont variants). Module extractions: `eval_call.rs` (eval-split-a), `eval_deep.rs` (eval-split-d), `eval_access.rs` (eval-split-d).
 
 The iterative evaluator replaces the recursive `eval()` / `materialize()` call stack with an explicit continuation stack. The design follows Reynolds (1972) defunctionalization: each recursive call becomes a first-class `Cont` value pushed onto a `Vec<Cont>` stack. The main loop is a two-register machine `(action: Action, stack: Vec<Cont>)`.
 
@@ -99,20 +99,23 @@ enum Cont {
 **Main loop sketch:**
 
 ```rust
-fn run(mut action: Action, mut stack: Vec<Cont>, ctx: &Rc<EvalContext>) -> EvalResult<Value> {
+fn run(initial: Action, _ctx: &Rc<EvalContext>) -> EvalResult<Value> {
+    let mut stack: Vec<Cont> = Vec::new();
+    let mut action = initial;
+
     loop {
         match action {
-            Action::Eval { expr, env, depth } => {
-                action = eval_step(expr, env, depth, &mut stack, ctx)?;
+            Action::Eval { expr, env, ctx, depth } => {
+                action = eval_step(&expr, env, &ctx, depth, &mut stack);
             }
             Action::Materialize { thunk, mat_span, depth } => {
-                action = materialize_step(thunk, mat_span, depth, &mut stack, ctx)?;
+                action = force_step(&thunk, mat_span, depth, &mut stack);
             }
             Action::Continue(result) => {
                 match stack.pop() {
                     None => return result,
                     Some(cont) => {
-                        action = apply_cont(cont, result, &mut stack, ctx)?;
+                        action = apply_cont(cont, result, &mut stack);
                     }
                 }
             }
