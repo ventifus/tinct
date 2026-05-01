@@ -121,6 +121,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 - `range`, `repeat`, `cycle`, `iterate`, `unfold` -- constructors (finite or infinite)
 - `seq` -- low-level cons: `[call $seq $head $tail-thunk]`
 - `collect` -- materializes a Seq into a dict with integer keys
+- `concat` -- lazy Seq concatenation (O(1) chain for Seq path; Dict path is materializing)
 - `head`, `tail` -- destructors
 - `seq?` -- type check
 
@@ -172,12 +173,12 @@ first-ten: [call $collect [call $take 10 $squares]]
 | Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is forced. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
 | Dict primitives | — | `keys`, `length`, `merge`, `append` | Operate on IndexMap directly. |
-| Strings | — | `str`, `split`, `replace`, `upper`, `lower`, `trim` | Strings are opaque; all content operations require Rust. |
+| Strings | — | `str`, `split`, `replace`, `upper`, `lower`, `trim`, `join` | Strings are opaque; all content operations require Rust. `join` uses an O(n) string builder (dual-dispatch Dict/Seq); no stable alias needed. |
 | Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
 | Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-forces; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). |
 | Type introspection | — | `type-of` | Inspects the Value enum variant. |
-| Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join` (no stable aliases needed). |
+| Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `concat` (no stable aliases needed). |
 | I/O | — | `from-json`, `include` | serde_json, filesystem access. |
 
 **Tinct-implemented stdlib (wrappers and derived functions):**
@@ -294,12 +295,12 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `sign` | `[fn [x] ...]` | Sign of a number: -1 for negative, 0 for zero, 1 for positive |
 | `clamp` | `[fn [lo hi x] ...]` | Clamp a value between lo and hi bounds (inclusive) |
 
-**String (derived from `str`, `split`, `filter`):**
+**String:**
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `join` | Rust native builtin — no LLT wrapper | Join values as strings with separator (O(n); dual-dispatch Dict/Seq) |
-| `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq) |
+| `join` | Rust native builtin — no LLT wrapper | Join values as strings with separator (O(n) string builder; dual-dispatch Dict/Seq) |
+| `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq). Derived from `str`, `split`, and `filter`. |
 
 **Control Flow:**
 

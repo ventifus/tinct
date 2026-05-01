@@ -208,9 +208,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let head = map
         .get_index(current_idx as usize)
         .map(|(_, v)| Rc::clone(v))
-        .ok_or_else(|| {
-            EvalError::internal("cycle: index out of bounds".to_string(), call_span)
-        })?;
+        .ok_or_else(|| EvalError::internal("cycle: index out of bounds".to_string(), call_span))?;
 
     // Create tail as PendingBuiltin for next step
     let tail_args = vec![

@@ -1032,7 +1032,13 @@ pub fn materialize(
                     closure_env: &env,
                     positional: &args,
                     named: &named,
-                    default_env: &caller_env, // Use caller's environment for default param evaluation
+                    // For normal calls, `default_env` is the caller's environment (the env at
+                    // the call site where the PendingCall thunk was created by `eval_call`).
+                    // When forcing a PendingCall, `caller_env` is preserved from creation time
+                    // (iterative-eval-b1) — it is the env captured in the thunk, not the env
+                    // of whoever triggered materialization. `$apply` diverges: it uses the
+                    // closure env as `default_env` so that defaults see the function's own scope.
+                    default_env: &caller_env,
                     call_span,
                     depth,
                     origin: origin.clone(),

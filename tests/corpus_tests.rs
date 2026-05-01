@@ -304,10 +304,10 @@ fn test_corpus_structure() {
     }
 
     // Minimum test count assertions for key directories
-    const EVAL_LAZINESS_MIN: usize = 15;
-    const EVAL_BUILTINS_MIN: usize = 87;
-    const EVAL_STDLIB_MIN: usize = 133;
-    const EVAL_ERRORS_MIN: usize = 45;
+    const EVAL_LAZINESS_MIN: usize = 21;
+    const EVAL_BUILTINS_MIN: usize = 90;
+    const EVAL_STDLIB_MIN: usize = 194;
+    const EVAL_ERRORS_MIN: usize = 67;
 
     let laziness_count = find_test_files(&manifest_dir.join("tests/corpus/eval/laziness")).len();
     assert!(
