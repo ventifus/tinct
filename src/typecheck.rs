@@ -71,7 +71,8 @@ fn reset_expr(expr: &Spanned<Expr>) {
         | Expr::Bool(_)
         | Expr::Str(_)
         | Expr::VarRef(_)
-        | Expr::Rest(_) => {}
+        | Expr::Rest(_)
+        | Expr::Error(_) => {}
 
         // Access expressions: recurse into target and key/bounds
         Expr::DotAccess { expr: target, .. } => {
@@ -496,6 +497,14 @@ fn infer_expr(
 
         Expr::Rest(_) => Err(vec![TypeError::new(
             "rest marker (...) is only valid inside type expressions",
+            expr.span,
+        )]),
+
+        Expr::Error(span) => Err(vec![TypeError::new(
+            &format!(
+                "syntax error at {}:{} (cannot typecheck error node)",
+                span.start.line, span.start.column
+            ),
             expr.span,
         )]),
     };

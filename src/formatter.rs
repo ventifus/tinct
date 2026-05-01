@@ -57,7 +57,11 @@ impl<'a> Formatter<'a> {
         // AND there are no comments (which would require multi-line formatting)
         let all_simple = document.expressions.iter().all(|e| match &e.node {
             Expr::Dict(entries) if self.is_simple_dict(entries) => true,
-            Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } | Expr::TypeAlias(_) => false,
+            Expr::Dict(_)
+            | Expr::Call { .. }
+            | Expr::Fn { .. }
+            | Expr::TypeAlias(_)
+            | Expr::Error(_) => false,
             _ => true,
         });
 
@@ -226,6 +230,11 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(n);
                 }
             }
+            Expr::Error(span) => {
+                // Emit original source text verbatim for error nodes
+                let text = &self.source[span.start.offset..span.end.offset];
+                self.output.push_str(text);
+            }
         }
     }
 
@@ -390,6 +399,10 @@ impl<'a> Formatter<'a> {
                 name.len() + 1 + self.measure_annotation_width(&annotation.node)
             }
             Expr::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
+            Expr::Error(span) => {
+                // Measure the width of the original source text
+                span.end.offset - span.start.offset
+            }
         }
     }
 

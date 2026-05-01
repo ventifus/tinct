@@ -67,10 +67,10 @@ Sequence reduction — fold a sequence into a single value or collect into a str
 
 Extend the iterative parser with bracket-level error recovery. See doc/whatif/parser-rewrite.md §Phase 4. **Depends on:** `parser-core`.
 
-- [ ] Add `Expr::Error(Span)` variant to AST (`src/ast.rs`)
-- [ ] On syntax error inside a bracket form: skip tokens until matching `]` (tracking nesting depth), emit `Expr::Error(span)`, continue parsing (`src/parser.rs`)
-- [ ] Collect all parse errors per file; report together rather than stopping at first
-- [ ] Formatter renders `Expr::Error(Span)` by emitting original source text for the span verbatim (`src/formatter.rs`)
+- [x] Add `Expr::Error(Span)` variant to AST (`src/ast.rs`) — includes Display impl, pattern matches in eval/typecheck/desugar/formatter/lsp
+- [ ] On syntax error inside a bracket form: skip tokens until matching `]` (tracking nesting depth), emit `Expr::Error(span)`, continue parsing (`src/parser.rs`) — **KNOWN ISSUE**: requires significant parser refactoring; deferred to future sprint
+- [ ] Collect all parse errors per file; report together rather than stopping at first — **KNOWN ISSUE**: requires ParseOutput error list + caller updates; deferred to future sprint
+- [x] Formatter renders `Expr::Error(Span)` by emitting original source text for the span verbatim (`src/formatter.rs`) — also added `source: String` to ParseOutput
 
 ## type-extensions: Type System Extensions
 

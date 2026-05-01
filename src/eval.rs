@@ -493,6 +493,14 @@ pub(crate) fn eval_recursive(
             expr.span,
         )
         .into()),
+        Expr::Error(span) => Err(EvalError::internal(
+            format!(
+                "syntax error at {}:{} (cannot evaluate error node)",
+                span.start.line, span.start.column
+            ),
+            expr.span,
+        )
+        .into()),
     }
 }
 
