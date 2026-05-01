@@ -2368,3 +2368,28 @@ Convert `eval()` into `eval_step()` that pushes `Cont` variants and returns `Act
 - [x] Keep `pub fn eval(expr, env, ctx, depth)` as thin wrapper: `run(Action::Eval { expr: Rc::new(expr.clone()), env, depth }, Vec::new(), ctx).map(|v| Rc::new(Thunk::new_materialized(v, expr.span)))` — preserves external API (`src/eval.rs`) [Minor] (eval_recursive extracted; eval_step handles all Expr variants; full run() wiring deferred)
 - [x] Fix `TypeAssert` forces materialization inside `eval_step()` — `eval_step()` TypeAssert branch now pushes `TypeAssertCheck` Cont and returns `Action::Materialize` for the inner thunk instead of calling `materialize()` synchronously. `apply_cont()` handler replicates full validation logic (Record proxy wrapping, scalar type check, nominal fallback, default handling). (`src/eval.rs`) [Major, eval-engine C47]
 - [x] Fix `$apply` eagerly materializing args dict — `builtin_apply` now returns a PendingBuiltin thunk wrapping `builtin_apply_impl`. Added `name: &'static str` to `ThunkState::PendingBuiltin` and `BuiltinForceArgData`. When PendingBuiltin("apply", ...) is materialized, BuiltinForceArg pre-materializes args[0] (function), then checks if `builtin_name == "apply"` and pre-materializes args[1] (args dict) iteratively. Both `materialize()` calls in `builtin_apply_impl` are now O(1) cache hits. Updated all `new_pending_builtin` call sites to include builtin name. (`src/eval.rs` + `src/builtins.rs` + `src/value.rs` + `src/builtins_seq_*.rs` + `src/eval_access.rs`) [Major, eval-engine]
+
+### error-restructuring: Error Model Restructuring
+
+Core error model improvements. Foundation for all later error work.
+
+- [x] Design structured error model (enum variants, error codes, style guidelines) — see doc/10-errors.md §Structured Error Model
+- [x] Establish error message style guidelines (rustc's rules: no trailing punctuation, no questions, may contain names but not expressions) — see doc/10-errors.md §Structured Error Model Part 8
+- [x] Migrate freeform string error constructors to structured enum variants (`key_not_found`, `type_mismatch`, `arity_mismatch`) — done in error-structured-migrate-a through -d sprints
+- [x] Add structured error codes (E001, E002, ...) for programmatic error filtering and documentation linking — ErrorKind::code() returns E001-E099
+- [x] Document dual-span error model in doc/*.md — see doc/10-errors.md §Error Semantics — Formal Specification, Part 1: Error Representation
+- [x] Migrate lib.rs remaining `EvalError::new()` call sites to typed ErrorKind constructors — verified clean: no EvalError::new() in lib.rs [Minor, integration-verifier]
+- [x] Add builtin function name to error stack frames — builtin errors currently lack the function name in stack traces (`src/builtins.rs`, `src/error.rs`) [Major, span-integrity-checker] (already in place via PendingBuiltin name field; test added)
+- [x] Deduplicate redundant span output when definition-site == materialization-site — already implemented in error.rs Display [Major, span-integrity-checker]
+- [x] Add dual-span pattern to access chain errors — fixed eval_dot_access, eval_bracket_access, eval_range_access (`src/eval.rs`) [Major, span-integrity-checker]
+- [x] Fix builtin errors using call_span for definition-site — fixed 6 builtins ($to-int, $to-float, $error, $from-json, $include, $join) to use args[i].span as definition_span (`src/builtins.rs`) [Major, span-integrity-checker]
+- [x] Fix builtin helper functions materializing with `None` mat_span instead of operand span — `expect_one_arg`, `extract_num_pair`, `require_dict`, `require_string` now pass `Some(&call_span)` to materialize. (`src/builtins.rs`) [Major, span-integrity-checker]
+- [x] Fix `TypeMismatch::context` field always `None` — added context strings to 8 call sites: $try, $apply (builtins.rs), dot access, bracket access, range access (eval.rs) [Major, span-integrity-checker]
+
+### error-typeassert: TypeAssert Error Reporting (Post typeassert-structural Sprint) — Final Items
+
+Remaining items from the error-typeassert sprint (earlier items already in DONE.md above).
+
+- [x] Fix TypeAssert Record/non-Dict branch missing `.with_materialization_span(expr.span)` — added to both `eval()` (line ~389) and `eval_step()` (line ~2030) to match the pattern of the parallel non-Record branch. (`src/eval.rs`) [Nit, sprint-reviewer C62 round 9]
+- [x] Fix Guarded materialize path missing `.with_materialization_span(guard_span)` in two error branches — Record/non-Dict and non-Record type mismatch in `apply_cont` for `GuardedValidate`. Both now chain `.with_materialization_span(guard_span)` before `decorate()`. (`src/eval.rs`) [Minor, integration-verifier C62]
+- [x] Add compile-time assertion that `lsp/server.rs::MAX_DOCUMENT_SIZE == builtins.rs::MAX_FILE_SIZE` — currently two independent constants with a comment stating they should match; silent divergence risk. [Nit, integration-verifier C62]
