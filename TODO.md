@@ -524,15 +524,15 @@ Consolidated from: test-tooling, test-tooling-b
 
 - [ ] Integration tests for REPL/LSP — multi-line input, hover on nested expressions, multiple errors (test-crafter review)
 - [ ] Add LSP corpus tests (`tests/lsp_corpus/`) with `.llt` + `.expected.json` per position
-- [ ] EvalContext API documentation — add docstrings to `eval_source()`, `eval_file()`, `eval_file_with_input()` documenting EvalContext requirements and `$include` behavior (`src/lib.rs`) [Major, integration-verifier]
+- [x] EvalContext API documentation — add docstrings to `eval_source()`, `eval_file()`, `eval_file_with_input()` documenting EvalContext requirements and `$include` behavior (`src/lib.rs`) [Major, integration-verifier]
 - [ ] Add `EvalContext::with_base_dir()` file-resolution integration test — current test verifies `base_dir` field change and shared state via `Rc::ptr_eq` but never calls `$include` through the new context. Add test that uses `ctx1.with_base_dir(dir2)` and verifies `$include` resolves a file from `dir2`, not `dir1`. (`src/eval.rs:66`, `src/builtins.rs:1065`) [Major, test-crafter C40]
-- [ ] Expose `eval_file_with_input` in public API — main.rs can inject JSON via stdin but lib.rs callers cannot; add public wrapper or re-export (`src/lib.rs`) [Major, integration-verifier C35]
-- [ ] Fix test helpers using `create_root_env()` instead of `create_stdlib_env()` — tests skip stdlib loading, so they can't test stdlib-dependent behavior accurately (`src/eval.rs`, `src/builtins.rs`) [Minor, integration-verifier C35]
-- [ ] Document circular builtins⇄eval dependency — add safety comment at `src/builtins.rs:28` explaining the value-level vs import-level dependency [Minor, integration-verifier]
-- [ ] Cross-layer contracts documentation — add §Implementation Architecture to doc/16-architecture.md documenting pipeline phases (parse→typecheck→eval→serialize), cross-layer contracts (BuiltinFn signature, serializer requirements, thread-local state discipline), Expr→eval exhaustiveness invariant, Value→serializer coverage, type checker advisory role, environment chain construction order [Major, integration-verifier]
-- [ ] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference — add test for display_string with NaN/Inf (`src/lib.rs:112-125, 176-211`) [Minor, integration-verifier]
-- [ ] Add lib.rs EvalContext doc comment mentioning include cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs`) [Minor, integration-verifier]
-- [ ] Add doc/16-architecture.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
+- [x] Expose `eval_file_with_input` in public API — main.rs can inject JSON via stdin but lib.rs callers cannot; add public wrapper or re-export (`src/lib.rs`) [Major, integration-verifier C35] (already public)
+- [x] Fix test helpers using `create_root_env()` instead of `create_stdlib_env()` — tests skip stdlib loading, so they can't test stdlib-dependent behavior accurately (`src/eval.rs`, `src/builtins.rs`) [Minor, integration-verifier C35] (current usage is correct)
+- [x] Document circular builtins⇄eval dependency — add safety comment at `src/builtins.rs:28` explaining the value-level vs import-level dependency [Minor, integration-verifier]
+- [x] Cross-layer contracts documentation — add §Implementation Architecture to doc/16-architecture.md documenting pipeline phases (parse→typecheck→eval→serialize), cross-layer contracts (BuiltinFn signature, serializer requirements, thread-local state discipline), Expr→eval exhaustiveness invariant, Value→serializer coverage, type checker advisory role, environment chain construction order [Major, integration-verifier]
+- [x] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference — add test for display_string with NaN/Inf (`src/lib.rs:112-125, 176-211`) [Minor, integration-verifier]
+- [x] Add lib.rs EvalContext doc comment mentioning include cache behavior — memoizes evaluated include results, Jsonnet-style (`src/lib.rs`) [Minor, integration-verifier]
+- [x] Add doc/16-architecture.md testing requirements section — testing philosophy and per-decision test requirements [Minor, test-crafter]
 
 ## doc-divergences: Documentation Divergences (doc/*.md / Code)
 
