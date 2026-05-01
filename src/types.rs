@@ -1491,9 +1491,9 @@ pub fn unify(
 /// (allows inspection of which type/row vars were renamed to which fresh vars).
 #[cfg(test)]
 pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
-    let mut type_vars = Vec::new();
-    let mut row_vars = Vec::new();
-    ty.collect_all_vars_vec(&mut type_vars, &mut row_vars);
+    let mut type_vars = HashSet::new();
+    let mut row_vars = HashSet::new();
+    ty.collect_all_vars(&mut type_vars, &mut row_vars);
 
     let mut renaming = Substitution::new();
     for var in type_vars {

@@ -10859,6 +10859,25 @@ mod tests {
         assert_eq!(result, Value::String("a,b".into()));
     }
 
+    /// Helper: create a function whose closure env contains builtins (needed for
+    /// tests where the function body calls builtins like $builtin-add).
+    fn n_arg_fn_with_builtins(param_names: &[&str], body_expr: Expr) -> Value {
+        Value::Function {
+            params: Rc::new(
+                param_names
+                    .iter()
+                    .map(|name| Param {
+                        name: name.to_string(),
+                        annotation: None,
+                        variadic: false,
+                    })
+                    .collect(),
+            ),
+            body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
+            env: create_root_env(),
+        }
+    }
+
     #[test]
     fn test_builtin_until_basic() {
         // Count from 0 to 10 using until
@@ -10868,7 +10887,7 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
-                let pred = n_arg_fn(
+                let pred = n_arg_fn_with_builtins(
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
@@ -10882,7 +10901,7 @@ mod tests {
                         named_args: vec![],
                     },
                 );
-                let f = n_arg_fn(
+                let f = n_arg_fn_with_builtins(
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
@@ -10959,7 +10978,7 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
-                let pred = n_arg_fn(
+                let pred = n_arg_fn_with_builtins(
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
@@ -10973,7 +10992,7 @@ mod tests {
                         named_args: vec![],
                     },
                 );
-                let f = n_arg_fn(
+                let f = n_arg_fn_with_builtins(
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(

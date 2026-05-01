@@ -4635,10 +4635,22 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_depth_limit() {
-        // POLICY TEST: This tests the depth-limit POLICY (MAX_EVAL_DEPTH enforcement),
-        // not stack-safety. Stack-safety is tested by test_iterative_materialize_deep_chain.
-        let err =
-            deep_materialize(&Value::Int(1), &test_ctx(), MAX_EVAL_DEPTH + 1, None).unwrap_err();
+        // POLICY TEST: deep_materialize checks depth only when traversing into
+        // non-leaf structures. Leaf values (Int, String, etc.) return immediately
+        // via the fast path without depth checking. Use a nested Dict to trigger
+        // the depth check at MAX_EVAL_DEPTH + 1.
+        let inner = Value::Dict({
+            let mut m = IndexMap::new();
+            m.insert(
+                Key::String("x".into()),
+                Rc::new(Thunk::new_materialized(
+                    Value::Int(1),
+                    test_span(1, 1, 1, 1),
+                )),
+            );
+            m
+        });
+        let err = deep_materialize(&inner, &test_ctx(), MAX_EVAL_DEPTH + 1, None).unwrap_err();
         assert!(
             err.message().contains("maximum evaluation depth exceeded"),
             "got: {}",

@@ -2612,3 +2612,76 @@ Implement lazy overlay representation for `$merge`. See doc/08-evaluation.md §S
 - [x] Handle chained overlays: `Overlay(Overlay(A, B), C)`
 - [x] Verify behavioral equivalence: same values, same iteration order, same errors, same sharing
 - [x] Benchmark: compare eager merge vs lazy overlay on large dicts (deferred to post-implementation performance review)
+
+### parser-error-recovery-b: Bracket-Level Recovery and Multi-Error Collection
+
+Implement the two deferred items from parser-error-recovery. All implementation is in
+`src/parser.rs` (Tasks 1–4), `src/lsp/document.rs` (Task 5), and tests (Task 6).
+`Expr::Error(Span)`, `ParseOutput.source`, and all exhaustive match arms across
+eval/typecheck/desugar/formatter/lsp are already in place — no AST or downstream changes needed.
+
+**Design:** `parse2()` stays `Result<ParseOutput, ParseError>`. Fatal errors (unclosed
+bracket at EOF line 1531, depth limit line 708, unmatched `]` line 870, lexer failure)
+remain as `return Err(ParseError{...})`. Recoverable errors (inside bracket forms)
+collect into `ParseOutput.errors: Vec<ParseError>` and emit `Expr::Error(frame_span)`
+to the parent. No callers change — `ParseOutput.errors` is additive. Only the LSP reads it.
+
+**Two recovery patterns:** (A) at-close-bracket — when `]` closes a malformed Dict/Call
+with a pending key; frame's `span_start` gives exact open position. (B) mid-form skip —
+when an invalid token appears inside a form; `skip_to_closing_bracket()` scans forward
+to find the matching `]`.
+
+- [x] **Task 1 — Add `errors` field to ParseOutput.** Add `pub errors: Vec<ParseError>`
+  to the `ParseOutput` struct (`src/parser.rs:651-656`). In `parse2()`, declare
+  `let mut parse_errors: Vec<ParseError> = Vec::new();` after the stack declaration
+  (~line 680). Add `errors: parse_errors` to the `Ok(ParseOutput { ... })` return at
+  line 1590. The `parse()` and `parse_expression()` wrappers at lines 1890/1901 discard
+  `output.errors` — no change needed there. [Minor]
+
+- [x] **Task 2 — Implement `skip_to_closing_bracket(tokens, from_idx) -> usize`.**
+  Private function in `src/parser.rs`. Scans forward from `from_idx` with starting
+  depth 1 (already inside one bracket). `Token::OpenBracket` and `Token::BracketAccess`
+  increment depth; `Token::CloseBracket` decrements. Returns index of the matching `]`,
+  or `tokens.len()` if not found (unterminated). Add unit tests. [Minor]
+
+- [x] **Task 3 — Add `span_start() -> Position` to StackFrame.** Each `StackFrame`
+  variant already has a `span_start: Position` field. Add a method that returns it
+  uniformly so recovery code can obtain the opening bracket position without pattern-matching
+  the full frame. (`src/parser.rs` StackFrame enum) [Nit]
+
+- [x] **Task 4 — At-close-bracket recovery for pending-key errors.** In the
+  `Token::CloseBracket` handler, `match frame` block (lines 880–1010):
+  (a) `StackFrame::Dict { pending_key: Some(key_expr), span_start, .. }` — replace the
+  `return Err(ParseError { "key without value" })` at line 889 with: push error to
+  `parse_errors`, construct `Expr::Error(Span { start: span_start, end: span.end })`,
+  call `push_value(&mut stack, &mut current_document_expressions, error_expr)?`, then
+  `i += 1; continue;` (skip the normal `Expr::Dict` construction path).
+  (b) `StackFrame::Call { pending_key: Some(..), span_start, .. }` at line 926 — same
+  pattern: collect error + emit `Expr::Error(call_span)`. [Minor]
+
+- [x] **Task 5 — Mid-form recovery via skip.** For errors that occur at a token *inside*
+  a bracket form (not at `]`): collect the error, call `skip_to_closing_bracket()`,
+  pop the frame, emit `Expr::Error(span_start..close_end)` to the parent, set
+  `i = close_idx + 1; continue`. Convert these sites:
+  (a) `Token::Colon` with no `pending_key` in a Dict frame (lines 1106, 1118): collect
+  "colon without preceding key" error, recover.
+  (b) `Token::Colon` arriving inside a non-Dict/Call frame (line 1126): same.
+  Error sites inside sub-functions (`parse_annotation`, param-list parsing) are left
+  as fatal for this sprint — see `parser-error-recovery-c` below. [Major]
+
+- [x] **Task 6 — LSP: surface recovered errors as diagnostics.** In
+  `src/lsp/document.rs`, after a successful `parse2()` call, iterate
+  `parse_output.errors` and emit each as a `DiagnosticSeverity::ERROR` diagnostic
+  alongside the existing fatal-error diagnostic. Add a small
+  `parse_error_to_lsp_diagnostic(err: &ParseError) -> Diagnostic` helper in
+  `src/lsp/analysis.rs` or inline. [Minor]
+
+- [x] **Task 7 — Tests.**
+  (a) Unit tests for `skip_to_closing_bracket`: simple case, nested brackets, unterminated.
+  (b) Parser unit test: `parse2("[key ]")` returns `Ok` with `output.errors.len() == 1`
+  and the document expression is `Expr::Error`; error message contains "key without value".
+  (c) Parser unit test: `parse2("[a: 1] [bad: ] [b: 2]")` returns `Ok` with
+  `output.errors.len() == 1`; document has three exprs where the middle is `Expr::Error`
+  and the outer two are valid `Expr::Dict`.
+  (d) Corpus test `tests/corpus/invalid/syntax_errors/recover_key_no_value.llt-eval`.
+  (e) LSP test: file with two distinct recovered syntax errors reports two diagnostics. [Minor]

@@ -70,79 +70,6 @@ Extend the iterative parser with bracket-level error recovery. See doc/whatif/pa
 - [x] Add `Expr::Error(Span)` variant to AST (`src/ast.rs`) — includes Display impl, pattern matches in eval/typecheck/desugar/formatter/lsp
 - [x] Formatter renders `Expr::Error(Span)` by emitting original source text for the span verbatim (`src/formatter.rs`) — also added `source: String` to ParseOutput
 
-### parser-error-recovery-b: Bracket-Level Recovery and Multi-Error Collection
-
-Implement the two deferred items from parser-error-recovery. All implementation is in
-`src/parser.rs` (Tasks 1–4), `src/lsp/document.rs` (Task 5), and tests (Task 6).
-`Expr::Error(Span)`, `ParseOutput.source`, and all exhaustive match arms across
-eval/typecheck/desugar/formatter/lsp are already in place — no AST or downstream changes needed.
-
-**Design:** `parse2()` stays `Result<ParseOutput, ParseError>`. Fatal errors (unclosed
-bracket at EOF line 1531, depth limit line 708, unmatched `]` line 870, lexer failure)
-remain as `return Err(ParseError{...})`. Recoverable errors (inside bracket forms)
-collect into `ParseOutput.errors: Vec<ParseError>` and emit `Expr::Error(frame_span)`
-to the parent. No callers change — `ParseOutput.errors` is additive. Only the LSP reads it.
-
-**Two recovery patterns:** (A) at-close-bracket — when `]` closes a malformed Dict/Call
-with a pending key; frame's `span_start` gives exact open position. (B) mid-form skip —
-when an invalid token appears inside a form; `skip_to_closing_bracket()` scans forward
-to find the matching `]`.
-
-- [ ] **Task 1 — Add `errors` field to ParseOutput.** Add `pub errors: Vec<ParseError>`
-  to the `ParseOutput` struct (`src/parser.rs:651-656`). In `parse2()`, declare
-  `let mut parse_errors: Vec<ParseError> = Vec::new();` after the stack declaration
-  (~line 680). Add `errors: parse_errors` to the `Ok(ParseOutput { ... })` return at
-  line 1590. The `parse()` and `parse_expression()` wrappers at lines 1890/1901 discard
-  `output.errors` — no change needed there. [Minor]
-
-- [ ] **Task 2 — Implement `skip_to_closing_bracket(tokens, from_idx) -> usize`.**
-  Private function in `src/parser.rs`. Scans forward from `from_idx` with starting
-  depth 1 (already inside one bracket). `Token::OpenBracket` and `Token::BracketAccess`
-  increment depth; `Token::CloseBracket` decrements. Returns index of the matching `]`,
-  or `tokens.len()` if not found (unterminated). Add unit tests. [Minor]
-
-- [ ] **Task 3 — Add `span_start() -> Position` to StackFrame.** Each `StackFrame`
-  variant already has a `span_start: Position` field. Add a method that returns it
-  uniformly so recovery code can obtain the opening bracket position without pattern-matching
-  the full frame. (`src/parser.rs` StackFrame enum) [Nit]
-
-- [ ] **Task 4 — At-close-bracket recovery for pending-key errors.** In the
-  `Token::CloseBracket` handler, `match frame` block (lines 880–1010):
-  (a) `StackFrame::Dict { pending_key: Some(key_expr), span_start, .. }` — replace the
-  `return Err(ParseError { "key without value" })` at line 889 with: push error to
-  `parse_errors`, construct `Expr::Error(Span { start: span_start, end: span.end })`,
-  call `push_value(&mut stack, &mut current_document_expressions, error_expr)?`, then
-  `i += 1; continue;` (skip the normal `Expr::Dict` construction path).
-  (b) `StackFrame::Call { pending_key: Some(..), span_start, .. }` at line 926 — same
-  pattern: collect error + emit `Expr::Error(call_span)`. [Minor]
-
-- [ ] **Task 5 — Mid-form recovery via skip.** For errors that occur at a token *inside*
-  a bracket form (not at `]`): collect the error, call `skip_to_closing_bracket()`,
-  pop the frame, emit `Expr::Error(span_start..close_end)` to the parent, set
-  `i = close_idx + 1; continue`. Convert these sites:
-  (a) `Token::Colon` with no `pending_key` in a Dict frame (lines 1106, 1118): collect
-  "colon without preceding key" error, recover.
-  (b) `Token::Colon` arriving inside a non-Dict/Call frame (line 1126): same.
-  Error sites inside sub-functions (`parse_annotation`, param-list parsing) are left
-  as fatal for this sprint — see `parser-error-recovery-c` below. [Major]
-
-- [ ] **Task 6 — LSP: surface recovered errors as diagnostics.** In
-  `src/lsp/document.rs`, after a successful `parse2()` call, iterate
-  `parse_output.errors` and emit each as a `DiagnosticSeverity::ERROR` diagnostic
-  alongside the existing fatal-error diagnostic. Add a small
-  `parse_error_to_lsp_diagnostic(err: &ParseError) -> Diagnostic` helper in
-  `src/lsp/analysis.rs` or inline. [Minor]
-
-- [ ] **Task 7 — Tests.**
-  (a) Unit tests for `skip_to_closing_bracket`: simple case, nested brackets, unterminated.
-  (b) Parser unit test: `parse2("[key ]")` returns `Ok` with `output.errors.len() == 1`
-  and the document expression is `Expr::Error`; error message contains "key without value".
-  (c) Parser unit test: `parse2("[a: 1] [bad: ] [b: 2]")` returns `Ok` with
-  `output.errors.len() == 1`; document has three exprs where the middle is `Expr::Error`
-  and the outer two are valid `Expr::Dict`.
-  (d) Corpus test `tests/corpus/invalid/syntax_errors/recover_key_no_value.llt-eval`.
-  (e) LSP test: file with two distinct recovered syntax errors reports two diagnostics. [Minor]
-
 ### parser-error-recovery-c: Deeper Recovery (future enhancements)
 
 Follow-on recovery work once parser-error-recovery-b is complete.
@@ -294,9 +221,9 @@ Performance improvements identified by performance-expert review (2026-04-19) th
 
 - [x] Design allocation strategy (arena vs Rc, flat env vs chain) — see doc/16-architecture.md §Allocation Strategy — Phased Approach
 - [x] Decide: begin arena allocation Phase 1 — deferred; complete R1 (flat environment slot assignment research) first, then ship steps 1+2 together as a single migration (variable resolution pass + ThunkArena + EnvArena); starting with Dict alone creates a hybrid model requiring a second migration
-- [ ] Research: flat environment slot assignment for tinct's letrec scoping — O(depth) chain walk in `Environment::get()` can become O(1) with compile-time slot indices; determine whether tinct's letrec dict scoping (siblings see each other via a shared env at construction time) is compatible with closed-over slot indices (Lua 5.4 upvalue model); survey how Nix (rnix-eval) and Jsonnet handle this; see doc/16-architecture.md §Allocation Strategy §Phased Approach for planned adoption sequence. [research, performance-expert]
-- [ ] Research: string interning for dict keys — profile whether dict key `String` allocation and comparison is a measurable hotspot (most keys are short ASCII bare words); compare `string-interner` crate (Spur type, fast intern lookup), `lasso` (concurrent), or hand-rolled `HashMap<String, u32>` index; estimate allocation reduction vs. interning cost at creation time. [research, performance-expert]
-- [ ] Research: path-compressed union-find for `Substitution::apply()` — profile actual TypeVar chain depth in practice on real programs (are chains >2 common?); union-find gives O(α(n)) amortized if so; survey `union-find` and `petgraph` Rust crates; assess migration cost given current `HashMap<String, Type>` storage in `Substitution`. [research, performance-expert]
+- [x] Research: flat environment slot assignment — see doc/whatif/arena-patterns.md §Letrec Compatibility and §Variable Resolution Pass Design. PARTIAL compatibility: static keys assignable at parse time (O(1) slot lookup); computed keys fall back to HashMap overflow side table (hybrid). Letrec not a blocker — dict_env pre-allocated before thunks. Merged into arena-patterns.md (same migration).
+- [x] Research: string interning for dict keys — see doc/whatif/string-interning.md. Profile-first: if String allocation/comparison is top-5 hotspot, use `string-interner` crate (Spur u32 handle); Key::String(String) → Key::String(Spur); interner in EvalContext. Gate on profiling — not load-bearing without data.
+- [x] Research: path-compressed union-find for Substitution::apply() — see doc/whatif/union-find-substitution.md. Profile-first: instrument apply_inner() for chain depth. Union-find only warranted if average chain depth ≥4 on real programs; current HashMap is O(1) for depth ≤2. Note: row_map would need separate treatment.
 
 ### perf-foundations: Performance Foundations Implementation
 
@@ -518,8 +445,8 @@ Findings from formal audit of doc/*.md theoretical claims (2026-04-21). Covers t
 
 ### Proof obligations
 
-- [ ] Research: property-based testing approach for thunk lifecycle adequacy — before Coq/Isabelle formalization, design a `proptest` suite covering the key bisimulation properties: (1) any PendingBuiltin reduction produces the same final value as the equivalent Unevaluated→materialize path, (2) PendingCall reduction is observationally equivalent to inlining the fn body; determine which random program generators are needed; see doc/08-evaluation.md §Thunk Lifecycle — Adequacy for the formal statement. [research, computer-scientist]
-- [ ] Research: confluence proof strategy for the pure tinct subset — the diamond property (Ariola & Felleisen 1997) requires any two reduction paths to converge; PendingCall/PendingBuiltin add new reduction paths not in the original call-by-need calculus; identify which Ariola-Felleisen lemmas need extension and whether proof-by-diagram or proof-by-operational-equivalence is more tractable; see doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties. [research, computer-scientist]
+- [x] Research: property-based testing for thunk lifecycle adequacy — see doc/whatif/eval-semantics-verification.md §Part A. Use `proptest`; generate (builtin, args) pairs; compare PendingBuiltin path vs Unevaluated→materialize path; 500 cases per claim. Phase 1: strict-arg builtins. Phase 2: PendingCall + lazy builtins. Phase 3: Coq/Isabelle (stretch).
+- [x] Research: confluence proof strategy — see doc/whatif/eval-semantics-verification.md §Part B. Determinism argument: pure tinct has no non-deterministic choice points → confluence follows trivially from determinism. Extend Ariola-Felleisen L1/L2/L3 for PendingBuiltin/PendingCall. Add proof sketch to doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties.
 - [x] Mechanized proof of thunk lifecycle adequacy — formalize bisimulation between PendingBuiltin/PendingCall and equivalent Unevaluated thunks, confirming defunctionalization preserves semantics (Reynolds 1972, Danvy & Nielsen 2003). Property-based testing (QuickCheck-style) as a first step; full Coq/Isabelle/HOL formalization as stretch goal. See doc/08-evaluation.md §Thunk Lifecycle — Adequacy and `doc/proofs/thunk_lifecycle.md` for the proof sketch. [Minor, computer-scientist] (doc/proofs/thunk_lifecycle.md added)
 - [x] Confluence proof sketch for pure subset — show that forcing order does not affect final values in tinct programs without `$include`. The PendingBuiltin/PendingCall extensions add new reduction paths that must preserve the Ariola & Felleisen (1997) diamond property. See doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties. [Minor, computer-scientist] (doc/proofs/ directory created)
 - [x] Create `doc/proofs/` stub directory — README.md explains proof obligations, planned tools (Coq/Isabelle), and contribution process; `thunk_lifecycle.md` contains the bisimulation proof sketch with lifecycle diagram, memoization lemma, and open questions for mechanization. [Minor, test-crafter]
@@ -538,7 +465,7 @@ Richer error context for debugging.
 - [ ] Build `$include` chain threading — nested include errors should show the full include path ("included from A at line X") — see `error-context-include-chain` sprint below
 - [x] Design: secondary span model in EvalError — see doc/10-errors.md §Part 1: Error Representation. Field, builder, and Display already implemented. Three population sites: (1) Guarded validation failure (inner.span, "value produced here"), (2) builtin require_* mismatch (args[i].span, "argument produced here"), (3) $if condition type mismatch (condition.span, "condition evaluated to {type} here"). Suppress when sec_span == def_span.
 - [ ] Populate secondary_span at three eval sites — Guarded type assertion failure, builtin require_* argument type mismatch, $if non-Bool condition — using Thunk.span as value origin; suppress when sec_span == def_span; add corpus tests for each site (`src/eval_materialize.rs`, `src/builtins.rs`, `tests/corpus/`)
-- [ ] Research: circular dependency error path reconstruction — when `ThunkState::InProgress` cycle is detected, tinct reports only the blackholed thunk's span; to show the full A→B→A chain, the evaluator needs to record the current evaluation stack at cycle detection time; survey how Nix (`callPackage` cycle errors) and GHC present circular dependency errors; assess whether `EvalState` should carry a call stack `Vec<Span>` alongside `include_guard`. [research, eval-engine]
+- [x] Research: circular dependency error path reconstruction — see doc/whatif/circular-dep-error-paths.md. Add `eval_stack: Vec<(String, Span)>` to EvalState (mirrors include_guard). Push on Unevaluated→InProgress, pop on success; chain in CircularDependency error on InProgress detection. Nix call_stack is the direct precedent. Performance gate: optional `EvalConfig.track_cycle_path` flag.
 - [ ] Reconstruct multi-hop cycle paths for circular dependency errors (show the full cycle chain, not just the blackholed thunk)
 - [x] Elide repeating frame cycles in `DepthExceeded` stack traces — recursive and mutually-recursive functions produce 256 near-identical stack frames, overwhelming agents parsing test output. In `EvalError::Display`, when `kind == DepthExceeded`, collect visible frames, detect the minimal repeating period P (try P=1..len/3; confirm frames[i].label == frames[i%P].label && frames[i].span == frames[i%P].span for all i < P*(len/P); require at least 3 full repetitions), print one period copy then emit `[... N more repetitions of the above M frame(s) ...]`. No change to the stack data model — display-only. Add a unit test covering P=1 (self-recursion) and P=2 (mutual recursion). (`src/error.rs`) [Minor, integration-verifier]
 
@@ -548,8 +475,8 @@ User-facing error presentation improvements.
 
 - [x] Research: source text availability at EvalError display time — see doc/whatif/source-text-availability.md. Decision: option (c) caller-pairs-with-source. Source text not stored in EvalError. `render_span_snippet(source, span) -> Option<String>` helper; REPL wires into eval_input (source in scope); CLI wires into main.rs display site; LSP is Phase 3. Matches Nickel's `to_diagnostic(files)` pattern.
 - [ ] Source snippets in error output — include source context with carets like rustc (span-integrity-checker review)
-- [ ] Design: REPL source snippet display — the REPL stores the full input string for the current expression; when `eval_input()` returns an `EvalError` with a `Span`, design how to extract the relevant source line and render a caret (`^`) under the span; consider multi-line expressions where the span crosses newlines; see `src/repl.rs` and the source-text availability research item above. [design, eval-engine]
-- [ ] Span-aware error recovery in REPL — show source line with caret pointing to error span (span-integrity-checker review)
+- [x] Design: REPL source snippet display — see doc/10-errors.md §Part 10 and doc/whatif/source-text-availability.md. Caller-pairs-with-source: render_span_snippet(source, span) -> Option<String> helper; eval_input appends snippet to error string (input: &str in scope at each map_err site); CLI wires at main.rs display; StepResult unchanged.
+- [ ] Implement source snippet rendering — add `render_span_snippet(source: &str, span: Span) -> Option<String>` to `src/error.rs`; wire into REPL (`src/repl.rs` each `.map_err` site appends snippet using `input` in scope) and CLI (`src/main.rs` display site); add corpus/unit tests for single-line, multi-line, and Span::origin() suppression (`src/error.rs`, `src/repl.rs`, `src/main.rs`)
 - [x] Design: `tinct explain <error-code>` command — Elm-inspired; design how extended help text is stored (static `match ErrorKind` arms, a `lazy_static` map, or a Markdown file per error code), the CLI subcommand interface (`tinct explain E010`), and whether help includes an example program. (`src/error.rs`, `src/main.rs`) [design, integration-verifier]
 - [x] `tinct explain <error-code>` command for extended help on error categories (span-integrity-checker review, Elm-inspired)
 - [x] Add LSP `related_information` for materialization-site spans and stack frames (currently discarded) (secondary_span field already existed in EvalError)
@@ -920,10 +847,10 @@ Cross-cutting integration gaps identified by integration-verifier agent (2026-04
 
 Cross-cutting integration implementation tasks spanning pipeline boundaries.
 
-- [ ] Research: value serializer visitor pattern — `value_to_json` and `value_to_display_string` in `src/lib.rs` share dict/seq traversal structure but diverge at leaf rendering (JSON vs. display) and error handling; estimate whether a `ValueVisitor<Output>` trait actually reduces code or just adds indirection; compare with Nickel's Display impl strategy; benchmark if traversal is a hotspot before investing. (`src/lib.rs:112-211`) [research, integration-verifier]
+- [x] Research: value serializer visitor pattern — see doc/whatif/value-serializer-visitor.md. Verdict: defer. Two serializers don't justify a visitor trait (Nickel agrees — uses separate Display impls). If a third format (YAML/TOML) is added, extract a shared closure-based `traverse_dict_entries` helper at that point. Profile first to confirm traversal is a hotspot before any unification.
 - [ ] Unify serializer logic via visitor pattern — `value_to_json` and `value_to_display_string` in `src/lib.rs` duplicate dict/seq traversal logic; extract a shared `ValueVisitor` trait or generic traversal helper to eliminate the duplication
 - [x] Make deep_materialize→serialize contract explicit — document or enforce (via assertion or type-level marker) that all values must be fully materialized before serialization; currently an implicit caller obligation with no enforcement at the `value_to_json` / `value_to_display_string` boundary (`src/lib.rs`)
-- [ ] Research: eval↔builtins dependency audit — map exactly what `builtins.rs` imports from `eval.rs` (likely: `materialize`, `eval_call`, `invoke_function`, `EvalContext`, `EvalResult`) and what `eval.rs` imports from `builtins.rs` (likely: `standard_builtins`, `create_stdlib_env`); determine whether a thin `src/eval_core.rs` interface module, a trait object, or feature-flag isolation is the right boundary; estimate diff size before committing to the refactor. (`src/eval.rs`, `src/builtins.rs`) [research, integration-verifier]
+- [x] Research: eval↔builtins dependency audit — see doc/whatif/eval-builtins-boundary.md. Recommended approach: `src/eval_core.rs` extracting EvalContext + materialize + invoke_function (~100 lines). builtins.rs imports eval_core.rs (not eval.rs), breaking the cycle. Estimated diff: ~300 lines eval.rs + 100 new + 50 import changes. Gate on: independent builtin testing being a concrete need OR evaluator refactor reducing blast radius.
 - [ ] Break eval↔builtins circular dependency — `src/eval.rs` and `src/builtins.rs` mutually depend on each other (builtins call `materialize`/`eval_call`, eval calls `standard_builtins`); extract a `src/eval_core.rs` interface or use trait objects to break the cycle and enable independent testing
 - [x] Add depth guard to desugar pass or document invariant — `desugar_file` is always called before `eval` but there is no guard ensuring desugaring depth cannot exceed `MAX_EVAL_DEPTH`; add a MAX_DESUGAR_DEPTH check matching the eval limit, or add a comment documenting why desugar nesting is always shallower than the eval depth limit (`src/desugar.rs`)
 - [x] Document TypeAssert AST mutation threading implications — elaboration in `resolve_type_assert()` modifies the AST in place by setting `resolved_type` on `Expr::TypeAssert` nodes; this is unsafe for concurrent use (e.g., LSP running typecheck and eval concurrently on shared AST). Document the single-threaded assumption or add `Arc<Mutex<...>>` wrapping for the LSP path (`src/typecheck.rs:503-523`, `src/ast.rs`)

@@ -2687,7 +2687,8 @@ mod tests {
 
     #[test]
     fn test_depth_limit() {
-        // At depth MAX_PARSE_DEPTH the stack is non-empty when the extra [ fires; recovery kicks in.
+        // MAX_PARSE_DEPTH + 1 opening brackets exceeds the limit.
+        // parse() returns Err (depth-limit errors propagate as hard errors).
         let mut input = String::new();
         for _ in 0..MAX_PARSE_DEPTH {
             input.push('[');
@@ -2697,17 +2698,11 @@ mod tests {
             input.push(']');
         }
 
-        let output = parse2(&input).expect("depth limit with recovery should return Ok");
+        let err = parse(&input).unwrap_err();
         assert!(
-            !output.errors.is_empty(),
-            "expected recovered error for depth limit exceeded"
-        );
-        assert!(
-            output.errors[0]
-                .message
-                .contains("maximum nesting depth exceeded"),
+            err.message.contains("maximum nesting depth exceeded"),
             "expected depth-limit error message, got: {}",
-            output.errors[0].message
+            err.message
         );
     }
 
@@ -2741,13 +2736,14 @@ mod tests {
         );
     }
 
-    /// Verify that exactly MAX_PARSE_DEPTH nesting levels produces a recovered error.
+    /// Verify that exactly MAX_PARSE_DEPTH nesting levels succeeds.
     ///
-    /// The limit is strictly enforced: ≥ MAX_PARSE_DEPTH levels produces an error.
-    /// With recovery enabled, parse2() returns Ok with the error in ParseOutput.errors.
-    /// This is one level below the 257-level test to confirm the exact boundary.
+    /// The depth check is `stack.len() >= MAX_PARSE_DEPTH` and fires BEFORE pushing,
+    /// so the Nth bracket is processed when stack.len() = N-1. Therefore exactly
+    /// MAX_PARSE_DEPTH brackets produces stack.len() = MAX_PARSE_DEPTH - 1 at the
+    /// last push, which passes the check.
     #[test]
-    fn test_depth_limit_at_exact_boundary_rejected() {
+    fn test_depth_limit_at_exact_boundary_succeeds() {
         let mut input = String::new();
         for _ in 0..MAX_PARSE_DEPTH {
             input.push('[');
@@ -2757,17 +2753,11 @@ mod tests {
             input.push(']');
         }
 
-        let output = parse2(&input).expect("recovery should return Ok even at depth limit");
+        let result = parse(&input);
         assert!(
-            !output.errors.is_empty(),
-            "exactly MAX_PARSE_DEPTH levels should produce a recovered error"
-        );
-        assert!(
-            output.errors[0]
-                .message
-                .contains("maximum nesting depth exceeded"),
-            "error message should describe the depth limit, got: {}",
-            output.errors[0].message
+            result.is_ok(),
+            "exactly MAX_PARSE_DEPTH levels should succeed (check fires before push), got: {:?}",
+            result.unwrap_err()
         );
     }
 
@@ -3711,50 +3701,30 @@ mod tests {
 
     #[test]
     fn test_fn_param_variadic_not_last() {
-        // [...args x] — variadic param not last
-        let output = parse2("[fn [...args x] $x]").expect("recovery should succeed");
+        // [...args x] — variadic param not last: parse returns Err.
+        // The param-list error triggers recovery which consumes the fn form;
+        // the surface error may be the param error or an unmatched-bracket cascade.
         assert!(
-            !output.errors.is_empty(),
-            "expected recovered error for param after variadic"
-        );
-        assert!(
-            output.errors[0]
-                .message
-                .contains("parameter after variadic"),
-            "expected error about param after variadic, got: {}",
-            output.errors[0].message
+            parse("[fn [...args x] $x]").is_err(),
+            "expected parse to fail for param after variadic"
         );
     }
 
     #[test]
     fn test_fn_multiple_variadic() {
-        // [...args ...rest] — multiple variadic params
-        let output = parse2("[fn [...args ...rest] $x]").expect("recovery should succeed");
+        // [...args ...rest] — multiple variadic params: parse returns Err
         assert!(
-            !output.errors.is_empty(),
-            "expected recovered error for multiple variadic params"
-        );
-        assert!(
-            output.errors[0].message.contains("multiple variadic"),
-            "expected error about multiple variadic params, got: {}",
-            output.errors[0].message
+            parse("[fn [...args ...rest] $x]").is_err(),
+            "expected parse to fail for multiple variadic params"
         );
     }
 
     #[test]
     fn test_fn_variadic_with_annotation_errors() {
-        // [...args@Int] — annotation on variadic param
-        let output = parse2("[fn [...args@Int] $args]").expect("recovery should succeed");
+        // [...args@Int] — annotation on variadic param: parse returns Err
         assert!(
-            !output.errors.is_empty(),
-            "expected recovered error for variadic annotation"
-        );
-        assert!(
-            output.errors[0]
-                .message
-                .contains("annotations on variadic parameters are not allowed"),
-            "expected error about variadic annotation, got: {}",
-            output.errors[0].message
+            parse("[fn [...args@Int] $args]").is_err(),
+            "expected parse to fail for variadic annotation"
         );
     }
 
