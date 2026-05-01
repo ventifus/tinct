@@ -633,4 +633,46 @@ mod tests {
             err2.message()
         );
     }
+
+    #[test]
+    fn test_deep_materialize_infinite_seq_depth_guard() {
+        // Test that deep_materialize detects and rejects infinite Seq structures.
+        // Create a long Seq chain that exceeds MAX_EVAL_DEPTH.
+        // The seq_depth guard should fire before stack overflow.
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 5);
+
+        // Create a long chain that exceeds MAX_EVAL_DEPTH
+        let mut current = Rc::new(Thunk::new_materialized(Value::Int(0), span));
+
+        // Create MAX_EVAL_DEPTH + 2 nested Seq values to exceed the limit
+        for _ in 0..MAX_EVAL_DEPTH + 2 {
+            let seq = Value::Seq {
+                head: Rc::new(Thunk::new_materialized(Value::Int(1), span)),
+                tail: Rc::clone(&current),
+            };
+            current = Rc::new(Thunk::new_materialized(seq, span));
+        }
+
+        // Materialize the outer Seq
+        let outer_seq = materialize(&current, None, &ctx, 0).unwrap();
+
+        // Attempt to deep_materialize — should fail with infinite Seq error
+        let err = deep_materialize(&outer_seq, &ctx, 0, None).unwrap_err();
+
+        // Verify the error message indicates infinite Seq
+        assert!(
+            err.message()
+                .contains("cannot deep-materialize an infinite Seq"),
+            "Expected infinite Seq error, got: {}",
+            err.message()
+        );
+
+        // Verify it's a resource limit error
+        assert!(
+            err.message().contains("use $collect with $take first"),
+            "Expected suggestion to use $collect with $take, got: {}",
+            err.message()
+        );
+    }
 }

@@ -3463,4 +3463,75 @@ mod tests {
             other => panic!("expected outer Dict, got {other:?}"),
         }
     }
+
+    /// Regression test: Call, Fn, TypeAlias, and TypeAssert bracket forms
+    /// should have correct line and column numbers in their spans.
+    #[test]
+    fn test_bracket_form_span_variants() {
+        // Call form on line 3
+        let input_call = "# Line 1\n# Line 2\n[call $f 1]";
+        let output = parse2(input_call).expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        let call_expr = &doc.expressions[0];
+        match &call_expr.node {
+            Expr::Call { .. } => {
+                assert_eq!(call_expr.span.start.line, 3, "Call should start on line 3");
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+
+        // Fn form on line 3
+        let input_fn = "# Line 1\n# Line 2\n[fn [x] $x]";
+        let output = parse2(input_fn).expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        let fn_expr = &doc.expressions[0];
+        match &fn_expr.node {
+            Expr::Fn { .. } => {
+                assert_eq!(fn_expr.span.start.line, 3, "Fn should start on line 3");
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+
+        // TypeAlias form on line 3
+        let input_type = "# Line 1\n# Line 2\n[type Int]";
+        let output = parse2(input_type).expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        let type_expr = &doc.expressions[0];
+        match &type_expr.node {
+            Expr::TypeAlias(_) => {
+                assert_eq!(
+                    type_expr.span.start.line, 3,
+                    "TypeAlias should start on line 3"
+                );
+            }
+            other => panic!("expected TypeAlias, got {other:?}"),
+        }
+
+        // TypeAssert form on line 3
+        let input_assert = "# Line 1\n# Line 2\n[@Int 42]";
+        let output = parse2(input_assert).expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        let assert_expr = &doc.expressions[0];
+        match &assert_expr.node {
+            Expr::TypeAssert { .. } => {
+                assert_eq!(
+                    assert_expr.span.start.line, 3,
+                    "TypeAssert should start on line 3"
+                );
+            }
+            other => panic!("expected TypeAssert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_call_newline_colon_not_dict() {
+        // [call\n: x] — newline before colon should not create dict with "call" key
+        // Instead, it's a call form with zero args followed by unexpected colon
+        let err = parse2("[call\n: x]").unwrap_err();
+        assert!(
+            err.message.contains("`:` without a name"),
+            "expected error about colon without name, got: {}",
+            err.message
+        );
+    }
 }

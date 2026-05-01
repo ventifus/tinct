@@ -6291,4 +6291,45 @@ mod tests {
         subst_with_binding.type_map.insert("a".into(), Type::Int);
         assert_eq!(subst_with_binding.apply(&Type::Error), Type::Error);
     }
+
+    /// Case 5: unify_remainders with display-hiding row variable.
+    /// Tests that unification succeeds when one of the row variables has a `_` prefix,
+    /// triggering the display-hiding branch in error messages and Display formatting.
+    #[test]
+    fn test_unify_remainders_case5_display_hiding() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // Create two rows with the same field set: {a: Int}
+        // Left: {a: Int, ...rho1}, right: {a: Int, ..._hidden2}
+        // The `_hidden2` row var has a `_` prefix → display-hiding behavior
+        let mut f1 = HashMap::new();
+        f1.insert("a".into(), Type::Int);
+        let mut f2 = HashMap::new();
+        f2.insert("a".into(), Type::Int);
+
+        // Unify should succeed: shared field {a: Int}, no unique fields → Case 1
+        let result = unify(
+            &row_var_record(f1, "rho1", 0),
+            &row_var_record(f2, "_hidden2", 0),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(
+            result.is_ok(),
+            "unification should succeed when row var has _ prefix, got: {:?}",
+            result.unwrap_err()
+        );
+
+        // The tails should unify: rho1 and _hidden2 should bind together
+        // (Case 1 in unify_remainders: no unique fields → unify_tails)
+        // unify_tails(RowVar("rho1"), RowVar("_hidden2")) binds the lower-level one
+        // to the higher-level one (or chooses based on name ordering if same level)
+        assert!(
+            subst.row_map.get("rho1").is_some() || subst.row_map.get("_hidden2").is_some(),
+            "at least one row var should be bound after tail unification"
+        );
+    }
 }

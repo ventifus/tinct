@@ -1726,6 +1726,155 @@ mod tests {
     }
 
     #[test]
+    fn test_restore_state_pending_call() {
+        let span = test_span(1, 1, 1, 10);
+        let ctx = test_ctx();
+
+        // Create a simple function thunk
+        let func_thunk = Rc::new(Thunk::new_materialized(
+            Value::Function {
+                params: Rc::new(vec![]),
+                body: Rc::new(sp(Expr::Int(42))),
+                env: empty_env(),
+            },
+            span,
+        ));
+
+        let args = vec![Rc::new(Thunk::new_materialized(Value::Int(1), span))];
+        let named = IndexMap::new();
+        let caller_env = empty_env();
+
+        let pending_thunk = Rc::new(Thunk::new_pending_call(
+            Rc::clone(&func_thunk),
+            args.clone(),
+            named.clone(),
+            span,
+            Rc::clone(&caller_env),
+            span,
+            "test_pending_call".into(),
+            Rc::clone(&ctx),
+        ));
+
+        // Take the state (transitions to InProgress)
+        let taken = pending_thunk.take_pending_call();
+        assert!(taken.is_some());
+
+        // Create RestoreState and restore
+        let restore = RestoreState::PendingCall {
+            func: Rc::clone(&func_thunk),
+            args: Box::new(args),
+            named: Box::new(named),
+            call_span: span,
+            caller_env,
+            ctx: Rc::clone(&ctx),
+        };
+        restore.restore(&pending_thunk);
+
+        // Verify state is restored
+        let state = pending_thunk.state();
+        match &*state {
+            ThunkState::PendingCall { .. } => {} // Success
+            other => panic!("Expected PendingCall state, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pending_call_restore_preserves_args() {
+        let span = test_span(1, 1, 1, 10);
+        let ctx = test_ctx();
+
+        // Create a function thunk
+        let func_thunk = Rc::new(Thunk::new_materialized(
+            Value::Function {
+                params: Rc::new(vec![]),
+                body: Rc::new(sp(Expr::Int(42))),
+                env: empty_env(),
+            },
+            span,
+        ));
+
+        // Create multiple args with different values
+        let args = vec![
+            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
+            Rc::new(Thunk::new_materialized(Value::Int(2), span)),
+            Rc::new(Thunk::new_materialized(Value::String("test".into()), span)),
+        ];
+        let mut named = IndexMap::new();
+        named.insert(
+            "key".to_string(),
+            Rc::new(Thunk::new_materialized(Value::Bool(true), span)),
+        );
+        let caller_env = empty_env();
+
+        let pending_thunk = Rc::new(Thunk::new_pending_call(
+            Rc::clone(&func_thunk),
+            args.clone(),
+            named.clone(),
+            span,
+            Rc::clone(&caller_env),
+            span,
+            "test_preserve_args".into(),
+            Rc::clone(&ctx),
+        ));
+
+        // Take the state
+        let taken = pending_thunk.take_pending_call();
+        assert!(taken.is_some());
+
+        // Restore
+        let restore = RestoreState::PendingCall {
+            func: Rc::clone(&func_thunk),
+            args: Box::new(args.clone()),
+            named: Box::new(named.clone()),
+            call_span: span,
+            caller_env,
+            ctx: Rc::clone(&ctx),
+        };
+        restore.restore(&pending_thunk);
+
+        // Verify the args are preserved
+        let state = pending_thunk.state();
+        match &*state {
+            ThunkState::PendingCall {
+                args: restored_args,
+                named: restored_named,
+                ..
+            } => {
+                // Check arg count
+                assert_eq!(
+                    restored_args.len(),
+                    3,
+                    "Expected 3 positional args, got {}",
+                    restored_args.len()
+                );
+
+                // Check that the actual arg values are correct
+                use crate::eval::materialize;
+                let ctx_ref = test_ctx();
+                let v0 = materialize(&restored_args[0], None, &ctx_ref, 0).unwrap();
+                let v1 = materialize(&restored_args[1], None, &ctx_ref, 0).unwrap();
+                let v2 = materialize(&restored_args[2], None, &ctx_ref, 0).unwrap();
+
+                assert_eq!(v0, Value::Int(1));
+                assert_eq!(v1, Value::Int(2));
+                assert_eq!(v2, Value::String("test".into()));
+
+                // Check named arg count and value
+                assert_eq!(
+                    restored_named.len(),
+                    1,
+                    "Expected 1 named arg, got {}",
+                    restored_named.len()
+                );
+                let named_val =
+                    materialize(restored_named.get("key").unwrap(), None, &ctx_ref, 0).unwrap();
+                assert_eq!(named_val, Value::Bool(true));
+            }
+            other => panic!("Expected PendingCall state, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_attach_materialization_context_adds_frame() {
         let thunk_span = test_span(1, 1, 1, 10);
         let err = EvalError::undefined_variable("x".to_string(), thunk_span);

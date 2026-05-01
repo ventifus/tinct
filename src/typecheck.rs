@@ -7320,4 +7320,127 @@ mod tests {
             "TypeVar must NOT be bound when unified with Error (Error carries no type info)"
         );
     }
+
+    // -- check_call_with_scheme error paths --
+
+    #[test]
+    fn test_check_call_with_scheme_arity_mismatch() {
+        // Arity mismatch when calling a polymorphic scheme with wrong number of args.
+        // The scheme has 2 params but we provide 1 positional arg → arity mismatch error.
+        let errors = check_err("[f: [fn [x@a y@b] $x]]\n[result: [call $f 42]]");
+        assert!(
+            errors.iter().any(|e| e.message.contains("arity mismatch")),
+            "expected arity mismatch error when calling polymorphic scheme, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_check_call_with_scheme_non_function_error() {
+        // Calling a non-function scheme (type is Int, not Function).
+        // check_call_with_scheme should produce "expected function type" error.
+        let errors = check_err("[x: 42]\n---\n[result: [call $x 1 2]]");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("expected function type")),
+            "expected 'expected function type' error when calling Int scheme, got: {:?}",
+            errors
+        );
+    }
+
+    // -- Builtin sequence types --
+
+    #[test]
+    fn test_builtin_seq_generators_return_seq_types() {
+        // Regression test for type-seq sprint: sequence-generating builtins should return Type::Seq.
+        // Covers: $seq, $repeat, $cycle, $iterate, $unfold, $take
+        // NOTE: $seq takes (head, tail) args — it's the primitive Seq cons operation
+        let input = r#"
+            [some_seq: [call $range 0 10]]
+            [seq_result: [call $seq 1 $some_seq]]
+            [repeat_result: [call $repeat 42]]
+            [cycle_result: [call $cycle $some_seq]]
+            [iterate_result: [call $iterate [fn [x@a] $x] 0]]
+            [unfold_result: [call $unfold [fn [x@a] [Just: [x  $x]]] 0]]
+            [take_result: [call $take 5 $some_seq]]
+        "#;
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let env = Rc::new(TypeEnv::with_builtins());
+        let mut state = InferState::new();
+        let new_env = typecheck_document(&file.node.documents[0], &env, &mut state, &mut None)
+            .expect("typecheck should succeed");
+
+        // $seq should return Seq(Int) — all args are IntLiterals
+        let seq_ty = new_env.get("seq_result").unwrap().body.clone();
+        match seq_ty {
+            Type::Seq(_) => {} // success
+            other => panic!("seq should return Seq, got: {other}"),
+        }
+
+        // $repeat should return Seq(Int)
+        let repeat_ty = new_env.get("repeat_result").unwrap().body.clone();
+        match repeat_ty {
+            Type::Seq(_) => {} // success
+            other => panic!("repeat should return Seq, got: {other}"),
+        }
+
+        // $cycle should return Seq
+        let cycle_ty = new_env.get("cycle_result").unwrap().body.clone();
+        match cycle_ty {
+            Type::Seq(_) => {} // success
+            other => panic!("cycle should return Seq, got: {other}"),
+        }
+
+        // $iterate should return Seq
+        let iterate_ty = new_env.get("iterate_result").unwrap().body.clone();
+        match iterate_ty {
+            Type::Seq(_) => {} // success
+            other => panic!("iterate should return Seq, got: {other}"),
+        }
+
+        // $unfold should return Seq
+        let unfold_ty = new_env.get("unfold_result").unwrap().body.clone();
+        match unfold_ty {
+            Type::Seq(_) => {} // success
+            other => panic!("unfold should return Seq, got: {other}"),
+        }
+
+        // $take should return Seq
+        let take_ty = new_env.get("take_result").unwrap().body.clone();
+        match take_ty {
+            Type::Seq(_) => {} // success
+            other => panic!("take should return Seq, got: {other}"),
+        }
+    }
+
+    // -- $merge/$append RowVar regression --
+
+    #[test]
+    fn test_merge_no_rowvar_sharing_error() {
+        // Regression test: $merge [a: 1] [b: 2] should type-check without error.
+        // Previous RowVar sharing bug would fail because the same row var appeared
+        // in both params and return type of the builtin signature.
+        let result = check("[result: [call $merge [a: 1] [b: 2]]]");
+        assert!(
+            result.is_ok(),
+            "merge with simple records should type-check, got error: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_append_no_rowvar_sharing_error() {
+        // Regression test: $append [a: 1] [b: 2] should type-check without error.
+        // Previous RowVar sharing bug would fail because the same row var appeared
+        // in both param and return type of the builtin signature.
+        let result = check("[result: [call $append [a: 1] [b: 2]]]");
+        assert!(
+            result.is_ok(),
+            "append with simple records should type-check, got error: {:?}",
+            result.unwrap_err()
+        );
+    }
 }

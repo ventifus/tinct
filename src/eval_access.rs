@@ -181,3 +181,77 @@ pub(crate) fn eval_range_access(
         *access_span,
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::test_span;
+
+    #[test]
+    fn test_key_in_range_all_ints() {
+        // Test key_in_range with all Int keys
+        let span = test_span(1, 1, 1, 10);
+        let k = Key::Int(5);
+        let start = Key::Int(0);
+        let end = Key::Int(10);
+
+        // Key is in range [0, 10)
+        let result = key_in_range(&k, Some(&start), Some(&end), span).unwrap();
+        assert!(result, "5 should be in range [0, 10)");
+
+        // Key equals start (inclusive)
+        let k_at_start = Key::Int(0);
+        let result = key_in_range(&k_at_start, Some(&start), Some(&end), span).unwrap();
+        assert!(result, "0 should be in range [0, 10)");
+
+        // Key equals end (exclusive)
+        let k_at_end = Key::Int(10);
+        let result = key_in_range(&k_at_end, Some(&start), Some(&end), span).unwrap();
+        assert!(!result, "10 should NOT be in range [0, 10)");
+
+        // Key below start
+        let k_below = Key::Int(-1);
+        let result = key_in_range(&k_below, Some(&start), Some(&end), span).unwrap();
+        assert!(!result, "-1 should NOT be in range [0, 10)");
+
+        // Key above end
+        let k_above = Key::Int(15);
+        let result = key_in_range(&k_above, Some(&start), Some(&end), span).unwrap();
+        assert!(!result, "15 should NOT be in range [0, 10)");
+    }
+
+    #[test]
+    fn test_key_in_range_unbounded() {
+        // Test key_in_range with unbounded start/end (None)
+        let span = test_span(1, 1, 1, 10);
+        let k = Key::Int(100);
+
+        // No bounds (all keys match)
+        let result = key_in_range(&k, None, None, span).unwrap();
+        assert!(result, "key should be in unbounded range");
+
+        // Only start bound
+        let start = Key::Int(50);
+        let result = key_in_range(&k, Some(&start), None, span).unwrap();
+        assert!(result, "100 should be >= 50");
+
+        // Only end bound
+        let end = Key::Int(200);
+        let result = key_in_range(&k, None, Some(&end), span).unwrap();
+        assert!(result, "100 should be < 200");
+    }
+
+    #[test]
+    fn test_key_in_range_mixed_types_error() {
+        // Test that mixing Int and String keys produces an error
+        let span = test_span(1, 1, 1, 10);
+        let k = Key::Int(5);
+        let start = Key::String("abc".into());
+
+        let result = key_in_range(&k, Some(&start), None, span);
+        assert!(
+            result.is_err(),
+            "Mixing Int and String keys should produce an error"
+        );
+    }
+}

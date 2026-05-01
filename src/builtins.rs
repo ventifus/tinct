@@ -4514,6 +4514,8 @@ mod tests {
         // MAX_SPLIT_PARTS+2 parts, which exceeds the limit.
         // Verifies that ResourceLimitExceeded is returned and that the error fires
         // after at most MAX_SPLIT_PARTS+1 allocations (not after the full split).
+        // Note: corpus tests for this would be impractical (require >1M element inputs),
+        // so we test the limit directly in unit tests.
         let input = "a".repeat(MAX_SPLIT_PARTS + 1);
         let result = builtin_split(BuiltinArgs {
             args: &[thunk(Value::String("".into())), thunk(Value::String(input))],
@@ -4784,6 +4786,60 @@ mod tests {
             ctx: test_ctx(),
         }));
         assert_eq!(result, Value::String("".into()));
+    }
+
+    #[test]
+    fn upper_size_limit_exceeded() {
+        // Input string larger than MAX_STRING_SIZE (64MB) should fail.
+        // Note: corpus tests for this would be impractical (require >64MB test files),
+        // so we test the limit directly in unit tests.
+        let large_string = "a".repeat(MAX_STRING_SIZE + 1);
+        let result = builtin_upper(BuiltinArgs {
+            args: &[thunk(Value::String(large_string))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        assert!(result.is_err(), "expected Err for input > MAX_STRING_SIZE");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }),
+            "expected ResourceLimitExceeded, got {:?}",
+            err.kind
+        );
+        assert!(
+            err.message().contains("upper: input exceeds"),
+            "expected 'upper: input exceeds' message, got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn lower_size_limit_exceeded() {
+        // Input string larger than MAX_STRING_SIZE (64MB) should fail.
+        // Note: corpus tests for this would be impractical (require >64MB test files),
+        // so we test the limit directly in unit tests.
+        let large_string = "A".repeat(MAX_STRING_SIZE + 1);
+        let result = builtin_lower(BuiltinArgs {
+            args: &[thunk(Value::String(large_string))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        assert!(result.is_err(), "expected Err for input > MAX_STRING_SIZE");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }),
+            "expected ResourceLimitExceeded, got {:?}",
+            err.kind
+        );
+        assert!(
+            err.message().contains("lower: input exceeds"),
+            "expected 'lower: input exceeds' message, got: {}",
+            err.message()
+        );
     }
 
     #[test]
@@ -8047,8 +8103,8 @@ mod tests {
         // will eventually hit either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE.
         //
         // This test verifies the error message is correct for the MAX_COLLECT_SIZE path.
-        // The actual limit boundary (1M vs 1M+1) is tested by the corpus test
-        // concat_large_seq.llt-eval which creates 300-element sequences.
+        // Note: corpus tests for this would be impractical (require >1M element sequences),
+        // so we test the limit directly in unit tests.
         //
         // Run in a thread with larger stack to avoid Rust stack overflow when testing
         // depth-exceeded behavior (same pattern as corpus test runners and join_seq_size_limit).
