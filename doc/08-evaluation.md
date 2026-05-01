@@ -309,6 +309,8 @@ force(θ', d+1) ⇒ v
 force(θ, d) ⇒ v
 ```
 
+**Note:** If `d ≥ MAX_EVAL_DEPTH (256)`, `force` returns `ErrorKind::MaxDepthExceeded` before entering this rule (see [FORCE-DEPTH] above). The thunk state is left unchanged so the same thunk may succeed when forced at a lower depth.
+
 `Σ_θ` is the evaluation context captured at thunk construction time. The thunk evaluates in its captured context, not the current forcing context — this ensures that context-dependent state (base directory, include guards, depth budget) reflects the thunk's definition site.
 
 **[FORCE-EVAL-ERR]**
@@ -883,7 +885,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |
-| `TypeAssert` (`[@Type expr]`) | Strict — materializes expr immediately during eval() | Annotation-time forcing (not access-time). Laziness violation; see open TODO: Fix TypeAssert forces materialization in eval() |
+| `TypeAssert` body (`[@Type expr]`) | Forced at annotation site — `eval()` calls `materialize()` on the inner expression immediately | Cannot type-check an unevaluated thunk: the type constraint must be verified before the value is bound. Annotation-time forcing (not access-time). Known laziness violation; tracked in TODO (Fix TypeAssert forces materialization in eval()). |
 
 **Error reporting impact:** Operations that shift from eager to lazy (e.g., `$if`, `$merge`, `$map`) will report errors at access time rather than construction time. This provides more accurate source locations (pointing to where materialization failed) but changes error timing. Inherently materializing operations continue to produce errors at call time.
 
