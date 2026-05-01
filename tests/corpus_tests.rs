@@ -600,14 +600,16 @@ fn has_error_code_prefix(error_msg: &str) -> bool {
     })
 }
 
-/// Typecheck corpus runner — disabled until stdlib builtins have type signatures.
+/// Typecheck corpus runner — validates that all `.llt-eval` files in
+/// `tests/corpus/eval/typecheck/` pass type checking without errors.
 ///
-/// 4 of 8 corpus files use builtins (`$+`, `$merge`, `$get`) that are not registered
-/// in `TypeEnv::new()`, causing spurious "undefined variable" type errors.
-/// Re-enable once the `typecheck-stdlib-types` sprint lands (`TypeEnv::with_builtins()`).
-/// See TODO.md §type-extensions — "Add `TypeEnv::with_builtins()` constructor".
+/// Builtin type signatures are available via `TypeEnv::with_builtins()`, but 3 of 16
+/// corpus files still fail: `$get` is a stdlib prelude function (not a builtin),
+/// `$merge` triggers a row polymorphism false positive, and `$+` with dot-access
+/// forward refs produces a unification error. Re-enable once stdlib prelude functions
+/// have type signatures and row-polymorphism inference is improved.
 #[test]
-#[ignore = "stdlib builtins lack type signatures — re-enable once typecheck-stdlib-types sprint is complete"]
+#[ignore = "3 corpus files fail: $get is stdlib (not builtin), $merge/$+ row-poly false positives"]
 fn test_typecheck_corpus() {
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval/typecheck");
 
@@ -660,19 +662,12 @@ fn test_typecheck_corpus() {
 /// 1. Contain LLT source that **fails** type checking (i.e. `typecheck_source()` returns `Err`).
 /// 2. Have an `===` section with an expected error substring.
 ///
-/// Unlike the ignored `test_typecheck_error_corpus` (which targets
-/// `tests/corpus/invalid/type_errors/` and awaits stdlib type signatures), this runner
-/// only exercises the type checker itself — no stdlib builtins required. Files should use
-/// only core language features (functions, annotations, dicts) that the type checker handles
-/// without builtin type signatures.
+/// Unlike `test_typecheck_error_corpus` (which targets `tests/corpus/invalid/type_errors/`),
+/// this runner exercises type errors in the eval corpus directory. Files may use stdlib
+/// builtins since `TypeEnv::with_builtins()` provides type signatures for all builtins.
 ///
 /// The type checker is advisory at runtime (eval always proceeds), but this corpus ensures
 /// we can write regression tests that assert specific type errors are detected.
-///
-/// IMPORTANT: Files in `tests/corpus/eval/type_errors/` MUST NOT use stdlib builtins
-/// (e.g., `$+`, `$merge`, `$get`). `typecheck_source` uses an empty TypeEnv with no
-/// builtin type signatures — stdlib builtins appear as undefined variables, masking
-/// the actual type error being tested. Use only core annotation forms: `@Type`, `[fn ...]`.
 #[test]
 fn test_typecheck_error_corpus_eval() {
     let corpus_dir =
@@ -739,15 +734,12 @@ fn test_typecheck_error_corpus_eval() {
     }
 }
 
-/// Type error corpus runner — disabled until stdlib builtins have type signatures.
+/// Type error corpus runner — validates that all files in `tests/corpus/invalid/type_errors/`
+/// fail type checking with the expected error substring.
 ///
-/// Companion to `test_typecheck_corpus`: files in `tests/corpus/invalid/type_errors/`
-/// are expected to fail type-checking with a specific error substring. Disabled because
-/// the type checker's `TypeEnv` lacks stdlib builtin signatures, making any test that
-/// exercises builtins unreliable. Re-enable together with `test_typecheck_corpus` once
-/// the `typecheck-stdlib-types` sprint lands.
+/// Companion to `test_typecheck_corpus`. Builtin type signatures are available via
+/// `TypeEnv::with_builtins()`, so corpus files may exercise builtins.
 #[test]
-#[ignore = "stdlib builtins lack type signatures — re-enable once typecheck-stdlib-types sprint is complete"]
 fn test_typecheck_error_corpus() {
     let corpus_dir =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/invalid/type_errors");

@@ -190,6 +190,29 @@ impl fmt::Display for Value {
 /// comparison always returns false (e.g. `Int(1) != Float(1.0)`). Float uses
 /// IEEE 754 semantics (NaN != NaN). Dict, Function, Builtin, Seq, and Proxy are
 /// intentionally non-comparable and always return false, even to themselves.
+///
+/// # Hash Consistency Invariant
+///
+/// **REQUIREMENT:** For Dict key equality, `hash(a) == hash(b)` whenever
+/// `Value::PartialEq` returns `a == b`.
+///
+/// **CURRENT STATUS:** This invariant is SATISFIED. Int and Float use separate
+/// hash paths in `Key::hash()` (via discriminant-based hashing), so `Int(1)` and
+/// `Float(1.0)` produce different hashes even though they are numerically equal.
+/// Cross-variant comparisons return `false` in `Value::PartialEq`, so distinct
+/// hash values are required.
+///
+/// **CONSEQUENCE:** Dict keys `[1: x]` (Int key) and `[1.0: y]` (Float key) are
+/// treated as DISTINCT keys, not merged. This is intentional: the type system
+/// treats `Int` and `Float` as separate types (subsumed by `Number` via subtyping,
+/// but not equal). Future Dict key deduplication or Set types must preserve this
+/// separation.
+///
+/// **CROSS-REFERENCE:** `Key::hash()` implementation (lines 47-54) enforces
+/// discriminant-based hashing to maintain this invariant. See also: `Key::PartialEq`
+/// (derived via `#[derive(PartialEq)]` on line 31) and `$=` builtin semantics
+/// (src/builtins_math.rs) which allow cross-type Int/Float comparison (separate
+/// from Value equality used for Dict keys).
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {

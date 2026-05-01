@@ -32,7 +32,7 @@ pub type TypeMap = HashMap<(usize, usize), Type>;
 /// the canonical call sequence.
 pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     let mut errors = Vec::new();
-    let mut env = Rc::new(TypeEnv::new());
+    let mut env = Rc::new(TypeEnv::with_builtins());
     let mut state = InferState::new();
 
     for doc in &file.documents {
@@ -175,7 +175,7 @@ pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
     reset_elaboration(file);
 
     let mut errors = Vec::new();
-    let mut env = Rc::new(TypeEnv::new());
+    let mut env = Rc::new(TypeEnv::with_builtins());
     let mut state = InferState::new();
     let mut type_map = TypeMap::new();
 
@@ -269,6 +269,11 @@ fn typecheck_document(
                     Err(mut errs) => {
                         state.level = enclosing_level;
                         errors.append(&mut errs);
+                        // Populate type_map with Any for LSP hover on failed expressions
+                        if let Some(ref mut map) = type_map {
+                            let key = (expr.span.start.offset, expr.span.end.offset);
+                            map.insert(key, Type::Any);
+                        }
                     }
                 }
             } else {
@@ -304,6 +309,11 @@ fn typecheck_document(
                     Err(mut errs) => {
                         state.level = enclosing_level; // Restore even on error
                         errors.append(&mut errs);
+                        // Populate type_map with Any for LSP hover on failed expressions
+                        if let Some(ref mut map) = type_map {
+                            let key = (expr.span.start.offset, expr.span.end.offset);
+                            map.insert(key, Type::Any);
+                        }
                     }
                 }
             }
@@ -859,6 +869,14 @@ fn infer_dict(
                 Err(mut errs) => {
                     errors.append(&mut errs);
                     field_types.insert(name.clone(), Type::Any);
+                    // Populate type_map with Any for LSP hover on failed dict value expressions
+                    if let Some(ref mut map) = type_map {
+                        let key = (
+                            entry.node.value.span.start.offset,
+                            entry.node.value.span.end.offset,
+                        );
+                        map.insert(key, Type::Any);
+                    }
                 }
             }
         }
@@ -1216,7 +1234,9 @@ fn check_bracket_access(
             }
             // Dynamic key — cannot generate field-level constraints.
             match &key_ty {
-                Type::Str | Type::Int | Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
+                Type::Str | Type::Int | Type::Number | Type::Any | Type::TypeVar(_, _) => {
+                    Ok(Type::Any)
+                }
                 _ => Err(vec![TypeError::new(
                     format!("bracket access key must be String or Int, got {key_ty}"),
                     span,
@@ -1825,6 +1845,11 @@ fn resolve_type_assert(
     Ok(expected)
 }
 
+/// Resolve an annotated type expression `[@Name $annotation]`.
+/// If `name == "Fn"`, interprets `$annotation` as a function type specification:
+/// - `[@Fn@RetType [Param1 Param2 ...]]` → function type with params and return type
+/// - `[@Fn@RetType]` (no param list) → zero-parameter function returning RetType
+/// Otherwise, resolves `$annotation` as a regular type annotation.
 fn resolve_annotated(
     name: &str,
     annotation: &Spanned<Annotation>,
@@ -3473,6 +3498,25 @@ mod tests {
                 assert_eq!(fields.len(), 2);
             }
             other => panic!("expected Record type from Coord alias, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_type_alias_shadowing_allows_nested_redefinition() {
+        // Inner dict can shadow outer dict's type alias — lexical scoping
+        // Type aliases are excluded from the record's fields, so we test via usage
+        let ty = result_field(
+            "[ID: [type Int]  outer: [@ID 42]  nested: [ID: [type String]  inner: [@ID \"text\"]]]",
+            "nested",
+        );
+        match ty {
+            Type::Record(Row { fields, .. }) => {
+                // nested.ID is a type alias, so it's NOT in fields (type aliases excluded from record)
+                assert_eq!(fields.get("ID"), None);
+                // nested.inner uses the shadowed String type (not the outer Int type)
+                assert_eq!(fields.get("inner"), Some(&Type::Str));
+            }
+            other => panic!("expected Record type, got {other}"),
         }
     }
 
