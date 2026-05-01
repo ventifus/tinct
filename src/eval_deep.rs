@@ -348,6 +348,9 @@ fn process_force(
         }
         Some(None) => {
             // Cycle sentinel: return the original thunk unchanged.
+            // Returns Rc::clone(thunk) safely because materialize() has already transitioned
+            // the thunk to Materialized; sub-structure of the returned thunk is not deep-forced
+            // (documented behavior for cycles).
             value_stack.push(Rc::clone(thunk));
             return Ok(());
         }

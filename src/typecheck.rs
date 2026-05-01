@@ -732,7 +732,11 @@ fn check_expr(
                     }
 
                     // Record the function type in the type map — use the resolved
-                    // (subst-applied) type so the map contains concrete types
+                    // (subst-applied) type so the map contains concrete types.
+                    // In lambda checking mode, type_map records the expected function type
+                    // (resolved_expected), not the synthesized type. This is correct
+                    // bidirectional semantics for LSP hover: the lambda's type is determined
+                    // by the checking context, not inferred from the body alone.
                     if let Some(ref mut map) = type_map {
                         let key = (expr.span.start.offset, expr.span.end.offset);
                         map.insert(key, resolved_expected.clone());
@@ -1442,6 +1446,16 @@ fn check_call_with_scheme(
 }
 
 /// Check a function call expression.
+///
+/// Inline lambdas with type annotations (e.g., `[call [fn [x@a] $x] 42]`) go through
+/// this function, not `check_call_with_scheme`, because the callee is a `Fn` expression
+/// (not a `VarRef` to a polymorphic scheme). `infer_expr` on the `Fn` synthesizes a type
+/// with fresh TypeVars from annotations, which then enters the CALL-POLY path for
+/// instantiation. This is a double-instantiation (annotation TypeVars + CALL-POLY TypeVars)
+/// but is harmless for single-call sites: the extra freshening produces equivalent
+/// constraints. The `check_call_with_scheme` optimization (instantiate once) only applies
+/// to `VarRef` callees where the scheme is looked up from the environment.
+///
 /// Note: This function does NOT verify that named arguments exist in the function's parameter list.
 /// Named argument validation is deferred to evaluation time (runtime check).
 fn check_call(

@@ -9589,7 +9589,7 @@ mod tests {
     fn test_drop_seq_step_non_int_remaining_error() {
         // Create a PendingBuiltin invocation of drop_seq_step where n_remaining
         // (first arg) is a String instead of an Int. This should trigger the
-        // internal error path at src/builtins.rs:2562-2570.
+        // type mismatch error path.
 
         // Create args: [String("not an int"), Seq { head: Int(1), tail: empty dict }]
         let n_remaining = thunk(Value::String("not an int".to_string()));
@@ -9616,16 +9616,15 @@ mod tests {
         let result = crate::eval::materialize(&pending_thunk, None, &test_ctx(), 0);
         let err = result.unwrap_err();
 
-        // Verify it's an Internal error with the expected message
+        // Verify it's a TypeMismatch error with the expected message
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::Internal { .. }),
-            "Expected ErrorKind::Internal, got: {:?}",
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "Expected ErrorKind::TypeMismatch, got: {:?}",
             err.kind
         );
         assert!(
-            err.message()
-                .contains("drop: expected Int for remaining count"),
-            "Expected message to contain 'drop: expected Int for remaining count', got: {}",
+            err.message().contains("drop") && err.message().contains("expected Int"),
+            "Expected message to contain 'drop' and 'expected Int', got: {}",
             err.message()
         );
     }

@@ -221,7 +221,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
         Value::Int(i) => i,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "filter-dict-step".to_string(),
+                "filter".to_string(),
                 "Int",
                 other.type_name(),
                 call_span,
@@ -237,7 +237,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
         Value::Dict(ref m) => m,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "filter-dict-step".to_string(),
+                "filter".to_string(),
                 "Dict",
                 other.type_name(),
                 call_span,
@@ -253,7 +253,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
         Value::Dict(ref m) => m,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "filter-dict-step".to_string(),
+                "filter".to_string(),
                 "Dict",
                 other.type_name(),
                 call_span,
@@ -276,7 +276,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
             Some(thunk) => materialize(thunk, None, &ctx, depth)?,
             None => {
                 return Err(EvalError::internal(
-                    format!("filter-dict-step: key at index {} not found", idx_int),
+                    format!("filter: key at index {} not found", idx_int),
                     call_span,
                 )
                 .into())
@@ -288,7 +288,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
             Value::String(s) => Key::String(s),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "filter-dict-step".to_string(),
+                    "filter".to_string(),
                     "Int or String",
                     other.type_name(),
                     call_span,
@@ -301,7 +301,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
             Some(v) => Rc::clone(v),
             None => {
                 return Err(EvalError::internal(
-                    format!("filter-dict-step: key {} not found in dict", current_key),
+                    format!("filter: key {} not found in dict", current_key),
                     call_span,
                 )
                 .into())
@@ -453,7 +453,7 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "filter-seq-step".to_string(),
+                    "filter".to_string(),
                     "Dict or Seq",
                     other.type_name(),
                     call_span,
@@ -634,11 +634,10 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     let n_int = match n {
         Value::Int(i) => i,
         other => {
-            return Err(EvalError::internal(
-                format!(
-                    "drop: expected Int for remaining count, got {}",
-                    other.type_name()
-                ),
+            return Err(EvalError::type_mismatch_ctx(
+                "drop".to_string(),
+                "Int",
+                other.type_name(),
                 call_span,
             )
             .into())
@@ -671,8 +670,10 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
                 Rc::clone(&ctx),
             )))
         }
-        other => Err(EvalError::internal(
-            format!("drop: invalid Seq tail, got {}", other.type_name()),
+        other => Err(EvalError::type_mismatch_ctx(
+            "drop".to_string(),
+            "Dict or Seq",
+            other.type_name(),
             call_span,
         )
         .into()),

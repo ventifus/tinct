@@ -155,8 +155,10 @@ pub(crate) fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                 Rc::clone(&ctx),
             )))
         }
-        other => Err(EvalError::internal(
-            format!("reduce: invalid Seq tail, got {}", other.type_name()),
+        other => Err(EvalError::type_mismatch_ctx(
+            "reduce".to_string(),
+            "Dict or Seq",
+            other.type_name(),
             call_span,
         )
         .into()),
@@ -252,8 +254,10 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         current_tail = Rc::clone(&tail);
                     }
                     other => {
-                        return Err(EvalError::internal(
-                            format!("join: invalid Seq tail, got {}", other.type_name()),
+                        return Err(EvalError::type_mismatch_ctx(
+                            "join".to_string(),
+                            "Dict or Seq",
+                            other.type_name(),
                             call_span,
                         )
                         .into());
@@ -470,7 +474,7 @@ pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
             )
         }
         other => Err(EvalError::type_mismatch_ctx(
-            "concat-seq-step".to_string(),
+            "concat".to_string(),
             "Dict or Seq",
             other.type_name(),
             call_span,

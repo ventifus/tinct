@@ -173,7 +173,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         Value::Dict(m) => m,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "cycle_step".to_string(),
+                "cycle".to_string(),
                 "Dict",
                 other.type_name(),
                 call_span,
@@ -187,7 +187,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         Value::Int(i) => i,
         other => {
             return Err(EvalError::type_mismatch_ctx(
-                "cycle_step".to_string(),
+                "cycle".to_string(),
                 "Int",
                 other.type_name(),
                 call_span,
@@ -209,7 +209,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         .get_index(current_idx as usize)
         .map(|(_, v)| Rc::clone(v))
         .ok_or_else(|| {
-            EvalError::internal("cycle_step: index out of bounds".to_string(), call_span)
+            EvalError::internal("cycle: index out of bounds".to_string(), call_span)
         })?;
 
     // Create tail as PendingBuiltin for next step
