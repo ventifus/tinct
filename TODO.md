@@ -95,7 +95,7 @@ Sequence reduction — fold a sequence into a single value or collect into a str
 
 ### builtins-split-f: Extract builtins_math.rs
 
-- [ ] Move `builtin_add`, `builtin_sub`, `builtin_mul`, `builtin_div_float`, `builtin_eq`, `builtin_lt`, `builtin_if` to `src/builtins_math.rs` (~200 lines) [Minor]
+- [x] Move `builtin_add`, `builtin_sub`, `builtin_mul`, `builtin_div_float`, `builtin_eq`, `builtin_lt`, `builtin_if` to `src/builtins_math.rs` (~200 lines) [Minor]
 
 ## parser-rewrite: Parser Rewrite (E2)
 
