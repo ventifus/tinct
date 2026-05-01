@@ -1229,18 +1229,20 @@ mod tests {
     #[test]
     fn test_is_catchable() {
         // DepthExceeded and ResourceLimitExceeded are NOT catchable
-        let depth_err = ErrorKind::DepthExceeded { limit: 256 };
-        assert!(!depth_err.is_catchable());
+        assert!(!ErrorKind::DepthExceeded { limit: 256 }.is_catchable());
+        assert!(!ErrorKind::ResourceLimitExceeded {
+            message: "test".to_string(),
+        }
+        .is_catchable());
 
-        let resource_err = ErrorKind::ResourceLimitExceeded {
-            message: "collect: exceeded maximum collection size (1000000)".to_string(),
-        };
-        assert!(!resource_err.is_catchable());
-
-        // All other errors ARE catchable
+        // All other 24 variants ARE catchable
         assert!(ErrorKind::KeyNotFound {
             key: "foo".to_string(),
             available_keys: vec![],
+        }
+        .is_catchable());
+        assert!(ErrorKind::UndefinedVariable {
+            name: "x".to_string()
         }
         .is_catchable());
         assert!(ErrorKind::TypeMismatch {
@@ -1249,6 +1251,97 @@ mod tests {
             got: "String".to_string()
         }
         .is_catchable());
+        assert!(ErrorKind::TypeAssertFailed {
+            expected: "Int".to_string(),
+            got: "String".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::ArityMismatch {
+            expected: ArityBound::Exact(1),
+            got: 2
+        }
+        .is_catchable());
+        assert!(ErrorKind::MissingRequiredParam {
+            param: "x".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::NamedArgConflict {
+            param: "x".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::UnknownNamedArg {
+            name: "x".to_string(),
+            valid_params: vec![]
+        }
+        .is_catchable());
+        assert!(ErrorKind::NamedArgRejected {
+            builtin: "test".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::DuplicateKey {
+            key: "x".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::DivisionByZero {
+            op: "/".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::IntegerOverflow {
+            op: "+".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::FloatNotFinite {
+            builtin: "test".to_string(),
+            value: f64::NAN
+        }
+        .is_catchable());
+        assert!(ErrorKind::EmptyCollection {
+            op: "head".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::ValueNotSerializable {
+            value_type: "Function".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::FloatOutOfRange {
+            builtin: "floor".to_string(),
+            value: 1e20
+        }
+        .is_catchable());
+        assert!(ErrorKind::JsonDepthExceeded { limit: 128 }.is_catchable());
+        assert!(ErrorKind::IncludeForbidden.is_catchable());
+        assert!(ErrorKind::IncludeNotAvailable.is_catchable());
+        assert!(ErrorKind::IncludeIoError {
+            path: "test.llt".to_string(),
+            detail: "no such file".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::IncludeCycle {
+            path: "test.llt".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::IncludeParseFailed {
+            path: "test.llt".to_string(),
+            detail: "parse error".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::IncludeFileTooLarge {
+            path: "big.llt".to_string(),
+            size: 100_000_000,
+            limit: 10_000_000
+        }
+        .is_catchable());
+        assert!(ErrorKind::ParseConversion {
+            builtin: "to-int".to_string(),
+            input: "abc".to_string(),
+            target: "Int".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::JsonParse {
+            detail: "invalid".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::JsonRange.is_catchable());
         assert!(ErrorKind::CircularDependency {
             name: "$x".to_string()
         }
@@ -1257,13 +1350,8 @@ mod tests {
             message: "test".to_string()
         }
         .is_catchable());
-        assert!(ErrorKind::DivisionByZero {
-            op: "/".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::FloatNotFinite {
-            builtin: "test".to_string(),
-            value: f64::NAN
+        assert!(ErrorKind::Internal {
+            message: "test".to_string()
         }
         .is_catchable());
     }
@@ -1440,21 +1528,19 @@ mod tests {
     #[test]
     fn test_is_cacheable() {
         // DepthExceeded is NOT cacheable (must retry at different depth)
-        let depth_err = ErrorKind::DepthExceeded { limit: 256 };
-        assert!(!depth_err.is_cacheable());
+        assert!(!ErrorKind::DepthExceeded { limit: 256 }.is_cacheable());
 
+        // All other 25 variants ARE cacheable (can be stored in Failed thunk state).
         // ResourceLimitExceeded IS cacheable (unlike DepthExceeded, resource limits
         // are not context-dependent on call depth — a failed resource limit check
-        // will fail consistently regardless of when it's retried)
-        assert!(ErrorKind::ResourceLimitExceeded {
-            message: "collect: exceeded maximum collection size (1000000)".to_string(),
-        }
-        .is_cacheable());
-
-        // All other errors ARE cacheable (can be stored in Failed thunk state)
+        // will fail consistently regardless of when it's retried).
         assert!(ErrorKind::KeyNotFound {
             key: "foo".to_string(),
             available_keys: vec![],
+        }
+        .is_cacheable());
+        assert!(ErrorKind::UndefinedVariable {
+            name: "x".to_string()
         }
         .is_cacheable());
         assert!(ErrorKind::TypeMismatch {
@@ -1463,6 +1549,101 @@ mod tests {
             got: "String".to_string()
         }
         .is_cacheable());
+        assert!(ErrorKind::TypeAssertFailed {
+            expected: "Int".to_string(),
+            got: "String".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::ArityMismatch {
+            expected: ArityBound::Exact(1),
+            got: 2
+        }
+        .is_cacheable());
+        assert!(ErrorKind::MissingRequiredParam {
+            param: "x".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::NamedArgConflict {
+            param: "x".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::UnknownNamedArg {
+            name: "x".to_string(),
+            valid_params: vec![]
+        }
+        .is_cacheable());
+        assert!(ErrorKind::NamedArgRejected {
+            builtin: "test".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::DuplicateKey {
+            key: "x".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::DivisionByZero {
+            op: "/".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::IntegerOverflow {
+            op: "+".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::FloatNotFinite {
+            builtin: "test".to_string(),
+            value: f64::NAN
+        }
+        .is_cacheable());
+        assert!(ErrorKind::EmptyCollection {
+            op: "head".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::ValueNotSerializable {
+            value_type: "Function".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::FloatOutOfRange {
+            builtin: "floor".to_string(),
+            value: 1e20
+        }
+        .is_cacheable());
+        assert!(ErrorKind::JsonDepthExceeded { limit: 128 }.is_cacheable());
+        assert!(ErrorKind::IncludeForbidden.is_cacheable());
+        assert!(ErrorKind::ResourceLimitExceeded {
+            message: "test".to_string(),
+        }
+        .is_cacheable());
+        assert!(ErrorKind::IncludeNotAvailable.is_cacheable());
+        assert!(ErrorKind::IncludeIoError {
+            path: "test.llt".to_string(),
+            detail: "no such file".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::IncludeCycle {
+            path: "test.llt".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::IncludeParseFailed {
+            path: "test.llt".to_string(),
+            detail: "parse error".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::IncludeFileTooLarge {
+            path: "big.llt".to_string(),
+            size: 100_000_000,
+            limit: 10_000_000
+        }
+        .is_cacheable());
+        assert!(ErrorKind::ParseConversion {
+            builtin: "to-int".to_string(),
+            input: "abc".to_string(),
+            target: "Int".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::JsonParse {
+            detail: "invalid".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::JsonRange.is_cacheable());
         assert!(ErrorKind::CircularDependency {
             name: "$x".to_string()
         }
@@ -1471,16 +1652,10 @@ mod tests {
             message: "test".to_string()
         }
         .is_cacheable());
-        assert!(ErrorKind::DivisionByZero {
-            op: "/".to_string()
+        assert!(ErrorKind::Internal {
+            message: "test".to_string()
         }
         .is_cacheable());
-        assert!(ErrorKind::FloatNotFinite {
-            builtin: "test".to_string(),
-            value: f64::NAN
-        }
-        .is_cacheable());
-        assert!(ErrorKind::JsonDepthExceeded { limit: 128 }.is_cacheable());
     }
 
     #[test]

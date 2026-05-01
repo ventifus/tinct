@@ -3534,4 +3534,61 @@ mod tests {
             err.message
         );
     }
+
+    #[test]
+    fn test_underscore_exclusion_positions() {
+        // Verify that $_ in exclusion positions (bracket key, range bounds, dict key)
+        // is parsed as VarRef, not desugared. The parser should emit VarRef("_") AST nodes.
+        // Desugaring happens in a later pass, which checks these exclusion positions.
+
+        // $_ in bracket key position: $dict[$_]
+        let expr = parse_expr("$dict[$_]");
+        match &expr.node {
+            Expr::BracketAccess { expr, key } => {
+                match &expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "dict"),
+                    other => panic!("expected VarRef for target, got {other:?}"),
+                }
+                match &key.node {
+                    Expr::VarRef(name) => {
+                        assert_eq!(name, "_", "$_ in bracket key should be VarRef")
+                    }
+                    other => panic!("expected VarRef(_) for bracket key, got {other:?}"),
+                }
+            }
+            other => panic!("expected BracketAccess, got {other:?}"),
+        }
+
+        // $_ in range start bound: $x[$_..10]
+        let expr2 = parse_expr("$x[$_..10]");
+        match &expr2.node {
+            Expr::RangeAccess { start, end, .. } => {
+                match start.as_ref().map(|s| &s.node) {
+                    Some(Expr::VarRef(name)) => {
+                        assert_eq!(name, "_", "$_ in range start should be VarRef")
+                    }
+                    other => panic!("expected VarRef(_) for range start, got {other:?}"),
+                }
+                match end.as_ref().map(|e| &e.node) {
+                    Some(Expr::Int(10)) => {}
+                    other => panic!("expected Int(10) for range end, got {other:?}"),
+                }
+            }
+            other => panic!("expected RangeAccess, got {other:?}"),
+        }
+
+        // $_ in dict key position: [$_: 42]
+        let expr3 = parse_expr("[$_: 42]");
+        match &expr3.node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                let key_expr = entries[0].node.key.as_ref().expect("expected key");
+                match &key_expr.node {
+                    Expr::VarRef(name) => assert_eq!(name, "_", "$_ as dict key should be VarRef"),
+                    other => panic!("expected VarRef(_) for dict key, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
 }

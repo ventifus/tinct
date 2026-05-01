@@ -1,0 +1,4 @@
+# or: returns truthy value, not just true
+[call $or 42 0]
+===
+Int(42)

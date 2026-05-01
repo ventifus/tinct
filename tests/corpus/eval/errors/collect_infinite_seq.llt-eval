@@ -1,0 +1,4 @@
+# collect: error on infinite sequence (depth exceeded)
+[call $collect [call $range 0]]
+===
+[E040] maximum evaluation depth exceeded

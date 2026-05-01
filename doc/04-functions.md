@@ -318,6 +318,10 @@ fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
 
 **Migration from eval-time desugaring.** The implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) was removed when the AST pass was activated. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) moved to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) now call `desugar_expr()` before `eval()`. The migration resolved TODO.md:44 ("$_ desugaring AST shape mismatch between type checker and evaluator").
 
+#### Testing Requirements
+
+Corpus tests are required for each WRAP rule (WRAP-CALL, WRAP-DICT, WRAP-DOT, WRAP-BRACKET, WRAP-RANGE) and each exclusion position (func position in Call, bracket access keys, range bounds, dict entry keys). Tests should verify that desugaring produces the expected `Fn([_], ...)` wrapper and that excluded positions do not trigger wrapping.
+
 ## Call Convention — Formal Specification
 
 Specifies how arguments at a call site are bound to function parameters. This is a dual-layer specification: **binding constraints** (declarative — what a valid binding is) and a **binding algorithm** (phased operational rules — how to compute it), connected by a **correctness proof** showing the algorithm computes the unique solution satisfying the constraints.

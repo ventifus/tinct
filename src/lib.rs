@@ -5,11 +5,11 @@
 //! [`eval_source`] parses and evaluates LLT source with the standard library environment.
 //!
 //! Additional public API:
-//! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input
+//! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input (requires EvalContext; `$include` uses context base_dir for resolution)
 //! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
-//! - [`EvalContext`] -- evaluation context with base directory and stdlib environment for `$include`
+//! - [`EvalContext`] -- evaluation context with base directory and stdlib environment; include_cache memoizes `$include` results (same file = same cached thunk)
 //! - [`json_to_value`] -- convert `serde_json::Value` to LLT `Value`
 //! - [`value_to_json`] -- convert LLT `Value` to `serde_json::Value`
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
@@ -165,9 +165,14 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
 
 /// Convert a materialized [`Value`](value::Value) to a [`serde_json::Value`].
 ///
+/// **Caller must ensure all values are fully materialized via [`deep_materialize`] before calling.**
+/// Unmaterialized thunks will produce incorrect output.
+///
 /// Dict values are materialized on demand via [`eval::materialize`]. If all keys
 /// are sequential integers starting from 0 the dict is serialized as a JSON array;
 /// otherwise it becomes a JSON object (integer keys are stringified).
+///
+/// Unlike [`value_to_display_string`], this rejects NaN/Infinity floats (not valid JSON).
 ///
 /// Returns an error for:
 /// - `Function` / `Builtin` values (no JSON representation)
@@ -247,15 +252,17 @@ pub fn value_to_json(
     }
 }
 
-/// Convert a Value into a displayable string.
+/// Convert a Value into a displayable string (LLT format, not JSON).
+///
+/// **Caller must ensure all values are fully materialized via [`deep_materialize`] before calling.**
+/// Unmaterialized thunks will produce incorrect output.
 ///
 /// Unlike `Value::Debug`, this renders dict values showing the complete
 /// structure, not just keys. The value should already be deep-materialized
 /// via [`eval::deep_materialize`]; this function still calls `materialize`
 /// on each thunk for safety but does not perform recursive deep-forcing.
 ///
-/// Unlike [`value_to_json`], this function accepts `Float` values that are
-/// NaN or Infinity (they render as `Float(NaN)`, `Float(inf)`, etc.).
+/// Unlike [`value_to_json`], this accepts NaN/Infinity floats (renders as `Float(NaN)`, `Float(inf)`).
 ///
 /// `depth` tracks recursion depth to prevent stack overflow from deeply nested
 /// dict-of-dicts structures. Uses the same limit as `eval::MAX_EVAL_DEPTH`.

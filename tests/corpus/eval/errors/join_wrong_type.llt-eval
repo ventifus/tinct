@@ -1,0 +1,4 @@
+# join: error when separator is not a string
+[call $join 42 [1 2 3]]
+===
+[E010] type mismatch: expected String, got Int

@@ -6,17 +6,31 @@ Organized test suite for the tinct parser.
 
 ```
 tests/corpus/
-├── valid/           # Inputs that should parse successfully
-│   ├── simple/      # Basic key-value pairs and simple structures
-│   ├── complex/     # Nested structures, metadata, larger examples
-│   └── edge_cases/  # Empty inputs, whitespace handling, etc.
-├── invalid/         # Inputs that should fail to parse
-│   ├── syntax_errors/    # Bracket mismatches, unexpected tokens
-│   └── semantic_errors/  # Future: Type errors, constraint violations
-└── eval/            # Evaluator tests
-    ├── builtins/    # Builtin function evaluation
-    ├── errors/      # Expected eval failures
-    └── stdlib/      # Stdlib function evaluation
+├── valid/                # Inputs that should parse successfully
+│   ├── simple/           # Basic key-value pairs and simple structures
+│   ├── complex/          # Nested structures, metadata, larger examples
+│   ├── literals/         # Int, float, bool, string, bare word literals
+│   ├── special_forms/    # call, fn, type special forms
+│   ├── access/           # Dot, bracket, range access
+│   ├── annotations/      # Type annotations and assertions
+│   ├── documents/        # Multi-expression, multi-document, --- separator
+│   └── edge_cases/       # Empty inputs, whitespace, deep nesting, CRLF
+├── invalid/              # Inputs that should fail to parse
+│   ├── syntax_errors/    # Bracket mismatches, unexpected tokens, depth exceeded
+│   └── semantic_errors/  # Type errors, constraint violations
+└── eval/                 # Evaluator tests (input === expected JSON output)
+    ├── builtins/         # Builtin function evaluation
+    ├── stdlib/           # Stdlib function evaluation
+    ├── errors/           # Expected eval failures (input === ERROR)
+    ├── laziness/         # Laziness proof tests (use $error in unused positions)
+    ├── type_assertions/  # TypeAssert structural contract evaluation
+    ├── type_errors/      # Type checker error tests
+    ├── typecheck/        # Type inference and checking tests
+    ├── functions/        # Function definition and call tests
+    ├── documents/        # Multi-document evaluation and pipelines
+    ├── access/           # Access chain evaluation
+    ├── underscore/       # $_ implicit lambda desugaring
+    └── letrec/           # Letrec scoping and forward references
 ```
 
 ## Adding Tests
@@ -60,6 +74,22 @@ a valid LLT document separator.)
 Dict({"name": String("Alice")})
 ```
 
+### Error Tests
+
+For tests in `tests/corpus/eval/errors/` or `tests/corpus/invalid/`, the expected output
+after `===` should be an error substring or error code. **All error tests MUST include
+the error code `[EXXX]` to ensure error code stability.**
+
+```
+[call $+ 1 2 3]
+===
+[E020] arity mismatch
+```
+
+Error tests match on substrings, so you can specify just the error code, or include
+additional message text for clarity. The test runner verifies that the error message
+contains the expected substring.
+
 If no `===` delimiter is present, the test only checks that the input parses
 successfully (for valid tests) or fails (for invalid tests).
 
@@ -95,13 +125,33 @@ Failed tests show the filename and error:
 
 ## Current Test Coverage
 
-### Valid Tests
+### Valid Tests (Parser)
 - **simple/**: Basic key-value, multi-value, nested lists
 - **complex/**: Metadata structures, deep nesting
-- **edge_cases/**: Empty input, whitespace normalization
+- **literals/**: Int, float, bool, string, bare word, variable references
+- **special_forms/**: call, fn, type forms
+- **access/**: Dot, bracket, range, chained access
+- **annotations/**: Type assertions with and without defaults
+- **documents/**: Multi-expression files, multi-document pipelines
+- **edge_cases/**: Empty input, whitespace, CRLF line endings, deep nesting (200 levels), delimiter edge cases
 
-### Invalid Tests
-- **syntax_errors/**: Missing brackets, extra tokens, unexpected colons, missing values
+### Invalid Tests (Parse Failures)
+- **syntax_errors/**: Missing brackets, extra tokens, unexpected colons, missing values, depth exceeded (257+ levels)
+- **semantic_errors/**: Type errors, constraint violations
+
+### Eval Tests (Evaluator)
+- **builtins/**: All 44 builtin functions with edge cases
+- **stdlib/**: All 51 stdlib functions (defined in stdlib/prelude.llt)
+- **errors/**: Expected eval failures with error codes (E001-E099)
+- **laziness/**: Tests proving values are NOT eagerly evaluated
+- **type_assertions/**: TypeAssert contract validation with defaults and fallbacks
+- **type_errors/**: Type checker error tests
+- **typecheck/**: Type inference, polymorphism, let-generalization
+- **functions/**: Function definitions, closures, variadic, named args
+- **documents/**: Multi-document evaluation, pipelines with $$
+- **access/**: Access chain evaluation
+- **underscore/**: $_ implicit lambda desugaring
+- **letrec/**: Letrec scoping and forward references
 
 ### Known Issues
 - None currently tracked

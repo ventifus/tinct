@@ -129,6 +129,10 @@ pub enum Expr {
         /// Type resolved during elaboration (type checking).
         /// Uses RefCell for write-once elaboration without cloning the entire AST.
         /// The write-once invariant is enforced in typecheck.rs `resolve_type_assert`.
+        ///
+        /// **WARNING:** `resolve_type_assert()` modifies AST in place. The AST is not
+        /// thread-safe — typecheck and eval must not run concurrently on the same AST.
+        /// LSP handles this by parsing fresh for each request.
         resolved_type: RefCell<Option<Type>>,
     },
 

@@ -1862,6 +1862,28 @@ impl TypeEnv {
             },
         );
 
+        // Convergence loop: until(pred, f, init) applies f until pred holds
+        env.insert(
+            "until".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Function {
+                        params: vec![Type::Any],
+                        ret: Box::new(Type::Bool),
+                        variadic: false,
+                    },
+                    Type::Function {
+                        params: vec![Type::Any],
+                        ret: Box::new(Type::Any),
+                        variadic: false,
+                    },
+                    Type::Any,
+                ],
+                ret: Box::new(Type::Any),
+                variadic: false,
+            },
+        );
+
         // Type introspection
         env.insert(
             "type-of".to_string(),
@@ -2990,6 +3012,27 @@ mod tests {
             .insert("a".into(), Type::TypeVar("b".into(), 0));
         subst.type_map.insert("b".into(), Type::Int);
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
+    }
+
+    #[test]
+    fn test_substitution_idempotence() {
+        // Verify that applying a substitution multiple times produces the same result.
+        // This validates the claim in doc/05-type-annotations.md that substitution
+        // application is idempotent.
+        let mut subst = Substitution::new();
+        subst
+            .type_map
+            .insert("a".into(), Type::TypeVar("b".into(), 0));
+        subst.type_map.insert("b".into(), Type::Int);
+
+        let ty = Type::TypeVar("a".into(), 0);
+        let result_once = subst.apply(&ty);
+        let result_twice = subst.apply(&result_once);
+
+        // Both applications should produce the same result: Int
+        assert_eq!(result_once, Type::Int);
+        assert_eq!(result_twice, Type::Int);
+        assert_eq!(result_once, result_twice);
     }
 
     #[test]
@@ -4259,6 +4302,34 @@ mod tests {
 
         // Should be different fresh variables
         assert_ne!(inst1, inst2);
+    }
+
+    #[test]
+    fn test_instantiate_at_level_registers_vars_in_levels() {
+        // Create a type scheme with a polymorphic variable
+        let scheme = TypeScheme {
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
+            body: Type::TypeVar("a".into(), 0),
+        };
+        let mut state = InferState::new();
+        state.level = 2;
+
+        // Instantiate the scheme
+        let result = instantiate_scheme(&scheme, 2, &mut state);
+
+        // The result should be a fresh type variable
+        match result {
+            Type::TypeVar(name, _) => {
+                // Verify the fresh variable is registered in levels at the current level
+                assert_eq!(
+                    state.levels.get(&name),
+                    Some(&2),
+                    "instantiate_at_level must register fresh vars in state.levels at current level"
+                );
+            }
+            other => panic!("expected TypeVar, got {other:?}"),
+        }
     }
 
     // --- generalize ---

@@ -2,6 +2,8 @@
 
 For the user-facing annotation syntax, see [Type Annotations](05-type-annotations.md). For the formal inference algorithm, see [Type Inference](06-type-inference.md).
 
+**Terminology note:** The current implementation uses `RowTail` (not `RowRest`). See Part 8 for the migration reference.
+
 ## TypeAssert Runtime Validation
 
 The type checker and evaluator must agree on TypeAssert semantics. Currently they diverge: the static check is structural (`is_subtype(actual, expected)` in `resolve_type_assert`), while the runtime check is nominal (string comparison of `value.type_name()`). Record-type assertions like `[@[name: String age: Int] $expr]` pass type checking but are no-ops at runtime — the evaluator only sees "Dict" and cannot validate the record structure.

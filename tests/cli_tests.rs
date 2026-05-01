@@ -1410,3 +1410,25 @@ fn eval_proxy_json_serialization_error() {
         "expected error message about Proxy JSON serialization, got: {stderr}"
     );
 }
+
+#[test]
+fn eval_deep_materialize_seq() {
+    // Test deep materialization with a sequence
+    let (path, _dir) = write_temp_llt(
+        "deep_materialize_seq",
+        "[call $collect [call $take 3 [call $range 0 10]]]",
+    );
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!([0, 1, 2]));
+}
