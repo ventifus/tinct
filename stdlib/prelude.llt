@@ -573,21 +573,21 @@ find-deep-try-check: [fn [result parent target ks i]
 with-entries: [fn [xs f] [call $from-entries [call $builtin-map $f [call $entries $xs]]]]
 
 # Split a collection into two groups: elements satisfying pred and those that do not.
-# Returns a dict with keys `x` (matching) and `not-x` (non-matching).
+# Returns a dict with keys `pass` (matching) and `fail` (non-matching).
 # Both groups are integer-keyed dicts (eager, not Seqs) for predictable downstream use.
 partition: [fn [pred xs]
     [call $builtin-reduce
         [fn [acc e]
             [call $partition-step $acc $e [call $pred $e]]]
-        [x: []  not-x: []]
+        [pass: []  fail: []]
         $xs]]
 
 partition-step: [fn [acc e passes]
     [call $builtin-if $passes
-        [x:     [call $append $acc.x $e]
-         not-x: $acc.not-x]
-        [x:     $acc.x
-         not-x: [call $append $acc.not-x $e]]]]
+        [pass: [call $append $acc.pass $e]
+         fail: $acc.fail]
+        [pass: $acc.pass
+         fail: [call $append $acc.fail $e]]]]
 
 # Map a function over a collection and flatten (concatenate) the results.
 # Uses concat to accumulate the results of f, avoiding Seq/Dict flush issues.

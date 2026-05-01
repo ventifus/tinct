@@ -103,15 +103,22 @@ impl DocumentStore {
         // Create base evaluation context.
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
+        //
+        // Fallback chain for base_dir: try "." first, then temp_dir, then "/" as last resort.
+        // This handles systemd socket activation, chroots, and containers where CWD or
+        // temp may be inaccessible. Since no_fs=true, the Dir is never used for actual I/O.
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .unwrap_or_else(|_| {
-                // Fallback: if we can't open ".", try to open a temp directory
-                // This should never happen in practice, but ensures we always have a valid Dir
+            .or_else(|_| {
                 cap_std::fs::Dir::open_ambient_dir(
                     std::env::temp_dir(),
                     cap_std::ambient_authority(),
                 )
-                .expect("failed to open fallback base_dir")
+            })
+            .unwrap_or_else(|_| {
+                // Last resort: open root directory. This should always succeed on Unix-like systems.
+                // If this also fails, the LSP cannot start, but this is extremely unlikely.
+                cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
+                    .expect("failed to open any base_dir (tried ., temp_dir, /)")
             });
         let base_eval_ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), true);
         Self {
@@ -130,10 +137,22 @@ impl DocumentStore {
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
+        // Fallback chain: try document's directory first, then ".", then base_eval_ctx's Dir.
+        // This handles cases where the document's directory becomes inaccessible mid-session
+        // (e.g., unmounted network share, deleted directory). Since no_fs=true, the Dir is
+        // never used for actual I/O.
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_path, cap_std::ambient_authority())
+            .or_else(|_| cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()))
             .unwrap_or_else(|_| {
-                cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-                    .expect("cannot open current directory")
+                // Last resort: reopen base_eval_ctx's Dir. cap_std::fs::Dir doesn't implement
+                // Clone, so we open "." relative to base_dir to get a duplicate handle.
+                // This should never fail since base_eval_ctx.base_dir was successfully opened
+                // during DocumentStore::new(), but if it does, we have no choice but to panic.
+                self.base_eval_ctx
+                    .config
+                    .base_dir
+                    .open_dir(".")
+                    .expect("failed to reopen base_eval_ctx.base_dir")
             });
         let eval_ctx = self.base_eval_ctx.with_base_dir(base_dir);
 

@@ -4326,6 +4326,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_call_polymorphic_positional_plus_named_arity_ok() {
+        // Polymorphic function with 2 params called with 1 positional arg + 1 named arg.
+        // total_supplied = args.len() + named_args.len() = 1 + 1 = 2 = params.len() → ok.
+        // This is a regression test for the named arg arity counting fix.
+        let result = check(
+            "[f: [fn [a b] $a]]
+             ---
+             [result: [call $f 1 b: 2]]",
+        );
+        result.expect(
+            "call with 1 positional + 1 named arg filling 2 param slots should not produce arity error",
+        );
+        let env = file_env(
+            "[f: [fn [a b] $a]]
+             ---
+             [result: [call $f 1 b: 2]]",
+        );
+        let result_ty = env.get("result").expect("result should be in env");
+        assert!(
+            !matches!(&result_ty.body, Type::Error),
+            "result type should not be Type::Error, got: {:?}",
+            result_ty.body
+        );
+    }
+
     // -- Function type expression with param list --
 
     #[test]

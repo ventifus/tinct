@@ -90,7 +90,7 @@ WHITESPACE = " " | "\t" | "\r" | "\n"
 COMMENT    = "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI)
 ```
 
-The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the line (or end of input if the comment is on the last line). `NEWLINE` is a pest built-in rule matching line endings (`\n`, `\r\n`, `\r`).
+The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the line (or end of input if the comment is on the last line). `NEWLINE` matches line endings (`\n`, `\r\n`, `\r`).
 
 **Whitespace significance:** Although whitespace is skipped between tokens in most contexts, it is *significant* for distinguishing access chains from separate expressions:
 
@@ -302,7 +302,7 @@ When classifying a bare token, the tokenizer applies rules in this order:
 5. If followed by `@` (in value position), treat as annotated value (`Fn@Number` → `annotated_bare`). This rule applies at the `atom` level only (value position). At the bracket-expression level, `[fn@Type ...]` is handled by `fn_form`'s explicit `fn_annotation?` component, making `fn` there a keyword, not an annotated bare word.
 6. Everything else → `bare_word`
 
-This order is enforced by PEG's ordered choice in the `atom` rule.
+This order is enforced by the hand-written parser's token dispatch logic.
 
 ### 2.5 Tokenization Rules for `.`, `[`, `..`, and `@`
 
@@ -456,7 +456,7 @@ bracket_expr = {
 
 ### 3.3 Special Forms
 
-Special forms are recognized when the first token in a `[]` is a bare keyword (not followed by `:`). PEG ordered choice tries each form before falling back to `dict_entries`.
+Special forms are recognized when the first token in a `[]` is a bare keyword (not followed by `:`). The parser tries each form before falling back to `dict_entries`.
 
 ```ebnf
 special_form = {
@@ -613,7 +613,7 @@ atom = { float_lit | int_lit | bool_lit | quoted_string | var_ref | annotated_ba
 
 The ordering in `atom` enforces literal precedence (section 2.4). `float_lit` before `int_lit` ensures `3.14` matches as float, not int `3` followed by `.14`. `bool_lit` before `bare_word` ensures `true` matches as boolean. `annotated_bare` before `bare_word` ensures `Fn@Number` is parsed as an annotated value, not as a bare word containing `@`.
 
-`var_ref` appears in both `value` (as a plain reference) and `access_expr` (as the start of an access chain). PEG ordered choice tries `access_expr` first — if the var_ref is followed immediately by `.` or `[`, it becomes an access expression. Otherwise it falls through to `atom` where it matches as a plain var_ref.
+`var_ref` appears in both `value` (as a plain reference) and `access_expr` (as the start of an access chain). The parser tries `access_expr` first — if the var_ref is followed immediately by `.` or `[`, it becomes an access expression. Otherwise it falls through to `atom` where it matches as a plain var_ref.
 
 ### 3.7 Annotations
 

@@ -669,14 +669,6 @@ pub struct ParseOutput {
 /// - Range access: `$a[2..5]`, `$a[..5]`, `$a[2..]`, `$a[..]`
 /// - Document separators: `---` between document sections
 /// - Comment collection: leading and trailing comments attached by span offset
-///
-/// Not yet implemented (deferred to parser-core-c2):
-/// - Annotated bare words as dict values (`word@SimpleType`)
-/// - Corpus parity tests with pest parser
-///
-/// NOTE: When parser-core-c2 lands, `parse()` in parser.rs will be replaced by this function.
-/// All pipeline entry points (eval_source, typecheck_source, REPL, LSP) will unwrap `.file`
-/// from `ParseOutput`.
 pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     // Tokenize the input via the lexer
     let tokens = lexer::tokenize(input).map_err(|e| ParseError {
