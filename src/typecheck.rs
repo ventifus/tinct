@@ -1382,8 +1382,14 @@ fn check_call_with_scheme(
     // Infer named args for type map population and error propagation.
     // Named arg errors (e.g., undefined variable in a named arg value) must be propagated —
     // cascade prevention only applies to positional args where an Error arg would cause
-    // spurious "wrong argument type" unification errors. Named args don't participate in
-    // param type unification, so their errors can be reported directly.
+    // spurious "wrong argument type" unification errors.
+    //
+    // TODO(named-arg-types): Named arg types are not unified against the corresponding param types.
+    // This requires `Type::Function` to carry param names alongside param types so that a named
+    // arg `x: e` can be matched to the param at the index where `param.name == "x"`. Until
+    // `Type::Function` is extended to `params: Vec<(String, Type)>` (or equivalent), type
+    // mismatches in named args are silently accepted by the type checker even though the evaluator
+    // validates them at runtime (see `eval_call.rs` C-NAMED-VALID check).
     let mut named_arg_errors: Vec<TypeError> = Vec::new();
     for na in named_args {
         if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
@@ -1396,12 +1402,19 @@ fn check_call_with_scheme(
 
     match &func_ty {
         Type::Function { params, ret } => {
-            if params.len() != args.len() {
+            // Arity check: named args fill remaining parameter slots by name (Kotlin model in
+            // eval_call.rs), so count positional + named against total params.
+            // TODO(named-arg-types): When Type::Function carries param names, validate that each
+            // named arg targets a real param and doesn't overlap a positional arg position.
+            let total_supplied = args.len() + named_args.len();
+            if params.len() != total_supplied {
                 return Err(vec![TypeError::new(
                     format!(
-                        "arity mismatch: expected {} arguments, got {}. Note: the type checker does not yet support named arguments. If named arguments satisfy this requirement, evaluation may still succeed.",
+                        "arity mismatch: expected {} argument(s), got {} ({} positional, {} named)",
                         params.len(),
-                        args.len()
+                        total_supplied,
+                        args.len(),
+                        named_args.len(),
                     ),
                     span,
                 )]);
@@ -1510,8 +1523,10 @@ fn check_call_with_scheme(
 /// constraints. The `check_call_with_scheme` optimization (instantiate once) only applies
 /// to `VarRef` callees where the scheme is looked up from the environment.
 ///
-/// Note: This function does NOT verify that named arguments exist in the function's parameter list.
-/// Named argument validation is deferred to evaluation time (runtime check).
+/// Note: Named argument type checking is partial — this function infers named arg value types for
+/// LSP hover and error propagation, and counts named args toward arity, but cannot verify that
+/// each named arg's name matches a real parameter (or unify the arg type against the param type).
+/// Both require `Type::Function` to carry param names. See TODO(named-arg-types) inline comments.
 fn check_call(
     func: &Spanned<Expr>,
     args: &[Spanned<Expr>],
@@ -1534,8 +1549,14 @@ fn check_call(
     // Infer named args for type map population and error propagation.
     // Named arg errors (e.g., undefined variable in a named arg value) must be propagated —
     // cascade prevention only applies to positional args where an Error arg would cause
-    // spurious "wrong argument type" unification errors. Named args don't participate in
-    // param type unification, so their errors can be reported directly.
+    // spurious "wrong argument type" unification errors.
+    //
+    // TODO(named-arg-types): Named arg types are not unified against the corresponding param types.
+    // This requires `Type::Function` to carry param names alongside param types so that a named
+    // arg `x: e` can be matched to the param at the index where `param.name == "x"`. Until
+    // `Type::Function` is extended to `params: Vec<(String, Type)>` (or equivalent), type
+    // mismatches in named args are silently accepted by the type checker even though the evaluator
+    // validates them at runtime (see `eval_call.rs` C-NAMED-VALID check).
     let mut named_arg_errors: Vec<TypeError> = Vec::new();
     for na in named_args {
         if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
@@ -1548,12 +1569,19 @@ fn check_call(
 
     match &func_ty {
         Type::Function { params, ret } => {
-            if params.len() != args.len() {
+            // Arity check: named args fill remaining parameter slots by name (Kotlin model in
+            // eval_call.rs), so count positional + named against total params.
+            // TODO(named-arg-types): When Type::Function carries param names, validate that each
+            // named arg targets a real param and doesn't overlap a positional arg position.
+            let total_supplied = args.len() + named_args.len();
+            if params.len() != total_supplied {
                 return Err(vec![TypeError::new(
                     format!(
-                        "arity mismatch: expected {} arguments, got {}. Note: the type checker does not yet support named arguments. If named arguments satisfy this requirement, evaluation may still succeed.",
+                        "arity mismatch: expected {} argument(s), got {} ({} positional, {} named)",
                         params.len(),
-                        args.len()
+                        total_supplied,
+                        args.len(),
+                        named_args.len(),
                     ),
                     span,
                 )]);
@@ -4121,14 +4149,36 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_with_named_arg() {
-        // Polymorphic function called with positional args and a named arg override.
-        // Named args are type-checked but don't participate in type var unification.
-        assert_eq!(
-            result_field(
-                "[f: [fn [x@a y@b] $x]]\n[result: [call $f 42 hello y: 77]]",
-                "result"
-            ),
-            Type::IntLiteral(42),
+        // Polymorphic function called with only named args (no positional args).
+        // The function has 1 param; 1 named arg fills it → total_supplied = 1 = params.len() → ok.
+        // Named arg types are inferred for LSP hover but not unified with param types
+        // (TODO(named-arg-types): requires param names in Type::Function).
+        let result = check(
+            "[f: [fn [x@a] $x]]
+             ---
+             [result: [call $f x: 42]]",
+        );
+        assert!(
+            result.is_ok(),
+            "call with 1 named arg filling 1 param slot should not produce arity error, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_call_polymorphic_positional_plus_named_arity_error() {
+        // Polymorphic function with 2 params called with 2 positional args AND 1 named arg.
+        // total_supplied = 3 != params.len() = 2 → arity error.
+        // At runtime this would also fail (C-NO-OVERLAP: named arg targets a positionally-bound param).
+        let errors = check_err(
+            "[f: [fn [x@a y@b] $x]]
+             ---
+             [result: [call $f 42 hello y: 77]]",
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("arity mismatch")),
+            "expected arity mismatch for 2 positional + 1 named against 2 params, got: {:?}",
+            errors
         );
     }
 
@@ -6502,12 +6552,11 @@ mod tests {
         );
     }
 
-    // -- Arity-mismatch named-arg note --
+    // -- Arity-mismatch counting (positional + named) --
 
     #[test]
-    fn test_arity_mismatch_named_arg_note() {
-        // Arity mismatch errors include a note about named arguments to explain why the
-        // type checker rejects a call that evaluation might still accept via named args.
+    fn test_arity_mismatch_shows_counts() {
+        // Arity mismatch errors show positional and named arg counts separately.
         //
         // Uses multi-document input so f's type is fully resolved before the call site
         // is checked (avoids letrec TypeVar ambiguity where the function type is not yet
@@ -6520,10 +6569,35 @@ mod tests {
              [result: [call $f]]",
         );
         assert!(
-            errors.iter().any(|e| e
-                .message
-                .contains("Note: the type checker does not yet support named arguments")),
-            "expected named-arg note in arity mismatch error, got: {errors:?}"
+            errors.iter().any(|e| e.message.contains("arity mismatch")),
+            "expected arity mismatch error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("(0 positional, 0 named)")),
+            "expected positional/named counts in arity mismatch error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_arity_mismatch_named_args_counted() {
+        // Named args count toward arity: [call $f x: 1] with f: [fn [x] $x] has
+        // 1 param, 0 positional args, 1 named arg → total_supplied = 1 = params.len() → no error.
+        //
+        // Uses multi-document input so f's type is fully resolved before the call site.
+        // TODO(named-arg-types): Once Type::Function carries param names, this test should
+        // additionally verify that the named arg type is unified against the param type.
+        let result = check(
+            "[f: [fn [x] $x]]
+             ---
+             [result: [call $f x: 42]]",
+        );
+        // Named arg `x: 42` fills the one param slot — no arity error expected.
+        assert!(
+            result.is_ok(),
+            "call with named arg filling all param slots should not produce arity error, got: {:?}",
+            result.unwrap_err()
         );
     }
 
