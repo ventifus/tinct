@@ -551,7 +551,10 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// For user-defined functions, delegates to `eval::invoke_function` so that
 /// default values, named args, and variadics are handled identically to `call`.
-fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+/// Helper that performs the actual $apply logic after args are pre-materialized.
+/// This is separated from builtin_apply so that builtin_apply can return a
+/// PendingBuiltin thunk, enabling iterative arg materialization via BuiltinForceArg.
+fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -563,6 +566,8 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
+    // Both args[0] and args[1] have been pre-materialized by BuiltinForceArg,
+    // so these materialize() calls are O(1) cache hits.
     let func_val = materialize(&args[0], None, &ctx, depth)?;
     let args_val = materialize(&args[1], None, &ctx, depth)?;
 
@@ -629,6 +634,30 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         )
         .into()),
     }
+}
+
+fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    // Return a PendingBuiltin thunk that wraps builtin_apply_impl.
+    // When materialized, the PendingBuiltin handler will use BuiltinForceArg
+    // to pre-materialize both args[0] and args[1] iteratively, avoiding
+    // Rust stack growth.
+    Ok(Rc::new(Thunk::new_pending_builtin(
+        "apply",
+        builtin_apply_impl,
+        args.to_vec(),
+        named.clone(),
+        depth,
+        call_span,
+        Cow::Borrowed("call $apply"),
+        ctx,
+    )))
 }
 
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
@@ -1055,6 +1084,9 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     })?;
 
     crate::desugar::desugar_file(&mut file.node);
+
+    // Type errors are advisory; evaluation proceeds regardless.
+    let _ = crate::typecheck::typecheck_file(&file.node);
 
     let thunk = crate::eval::eval_file(&file.node, Rc::clone(&root_env), &bootstrap_ctx, 0)?;
 
@@ -2819,14 +2851,15 @@ mod tests {
         arg_dict.insert(Key::Int(0), thunk(Value::Int(1)));
         let args_val = Value::Dict(arg_dict);
 
-        let err = builtin_apply(BuiltinArgs {
+        let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), thunk(args_val)],
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
-        .unwrap_err();
+        .expect("should return thunk");
+        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message()
                 .contains("missing argument for required parameter"),
@@ -2841,14 +2874,15 @@ mod tests {
         arg_dict.insert(Key::Int(0), thunk(Value::Int(1)));
         let args_val = Value::Dict(arg_dict);
 
-        let err = builtin_apply(BuiltinArgs {
+        let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(Value::Int(42)), thunk(args_val)],
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
-        .unwrap_err();
+        .expect("should return thunk");
+        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("expected Function"),
             "got: {}",
@@ -2859,14 +2893,15 @@ mod tests {
     #[test]
     fn apply_non_dict_args_type_error() {
         let func = n_arg_fn(&["x"], Expr::VarRef("x".into()));
-        let err = builtin_apply(BuiltinArgs {
+        let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), thunk(Value::Int(42))],
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
-        .unwrap_err();
+        .expect("should return thunk");
+        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("expected Dict"),
             "got: {}",
@@ -2876,14 +2911,15 @@ mod tests {
 
     #[test]
     fn apply_wrong_arity() {
-        let err = builtin_apply(BuiltinArgs {
+        let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
-        .unwrap_err();
+        .expect("should return thunk");
+        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("arity mismatch"),
             "got: {}",
@@ -5557,14 +5593,15 @@ mod tests {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
         let func = zero_arg_fn(Expr::Int(42));
-        let err = builtin_apply(BuiltinArgs {
+        let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), thunk(Value::Dict(IndexMap::new()))],
             named: &named,
             depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
-        .unwrap_err();
+        .expect("should return thunk");
+        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("named arguments"),
             "got: {}",
@@ -9504,6 +9541,7 @@ mod tests {
 
         // Create the PendingBuiltin thunk
         let pending_thunk = Rc::new(Thunk::new_pending_builtin(
+            "drop",
             builtin_drop_seq_step,
             vec![n_remaining, seq],
             IndexMap::new(),

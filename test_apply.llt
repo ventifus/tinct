@@ -1,0 +1,6 @@
+# Test $apply with basic function
+f: $fn [x] [$+ $x 1]
+args: [0: 5]
+result: [call $apply $f $args]
+---
+$result

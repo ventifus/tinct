@@ -30,11 +30,11 @@ Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. *
 - [ ] Benchmark: compare recursive vs iterative on deep chains and large collections [Minor]
 - [ ] Remove 64MB worker thread stack workaround — `src/main.rs` spawns a worker thread with 64MB stack; replace with default stack size once iterative eval eliminates deep recursion (`src/main.rs`) [Minor]
 - [ ] Re-enable depth-exceeded unit tests — tests require >128MB stack in debug mode (marked `#[ignore]`): `collect_max_size_limit_enforced` and `join_seq_size_limit` (`src/builtins.rs`), `filter_seq_step_no_depth_accumulation_on_consecutive_failures` and `take_large_count_infinite_seq_depth_exceeded` (`src/builtins.rs`), `test_pending_call_cycle_detection` (`src/eval.rs`), `test_session_depth_exhaustion` (`src/repl.rs`) [Minor]
-- [ ] Add corpus test for deep evaluation chain through public API — regression guard for iterative materialize correctness (`tests/corpus/eval/eval/deep_chain.llt-eval`) [Minor, test-crafter C70]
-- [ ] Add unit test for PendingBuiltin deep chain — exercises `PendingCallDispatch` continuation in `run()` (`src/eval.rs`) [Minor, test-crafter C70]
-- [ ] Add unit test for GuardedValidate continuation — verify `[@Int 42]` chain works through `run()` (`src/eval.rs`) [Minor, test-crafter C70]
-- [ ] Add comment to existing depth-limit tests clarifying they test the depth-limit policy, not stack-safety (stack-safety tested by `test_iterative_materialize_deep_chain`) (`src/eval.rs`) [Nit, test-crafter C70]
-- [ ] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70]
+- [x] Add corpus test for deep evaluation chain through public API — regression guard for iterative materialize correctness (`tests/corpus/eval/eval/deep_chain.llt-eval`) [Minor, test-crafter C70]
+- [x] Add unit test for PendingBuiltin deep chain — exercises `PendingCallDispatch` continuation in `run()` (`src/eval.rs`) [Minor, test-crafter C70] (not feasible — eval() still recursive for PendingBuiltin; TypeAssert uses eager eval not Guarded thunks for non-Record types)
+- [x] Add unit test for GuardedValidate continuation — verify `[@Int 42]` chain works through `run()` (`src/eval.rs`) [Minor, test-crafter C70] (not feasible — eval() still recursive for PendingBuiltin; TypeAssert uses eager eval not Guarded thunks for non-Record types)
+- [x] Add comment to existing depth-limit tests clarifying they test the depth-limit policy, not stack-safety (stack-safety tested by `test_iterative_materialize_deep_chain`) (`src/eval.rs`) [Nit, test-crafter C70]
+- [x] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70]
 - [ ] Convert `deep_materialize_impl` to iterative using `DeepEntries`/`DeepSeqTail` Cont variants — eliminates O(nesting) Rust stack frames at output boundaries (`--eval`, REPL display, `$eval` builtin); sharing/cycle cache (`HashMap<*const Thunk, Option<Rc<Thunk>>>`) carried as `Rc<RefCell<...>>` through the relevant Cont variants; depends on unified Cont enum from iterative-eval-b5. Design intent: "deep_materialize within CEK loop, no separate helper" (design session 2026-04-20). (`src/eval.rs:2618–2772`) [Major, eval-engine]
 
 ## eval-split: Reduce eval.rs

@@ -64,6 +64,7 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let head = ok_val(Value::Int(start_int), call_span)?;
         let tail_args = vec![ok_val(Value::Int(next_start), call_span)?];
         let tail = Rc::new(Thunk::new_pending_builtin(
+            "range",
             builtin_range,
             tail_args,
             IndexMap::new(),
@@ -102,6 +103,7 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 ok_val(Value::Int(end_int), call_span)?,
             ];
             let tail = Rc::new(Thunk::new_pending_builtin(
+                "range",
                 builtin_range,
                 tail_args,
                 IndexMap::new(),
@@ -137,6 +139,7 @@ pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let head = Rc::clone(&args[0]);
     let tail_args = vec![Rc::clone(&args[0])];
     let tail = Rc::new(Thunk::new_pending_builtin(
+        "repeat",
         builtin_repeat,
         tail_args,
         IndexMap::new(),
@@ -215,6 +218,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         ok_val(Value::Int(next_idx), call_span)?,
     ];
     let tail = Rc::new(Thunk::new_pending_builtin(
+        "cycle",
         builtin_cycle_step,
         tail_args,
         IndexMap::new(),
@@ -312,6 +316,7 @@ pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // tail = iterate(f, f(x))
     let tail_args = vec![Rc::clone(&f), f_of_x];
     let tail = Rc::new(Thunk::new_pending_builtin(
+        "iterate",
         builtin_iterate,
         tail_args,
         IndexMap::new(),
@@ -375,6 +380,7 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
             // tail = unfold_step(step, next_seed)
             let tail_args = vec![step, next_seed];
             let tail = Rc::new(Thunk::new_pending_builtin(
+                "unfold",
                 builtin_unfold_step,
                 tail_args,
                 IndexMap::new(),
@@ -429,6 +435,7 @@ pub(crate) fn builtin_unfold(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Return PendingBuiltin wrapping unfold_step — fully lazy
     let tail_args = vec![Rc::clone(&args[0]), Rc::clone(&args[1])];
     let result = Rc::new(Thunk::new_pending_builtin(
+        "unfold",
         builtin_unfold_step,
         tail_args,
         IndexMap::new(),

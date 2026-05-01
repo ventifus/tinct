@@ -211,6 +211,7 @@ pub enum ThunkState {
         ctx: Rc<crate::eval::EvalContext>,
     },
     PendingBuiltin {
+        name: &'static str,
         func: BuiltinFn,
         args: Box<Vec<Rc<Thunk>>>,
         named: Box<IndexMap<String, Rc<Thunk>>>,
@@ -273,6 +274,7 @@ impl Thunk {
     }
 
     pub fn new_pending_builtin(
+        name: &'static str,
         func: BuiltinFn,
         args: Vec<Rc<Thunk>>,
         named: IndexMap<String, Rc<Thunk>>,
@@ -283,6 +285,7 @@ impl Thunk {
     ) -> Self {
         Self {
             state: RefCell::new(ThunkState::PendingBuiltin {
+                name,
                 func,
                 args: Box::new(args),
                 named: Box::new(named),
@@ -414,6 +417,7 @@ impl Thunk {
     pub fn take_pending_builtin(
         &self,
     ) -> Option<(
+        &'static str,
         BuiltinFn,
         Vec<Rc<Thunk>>,
         IndexMap<String, Rc<Thunk>>,
@@ -424,13 +428,14 @@ impl Thunk {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingBuiltin {
+                name,
                 func,
                 args,
                 named,
                 depth,
                 call_span,
                 ctx,
-            } => Some((func, *args, *named, depth, call_span, ctx)),
+            } => Some((name, func, *args, *named, depth, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -1088,6 +1093,7 @@ mod tests {
 
         let span = test_span(1, 1, 1, 5);
         let thunk = Thunk::new_pending_builtin(
+            "test-builtin",
             dummy_builtin,
             vec![],
             IndexMap::new(),
@@ -1109,7 +1115,7 @@ mod tests {
         let taken = thunk.take_pending_builtin();
         assert!(taken.is_some(), "take_pending_builtin should succeed");
 
-        let (_func, _args, _named, _depth, _call_span, taken_ctx) = taken.unwrap();
+        let (_name, _func, _args, _named, _depth, _call_span, taken_ctx) = taken.unwrap();
         assert!(
             Rc::ptr_eq(&taken_ctx, &ctx1),
             "PendingBuiltin should evaluate using captured ctx1"
