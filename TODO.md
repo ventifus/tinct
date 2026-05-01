@@ -118,24 +118,6 @@ Extend the iterative parser with bracket-level error recovery. See doc/whatif/pa
 - [ ] Collect all parse errors per file; report together rather than stopping at first
 - [ ] Formatter renders `Expr::Error(Span)` by emitting original source text for the span verbatim (`src/formatter.rs`)
 
-## include-fd-hardening: fd-Based $include with cap-std
-
-Replace tinct's three-path-op `$include` pattern (`canonicalize()→metadata()→read_to_string()`) with a single fd-based flow using `cap-std::fs::Dir`, eliminating the TOCTOU race window. See `doc/12-tooling.md` §File Sandbox.
-
-**Depends on:** `file-sandbox-security` (the companion items in that sprint are subsumed here)
-
-### include-fd-hardening
-
-Replace three-path-op `$include` with fd-based cap-std flow. **Depends on:** `file-sandbox-security`.
-
-- [ ] Add `cap-std = "3"` to `Cargo.toml` (`Cargo.toml`)
-- [ ] Add `base_dir: cap_std::fs::Dir` to `EvalConfig`; open with `Dir::open_ambient(".")` at CLI startup and store in context (`src/main.rs`, `src/eval.rs`)
-- [ ] Replace `canonicalize()→metadata()→read_to_string()` with `base_dir.open(relative_path)?` → `file.metadata()?` → read from the same fd in `builtin_include` — all three ops on one open fd, zero TOCTOU window (`src/builtins.rs:1021-1050`)
-- [ ] Switch `include_guard` and `include_cache` keys from `PathBuf` to `(u64, u64)` dev+ino pair; obtain via `metadata.dev()` and `metadata.ino()` from the open fd, not a separate stat call (`src/eval.rs`, `src/builtins.rs:1031,1060`)
-- [ ] Add file-type guard from fd metadata — reject FIFOs (`FileType::is_fifo()`), device nodes (`is_block_device()`, `is_char_device()`), and directories to prevent hang/weird-read attacks (`src/builtins.rs`)
-- [ ] Update error messages to include both the user-supplied path and the fd-resolved (dev, ino) identity so include cycle errors remain informative after the PathBuf key removal (`src/builtins.rs`, `src/error.rs`)
-- [ ] Add corpus test: two files that include each other via symlinks — verify cycle detection fires with inode-keyed cache (`tests/corpus/eval/`)
-
 ## type-extensions: Type System Extensions
 
 Future type system work identified by type-theorist review (2026-04-19). Updated by type-theorist review (2026-04-22).

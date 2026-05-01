@@ -2408,3 +2408,21 @@ Verify invariants, benchmark, remove workarounds, and re-enable ignored tests. *
 - [x] Add comment to existing depth-limit tests clarifying they test the depth-limit policy, not stack-safety (stack-safety tested by `test_iterative_materialize_deep_chain`) (`src/eval.rs`) [Nit, test-crafter C70]
 - [x] Add longer cycle tests to `test_iterative_materialize_cycle_detection` — a→b→c→a and self-reference cycles (`src/eval.rs`) [Nit, test-crafter C70]
 - [x] Convert `deep_materialize_impl` to iterative using `DeepEntries`/`DeepSeqTail` Cont variants — eliminates O(nesting) Rust stack frames at output boundaries (`--eval`, REPL display, `$eval` builtin); sharing/cycle cache (`HashMap<*const Thunk, Option<Rc<Thunk>>>`) carried as `Rc<RefCell<...>>` through the relevant Cont variants. No dependency on b5 — the Cont enum is already extensible. (`src/eval_deep.rs`, `src/eval.rs`) [Major, eval-engine] (work-stack iterative implementation; eliminates O(nesting) Rust stack frames at output boundaries)
+
+## include-fd-hardening: fd-Based $include with cap-std
+
+Replace tinct's three-path-op `$include` pattern (`canonicalize()→metadata()→read_to_string()`) with a single fd-based flow using `cap-std::fs::Dir`, eliminating the TOCTOU race window. See `doc/12-tooling.md` §File Sandbox.
+
+**Depends on:** `file-sandbox-security` (the companion items in that sprint are subsumed here)
+
+### include-fd-hardening
+
+Replace three-path-op `$include` with fd-based cap-std flow. **Depends on:** `file-sandbox-security`.
+
+- [x] Add `cap-std = "3"` to `Cargo.toml` (`Cargo.toml`)
+- [x] Add `base_dir: cap_std::fs::Dir` to `EvalConfig`; open with `Dir::open_ambient(".")` at CLI startup and store in context (`src/main.rs`, `src/eval.rs`)
+- [x] Replace `canonicalize()→metadata()→read_to_string()` with `base_dir.open(relative_path)?` → `file.metadata()?` → read from the same fd in `builtin_include` — all three ops on one open fd, zero TOCTOU window (`src/builtins.rs:1021-1050`)
+- [x] Switch `include_guard` and `include_cache` keys from `PathBuf` to `(u64, u64)` dev+ino pair; obtain via `metadata.dev()` and `metadata.ino()` from the open fd, not a separate stat call (`src/eval.rs`, `src/builtins.rs:1031,1060`)
+- [x] Add file-type guard from fd metadata — reject FIFOs (`FileType::is_fifo()`), device nodes (`is_block_device()`, `is_char_device()`), and directories to prevent hang/weird-read attacks (`src/builtins.rs`)
+- [x] Update error messages to include both the user-supplied path and the fd-resolved (dev, ino) identity so include cycle errors remain informative after the PathBuf key removal (`src/builtins.rs`, `src/error.rs`)
+- [x] Add corpus test: two files that include each other via symlinks — verify cycle detection fires with inode-keyed cache (`tests/corpus/eval/`)
