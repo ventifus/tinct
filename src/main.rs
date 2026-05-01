@@ -350,8 +350,12 @@ fn read_source(file_path: &str) -> Result<String, String> {
         }
         Ok(buf)
     } else {
-        let metadata =
-            std::fs::metadata(file_path).map_err(|e| format!("error reading file: {e}"))?;
+        // Open the file first to get a stable fd, avoiding TOCTOU race.
+        let file =
+            std::fs::File::open(file_path).map_err(|e| format!("error reading file: {e}"))?;
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("error reading file: {e}"))?;
         if metadata.len() > MAX_FILE_SIZE {
             return Err(format!(
                 "input file is {} bytes, which exceeds the 10 MB limit ({} bytes)",
@@ -359,7 +363,18 @@ fn read_source(file_path: &str) -> Result<String, String> {
                 MAX_FILE_SIZE
             ));
         }
-        std::fs::read_to_string(file_path).map_err(|e| format!("error reading file: {e}"))
+        // Read from the open fd using take() to limit reads at the OS level.
+        let mut buf = String::new();
+        file.take(MAX_FILE_SIZE + 1)
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("error reading file: {e}"))?;
+        if buf.len() as u64 > MAX_FILE_SIZE {
+            return Err(format!(
+                "file grew beyond 10 MB limit during read ({} bytes)",
+                buf.len()
+            ));
+        }
+        Ok(buf)
     }
 }
 

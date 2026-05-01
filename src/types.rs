@@ -383,7 +383,9 @@ const MAX_APPLY_DEPTH: usize = 256;
 
 /// Maximum size of the substitution map (combined type_map + row_map entries).
 /// Prevents resource exhaustion from quadratic growth in pathological cases.
-pub const MAX_SUBST_SIZE: usize = 10_000;
+/// Raised from 10K to 50K to accommodate real-world K8s-style configs with
+/// hundreds of open-record dot-accesses that each bind a fresh row variable.
+pub const MAX_SUBST_SIZE: usize = 50_000;
 
 impl Substitution {
     /// Create a new empty substitution.
@@ -411,9 +413,7 @@ impl Substitution {
         if total_size > MAX_SUBST_SIZE {
             Err(TypeError::new(
                 format!(
-                    "type inference limit reached: too many open record constraints \
-                     — use fewer chained dot-accesses or add explicit type annotations \
-                     to break constraint chains ({} bindings > {} max)",
+                    "type inference resource limit exceeded (substitution size {} > {}) — use fewer chained dot-accesses or add explicit type annotations to break constraint chains",
                     total_size, MAX_SUBST_SIZE
                 ),
                 span,
@@ -6080,7 +6080,7 @@ mod tests {
                 );
                 if let Err(e) = result {
                     assert!(
-                        e.message.contains("type inference limit reached"),
+                        e.message.contains("type inference resource limit exceeded"),
                         "error message should mention inference limit, got: {}",
                         e.message
                     );
@@ -6121,7 +6121,7 @@ mod tests {
                 );
                 if let Err(e) = result {
                     assert!(
-                        e.message.contains("type inference limit reached"),
+                        e.message.contains("type inference resource limit exceeded"),
                         "error message should mention inference limit, got: {}",
                         e.message
                     );
@@ -6181,7 +6181,7 @@ mod tests {
                 );
                 if let Err(e) = result {
                     assert!(
-                        e.message.contains("type inference limit reached"),
+                        e.message.contains("type inference resource limit exceeded"),
                         "error message should mention inference limit, got: {}",
                         e.message
                     );
