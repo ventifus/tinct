@@ -459,7 +459,7 @@ impl TypeScheme {
 - Fresh type variables are created at ℓ_current
 - `Type::TypeVar(String)` becomes `Type::TypeVar(String, u32)` (name + level)
 - `PartialEq` for `Type` is implemented manually: `TypeVar(a, _) == TypeVar(b, _)` compares names only, ignoring levels. This preserves the [U-REFL] fast path in `unify()`.
-- `RowTail::RowVar(String)` becomes `RowTail::RowVar(String, u32)` — row variables carry levels and participate in generalization identically to type variables.
+- `RowTail::RowVar(String)` becomes `RowTail::RowVar(String, u32)` — row variables carry levels and participate in generalization identically to type variables. **Naming note:** the enum was previously called `RowRest` in pre-row-unification code (e.g., `RowRest::Closed`, `RowRest::RowVar`); it was renamed to `RowTail` during the row-unification sprint (`RowRest::Closed` → `RowTail::Empty`, `RowRest::RowVar` → `RowTail::RowVar`). `RowTail` is the current name throughout the codebase.
 - `Display` for `TypeVar` and `RowVar` hides the level (internal inference state, not user-facing).
 
 **Level storage and mutation.** Levels must be mutable during unification (Kiselyov's level lowering). Since `Type` is a value type, levels are stored in a separate mutable map alongside the substitution:
@@ -473,7 +473,7 @@ pub struct InferState {
 }
 ```
 
-`InferState.subst` accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution: when both maps bind the same variable, the two bindings are **unified** (Algorithm W substitution composition, Damas & Milner 1982) rather than silently dropped. Colliding bindings are **unified** (unify) rather than dropped, maintaining substitution composition soundness.
+`InferState.subst` accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution: when both maps bind the same variable, the two bindings are **unified** (Algorithm W substitution composition, Damas & Milner 1982) rather than silently dropped. Colliding bindings are **unified** rather than dropped, maintaining substitution composition soundness. After merging, Pass 3d writes the fully-merged local substitution back into `state.subst` so that subsequent dicts in the same document see the letrec bindings. See the Pass 3b merge algorithm in [DICT-GEN] below for the precise pseudocode.
 
 When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `TypeVar(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
 
@@ -552,10 +552,39 @@ Pass 3 — Infer values: at level ℓ+1, for each non-alias
          entry kᵢ, infer Γ' ⊢ eᵢ : τᵢ, then unify(αᵢ, τᵢ).
          Apply resulting substitution S.
          
-         Implementation note: Pass 3 splits into sub-passes 3a/3b/3c
+         Implementation note: Pass 3 splits into sub-passes 3a/3b/3c/3d
          to handle the two-substitution model (local + state.subst).
          3a: clone state.subst → local subst; 3: unify into local;
-         3b: merge state.subst updates → local; 3c: apply merged → fields.
+         3b: merge state.subst updates → local; 3c: apply merged → fields;
+         3d: merge local subst back into state.subst for subsequent dicts.
+
+         Pass 3b merge algorithm (Algorithm W substitution composition,
+         Damas & Milner 1982) — applied separately to type_map and row_map:
+
+             for each (k, v) in state.subst.type_map:
+                 applied_v = local_subst.apply(v)
+                 if k ∈ local_subst.type_map:
+                     existing = local_subst.type_map[k]
+                     local_subst.type_map.remove(k)   // prevent apply() cycle k→existing→k
+                     unify(existing, applied_v, local_subst, state)  // may error
+                 else:
+                     local_subst.type_map[k] = applied_v
+
+             for each (k, row) in state.subst.row_map:
+                 applied_row = Row { fields: local_subst.apply(row.fields), tail: row.tail }
+                 if k ∈ local_subst.row_map:
+                     existing = local_subst.row_map[k]
+                     local_subst.row_map.remove(k)    // prevent apply() cycle k→existing→k
+                     unify(Record(existing), Record(applied_row), local_subst, state)  // may error
+                 else:
+                     local_subst.row_map[k] = applied_row
+
+         The remove-before-unify step is required because `apply()` chases
+         bound variables transitively: if k is in the map during unify(),
+         apply() would chase k → existing → k in an infinite cycle.
+         Collision means two independent inference paths (access-chain and
+         letrec unification) each bound the same variable; unifying their
+         bindings reconciles the constraints correctly.
          
 Pass 4 — Generalize (NEW): for each entry kᵢ,
          σᵢ = generalize(ℓ, S(αᵢ), state)
