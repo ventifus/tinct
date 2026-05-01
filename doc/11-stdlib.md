@@ -208,7 +208,7 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `quot` | `[fn [a b] [call $trunc [call $builtin-div $a $b]]]` | Truncation toward zero |
 | `mod` | `[fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]` | Algebraic identity |
 | `ceil` | `[fn [x] [call $builtin-sub 0 [call $floor [call $builtin-sub 0 $x]]]]` | `ceil(x) = -floor(-x)` |
-| `trunc` | `[fn [x] [call $if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
+| `trunc` | `[fn [x] [call $builtin-if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
 | `words` | `[call $builtin-filter [fn [w] [call $not [call $builtin-eq $w ""]]] [call $split " " $s]]` | Uses stable `$builtin-filter`, `$builtin-eq` |
 
 **Why shadowable wrappers matter:**
@@ -380,7 +380,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `with-entries` | `[fn [xs f] ...]` | Transform a dict via entries: `entries → map(f) → from-entries` |
-| `partition` | `[fn [pred xs] ...]` | Split into two groups: elements satisfying pred (`x`) and those that don't (`not-x`) |
+| `partition` | `[fn [pred xs] ...]` | Split into two groups: elements satisfying pred (`pass`) and those that don't (`fail`) |
 | `flat-map` | `[fn [f xs] ...]` | Map function over collection and flatten (concatenate) the results |
 | `find-first` | `[fn [pred xs] ...]` | Return the first element satisfying pred, or error if none found |
 | `find-first-or` | `[fn [pred default xs] ...]` | Return the first element satisfying pred, or default if none found |

@@ -110,18 +110,6 @@ Type::Seq inference, TypeEnv::with_builtins, and core type system correctness.
 - [x] Fix `TypeScheme::vars` conflating type variable and row variable names — single `Vec<String>` quantifies both; Rémy-style kinded schemes need `type_vars: Vec<String>` + `row_vars: Vec<String>` so `instantiate_scheme()` routes substitutions correctly (type-map vs row-map). Becomes load-bearing when let-gen-inference + row-unification overlap. (`src/types.rs:171-174`) [Minor, type-theorist C39] — done in bidirectional-typing-b
 - [x] Fix `collect_type_vars()` conflating type and row variable names — collects `RowVar` names into the same `BTreeSet<String>` as `TypeVar` names; `instantiate()` then routes all through the type substitution, freshening row variables as TypeVars. Add separate `collect_row_vars()` (Pierce & Turner 2000) or use two-map substitution. (`src/types.rs:129-151`) [Minor, type-theorist C39] — done in bidirectional-typing-b
 - [x] Fix `check_bracket_access` rejecting `Type::Number` as key type — only `Type::Str | Type::Int | Type::Any` accepted; `Number` is supertype of `Int` and should produce `Any` return like `Int` does. (`src/typecheck.rs:347-348`) [Fix-later, type-theorist C39]
-### cycle-findings-c71-b: Cycle #71 Doc and Minor Fixes
-
-- [ ] Fix `doc/15-ast.md:324` — `[call\n: x]` documented as producing `Dict`; code and `doc/02-syntax.md` say this is a `CallExpr` (newline before `:` breaks the dict-key parse, producing a call with no args). [Major, grammar-architect C71]
-- [ ] Fix `doc/15-ast.md:137` — claims `$key: val` in a call strips the `$` prefix for named args; parser code rejects `$`-prefixed named arg keys as a syntax error. Fix: remove the `$key: val` example and show only `key: val`. [Major, grammar-architect C71]
-- [ ] Fix `doc/15-ast.md:233-235` — `ParseOutput` described as "future work may add a ParseOutput"; it is the current production API returned by `parse2()`. Fix to show current API. [Major, grammar-architect C71]
-- [ ] Fix `doc/15-ast.md:32-34` — `parse_expression()` documented as returning "the last expression of the first document"; code at `src/parser.rs:69-76` returns `expressions[0]` (the first, not last). Fix to "first expression of the first document". [Minor, grammar-architect C71]
-- [ ] Fix 4 stale pest/PEG prose references in `doc/02-syntax.md` at lines ~93, 305, 459, 616 — pest parser was removed in parser-core-c3 (commit cc8333c); these prose sections still reference pest grammar concepts. Update to describe the hand-written iterative parser. [Minor, grammar-architect C71]
-- [ ] Remove stale `parser-core-c2` comment in `src/parser.rs:677-679` — "NOTE: When parser-core-c2 lands..." comment is obsolete; parser-core-c2 and c3 are both complete. [Nit, grammar-architect C71]
-- [ ] Fix `doc/11-stdlib.md:211` — `trunc` derivation example shows `[call $if ...]` but the prelude implementation uses `[call $builtin-if ...]`; the difference matters for shadowing semantics. [Minor, stdlib-author C71]
-- [ ] Fix `partition` opaque key names — `stdlib/prelude.llt:578` returns keys named `x` and `not-x` which are opaque; rename to `pass`/`fail` and update `doc/11-stdlib.md:383`. [Minor, stdlib-author C71]
-- [ ] Fix LSP `DocumentStore::new()` panic on inaccessible directory — `cap_std::fs::Dir::open_ambient_dir(temp_dir()).expect(...)` at `src/lsp/document.rs:114` panics if temp dir is inaccessible (chroot, container, systemd socket); replace with fallback that always succeeds since `no_fs=true` makes the Dir unused for security. [Minor, security-expert C71]
-- [ ] Add named-arg arity type-check regression test — `check_call` with `total_supplied = args.len() + named_args.len()` has no corpus test verifying named args are counted correctly; a regression would silently break LSP type hover for named-arg calls. Add one corpus test to `tests/corpus/eval/typecheck/`. [Minor, test-crafter C71]
 
 ## file-sandbox-security: $include TOCTOU and File Access Hardening
 
@@ -735,6 +723,8 @@ Doc and behavior nits from codebase reviews. Requires misc-nits-b.
 - [ ] Add corpus tests for bracket access and range access — no eval-level corpus tests cover the dot-access, bracket-access, or range-access code paths end-to-end. (`tests/corpus/eval/access/`) [Minor, grammar-architect C71]
 - [ ] Add laziness proof corpus tests for $reduce/$join/$concat — these sequence builtins have no tests proving unused tail elements are NOT forced. (`tests/corpus/eval/laziness/`) [Minor, test-crafter C71]
 - [ ] Fix variadic function arity false positive in type checker — `Type::Function.params` includes the `...rest` variadic param; calls with more positional args than `params.len() - 1` trigger false arity mismatch. Add variadic flag to `Type::Function` or exclude the variadic param from the count. (`src/typecheck.rs:1576-1588`) [Minor, computer-scientist C71]
+- [ ] Add parser unit test for `[call\n: x]` edge case — doc/15-ast.md documents this as producing Call (not Dict) but no parser test covers it [Minor, test-crafter C71 panel]
+- [ ] Add partition cross-feature corpus tests (partition with type annotations, partition in nested contexts) [Minor, test-crafter C71 panel]
 
 ## integration: Integration / Pipeline
 

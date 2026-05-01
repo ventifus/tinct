@@ -30,7 +30,7 @@ struct Document {
 
 The `parse()` function returns `Result<Spanned<File>, ParseError>`.
 
-The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the last expression of the first document. Multi-expression inputs discard all but the last expression; multi-document inputs discard all but the first document (`---`-separated multi-doc input returns only the first document). No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
+The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the first expression of the first document. Multi-expression inputs discard all but the first expression; multi-document inputs discard all but the first document (`---`-separated multi-doc input returns only the first document). No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
 
 ### Core Expression Type
 
@@ -134,7 +134,7 @@ struct NamedArg {
 }
 ```
 
-**Named Argument Key Normalization:** The `name` field always contains the bare identifier without the `$` prefix. Both `key: val` and `$key: val` call syntax produce `NamedArg { name: "key", ... }`. The `$` prefix is stripped during AST construction (`parser.rs:430`) because named arguments represent parameter name bindings (matched against `Param.name` strings by the evaluator), not value expressions. The `$` sigil is syntactic sugar allowing `$timeout: 60` (clearer for readers: "I'm binding to the timeout parameter") without requiring the evaluator to strip prefixes at runtime.
+**Named Argument Key Normalization:** The `name` field always contains a bare identifier. Only `key: val` syntax is supported for named arguments in call forms — the parser does not accept `$key: val` (a variable reference followed by `:` in a call context is a syntax error). Named arguments represent parameter name bindings (matched against `Param.name` strings by the evaluator), not value expressions.
 
 ```rust
 /// A function parameter
@@ -232,7 +232,7 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 
 ### Parser Output
 
-`parse()` returns `Result<Spanned<File>, ParseError>`. Comments are not preserved in the AST — they are stripped during parsing. Future work may add a `ParseOutput` struct with comment side-tables for formatter support.
+`parse()` returns `Result<Spanned<File>, ParseError>`. The underlying `parse2()` function returns `ParseOutput { file: Spanned<File>, source: String, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String> }` with comment side-tables for formatter support. The main `parse()` entry point extracts `.file` from `ParseOutput` for evaluator and type checker use; formatters can call `parse2()` directly to access comments.
 
 ### Annotation Bracket Restriction
 
@@ -320,8 +320,8 @@ The parser examines the first token of every `[]` to detect special forms:
 | anything else | — | `Dict` |
 
 Edge cases:
-- `[call: something]` — `call` followed by `:` makes it a key, not a keyword. Parsed as `Dict`.
-- `[call\n: something]` — newline breaks keyword recognition; `call` is a Dict entry. Parsed as `Dict`.
+- `[call: something]` — `call` followed by `:` (with no newline between) makes it a key, not a keyword. Parsed as `Dict`.
+- `[call\n: something]` — newline between `call` and `:` allows keyword recognition; parsed as `Call` with no arguments (the `: something` is parsed separately as an error or discarded depending on context).
 - `[$call $x]` — `$call` is a variable reference, not the bare keyword `call`. Parsed as `Dict`.
 
 ### `$_` Implicit Lambda Desugaring
