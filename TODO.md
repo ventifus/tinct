@@ -337,8 +337,8 @@ Add type signatures, inline examples, and fix documentation accuracy across stdl
 - [ ] Add type annotations to all `stdlib/prelude.llt` function definitions
 - [ ] Add inline assertion examples to each function (Dhall pattern: `assert` examples serve as tests AND docs)
 - [ ] Generate stdlib reference documentation from annotated source
-- [ ] Document `get-or`/`get-in-or` data-first argument order inconsistency — most collection functions are data-last for `->` threading but these are data-first; document rationale or provide data-last variants [Minor, stdlib-author C31]
-- [ ] Document argument order convention in doc/11-stdlib.md — no clear documentation of when data-first vs data-last is appropriate (doc/11-stdlib.md) [Minor, stdlib-author C31]
+- [x] Document `get-or`/`get-in-or` data-first argument order inconsistency — most collection functions are data-last for `->` threading but these are data-first; document rationale or provide data-last variants [Minor, stdlib-author C31]
+- [x] Document argument order convention in doc/11-stdlib.md — no clear documentation of when data-first vs data-last is appropriate (doc/11-stdlib.md) [Minor, stdlib-author C31]
 - [x] Stdlib wholeness test: single test validating entire stdlib loads and contains all expected bindings (Nickel pattern) — `test_stdlib_wholeness` added to `src/builtins.rs` (C97)
 - [x] Add docstrings to `$quot` and `$mod` explaining Clojure truncate-toward-zero semantics (`stdlib/prelude.llt:71-73`) [Major, stdlib-author]
 - [x] Document `map-entries` return value structure — clarify whether function receives entries and returns new values or new entries (`stdlib/prelude.llt:314`, doc/11-stdlib.md) [Major, stdlib-author]
@@ -346,7 +346,7 @@ Add type signatures, inline examples, and fix documentation accuracy across stdl
 - [x] Mark `make-entry` as internal — add docstring or rename to `-impl` (`stdlib/prelude.llt:32`) [Minor, stdlib-author]
 - [x] Add docstring to `fold` justifying alias duplication with `reduce` (`stdlib/prelude.llt:353`) [Nit, stdlib-author]
 - [x] Document `cond` returning `[]` when no branch matches (`stdlib/prelude.llt:120-123`) [Nit, stdlib-author]
-- [ ] Add 16 undocumented stdlib functions to doc/11-stdlib.md stdlib section: `const`, `>`, `<=`, `>=`, `quot`, `mod`, `ceil`, `trunc`, `join`, `words`, `nth`, `conj`, `reindex`, `from-entries`, `any?`, `all?` [Major, stdlib-author]
+- [x] Add 16 undocumented stdlib functions to doc/11-stdlib.md stdlib section: `const`, `>`, `<=`, `>=`, `quot`, `mod`, `ceil`, `trunc`, `join`, `words`, `nth`, `conj`, `reindex`, `from-entries`, `any?`, `all?` [Major, stdlib-author]
 - [x] Add doc comment to `Value::Seq` match arm in `value_to_json` explaining why Seq→JSON is an error and requires `$collect` first (`src/lib.rs:161-166`) [Minor, integration-verifier]
 - [x] Update doc/11-stdlib.md concat classification to note dual-dispatch: Seq path is lazy O(1), Dict path is eager O(m) (doc/11-stdlib.md) [Minor, grammar-architect]
 - [x] Add comment to Seq cycle detection in `deep_materialize` explaining raw pointer identity pattern (`src/eval.rs:1093-1100`) [Nit, integration-verifier]
