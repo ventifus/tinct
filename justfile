@@ -189,6 +189,11 @@ doc-open:
 bench:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo bench
 
+# Generate LLVM coverage report (requires cargo-llvm-cov; install with: cargo install cargo-llvm-cov)
+# Opens the HTML report in the default browser after generation.
+coverage:
+    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add llvm-tools-preview 2>/dev/null; cargo llvm-cov --open"
+
 # Audit dependencies for security vulnerabilities
 audit:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "cargo install cargo-audit@0.22.1 --locked && cargo audit"

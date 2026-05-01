@@ -599,23 +599,22 @@ pub(crate) fn force_step(
                 Action::Continue(Err(decorated))
             }
         }
-    } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
-        thunk.take_pending_call()
-    {
+    } else if matches!(&*thunk.state(), ThunkState::PendingCall { .. }) {
+        // Depth check before take_pending_call(): thunk stays in PendingCall state on
+        // DepthExceeded, so no clones are needed to restore state. The Ref temporary
+        // from thunk.state() is a non-binding temporary in an if condition, so Rust
+        // drops it before entering the if body (NLL rule: temporaries in if conditions
+        // are not extended to the body).
         if depth > MAX_EVAL_DEPTH {
             let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
             let err =
                 attach_materialization_context(err.into(), mat_span.as_ref(), &origin, thunk_span);
-            thunk.set_state(ThunkState::PendingCall {
-                func: func_thunk.clone(),
-                args: Box::new(args.clone()),
-                named: Box::new(named.clone()),
-                call_span,
-                caller_env,
-                ctx: thunk_ctx,
-            });
+            // Thunk remains in PendingCall — no restoration clones needed.
             return Action::Continue(Err(err));
         }
+        let (func_thunk, args, named, call_span, caller_env, thunk_ctx) = thunk
+            .take_pending_call()
+            .expect("PendingCall state confirmed above; single-threaded execution prevents TOCTOU");
 
         stack.push(Cont::PendingCallDispatch(Box::new(
             PendingCallDispatchData {
@@ -751,34 +750,46 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
             let decorate =
                 |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
 
+            // Wrap args/named in Option so each exclusive match arm can move them
+            // without cloning. Taking ownership avoids the pre-clone of Box<Vec>/Box<IndexMap>
+            // that was previously done on every successful function call to build RestoreState.
+            // Each arm calls .take().expect("...") exactly once to extract the owned value.
+            let mut args = Some(args);
+            let mut named = Some(named);
+
             match result.map_err(&decorate) {
                 Ok(func_value) => match func_value {
                     Value::Function { params, body, env } => {
-                        let call_ctx = CallContext {
-                            params: &params,
-                            body: &body,
-                            closure_env: &env,
-                            positional: &args,
-                            named: &named,
-                            default_env: &caller_env, // Use caller's environment for default param evaluation
-                            call_span,
-                            depth,
-                            origin: origin.clone(),
-                            ctx: &thunk_ctx,
+                        // The block scopes borrows of args/named so the borrow checker
+                        // allows args.take()/named.take() in the match arms below.
+                        let invoke_result = {
+                            let call_ctx = CallContext {
+                                params: &params,
+                                body: &body,
+                                closure_env: &env,
+                                positional: args.as_deref().expect("args set above"),
+                                named: named.as_deref().expect("named set above"),
+                                default_env: &caller_env, // Use caller's environment for default param evaluation
+                                call_span,
+                                depth,
+                                origin: origin.clone(),
+                                ctx: &thunk_ctx,
+                            };
+                            invoke_function(&call_ctx)
                         };
 
-                        match invoke_function(&call_ctx).map_err(&decorate) {
+                        match invoke_result.map_err(&decorate) {
                             Ok(result_thunk) => {
-                                // Clone args/named to create RestoreState. If result materializes
-                                // successfully (common case), these clones are wasted but harmless.
-                                // TODO(perf): defer cloning to restore() time only.
+                                // Move args/named into RestoreState — no clone needed.
+                                // invoke_function consumed them by reference above; after
+                                // the Ok result, args/named are not needed for anything else.
                                 let restore = RestoreState::PendingCall {
-                                    func: Rc::clone(&func_thunk),
-                                    args: args.clone(),
-                                    named: named.clone(),
+                                    func: func_thunk,
+                                    args: args.take().expect("args set above"),
+                                    named: named.take().expect("named set above"),
                                     call_span,
-                                    caller_env: Rc::clone(&caller_env),
-                                    ctx: Rc::clone(&thunk_ctx),
+                                    caller_env,
+                                    ctx: thunk_ctx,
                                 };
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Rc::clone(&thunk),
@@ -799,10 +810,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure(&e);
                                 } else {
+                                    // Move args/named into PendingCall — no clone needed.
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk,
-                                        args: Box::new((*args).clone()),
-                                        named: Box::new((*named).clone()),
+                                        args: args.take().expect("args set above"),
+                                        named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
                                         ctx: thunk_ctx,
@@ -813,30 +825,35 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         }
                     }
                     Value::Builtin { func, .. } => {
-                        // TCO: use loop depth for builtin arg materialization
-                        let builtin_args = crate::value::BuiltinArgs {
-                            args: &args,
-                            named: &named,
-                            depth,
-                            call_span,
-                            ctx: Rc::clone(&thunk_ctx),
+                        // TCO: use loop depth for builtin arg materialization.
+                        // The block scopes the borrows of args/named so the borrow
+                        // checker allows args.take()/named.take() in the match arms below.
+                        let builtin_result = {
+                            let builtin_args = crate::value::BuiltinArgs {
+                                args: args.as_deref().expect("args set above"),
+                                named: named.as_deref().expect("named set above"),
+                                depth,
+                                call_span,
+                                ctx: Rc::clone(&thunk_ctx),
+                            };
+                            func(builtin_args)
                         };
-                        match func(builtin_args).map_err(&decorate) {
+                        match builtin_result.map_err(&decorate) {
                             Ok(result_thunk) => {
                                 if let Some(value) = result_thunk.try_get_materialized() {
+                                    // Fast path: builtin result is already materialized.
+                                    // args/named are no longer needed; drop them implicitly.
                                     thunk.set_state(ThunkState::Materialized(value.clone()));
                                     Action::Continue(Ok(value))
                                 } else {
-                                    // Clone args/named to create RestoreState. If result materializes
-                                    // successfully (common case), these clones are wasted but harmless.
-                                    // TODO(perf): defer cloning to restore() time only.
+                                    // Move args/named into RestoreState — no clone needed.
                                     let restore = RestoreState::PendingCall {
-                                        func: Rc::clone(&func_thunk),
-                                        args: args.clone(),
-                                        named: named.clone(),
+                                        func: func_thunk,
+                                        args: args.take().expect("args set above"),
+                                        named: named.take().expect("named set above"),
                                         call_span,
-                                        caller_env: Rc::clone(&caller_env),
-                                        ctx: Rc::clone(&thunk_ctx),
+                                        caller_env,
+                                        ctx: thunk_ctx,
                                     };
                                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                                         thunk: Rc::clone(&thunk),
@@ -857,10 +874,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure(&e);
                                 } else {
+                                    // Move args/named into PendingCall — no clone needed.
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk,
-                                        args: Box::new((*args).clone()),
-                                        named: Box::new((*named).clone()),
+                                        args: args.take().expect("args set above"),
+                                        named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
                                         ctx: thunk_ctx,
@@ -880,10 +898,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         if decorated.kind.is_cacheable() {
                             thunk.cache_failure(&decorated);
                         } else {
+                            // Move args/named into PendingCall — no clone needed.
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk,
-                                args: Box::new((*args).clone()),
-                                named: Box::new((*named).clone()),
+                                args: args.take().expect("args set above"),
+                                named: named.take().expect("named set above"),
                                 call_span,
                                 caller_env,
                                 ctx: thunk_ctx,
@@ -897,10 +916,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else {
+                        // Move args/named into PendingCall — no clone needed.
                         thunk.set_state(ThunkState::PendingCall {
                             func: func_thunk,
-                            args: Box::new((*args).clone()),
-                            named: Box::new((*named).clone()),
+                            args: args.take().expect("args set above"),
+                            named: named.take().expect("named set above"),
                             call_span,
                             caller_env,
                             ctx: thunk_ctx,
