@@ -158,6 +158,11 @@ fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> 
         )),
 
         Expr::Rest(name) => Some(format!("Rest marker: {}", name.as_deref().unwrap_or("..."))),
+
+        Expr::Error(span) => Some(format!(
+            "Parse error at {}:{}",
+            span.start.line, span.start.column
+        )),
     }
 }
 

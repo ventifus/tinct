@@ -1532,6 +1532,14 @@ pub(crate) fn eval_step(
             expr.span,
         )
         .into())),
+        Expr::Error(span) => Action::Continue(Err(EvalError::internal(
+            format!(
+                "syntax error at {}:{} (cannot evaluate error node)",
+                span.start.line, span.start.column
+            ),
+            expr.span,
+        )
+        .into())),
     }
 }
 

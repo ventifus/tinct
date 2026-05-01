@@ -140,6 +140,11 @@ pub enum Expr {
 
     /// Row variable / open record marker, e.g. `...` or `...rest`
     Rest(Option<String>),
+
+    /// Parse error — a section of source that couldn't be parsed.
+    /// Emitted by bracket-level error recovery (parser-rewrite.md §Phase 4).
+    /// The span covers the entire unparseable region.
+    Error(Span),
 }
 
 /// A dict entry (keyed or auto-indexed)
@@ -297,6 +302,7 @@ impl fmt::Display for Expr {
             }
             Expr::Rest(None) => write!(f, "..."),
             Expr::Rest(Some(name)) => write!(f, "...{name}"),
+            Expr::Error(span) => write!(f, "<error at {span}>"),
         }
     }
 }
@@ -683,5 +689,23 @@ mod tests {
     fn test_display_rest_named() {
         let expr = Expr::Rest(Some("extra".into()));
         assert_eq!(format!("{expr}"), "...extra");
+    }
+
+    #[test]
+    fn test_display_error() {
+        let span = Span::new(
+            Position {
+                offset: 10,
+                line: 2,
+                column: 5,
+            },
+            Position {
+                offset: 20,
+                line: 2,
+                column: 15,
+            },
+        );
+        let expr = Expr::Error(span);
+        assert_eq!(format!("{expr}"), "<error at 2:5-2:15>");
     }
 }

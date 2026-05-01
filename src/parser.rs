@@ -178,6 +178,9 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
         | Expr::VarRef(_)
         | Expr::Rest(_) => expr,
 
+        // Error nodes contain a span that needs adjustment
+        Expr::Error(span) => Expr::Error(adjust_span(span, base)),
+
         Expr::DotAccess { expr, field } => Expr::DotAccess {
             expr: Box::new(adjust_spanned_expr(*expr, base)),
             field,
@@ -647,6 +650,7 @@ enum CallArg {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseOutput {
     pub file: Spanned<File>,
+    pub source: String,
     pub leading_comments: BTreeMap<usize, Vec<String>>,
     pub trailing_comments: BTreeMap<usize, String>,
 }
@@ -1638,6 +1642,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
     Ok(ParseOutput {
         file: Spanned::new(file, file_span),
+        source: input.to_string(),
         leading_comments,
         trailing_comments,
     })

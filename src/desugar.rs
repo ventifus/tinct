@@ -188,7 +188,8 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         | Expr::Bool(_)
         | Expr::Str(_)
         | Expr::VarRef(_)
-        | Expr::Rest(_) => {}
+        | Expr::Rest(_)
+        | Expr::Error(_) => {}
 
         // Access expressions: recurse into target and key/bounds
         Expr::DotAccess { expr: target, .. } => {
