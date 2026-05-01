@@ -740,6 +740,7 @@ Consolidated from: test-framework-b, test-advanced
 - [ ] Add pretty-print round-trip idempotence test (parse → Display → re-parse → Display → compare)
 - [ ] Add `$_` formatter round-trip tests — parse code containing `$_`, format, re-parse, assert AST equality; test patterns: `$_` in call args, nested `$_`, `$_.field[0]` (`src/formatter.rs`) [Minor, test-crafter C31]
 - [ ] Add function variance transitivity test or property test — transitivity assumed but not proven for subtyping (`src/types.rs:74-80`) [Major, type-theorist]
+- [ ] Add corpus tests for MAX_PARSE_DEPTH boundary: depth_limit_255_succeeds.llt-eval (255 nested brackets) and depth_limit_256_fails.llt-eval (256 nested brackets → error) (`tests/corpus/`) [Minor, grammar-architect C81]
 
 ### test-tooling: Tooling Tests and Documentation
 
@@ -802,6 +803,9 @@ Split from docs-vs-code. Items targeting stdlib docs, data model, examples, AST,
 - [ ] **src/formatter.rs `is_fn_params` heuristic fragile** — operates on flat token stream without AST context; heuristics at `src/formatter.rs:418-450` can misfire on comments containing "fn" before brackets. Either pass AST to formatter or document best-effort nature. (`src/formatter.rs:418-450`) [Major, grammar-architect]
 - [ ] **doc/15-ast.md `desugared: bool` field documentation missing** — `Expr::Fn` has a `desugared: bool` origin tag (Pombrio & Krishnamurthi 2014) set by `wrap_expr_in_lambda()`, but the `$_` Desugaring section doesn't mention it. Add paragraph explaining origin tracking motivation and tooling use cases. (`doc/15-ast.md`, `src/ast.rs:106-110`) [Nit, grammar-architect + computer-scientist C32]
 - [ ] **src/eval.rs `with_base_dir()` docstring inaccurate** — says "Avoids allocating a new EvalConfig" but it does allocate a new `EvalConfig`; it avoids allocating a new `EvalState`. (`src/eval.rs:63-64`) [Nit, computer-scientist C35]
+- [ ] Fix doc/11-stdlib.md function count: "66 LLT functions (54 public API + 12 shadowable wrappers)" → "93 LLT functions (81 public API + 12 shadowable wrappers)" total count off by 27 [Major, stdlib-author C81]
+- [ ] Add 27 missing functions to doc/11-stdlib.md reference tables: abs, sign, clamp, take-while, drop-while, with-entries, partition, flat-map, find-first, find-first-or, group-by, deep-merge, walk, unzip, transpose, sum, product, min, max, count, contains?, uniq, foldr, int?, str?, float?, bool?, dict?, fn? [Major, stdlib-author C81]
+- [ ] Add prose section to doc/11-stdlib.md describing new stdlib categories (aggregates, higher-order utilities, type predicates) [Minor, stdlib-author C81]
 
 ### misc-nits-c: Miscellaneous Nits (Part 3)
 
@@ -909,6 +913,14 @@ Doc and behavior nits from codebase reviews. Requires misc-nits-b.
 - [ ] Fix definition-site span lost in access chain continuations — DotAccessForce/BracketForceTarget use access_span for both definition and materialization spans; add target_thunk: Rc<Thunk> field to capture the dict's definition span for better error messages (`src/eval.rs:2161-2163,2193-2194`) [Minor, integration-verifier C74 panel]
 - [ ] Eliminate Rc::from(key.as_ref().clone()) extra allocation in BracketAccess force_step handler — use Rc::new((*key).clone()) or restructure to avoid the clone (`src/eval.rs:1572`) [Nit, computer-scientist C74 panel]
 - [ ] Add unit tests verifying boxed args/named preserved correctly in PendingBuiltin/PendingCall error restoration paths — existing tests verify error messages but not state restoration contents [Nit, test-crafter C74 panel]
+- [ ] Fix value_to_display_string depth error: uses EvalError::depth_exceeded (E040) instead of EvalError::internal for display recursion limit — these are different limits; E040 conflates them and makes is_catchable() wrong (`src/lib.rs:239-242`) [Major, integration-verifier C81]
+- [ ] Add typecheck call to create_stdlib_env() after desugar_file (line 3215) — stdlib code is never type-checked currently (`src/builtins.rs:3215`) [Major, integration-verifier C81]
+- [ ] Add doc/06 InferState.subst merge algorithm explanation in Pass 3b section — when both state.subst and local substitution bind same variable, show unification algorithm (`doc/06-type-inference.md:473-477`) [Minor, type-theorist C81]
+- [ ] Fix eval_step VarRef eager materialization before Action::Eval is wired live — VarRef returns Action::Materialize (forces immediately) but eval_recursive returns Ok(thunk) (lazy); must match before CEK migration advances (`src/eval.rs:2079-2086`) [Major, computer-scientist C81]
+- [ ] Add doc comment to Cont enum documenting ctx capture convention — some variants carry ctx for proxy dispatch, others read from thunk; document when each pattern is appropriate (`src/eval.rs` Cont enum) [Nit, computer-scientist C81]
+- [ ] Add corpus tests for newline edge cases: call_newline_colon.llt-eval ([call\n: x] → error), newline_breaks_bracket_access.llt-eval ($a\n[0] → two expressions), newline_breaks_dot_access.llt-eval ($a\n.b → two expressions) (`tests/corpus/invalid/`) [Minor, grammar-architect C81]
+- [ ] Change resolve_row to return Cow<'_, Row> — RowTail::Empty case clones unconditionally even when row is unchanged; use Cow::Borrowed to avoid allocation (`src/types.rs:680,683`) [Major, performance-expert C81]
+- [ ] Guard ann_mapping HashMap allocation in infer_fn — every function literal allocates HashMap even when no annotations exist (common for $map/$filter lambdas); add early return for unannotated functions (`src/typecheck.rs`) [Major, performance-expert C81]
 
 ## integration: Integration / Pipeline
 
