@@ -476,34 +476,6 @@ Consolidated from: test-critical-c, test-critical-d
 - [x] Expand is_cacheable/is_catchable tests to cover all 26 ErrorKind variants — currently test 7/26 and 6/26 respectively. Sufficient logically but inconsistent with the all-variants pattern used by Display and PartialEq tests. (`src/error.rs`) [Nit, computer-scientist panel]
 - [x] Fix `test_call_poly_state_subst_isolation` SCENARIO comment inaccuracy — the SCENARIO block at `src/typecheck.rs:3699-3703` says "Document 1 includes a forward-reference dot-access, causing check_dot_access to write a constraint into state.subst (the TypeVar α arm)"; the actual Document 1 source has no dot-access; the dot-access (`$data.name`) is in Document 2 and is a backward reference to a concrete dict, not a forward TypeVar constraint. The CURRENT LIMITATION section is accurate; update the SCENARIO and WHAT THE TEST DOES VERIFY item 2 to match the actual mechanism. (`src/typecheck.rs:3699-3708, 3736`) [Nit, computer-scientist C63]
 
-### test-additional: Additional Test Coverage
-
-Consolidated from: test-additional, test-additional-b, test-additional-c
-
-- [ ] Fix `any?`/`all?` using `$length` for empty check — materializes entire collection (O(n)) just to check emptiness; breaks on infinite Seq (hangs). Replace with direct `$head`-based check or `$reduce` without empty guard. Also prevents Seq support since `$length` requires finite collection. (`stdlib/prelude.llt:60-78`) [Major, stdlib-author + computer-scientist]
-- [ ] Add stdlib corpus tests for `from-entries`, `any?`, `all?` — functions added in Phase 4b½ lack dedicated corpus verification; short-circuit semantics for `any?`/`all?` are critical for correctness (`tests/corpus/eval/stdlib/`) [Major, stdlib-author]
-- [ ] Add error corpus tests for arithmetic overflow ($+/$-/$* with i64 bounds), NaN/Infinity rejection ($floor/$round), string parse failure ($to-int/$to-float), TypeAssert failure, range mixed keys [Critical, test-crafter]
-- [ ] Add depth limit corpus tests (256 levels succeeds, 257 errors)
-- [ ] Add keyword-in-context corpus tests (`[call: 42]`, `[fn: hello]` testing colon-lookahead)
-- [ ] Add static constraint negative tests (variadic-not-last, rest-entry position, annotation context)
-- [ ] Add stack frame correctness unit tests — verify chain with correct labels and spans (`src/eval.rs:825+`) [Minor, span-integrity-checker]
-- [ ] Add type system literal widening tests — widening chain, nested computed keys, polymorphic call with literals (`src/typecheck.rs:83`) [Minor, test-crafter]
-- [ ] Add SPEC.md grammar coverage tests — parser_mechanisms tests for 100% grammar rule coverage (`SPEC.md`, `tests/corpus/valid/`) [Minor, test-crafter]
-- [ ] Add `$_` desugared lambda type inference tests — verify inferred types of desugared expressions (e.g., `$_.name` → `Fn(Any → Any)`); current tests only validate runtime behavior, not type inference (`src/typecheck.rs`) [Minor, test-crafter C31]
-- [ ] Add `$_` implicit lambda edge case tests — nested `$_`, shadowing when `_` already bound, desugaring in dict entries vs call args (`src/desugar.rs`) [Minor, test-crafter]
-- [ ] Add row polymorphism tests for Closed-specific behavior — closed record with extra fields (`src/types.rs:679-837`) [Nit, type-theorist]
-- [ ] Add `test_substitution_idempotence` to types.rs — construct `a → b → Int` substitution chain, verify `subst.apply(&subst.apply(&TypeVar("a"))) == subst.apply(&TypeVar("a"))`; validates claim in doc/05-type-annotations.md:203. (`src/types.rs`) [Minor, type-theorist C38]
-- [ ] Add RowRest/RowTail terminology clarification to doc/07-type-extensions.md — current implementation uses `RowRest` (src/types.rs:14); row-unification sprint will migrate to kinded `RowTail` per Rémy §Row-Variable Unification. Prevents reader confusion between current and target representations. (`doc/07-type-extensions.md:288`) [Minor, type-theorist C38]
-- [ ] Add === delimiter edge case tests — `delimiter_in_string.txt`, `delimiter_partial.txt`, `delimiter_triple_docs.txt` (`tests/corpus/valid/edge_cases/`) [Major, test-crafter]
-- [ ] Add CRLF line ending corpus test — create `.txt` with actual `\r\n` bytes (`tests/corpus/valid/edge_cases/crlf_line_endings.txt`) [Minor, test-crafter]
-- [ ] Add Unicode identifier corpus test — `[$café: espresso]` and other Unicode var names (`tests/corpus/valid/literals/unicode_identifiers.txt`) [Minor, test-crafter]
-- [ ] Add annotated bare word corpus tests — `[x@Number: 42]`, `[fn@Int [] 42]` (`tests/corpus/valid/annotations/`) [Minor, test-crafter]
-- [ ] Add variadic + named args interaction test — positional + variadic + named args together (`tests/corpus/eval/fn_variadic_plus_named.txt`) [Minor, test-crafter]
-- [ ] Rename `threading.txt` test file to `pipeline.txt` to match function name (`tests/corpus/eval/stdlib/threading.txt`) [Nit, stdlib-author]
-- [ ] Add TypeAssert `default:` fallback corpus test — `[@Number default: 42 "not a number"]` returns 42 (`tests/corpus/eval/builtins/`) [Minor, test-crafter]
-- [ ] Add type error corpus tests directory — `type_mismatch.txt`, `unification_failure.txt`, `record_field_missing.txt` (`tests/corpus/eval/type_errors/`) [Major, test-crafter]
-- [ ] Rename `test_call_poly_state_subst_applied` — test exercises the CALL-POLY path end-to-end but does NOT isolate the `state.subst.apply()` call at the return site (documented in test comment); current name implies it does. Rename to `test_call_poly_end_to_end_dot_access_resolution` to match what the test actually guards. (`src/typecheck.rs`) [Nit, type-theorist C57]
-
 ### test-framework: Test Framework Enhancements
 
 Infrastructure tooling and output quality improvements. Split from 15-item backlog.
