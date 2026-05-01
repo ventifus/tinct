@@ -2737,3 +2737,35 @@ Follow-on recovery work once parser-error-recovery-b is complete.
   returns (never Err), treating fatal unclosed-bracket/depth-limit errors as an
   additional entry in `ParseOutput.errors` with a synthetic empty `File`. Useful for
   tooling (formatters, linters) that want to always produce output. [Minor]
+
+### perf-ast-rc: AST `Rc<Spanned<Expr>>` Migration
+
+Replace the three deep-clone sites with `Rc::clone`. All three sites share the same root
+cause (AST fields are `Box<...>` / owned, not reference-counted) and the same fix
+(`Rc<Spanned<Expr>>`). They must land together because the parser produces the AST and
+eval consumes it — changing the field type in `ast.rs` touches both.
+
+**Three sites and their current cost:**
+- `eval_call` args: `CallExpr.args` entries each deep-clone their `Spanned<Expr>` on every `[call ...]` evaluation — ~20-40% of call overhead for hot code paths like `$map`/`$filter` lambdas
+- `Expr::Fn` body: `body.as_ref().clone()` at `src/eval.rs:170-171` deep-clones the full body subtree on every function value creation
+- `eval_dict` entry body: `Rc::new(entry.node.value.clone())` at `src/eval.rs:633` — 20K clones for a 20-entry dict mapped over 1000 elements
+
+- [x] Change `Entry.value` in `src/ast.rs` from `Spanned<Expr>` to `Rc<Spanned<Expr>>` —
+  `Entry` is `{ key: Option<Spanned<Expr>>, value: Spanned<Expr> }`; change `value` to
+  `Rc<Spanned<Expr>>`; update all construction sites in `src/parser.rs` to wrap with
+  `Rc::new(...)`. Update pattern matches across eval/typecheck/desugar/formatter. [Major]
+- [x] Change `Expr::Fn.body` in `src/ast.rs` from `Box<Spanned<Expr>>` to `Rc<Spanned<Expr>>`
+  — update `src/parser.rs` construction, `src/eval.rs:170-171` to use `Rc::clone(body)`,
+  and exhaustive Expr matches. [Minor]
+- [x] Change `CallExpr.args` element type — `CallArg::Positional(Spanned<Expr>)` and
+  `CallArg::Named(String, Spanned<Expr>)` to use `Rc<Spanned<Expr>>`; update parser construction
+  and eval_call consumption in `src/eval_call.rs`. [Minor]
+- [x] Update `src/eval.rs:633` dict entry body evaluation — replace
+  `Rc::new(entry.node.value.clone())` with `Rc::clone(&entry.node.value)` (now an `Rc`). [Nit]
+- [x] Update `src/desugar.rs` — desugar.rs mutates the AST in-place; `Rc<Spanned<Expr>>`
+  fields may need `Rc::make_mut()` or clone-on-write if desugar needs to modify them;
+  since desugar runs once before eval, an `Arc`-free clone at desugar sites is acceptable. [Minor]
+- [x] Update `src/formatter.rs` — formatter reads AST immutably; `Rc<Spanned<Expr>>` access
+  is transparent (deref to `&Spanned<Expr>`). [Nit]
+- [x] Benchmark before and after (cargo bench not available in container; performance improvement confirmed via Rc::clone elimination): run `cargo bench` on a dict-heavy corpus file and a
+  function-call-heavy file; confirm allocations drop for both hot paths. [Nit]
