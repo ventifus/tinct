@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, EvalContext, MAX_EVAL_DEPTH};
-use crate::value::{Thunk, Value};
+use crate::value::{Key, Thunk, Value};
 
 /// Recursively force all thunks in a value tree.
 ///
@@ -27,162 +27,381 @@ use crate::value::{Thunk, Value};
 ///
 /// `depth` is checked against [`MAX_EVAL_DEPTH`] to prevent stack overflow on
 /// deeply nested structures. Cycle detection and sharing preservation are handled
-/// via a `HashMap<*const Thunk, Option<Rc<Thunk>>>` cache; see
-/// `deep_materialize_thunk` for the dual-purpose semantics.
+/// via a `HashMap<*const Thunk, Option<Rc<Thunk>>>` cache; see the
+/// dual-purpose cache semantics in `force_thunk`.
 pub fn deep_materialize(val: &Value, ctx: &Rc<EvalContext>, depth: usize) -> EvalResult<Value> {
     let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
     deep_materialize_impl(val, ctx, depth, &mut cache, 0, Span::origin())
 }
 
-/// Deep-force a value, recursively materializing all thunks in dicts and seqs.
+// ---------------------------------------------------------------------------
+// Iterative work-stack items
+// ---------------------------------------------------------------------------
+
+/// An item on the iterative work stack.
 ///
-/// `seq_depth` tracks consecutive Seq tail traversals along the spine. The check
-/// lives inside the `Seq` match arm (not at function entry) so it fires before the
-/// head's `deep_materialize_thunk` call increments `depth`. Without this placement,
-/// the generic `depth > MAX_EVAL_DEPTH` guard would fire first via the head path
-/// (where `seq_depth` is reset to 0), producing a generic error instead of the
-/// targeted "cannot deep-materialize an infinite Seq" message.
+/// The traversal uses two stacks:
 ///
-/// `current_span` is the source span of the thunk currently being traversed,
-/// used as the error location for depth-exceeded and infinite-Seq errors; callers
-/// at the entry point should pass [`Span::origin()`].
+/// - `work_stack`: items to process (LIFO). Items that need results from
+///   sub-items appear BELOW those sub-items on the stack.
+/// - `value_stack`: completed `Rc<Thunk>` results (LIFO). Each `Force` item
+///   pushes exactly one result. Each `Build*` collector pops N results and
+///   pushes one assembled result.
+///
+/// The protocol for structural values (Dict / Seq / Proxy):
+/// 1. Push `Build*` collector first (deepest on work stack → runs last).
+/// 2. Push one `Force` item per child in reverse order so the first child
+///    lands on top of the work stack → processed first → result deepest on
+///    value stack (correct order for the collector).
+enum WorkItem {
+    /// Force `thunk`, materialize it one level, then:
+    /// - For primitives / functions: push the wrapped result onto `value_stack`.
+    /// - For Dict / Seq / Proxy: push child `Force` items and a `Build*`
+    ///   collector onto `work_stack`.  Nothing is pushed to `value_stack`
+    ///   immediately; the collector does that after assembling children.
+    Force {
+        thunk: Rc<Thunk>,
+        seq_depth: usize,
+        depth: usize,
+    },
+    /// Collect `keys.len()` thunks from `value_stack`, assemble a `Value::Dict`,
+    /// wrap as a `Materialized` thunk, and push onto `value_stack`.
+    /// `thunk_ptr` is the original thunk pointer — used to update the sharing
+    /// cache after the dict is assembled.
+    BuildDict {
+        keys: Vec<Key>,
+        span: Span,
+        /// Original thunk pointer — updated in cache after assembly.
+        /// `None` if the dict is a root value (no thunk to cache).
+        thunk_ptr: Option<*const Thunk>,
+    },
+    /// Pop two thunks from `value_stack` (tail on top, head below), assemble
+    /// a `Value::Seq`, wrap as a `Materialized` thunk, push onto `value_stack`.
+    BuildSeq {
+        span: Span,
+        thunk_ptr: Option<*const Thunk>,
+    },
+    /// Pop one thunk from `value_stack` (the handler), assemble a
+    /// `Value::Proxy`, wrap as a `Materialized` thunk, push onto `value_stack`.
+    BuildProxy {
+        span: Span,
+        thunk_ptr: Option<*const Thunk>,
+    },
+}
+
+/// Deep-force a value, using an explicit work stack to avoid Rust call-stack
+/// recursion for deeply nested dicts and seq spines.
 fn deep_materialize_impl(
-    val: &Value,
+    root_val: &Value,
     ctx: &Rc<EvalContext>,
     depth: usize,
-    cache: &mut std::collections::HashMap<*const Thunk, Option<Rc<Thunk>>>,
+    cache: &mut HashMap<*const Thunk, Option<Rc<Thunk>>>,
     seq_depth: usize,
     current_span: Span,
 ) -> EvalResult<Value> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, current_span).into());
     }
+
+    // Fast path: primitives and functions need no traversal.
+    match root_val {
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::Bool(_)
+        | Value::Function { .. }
+        | Value::Builtin { .. } => return Ok(root_val.clone()),
+        _ => {}
+    }
+
+    // For structural values we need the work stack.  Seed it by expanding the
+    // root value's immediate children.  The root has no thunk pointer in the
+    // cache (it was already materialized by the caller).
+    let mut work_stack: Vec<WorkItem> = Vec::new();
+    let mut value_stack: Vec<Rc<Thunk>> = Vec::new();
+
+    push_structural(
+        root_val,
+        depth,
+        cache,
+        seq_depth,
+        current_span,
+        None, // root has no thunk pointer
+        &mut work_stack,
+        &mut value_stack,
+    )?;
+
+    // Main work loop.
+    while let Some(item) = work_stack.pop() {
+        match item {
+            WorkItem::Force {
+                thunk,
+                seq_depth: item_seq_depth,
+                depth: item_depth,
+            } => {
+                process_force(
+                    &thunk,
+                    ctx,
+                    item_depth,
+                    cache,
+                    item_seq_depth,
+                    &mut work_stack,
+                    &mut value_stack,
+                )?;
+            }
+            WorkItem::BuildDict {
+                keys,
+                span,
+                thunk_ptr,
+            } => {
+                let n = keys.len();
+                let stack_len = value_stack.len();
+                debug_assert!(
+                    stack_len >= n,
+                    "BuildDict: expected {n} values on stack, have {stack_len}"
+                );
+                let start = stack_len - n;
+                let mut result: IndexMap<Key, Rc<Thunk>> = IndexMap::with_capacity(n);
+                for (key, thunk) in keys.into_iter().zip(value_stack.drain(start..)) {
+                    result.insert(key, thunk);
+                }
+                let assembled = Rc::new(Thunk::new_materialized(Value::Dict(result), span));
+                if let Some(ptr) = thunk_ptr {
+                    cache.insert(ptr, Some(Rc::clone(&assembled)));
+                }
+                value_stack.push(assembled);
+            }
+            WorkItem::BuildSeq { span, thunk_ptr } => {
+                let tail = value_stack
+                    .pop()
+                    .expect("BuildSeq: missing tail on value_stack");
+                let head = value_stack
+                    .pop()
+                    .expect("BuildSeq: missing head on value_stack");
+                let assembled = Rc::new(Thunk::new_materialized(
+                    Value::Seq { head, tail },
+                    span,
+                ));
+                if let Some(ptr) = thunk_ptr {
+                    cache.insert(ptr, Some(Rc::clone(&assembled)));
+                }
+                value_stack.push(assembled);
+            }
+            WorkItem::BuildProxy { span, thunk_ptr } => {
+                let handler = value_stack
+                    .pop()
+                    .expect("BuildProxy: missing handler on value_stack");
+                let assembled = Rc::new(Thunk::new_materialized(
+                    Value::Proxy { handler },
+                    span,
+                ));
+                if let Some(ptr) = thunk_ptr {
+                    cache.insert(ptr, Some(Rc::clone(&assembled)));
+                }
+                value_stack.push(assembled);
+            }
+        }
+    }
+
+    // The work loop should leave exactly one result on the value stack.
+    debug_assert_eq!(
+        value_stack.len(),
+        1,
+        "deep_materialize_impl: expected 1 result on value_stack, got {}",
+        value_stack.len()
+    );
+    let result_thunk = value_stack
+        .pop()
+        .expect("deep_materialize_impl: empty value_stack after work loop");
+
+    // Extract the materialized value from the result thunk.
+    match result_thunk.try_get_materialized() {
+        Some(v) => Ok(v),
+        None => unreachable!(
+            "deep_materialize_impl: result thunk is not Materialized after work loop"
+        ),
+    }
+}
+
+/// Push work items to process the children of a structural `Value`
+/// (Dict / Seq / Proxy) onto the work and value stacks.
+///
+/// For primitives and functions, push a pre-materialized thunk directly onto
+/// `value_stack` (no child work needed).
+///
+/// `thunk_ptr` is the cache key for the parent thunk (if any), forwarded to
+/// the `Build*` collector so it can update the sharing cache after assembly.
+///
+/// Returns `Err` if the Seq spine guard fires (seq_depth >= MAX_EVAL_DEPTH).
+fn push_structural(
+    val: &Value,
+    depth: usize,
+    cache: &mut HashMap<*const Thunk, Option<Rc<Thunk>>>,
+    seq_depth: usize,
+    span: Span,
+    thunk_ptr: Option<*const Thunk>,
+    work_stack: &mut Vec<WorkItem>,
+    value_stack: &mut Vec<Rc<Thunk>>,
+) -> EvalResult<()> {
     match val {
         Value::Dict(map) => {
-            let mut result = IndexMap::new();
-            for (key, thunk) in map {
-                let deep_thunk = deep_materialize_thunk(thunk, ctx, depth, cache, 0)?;
-                result.insert(key.clone(), deep_thunk);
+            if map.is_empty() {
+                // Empty dict: assemble immediately, no children.
+                let t = Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), span));
+                if let Some(ptr) = thunk_ptr {
+                    cache.insert(ptr, Some(Rc::clone(&t)));
+                }
+                value_stack.push(t);
+                return Ok(());
             }
-            Ok(Value::Dict(result))
+            let keys: Vec<Key> = map.keys().cloned().collect();
+            // Collector runs last: push first.
+            work_stack.push(WorkItem::BuildDict {
+                keys: keys.clone(),
+                span,
+                thunk_ptr,
+            });
+            // Push Force items in reverse: first key ends on top → processed
+            // first → result deepest on value_stack → collected in order.
+            for key in keys.into_iter().rev() {
+                let entry_thunk = Rc::clone(&map[&key]);
+                work_stack.push(WorkItem::Force {
+                    thunk: entry_thunk,
+                    seq_depth: 0, // dict entries reset seq_depth
+                    depth,
+                });
+            }
         }
         Value::Seq { head, tail } => {
-            // Seq spine guard: checked before recursing on head or tail so that
-            // infinite sequences (e.g., $iterate, $repeat) get a targeted error
-            // message. This check must live here in the Seq arm, not at the top
-            // of the function, because the head's deep_materialize_thunk call
-            // increments `depth` — if seq_depth were only checked at function
-            // entry, the generic depth guard would fire first (via the head
-            // recursion at depth+1) before the next tail step could trigger it.
-            //
-            // Uses `>=` rather than `>` because `depth` and `seq_depth` are equal
-            // along a flat Seq spine (both start at 0 and increment by 1 per cons
-            // cell via deep_materialize_thunk). The head's recursion through
-            // deep_materialize_thunk adds `depth + 1`, so the generic depth guard
-            // (`depth > MAX_EVAL_DEPTH`) would fire at `depth = MAX_EVAL_DEPTH + 1`
-            // during head processing of the cell where `seq_depth = MAX_EVAL_DEPTH`.
-            // Using `>=` ensures the seq_depth guard fires at the same cell, before
-            // the head is processed.
+            // Seq spine guard (same semantics as the old recursive version).
             if seq_depth >= MAX_EVAL_DEPTH {
                 return Err(EvalError::resource_limit_exceeded(
                     "cannot deep-materialize an infinite Seq: use $collect with $take first"
                         .to_string(),
-                    current_span,
+                    span,
                 )
                 .into());
             }
-            // Seq depth: head and tail are both recursed from the same depth — independent
-            // branches, not additive. Total depth consumed is max(head_subtree, tail_subtree).
-            //
-            // Key asymmetry vs Dict: Seq spine traversal is O(n) in depth (each cons cell's
-            // tail passes through deep_materialize_thunk with depth+1), so a flat Seq of N
-            // elements reaches depth D+N along the tail spine. Dict traversal is O(1) in
-            // depth — a flat loop with all entries processed at the same level.
-            //
-            // seq_depth tracks consecutive Seq tail traversals. The head resets it
-            // to 0 (head is not part of the spine). The tail increments it.
-            let deep_head = deep_materialize_thunk(head, ctx, depth, cache, 0)?;
-            let deep_tail = deep_materialize_thunk(tail, ctx, depth, cache, seq_depth + 1)?;
-            Ok(Value::Seq {
-                head: deep_head,
-                tail: deep_tail,
-            })
+            // Collector runs last: push first.
+            work_stack.push(WorkItem::BuildSeq { span, thunk_ptr });
+            // Push tail SECOND on work_stack → processed second → lands on TOP
+            // of value_stack → BuildSeq pops tail first.
+            work_stack.push(WorkItem::Force {
+                thunk: Rc::clone(tail),
+                seq_depth: seq_depth + 1,
+                depth,
+            });
+            // Push head LAST on work_stack → processed first → result BELOW
+            // tail on value_stack → BuildSeq pops head after tail.
+            work_stack.push(WorkItem::Force {
+                thunk: Rc::clone(head),
+                seq_depth: 0, // head resets seq_depth
+                depth,
+            });
         }
         Value::Proxy { handler } => {
-            // Deep-materialize the handler thunk and return the proxy with the deep handler
-            let deep_handler = deep_materialize_thunk(handler, ctx, depth, cache, 0)?;
-            Ok(Value::Proxy {
-                handler: deep_handler,
-            })
+            work_stack.push(WorkItem::BuildProxy { span, thunk_ptr });
+            work_stack.push(WorkItem::Force {
+                thunk: Rc::clone(handler),
+                seq_depth: 0,
+                depth,
+            });
         }
-        // Primitives and functions are already fully materialized
-        other => Ok(other.clone()),
+        // Primitives and functions: no children.
+        other => {
+            let t = Rc::new(Thunk::new_materialized(other.clone(), span));
+            if let Some(ptr) = thunk_ptr {
+                cache.insert(ptr, Some(Rc::clone(&t)));
+            }
+            value_stack.push(t);
+        }
     }
+    Ok(())
 }
 
-/// Deep-materialize a single thunk, preserving sharing via the cache.
+/// Process a single `WorkItem::Force`: check the sharing/cycle cache, call
+/// [`materialize`], then expand the materialized value's structure.
 ///
-/// The `cache` serves two purposes:
-/// 1. **Cycle detection** (Launchbury 1993 blackholing): an entry with value `None`
-///    means we are currently processing this thunk — re-encountering it is a cycle.
-/// 2. **Sharing preservation** (Launchbury 1993 sharing invariant): an entry with
-///    value `Some(rc)` means this thunk was already deep-materialized — reuse it
-///    so that `Rc::ptr_eq` holds for outputs derived from shared inputs.
+/// On success, exactly one new result is eventually pushed onto `value_stack`
+/// (either immediately for cached/leaf values, or after the children are
+/// processed by a `Build*` collector).
 ///
-/// Returns an `Rc<Thunk>` that is either:
-/// - The cached result (if this thunk pointer was already processed — sharing preserved)
-/// - The original `Rc::clone` (if this thunk is currently being processed — cycle)
-/// - A new `Rc<Thunk>` containing the deep-materialized value (first encounter)
-fn deep_materialize_thunk(
+/// On error, propagates the error.  The cache sentinel (`None`) is removed
+/// before propagating to prevent cache poisoning (same as the old
+/// `deep_materialize_thunk`).
+fn process_force(
     thunk: &Rc<Thunk>,
     ctx: &Rc<EvalContext>,
     depth: usize,
-    cache: &mut std::collections::HashMap<*const Thunk, Option<Rc<Thunk>>>,
+    cache: &mut HashMap<*const Thunk, Option<Rc<Thunk>>>,
     seq_depth: usize,
-) -> EvalResult<Rc<Thunk>> {
+    work_stack: &mut Vec<WorkItem>,
+    value_stack: &mut Vec<Rc<Thunk>>,
+) -> EvalResult<()> {
     let thunk_ptr = Rc::as_ptr(thunk);
+
+    // Cache lookup: sharing hit or cycle sentinel.
     match cache.get(&thunk_ptr) {
-        Some(Some(cached)) => return Ok(Rc::clone(cached)), // sharing hit
-        // `Some(None)` is the in-progress sentinel: this thunk is currently being traversed
-        // by an ancestor call in the same deep_materialize invocation. Return the original thunk
-        // without recursing to break the structural cycle. See the "Deep Materialization"
-        // section in doc/08-evaluation.md for the dual-purpose cache design.
-        Some(None) => return Ok(Rc::clone(thunk)),
+        Some(Some(cached)) => {
+            value_stack.push(Rc::clone(cached));
+            return Ok(());
+        }
+        Some(None) => {
+            // Cycle sentinel: return the original thunk unchanged.
+            value_stack.push(Rc::clone(thunk));
+            return Ok(());
+        }
         None => {}
     }
-    // Mark as in-progress (cycle sentinel)
-    cache.insert(thunk_ptr, None);
-    // materialize uses current depth because it has its own depth guard;
-    // deep_materialize_impl increments to account for one level of nesting.
-    // Pass thunk.span as mat_span so errors from materializing this thunk
-    // carry the thunk's source location as the call-site span for depth errors.
+
     let thunk_span = thunk.span;
+
+    // Depth check before doing any work.
+    if depth > MAX_EVAL_DEPTH {
+        return Err(EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span).into());
+    }
+
+    // Insert the in-progress (cycle) sentinel.
+    cache.insert(thunk_ptr, None);
+
+    // Materialize the thunk one level.
+    // Pass thunk.span as mat_span so errors carry the thunk's source location as
+    // the call-site span, matching the old deep_materialize_thunk behavior.
     let v = match materialize(thunk, Some(&thunk_span), ctx, depth) {
         Ok(v) => v,
         Err(e) => {
-            // Clean up sentinel on error to prevent cache poisoning
+            // Clean up sentinel on error (same as old deep_materialize_thunk).
             cache.remove(&thunk_ptr);
             return Err(e);
         }
     };
-    let forced = match deep_materialize_impl(&v, ctx, depth + 1, cache, seq_depth, thunk_span) {
-        Ok(v) => v,
-        Err(mut e) => {
-            // Clean up sentinel on error to prevent cache poisoning
-            cache.remove(&thunk_ptr);
-            // Attach the thunk's source span as a frame so depth-exceeded errors
-            // show where in the structure the recursion limit was hit.
-            // Only add a frame if thunk_span is not the synthetic origin span.
-            if thunk_span != Span::origin() {
-                e.push_frame("deep-materializing".to_string(), thunk_span);
-            }
-            return Err(e);
+
+    // Expand the materialized value.  For leaf values, push directly to
+    // value_stack and update cache.  For structural values, push_structural
+    // queues child work items and a Build* collector; the collector updates
+    // the cache with `thunk_ptr` when it assembles the final result.
+    push_structural(
+        &v,
+        depth + 1,
+        cache,
+        seq_depth,
+        thunk_span,
+        Some(thunk_ptr),
+        work_stack,
+        value_stack,
+    )
+    .map_err(|mut e| {
+        // Depth / infinite-Seq error from a child: attach the source thunk's
+        // span as a frame so depth-exceeded errors show where in the structure
+        // the recursion limit was hit.
+        if thunk_span != Span::origin() {
+            e.push_frame("deep-materializing".to_string(), thunk_span);
         }
-    };
-    let result = Rc::new(Thunk::new_materialized(forced, thunk.span));
-    // Cache the result for sharing preservation
-    cache.insert(thunk_ptr, Some(Rc::clone(&result)));
-    Ok(result)
+        // Remove the sentinel for this thunk since we failed.
+        // (push_structural already cleaned up any sentinels it inserted.)
+        cache.remove(&thunk_ptr);
+        e
+    })
 }
 
 #[cfg(test)]
@@ -208,9 +427,9 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_cycle_sentinel() {
-        // Test the cycle detection path in deep_materialize_thunk.
+        // Test the cycle detection path.
         // When a thunk pointer is already in the cache with None value
-        // (the cycle sentinel), it should return the original thunk unchanged.
+        // (the cycle sentinel), process_force should return the original thunk unchanged.
         let span = test_span(1, 1, 1, 5);
         let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
 
@@ -219,13 +438,26 @@ mod tests {
         let thunk_ptr = Rc::as_ptr(&thunk);
         cache.insert(thunk_ptr, None);
 
-        // Call deep_materialize_thunk with the pre-populated cache
-        let result = deep_materialize_thunk(&thunk, &test_ctx(), 0, &mut cache, 0).unwrap();
+        // Call process_force with the pre-populated cache
+        let mut work_stack = Vec::new();
+        let mut value_stack = Vec::new();
+        let ctx = test_ctx();
+        process_force(
+            &thunk,
+            &ctx,
+            0,
+            &mut cache,
+            0,
+            &mut work_stack,
+            &mut value_stack,
+        )
+        .unwrap();
 
-        // Verify the original thunk is returned unchanged (same Rc pointer)
+        // The original thunk should have been pushed onto value_stack
+        assert_eq!(value_stack.len(), 1);
         assert!(
-            Rc::ptr_eq(&thunk, &result),
-            "deep_materialize_thunk must return the original thunk when cycle sentinel (None) is found in cache"
+            Rc::ptr_eq(&thunk, &value_stack[0]),
+            "process_force must push the original thunk when cycle sentinel (None) is found in cache"
         );
     }
 
@@ -257,12 +489,12 @@ mod tests {
                 let a = &map[&Key::String("a".into())];
                 let b = &map[&Key::String("b".into())];
 
-                // Verify the two resulting thunks are Rc::ptr_eq
+                // Verify the two resulting thunks are Rc::ptr_eq (sharing preserved)
                 assert!(
                     Rc::ptr_eq(a, b),
-                    "deep_materialize must preserve sharing through actual evaluation: \
-                     two dict entries pointing to the same unevaluated thunk should \
-                     remain Rc::ptr_eq after deep materialization"
+                    "deep_materialize must preserve sharing: two dict entries pointing \
+                     to the same unevaluated thunk should remain Rc::ptr_eq after \
+                     deep materialization"
                 );
 
                 // Also verify the value is correct
@@ -275,26 +507,18 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_cache_cleanup_on_error() {
-        // Bug fix: deep_materialize_thunk must clean up the None sentinel from the cache
+        // Bug fix: deep_materialize must clean up the None sentinel from the cache
         // when materialize() fails with a non-cacheable error (DepthExceeded). If the sentinel
         // is not removed, a second encounter of the same thunk pointer within the same
-        // deep_materialize call would hit the Some(None) → cycle path, silently returning
+        // deep_materialize call would hit the Some(None) -> cycle path, silently returning
         // Ok(Rc::clone(thunk)) instead of propagating the real error.
         //
         // What this test validates (public API observable properties):
-        // 1. After a failed deep_materialize, the shared thunk is NOT in Failed state —
+        // 1. After a failed deep_materialize, the shared thunk is NOT in Failed state --
         //    DepthExceeded is non-cacheable, so the thunk stays Unevaluated and is retryable.
         // 2. A second deep_materialize call (fresh cache) fails with DepthExceeded again,
-        //    not with a cycle/circular error — proving no permanent state corruption.
+        //    not with a cycle/circular error -- proving no permanent state corruption.
         // 3. Rc sharing: both dict entries reference the same thunk (Rc::ptr_eq confirmed).
-        //
-        // Note: The sentinel cleanup bug is an intra-call property — within one deep_materialize
-        // call, if the same error thunk appears at two different positions in the structure,
-        // the second encounter sees the stale None sentinel and gets an incorrect cycle result.
-        // Testing this intra-call scenario requires deep_materialize_impl (private). The public
-        // API always propagates via ? which stops processing after the first failure, so only
-        // one encounter of the thunk occurs per call — making the sentinel cleanup safe to
-        // validate through thunk state inspection rather than a second-encounter scenario.
 
         let ctx = test_ctx();
 
@@ -344,8 +568,6 @@ mod tests {
         let dict_value = Value::Dict(dict_map);
 
         // Materialize at MAX_EVAL_DEPTH so the inner recursive call exceeds the limit.
-        // The sentinel for error_thunk is inserted then cleaned up (fix), and the thunk
-        // state is restored to PendingCall (non-cacheable error path in materialize).
         let err1 = deep_materialize(&dict_value, &ctx, MAX_EVAL_DEPTH - 1).unwrap_err();
         assert!(
             err1.message().contains("maximum evaluation depth exceeded"),
@@ -354,8 +576,6 @@ mod tests {
         );
 
         // Property 1: the shared thunk must NOT be in Failed state after a non-cacheable error.
-        // Without the non-cacheable handling in materialize(), the thunk would be Failed.
-        // (This tests materialize's own non-cacheable path, not deep_materialize's sentinel.)
         let state = error_thunk.state();
         assert!(
             !matches!(&*state, ThunkState::Failed(_)),
@@ -370,7 +590,7 @@ mod tests {
         drop(state);
 
         // Property 2: a second deep_materialize (fresh cache) fails with DepthExceeded again,
-        // not a cycle error — confirming no permanent state corruption from the sentinel.
+        // not a cycle error -- confirming no permanent state corruption from the sentinel.
         let err2 = deep_materialize(&dict_value, &ctx, MAX_EVAL_DEPTH - 1).unwrap_err();
         assert!(
             err2.message().contains("maximum evaluation depth exceeded"),
