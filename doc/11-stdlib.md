@@ -447,6 +447,10 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `assert` | `[fn [cond msg] ...]` | Assert condition; error with message if false |
 
+## Known Limitations
+
+**Stdlib error message spans:** Error messages from stdlib functions that call `$error` internally (such as `$flatten`, `$take-while`, `$drop-while`) point to the stdlib implementation source location, not the user's call site. This is inherent to stdlib-authored error messages — the `$error` builtin correctly reports the span of the `[call $error ...]` expression, which happens to be inside `stdlib/prelude.llt`. User call sites will appear in the error's stack trace, but not as the primary error location. This will be addressed when file-path-based stack frame filtering is implemented to suppress stdlib internal frames and promote user frames.
+
 ## Two Map Variants
 
 - `map` — transforms values, preserves keys

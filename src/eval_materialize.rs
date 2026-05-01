@@ -438,7 +438,7 @@ pub(crate) fn force_step(
                     })));
                     // Push BracketForceTarget to handle key lookup after target materializes
                     stack.push(Cont::BracketForceTarget {
-                        key_expr: Rc::from(key.as_ref().clone()),
+                        key_expr: Rc::new((**key).clone()),
                         access_span: expr.span,
                         env: Rc::clone(&env),
                         ctx: Rc::clone(&thunk_ctx),
@@ -639,9 +639,9 @@ pub(crate) fn force_step(
             let err =
                 attach_materialization_context(err.into(), mat_span.as_ref(), &origin, thunk_span);
             thunk.set_state(ThunkState::Guarded {
-                inner: inner.clone(),
-                expected: expected.clone(),
-                field_path: Box::new(field_path.clone()),
+                inner,
+                expected,
+                field_path: Box::new(field_path),
                 guard_span,
             });
             return Action::Continue(Err(err));

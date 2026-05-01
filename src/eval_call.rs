@@ -244,6 +244,11 @@ pub(crate) fn bind_args_thunks(
                     *call_span,
                 )));
             }
+            Some(_) => {
+                // Valid: named arg targets an existing param that wasn't positionally bound
+                // (idx >= positional.len(), verified by guard above). Continue to next arg.
+                continue;
+            }
             None => {
                 // C-NAMED-VALID: named arg must target an existing parameter
                 // (Kotlin model: ANY param can be named, not just optional params)
@@ -254,9 +259,6 @@ pub(crate) fn bind_args_thunks(
                     valid_params,
                     *call_span,
                 )));
-            }
-            Some(_) => {
-                // Valid: named arg targets an existing param that wasn't positionally bound
             }
         }
     }

@@ -38,11 +38,11 @@ pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 const ANNOTATION_META_KEYS: &[&str] = &["type", "default"];
 
 /// Formats a field path for TypeAssert error display. Each segment is separately
-/// double-quoted: `"user"."address"."zip"`. Not for reconstruction — display only.
+/// backtick-quoted: `user`.`address`.`zip`. Not for reconstruction — display only.
 pub(crate) fn format_field_path(field_path: &[String]) -> String {
     field_path
         .iter()
-        .map(|s| format!("\"{}\"", s))
+        .map(|s| format!("`{}`", s))
         .collect::<Vec<_>>()
         .join(".")
 }
@@ -7435,10 +7435,10 @@ mod tests {
 
         // Verify the error message contains the field path prefix
         // doc/07-type-extensions.md:162 specifies each segment separately quoted:
-        // field "outer"."inner": (not field "outer.inner":)
+        // field `outer`.`inner`: (not field `outer.inner`:)
         assert!(
-            msg.contains("field \"outer\".\"inner\":"),
-            "Expected field path prefix 'field \"outer\".\"inner\":' in error message, got: {}",
+            msg.contains("field `outer`.`inner`:"),
+            "Expected field path prefix 'field `outer`.`inner`:' in error message, got: {}",
             msg
         );
 
@@ -7502,8 +7502,8 @@ mod tests {
 
         // Verify the error message contains the field path prefix
         assert!(
-            msg.contains("field \"config\":"),
-            "Expected field path prefix 'field \"config\":' in error message, got: {}",
+            msg.contains("field `config`:"),
+            "Expected field path prefix 'field `config`:' in error message, got: {}",
             msg
         );
 
