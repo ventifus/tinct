@@ -270,7 +270,8 @@ pub(crate) fn bind_args_thunks(
 
     // BIND-VARIADIC: Collect excess positional args into a dict with int keys
     if let Some(var_param) = variadic_param {
-        let mut var_map: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
+        let num_variadic_args = positional.len().saturating_sub(max_positional);
+        let mut var_map: IndexMap<Key, Rc<Thunk>> = IndexMap::with_capacity(num_variadic_args);
         for (i, thunk) in positional.iter().enumerate().skip(max_positional) {
             var_map.insert(
                 Key::Int(i64::try_from(i - max_positional).expect("collection too large")),
