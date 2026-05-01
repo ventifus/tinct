@@ -20,12 +20,9 @@ Replace the recursive `eval()` / `materialize()` call stack with an explicit con
 
 - [x] Move `func_label()`, `func_path()`, `eval_call()`, `CallContext`, `invoke_function()`, `bind_args_thunks()` to `src/eval_call.rs`; re-export via `pub(crate) use` in `eval.rs` (`src/eval.rs:738-1000`, ~280 lines) [Minor]
 
-### eval-split-b: Extract eval_materialize.rs
+### ~~eval-split-b: Extract eval_materialize.rs~~ DONE
 
-Move the CEK continuation machinery — the active area for iterative-eval-b sprints. Land before iterative-eval-b3 so those sprints operate on a smaller file.
-
-- [ ] Move `Cont`, `Action`, `RestoreState`, `attach_materialization_context()`, `next_depth()`, `force_step()`, `run()`, `apply_cont()` to `src/eval_materialize.rs` (`src/eval.rs:1245-2100`, ~860 lines) [Minor]
-
+- [x] Move `Cont`, `Action`, `RestoreState`, `attach_materialization_context()`, `next_depth()`, `force_step()`, `run()`, `apply_cont()` to `src/eval_materialize.rs` (`src/eval.rs:1245-2100`, ~860 lines) [Minor]
 
 ### eval-split-d: Extract eval_deep.rs
 
