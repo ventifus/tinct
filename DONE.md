@@ -2275,6 +2275,10 @@ Pure structural rename and type additions preparing for the full CEK loop. **No 
 - [x] Update `doc/16-architecture.md` §Iterative Evaluator status note — Phase 1 (materialize) complete via iterative-eval-a; access chains iterative via iterative-eval-b2; eval() step conversion pending in iterative-eval-b4 (`doc/16-architecture.md`) [Minor]
 - [x] Make access chains fully iterative: eval()'s DotAccess arm should return an Unevaluated(DotAccess_expr) thunk (same pattern as eval_call → PendingCall in iterative-eval-b1), enabling force_step to handle the ENTIRE chain via DotAccessForce continuations iteratively (`src/eval.rs`) [Major, eval-engine C74]
 
+## eval-split-b: Extract eval_materialize.rs
+
+- [x] Move `Cont`, `Action`, `RestoreState`, `attach_materialization_context()`, `next_depth()`, `force_step()`, `run()`, `apply_cont()` to `src/eval_materialize.rs` (~1500 lines) [Minor]
+
 ## eval-split-c: Extract eval_access.rs
 
 - [x] Move `eval_range_access()`, `invoke_proxy_handler()` and their helpers to `src/eval_access.rs` (note: `eval_dot_access()` and `eval_bracket_access()` were deleted in iterative-eval-b3 — dot/bracket access is now fully iterative via `DotAccessForce`/`BracketForceTarget` continuations in `force_step`) [Minor]
