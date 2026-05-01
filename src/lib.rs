@@ -38,6 +38,10 @@ pub(crate) mod builtins_seq_prim;
 pub(crate) mod builtins_seq_gen;
 // Sequence transform builtins: map, filter, take, drop.
 pub(crate) mod builtins_seq_xform;
+// Sequence reduction builtins: reduce, join, concat.
+pub(crate) mod builtins_seq_reduce;
+// String builtins: str, split, replace, upper, lower, trim.
+pub(crate) mod builtins_string;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // REPL (Read-Eval-Print Loop).
