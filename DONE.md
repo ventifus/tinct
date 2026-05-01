@@ -2708,3 +2708,32 @@ to find the matching `]`.
   and the outer two are valid `Expr::Dict`.
   (d) Corpus test `tests/corpus/invalid/syntax_errors/recover_key_no_value.llt-eval`.
   (e) LSP test: file with two distinct recovered syntax errors reports two diagnostics. [Minor]
+
+### parser-error-recovery-c: Deeper Recovery (future enhancements)
+
+Follow-on recovery work once parser-error-recovery-b is complete.
+
+- [x] Partial dict/call preservation — instead of emitting `Expr::Error` for the entire
+  malformed bracket form, preserve valid entries before the error site. E.g.,
+  `[a: 1 bad ]` produces a dict with `a: 1` plus an error entry or a trailing
+  `Expr::Error`. Requires threading a partial-entries accumulator through recovery
+  rather than popping the whole frame. [Major]
+
+- [x] Recovery inside `parse_annotation()` sub-function — annotation parsing calls
+  helpers that do `return Err(ParseError{...})`; those errors currently propagate
+  fatally through the main loop. Refactor annotation parsing to accept
+  `&mut Vec<ParseError>` and recover where possible, allowing malformed type annotations
+  to degrade to `Expr::Error` without aborting the whole file. [Major]
+
+- [x] Recovery inside param-list parsing — `parse_fn_params()` and related helpers
+  fail fatally on malformed param lists. Same `&mut Vec<ParseError>` threading pattern
+  as annotation recovery. [Minor]
+
+- [x] REPL recovery — use `parse2()` error list in the REPL to show all errors per
+  expression rather than stopping at the first; display errors but continue the session.
+  (`src/repl.rs`) [Minor]
+
+- [x] `parse_with_recovery(input: &str) -> ParseOutput` convenience wrapper — always
+  returns (never Err), treating fatal unclosed-bracket/depth-limit errors as an
+  additional entry in `ParseOutput.errors` with a synthetic empty `File`. Useful for
+  tooling (formatters, linters) that want to always produce output. [Minor]
