@@ -443,7 +443,7 @@ fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = expect_one_arg("eval", args, named, &ctx, depth, call_span)?;
-    let deep = crate::eval::deep_materialize(&val, &ctx, depth)?;
+    let deep = crate::eval::deep_materialize(&val, &ctx, depth, Some(&call_span))?;
     ok_val(deep, call_span)
 }
 

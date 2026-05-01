@@ -269,7 +269,7 @@ fn run_eval(
 
     // Optionally deep-force all thunks
     let val = if force_eval {
-        deep_materialize(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?
+        deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| format!("{e}"))?
     } else {
         val
     };
@@ -288,7 +288,7 @@ fn run_eval(
             let display_val = if force_eval {
                 &val
             } else {
-                &deep_materialize(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?
+                &deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| format!("{e}"))?
             };
             let output =
                 value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;

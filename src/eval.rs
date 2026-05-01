@@ -4355,35 +4355,35 @@ mod tests {
     #[test]
     fn test_deep_materialize_int() {
         let val = Value::Int(42);
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn test_deep_materialize_float() {
         let val = Value::Float(3.14);
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         assert_eq!(result, Value::Float(3.14));
     }
 
     #[test]
     fn test_deep_materialize_string() {
         let val = Value::String("hello".into());
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         assert_eq!(result, Value::String("hello".into()));
     }
 
     #[test]
     fn test_deep_materialize_bool() {
         let val = Value::Bool(true);
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         assert_eq!(result, Value::Bool(true));
     }
 
     #[test]
     fn test_deep_materialize_empty_dict() {
         let val = Value::Dict(IndexMap::new());
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => assert!(map.is_empty()),
             other => panic!("expected Dict, got {other:?}"),
@@ -4403,7 +4403,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(Value::Int(2), span)),
         );
         let val = Value::Dict(map);
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -4430,7 +4430,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(Value::Dict(inner), span)),
         );
         let val = Value::Dict(outer);
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(outer_map) => {
                 let x_val = materialize(&outer_map[&Key::String("x".into())], None, &test_ctx(), 0)
@@ -4465,7 +4465,7 @@ mod tests {
         map.insert(Key::String("val".into()), unevaluated);
         let val = Value::Dict(map);
 
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => {
                 let v =
@@ -4488,7 +4488,7 @@ mod tests {
             body: Rc::new(Spanned::new(Expr::Int(0), span)),
             env: Rc::new(RefCell::new(Environment::new())),
         };
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         // Functions are opaque -- returned as-is
         match result {
             Value::Function { params, .. } => {
@@ -4511,7 +4511,7 @@ mod tests {
             name: "test",
             func: dummy,
         };
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Builtin { name, .. } => assert_eq!(name, "test"),
             other => panic!("expected Builtin, got {other:?}"),
@@ -4522,7 +4522,8 @@ mod tests {
     fn test_deep_materialize_depth_limit() {
         // POLICY TEST: This tests the depth-limit POLICY (MAX_EVAL_DEPTH enforcement),
         // not stack-safety. Stack-safety is tested by test_iterative_materialize_deep_chain.
-        let err = deep_materialize(&Value::Int(1), &test_ctx(), MAX_EVAL_DEPTH + 1).unwrap_err();
+        let err =
+            deep_materialize(&Value::Int(1), &test_ctx(), MAX_EVAL_DEPTH + 1, None).unwrap_err();
         assert!(
             err.message().contains("maximum evaluation depth exceeded"),
             "got: {}",
@@ -4533,7 +4534,7 @@ mod tests {
     #[test]
     fn test_deep_materialize_depth_just_under() {
         // At the limit should still succeed for a leaf value
-        let result = deep_materialize(&Value::Int(1), &test_ctx(), MAX_EVAL_DEPTH);
+        let result = deep_materialize(&Value::Int(1), &test_ctx(), MAX_EVAL_DEPTH, None);
         assert!(result.is_ok());
     }
 
@@ -4550,7 +4551,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(Value::String("one".into()), span)),
         );
         let val = Value::Dict(map);
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
@@ -4580,7 +4581,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(Value::Int(2), span)),
         );
         let val = Value::Dict(map);
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => {
                 let keys: Vec<&Key> = map.keys().collect();
@@ -4616,7 +4617,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(Value::Int(10), span)),
         );
         let val = Value::Dict(map);
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => {
                 let f = materialize(&map[&Key::String("f".into())], None, &test_ctx(), 0).unwrap();
@@ -4650,7 +4651,7 @@ mod tests {
         );
         let val = Value::Dict(level1);
 
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         // Navigate three levels deep
         match result {
             Value::Dict(l1) => {
@@ -4698,7 +4699,7 @@ mod tests {
         map.insert(Key::String("x".into()), unevaluated);
         let val = Value::Dict(map);
 
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => {
                 let thunk = &map[&Key::String("x".into())];
@@ -4738,7 +4739,7 @@ mod tests {
             tail: tail_thunk,
         };
 
-        let result = deep_materialize(&seq, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&seq, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Seq { head, tail } => {
                 // Both head and tail should be materialized
@@ -4776,7 +4777,7 @@ mod tests {
         }
 
         let outer_seq = materialize(&current, None, &test_ctx(), 0).unwrap();
-        let err = deep_materialize(&outer_seq, &test_ctx(), 0).unwrap_err();
+        let err = deep_materialize(&outer_seq, &test_ctx(), 0, None).unwrap_err();
         assert!(
             err.message()
                 .contains("cannot deep-materialize an infinite Seq"),
@@ -4800,7 +4801,7 @@ mod tests {
         map.insert(Key::String("b".into()), Rc::clone(&shared_thunk));
         let val = Value::Dict(map);
 
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => {
                 let a = &map[&Key::String("a".into())];
@@ -4830,7 +4831,7 @@ mod tests {
             tail: Rc::clone(&shared_thunk),
         };
 
-        let result = deep_materialize(&seq, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&seq, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Seq { head, tail } => {
                 assert!(
@@ -4870,7 +4871,7 @@ mod tests {
         outer.insert(Key::String("seq".into()), seq_thunk);
         let val = Value::Dict(outer);
 
-        let result = deep_materialize(&val, &test_ctx(), 0).unwrap();
+        let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
         match result {
             Value::Dict(map) => {
                 // Extract the shared thunk from the nested dict
@@ -4914,7 +4915,7 @@ mod tests {
         };
 
         // Deep materialize the proxy
-        let result = deep_materialize(&proxy_val, &ctx, 0).unwrap();
+        let result = deep_materialize(&proxy_val, &ctx, 0, None).unwrap();
 
         match result {
             Value::Proxy {
