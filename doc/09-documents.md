@@ -452,6 +452,20 @@ If the included file needs to reference local bindings, use namespaced import in
 
 Duplicate names during merge are errors (consistent with the duplicate-keys-are-errors rule). Include cycle detection is required — even with lazy values, the scope structure must be known at include time.
 
+### Error reporting for nested includes
+
+When an error originates inside a chain of included files, the runtime annotates the error's stack trace with one frame per include boundary, showing the full path that led to the error:
+
+```
+[E053] include: parse error in "bad.llt": ... (defined at ...)
+  in included from outer.llt at 1:1-1:5
+  in included from middle.llt at 1:1-1:24
+```
+
+Each frame reads as "`file` was included (from the enclosing context) at the given source location". Frames are ordered outermost-first: the first frame is the entry point include, the last frame is the immediate parent of the failing file. The error message itself already names the failing file (`bad.llt` above), so no redundant frame is added for it.
+
+This chain is reconstructed dynamically from the active `$include` call stack at the time the error is raised. It reflects the actual call path, not a static import graph, so conditional includes (e.g., inside `if`) only appear in the chain when they were actually evaluated.
+
 ## Document Pipeline and $include — Formal Specification
 
 This section formalizes the inter-file include mechanism. The intra-file document pipeline (`$$` threading via `---` boundaries) and intra-document scope chains are already formalized in §Scope Chain Semantics — Formal Specification (DOC-PIPELINE and SEQ-SCOPE rules, respectively). This section covers `$include`: path resolution, cycle detection, result caching, and the eager materialization invariant.
@@ -592,9 +606,9 @@ This is consistent with Nix's `import` (which also eagerly evaluates the importe
 
 **P3 — Guard restoration (INCLUDE-RESTORE):** The include guard and `base_dir` are always restored to their pre-call state, even when evaluation fails.
 
-*Correspondence:* `builtins.rs:1178-1196` — the `cleanup()` closure removes the canonical path from the include guard. The `materialize()` call is wrapped in a `match` statement with `cleanup()` explicitly called in both the `Ok` branch (line 1189) and the `Err` branch (line 1193). This ensures that a failed include does not leave stale entries in the guard set (which would cause false cycle-detection errors for subsequent includes of the same file from different call sites).
+*Correspondence:* `builtins.rs` — the `cleanup()` closure removes the canonical path from the include guard and pops the include chain entry. The `materialize()` call is wrapped in a `match` statement with `cleanup()` explicitly called in both the `Ok` branch and the `Err` branch. This ensures that a failed include does not leave stale entries in the guard set (which would cause false cycle-detection errors for subsequent includes of the same file from different call sites). The guard and chain inserts are placed after all fallible `open_dir` operations, so cleanup is only required once the guard/chain have been pushed.
 
-**Previously known defect (resolved):** Earlier versions violated P3 for materialization errors — the `materialize` call used the `?` operator, which returned before cleanup ran. This has been fixed by using an explicit `match` with cleanup in both branches (see `builtins.rs:1178-1210`).
+**Previously known defect (resolved):** Earlier versions violated P3 for materialization errors — the `materialize` call used the `?` operator, which returned before cleanup ran. This has been fixed by using an explicit `match` with cleanup in both branches.
 
 **P4 — Include determinism (conditional):** For a fixed filesystem state, the document pipeline `eval_file(file, ρ, d)` is deterministic. When the filesystem changes between evaluations, results may differ — `$include` is the sole source of nondeterminism in tinct (see §Thunk Lifecycle — Semantic Properties, Determinism; also Semantic Commitment 2 in §Thunk Lifecycle — Semantic Commitments).
 

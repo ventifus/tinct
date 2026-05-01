@@ -816,11 +816,15 @@ fn infer_dict(
         key_entries.push((key_name, is_alias));
     }
 
-    // Pass 1: Bind all non-alias entries to fresh TypeVar at level state.level
+    // Pass 1: Bind all non-alias entries to fresh TypeVar at level state.level.
+    // Also collect fresh vars into a local HashMap for direct O(1) lookup in Pass 3,
+    // bypassing the TypeEnv parent-chain traversal in TypeEnv::get().
+    let mut fresh_vars: HashMap<String, Type> = HashMap::new();
     for (key_name, is_alias) in &key_entries {
         if !is_alias {
             if let Some(ref name) = key_name {
                 let fresh_var = state.fresh_type_var();
+                fresh_vars.insert(name.clone(), fresh_var.clone());
                 dict_env.insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
             }
         }
@@ -874,12 +878,12 @@ fn infer_dict(
         if let Some(name) = key_name {
             match infer_expr(&entry.node.value, &dict_env, state, type_map) {
                 Ok(value_ty) => {
-                    // Get the bound TypeVar from Pass 1
-                    if let Some(scheme) = dict_env.get(name) {
-                        let bound_var = scheme.body.clone();
+                    // Get the bound TypeVar from Pass 1 via direct HashMap lookup,
+                    // avoiding TypeEnv parent-chain traversal.
+                    if let Some(bound_var) = fresh_vars.get(name.as_str()) {
                         // Unify the inferred type with the bound var
                         if let Err(e) = unify(
-                            &bound_var,
+                            bound_var,
                             &value_ty,
                             &mut subst,
                             state,
@@ -6090,9 +6094,7 @@ mod tests {
 
     // -- state.subst apply() regression test --
 
-    // TODO: enable when check_bracket_access generates row constraints for open records — see row-unification-h-b
     #[test]
-    #[ignore]
     fn test_bracket_access_forward_ref_resolves_correctly() {
         // Forward-reference bracket access should resolve to field type.
         // Exercises the TypeVar constraint generation in check_bracket_access:

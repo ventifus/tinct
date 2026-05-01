@@ -104,6 +104,14 @@ pub struct EvalState {
     /// File identity (dev, ino) -> materialized result thunk (include result caching).
     /// Only successful evaluations are cached; errors are not cached.
     pub include_cache: HashMap<(u64, u64), Rc<Thunk>>,
+    /// Stack of active $include calls: `(display_path, call_site_span)`.
+    ///
+    /// Pushed by `builtin_include` before evaluating the included file, popped
+    /// after (in both success and error branches). Used to annotate errors from
+    /// nested includes with the full include path, e.g.:
+    ///   "included from a.llt at 3:10-3:25"
+    ///   "included from b.llt at 1:5-1:20"
+    pub include_chain: Vec<(String, Span)>,
     // future: trace_log, eval_stats
 }
 
@@ -142,6 +150,7 @@ impl EvalContext {
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
                 include_cache: HashMap::new(),
+                include_chain: Vec::new(),
             })),
         })
     }
@@ -8352,6 +8361,68 @@ mod tests {
         assert!(
             ctx_no_fs.config.no_fs,
             "no_fs should be true when created with true"
+        );
+    }
+
+    /// Integration test: `with_base_dir()` inherits `no_fs` flag.
+    ///
+    /// Verifies the no_fs=true code path end-to-end through `with_base_dir()`:
+    /// 1. Create a ctx1 with no_fs=true.
+    /// 2. Call ctx1.with_base_dir() to get ctx2 with a different base_dir.
+    /// 3. Evaluate a `$include` call using ctx2.
+    /// 4. Confirm the result is `IncludeForbidden` [E042] — proving:
+    ///    a. `with_base_dir()` correctly propagates the no_fs flag.
+    ///    b. `$include` resolves via ctx2's config (not a stale ctx1 config).
+    ///    c. No actual filesystem access is needed — the error fires immediately.
+    #[test]
+    fn test_eval_context_with_base_dir_inherits_no_fs() {
+        // Two separate base dirs: ctx1 starts with no_fs=true.
+        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open base_dir1");
+        let base_dir2 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open base_dir2");
+        let env = crate::builtins::create_stdlib_env().expect("stdlib env");
+
+        // ctx1 has no_fs=true
+        let ctx1 = EvalContext::new(base_dir1, env, true);
+        assert!(ctx1.config.no_fs, "ctx1 must have no_fs=true");
+
+        // ctx2 shares ctx1's state but has a different base_dir
+        let ctx2 = ctx1.with_base_dir(base_dir2);
+
+        // Verify structural properties of ctx2
+        assert!(
+            ctx2.config.no_fs,
+            "ctx2 created via with_base_dir() must inherit no_fs=true from ctx1"
+        );
+        assert!(
+            Rc::ptr_eq(&ctx1.state, &ctx2.state),
+            "ctx2 must share the same state Rc as ctx1"
+        );
+
+        // Exercise the no_fs path: $include must produce IncludeForbidden [E042].
+        // This proves ctx2 correctly propagates no_fs to $include without needing
+        // any real files on disk.
+        let include_expr = sp(crate::ast::Expr::Call {
+            func: Box::new(sp(crate::ast::Expr::VarRef("include".into()))),
+            args: vec![sp(crate::ast::Expr::Str("hypothetical.llt".into()))],
+            named_args: vec![],
+        });
+
+        let thunk = eval(&include_expr, Rc::clone(&ctx2.config.stdlib_env), &ctx2, 0)
+            .expect("eval should succeed (thunk creation does not access filesystem)");
+        let err =
+            materialize(&thunk, None, &ctx2, 0).expect_err("$include with no_fs=true must fail");
+
+        assert!(
+            matches!(err.kind, crate::error::ErrorKind::IncludeForbidden),
+            "Expected IncludeForbidden [E042], got: {}",
+            err.kind.code()
+        );
+        assert_eq!(
+            err.kind.code(),
+            "E042",
+            "IncludeForbidden must produce error code E042"
         );
     }
 

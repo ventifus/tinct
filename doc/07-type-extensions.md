@@ -542,6 +542,16 @@ unify_tails(t₁, t₂, S):
 
 **Case 4** is the key insight from Wand (1987): when both rows have unique fields and open tails, a fresh row variable `ρ_fresh` is created to represent the (yet unknown) fields shared by both tails. Each original tail is bound to the other side's unique fields plus this shared unknown. This correctly propagates constraints — if either tail is later unified with a concrete row, the constraints flow through `ρ_fresh` to the other side. Case 4 must be matched before Cases 2/3 in implementation because Case 2's pattern `(false, _, _, RowVar(ρ₂))` is strictly more general and would shadow Case 4, incorrectly binding only one tail instead of both.
 
+**`partition_fields_and_bind` — Case 4 implementation.** Case 4 is extracted into a dedicated function (`src/types.rs: partition_fields_and_bind`) to keep `unify_remainders` readable. The function takes the two unique field sets and the two RowVar names (ρ₁, ρ₂), and performs the following steps in sequence:
+
+1. **Allocate `ρ_fresh`**: create a fresh row variable at `state.level`, register its level in `state.levels`.
+2. **Build binding rows**: `row2_with_fresh = Row { fields: U₂, tail: RowVar(ρ_fresh) }` and `row1_with_fresh = Row { fields: U₁, tail: RowVar(ρ_fresh) }`. Both share the same `ρ_fresh` tail, establishing the linkage.
+3. **Occurs checks**: verify `row_var_occurs(ρ₁, row2_with_fresh)` and `row_var_occurs(ρ₂, row1_with_fresh)` are both false. Either check failing indicates a would-be infinite row type (e.g., `ρ₁ = {x: Record({...ρ₁}), ...ρ_fresh}`) and signals a type error.
+4. **Level lowering**: call `lower_row_var_levels(row2_with_fresh, level(ρ₁))` and `lower_row_var_levels(row1_with_fresh, level(ρ₂))`. This ensures inner type/row variables cannot escape their binding scope via the fresh tail (Kiselyov 2013 §level-lowering).
+5. **Bind and size-check**: `subst.row_map.insert(ρ₁, row2_with_fresh)` followed by `subst.check_size(span)?`, then `subst.row_map.insert(ρ₂, row1_with_fresh)` followed by `subst.check_size(span)?`. The `check_size` call after each insert enforces the global substitution size limit (prevents runaway unification).
+
+The occurs check at step 3 must happen before the level lowering at step 4: if the occurs check fires, no binding occurs and no levels are mutated. Level lowering is a side effect that should only run for successful bindings.
+
 **Type-level unification for records:**
 
 ```

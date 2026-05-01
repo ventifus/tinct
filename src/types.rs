@@ -912,6 +912,94 @@ pub fn lower_row_var_levels_pub(row: &Row, max_level: u32, state: &mut InferStat
     lower_row_var_levels(row, max_level, state);
 }
 
+/// Case 4 of Wand (1987): both rows have unique fields and distinct RowVar tails.
+///
+/// Creates a fresh row variable ρ_fresh to represent the shared unknown tail, then:
+///   - Binds ρ₁ → Row { fields: U₂, tail: RowVar(ρ_fresh) }
+///   - Binds ρ₂ → Row { fields: U₁, tail: RowVar(ρ_fresh) }
+///
+/// This correctly propagates constraints: if either tail is later unified with a
+/// concrete row, the binding flows through ρ_fresh to the other side.
+///
+/// # Soundness
+///
+/// Before each binding, `row_var_occurs` is called to detect would-be cyclic
+/// bindings (infinite row types).  After each `row_map.insert`, `check_size` is
+/// called to enforce the global substitution size limit.  Level lowering
+/// (`lower_row_var_levels`) is applied to both rows before binding so that
+/// inner type/row variables cannot escape their scope via the fresh tail
+/// (Kiselyov 2013 §level-lowering).
+fn partition_fields_and_bind(
+    unique1: HashMap<String, Type>,
+    rho1: &str,
+    unique2: HashMap<String, Type>,
+    rho2: &str,
+    subst: &mut Substitution,
+    state: &mut InferState,
+    span: Span,
+) -> Result<(), TypeError> {
+    // Allocate a fresh row variable ρ_fresh to act as the shared unknown tail
+    let rho_fresh_name = format!("_t{}", state.name_counter);
+    state.name_counter += 1;
+    let rho_fresh_level = state.level;
+    state.levels.insert(rho_fresh_name.clone(), rho_fresh_level);
+
+    let fresh_tail = RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level);
+
+    // Build the two rows that each RowVar will be bound to.
+    // ρ₁ → Row { fields: U₂, tail: ρ_fresh }
+    // ρ₂ → Row { fields: U₁, tail: ρ_fresh }
+    let row2_with_fresh = Row {
+        fields: unique2,
+        tail: fresh_tail.clone(),
+    };
+    let row1_with_fresh = Row {
+        fields: unique1,
+        tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
+    };
+
+    // Occurs check: ρ₁ must not appear in (U₂ ∪ {ρ_fresh})
+    if row_var_occurs(rho1, &row2_with_fresh, subst) {
+        let rho1_display = if is_display_hidden(rho1) {
+            "an anonymous open row".to_string()
+        } else {
+            rho1.to_string()
+        };
+        return Err(TypeError::new(
+            format!("infinite row type: {rho1_display} occurs in its own binding"),
+            span,
+        ));
+    }
+
+    // Occurs check: ρ₂ must not appear in (U₁ ∪ {ρ_fresh})
+    if row_var_occurs(rho2, &row1_with_fresh, subst) {
+        let rho2_display = if is_display_hidden(rho2) {
+            "an anonymous open row".to_string()
+        } else {
+            rho2.to_string()
+        };
+        return Err(TypeError::new(
+            format!("infinite row type: {rho2_display} occurs in its own binding"),
+            span,
+        ));
+    }
+
+    // Level lowering: prevent inner vars from escaping their scope through the fresh tail
+    let rho1_level = state.levels.get(rho1).copied().unwrap_or(0);
+    let rho2_level = state.levels.get(rho2).copied().unwrap_or(0);
+    lower_row_var_levels(&row2_with_fresh, rho1_level, state);
+    lower_row_var_levels(&row1_with_fresh, rho2_level, state);
+
+    // Bind ρ₁ → Row { fields: U₂, tail: ρ_fresh }
+    subst.row_map.insert(rho1.to_string(), row2_with_fresh);
+    subst.check_size(span)?;
+    // Bind ρ₂ → Row { fields: U₁, tail: ρ_fresh }
+    subst.row_map.insert(rho2.to_string(), row1_with_fresh);
+    subst.check_size(span)?;
+
+    Ok(())
+}
+
 /// Unify remainders (unique fields + tails) — implements Wand (1987) 4-case algorithm.
 ///
 /// Soundness invariant: every binding case calls `row_var_occurs` BEFORE
@@ -934,66 +1022,13 @@ fn unify_remainders(
         // Case 1: No unique fields on either side — unify tails directly
         (_, _) if u1_empty && u2_empty => unify_tails(&tail1, &tail2, subst, state, span),
 
-        // Case 4: Both have unique fields and both have RowVar tails — create fresh row variable
+        // Case 4: Both have unique fields and both have RowVar tails — create fresh row variable.
+        // Delegates to `partition_fields_and_bind` which encapsulates the occurs checks,
+        // level lowering, and dual binding logic (Wand 1987, Case 4).
         (RowTail::RowVar(rho1, _), RowTail::RowVar(rho2, _))
             if !u1_empty && !u2_empty && rho1 != rho2 =>
         {
-            let rho_fresh_name = format!("_t{}", state.name_counter);
-            state.name_counter += 1;
-            let rho_fresh_level = state.level;
-            state.levels.insert(rho_fresh_name.clone(), rho_fresh_level);
-
-            let fresh_tail = RowTail::RowVar(rho_fresh_name.clone(), rho_fresh_level);
-
-            // Occurs checks: construct row for check, then reuse for binding
-            // ρ₁ must not appear in U₂ fields + fresh tail
-            let row2_with_fresh = Row {
-                fields: unique2,
-                tail: fresh_tail.clone(),
-            };
-            if row_var_occurs(rho1, &row2_with_fresh, subst) {
-                let rho1_display = if is_display_hidden(rho1) {
-                    "an anonymous open row".to_string()
-                } else {
-                    rho1.clone()
-                };
-                return Err(TypeError::new(
-                    format!("infinite row type: {rho1_display} occurs in its own binding"),
-                    span,
-                ));
-            }
-
-            // ρ₂ must not appear in U₁ fields + fresh tail
-            let row1_with_fresh = Row {
-                fields: unique1,
-                tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
-            };
-            if row_var_occurs(rho2, &row1_with_fresh, subst) {
-                let rho2_display = if is_display_hidden(rho2) {
-                    "an anonymous open row".to_string()
-                } else {
-                    rho2.clone()
-                };
-                return Err(TypeError::new(
-                    format!("infinite row type: {rho2_display} occurs in its own binding"),
-                    span,
-                ));
-            }
-
-            // Lower levels of inner vars to rho1's and rho2's levels before binding
-            let rho1_level = state.levels.get(rho1).copied().unwrap_or(0);
-            let rho2_level = state.levels.get(rho2).copied().unwrap_or(0);
-            lower_row_var_levels(&row2_with_fresh, rho1_level, state);
-            lower_row_var_levels(&row1_with_fresh, rho2_level, state);
-
-            // Bind ρ₁ → Row { fields: U₂, tail: ρ_fresh }
-            subst.row_map.insert(rho1.clone(), row2_with_fresh);
-            subst.check_size(span)?;
-            // Bind ρ₂ → Row { fields: U₁, tail: ρ_fresh }
-            subst.row_map.insert(rho2.clone(), row1_with_fresh);
-            subst.check_size(span)?;
-
-            Ok(())
+            partition_fields_and_bind(unique1, rho1, unique2, rho2, subst, state, span)
         }
 
         // Case 2: Only left has unique fields — right tail must absorb them

@@ -1299,7 +1299,7 @@ mod tests {
         }
         .is_catchable());
 
-        // All other 24 variants ARE catchable
+        // All other 31 variants ARE catchable
         assert!(ErrorKind::KeyNotFound {
             key: "foo".to_string(),
             available_keys: vec![],
@@ -1612,7 +1612,7 @@ mod tests {
         // DepthExceeded is NOT cacheable (must retry at different depth)
         assert!(!ErrorKind::DepthExceeded { limit: 256 }.is_cacheable());
 
-        // All other 25 variants ARE cacheable (can be stored in Failed thunk state).
+        // All other 32 variants ARE cacheable (can be stored in Failed thunk state).
         // ResourceLimitExceeded IS cacheable (unlike DepthExceeded, resource limits
         // are not context-dependent on call depth — a failed resource limit check
         // will fail consistently regardless of when it's retried).
@@ -2868,6 +2868,468 @@ mod tests {
             result,
             Some((1, 6)),
             "should return minimal period 1, not 2 or 3"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Constructor-level unit tests: one test per EvalError named constructor
+    // that was not already covered by test_eval_error_* tests above.
+    // These complement the exhaustiveness checks in all_error_kind_variants()
+    // and test_error_kind_display_all_variants() by exercising each constructor
+    // directly and verifying the resulting kind, message, code, and span.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_eval_error_depth_exceeded_constructor() {
+        let span = test_span(1, 1, 1, 10);
+        let err = EvalError::depth_exceeded(256, span);
+        assert!(matches!(err.kind, ErrorKind::DepthExceeded { limit: 256 }));
+        assert_eq!(err.kind.code(), "E040");
+        assert_eq!(err.message(), "maximum evaluation depth exceeded (256)");
+        assert!(
+            !err.kind.is_cacheable(),
+            "DepthExceeded must not be cacheable"
+        );
+        assert!(
+            !err.kind.is_catchable(),
+            "DepthExceeded must not be catchable"
+        );
+        assert_eq!(err.definition_span, span);
+    }
+
+    #[test]
+    fn test_eval_error_user_error_constructor() {
+        let span = test_span(2, 3, 2, 15);
+        let err = EvalError::user_error("custom error message".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::UserError { .. }));
+        assert_eq!(err.kind.code(), "E080");
+        assert_eq!(err.message(), "custom error message");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_named_arg_rejected_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::named_arg_rejected("floor".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::NamedArgRejected { .. }));
+        assert_eq!(err.kind.code(), "E023");
+        assert_eq!(err.message(), "floor does not accept named arguments");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_integer_overflow_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::integer_overflow("*".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::IntegerOverflow { .. }));
+        assert_eq!(err.kind.code(), "E032");
+        assert_eq!(err.message(), "*: integer overflow");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_type_mismatch_ctx_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err =
+            EvalError::type_mismatch_ctx("document pipeline".to_string(), "Dict", "Int", span);
+        assert!(matches!(
+            err.kind,
+            ErrorKind::TypeMismatch {
+                context: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(err.kind.code(), "E010");
+        assert_eq!(err.message(), "document pipeline: expected Dict, got Int");
+        assert!(err.kind.is_catchable());
+    }
+
+    #[test]
+    fn test_eval_error_division_by_zero_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::division_by_zero("%".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::DivisionByZero { .. }));
+        assert_eq!(err.kind.code(), "E031");
+        assert_eq!(err.message(), "%: division by zero");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_float_not_finite_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::float_not_finite("round".to_string(), f64::INFINITY, span);
+        assert!(matches!(err.kind, ErrorKind::FloatNotFinite { .. }));
+        assert_eq!(err.kind.code(), "E033");
+        assert!(err.message().contains("not a finite number"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_empty_collection_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::empty_collection("tail".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::EmptyCollection { .. }));
+        assert_eq!(err.kind.code(), "E034");
+        assert_eq!(err.message(), "tail on empty collection");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_value_not_serializable_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::value_not_serializable("Builtin".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::ValueNotSerializable { .. }));
+        assert_eq!(err.kind.code(), "E035");
+        assert_eq!(err.message(), "cannot serialize Builtin to JSON");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_float_out_of_range_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::float_out_of_range("to-int".to_string(), 1e300, span);
+        assert!(matches!(err.kind, ErrorKind::FloatOutOfRange { .. }));
+        assert_eq!(err.kind.code(), "E036");
+        assert!(err.message().contains("out of range for Int"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_undefined_variable_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::undefined_variable("myvar".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::UndefinedVariable { .. }));
+        assert_eq!(err.kind.code(), "E002");
+        assert_eq!(err.message(), "undefined variable: $myvar");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_type_assert_failed_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::type_assert_failed("Bool", "String", span);
+        assert!(matches!(err.kind, ErrorKind::TypeAssertFailed { .. }));
+        assert_eq!(err.kind.code(), "E011");
+        assert_eq!(
+            err.message(),
+            "type assertion failed: expected Bool, got String"
+        );
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_named_arg_conflict_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::named_arg_conflict("separator".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::NamedArgConflict { .. }));
+        assert_eq!(err.kind.code(), "E021");
+        assert_eq!(
+            err.message(),
+            "parameter 'separator' received both positional and named argument"
+        );
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_unknown_named_arg_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::unknown_named_arg(
+            "typo".to_string(),
+            vec!["sep".to_string(), "limit".to_string()],
+            span,
+        );
+        assert!(matches!(err.kind, ErrorKind::UnknownNamedArg { .. }));
+        assert_eq!(err.kind.code(), "E022");
+        assert!(err.message().contains("unexpected named argument: typo"));
+        assert!(err.message().contains("sep"));
+        assert!(err.message().contains("limit"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_duplicate_key_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::duplicate_key("host", span);
+        assert!(matches!(err.kind, ErrorKind::DuplicateKey { .. }));
+        assert_eq!(err.kind.code(), "E030");
+        assert_eq!(err.message(), "duplicate key: host");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_json_depth_exceeded_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::json_depth_exceeded(128, span);
+        assert!(matches!(
+            err.kind,
+            ErrorKind::JsonDepthExceeded { limit: 128 }
+        ));
+        assert_eq!(err.kind.code(), "E041");
+        assert_eq!(err.message(), "maximum JSON nesting depth exceeded (128)");
+        // JsonDepthExceeded IS catchable (unlike DepthExceeded which is not)
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_include_forbidden_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::include_forbidden(span);
+        assert!(matches!(err.kind, ErrorKind::IncludeForbidden));
+        assert_eq!(err.kind.code(), "E042");
+        assert_eq!(err.message(), "filesystem access is disabled (--no-fs)");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_resource_limit_exceeded_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::resource_limit_exceeded(
+            "collect: exceeded maximum collection size (1000000)",
+            span,
+        );
+        assert!(matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }));
+        assert_eq!(err.kind.code(), "E043");
+        assert!(err.message().contains("exceeded maximum collection size"));
+        // ResourceLimitExceeded is NOT catchable (safety boundary)
+        assert!(
+            !err.kind.is_catchable(),
+            "ResourceLimitExceeded must not be catchable"
+        );
+        // ResourceLimitExceeded IS cacheable (deterministic — always fails)
+        assert!(
+            err.kind.is_cacheable(),
+            "ResourceLimitExceeded should be cacheable"
+        );
+    }
+
+    #[test]
+    fn test_eval_error_include_not_available_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::include_not_available(span);
+        assert!(matches!(err.kind, ErrorKind::IncludeNotAvailable));
+        assert_eq!(err.kind.code(), "E050");
+        assert_eq!(err.message(), "include: not available in this context");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_include_io_error_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::include_io_error(
+            "missing.llt".to_string(),
+            "No such file or directory".to_string(),
+            span,
+        );
+        assert!(matches!(err.kind, ErrorKind::IncludeIoError { .. }));
+        assert_eq!(err.kind.code(), "E051");
+        assert!(err.message().contains("cannot access \"missing.llt\""));
+        assert!(err.message().contains("No such file or directory"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_include_cycle_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::include_cycle("recursive.llt".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::IncludeCycle { .. }));
+        assert_eq!(err.kind.code(), "E052");
+        assert!(err.message().contains("circular include detected"));
+        assert!(err.message().contains("recursive.llt"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_include_parse_failed_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::include_parse_failed(
+            "broken.llt".to_string(),
+            "unexpected token at line 3".to_string(),
+            span,
+        );
+        assert!(matches!(err.kind, ErrorKind::IncludeParseFailed { .. }));
+        assert_eq!(err.kind.code(), "E053");
+        assert!(err.message().contains("parse error in \"broken.llt\""));
+        assert!(err.message().contains("unexpected token at line 3"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_include_file_too_large_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err =
+            EvalError::include_file_too_large("huge.llt".to_string(), 20_000_000, 10_485_760, span);
+        assert!(matches!(err.kind, ErrorKind::IncludeFileTooLarge { .. }));
+        assert_eq!(err.kind.code(), "E054");
+        assert!(err.message().contains("huge.llt"));
+        assert!(err.message().contains("20000000"));
+        assert!(err.message().contains("10485760"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_include_hash_mismatch_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::include_hash_mismatch(
+            "config.llt".to_string(),
+            "blake3:aabbcc".to_string(),
+            "blake3:112233".to_string(),
+            span,
+        );
+        assert!(matches!(err.kind, ErrorKind::IncludeHashMismatch { .. }));
+        assert_eq!(err.kind.code(), "E055");
+        assert!(err.message().contains("integrity check failed"));
+        assert!(err.message().contains("config.llt"));
+        assert!(err.message().contains("blake3:aabbcc"));
+        assert!(err.message().contains("blake3:112233"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_include_hash_required_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::include_hash_required("untrusted.llt".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::IncludeHashRequired { .. }));
+        assert_eq!(err.kind.code(), "E056");
+        assert!(err.message().contains("integrity hash required"));
+        assert!(err.message().contains("untrusted.llt"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_parse_conversion_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::parse_conversion(
+            "to-float".to_string(),
+            "not-a-number".to_string(),
+            "Float",
+            span,
+        );
+        assert!(matches!(err.kind, ErrorKind::ParseConversion { .. }));
+        assert_eq!(err.kind.code(), "E060");
+        assert_eq!(
+            err.message(),
+            "to-float: cannot parse \"not-a-number\" as Float"
+        );
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_json_parse_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::json_parse("unexpected EOF at line 3".to_string(), span);
+        assert!(matches!(err.kind, ErrorKind::JsonParse { .. }));
+        assert_eq!(err.kind.code(), "E061");
+        assert!(err.message().contains("invalid JSON"));
+        assert!(err.message().contains("unexpected EOF at line 3"));
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_json_range_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::json_range(span);
+        assert!(matches!(err.kind, ErrorKind::JsonRange));
+        assert_eq!(err.kind.code(), "E062");
+        assert_eq!(err.message(), "JSON number outside representable range");
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    #[test]
+    fn test_eval_error_missing_required_param_constructor() {
+        let span = test_span(1, 1, 1, 5);
+        let err = EvalError::missing_required_param("separator", span);
+        assert!(matches!(err.kind, ErrorKind::MissingRequiredParam { .. }));
+        assert_eq!(err.kind.code(), "E024");
+        assert_eq!(
+            err.message(),
+            "missing argument for required parameter 'separator'"
+        );
+        assert!(err.kind.is_catchable());
+        assert!(err.kind.is_cacheable());
+    }
+
+    /// Verify `JsonDepthExceeded` is catchable while `DepthExceeded` is not.
+    /// These two variants are semantically similar but have opposite catchability:
+    /// - `DepthExceeded` is a resource limit (not catchable, not cacheable)
+    /// - `JsonDepthExceeded` is a data error (catchable, cacheable)
+    #[test]
+    fn test_json_depth_exceeded_vs_depth_exceeded_catchability() {
+        assert!(
+            !ErrorKind::DepthExceeded { limit: 256 }.is_catchable(),
+            "DepthExceeded must NOT be catchable"
+        );
+        assert!(
+            ErrorKind::JsonDepthExceeded { limit: 128 }.is_catchable(),
+            "JsonDepthExceeded MUST be catchable (user data error, not resource limit)"
+        );
+        assert!(
+            !ErrorKind::DepthExceeded { limit: 256 }.is_cacheable(),
+            "DepthExceeded must NOT be cacheable (context-dependent)"
+        );
+        assert!(
+            ErrorKind::JsonDepthExceeded { limit: 128 }.is_cacheable(),
+            "JsonDepthExceeded MUST be cacheable (deterministic)"
+        );
+    }
+
+    /// Verify error code uniqueness across all 26 ErrorKind variants.
+    /// Each variant must have a distinct error code — no two variants share a code.
+    #[test]
+    fn test_all_error_codes_are_unique_and_valid() {
+        let variants = all_error_kind_variants();
+        let mut seen_codes = std::collections::HashMap::new();
+        for variant in &variants {
+            let code = variant.code();
+            // Must follow [E\d\d\d] format (3 digits after E)
+            assert!(
+                code.starts_with('E')
+                    && code.len() == 4
+                    && code[1..].chars().all(|c| c.is_ascii_digit()),
+                "Error code {:?} for {:?} must follow E### format",
+                code,
+                variant
+            );
+            if let Some(prev) = seen_codes.insert(code, format!("{:?}", variant)) {
+                panic!(
+                    "Duplicate error code {:?} for variants: {} and {:?}",
+                    code, prev, variant
+                );
+            }
+        }
+        // Verify the count matches all_error_kind_variants() — the canonical list.
+        // If variants are added or removed, update all_error_kind_variants() to match.
+        // Current count: 33 variants (verified against the ErrorKind enum definition).
+        assert_eq!(
+            variants.len(),
+            33,
+            "Expected 33 ErrorKind variants in all_error_kind_variants(); got {}. \
+             Update all_error_kind_variants() if variants were added or removed.",
+            variants.len()
         );
     }
 }
