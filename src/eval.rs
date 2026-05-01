@@ -37,6 +37,16 @@ pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 /// annotation that should enforce at minimum a Dict tag check when `resolved_type` is `None`.
 const ANNOTATION_META_KEYS: &[&str] = &["type", "default"];
 
+/// Formats a field path for TypeAssert error display. Each segment is separately
+/// double-quoted: `"user"."address"."zip"`. Not for reconstruction — display only.
+pub(crate) fn format_field_path(field_path: &[String]) -> String {
+    field_path
+        .iter()
+        .map(|s| format!("\"{}\"", s))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 /// Check whether a PropertyDict annotation contains structural field declarations.
 ///
 /// Returns `true` if the annotation has at least one entry with a string key that
@@ -219,14 +229,7 @@ pub(crate) fn validate_and_wrap_record(
             let field_path_prefix = if field_path.is_empty() {
                 String::new()
             } else {
-                format!(
-                    "field {}: ",
-                    field_path
-                        .iter()
-                        .map(|s| format!("\"{}\"", s))
-                        .collect::<Vec<_>>()
-                        .join(".")
-                )
+                format!("field {}: ", format_field_path(&field_path))
             };
 
             return Err(EvalError::type_assert_failed(
@@ -267,14 +270,7 @@ pub(crate) fn validate_and_wrap_record(
                 let field_path_prefix = if field_path.is_empty() {
                     String::new()
                 } else {
-                    format!(
-                        "field {}: ",
-                        field_path
-                            .iter()
-                            .map(|s| format!("\"{}\"", s))
-                            .collect::<Vec<_>>()
-                            .join(".")
-                    )
+                    format!("field {}: ", format_field_path(&field_path))
                 };
 
                 return Err(EvalError::type_assert_failed(
@@ -1322,14 +1318,7 @@ pub fn materialize(
                         let field_path_prefix = if field_path.is_empty() {
                             String::new()
                         } else {
-                            format!(
-                                "field {}: ",
-                                field_path
-                                    .iter()
-                                    .map(|s| format!("\"{}\"", s))
-                                    .collect::<Vec<_>>()
-                                    .join(".")
-                            )
+                            format!("field {}: ", format_field_path(&field_path))
                         };
                         let err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
@@ -1349,14 +1338,7 @@ pub fn materialize(
                         let field_path_prefix = if field_path.is_empty() {
                             String::new()
                         } else {
-                            format!(
-                                "field {}: ",
-                                field_path
-                                    .iter()
-                                    .map(|s| format!("\"{}\"", s))
-                                    .collect::<Vec<_>>()
-                                    .join(".")
-                            )
+                            format!("field {}: ", format_field_path(&field_path))
                         };
                         let err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),

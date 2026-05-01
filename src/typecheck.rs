@@ -1852,7 +1852,11 @@ fn infer_fn(
                 let result = unify(&body_ty, &declared, &mut subst, state, body.span);
                 state.subst = subst;
                 result.map_err(|e| vec![e])?;
-                declared
+                // Apply substitution to resolve any TypeVars bound during unification.
+                // Without this, the returned Type::Function would have has_inference_vars() == true,
+                // causing check_call to enter the CALL-POLY path unnecessarily (see check_call's
+                // has_inference_vars guard). This prevents call sites from entering CALL-POLY.
+                state.subst.apply(&declared)
             } else {
                 // Use checking mode for concrete return types (no type variables)
                 check_expr(body, &declared, &fn_env, state, type_map)?;
@@ -3149,6 +3153,132 @@ mod tests {
                 .iter()
                 .any(|e| e.message.contains("expected function type")),
             "error should mention 'expected function type', got: {errors:?}"
+        );
+    }
+
+    // -- Builtin sequence types --
+
+    #[test]
+    fn test_builtin_range_returns_seq_int() {
+        // Regression test for type-seq sprint: $range should return Type::Seq(Int).
+        // TypeEnv::with_builtins() registers range as Fn(Int, Int) -> Seq(Int).
+        let input = "[result: [call $range 0 10]]";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let env = Rc::new(TypeEnv::with_builtins());
+        let mut state = InferState::new();
+        let new_env = typecheck_document(&file.node.documents[0], &env, &mut state, &mut None)
+            .expect("typecheck should succeed");
+
+        let result_ty = new_env
+            .get("result")
+            .expect("result field should exist")
+            .body
+            .clone();
+
+        assert_eq!(
+            result_ty,
+            Type::Seq(Box::new(Type::Int)),
+            "range should return Seq(Int), got: {result_ty}"
+        );
+    }
+
+    #[test]
+    fn test_builtin_keys_returns_seq_str() {
+        // Regression test for type-seq sprint: $keys should return Type::Seq(Str).
+        // TypeEnv::with_builtins() registers keys as Fn(Record) -> Seq(Str).
+        let input = "[d: [a: 1  b: 2]]\n[result: [call $keys $d]]";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let mut env = Rc::new(TypeEnv::with_builtins());
+        let mut state = InferState::new();
+
+        // Process both documents
+        for doc in &file.node.documents {
+            env = typecheck_document(doc, &env, &mut state, &mut None)
+                .expect("typecheck should succeed");
+        }
+
+        let result_ty = env
+            .get("result")
+            .expect("result field should exist")
+            .body
+            .clone();
+
+        assert_eq!(
+            result_ty,
+            Type::Seq(Box::new(Type::Str)),
+            "keys should return Seq(Str), got: {result_ty}"
+        );
+    }
+
+    #[test]
+    fn test_builtin_plus_does_not_return_seq() {
+        // Negative test: $+ returns Number, not Seq.
+        // TypeEnv::with_builtins() registers + as Fn(Number, Number) -> Number.
+        let input = "[result: [call $+ 1 2]]";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let env = Rc::new(TypeEnv::with_builtins());
+        let mut state = InferState::new();
+        let new_env = typecheck_document(&file.node.documents[0], &env, &mut state, &mut None)
+            .expect("typecheck should succeed");
+
+        let result_ty = new_env
+            .get("result")
+            .expect("result field should exist")
+            .body
+            .clone();
+
+        assert_eq!(
+            result_ty,
+            Type::Number,
+            "+ should return Number, not Seq; got: {result_ty}"
+        );
+
+        // Explicitly verify it's NOT a Seq
+        assert!(
+            !matches!(result_ty, Type::Seq(_)),
+            "+ should not return a Seq type"
+        );
+    }
+
+    #[test]
+    fn test_builtin_collect_returns_record_not_seq() {
+        // $collect returns Record (open row), not Seq.
+        // TypeEnv::with_builtins() registers collect as Fn(Seq(Any)) -> Record({...}).
+        let input = "[s: [call $range 0 5]]\n[result: [call $collect $s]]";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let mut env = Rc::new(TypeEnv::with_builtins());
+        let mut state = InferState::new();
+
+        // Process both documents
+        for doc in &file.node.documents {
+            env = typecheck_document(doc, &env, &mut state, &mut None)
+                .expect("typecheck should succeed");
+        }
+
+        let result_ty = env
+            .get("result")
+            .expect("result field should exist")
+            .body
+            .clone();
+
+        // Should be a Record type (open row with RowVar tail)
+        assert!(
+            matches!(result_ty, Type::Record(_)),
+            "collect should return Record, got: {result_ty}"
+        );
+
+        // Explicitly verify it's NOT a Seq
+        assert!(
+            !matches!(result_ty, Type::Seq(_)),
+            "collect should not return a Seq type"
         );
     }
 

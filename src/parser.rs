@@ -587,14 +587,14 @@ enum StackFrame {
         pending_key: Option<Spanned<Expr>>,
         /// Track seen keys for duplicate detection (literal keys only)
         seen_keys: std::collections::HashSet<String>,
-        span_start: usize,
+        span_start: Position,
     },
     /// Function call: `[call $func arg1 arg2 name: val]`
     Call {
         args: Vec<CallArg>,
         /// Pending key for named args (BareWord before colon)
         pending_key: Option<(String, Span)>,
-        span_start: usize,
+        span_start: Position,
     },
     /// Function definition: `[fn [params] body]` or `[fn@Type [params] body]`
     Fn {
@@ -602,18 +602,18 @@ enum StackFrame {
         params: Vec<Spanned<Param>>,
         body: Option<Spanned<Expr>>,
         return_ann: Option<Spanned<Annotation>>,
-        span_start: usize,
+        span_start: Position,
     },
     /// Type alias: `[type expr]`
     TypeAlias {
         type_expr: Option<Spanned<Expr>>,
-        span_start: usize,
+        span_start: Position,
     },
     /// Type assertion: `[@Annotation expr]`
     TypeAssert {
         annotation: Option<Spanned<Annotation>>,
         expr: Option<Spanned<Expr>>,
-        span_start: usize,
+        span_start: Position,
     },
     /// Bracket access key: `$a[key_expr]` where `key_expr` may contain nested brackets
     /// Also handles range access: `$a[2..5]`
@@ -625,7 +625,7 @@ enum StackFrame {
         is_range: bool,
         /// The expression after `..` (only for range access)
         range_end: Option<Spanned<Expr>>,
-        span_start: usize,
+        span_start: Position,
     },
 }
 
@@ -738,7 +738,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         stack.push(StackFrame::Call {
                             args: Vec::new(),
                             pending_key: None,
-                            span_start: span.start.offset,
+                            span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "call" token
@@ -787,7 +787,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             params,
                             body: None,
                             return_ann,
-                            span_start: span.start.offset,
+                            span_start: span.start,
                         });
                         continue;
                     }
@@ -803,7 +803,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         // (depth already checked above)
                         stack.push(StackFrame::TypeAlias {
                             type_expr: None,
-                            span_start: span.start.offset,
+                            span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "type" token
@@ -817,7 +817,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         stack.push(StackFrame::TypeAssert {
                             annotation: None,
                             expr: None,
-                            span_start: span.start.offset,
+                            span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
                         continue;
@@ -829,7 +829,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             entries: Vec::new(),
                             pending_key: None,
                             seen_keys: std::collections::HashSet::new(),
-                            span_start: span.start.offset,
+                            span_start: span.start,
                         });
                         i += 1;
                         continue;
@@ -867,7 +867,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     key_expr: None,
                     is_range: false,
                     range_end: None,
-                    span_start: span.start.offset,
+                    span_start: span.start,
                 });
                 i += 1;
                 continue;
@@ -880,12 +880,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     span: Some(span),
                 })?;
 
-                let dict_span = |span_start: usize| Span {
-                    start: Position {
-                        offset: span_start,
-                        line: 1, // TODO(parser-core-c): proper line tracking from lexer tokens
-                        column: 1,
-                    },
+                let dict_span = |span_start: Position| Span {
+                    start: span_start,
                     end: span.end,
                 };
 
@@ -1515,7 +1511,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     if !stack.is_empty() {
         // Get the innermost unclosed bracket's position
         let innermost_frame = stack.last().unwrap();
-        let bracket_offset = match innermost_frame {
+        let start_pos = match innermost_frame {
             StackFrame::Dict { span_start, .. } => *span_start,
             StackFrame::Call { span_start, .. } => *span_start,
             StackFrame::Fn { span_start, .. } => *span_start,
@@ -1524,51 +1520,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::BracketAccessKey { span_start, .. } => *span_start,
         };
 
-        // Convert offset to line/column
-        // Build line starts table from input.
-        // Recognizes LF (\n), CRLF (\r\n), and bare CR (\r) as line endings.
-        // CRLF counts as one line ending (the \r is consumed with the \n that follows).
-        let mut line_starts = vec![0usize];
-        let input_bytes = input.as_bytes();
-        let mut bi = 0;
-        while bi < input_bytes.len() {
-            match input_bytes[bi] {
-                b'\r' if bi + 1 < input_bytes.len() && input_bytes[bi + 1] == b'\n' => {
-                    // CRLF: one line ending, advance past both bytes
-                    bi += 2;
-                    line_starts.push(bi);
-                }
-                b'\r' => {
-                    // Bare CR (Mac Classic): one line ending
-                    bi += 1;
-                    line_starts.push(bi);
-                }
-                b'\n' => {
-                    // LF
-                    bi += 1;
-                    line_starts.push(bi);
-                }
-                _ => {
-                    bi += 1;
-                }
-            }
-        }
-
-        // Binary search to find the line for bracket_offset
-        let line_index = match line_starts.binary_search(&bracket_offset) {
-            Ok(i) => i,
-            Err(i) => i.saturating_sub(1),
-        };
-        let start_pos = Position {
-            offset: bracket_offset,
-            line: line_index + 1,
-            column: bracket_offset - line_starts[line_index] + 1,
-        };
-
         let unclosed_span = Span {
             start: start_pos,
             end: Position {
-                offset: bracket_offset + 1,
+                offset: start_pos.offset + 1,
                 line: start_pos.line,
                 column: start_pos.column + 1,
             },
@@ -3465,6 +3420,55 @@ mod tests {
                 }
             }
             other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    /// Regression test: bracket forms should have correct line and column numbers in their spans.
+    /// Previously, all bracket forms had line:1 col:1 regardless of actual position.
+    #[test]
+    fn test_bracket_form_span_line_column() {
+        // Dict on line 4 (after 3 comment lines)
+        let input = "# Line 1\n# Line 2\n# Line 3\n[x: 10\n y: 20]";
+        let output = parse2(input).expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        let dict_expr = &doc.expressions[0];
+
+        // The opening bracket '[' is at line 4, column 1
+        assert_eq!(dict_expr.span.start.line, 4, "Dict should start on line 4");
+        assert_eq!(
+            dict_expr.span.start.column, 1,
+            "Dict should start at column 1"
+        );
+
+        // Also test a nested bracket form
+        let input2 = "# Line 1\n[outer: [inner: 1]]";
+        let output2 = parse2(input2).expect("parse failed");
+        let doc2 = &output2.file.node.documents[0].node;
+        match &doc2.expressions[0].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                // Outer dict starts on line 2
+                assert_eq!(
+                    doc2.expressions[0].span.start.line, 2,
+                    "Outer dict should start on line 2"
+                );
+                // Inner dict should also have correct line/column (line 2, after "outer: ")
+                match &entries[0].node.value.node {
+                    Expr::Dict(_) => {
+                        let inner_span = entries[0].node.value.span;
+                        assert_eq!(
+                            inner_span.start.line, 2,
+                            "Inner dict should start on line 2"
+                        );
+                        assert_eq!(
+                            inner_span.start.column, 9,
+                            "Inner dict should start at column 9 (after 'outer: ')"
+                        );
+                    }
+                    other => panic!("expected inner Dict, got {other:?}"),
+                }
+            }
+            other => panic!("expected outer Dict, got {other:?}"),
         }
     }
 }

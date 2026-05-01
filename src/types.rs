@@ -1413,10 +1413,13 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
     let generalizable_type_vars: Vec<String> = all_type_vars
         .into_iter()
         .filter(|var| {
-            // Exclude row vars from type_vars (row vars collected separately)
-            !all_row_vars.contains(var)
-        })
-        .filter(|var| {
+            // Invariant: type_vars and row_vars are disjoint by construction
+            // (TypeVar and RowVar occupy distinct positions in the type tree)
+            debug_assert!(
+                !all_row_vars.contains(var),
+                "Type var {} should not appear in row vars set",
+                var
+            );
             let var_level = state.levels.get(var).copied().unwrap_or(0);
             var_level > level
         })
@@ -1663,16 +1666,16 @@ impl TypeEnv {
                 params: vec![
                     Type::Record(Row {
                         fields: HashMap::new(),
-                        tail: RowTail::RowVar("_dict".to_string(), 0),
+                        tail: RowTail::RowVar("_merge_a".to_string(), 0),
                     }),
                     Type::Record(Row {
                         fields: HashMap::new(),
-                        tail: RowTail::RowVar("_dict".to_string(), 0),
+                        tail: RowTail::RowVar("_merge_b".to_string(), 0),
                     }),
                 ],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
-                    tail: RowTail::RowVar("_dict".to_string(), 0),
+                    tail: RowTail::RowVar("_merge_r".to_string(), 0),
                 })),
             },
         );
@@ -1682,13 +1685,13 @@ impl TypeEnv {
                 params: vec![
                     Type::Record(Row {
                         fields: HashMap::new(),
-                        tail: RowTail::RowVar("_dict".to_string(), 0),
+                        tail: RowTail::RowVar("_append_a".to_string(), 0),
                     }),
                     Type::Any,
                 ],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
-                    tail: RowTail::RowVar("_dict".to_string(), 0),
+                    tail: RowTail::RowVar("_append_r".to_string(), 0),
                 })),
             },
         );
