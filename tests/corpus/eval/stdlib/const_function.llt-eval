@@ -1,0 +1,4 @@
+# Constant function returns first argument, ignoring second
+[call [call $const 42] ignored]
+===
+Int(42)

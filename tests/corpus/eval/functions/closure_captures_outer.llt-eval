@@ -1,0 +1,6 @@
+# Function closure captures variable from outer scope
+[x: 100]
+[f: [fn [y] [call $+ $x $y]]]
+[call $f 23]
+===
+Int(123)

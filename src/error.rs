@@ -1001,6 +1001,45 @@ fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
     "materialized at"
 }
 
+/// Detect the minimal repeating period in a sequence of stack frames for DepthExceeded errors.
+/// Returns `Some((period, full_repeats))` if a repeating pattern is found with at least 3 full
+/// repetitions, otherwise `None`.
+///
+/// The algorithm tries period sizes from 1 up to len/3, checking if frames[i].label and
+/// frames[i].span match frames[i % period] for all i in the repeating range.
+fn detect_repeating_period(frames: &[&StackFrame]) -> Option<(usize, usize)> {
+    let len = frames.len();
+    if len < 3 {
+        return None; // Need at least 3 frames for a meaningful pattern
+    }
+
+    // Try period sizes from 1 to len/3 (need at least 3 full repetitions)
+    for period in 1..=(len / 3) {
+        let full_repeats = len / period;
+        if full_repeats < 3 {
+            continue; // Need at least 3 full repetitions
+        }
+
+        // Check if all frames in the repeating range match the pattern
+        let repeating_range = period * full_repeats;
+        let mut is_repeating = true;
+        for i in 0..repeating_range {
+            let base_idx = i % period;
+            if frames[i].label != frames[base_idx].label || frames[i].span != frames[base_idx].span
+            {
+                is_repeating = false;
+                break;
+            }
+        }
+
+        if is_repeating {
+            return Some((period, full_repeats));
+        }
+    }
+
+    None
+}
+
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -1017,12 +1056,53 @@ impl fmt::Display for EvalError {
                 write!(f, " ({verb} {mat_span})")?;
             }
         }
-        for frame in &self.stack {
-            if !should_display_frame(frame) {
-                continue;
-            }
 
-            write!(f, "\n  in {} at {}", frame.label, frame.span)?;
+        // For DepthExceeded errors, detect and elide repeating frame cycles
+        if matches!(self.kind, ErrorKind::DepthExceeded { .. }) {
+            // Collect visible frames first
+            let visible_frames: Vec<&StackFrame> = self
+                .stack
+                .iter()
+                .filter(|f| should_display_frame(f))
+                .collect();
+
+            if let Some((period, full_repeats)) = detect_repeating_period(&visible_frames) {
+                // Display one period copy
+                for i in 0..period {
+                    write!(
+                        f,
+                        "\n  in {} at {}",
+                        visible_frames[i].label, visible_frames[i].span
+                    )?;
+                }
+                // Display summary line
+                let remaining = full_repeats - 1;
+                let plural = if period == 1 { "" } else { "s" };
+                write!(
+                    f,
+                    "\n  [... {remaining} more repetitions of the above {period} frame{plural} ...]"
+                )?;
+
+                // Display any tail frames beyond the repeated cycles
+                let tail_start = period * full_repeats;
+                for frame in &visible_frames[tail_start..] {
+                    write!(f, "\n  in {} at {}", frame.label, frame.span)?;
+                }
+            } else {
+                // No repeating pattern found - display all frames normally
+                for frame in visible_frames {
+                    write!(f, "\n  in {} at {}", frame.label, frame.span)?;
+                }
+            }
+        } else {
+            // Non-DepthExceeded errors: display all visible frames normally
+            for frame in &self.stack {
+                if !should_display_frame(frame) {
+                    continue;
+                }
+
+                write!(f, "\n  in {} at {}", frame.label, frame.span)?;
+            }
         }
         Ok(())
     }
@@ -2233,6 +2313,274 @@ mod tests {
             infer_materialization_verb(&frames),
             "called at",
             "origin-span frame must be skipped; second frame's 'call' label must drive the verb"
+        );
+    }
+
+    #[test]
+    fn test_depth_exceeded_elision_self_recursion() {
+        // P=1 (self-recursion): same frame repeated many times
+        let def_span = test_span(5, 1, 5, 20);
+        let frame_span = test_span(10, 5, 10, 15);
+        let mut err = EvalError::depth_exceeded(256, def_span);
+
+        // Add the same frame 256 times (simulating deep self-recursion)
+        for _ in 0..256 {
+            err.push_frame("call $f".to_string(), frame_span);
+        }
+
+        let display = format!("{err}");
+
+        // Should contain error code and message
+        assert!(display.contains("[E040]"));
+        assert!(display.contains("maximum evaluation depth exceeded (256)"));
+
+        // Should show one frame copy
+        assert!(display.contains("in call $f at 10:5-10:15"));
+
+        // Should show elision summary (255 more repetitions of 1 frame)
+        assert!(display.contains("[... 255 more repetitions of the above 1 frame ...]"));
+
+        // Should NOT repeat the same frame 256 times
+        let frame_count = display.matches("in call $f at").count();
+        assert_eq!(
+            frame_count, 1,
+            "should show frame exactly once, not {frame_count} times"
+        );
+    }
+
+    #[test]
+    fn test_depth_exceeded_elision_mutual_recursion() {
+        // P=2 (mutual recursion): alternating frames A, B, A, B, ...
+        let def_span = test_span(1, 1, 1, 5);
+        let frame_a_span = test_span(10, 1, 10, 10);
+        let frame_b_span = test_span(20, 1, 20, 10);
+        let mut err = EvalError::depth_exceeded(256, def_span);
+
+        // Add alternating A/B frames 128 times each (256 total)
+        for _ in 0..128 {
+            err.push_frame("call $a".to_string(), frame_a_span);
+            err.push_frame("call $b".to_string(), frame_b_span);
+        }
+
+        let display = format!("{err}");
+
+        // Should contain error code
+        assert!(display.contains("[E040]"));
+
+        // Should show both frames once each (the period)
+        assert!(display.contains("in call $a at 10:1-10:10"));
+        assert!(display.contains("in call $b at 20:1-20:10"));
+
+        // Should show elision summary (127 more repetitions of 2 frames)
+        assert!(display.contains("[... 127 more repetitions of the above 2 frames ...]"));
+
+        // Should show each frame exactly once in the visible output
+        let a_count = display.matches("in call $a at").count();
+        let b_count = display.matches("in call $b at").count();
+        assert_eq!(a_count, 1, "should show frame A exactly once");
+        assert_eq!(b_count, 1, "should show frame B exactly once");
+    }
+
+    #[test]
+    fn test_depth_exceeded_no_elision_non_repeating() {
+        // Non-repeating frames: should show all frames normally
+        let def_span = test_span(1, 1, 1, 5);
+        let mut err = EvalError::depth_exceeded(256, def_span);
+
+        // Add different frames (not repeating)
+        err.push_frame("call $a".to_string(), test_span(10, 1, 10, 5));
+        err.push_frame("call $b".to_string(), test_span(20, 1, 20, 5));
+        err.push_frame("call $c".to_string(), test_span(30, 1, 30, 5));
+        err.push_frame("call $d".to_string(), test_span(40, 1, 40, 5));
+
+        let display = format!("{err}");
+
+        // Should contain error code
+        assert!(display.contains("[E040]"));
+
+        // Should show all frames (no elision)
+        assert!(display.contains("in call $a at 10:1-10:5"));
+        assert!(display.contains("in call $b at 20:1-20:5"));
+        assert!(display.contains("in call $c at 30:1-30:5"));
+        assert!(display.contains("in call $d at 40:1-40:5"));
+
+        // Should NOT show elision summary
+        assert!(!display.contains("more repetitions"));
+    }
+
+    #[test]
+    fn test_depth_exceeded_elision_with_tail_frames() {
+        // Repeating pattern followed by non-repeating tail
+        let def_span = test_span(1, 1, 1, 5);
+        let frame_span = test_span(10, 1, 10, 5);
+        let tail_span = test_span(50, 1, 50, 5);
+        let mut err = EvalError::depth_exceeded(256, def_span);
+
+        // Add 9 identical frames (3 full repetitions of period 3)
+        for _ in 0..3 {
+            err.push_frame("call $f".to_string(), frame_span);
+            err.push_frame("call $f".to_string(), frame_span);
+            err.push_frame("call $f".to_string(), frame_span);
+        }
+
+        // Add a tail frame
+        err.push_frame("call $final".to_string(), tail_span);
+
+        let display = format!("{err}");
+
+        // Should show one period copy
+        assert!(display.contains("in call $f at 10:1-10:5"));
+
+        // Should show elision summary (2 more repetitions of 3 frames)
+        assert!(display.contains("[... 2 more repetitions of the above 3 frames ...]"));
+
+        // Should show the tail frame
+        assert!(display.contains("in call $final at 50:1-50:5"));
+    }
+
+    #[test]
+    fn test_depth_exceeded_elision_filters_hidden_frames() {
+        // Ensure elision only operates on visible frames (respects should_display_frame filter)
+        let def_span = test_span(1, 1, 1, 5);
+        let visible_span = test_span(10, 1, 10, 5);
+        let mut err = EvalError::depth_exceeded(256, def_span);
+
+        // Add mix of visible and hidden frames
+        for _ in 0..100 {
+            err.push_frame("call $f".to_string(), visible_span);
+            err.push_frame("call $hidden-impl".to_string(), visible_span); // hidden suffix
+            err.push_frame("call $origin".to_string(), Span::origin()); // origin span
+        }
+
+        let display = format!("{err}");
+
+        // Should only count visible frames for elision (100 repetitions of "call $f")
+        assert!(display.contains("in call $f at 10:1-10:5"));
+        assert!(display.contains("[... 99 more repetitions of the above 1 frame ...]"));
+
+        // Should NOT show hidden frames
+        assert!(!display.contains("hidden-impl"));
+        assert!(!display.contains("origin"));
+    }
+
+    #[test]
+    fn test_non_depth_exceeded_no_elision() {
+        // Elision should ONLY apply to DepthExceeded errors, not other error kinds
+        let def_span = test_span(1, 1, 1, 5);
+        let frame_span = test_span(10, 1, 10, 5);
+        let mut err = EvalError::type_mismatch("Int", "String", def_span);
+
+        // Add many identical frames
+        for _ in 0..256 {
+            err.push_frame("call $f".to_string(), frame_span);
+        }
+
+        let display = format!("{err}");
+
+        // Should NOT apply elision (not a DepthExceeded error)
+        assert!(!display.contains("more repetitions"));
+
+        // Should show all frames normally (TypeMismatch errors show all frames)
+        let frame_count = display.matches("in call $f at").count();
+        assert_eq!(
+            frame_count, 256,
+            "non-DepthExceeded errors should show all frames"
+        );
+    }
+
+    #[test]
+    fn test_detect_repeating_period_p1() {
+        // Period 1: same frame repeated
+        let span = test_span(10, 1, 10, 5);
+        let frame = StackFrame {
+            label: "call $f".to_string(),
+            span,
+        };
+        let frames: Vec<&StackFrame> = vec![&frame, &frame, &frame, &frame, &frame];
+
+        let result = detect_repeating_period(&frames);
+        assert_eq!(
+            result,
+            Some((1, 5)),
+            "should detect period 1 with 5 repeats"
+        );
+    }
+
+    #[test]
+    fn test_detect_repeating_period_p2() {
+        // Period 2: alternating A, B
+        let span_a = test_span(10, 1, 10, 5);
+        let span_b = test_span(20, 1, 20, 5);
+        let frame_a = StackFrame {
+            label: "call $a".to_string(),
+            span: span_a,
+        };
+        let frame_b = StackFrame {
+            label: "call $b".to_string(),
+            span: span_b,
+        };
+        let frames: Vec<&StackFrame> =
+            vec![&frame_a, &frame_b, &frame_a, &frame_b, &frame_a, &frame_b];
+
+        let result = detect_repeating_period(&frames);
+        assert_eq!(
+            result,
+            Some((2, 3)),
+            "should detect period 2 with 3 repeats"
+        );
+    }
+
+    #[test]
+    fn test_detect_repeating_period_none_too_few_frames() {
+        // Less than 3 frames: no pattern
+        let span = test_span(10, 1, 10, 5);
+        let frame = StackFrame {
+            label: "call $f".to_string(),
+            span,
+        };
+        let frames: Vec<&StackFrame> = vec![&frame, &frame];
+
+        let result = detect_repeating_period(&frames);
+        assert_eq!(result, None, "should return None for < 3 frames");
+    }
+
+    #[test]
+    fn test_detect_repeating_period_none_non_repeating() {
+        // Different frames: no pattern
+        let frame_a = StackFrame {
+            label: "call $a".to_string(),
+            span: test_span(10, 1, 10, 5),
+        };
+        let frame_b = StackFrame {
+            label: "call $b".to_string(),
+            span: test_span(20, 1, 20, 5),
+        };
+        let frame_c = StackFrame {
+            label: "call $c".to_string(),
+            span: test_span(30, 1, 30, 5),
+        };
+        let frames: Vec<&StackFrame> = vec![&frame_a, &frame_b, &frame_c];
+
+        let result = detect_repeating_period(&frames);
+        assert_eq!(result, None, "should return None for non-repeating frames");
+    }
+
+    #[test]
+    fn test_detect_repeating_period_minimal_period_wins() {
+        // Frame repeated 6 times: could be period 1, 2, or 3
+        // Should return minimal period (1)
+        let span = test_span(10, 1, 10, 5);
+        let frame = StackFrame {
+            label: "call $f".to_string(),
+            span,
+        };
+        let frames: Vec<&StackFrame> = vec![&frame, &frame, &frame, &frame, &frame, &frame];
+
+        let result = detect_repeating_period(&frames);
+        assert_eq!(
+            result,
+            Some((1, 6)),
+            "should return minimal period 1, not 2 or 3"
         );
     }
 }

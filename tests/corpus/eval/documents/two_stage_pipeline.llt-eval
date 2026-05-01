@@ -1,0 +1,6 @@
+# Two-document pipeline with $$ reference
+[base: 10]
+---
+[doubled: [call $* 2 $$[base]]]
+===
+Dict({"doubled": Int(20)})

@@ -360,51 +360,64 @@ fn test_eval_corpus() {
         corpus_dir.display()
     );
 
-    let mut failed = Vec::new();
+    // Spawn thread with large stack to prevent overflow in deeply-nested test cases.
+    // Same rationale as test_eval_error_corpus: the stdlib Rc<Environment> recursive
+    // drop at thread exit requires significant stack space (100+ MB in debug mode).
+    let test_files_clone = test_files.clone();
+    let result = std::thread::Builder::new()
+        .stack_size(128 * 1024 * 1024) // 128MB — debug-mode stdlib cleanup needs ~100MB
+        .spawn(move || {
+            let mut failed = Vec::new();
 
-    for test_file in &test_files {
-        let content = fs::read_to_string(test_file)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+            for test_file in &test_files_clone {
+                let content = fs::read_to_string(test_file)
+                    .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
 
-        let relative_path = test_file
-            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
-            .unwrap_or(test_file);
+                let relative_path = test_file
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap_or(test_file);
 
-        let test = split_test_file(&content);
+                let test = split_test_file(&content);
 
-        let expected_output = match test.expected {
-            Some(e) => e,
-            None => {
-                failed.push((
-                    relative_path.to_path_buf(),
-                    "eval corpus test file missing expected output after ===".to_string(),
-                ));
-                continue;
-            }
-        };
+                let expected_output = match test.expected {
+                    Some(e) => e,
+                    None => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            "eval corpus test file missing expected output after ===".to_string(),
+                        ));
+                        continue;
+                    }
+                };
 
-        match eval_source(test.input) {
-            Ok(actual) => {
-                if actual.trim() != expected_output {
-                    failed.push((
-                        relative_path.to_path_buf(),
-                        format!(
-                            "eval output mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
-                            expected_output,
-                            actual.trim()
-                        ),
-                    ));
+                match eval_source(test.input) {
+                    Ok(actual) => {
+                        if actual.trim() != expected_output {
+                            failed.push((
+                                relative_path.to_path_buf(),
+                                format!(
+                                    "eval output mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
+                                    expected_output,
+                                    actual.trim()
+                                ),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        failed.push((relative_path.to_path_buf(), format!("eval error: {e}")));
+                    }
                 }
             }
-            Err(e) => {
-                failed.push((relative_path.to_path_buf(), format!("eval error: {e}")));
-            }
-        }
-    }
 
-    if !failed.is_empty() {
-        eprintln!("\n{} eval test(s) failed:", failed.len());
-        for (path, error) in &failed {
+            failed
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+
+    if !result.is_empty() {
+        eprintln!("\n{} eval test(s) failed:", result.len());
+        for (path, error) in &result {
             eprintln!("  - {}: {}", path.display(), error);
         }
         panic!("Eval corpus tests failed");

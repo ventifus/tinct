@@ -1,0 +1,4 @@
+# TypeAssert default value used on type mismatch
+[@[type: Number  default: 0] hello]
+===
+Int(0)

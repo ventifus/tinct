@@ -2,6 +2,28 @@
 
 ## Language vs Stdlib Boundary
 
+### Argument Order Convention
+
+**Most stdlib functions are data-last** to enable `->` threading (pipeline composition):
+
+```tinct
+[call $-> $users
+  [call $filter $is-active]
+  [call $map $get-name]
+  [call $sort]]
+```
+
+Each function receives data as its **last** parameter: `[call $map $fn $data]`, `[call $filter $pred $data]`, etc. This aligns with Unix pipe semantics (`data | transform`) and allows partial application patterns in languages with currying.
+
+**Exceptions: `get-or` and `get-in-or` are data-first**:
+
+```tinct
+[call $get-or $config $key $default]      # data-first
+[call $get-in-or $config $path $default]  # data-first
+```
+
+**Rationale:** Data-first order mirrors bracket access syntax `$data[$key]` and follows Clojure's `get` convention, making lookups read naturally as "from collection, get key, or default." The trade-off: these functions don't compose directly with `->` threading (they would require wrapping in a lambda to reorder arguments).
+
 ### Special Forms vs Stdlib Functions
 
 **Lazy evaluation means most "control flow" is just regular functions.** In an eager language, `if` must be a special form because both branches would be evaluated before `if` runs. In Tinct, all arguments are thunks — the unused branch is never materialized.
@@ -230,9 +252,9 @@ Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-f
               └── User predicates and programs
 ```
 
-## Stdlib Function Reference (~125 total user-facing: 93 LLT functions + 32 unwrapped Rust builtins (44 total - 12 with stdlib wrappers))
+## Stdlib Function Reference (~127 total user-facing: 93 LLT functions + 34 unwrapped Rust builtins (46 total - 12 with stdlib wrappers))
 
-**Architecture:** 44 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + 93 LLT-implemented functions in `stdlib/prelude.llt` (81 public API + 12 shadowable wrappers). Of the 44 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). Total user-facing functions: 93 LLT + 32 unwrapped Rust = 125.
+**Architecture:** 46 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + 93 LLT-implemented functions in `stdlib/prelude.llt` (81 public API + 12 shadowable wrappers). Of the 46 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). Total user-facing functions: 93 LLT + 34 unwrapped Rust = 127.
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 

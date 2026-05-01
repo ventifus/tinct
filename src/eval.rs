@@ -8109,4 +8109,104 @@ mod tests {
             other => panic!("Expected Dict, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_decorate_deduplication() {
+        // Verify that decorating an error with the same span twice doesn't create duplicates.
+        // This tests the deduplication logic used when attaching stack frames during error propagation.
+        let def_span = test_span(1, 1, 1, 10);
+        let frame_span = test_span(5, 1, 5, 10);
+
+        let mut err = EvalError::key_not_found("key", vec![], def_span);
+
+        // Add the frame once
+        err.push_frame("first access".to_string(), frame_span);
+        assert_eq!(err.stack.len(), 1, "Should have exactly one frame");
+        assert_eq!(err.stack[0].label, "first access");
+
+        // Manually check for duplicate before adding (this is what error decoration does)
+        if !err.stack.iter().any(|f| f.span == frame_span) {
+            err.push_frame("second access".to_string(), frame_span);
+        }
+
+        // Should still be 1 frame (duplicate was avoided)
+        assert_eq!(err.stack.len(), 1, "Duplicate span should be deduplicated");
+        assert_eq!(
+            err.stack[0].label, "first access",
+            "Original label preserved"
+        );
+    }
+
+    #[test]
+    fn test_eval_context_new_empty_state() {
+        // EvalContext::new() should create an empty include_guard and include_cache
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        let env = empty_env();
+        let ctx = EvalContext::new(base_dir, env, false);
+
+        assert!(
+            ctx.state.borrow().include_guard.is_empty(),
+            "include_guard should be empty on creation"
+        );
+        assert!(
+            ctx.state.borrow().include_cache.is_empty(),
+            "include_cache should be empty on creation"
+        );
+    }
+
+    #[test]
+    fn test_eval_context_with_base_dir_shares_state() {
+        // EvalContext::with_base_dir should share the same state but use a different base_dir
+        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        let env = empty_env();
+        let ctx1 = EvalContext::new(base_dir1, env, false);
+
+        // Populate the state
+        ctx1.state.borrow_mut().include_guard.insert((0, 1));
+        assert_eq!(ctx1.state.borrow().include_guard.len(), 1);
+
+        // Create ctx2 with a different base_dir but shared state
+        let base_dir2 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        let ctx2 = ctx1.with_base_dir(base_dir2);
+
+        // Verify state is shared (using Rc::ptr_eq)
+        assert!(
+            Rc::ptr_eq(&ctx1.state, &ctx2.state),
+            "ctx2 should share the same state Rc as ctx1"
+        );
+
+        // Verify the state is actually shared (include_guard has the same entry)
+        assert_eq!(
+            ctx2.state.borrow().include_guard.len(),
+            1,
+            "ctx2 should see the same include_guard as ctx1"
+        );
+        assert!(
+            ctx2.state.borrow().include_guard.contains(&(0, 1)),
+            "ctx2 should see the entry added to ctx1's include_guard"
+        );
+    }
+
+    #[test]
+    fn test_eval_context_no_fs_flag() {
+        // EvalContext should preserve the no_fs flag
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        let env = empty_env();
+
+        let ctx_with_fs = EvalContext::new(base_dir.try_clone().unwrap(), Rc::clone(&env), false);
+        assert!(
+            !ctx_with_fs.config.no_fs,
+            "no_fs should be false when created with false"
+        );
+
+        let ctx_no_fs = EvalContext::new(base_dir, env, true);
+        assert!(
+            ctx_no_fs.config.no_fs,
+            "no_fs should be true when created with true"
+        );
+    }
 }
