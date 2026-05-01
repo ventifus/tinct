@@ -250,9 +250,13 @@ words: [fn [s]
 # ============================================================================
 
 # Evaluates body if pred is true, otherwise returns [].
+# assert: [call $when true result] => result
+# assert: [call $when false result] => []
 when: [fn [pred body] [call $builtin-if $pred $body []]]
 
 # Evaluates body if pred is false, otherwise returns [].
+# assert: [call $unless false result] => result
+# assert: [call $unless true result] => []
 unless: [fn [pred body] [call $builtin-if $pred [] $body]]
 
 # Multi-branch conditional. Takes a list of [condition result] pairs.
@@ -283,9 +287,12 @@ cond-check: [fn [pairs i condition result]
 # ============================================================================
 
 # Get value by key from a dict.
+# assert: [call $get [a: 1  b: 2] b] => 2
 get: [fn [xs k] $xs[$k]]
 
 # Check if a key exists in a dict. Uses $try around bracket access.
+# assert: [call $has? [x: 1] x] => true
+# assert: [call $has? [x: 1] y] => false
 has?: [fn [xs k]
     [call $has?-impl [call $try [fn [] $xs[$k]]]]]
 
@@ -293,6 +300,8 @@ has?-impl: [fn [try-result]
     [call $builtin-eq [call $first [call $keys $try-result]] ok]]
 
 # Get value by key with a default if key is missing.
+# assert: [call $get-or [x: 1] x 99] => 1
+# assert: [call $get-or [x: 1] y 99] => 99
 get-or: [fn [xs k default]
     [call $builtin-if [call $has? $xs $k] $xs[$k] $default]]
 
@@ -322,12 +331,16 @@ get-in-or: [fn [xs path default]
 # Check if a collection is empty.
 # Seq values are never empty (always have a head), so return false immediately.
 # Inherently materializing: depends on $length which counts all entries.
+# assert: [call $empty? []] => true
+# assert: [call $empty? [1 2 3]] => false
 empty?: [fn [xs] [call $builtin-if [call $seq? $xs] false [call $builtin-eq [call $length $xs] 0]]]
 
 # Set a key in a dict (returns new dict with key added/updated).
+# assert: [call $set [a: 1] b 2] => [a: 1  b: 2]
 set: [fn [xs k v] [call $merge $xs [call $make-entry $k $v]]]
 
 # Remove a key from a dict (preserves remaining keys).
+# assert: [call $remove [a: 1  b: 2  c: 3] b] => [a: 1  c: 3]
 remove: [fn [xs k] [call $remove-impl $xs [call $keys $xs] $k 0 []]]
 
 remove-impl: [fn [xs ks exclude i acc]
@@ -342,11 +355,13 @@ remove-step: [fn [xs ks exclude i acc current-key]
             [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]]
 
 # Update a key by applying a function to its current value.
+# assert: [call $update [x: 5] x [fn [v] [call $+ $v 1]]] => [x: 6]
 update: [fn [xs k f]
     [call $set $xs $k [call $f $xs[$k]]]]
 
 # Get all values from a dict as an integer-indexed list.
 # Preserves dict insertion order: values are returned in the same order as keys.
+# assert: [call $values [a: 10  b: 20]] => [10 20]
 values: [fn [xs] [call $values-impl $xs [call $keys $xs] 0 []]]
 
 values-impl: [fn [xs ks i acc]
@@ -379,10 +394,13 @@ from-entries: [fn [pairs] [call $builtin-reduce [fn [acc pair] [call $merge $acc
 # ============================================================================
 
 # Get the first element of a list.
+# assert: [call $first [10 20 30]] => 10
 first: [fn [xs] $xs[0]]
 
 # Get the nth element by insertion-order position.
 # Supports negative indices: -1 is last, -2 is second-to-last, etc.
+# assert: [call $nth [10 20 30] 1] => 20
+# assert: [call $nth [10 20 30] -1] => 30
 nth: [fn [xs n]
     [call $nth-impl $xs [call $keys $xs] $n [call $length $xs]]]
 
@@ -390,6 +408,7 @@ nth-impl: [fn [xs ks n len]
     [call $get $xs [call $get $ks [call $builtin-if [call $builtin-lt $n 0] [call $builtin-add $len $n] $n]]]]
 
 # Get the last element by insertion-order position.
+# assert: [call $last [10 20 30]] => 30
 last: [fn [xs]
     [call $get $xs [call $get [call $keys $xs] [call $builtin-sub [call $length $xs] 1]]]]
 

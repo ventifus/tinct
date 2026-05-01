@@ -1,0 +1,6 @@
+# Without whitespace, $a.b is a single dot access expression.
+# With whitespace, $a .b becomes two separate dict entries: $a and the bare word ".b".
+# This test verifies the no-whitespace case (access chain).
+[x: $config.host]
+===
+["x": $config.host]

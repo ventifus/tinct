@@ -1,0 +1,5 @@
+# Range access: $xs[1..3] — ".." inside brackets attached to a value is a range operator.
+# Contrast with bare word "a..b" where ".." appears outside brackets.
+[slice: $xs[1..3]]
+===
+["slice": $xs[1..3]]

@@ -1,0 +1,6 @@
+# "---foo" is a bare word, not a doc separator.
+# doc_separator = "---" NOT followed by a bare_word_char.
+# "---foo" has "f" after the three dashes, so it is parsed as a bare word.
+[x: ---foo]
+===
+["x": "---foo"]
