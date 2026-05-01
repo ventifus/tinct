@@ -81,7 +81,7 @@ Core linked-list primitives — the four operations that construct and destructu
 
 Sequence transforms — consume a sequence and produce a new one element-by-element.
 
-- [ ] Move `builtin_map`+`map_step`, `builtin_filter`+`filter_step`, `builtin_take`, `builtin_drop` to `src/builtins_seq_xform.rs` (`src/builtins.rs:1976-2628`, ~650 lines) [Minor]
+- [x] Move `builtin_map`+`map_step`, `builtin_filter`+`filter_step`, `builtin_take`, `builtin_drop` to `src/builtins_seq_xform.rs` (`src/builtins.rs:1976-2628`, ~650 lines) [Minor]
 
 ### builtins-split-d: Extract builtins_seq_reduce.rs
 

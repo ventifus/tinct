@@ -36,6 +36,8 @@ pub(crate) mod builtins;
 pub(crate) mod builtins_seq_prim;
 // Sequence generator builtins: range, repeat, cycle, iterate, unfold.
 pub(crate) mod builtins_seq_gen;
+// Sequence transform builtins: map, filter, take, drop.
+pub(crate) mod builtins_seq_xform;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // REPL (Read-Eval-Print Loop).
