@@ -17,3 +17,4 @@ pub(crate) mod document;
 pub(crate) mod server;
 
 pub use server::run_lsp;
+pub(crate) use server::MAX_DOCUMENT_SIZE;

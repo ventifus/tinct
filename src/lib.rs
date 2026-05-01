@@ -70,6 +70,17 @@ pub use eval_deep::deep_materialize;
 /// Builtin infrastructure: stdlib creation, JSON conversion.
 pub use builtins::{create_stdlib_env, json_to_value, MAX_FILE_SIZE};
 
+// Compile-time assertion: LSP MAX_DOCUMENT_SIZE must match builtins MAX_FILE_SIZE
+#[cfg(feature = "lsp")]
+const _: () = {
+    const LSP_MAX: usize = lsp::MAX_DOCUMENT_SIZE;
+    const BUILTINS_MAX: u64 = builtins::MAX_FILE_SIZE;
+    assert!(
+        LSP_MAX as u64 == BUILTINS_MAX,
+        "MAX_DOCUMENT_SIZE and MAX_FILE_SIZE must match"
+    );
+};
+
 /// Error types with source spans and stack traces.
 pub use error::{ArityBound, ErrorKind, EvalError, EvalResult, StackFrame};
 
@@ -223,6 +234,7 @@ pub fn value_to_json(
         )
         .into()),
         Value::Seq { head, .. } => {
+            // Seq cannot be serialized to JSON — must be collected to a Dict first via $collect
             Err(error::EvalError::value_not_serializable("Seq".to_string(), head.span).into())
         }
         Value::Proxy { .. } => Err(error::EvalError::value_not_serializable(

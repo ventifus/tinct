@@ -84,7 +84,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `set`, `remove` | Structural — add/remove entries |
 | `merge` | **Materializing** — eagerly materializes both dicts, builds new IndexMap (O(n)); values remain as thunk Rc-clones. |
 | `keys` | Structural — keys are always evaluated, not thunks |
-| `values`, `entries` | Structural — returns thunks |
+| `values`, `entries` | Structural — returns thunks in dict insertion order |
 | `update` | Lazy-transforming — produces thunk `[call $f $old-value]` |
 
 **Universal collections** (any collection, preserve keys, insertion order):
@@ -96,7 +96,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `zip` | Structural — pairs entries, values stay thunks |
 | `length`, `empty?` | Materializing — materializes collection structure to count entries (values remain as thunks) |
 | `map`, `map-entries` | Lazy-transforming — on dicts, returns dict with PendingCall thunks; on seqs, returns lazy seq |
-| `filter` | On dicts, returns Seq (must evaluate predicates); on seqs, returns lazy seq |
+| `filter` | **Asymmetric:** on dicts, returns Seq (must evaluate predicates to decide inclusion; keys are not preserved — use `$collect` to convert result to dict); on seqs, returns lazy Seq |
 | `reduce`, `fold` | **Selective** — Dict path builds lazy PendingCall chain; Seq path materializes tail at each step |
 | `find-deep` | **Materializing** — must traverse structure looking for keys |
 | `flatten` | **Materializing** — must inspect values to check if they are lists |
@@ -250,7 +250,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `make-entry` | `[fn [k v] ...]` | Construct a single-entry dict from a computed key and value |
+| `make-entry` | `[fn [k v] ...]` | **Internal helper** — construct a single-entry dict from a computed key and value; not part of the public API |
 
 **Identity:**
 
@@ -329,8 +329,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `set` | `[fn [xs k v] ...]` | Return new dict with key added/updated |
 | `remove` | `[fn [xs k] ...]` | Return new dict with key removed |
 | `update` | `[fn [xs k f] ...]` | Apply function `$f` to the value at key `$k` |
-| `values` | `[fn [xs] ...]` | Get all values as an integer-indexed list |
-| `entries` | `[fn [xs] ...]` | Get all entries as a list of `[key: k value: v]` dicts |
+| `values` | `[fn [xs] ...]` | Get all values as an integer-indexed list; preserves dict insertion order |
+| `entries` | `[fn [xs] ...]` | Get all entries as a list of `[key: k value: v]` dicts; preserves dict insertion order |
 | `from-entries` | `[fn [pairs] ...]` | Reconstruct a dict from a list or Seq of `[key: k value: v]` pairs |
 
 **List Operations (integer keys, dense 0..n output):**
@@ -358,11 +358,11 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `map` | `[fn [f xs] ...]` | Apply function to every value, preserving keys |
-| `map-entries` | `[fn [f xs] ...]` | Apply function to every `[key value]` pair |
-| `filter` | `[fn [pred xs] ...]` | Keep values where predicate returns true (returns Seq) |
+| `map` | `[fn [f xs] ...]` | Apply function to every value, preserving keys. On dicts, returns a dict with PendingCall thunks (lazy); on seqs, returns a lazy seq. Note: unlike `$filter`, `$map` preserves key types — dict input returns dict output. |
+| `map-entries` | `[fn [f xs] ...]` | Apply function to every entry `[key: k value: v]`; f receives the entry dict and returns the **new value** (keys are preserved unchanged) |
+| `filter` | `[fn [pred xs] ...]` | Keep values where predicate returns true. **Asymmetry:** returns Seq when input is Dict (keys are not preserved — must evaluate predicates to determine which values survive, breaking the key-value relationship); returns lazy Seq when input is Seq. Use `$collect` to convert the result back to a dict. See also `$map`, which preserves dict keys. |
 | `reduce` | `[fn [f init xs] ...]` | Left fold (Rust builtin; dual-dispatch Dict/Seq) |
-| `fold` | `[fn [f init xs] ...]` | Alias for `reduce` |
+| `fold` | `[fn [f init xs] ...]` | Alias for `reduce` — left fold, identical semantics; use whichever name fits context |
 | `foldr` | `[fn [f acc xs] ...]` | Right fold: fold from the right, equivalent to `fold(f, acc, reverse(xs))` |
 | `slice` | `[fn [xs start end] ...]` | Positional slice (start inclusive, end exclusive) |
 | `take` | `[fn [n xs] ...]` | Take the first n entries, preserving keys |
@@ -449,7 +449,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 ## Two Map Variants
 
 - `map` — transforms values, preserves keys
-- `map-entries` — transforms (key, value) pairs, can change keys
+- `map-entries` — receives each entry as `[key: k value: v]`, must return the **new value**; keys are preserved (to remap keys, use `with-entries`)
 
 ## Threading `->` in Stdlib
 

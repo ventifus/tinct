@@ -543,9 +543,18 @@ The binding algorithm produces four distinct error classes. Each corresponds to 
 
 Default evaluation errors (from `eval(default(pᵢ), env_d)` in BIND-POSITIONAL) are not binding errors — they propagate as normal evaluation errors with the default expression's span.
 
-**Implementation note:** The current implementation (eval.rs:520-626) uses a count-based arity check and restricts named args to `default:` params. Adopting the Kotlin model requires two implementation changes: (1) replace the count check with per-parameter coverage, (2) remove the `get_default(p).is_some()` guard in the named-arg validity check. The spec documents the target semantics.
+**Implementation note:** Implemented as of call-convention-kotlin. The evaluator uses per-parameter coverage (C-COVERAGE) and accepts named args for any parameter, not just `default:` params.
 
 ### Part 5: `$apply` and the Default Environment
+
+**Dict-splitting.** `$apply` takes a function `f` and a single dict argument `D`. Before invoking the binding algorithm, it splits `D` into positional and named argument lists:
+
+```
+pos   = sort_by_key({ (k, v) ∈ D | k ∈ Int })    # integer-keyed entries, sorted by key
+named = { (k, v) ∈ D | k ∈ String }              # string-keyed entries, as named args
+```
+
+Integer-keyed entries become positional arguments (in ascending key order); string-keyed entries become named arguments. The resulting `pos` and `named` are passed to `bind_args_thunks` exactly as if the caller had written them inline.
 
 The `default_env` parameter is the key difference between normal calls and `$apply`:
 

@@ -221,15 +221,15 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/parser.rs` | Hand-written iterative descent parser + comprehensive unit tests |
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/eval.rs` | Evaluator: `eval()`, `materialize()` (call-site span attachment, stack frame propagation), dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), named args, variadics, arity checking, TypeAssert `default:` fallback, depth limit (256) |
-| `src/desugar.rs` | `$_` implicit lambda desugaring — pre-typecheck AST transformation |
-| `src/builtins.rs` | Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy), `$include` via `EvalContext`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
+| `src/desugar.rs` | Desugarer: `$_` implicit lambda desugaring — pre-typecheck, pre-eval AST transformation (source-to-source pass between parsing and type checking) |
+| `src/builtins.rs` | Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy), `$include` resolved via `EvalContext`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces |
 | `src/types.rs` | Type system: `Type` enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any, IntLiteral, StringLiteral, Seq, Proxy), `Row` struct with `RowTail` (Empty, RowVar), `Substitution` (kinded unification with `type_map` and `row_map`), `TypeEnv` (Rc-based scope chain), `TypeError`, `InferState` (levels-based let-generalization) |
-| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, four-pass dict inference, access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, `Fn@Return [Params]` resolution, row polymorphism |
+| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, five-pass dict inference (Pass 0-4), access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, `Fn@Return [Params]` resolution, row polymorphism |
 | `src/formatter.rs` | Source formatter: idempotent pretty-printing (`tinct fmt`), `--check` mode |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
-| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `json_to_value()`, `value_to_json()`, `value_to_display_string()` |
+| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `json_to_value()`, `value_to_json()`, `value_to_display_string()`; `EvalContext`, `EvalConfig`, `EvalState` |
 | `src/repl.rs` | REPL session: scope chains, bracket matching, error recovery |
 | `src/lsp/` | LSP server: `tinct lsp` with `textDocument/didOpen`, `didChange`, `publishDiagnostics`, and hover |
 | `src/main.rs` | CLI (`tinct` binary): `eval` (JSON/Tinct output, stdin injection, deep-forcing), `fmt` (format source), `repl`, `lsp` |

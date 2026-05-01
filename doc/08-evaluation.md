@@ -112,8 +112,8 @@ first-ten: [call $collect [call $take 10 $evens]]
 | `drop` | Skip first n elements |
 | `filter` | Elements matching predicate |
 | `map` | Transform each element (on seq input; on dict input, returns lazy dict) |
-| `concat-seq` | Concatenate two sequences |
-| `zip-seq` | Pair elements from two sequences |
+| `$concat` | Concatenate two sequences |
+| `$zip` | Pair elements from two sequences |
 
 **Sequence destructors (materializing):**
 
@@ -239,7 +239,7 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 
 ### Part 2: Forcing Rules
 
-Forcing (materialization) dispatches on the current state to produce a value or error. Rules use the judgment form `force(θ, d) ⇒ v` where θ is a thunk, d is the current depth, and v is the resulting value.
+Forcing (materialization) dispatches on the current state to produce a value or error. Rules use two judgment forms: `force(θ, d) ⇒ v` where θ is a thunk, d is the current depth, and v is the resulting value; and `eval(e, ρ, Σ, d) ⇒ θ` where e is an expression, ρ is the lexical environment, Σ is the EvalContext (base directory, include guards, stdlib env), d is the current depth, and θ is the resulting thunk. The EvalContext Σ is captured inside each thunk at construction time (written Σ_θ when referencing a specific thunk's context) and is not a parameter of `force` — it is part of the thunk's closure.
 
 **Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`θ.state ← InProgress`) with declarative judgments (`eval(expr, env, Σ_θ, d+1) ⇒ θ'`). `Σ_θ` denotes the evaluation context (`EvalContext`) captured at thunk construction time — it carries context-dependent state (base directory, include guards) that must reflect the thunk's definition site. A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `force(θ, d, σ) ⇒ (v, σ')`. The notation here maps directly to the `materialize()` implementation for ease of cross-checking.
 

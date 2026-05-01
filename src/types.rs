@@ -403,7 +403,7 @@ impl Substitution {
     }
 
     pub fn apply(&self, ty: &Type) -> Type {
-        if self.type_map.is_empty() && self.row_map.is_empty() {
+        if self.is_empty() {
             return ty.clone();
         }
         let mut visited_types = HashSet::new();

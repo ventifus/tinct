@@ -2162,6 +2162,20 @@ fn eval_step(
                 Err(e) => return Action::Continue(Err(e)),
             };
             let resolved = resolved_type.borrow().clone();
+
+            // Fast path: if there is no type to check, skip materialization entirely.
+            // This applies when resolved_type is None (--no-typecheck mode) and the
+            // annotation has no "type" property — e.g. [@[default: 0] $x] where only
+            // a default is provided. A Simple annotation always carries a type name;
+            // a PropertyDict without a "type" key has nothing to validate against.
+            let has_type = match &annotation.node {
+                Annotation::Simple(_) => true,
+                Annotation::PropertyDict(_) => annotation.node.get_property("type").is_some(),
+            };
+            if resolved.is_none() && !has_type {
+                return wrap_thunk(Ok(inner_thunk));
+            }
+
             let thunk_span = inner_thunk.span;
             stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                 annotation: Box::new(annotation.clone()),
@@ -6806,6 +6820,47 @@ mod tests {
         assert!(
             err.stack.iter().any(|f| f.label == "call $f"),
             "expected 'call $f' frame, got: {:?}",
+            err.stack
+        );
+    }
+
+    #[test]
+    fn test_builtin_error_has_stack_frame_with_builtin_name() {
+        // Calling a builtin that errors should include "call $builtin_name" in the stack.
+        // We'll use $type-of with an intentionally broken setup to trigger an error.
+        // Actually, let's use a custom failing builtin for clarity.
+        fn failing_builtin(_ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            Err(
+                EvalError::internal("test builtin failure".to_string(), test_span(99, 1, 99, 10))
+                    .into(),
+            )
+        }
+
+        let env = empty_env();
+        env.borrow_mut().insert(
+            "fail".into(),
+            Rc::new(Thunk::new_materialized(
+                Value::Builtin {
+                    name: "fail",
+                    func: failing_builtin,
+                },
+                test_span(1, 1, 1, 5),
+            )),
+        );
+
+        let call_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::VarRef("fail".into()))),
+            args: vec![],
+            named_args: vec![],
+        });
+
+        let thunk = eval(&call_expr, env, &test_ctx(), 0).unwrap();
+        let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
+        assert!(err.message().contains("test builtin failure"));
+        // The stack should contain "call $fail"
+        assert!(
+            err.stack.iter().any(|f| f.label == "call $fail"),
+            "expected 'call $fail' frame, got: {:?}",
             err.stack
         );
     }

@@ -12,7 +12,7 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | Int                        integer
     | Float                      float
     | Number                     numeric supertype of Int and Float
-    | Str                        string
+    | Str                        string  (internal name; user-facing annotations accept `String` as an alias)
     | Bool                       boolean
     | Fn(τ₁...τₙ → τᵣ)          function (n params, return type)
     | Seq(τ)                     lazy sequence
@@ -628,7 +628,8 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `infer_dict` | 5 passes (0-4), bind to fresh αᵢ, generalize in Pass 4 |
 | `infer_dict` return | `(Type, HashMap<String, TypeScheme>)` |
 | `typecheck_document` | Splats `TypeScheme`s into parent env across `---` boundaries |
-| `instantiate()` | `fn(Type, &mut u32) → (Type, Subst)` — for CALL-POLY call-site freshening |
+| `instantiate()` | `fn(Type, &mut u32) → (Type, Subst)` — `#[cfg(test)]` only; not used in production |
+| `instantiate_at_level()` | `fn(Type, &mut InferState) → Type` — live CALL-POLY implementation; registers fresh vars in `state.levels` |
 | `instantiate_scheme()` | `fn(TypeScheme, u32, &mut InferState) → Type` |
 | `generalize()` | `fn(u32, Type, &InferState) → TypeScheme` |
 | `unify()` U-VAR | Bind + symmetric level lowering |

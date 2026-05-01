@@ -34,6 +34,7 @@
 # Internal Helpers
 # ============================================================================
 
+# Internal helper — not part of the public API.
 # Construct a single-entry dict from a computed key and value.
 # Access expressions like $ks[$i] can't appear in key position syntactically;
 # passing through function params makes the key a plain $k var_ref.
@@ -110,9 +111,16 @@ all?-impl: [fn [pred xs ks i]
 
 # Integer quotient: truncates toward zero (like Clojure's quot).
 # Uses $builtin-div (float division) then $trunc (toward-zero truncation to Int).
+# Example: (quot 7 2) = 3, (quot -7 2) = -3, (quot 7 -2) = -3.
+# Contrast with $floor-div (truncates toward negative infinity) which does not exist in LLT.
 # Inherently materializing: derived from arithmetic operations.
 quot: [fn [a b] [call $trunc [call $builtin-div $a $b]]]
 
+# Integer remainder with the same sign as the dividend (a), NOT the divisor.
+# Uses the algebraic identity: mod(a, b) = a - (quot(a, b) * b).
+# Clojure semantics (same as C % for integers, Haskell rem, Python math.fmod).
+# Example: (mod 7 3) = 1, (mod -7 3) = -1, (mod 7 -3) = 1.
+# Contrast with Haskell's `mod` / Python's `%` which has the sign of the divisor.
 # Inherently materializing: derived from arithmetic operations.
 mod: [fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]
 
@@ -262,6 +270,7 @@ update: [fn [xs k f]
     [call $set $xs $k [call $f $xs[$k]]]]
 
 # Get all values from a dict as an integer-indexed list.
+# Preserves dict insertion order: values are returned in the same order as keys.
 values: [fn [xs] [call $values-impl $xs [call $keys $xs] 0 []]]
 
 values-impl: [fn [xs ks i acc]
@@ -274,6 +283,7 @@ values-step: [fn [xs ks i acc current-key]
         [call $append $acc $xs[$current-key]]]]
 
 # Get all entries as a list of [key: k  value: v] dicts.
+# Preserves dict insertion order: entries appear in the same order as the source dict.
 entries: [fn [xs] [call $entries-impl $xs [call $keys $xs] 0 []]]
 
 entries-impl: [fn [xs ks i acc]
@@ -441,6 +451,9 @@ drop-while-check: [fn [pred xs ks i acc dropping current-key]
             false]]]
 
 # Apply a function to every [key value] pair, returning new values under same keys.
+# The function f receives a full entry dict [key: k value: v] and must return
+# the NEW VALUE (not a new entry dict). Keys are preserved unchanged.
+# Example: [call $map-entries [fn [e] [call $* $e.value 2]] [a: 1 b: 2]] => [a: 2 b: 4]
 map-entries: [fn [f xs] [call $map-entries-impl $f $xs [call $keys $xs] 0 []]]
 
 map-entries-impl: [fn [f xs ks i acc]
@@ -454,7 +467,11 @@ map-entries-step: [fn [f xs ks i acc current-key]
             [call $make-entry $current-key
                 [call $f [key: $current-key value: $xs[$current-key]]]]]]]
 
-# Alias for reduce (Rust-native builtin).
+# Alias for reduce (Rust-native builtin, dual-dispatch on Dict/Seq).
+# fold and reduce are identical — use whichever name fits your context.
+# Both are left folds: f receives (accumulator, element) and the result becomes
+# the new accumulator. Starting accumulator is init.
+# Example: [call $fold [fn [acc x] [call $+ $acc $x]] 0 [1 2 3 4]] => 10
 fold: [fn [f init xs] [call $builtin-reduce $f $init $xs]]
 
 # Take a slice by position (start inclusive, end exclusive). Preserves keys.

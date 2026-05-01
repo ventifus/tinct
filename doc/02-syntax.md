@@ -163,6 +163,8 @@ Identifier characters use a denylist approach — any character is valid except 
 
 **Denylist rationale:** The denylist approach (allow-by-default, exclude structural delimiters) provides extensibility for new operators without reserved keywords, and enables full Unicode identifier support (emoji, non-Latin scripts) without explicit allow-lists.
 
+**Unicode homograph risk:** Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions; tinct currently accepts all Unicode identifier characters without NFC normalization.
+
 The token ends at the first excluded character. `.` and `[` are **not** part of the variable name — they are separate access operators that the parser chains onto the reference.
 
 A bare `$` not followed by any valid identifier character is a parse error.
