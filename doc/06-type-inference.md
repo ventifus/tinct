@@ -479,6 +479,8 @@ pub struct InferState {
 
 When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `TypeVar(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
 
+**RowVar level semantics.** `RowTail::RowVar(String, u32)` carries the same creation-time level as `TypeVar`. The level stored in the `RowVar` variant is set at creation and never mutated directly — it is the *creation-time* level. The *current* (possibly lowered) level is always read from `InferState.levels[name]`. During row-variable binding (Case 2, 3, and 4 of `unify_remainders`), `lower_row_var_levels` is called with the binding RowVar's current level (read from `state.levels`, not from the `RowVar` variant itself) to lower the levels of all type and row variables in the bound row. `generalize()` generalizes a RowVar with name `r` when `levels[r] > enclosing_level`, identically to `TypeVar`. This two-field design (creation-time level in the variant, current level in `state.levels`) matches the `TypeVar` design: the variant field is only used during construction and display; all level queries go through `state.levels`.
+
 **Level adjustment during unification (symmetric).** Both branches of type variable unification perform level lowering:
 
 ```

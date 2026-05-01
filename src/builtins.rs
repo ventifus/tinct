@@ -1153,11 +1153,10 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Desugar $_ implicit lambdas (pre-typecheck and pre-eval AST transformation).
     crate::desugar::desugar_file(&mut file.node);
 
-    // Add to include guard before recursing.
-    ctx.state.borrow_mut().include_guard.insert(file_id);
-
     // Determine the parent directory for the included file.
     // We need to open a new Dir for relative includes within the included file.
+    // This is done BEFORE inserting into the guard/chain so that if open_dir fails,
+    // no cleanup is needed.
     let parent_path = std::path::Path::new(&file_path_str).parent();
     let included_dir = if let Some(pp) = parent_path.filter(|p| !p.as_os_str().is_empty()) {
         // Open a subdirectory relative to base_dir
@@ -1186,12 +1185,24 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let stdlib_env = Rc::clone(&ctx.config.stdlib_env);
 
+    // Add to include guard and include chain before recursing.
+    // The include chain records (file_path, call_span) for each active $include frame.
+    // On error, the chain is prepended to the error's stack frames so the user sees
+    // the full include path ("included from a.llt at 3:10 → included from b.llt at 1:5").
+    {
+        let mut state = ctx.state.borrow_mut();
+        state.include_guard.insert(file_id);
+        state.include_chain.push((file_path_str.clone(), call_span));
+    }
+
     // Evaluate the included file with empty $$ and the stdlib env.
     let eval_result = crate::eval::eval_file(&file.node, stdlib_env, &included_ctx, depth + 1);
 
-    // Remove from include guard regardless of success/failure.
+    // Remove from include guard and include chain regardless of success/failure.
     let cleanup = || {
-        ctx.state.borrow_mut().include_guard.remove(&file_id);
+        let mut state = ctx.state.borrow_mut();
+        state.include_guard.remove(&file_id);
+        state.include_chain.pop();
     };
 
     match eval_result {
@@ -1204,8 +1215,19 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     cleanup();
                     v
                 }
-                Err(e) => {
+                Err(mut e) => {
+                    // Prepend this include frame to the error's stack so nested errors
+                    // show the full include path. Each $include level inserts its own
+                    // frame at position 0 as the error propagates outward, producing
+                    // outermost-first ordering in the final stack trace.
                     cleanup();
+                    e.stack.insert(
+                        0,
+                        crate::error::StackFrame {
+                            label: format!("included from {file_path_str}"),
+                            span: call_span,
+                        },
+                    );
                     return Err(e);
                 }
             };
@@ -1220,8 +1242,19 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             Ok(result_thunk)
         }
-        Err(e) => {
+        Err(mut e) => {
+            // Prepend this include frame to the error's stack so nested errors
+            // show the full include path. Each $include level inserts its own
+            // frame at position 0 as the error propagates outward, producing
+            // outermost-first ordering in the final stack trace.
             cleanup();
+            e.stack.insert(
+                0,
+                crate::error::StackFrame {
+                    label: format!("included from {file_path_str}"),
+                    span: call_span,
+                },
+            );
             Err(e)
         }
     }
@@ -8074,6 +8107,54 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Verify that `$include` returns the **same Rc<Thunk> allocation** on the second call
+    /// to the same file. This proves the cache stores a `Rc::clone()` of the original thunk
+    /// rather than re-evaluating the file and creating a new Thunk allocation.
+    ///
+    /// This is the pointer-identity proof: `Rc::ptr_eq(&first, &second)` — both calls
+    /// return an `Rc` pointing to the identical Thunk object in memory. This would only
+    /// be true if the second call hit the cache.
+    #[test]
+    fn include_cache_returns_same_rc_ptr() {
+        let dir = std::env::temp_dir().join("llt_test_include_rc_ptr");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "cached_ptr.llt", "[value: 99]");
+        let ctx = include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("cached_ptr.llt".into()))];
+
+        // First include — builds and caches the Thunk
+        let raw1 = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: Rc::clone(&ctx),
+        })
+        .expect("first include should succeed");
+
+        // Second include — must return Rc::clone of the cached Thunk
+        let raw2 = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: Rc::clone(&ctx),
+        })
+        .expect("second include should succeed");
+
+        // Pointer identity: both Rcs must point to the same Thunk allocation.
+        // If the cache is bypassed and the file is re-evaluated, a new Thunk is
+        // allocated and ptr_eq returns false.
+        assert!(
+            Rc::ptr_eq(&raw1, &raw2),
+            "Second $include of same file must return the same Rc<Thunk> as the first \
+             (cache hit, not re-evaluation). Got distinct allocations — the cache is not working."
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn include_caches_result() {
         // Including the same file twice should return the cached result, not re-evaluate.
@@ -8491,6 +8572,136 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Include chain threading tests
+
+    /// Verify that nested include errors carry the full include chain as stack frames.
+    ///
+    /// Setup: outer.llt includes middle.llt, which includes bad.llt (parse error).
+    /// Expected stack frames on the error (outermost first in display):
+    ///   [0] "included from outer.llt"   (added by the top-level include of outer.llt)
+    ///   [1] "included from middle.llt"  (added by outer.llt's include of middle.llt)
+    ///
+    /// Note: bad.llt's parse fails before its guard/chain entry is pushed, so
+    /// there is no "included from bad.llt" frame — the IncludeParseFailed error
+    /// message already names bad.llt directly.
+    #[test]
+    fn include_chain_nested_error() {
+        let dir = std::env::temp_dir().join("llt_test_include_chain");
+        std::fs::create_dir_all(&dir).ok();
+
+        // bad.llt: parse error
+        write_temp_file(&dir, "bad.llt", "[x: ]");
+        // middle.llt: includes bad.llt
+        write_temp_file(&dir, "middle.llt", "[call $include \"bad.llt\"]");
+        // outer.llt: includes middle.llt
+        write_temp_file(&dir, "outer.llt", "[call $include \"middle.llt\"]");
+
+        let ctx = include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("outer.llt".into()))];
+        let err = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        })
+        .unwrap_err();
+
+        // The error should be a parse failure (bad.llt is the innermost problem).
+        assert!(
+            err.message().contains("parse error"),
+            "expected parse error, got: {}",
+            err.message()
+        );
+
+        // The stack should contain include chain frames.
+        // Frame 0: outer.llt frame (inserted at position 0 by the outermost include).
+        // Frame 1: middle.llt frame (inserted at position 0 by middle.llt's include, then
+        //          shifted to position 1 when outer.llt inserts its own frame at position 0).
+        assert!(
+            err.stack.len() >= 2,
+            "expected at least 2 stack frames for the include chain, got {}: {:?}",
+            err.stack.len(),
+            err.stack
+        );
+        assert!(
+            err.stack[0].label.contains("outer.llt"),
+            "frame[0] should mention outer.llt: {:?}",
+            err.stack[0]
+        );
+        assert!(
+            err.stack[1].label.contains("middle.llt"),
+            "frame[1] should mention middle.llt: {:?}",
+            err.stack[1]
+        );
+        // The span on frame[0] should be the call_span we passed (the test's outer call site).
+        assert_eq!(
+            err.stack[0].span,
+            call_span(),
+            "frame[0] span should be the outer call_span"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Verify that the include chain is cleaned up after a successful include.
+    ///
+    /// After `builtin_include` returns successfully, `state.include_chain` must be empty.
+    /// A non-empty chain after success would corrupt future error annotations.
+    #[test]
+    fn include_chain_cleaned_up_after_success() {
+        let dir = std::env::temp_dir().join("llt_test_include_chain_cleanup");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "ok.llt", "42");
+        let ctx = include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("ok.llt".into()))];
+        let _result = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: Rc::clone(&ctx),
+        })
+        .unwrap();
+
+        assert!(
+            ctx.state.borrow().include_chain.is_empty(),
+            "include_chain must be empty after successful include"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Verify that the include chain is cleaned up after a failed include.
+    ///
+    /// After `builtin_include` returns an error, `state.include_chain` must be empty.
+    #[test]
+    fn include_chain_cleaned_up_after_error() {
+        let dir = std::env::temp_dir().join("llt_test_include_chain_err_cleanup");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "bad.llt", "[x: ]");
+        let ctx = include_ctx(&dir);
+
+        let args = vec![thunk(Value::String("bad.llt".into()))];
+        let _err = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: Rc::clone(&ctx),
+        })
+        .unwrap_err();
+
+        assert!(
+            ctx.state.borrow().include_chain.is_empty(),
+            "include_chain must be empty after failed include"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

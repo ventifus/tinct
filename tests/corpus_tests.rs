@@ -543,6 +543,20 @@ fn test_eval_error_corpus() {
                         ),
                     ));
                 }
+
+                // Validate that the actual runtime error includes an [EXXX] error code.
+                // Error codes are part of the public API (visible in all error display output,
+                // documented in doc/10-errors.md §9.2). If the error code is missing from
+                // the actual error, the ErrorKind::code() implementation has regressed.
+                if !has_error_code_prefix(&error_msg) {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        format!(
+                            "Actual error message missing [EXXX] error code prefix\n--- actual error ---\n{}",
+                            error_msg
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -1053,6 +1067,131 @@ fn test_has_error_code_prefix_invalid_letters_in_number() {
     assert!(
         !has_error_code_prefix("[E0A1] letter in number"),
         "[E0A1] with letter in number should NOT be detected"
+    );
+}
+
+/// Check that a corpus test file's expected section (after `===`) does not contain
+/// a bare `---` line on its own.
+///
+/// A bare `---` line in the **expected** section is almost certainly a mistake:
+/// `---` is the LLT document separator and belongs in the **input** section.
+/// If an author writes:
+///
+///   [x: 1]
+///   ---
+///   $$.x
+///   ===
+///   1
+///   ---           ← THIS IS THE BUG: should be in the input section
+///   some_more
+///
+/// the `---` ends up in the expected output string, causing an "expected substring mismatch"
+/// that's hard to diagnose. This validator catches that mistake explicitly.
+///
+/// Note: `---` is legitimate in the input section (it is valid LLT syntax) and is
+/// allowed there. Only a bare `---` in the EXPECTED section is flagged.
+fn check_no_llt_separator_in_expected(content: &str, path: &std::path::Path) -> Option<String> {
+    // Use the FIRST \n===\n as the split point (same as split_test_file logic)
+    const DELIM: &str = "\n===\n";
+    if let Some(pos) = content.find(DELIM) {
+        let expected_section = &content[pos + DELIM.len()..];
+        // Check each line in the expected section for a bare "---"
+        for line in expected_section.lines() {
+            if line == "---" {
+                return Some(format!(
+                    "{}: bare `---` on its own line found in expected section (after `===`). \
+                     `---` is valid LLT document separator syntax and belongs in the input \
+                     section (before `===`). If this `---` is intentional expected output, \
+                     it cannot be on its own line — it must be part of a longer expected string.",
+                    path.display()
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Validates that no corpus test file has a bare `---` line in its expected section.
+/// Run as a separate test so failures are clearly attributed.
+#[test]
+fn test_no_llt_separator_in_expected_section() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let corpus_dir = manifest_dir.join("tests/corpus");
+
+    let all_test_files = find_test_files(&corpus_dir);
+    let mut violations = Vec::new();
+
+    for test_file in &all_test_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+        if let Some(msg) = check_no_llt_separator_in_expected(&content, test_file) {
+            violations.push(msg);
+        }
+    }
+
+    if !violations.is_empty() {
+        eprintln!(
+            "\n{} corpus test(s) have bare `---` in expected section:",
+            violations.len()
+        );
+        for msg in &violations {
+            eprintln!("  - {}", msg);
+        }
+        panic!(
+            "Corpus test files must not use `---` on its own line in the expected section. \
+             `---` is a valid LLT document separator and belongs only in the input section (before `===`)."
+        );
+    }
+}
+
+/// Unit tests for check_no_llt_separator_in_expected().
+#[test]
+fn test_check_no_llt_separator_dash_in_input_allowed() {
+    // `---` in the INPUT section (before `===`) is valid LLT — allowed.
+    let content = "[x: 1]\n---\n$$.x\n===\n1\n";
+    let path = std::path::Path::new("dummy.llt-eval");
+    assert!(
+        check_no_llt_separator_in_expected(content, path).is_none(),
+        "`---` in the input section should be allowed"
+    );
+}
+
+#[test]
+fn test_check_no_llt_separator_dash_in_expected_flagged() {
+    // `---` in the EXPECTED section (after `===`) is almost certainly a mistake.
+    let content = "[x: 1]\n===\n1\n---\nmore stuff\n";
+    let path = std::path::Path::new("dummy.llt-eval");
+    let result = check_no_llt_separator_in_expected(content, path);
+    assert!(
+        result.is_some(),
+        "`---` in the expected section should be flagged"
+    );
+    assert!(
+        result.unwrap().contains("bare `---`"),
+        "Error message should mention bare `---`"
+    );
+}
+
+#[test]
+fn test_check_no_llt_separator_no_delim_skipped() {
+    // Files without `===` have no expected section — nothing to flag.
+    let content = "[x: 1]\n---\n$$.x\n";
+    let path = std::path::Path::new("dummy.llt-eval");
+    assert!(
+        check_no_llt_separator_in_expected(content, path).is_none(),
+        "Files without === delimiter have no expected section"
+    );
+}
+
+#[test]
+fn test_check_no_llt_separator_partial_dash_allowed() {
+    // `----` or `--- more text` in the expected section is NOT a bare `---` — allowed.
+    let content = "[x: 1]\n===\nexpected output\n---- not a separator\n";
+    let path = std::path::Path::new("dummy.llt-eval");
+    assert!(
+        check_no_llt_separator_in_expected(content, path).is_none(),
+        "`---- more` is not a bare `---` separator — should be allowed"
     );
 }
 
