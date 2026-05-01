@@ -87,7 +87,7 @@ Sequence transforms — consume a sequence and produce a new one element-by-elem
 
 Sequence reduction — fold a sequence into a single value or collect into a string/dict.
 
-- [ ] Move `builtin_reduce`+`fold_step`, `builtin_join`+`join_step`, `builtin_concat` to `src/builtins_seq_reduce.rs` (`src/builtins.rs:2629-3087`, ~460 lines) [Minor]
+- [x] Move `builtin_reduce`+`fold_step`, `builtin_join`+`join_step`, `builtin_concat` to `src/builtins_seq_reduce.rs` (`src/builtins.rs:2629-3087`, ~460 lines) [Minor]
 
 ### builtins-split-e: Extract builtins_string.rs
 
