@@ -948,14 +948,17 @@ fn infer_dict(
             .iter()
             .map(|(k, row)| (k.clone(), row.clone()))
             .collect();
+
+        // Reusable HashMap to avoid allocation per iteration
+        let mut applied_fields: HashMap<String, Type> = HashMap::new();
+
         for (k, row) in state_row_entries {
-            let applied_fields: HashMap<String, Type> = row
-                .fields
-                .iter()
-                .map(|(field_name, field_ty)| (field_name.clone(), subst.apply(field_ty)))
-                .collect();
+            applied_fields.clear();
+            for (field_name, field_ty) in &row.fields {
+                applied_fields.insert(field_name.clone(), subst.apply(field_ty));
+            }
             let applied_row = Row {
-                fields: applied_fields,
+                fields: applied_fields.clone(),
                 // Tail not applied here; Pass 3c's subst.apply() chases tail chains transitively.
                 tail: row.tail.clone(),
             };

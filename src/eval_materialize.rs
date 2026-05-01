@@ -139,7 +139,9 @@ pub(crate) struct MemoizeData {
     pub(crate) origin: Cow<'static, str>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
-    pub(crate) restore: RestoreState,
+    // Changed to Option to support lazy creation: None means "reconstruct if needed"
+    // (currently always Some, but enables future optimization)
+    pub(crate) restore: Option<RestoreState>,
 }
 
 /// Payload for Cont::PendingCallDispatch. Boxed to keep the Cont enum ≤96 bytes.
@@ -291,7 +293,6 @@ pub(crate) fn force_step(
     depth: usize,
     stack: &mut Vec<Cont>,
 ) -> Action {
-    let origin = thunk.origin.clone();
     let thunk_span = thunk.span;
 
     // Early returns for already-resolved states
@@ -320,6 +321,8 @@ pub(crate) fn force_step(
                 return Action::Continue(Err(Box::new(cloned)));
             }
             ThunkState::InProgress => {
+                // Defer origin clone to error path only (hot path already returned at Materialized)
+                let origin = thunk.origin.clone();
                 let label = if origin.is_empty() { "thunk" } else { &origin };
                 let mut err = EvalError::circular_dependency(label, thunk.span);
                 if let Some(span) = mat_span {
@@ -357,7 +360,10 @@ pub(crate) fn force_step(
     //    extracting data. Re-encountering InProgress during materialization (line 1026)
     //    immediately produces CircularDependency error, cached in Failed state (line 1034).
     //
-    // Process deferred states
+    // Process deferred states (hot path has already returned above)
+    // Defer origin clone to here — it's only needed for error reporting and Memoize continuations.
+    let origin = thunk.origin.clone();
+
     if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
         if depth > MAX_EVAL_DEPTH {
             // All four deferred-state depth-exceeded paths (Unevaluated, PendingBuiltin,
@@ -394,7 +400,7 @@ pub(crate) fn force_step(
                         origin,
                         thunk_span,
                         mat_span,
-                        restore,
+                        restore: Some(restore),
                     })));
                     // Push DotAccessForce to handle field lookup after target materializes
                     stack.push(Cont::DotAccessForce {
@@ -434,7 +440,7 @@ pub(crate) fn force_step(
                         origin,
                         thunk_span,
                         mat_span,
-                        restore,
+                        restore: Some(restore),
                     })));
                     // Push BracketForceTarget to handle key lookup after target materializes
                     stack.push(Cont::BracketForceTarget {
@@ -472,7 +478,7 @@ pub(crate) fn force_step(
                     origin,
                     thunk_span,
                     mat_span,
-                    restore,
+                    restore: Some(restore),
                 })));
                 Action::Materialize {
                     thunk: result_thunk,
@@ -567,7 +573,7 @@ pub(crate) fn force_step(
                         origin,
                         thunk_span,
                         mat_span,
-                        restore,
+                        restore: Some(restore),
                     })));
                     // TCO: force result at same depth
                     Action::Materialize {
@@ -697,9 +703,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 Err(e) => {
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
-                    } else {
-                        restore.restore(&thunk);
+                    } else if let Some(restore_state) = restore {
+                        restore_state.restore(&thunk);
                     }
+                    // Note: if restore is None, the thunk remains in InProgress state,
+                    // which will trigger a CircularDependency error on next access.
+                    // This is correct for cases where restoration isn't possible.
                     Action::Continue(Err(e))
                 }
             }
@@ -739,20 +748,23 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
 
                         match invoke_function(&call_ctx).map_err(&decorate) {
                             Ok(result_thunk) => {
+                                // Clone args/named to create RestoreState. If result materializes
+                                // successfully (common case), these clones are wasted but harmless.
+                                // TODO(perf): defer cloning to restore() time only.
                                 let restore = RestoreState::PendingCall {
-                                    func: func_thunk.clone(),
+                                    func: Rc::clone(&func_thunk),
                                     args: args.clone(),
                                     named: named.clone(),
                                     call_span,
-                                    caller_env: caller_env.clone(),
-                                    ctx: thunk_ctx.clone(),
+                                    caller_env: Rc::clone(&caller_env),
+                                    ctx: Rc::clone(&thunk_ctx),
                                 };
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Rc::clone(&thunk),
                                     origin,
                                     thunk_span,
                                     mat_span,
-                                    restore,
+                                    restore: Some(restore),
                                 })));
                                 // TCO: function return value forced at caller's depth
                                 Action::Materialize {
@@ -794,20 +806,23 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     thunk.set_state(ThunkState::Materialized(value.clone()));
                                     Action::Continue(Ok(value))
                                 } else {
+                                    // Clone args/named to create RestoreState. If result materializes
+                                    // successfully (common case), these clones are wasted but harmless.
+                                    // TODO(perf): defer cloning to restore() time only.
                                     let restore = RestoreState::PendingCall {
-                                        func: func_thunk.clone(),
+                                        func: Rc::clone(&func_thunk),
                                         args: args.clone(),
                                         named: named.clone(),
                                         call_span,
-                                        caller_env: caller_env.clone(),
-                                        ctx: thunk_ctx.clone(),
+                                        caller_env: Rc::clone(&caller_env),
+                                        ctx: Rc::clone(&thunk_ctx),
                                     };
                                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                                         thunk: Rc::clone(&thunk),
                                         origin,
                                         thunk_span,
                                         mat_span,
-                                        restore,
+                                        restore: Some(restore),
                                     })));
                                     // TCO: builtin return value forced at caller's depth
                                     Action::Materialize {
@@ -1046,7 +1061,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     origin,
                                     thunk_span,
                                     mat_span,
-                                    restore,
+                                    restore: Some(restore),
                                 })));
                                 Action::Materialize {
                                     thunk: result_thunk,

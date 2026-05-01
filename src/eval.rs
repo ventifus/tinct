@@ -773,12 +773,32 @@ pub(crate) fn eval_dict(
             )));
         }
 
-        let thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(entry.node.value.clone()),
-            Rc::clone(&dict_env),
-            Rc::clone(ctx),
-            entry.node.value.span,
-        ));
+        // Fast path for literal values: create Materialized thunks directly,
+        // avoiding Unevaluated → Materialized state transition overhead (Nix maybeThunk pattern)
+        let thunk = match &entry.node.value.node {
+            Expr::Int(n) => Rc::new(Thunk::new_materialized(
+                Value::Int(*n),
+                entry.node.value.span,
+            )),
+            Expr::Float(f) => Rc::new(Thunk::new_materialized(
+                Value::Float(*f),
+                entry.node.value.span,
+            )),
+            Expr::Bool(b) => Rc::new(Thunk::new_materialized(
+                Value::Bool(*b),
+                entry.node.value.span,
+            )),
+            Expr::Str(s) => Rc::new(Thunk::new_materialized(
+                Value::String(s.clone()),
+                entry.node.value.span,
+            )),
+            _ => Rc::new(Thunk::new_unevaluated(
+                Rc::new(entry.node.value.clone()),
+                Rc::clone(&dict_env),
+                Rc::clone(ctx),
+                entry.node.value.span,
+            )),
+        };
 
         // String keys become bindings so sibling entries can reference via $name
         if let Key::String(ref name) = key {

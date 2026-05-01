@@ -1459,7 +1459,10 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     }
 
     // Create fresh type variables at the specified level for each quantified var
-    let mut renaming = Substitution::new();
+    let mut renaming = Substitution {
+        type_map: HashMap::with_capacity(scheme.type_vars.len()),
+        row_map: HashMap::with_capacity(scheme.row_vars.len()),
+    };
     for var in &scheme.type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter += 1;
@@ -1504,31 +1507,30 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
         return TypeScheme::mono(ty.clone());
     }
 
-    let mut all_type_vars = HashSet::new();
-    let mut all_row_vars = HashSet::new();
-    ty.collect_all_vars(&mut all_type_vars, &mut all_row_vars);
+    let mut all_type_vars = Vec::new();
+    let mut all_row_vars = Vec::new();
+    ty.collect_all_vars_vec(&mut all_type_vars, &mut all_row_vars);
 
-    // Filter: keep only vars where levels[var] > level
+    // Filter: keep only vars where levels[var] > level.
+    // collect_all_vars_vec may produce duplicates; deduplicate during filter using seen set.
+    let mut seen = HashSet::new();
     let generalizable_type_vars: Vec<String> = all_type_vars
         .into_iter()
         .filter(|var| {
-            // Invariant: type_vars and row_vars are disjoint by construction
-            // (TypeVar and RowVar occupy distinct positions in the type tree)
-            debug_assert!(
-                !all_row_vars.contains(var),
-                "Type var {} should not appear in row vars set",
-                var
-            );
             let var_level = state.levels.get(var).copied().unwrap_or(0);
-            var_level > level
+            let is_generalizable = var_level > level;
+            // Deduplicate: only include var if we haven't seen it and it's generalizable
+            is_generalizable && seen.insert(var.clone())
         })
         .collect();
 
+    seen.clear();
     let generalizable_row_vars: Vec<String> = all_row_vars
         .into_iter()
         .filter(|var| {
             let var_level = state.levels.get(var).copied().unwrap_or(0);
-            var_level > level
+            let is_generalizable = var_level > level;
+            is_generalizable && seen.insert(var.clone())
         })
         .collect();
 
