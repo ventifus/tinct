@@ -1071,6 +1071,7 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
 /// Parses and evaluates `stdlib/prelude.llt` using the root env, then
 /// layers the prelude dict entries as a child scope. User code should
 /// use this as the parent environment.
+// Fatal: stdlib failure is not recoverable — callers should propagate or panic on Err.
 pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
     let root_env = create_root_env();
 
@@ -9567,5 +9568,71 @@ mod tests {
             "Expected message to contain 'drop: expected Int for remaining count', got: {}",
             err.message()
         );
+    }
+
+    /// Verify that `create_stdlib_env()` loads without error and that a representative
+    /// sample of expected public names is present in the resulting environment.
+    ///
+    /// This is a wholeness test: it catches regressions where a prelude function is
+    /// accidentally removed, renamed, or fails to evaluate during stdlib loading.
+    #[test]
+    fn test_stdlib_wholeness() {
+        let stdlib_env = create_stdlib_env().expect("create_stdlib_env() must not fail");
+        let env = stdlib_env.borrow();
+
+        // Names that must exist: Rust-native builtins registered in standard_builtins()
+        // plus a representative selection of prelude-defined functions.
+        let required_names: &[&str] = &[
+            // Rust-native operators (registered in create_root_env())
+            "$+",
+            "$-",
+            "$*",
+            "$/",
+            "$=",
+            "$<",
+            "$if",
+            "$map",
+            "$filter",
+            "$reduce",
+            "$fold",
+            "$take",
+            "$drop",
+            // Prelude-defined wrappers and derived functions
+            "$not",
+            "$and",
+            "$or",
+            "$>",
+            "$<=",
+            "$>=",
+            // Prelude utilities
+            "$identity",
+            "$first",
+            "$rest",
+            "$concat",
+            "$reverse",
+            "$empty?",
+            "$get",
+            "$has?",
+            "$get-or",
+            "$values",
+            "$entries",
+            "$sort",
+            "$any?",
+            "$all?",
+            "$sum",
+            "$min",
+            "$max",
+            "$count",
+            "$contains?",
+        ];
+
+        for name in required_names {
+            // Names in the stdlib env are stored without the leading '$'.
+            let bare_name = name.trim_start_matches('$');
+            assert!(
+                env.get(bare_name).is_some(),
+                "stdlib is missing expected binding: {name}"
+            );
+        }
     }
 }

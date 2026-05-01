@@ -1503,11 +1503,32 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
         };
 
         // Convert offset to line/column
-        // Build line starts table from input
-        let mut line_starts = vec![0];
-        for (i, ch) in input.char_indices() {
-            if ch == '\n' {
-                line_starts.push(i + 1);
+        // Build line starts table from input.
+        // Recognizes LF (\n), CRLF (\r\n), and bare CR (\r) as line endings.
+        // CRLF counts as one line ending (the \r is consumed with the \n that follows).
+        let mut line_starts = vec![0usize];
+        let input_bytes = input.as_bytes();
+        let mut bi = 0;
+        while bi < input_bytes.len() {
+            match input_bytes[bi] {
+                b'\r' if bi + 1 < input_bytes.len() && input_bytes[bi + 1] == b'\n' => {
+                    // CRLF: one line ending, advance past both bytes
+                    bi += 2;
+                    line_starts.push(bi);
+                }
+                b'\r' => {
+                    // Bare CR (Mac Classic): one line ending
+                    bi += 1;
+                    line_starts.push(bi);
+                }
+                b'\n' => {
+                    // LF
+                    bi += 1;
+                    line_starts.push(bi);
+                }
+                _ => {
+                    bi += 1;
+                }
             }
         }
 

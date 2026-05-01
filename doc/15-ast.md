@@ -243,8 +243,22 @@ x@[type: Number  default: 30]    # valid: property dict
 x@Number                         # valid: simple annotation
 [@[name: String  ...] $val]      # valid: type expression with rest (no type: key)
 x@[call $f $x]                   # ERROR: special form in annotation bracket
+x@[fn [a] $a]                    # ERROR: special form in annotation bracket
+x@[type Number]                  # ERROR: special form in annotation bracket
+x@[@Number $val]                 # ERROR: type_assert_body in annotation bracket
 x@[type: Int  ...]               # ERROR: rest entry alongside type: key
 ```
+
+The following constructs are rejected inside annotation brackets:
+
+| Rejected form | Why |
+|--------------|-----|
+| `call` | Special form — produces `Expr::Call`, not `Expr::Dict` |
+| `fn` | Special form — produces `Expr::Fn`, not `Expr::Dict` |
+| `type` | Special form — produces `Expr::TypeAlias`, not `Expr::Dict` |
+| `type_assert_body` (`[@Annotation expr]`) | Produces `Expr::TypeAssert`, not `Expr::Dict` — rejected even though it is not a named special form keyword |
+
+All four are caught by the same check in `parse_annotation`: after re-parsing the bracket sub-string via `parse2`, any result that is not `Expr::Dict` is a parse error. `type_assert_body` is rejected on this basis, not because of keyword disambiguation.
 
 When no `type:` key is present, the bracket is interpreted as a type expression (record type), and rest entries are allowed for row polymorphism.
 

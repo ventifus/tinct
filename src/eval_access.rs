@@ -33,8 +33,10 @@ pub(crate) fn key_in_range(
     let after_start = match start {
         Some(s) => {
             let ord = k.partial_cmp(s).ok_or_else(|| {
-                EvalError::internal(
-                    "range access requires comparable key types".to_string(),
+                EvalError::type_mismatch_ctx(
+                    "range access".to_string(),
+                    "comparable key types (both Int or both String)",
+                    "mixed Int and String keys",
                     span,
                 )
             })?;
@@ -45,8 +47,10 @@ pub(crate) fn key_in_range(
     let before_end = match end {
         Some(e) => {
             let ord = k.partial_cmp(e).ok_or_else(|| {
-                EvalError::internal(
-                    "range access requires comparable key types".to_string(),
+                EvalError::type_mismatch_ctx(
+                    "range access".to_string(),
+                    "comparable key types (both Int or both String)",
+                    "mixed Int and String keys",
                     span,
                 )
             })?;
