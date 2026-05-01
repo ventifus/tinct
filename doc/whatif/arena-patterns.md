@@ -165,6 +165,58 @@ The environment arena uses the same `Vec + newtype index` pattern as thunks.
 Two separate arenas (`ThunkArena` + `EnvArena`) with cross-references via
 their respective ID types.
 
+### Letrec Compatibility and the Static/Computed Key Split
+
+tinct's letrec dict scoping — where all entries share one environment so siblings can reference each other — is **compatible with de Bruijn slot assignment, with a caveat for computed keys**.
+
+**Static keys** (the common case: `name: $x`, `enabled: true`) have names known at parse time. A variable resolution pass assigns slot indices 0, 1, 2, ... to entries in order. Sibling mutual references (`x: $y`, `y: $x`) resolve to `(level=0, slot=k)` — no name lookup needed. Letrec is not a blocker: `eval_dict()` pre-allocates the `dict_env` (creating the `FlatEnv` with a pre-sized slot vector) before creating any thunks. All thunks capture the same `FlatEnv`, and slots are filled as thunks are created, exactly as today.
+
+**Computed keys** (e.g., `[<$expr>: value]`) have names unknown at parse time. These fall back to a `HashMap<String, ThunkId>` overflow side table on the `FlatEnv`. This hybrid model handles both cases without special-casing the resolution pass:
+
+```rust
+pub struct FlatEnv {
+    slots: Vec<ThunkId>,                   // static keys, indexed by compile-time slot
+    overflow: HashMap<String, ThunkId>,    // computed keys, name-indexed
+    parent: Option<EnvId>,                 // stdlib/builtins root chain only
+}
+```
+
+Most real tinct programs use only static keys; computed keys are uncommon, so the overflow table is usually empty.
+
+### Variable Resolution Pass Design
+
+A single pre-eval analysis walk assigns `(level, slot)` pairs to `VarRef` nodes. The pass maintains a scope stack and populates a `Cell<Option<(u32, u32)>>` on each `VarRef`:
+
+```rust
+// VarRef gains a resolution cache field:
+Expr::VarRef { name: String, resolved: Cell<Option<(u32, u32)>> }
+
+// The pass walks the AST with a scope stack:
+struct Resolver {
+    scopes: Vec<HashMap<String, u32>>,  // name → slot per nesting level
+}
+impl Resolver {
+    fn enter_dict(&mut self, static_keys: &[String]) { ... }
+    fn resolve(&self, name: &str) -> Option<(u32, u32)> {
+        for (offset, scope) in self.scopes.iter().rev().enumerate() {
+            if let Some(&slot) = scope.get(name) {
+                let level = (self.scopes.len() - 1 - offset) as u32;
+                return Some((level, slot));
+            }
+        }
+        None  // falls back to name lookup (computed keys, $include-introduced bindings)
+    }
+}
+```
+
+Unresolved references (computed keys, bindings introduced by `$include`) remain `None` and use the overflow HashMap at runtime. The pass runs after parsing and before evaluation — it is the "variable resolution pass" in Phase 1.
+
+### Contrast with Lua 5.4 Upvalues
+
+Lua 5.4 uses explicit `UpValue` reference cells that functions close over. At function creation time, the compiler pre-computes which outer variables are referenced and allocates an upvalue array. Lookup is `upvalue[index]->value` — one array index plus one pointer dereference.
+
+tinct's letrec model is different: all dict-entry thunks are created simultaneously capturing the same `FlatEnv`. There is no "closure binding time" per thunk — all thunks see the same shared environment. This means tinct does not need upvalue arrays: the `FlatEnv` is shared by reference (`EnvId`), and slot access directly reaches the correct binding. For outer-scope free variables, the `parent` chain (retained for stdlib only) provides the additional lookup level, giving at most two hops for user code (current level + stdlib root).
+
 **Migration identity preservation** requires two translation tables
 (doc/08-evaluation.md §Allocation Strategy): `HashMap<ThunkId, Rc<Thunk>>` and
 `HashMap<EnvId, Rc<RefCell<Environment>>>`. Without the env table, two
@@ -318,6 +370,7 @@ and the rest of the codebase would not change.
   newtype `usize` pattern used by cranelift and rust-analyzer.
 - cranelift `entity` module. — `PrimaryMap<K,V>`, `SecondaryMap<K,V>`,
   typed u32 index handles. Production-scale precedent for this exact pattern.
+- Ierusalimschy, R., de Figueiredo, L.H. & Celes, W. (2005). "The implementation of Lua 5.0." *J. Universal Computer Science*, 11(7), pp. 1159–1176. — Flat local variable arrays with upvalue reference cells for closures. Closest precedent for tinct's slot-indexed `FlatEnv`; tinct's letrec model differs by using a shared env rather than per-closure upvalue arrays.
 - Nix evaluator. — Boehm GC, flat Value arrays with de Bruijn levels,
   in-place thunk update. C++ reference implementation for lazy configuration
   language evaluation.

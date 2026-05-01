@@ -42,9 +42,31 @@ makes the best case for its feature: "What would it take to do this well?"
 
 | Proposal | Summary |
 |----------|---------|
-| [Arena Patterns](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` to replace `Rc<RefCell<ThunkState>>` |
+| [Arena Patterns + Flat Environments](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; flat `FlatEnv` with de Bruijn slot indices; variable resolution pass replacing O(depth) environment chain walks |
+| [String Interning for Dict Keys](string-interning.md) | `Key::String(Spur)` via `string-interner` crate; O(1) comparison; profile-gated |
+| [Union-Find for Type Substitution](union-find-substitution.md) | Path-compressed union-find for `Substitution::apply()`; worthwhile only if chain depth ≥4; profile-gated |
 | [Numeric Types](numeric-types.md) | Range-constrained numerics; `@[min: 0 max: 65535]` → auto `u16` internally |
 | [Float Dict Keys](float-dict-keys.md) | Decimal (exact base-10) keys alongside a `Decimal` type |
+
+## Error Diagnostics
+
+| Proposal | Summary |
+|----------|---------|
+| [Source Text Availability](source-text-availability.md) | `render_span_snippet(source, span)` helper; caller-pairs-with-source model; REPL and CLI source snippet display |
+| [Circular Dependency Error Paths](circular-dep-error-paths.md) | `eval_stack: Vec<(String, Span)>` in EvalState to reconstruct full A→B→A cycle chain in error messages |
+
+## Architecture and Refactoring
+
+| Proposal | Summary |
+|----------|---------|
+| [eval↔builtins Boundary](eval-builtins-boundary.md) | Extract `src/eval_core.rs` to break circular dependency; gate on concrete need for independent builtin testing |
+| [Value Serializer Visitor](value-serializer-visitor.md) | Shared traversal for `value_to_json` + `value_to_display_string`; defer until a third format is needed |
+
+## Formal Verification
+
+| Proposal | Summary |
+|----------|---------|
+| [Evaluation Semantics Verification](eval-semantics-verification.md) | Part A: `proptest` bisimulation tests (PendingBuiltin ≡ Unevaluated, PendingCall ≡ inline); Part B: confluence proof via determinism argument |
 
 ## I/O and Connectivity
 
@@ -83,47 +105,31 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 
 ### Adopt Now
 
-These proposals have no gating conditions, accepted designs, and either
-eliminate a whole section of TODO or deliver standalone ergonomic value at
-low implementation cost.
+These proposals have no gating conditions and deliver standalone value at low cost.
 
-**[Type Predicates](type-predicates.md)** — `### stdlib-type-predicates` in TODO is
-exactly this proposal: `$int?`, `$str?`, `$float?`, `$bool?`, `$dict?`, `$fn?` as
-one-liners plus runtime assertion guards. Implementing as a coherent sprint closes
-the whole section and provides Phase 1 of pattern matching. No dependencies, no gating.
+**[Type Predicates](type-predicates.md)** — `### stdlib-type-predicates` in TODO is exactly this proposal: `$int?`, `$str?`, `$float?`, `$bool?`, `$dict?`, `$fn?` as one-liners plus runtime assertion guards. No dependencies, no gating.
 
-**[String Interpolation](string-interpolation.md) Phase 1** — No existing TODO items
-replaced, but high ergonomic ROI. Phase 1 (`i"..."` → desugar to `$str`) is a
-standalone parser + desugar change. No dependencies.
+**[String Interpolation](string-interpolation.md) Phase 1** — High ergonomic ROI. Phase 1 (`i"..."` → desugar to `$str`) is a standalone parser + desugar change. No dependencies.
 
-**[`let` Binding Form](let-binding.md)** — No existing TODO items replaced, but
-removes structural friction in every multi-step function. The nested-fn workaround
-(`[call [fn [x] ...] val]`) is pervasive. No new keywords; extends the existing
-sequential scoping model to `[fn ...]` bodies.
+**[`let` Binding Form](let-binding.md)** — Removes structural friction in every multi-step function. No new keywords; extends existing sequential scoping model to `[fn ...]` bodies. No dependencies.
 
-**[Supplemental Stdlib Modules](lib-supplemental.md) Phase 1** — Pure-tinct
-`stdlib/strings.llt` (`str-contains?`, `str-starts-with?`, `str-ends-with?`,
-`str-pad-left`, `str-pad-right`, `str-chars`, `str-repeat`, `str-find`,
-`str-slice`). At most one new Rust builtin (`$str-chars`). No new crates, no
-gating conditions. Phases 2 (math) and 3 (bitwise primitives) follow in order.
+**[Supplemental Stdlib Modules](lib-supplemental.md) Phase 1** — Pure-tinct `stdlib/strings.llt`. At most one new Rust builtin. No new crates, no gating. Phases 2 and 3 follow.
 
-**[Pure-Tinct Regex Engine](lib-regex.md) Phase 1** — Thompson NFA engine
-in `stdlib/regex.llt`. No Rust builtins, no crates. Requires lib-supplemental
-Phases 1 (`str-chars`) and 3 (`$char-code`) complete first.
+**[Pure-Tinct Regex Engine](lib-regex.md) Phase 1** — Thompson NFA in `stdlib/regex.llt`. No Rust builtins, no crates. Requires lib-supplemental Phases 1 + 3.
 
-**[Structural Contracts](structural-contracts.md) Phase 1 only** — Phase 1
-(`$$@Type` pipeline boundary annotation) answers open design questions around
-shape/contract systems without committing to the full `$validate` schema-as-dict
-system.
+**[Structural Contracts](structural-contracts.md) Phase 1** — `$$@Type` pipeline boundary annotation. Standalone, no gating.
 
-**[Algebraic Data Types](algebraic-data-types.md) Phase 1** — Convention
-documentation only: no code changes, just establishing the structural ADT pattern
-for user code and formalising the `$try` result shape. Zero-cost, immediate value.
+**[Algebraic Data Types](algebraic-data-types.md) Phase 1** — Convention documentation only. Zero-cost, immediate value.
+
+**[Source Text Availability](source-text-availability.md) Phase 1** — `render_span_snippet` + REPL wiring. Source text is already available at the call site; no EvalError changes. Low cost, high diagnostic value.
+
+**[Circular Dependency Error Paths](circular-dep-error-paths.md) Phase 1** — `eval_stack: Vec<(String, Span)>` in EvalState + chain in error Display. Small change, mirrors existing `include_guard` pattern.
+
+**[Evaluation Semantics Verification](eval-semantics-verification.md) Phase 1** — Confluence proof sketch to `doc/08-evaluation.md` (documentation) + core proptest suite (200 lines + `proptest` dev-dep). Low cost, validates key semantic claims.
 
 ### Already the Plan
 
-**[Arena Patterns](arena-patterns.md)** — This document IS the design for the
-`## iterative-eval` TODO sprint. No separate adoption decision; execute `iterative-eval`.
+**[Arena Patterns + Flat Environments](arena-patterns.md)** — The variable resolution pass (Phase 1) is a prerequisite for the arena/flat-env migration (Phase 2), which depends on the `strictness-dispatch-w1` sprint completing first (confirms evaluation semantics before changing the allocation model). Execute in order: `strictness-types` → `strictness-value-migration` → `strictness-dispatch-w1` → arena Phase 1 → arena Phase 2.
 
 ### Wait for Trigger
 
@@ -131,8 +137,8 @@ These proposals have accepted designs but explicit gating conditions not yet met
 
 | Proposal | Gating Condition |
 |----------|-----------------|
-| [Gradual Typing](gradual-typing.md) | `Any`-as-top-and-bottom causing a real false positive, or union types forcing the split |
-| [Type Classes](typeclasses.md) | `Any` typing for dual-dispatch causing false positives, or user-defined types needing protocols |
+| [Gradual Typing](gradual-typing.md) | whatif not yet accepted; `Any`-as-top-and-bottom causing a real false positive, or union types forcing the split. Note: `Type::Any` split (`Unknown`+`Top`) is a standalone sprint independent of this whatif. |
+| [Type Classes](typeclasses.md) | Phase 1 (`$deep-eq`/`$shallow-eq` builtins) ships now; Phase 2 (constrained type vars) after `Type::Any` split |
 | [Union Types](union-types.md) | Nullable types or tagged union patterns becoming common in user code |
 | [Algebraic Data Types](algebraic-data-types.md) Phase 2 | `union-types.md` Phase 2 implemented (`Type::Union` exists) |
 | [Nominal Variants](nominal-variants.md) | Structural ADTs Phase 2 complete; two constructors with identical payload shapes needed |
@@ -143,20 +149,19 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [Custom Call Aliases](call-aliases.md) | Macro system adoption |
 | [Parameterized Type Aliases](parameterized-type-aliases.md) | Name collision becomes a real type error, or recursive ADTs needed (Phase 4) |
 | [Pattern Matching](pattern-matching.md) Phase 2+ | Phase 1 (type predicates) complete |
+| [String Interning](string-interning.md) | Profiling confirms `String` allocation/comparison is top-5 hotspot on real workloads |
+| [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
+| [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |
+| [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
+| [Evaluation Semantics Verification](eval-semantics-verification.md) Phase 2+ | Phase 1 complete with zero failures; formal semantics in doc/08-evaluation.md |
 
 ### Strategic (Not a Sprint)
 
-**[Unified Syntax Reform](new-syntax.md)** — Bare-word references + implied call +
-`%`-named pipeline sections would reduce token count ~30–40% across all tinct
-code. Breaks all existing bare-word string values (they become references). There
-is no user code, so adoption is a clean internal cutover — no migration tooling
-needed. Requires parser-rewrite Phase 3 (AST-based formatter) as a prerequisite.
-Adopt as a deliberate project milestone, not a feature sprint.
+**[Unified Syntax Reform](new-syntax.md)** — Bare-word references + implied call + `%`-named pipeline sections would reduce token count ~30–40% across all tinct code. Breaks all existing bare-word string values. No user code, so adoption is a clean internal cutover — no migration tooling needed. Requires parser-rewrite Phase 3 (AST-based formatter) as prerequisite. Adopt as a deliberate project milestone, not a feature sprint.
 
 ### Additive Capability (No TODO Replacement)
 
-These proposals open new ground rather than closing existing work. All have
-accepted designs; adopt when the use case is ready.
+These proposals open new ground rather than closing existing work. All have accepted designs; adopt when the use case is ready.
 
 | Proposal | Key Unlock |
 |----------|-----------|
@@ -186,6 +191,10 @@ union-types (Ph 2) ──── algebraic-data-types (Ph 2) ──────�
        │                                                              │
        └──── algebraic-subtypes ─── gradual-typing ─── algebraic-data-types (Ph 3)
 
+type-classes (Ph 1: $deep-eq/$shallow-eq) ── type-classes (Ph 2: constrained vars)
+                                                    │
+                                           Any-split (Unknown + Top) ── gradual-typing
+
 quasiquoting ─── macros ─── call-aliases
 
 io (Ph 1) ─── templating
@@ -195,98 +204,62 @@ string-interpolation ─── new-syntax (Ph 4 default flip)
 
 structural-contracts ─── numeric-types (Ph 1)
 parameterized-type-aliases ─── algebraic-data-types (Ph 4, recursive ADTs)
+
+arena-patterns (Ph 1: variable-resolution-pass)
+    └── arena-patterns (Ph 2: ThunkArena + FlatEnv)
+            └── arena-patterns (Ph 3: CEK machine)
+                    └── arena-patterns (Ph 4: --- boundary migration)
+
+eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
 ```
 
 ---
 
 ## Conflicts and Alternative Paths
 
-No two proposals are fully mutually exclusive in the sense that adopting one
-*prevents* the other. However, several pairs represent alternative paths to the
-same problem, or create tension that requires careful ordering.
+No two proposals are fully mutually exclusive — adopting one never prevents the other. However, several pairs represent alternative paths or create ordering tension.
 
 ### Alternative Solutions to the Same Problem
 
 **Dual-dispatch typing: [Type Classes](typeclasses.md) vs [Union Types](union-types.md)**
 
-Both solve the problem of typing `$map`, `$filter`, and other dual-dispatch builtins
-that accept either Dict or Seq. Type classes solve it with `Functor f => (a → b) → f
-a → f b`; union types solve it with `(a → b) → (Dict a | Seq a) → (Dict b | Seq
-b)`. These are genuinely alternative approaches for this specific problem:
+Both solve the problem of typing `$map`, `$filter`, and other dual-dispatch builtins. Type classes solve it with `Functor f => (a → b) → f a → f b`; union types solve it with `(a → b) → (Dict a | Seq a) → (Dict b | Seq b)`.
 
-- Adopt **type classes** first if the goal is polymorphic protocols for user-defined
-  types (e.g., making user types participate in `$map`).
-- Adopt **union types** first if the goal is nullable types and ADTs (`Int | Null`,
-  `$try` result types) — the dual-dispatch typing is a secondary benefit.
+- Adopt **type classes** first if the goal is polymorphic protocols for user-defined types.
+- Adopt **union types** first if the goal is nullable types and ADTs (`Int | Null`, `$try` result types).
 
-Either path is valid. Adopting both is fine: type classes provide Functor-style
-abstraction, union types provide sum-type declarations. They are not in conflict, but
-for the dual-dispatch problem specifically, one solution is sufficient.
+Either path is valid. Both can coexist; for the dual-dispatch problem specifically, one solution is sufficient.
 
-### Supersession: When One Path Makes Another Obsolete
+### Supersession
 
 **[Union Types](union-types.md) Phase 2 vs [Algebraic Subtyping](algebraic-subtypes.md)**
 
-Union types Phase 2 adds annotation-only unions (`Type::Union`, checked but not
-inferred). Algebraic subtyping makes unions *inferred* — `$if cond [ok: v] [err: m]`
-automatically gets type `[ok: T] | [err: Str]` without annotation. If algebraic
-subtyping is adopted, annotation-only unions (Phase 2) are no longer the ceiling —
-they become a stepping stone that was already traversed. Concretely:
-
-- Phase 2 (annotation-only) is still needed as the foundation that algebraic
-  subtyping builds on — `Type::Union` is required by both.
-- The supersession is of the *motivation*, not the implementation: if you plan to
-  adopt algebraic subtyping, you can treat Phase 2 as Phase 1 of a larger migration
-  rather than as an endpoint.
+Union types Phase 2 adds annotation-only unions. Algebraic subtyping makes unions *inferred*. If algebraic subtyping is adopted, annotation-only Phase 2 becomes a stepping stone rather than an endpoint — not a conflict, but the motivation changes.
 
 **[Nominal Variants](nominal-variants.md) making [Algebraic Data Types](algebraic-data-types.md) conventions redundant for some use cases**
 
-For use cases where opaque construction matters (constructors enforce invariants,
-two variants with identical payload shapes), nominal variants are strictly more
-expressive. Structural ADTs remain the right choice when external JSON interop is
-the priority (structural variants round-trip transparently; nominal variants don't
-reconstruct from `$from-json` automatically). These coexist rather than conflict —
-but for any *specific* type declaration, the user must choose structural or nominal.
+For use cases where opaque construction matters, nominal variants are strictly more expressive. Structural ADTs remain correct for JSON interop (structural variants round-trip; nominal variants don't reconstruct from `$from-json`). These coexist — but for any specific type declaration, the user must choose.
 
 ### Runtime Representation Tension
 
-**[Nominal Variants](nominal-variants.md) + [Algebraic Data Types](algebraic-data-types.md) JSON serialization**
+**[Nominal Variants](nominal-variants.md) + JSON serialization**
 
-Both serialize similarly to JSON: structural `[ok: 42]` → `{"ok": 42}`, nominal
-`[call Ok 42]` → `{"Ok": 42}`. A consumer reading `{"Ok": 42}` from JSON cannot
-determine whether it was originally structural or nominal — and `$from-json` always
-produces structural dicts. This means: if a value crosses a JSON boundary, it loses
-its nominal identity. This is by design (nominality requires explicit construction)
-but it is an irrecoverable information loss. Do not use nominal variants for data
-that must survive JSON round-trips; use structural ADTs instead.
+Nominal `[call Ok 42]` → `{"Ok": 42}`. `$from-json` always produces structural dicts, losing nominal identity. Do not use nominal variants for data that must survive JSON round-trips; use structural ADTs instead.
 
 ### The One-Way Migration Door
 
-**[Unified Syntax Reform](new-syntax.md)** is not mutually exclusive with any other
-proposal, but once the default flip (Phase 4) is executed, all existing tinct code
-and all other whatif example syntax needs to be updated to the new `$`-inverted,
-bare-word-reference model. Every other whatif doc uses current syntax (`$name` for
-references, `[call $fn arg]` for calls). After the migration, their example syntax
-would be written differently (`name` for references, `[fn arg]` implied calls). The
-proposals themselves remain valid; only the surface syntax of their examples changes.
-Plan the syntax migration as a coordinated rewrite of all whatif docs, not a silent
-background change.
+**[Unified Syntax Reform](new-syntax.md)** — Once the default flip (Phase 4) executes, all existing tinct code and all whatif example syntax needs updating. Plan as a coordinated rewrite, not a background change.
 
 ### No Conflict (Apparent but Not Real)
 
 **[Algebraic Data Types](algebraic-data-types.md) vs [Nominal Variants](nominal-variants.md) — both use `[union ...]`**
 
-The same `[union ...]` form hosts both structural and nominal declarations,
-distinguished by case (lowercase entries = structural, uppercase entries = nominal).
-A single union can mix both. This is not a conflict — it is intentional composability.
-The distinction is visually clear and semantically sound at the runtime level
-(`Value::Dict` vs `Value::Variant`).
+The same `[union ...]` form hosts both structural and nominal declarations, distinguished by case. A single union can mix both. This is intentional composability.
 
 **[Structural Contracts](structural-contracts.md) vs [Type Classes](typeclasses.md) for validation**
 
-Structural contracts provide `$validate` dict-as-schema for runtime constraint
-checking. Type classes could provide a `Validate` typeclass for user-defined
-validation. These address different layers: structural contracts are for boundary
-validation (JSON input, pipeline boundaries), type classes are for type-level
-protocols. Both can coexist; adopt structural contracts first for the immediate
-use case, type classes later for polymorphic protocols.
+Structural contracts are for boundary validation (JSON input, pipeline boundaries); type classes are for type-level protocols. Both can coexist; adopt structural contracts first for the immediate use case.
+
+**[String Interning](string-interning.md) vs [Arena Patterns](arena-patterns.md)**
+
+String interning replaces `Key::String(String)` with `Key::String(Spur)`. Arena patterns replace `Rc<Thunk>` with `ThunkId`. Both are perf migrations that change the representation of different types — they don't conflict and could be done in either order. Arena migration is higher-leverage and already planned; string interning should be profiled before committing.

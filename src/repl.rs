@@ -658,9 +658,10 @@ mod tests {
     fn test_session_nested_dict() {
         let mut session = ReplSession::new().unwrap();
 
+        // Value::fmt uses bounded display depth; deeply nested dicts are truncated with "..."
         assert_eq!(
             session.eval_input("[a: [b: [c: 42]]]").unwrap(),
-            "Dict({\"a\": Dict({\"b\": Dict({\"c\": Int(42)})})})"
+            "Dict({\"a\": Dict({\"b\": Dict({\"c\": ...})})})"
         );
     }
 

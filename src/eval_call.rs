@@ -35,6 +35,7 @@ pub(crate) fn func_label(expr: &Expr) -> Cow<'static, str> {
     }
 }
 
+#[allow(dead_code)] // Used for detailed error diagnostics in future CEK migration
 pub(crate) fn func_path(expr: &Expr) -> String {
     match expr {
         Expr::VarRef(name) => format!("${name}"),
