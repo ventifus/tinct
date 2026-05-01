@@ -409,37 +409,6 @@ Findings from formal audit of doc/*.md theoretical claims (2026-04-21). Covers t
 
 Enhance error reporting with richer context types inspired by Elm, Nickel, and rustc patterns.
 
-### error-restructuring: Error Model Restructuring
-
-Core error model improvements. Foundation for all later error work.
-
-- [x] Design structured error model (enum variants, error codes, style guidelines) — see doc/10-errors.md §Structured Error Model
-- [x] Establish error message style guidelines (rustc's rules: no trailing punctuation, no questions, may contain names but not expressions) — see doc/10-errors.md §Structured Error Model Part 8
-- [x] Migrate freeform string error constructors to structured enum variants (`key_not_found`, `type_mismatch`, `arity_mismatch`) — done in error-structured-migrate-a through -d sprints
-- [x] Add structured error codes (E001, E002, ...) for programmatic error filtering and documentation linking — ErrorKind::code() returns E001-E099
-- [x] Document dual-span error model in doc/*.md — see doc/10-errors.md §Error Semantics — Formal Specification, Part 1: Error Representation
-- [x] Migrate lib.rs remaining `EvalError::new()` call sites to typed ErrorKind constructors — verified clean: no EvalError::new() in lib.rs [Minor, integration-verifier]
-- [ ] Add builtin function name to error stack frames — builtin errors currently lack the function name in stack traces (`src/builtins.rs`, `src/error.rs`) [Major, span-integrity-checker]
-- [x] Deduplicate redundant span output when definition-site == materialization-site — already implemented in error.rs Display [Major, span-integrity-checker]
-- [x] Add dual-span pattern to access chain errors — fixed eval_dot_access, eval_bracket_access, eval_range_access (`src/eval.rs`) [Major, span-integrity-checker]
-- [x] Fix builtin errors using call_span for definition-site — fixed 6 builtins ($to-int, $to-float, $error, $from-json, $include, $join) to use args[i].span as definition_span (`src/builtins.rs`) [Major, span-integrity-checker]
-- [x] Fix builtin helper functions materializing with `None` mat_span instead of operand span — `expect_one_arg`, `extract_num_pair`, `require_dict`, `require_string` now pass `Some(&call_span)` to materialize. (`src/builtins.rs`) [Major, span-integrity-checker]
-- [x] Fix `TypeMismatch::context` field always `None` — added context strings to 8 call sites: $try, $apply (builtins.rs), dot access, bracket access, range access (eval.rs) [Major, span-integrity-checker]
-
-### error-typeassert: TypeAssert Error Reporting (Post typeassert-structural Sprint)
-
-Span and message quality gaps introduced or exposed by the typeassert-structural sprint.
-
-- [x] Fix Guarded thunk type-check errors bypassing `decorate` — mat_span now propagated through all 3 Guarded failure paths (`src/eval.rs`) [Critical, span-integrity-checker T4]
-- [x] Fix `validate_and_wrap_record` using `guard_span` as definition-site — now uses `data_span` (inner thunk span) as definition_span (`src/eval.rs`) [Minor, span-integrity-checker T4]
-- [x] Fix Guarded thunk field errors using `guard_span` — now uses `inner.span` as definition_span for field errors (`src/eval.rs`) [Minor, span-integrity-checker T4]
-- [x] Fix nominal TypeAssert fallback — uses `EvalError::type_assert_failed()` constructor with `thunk.span`/`expr.span` dual-span pattern (`src/eval.rs:444`) [Nit, span-integrity-checker T4]
-- [x] Normalize TypeAssertFailed message format — fieldpath-prefix scheme applied consistently across shape and type errors (`src/eval.rs`) [Minor, span-integrity-checker T4]
-- [x] Add corpus tests for TypeAssert Record/proxy error paths — three corpus tests added: `typeassert_record_non_dict`, `typeassert_guarded_field_type_mismatch`, `typeassert_guarded_nested_record_non_dict`. Note: `@Any` inner wrapper required to bypass type checker early-return (which prevents `resolved_type` from being set when check fails). (`tests/corpus/eval/errors/`) [Major, test-crafter + span-integrity-checker T4]
-- [x] Fix TypeAssert Record/non-Dict branch missing `.with_materialization_span(expr.span)` — added to both `eval()` (line ~389) and `eval_step()` (line ~2030) to match the pattern of the parallel non-Record branch. (`src/eval.rs`) [Nit, sprint-reviewer C62 round 9]
-- [x] Fix Guarded materialize path missing `.with_materialization_span(guard_span)` in two error branches — Record/non-Dict and non-Record type mismatch in `apply_cont` for `GuardedValidate`. Both now chain `.with_materialization_span(guard_span)` before `decorate()`. (`src/eval.rs`) [Minor, integration-verifier C62]
-- [ ] Add compile-time assertion that `lsp/server.rs::MAX_DOCUMENT_SIZE == builtins.rs::MAX_FILE_SIZE` — currently two independent constants with a comment stating they should match; silent divergence risk. [Nit, integration-verifier C62]
-
 ### error-context: Error Context & Suggestions
 
 Richer error context for debugging.
