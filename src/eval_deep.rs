@@ -10,6 +10,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
+use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, EvalContext, MAX_EVAL_DEPTH};
 use crate::value::{Key, Thunk, Value};
@@ -149,6 +150,7 @@ fn deep_materialize_impl(
         current_span, // propagate call-site span
         &mut work_stack,
         &mut value_stack,
+        ctx,
     )?;
 
     // Main work loop.
@@ -261,8 +263,25 @@ fn push_structural(
     mat_span: Span,
     work_stack: &mut Vec<WorkItem>,
     value_stack: &mut Vec<Rc<Thunk>>,
+    ctx: &Rc<EvalContext>,
 ) -> EvalResult<()> {
     match val {
+        Value::Overlay(l, r) => {
+            // Flatten overlay to dict, then recurse as Dict.
+            let map = flatten_overlay(l, r, "deep-materialize", ctx, depth, span)?;
+            return push_structural(
+                &Value::Dict(map),
+                depth,
+                cache,
+                seq_depth,
+                span,
+                thunk_ptr,
+                mat_span,
+                work_stack,
+                value_stack,
+                ctx,
+            );
+        }
         Value::Dict(map) => {
             if map.is_empty() {
                 // Empty dict: assemble immediately, no children.
@@ -417,6 +436,7 @@ fn process_force(
         mat_span, // propagate call-site span through nested materializations
         work_stack,
         value_stack,
+        ctx,
     )
     .map_err(|mut e| {
         // Depth / infinite-Seq error from a child: attach the source thunk's

@@ -132,35 +132,20 @@ Security hardening implementation tasks for `$include` file sandbox and integrit
 - [x] Add LSP method name length cap in `handle_request` — implemented: `MAX_METHOD_NAME_LEN=256` at `src/lsp/server.rs:26`, cap applied at lines 111-118. [Minor, security-expert C52]
 - [x] Add `MAX_SUBST_SIZE` cap to `state.subst` to prevent DoS — `check_dot_access` on an open-record-typed target binds one `RowVar` in `state.subst.row_map` per call; the accumulator is never cleared during a file's type inference. N dot-accesses accumulate N entries; the occurs check at `row_var_occurs_pub` walks all reachable prior bindings, giving O(N²) type-check time total. A crafted file with N open-record dot-accesses can exhaust memory. Add `MAX_SUBST_SIZE: usize = 50_000` constant; before each `subst.type_map.insert` and `subst.row_map.insert`, check `type_map.len() + row_map.len() < MAX_SUBST_SIZE`; return `TypeError::new("type inference resource limit exceeded", span)` if exceeded. (`src/typecheck.rs:635`, `src/types.rs:317-319`) [Major, security-expert C53] (already implemented, updated to 50K)
 - [x] Disable or sandbox `$include` in LSP evaluation — implemented: `DocumentStore::new()` sets `no_fs=true` at `src/lsp/document.rs:109`; regression test `test_lsp_include_forbidden_with_no_fs` verifies IncludeForbidden (E042) error fires. CWE-22 mitigated. [Major, security-expert train-4]
-- [ ] Add `cargo audit` as a CI gate — the codebase has no automated dependency vulnerability scanning; add `cargo audit` (from the RustSec Advisory Database) to the CI pipeline so new advisories are surfaced before they accumulate. No known vulnerabilities as of C59. (`Cargo.toml`, CI config) [Minor, security-expert C59]
-- [ ] Add `blake3` and `sha3` crates to `Cargo.toml` for hash verification (`Cargo.toml`)
-- [ ] Extend `builtin_include` to accept optional second positional argument — parse `"algo:hexdigest"` string, validate hex length, hash raw bytes via `std::fs::read` (not `read_to_string`), error on mismatch (`src/builtins.rs`)
-- [ ] Add `HashMap<String, HashMap<String, String>>` hash map field to include cache (outer key: canonical path, inner key: algo name, value: hex digest); populate on first verified read; compare on cache hit (`src/eval.rs`, `src/builtins.rs`)
-- [ ] Update check ordering in `builtin_include`: cache lookup and cycle detection before file read; hash check after read, before cache store (`src/builtins.rs`)
-- [ ] Add `--require-integrity` flag to `eval` subcommand — errors on any `[call $include ...]` without a hash argument (`src/main.rs`, `src/builtins.rs`)
-- [ ] Add `llt hash <file>` subcommand — outputs `blake3:hexdigest`; `--algo sha3-256|sha3-512|sha256` selects algorithm (`src/main.rs`)
-- [ ] Add corpus test: include with correct hash passes; incorrect hash errors (`tests/corpus/eval/`)
-- [ ] Add corpus test: `--require-integrity` errors on hashless include (`tests/corpus/eval/`)
+- [x] Add `cargo audit` as a CI gate — the codebase has no automated dependency vulnerability scanning; add `cargo audit` (from the RustSec Advisory Database) to the CI pipeline so new advisories are surfaced before they accumulate. No known vulnerabilities as of C59. (`Cargo.toml`, CI config) [Minor, security-expert C59]
+- [x] Add `blake3` and `sha3` crates to `Cargo.toml` for hash verification (`Cargo.toml`)
+- [x] Extend `builtin_include` to accept optional second positional argument — parse `"algo:hexdigest"` string, validate hex length, hash raw bytes via `std::fs::read` (not `read_to_string`), error on mismatch (`src/builtins.rs`)
+- [x] Add `HashMap<String, HashMap<String, String>>` hash map field to include cache (outer key: canonical path, inner key: algo name, value: hex digest); populate on first verified read; compare on cache hit (`src/eval.rs`, `src/builtins.rs`)
+- [x] Update check ordering in `builtin_include`: cache lookup and cycle detection before file read; hash check after read, before cache store (`src/builtins.rs`)
+- [x] Add `--require-integrity` flag to `eval` subcommand — errors on any `[call $include ...]` without a hash argument (`src/main.rs`, `src/builtins.rs`)
+- [x] Add `llt hash <file>` subcommand — outputs `blake3:hexdigest`; `--algo sha3-256|sha3-512|sha256` selects algorithm (`src/main.rs`)
+- [x] Add corpus test: include with correct hash passes; incorrect hash errors (`tests/corpus/eval/`)
+- [x] Add corpus test: `--require-integrity` errors on hashless include (`tests/corpus/eval/`)
 - KNOWN ISSUE: Corpus tests for `$include` nested/chained includes are not possible in the corpus test environment — `eval_source()` has no real filesystem, so files cannot be injected. Nested include behavior is only testable via CLI integration tests (`tests/cli/`) or unit tests mocking the filesystem. The `include_forbidden.llt-eval` test uses `# no_fs` to test the disabled-filesystem error path, which is the only `$include` scenario accessible from corpus tests.
 - [x] Add `$split` parts-count limit — implemented: `MAX_SPLIT_PARTS=1_000_000` at `src/builtins.rs:44`, enforced at lines 588-594 with `.take(MAX_SPLIT_PARTS + 1)` before allocating and `EvalError` on excess. [Minor, security-expert C63]
 - [x] Add compile-time assertion `MAX_DOCUMENT_SIZE == MAX_FILE_SIZE` — `const _: () = assert!(MAX_DOCUMENT_SIZE == crate::builtins::MAX_FILE_SIZE as usize, ...)` added to `src/lsp/server.rs:25-29`; ensures LSP and CLI enforce the same 10 MB limit without silent drift. (already done in C96; test updated with compile-time const assert) [Minor, security-expert C97]
 - [x] Fix TOCTOU in `read_source` CLI file size check — `read_source()` at `src/main.rs:360-369` calls `std::fs::metadata(file_path)` then `std::fs::read_to_string(file_path)` in two separate operations. If the file grows between the two calls, `read_to_string` allocates more than `MAX_FILE_SIZE` bytes of heap. Fix: open the file with `File::open()`, call `file.metadata()?` on the open fd, check size, then `read_to_string` on the same fd (or use `file.take(MAX_FILE_SIZE + 1)` to limit reads at the OS level). Same two-op pattern exists in `builtin_include` and is tracked separately under `include-fd-hardening`. (`src/main.rs:360-369`) [Minor, security-expert C76]
 
-
-## merge-lazy-overlay: Lazy Dict Overlay for $merge
-
-Replace eager dict merge with lazy overlay representation. See doc/08-evaluation.md §Selective Materialization.
-
-### merge-lazy-overlay: Lazy Overlay Implementation
-
-Implement lazy overlay representation for `$merge`. See doc/08-evaluation.md §Selective Materialization.
-
-- [ ] Implement `Overlay(L, R)` representation for `Value::Dict` — O(1) construction without materializing L or R
-- [ ] Access semantics: check R first, then L
-- [ ] Iteration: flatten to concrete `IndexMap` on demand
-- [ ] Handle chained overlays: `Overlay(Overlay(A, B), C)`
-- [ ] Verify behavioral equivalence: same values, same iteration order, same errors, same sharing
-- [ ] Benchmark: compare eager merge vs lazy overlay on large dicts
 
 ## perf-stdlib: Performance: Stdlib Rust Reimplementations
 
@@ -171,8 +156,8 @@ Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append`
 ### perf-stdlib: Stdlib Rust Reimplementations
 
 Remaining Rust reimplementations (all currently in `stdlib/prelude.llt`):
-- [ ] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning). Note: `concat` Seq path is also a correctness issue (hits depth limit at ~256 elements), tracked separately in seq-resource-safety
-- [ ] `sort`, `sort-by` / `sort-merge` -- single Rust builtin using Vec::sort_by would be O(n log n) (laziness-auditor review: $sort uses eager $cons per element)
+- [x] `rest`, `cons`, `conj`, `concat`, `reverse` -- list primitives, used by sort (O(n) each due to cloning). Note: `concat` Seq path is also a correctness issue (hits depth limit at ~256 elements), tracked separately in seq-resource-safety (rest/cons/reverse/sort implemented; concat already Rust; conj deferred)
+- [x] `sort`, `sort-by` / `sort-merge` -- single Rust builtin using Vec::sort_by would be O(n log n) (laziness-auditor review: $sort uses eager $cons per element) (sort implemented as Rust builtin; sort-by still LLT)
 - [ ] `zip`, `flatten`, `find-deep` -- recursive traversal or lazy seq versions for perf
 - [x] `until` -- currently LLT recursive, hits MAX_EVAL_DEPTH at ~230 iterations; implement as Rust builtin using a Rust loop for unlimited depth convergence (`stdlib/prelude.llt:153-154`) [Minor, stdlib-author]
 
@@ -249,7 +234,7 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [ ] Fix `deep_materialize` allocating HashMap before checking if value is a primitive — cache `HashMap<*const Thunk, Option<Rc<Thunk>>>` is allocated unconditionally; `deep_materialize_impl` immediately returns for primitive types. Add upfront guard `if !matches!(val, Value::Dict(_) | Value::Seq { .. }) { return Ok(val.clone()); }` before allocation. (`src/eval.rs:1208-1210`) [Minor, performance-expert C46]
 - [x] Fix `TypeScheme::fmt()` allocating `Vec<String>` for display — `let all_vars: Vec<String> = self.type_vars.iter().chain(self.row_vars.iter()).cloned().collect(); all_vars.join(" ")` allocates and clones all var name strings. Replace with iterative `write!(f, ...)` with separator tracking. (`src/types.rs:217-225`) [Nit, performance-expert C46]
 - [ ] Fix `infer_dict` Pass 3 looking up fresh vars via TypeEnv chain — `dict_env.get(name)` traverses the TypeEnv parent closure on every pass-3 lookup even though all fresh vars were inserted in the same env in Pass 1 (depth 0). Collect `&str → Type` into a local `HashMap` in Pass 1 and look up directly in Pass 3, eliminating chain traversal. (`src/typecheck.rs:446`) [Minor, performance-expert C46]
-- [ ] Remove unreachable `check_call_with_scheme` CALL-MONO branch — `has_type_vars()` guard at `src/typecheck.rs:695` is always true by invariant: the function is only dispatched when `scheme.type_vars` or `scheme.row_vars` is non-empty, and `instantiate_scheme` inserts a fresh TypeVar for every quantified var. Delete the `if !func_ty.has_type_vars()` block; add `debug_assert!(func_ty.has_type_vars())`. Saves one O(type_size) walk per polymorphic call. (`src/typecheck.rs:695`) [Major, performance-expert C47]
+- [x] Remove unreachable `check_call_with_scheme` CALL-MONO branch — `has_type_vars()` guard at `src/typecheck.rs:695` is always true by invariant: the function is only dispatched when `scheme.type_vars` or `scheme.row_vars` is non-empty, and `instantiate_scheme` inserts a fresh TypeVar for every quantified var. Delete the `if !func_ty.has_type_vars()` block; add `debug_assert!(func_ty.has_type_vars())`. Saves one O(type_size) walk per polymorphic call. (`src/typecheck.rs:695`) [Major, performance-expert C47] (added debug_assert! instead)
 - [ ] Skip `ann_mapping` HashMap allocation for fully unannotated functions — `HashMap` is allocated on every `infer_fn` and `check_expr` lambda entry even for functions with no annotations (the common case); created, threaded through, never written, then dropped. Add early guard: if all params have no annotation and no return annotation, use `&mut None` directly and skip HashMap. Saves ~40 bytes + HashMap init per unannotated function. (`src/typecheck.rs:865,313`) [Minor, performance-expert C47]
 - [ ] Optimize `instantiate_scheme` for single-var schemes — allocates full `Substitution` (IndexMap-backed) even for the most common polymorphic case (one quantified var). For single-var case, perform renaming inline without constructing `Substitution`; or use `SmallVec<[(String, Type); 2]>` inside `Substitution.map`. (`src/types.rs:570`) [Minor, performance-expert C47]
 - [ ] Defer `field_path` allocation in `validate_and_wrap_record` to error path — `field_path: Vec<String>` parameter is cloned and extended on every nested record level (~5 allocs for K8s-style manifests); only used to construct error messages. Change to `field_path: &[&str]`, construct owned `String` path only in error arm via `field_path.join(".")`. (`src/eval.rs:166-257`) [Major, performance-expert C48]

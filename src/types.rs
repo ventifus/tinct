@@ -2150,6 +2150,71 @@ impl TypeEnv {
             },
         );
 
+        // List operations (moved from LLT stdlib to Rust for performance)
+        // rest: Dict → Dict (removes first entry, reindexes)
+        env.insert(
+            "rest".to_string(),
+            Type::Function {
+                params: vec![Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_rest_a".to_string(), 0),
+                })],
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_rest_r".to_string(), 0),
+                })),
+                variadic: false,
+            },
+        );
+        // cons: Any → Dict → Dict (prepends element, reindexes)
+        env.insert(
+            "cons".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Any,
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_cons_a".to_string(), 0),
+                    }),
+                ],
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_cons_r".to_string(), 0),
+                })),
+                variadic: false,
+            },
+        );
+        // reverse: Dict → Dict (reverses insertion order, reindexes)
+        env.insert(
+            "reverse".to_string(),
+            Type::Function {
+                params: vec![Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_reverse_a".to_string(), 0),
+                })],
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_reverse_r".to_string(), 0),
+                })),
+                variadic: false,
+            },
+        );
+        // sort: Dict → Dict (natural ordering, O(n log n))
+        env.insert(
+            "sort".to_string(),
+            Type::Function {
+                params: vec![Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_sort_a".to_string(), 0),
+                })],
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_sort_r".to_string(), 0),
+                })),
+                variadic: false,
+            },
+        );
+
         // Proxy
         env.insert(
             "proxy".to_string(),
@@ -2939,6 +3004,12 @@ mod tests {
         assert!(env.get("map").is_some());
         assert!(env.get("filter").is_some());
         assert!(env.get("reduce").is_some());
+
+        // List operations (moved from LLT to Rust)
+        assert!(env.get("rest").is_some());
+        assert!(env.get("cons").is_some());
+        assert!(env.get("reverse").is_some());
+        assert!(env.get("sort").is_some());
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::builtins::{ok_val, reject_named};
+use crate::builtins::{flatten_overlay, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Key, Thunk, ThunkState, Value};
@@ -40,6 +40,13 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let f_thunk = Rc::clone(&args[0]);
     let xs = materialize(&args[1], None, &ctx, depth)?;
+    // Flatten Overlay to Dict before dispatch.
+    let xs = match xs {
+        Value::Overlay(l, r) => {
+            Value::Dict(flatten_overlay(&l, &r, "map", &ctx, depth, call_span)?)
+        }
+        other => other,
+    };
 
     match xs {
         Value::Dict(ref map) => {
@@ -53,7 +60,7 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     call_span,
                     Rc::clone(&ctx.config.stdlib_env),
                     value_thunk.span,
-                    Cow::Owned(format!("map {}", key)),
+                    Cow::Borrowed("map"),
                     Rc::clone(&ctx),
                 ));
                 new_map.insert(key.clone(), pending_call);
@@ -122,6 +129,13 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let pred_thunk = Rc::clone(&args[0]);
     let xs = materialize(&args[1], None, &ctx, depth)?;
+    // Flatten Overlay to Dict before dispatch.
+    let xs = match xs {
+        Value::Overlay(l, r) => {
+            Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, depth, call_span)?)
+        }
+        other => other,
+    };
 
     match xs {
         Value::Dict(ref map) => {

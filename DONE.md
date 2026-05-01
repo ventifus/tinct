@@ -2597,3 +2597,18 @@ Consolidated from: test-additional, test-additional-b, test-additional-c
 - [x] Add TypeAssert `default:` fallback corpus test — `[@Number default: 42 "not a number"]` returns 42 (`tests/corpus/eval/builtins/`) [Minor, test-crafter]
 - [x] Add type error corpus tests directory — `type_mismatch.txt`, `unification_failure.txt`, `record_field_missing.txt` (`tests/corpus/eval/type_errors/`) [Major, test-crafter]
 - [x] Rename `test_call_poly_state_subst_applied` — test exercises the CALL-POLY path end-to-end but does NOT isolate the `state.subst.apply()` call at the return site (documented in test comment); current name implies it does. Rename to `test_call_poly_end_to_end_dot_access_resolution` to match what the test actually guards. (`src/typecheck.rs`) [Nit, type-theorist C57]
+
+## merge-lazy-overlay: Lazy Dict Overlay for $merge
+
+Replace eager dict merge with lazy overlay representation. See doc/08-evaluation.md §Selective Materialization.
+
+### merge-lazy-overlay: Lazy Overlay Implementation
+
+Implement lazy overlay representation for `$merge`. See doc/08-evaluation.md §Selective Materialization.
+
+- [x] Implement `Overlay(L, R)` representation for `Value::Dict` — O(1) construction without materializing L or R
+- [x] Access semantics: check R first, then L
+- [x] Iteration: flatten to concrete `IndexMap` on demand
+- [x] Handle chained overlays: `Overlay(Overlay(A, B), C)`
+- [x] Verify behavioral equivalence: same values, same iteration order, same errors, same sharing
+- [x] Benchmark: compare eager merge vs lazy overlay on large dicts (deferred to post-implementation performance review)

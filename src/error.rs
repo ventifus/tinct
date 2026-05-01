@@ -159,6 +159,14 @@ pub enum ErrorKind {
         size: u64,
         limit: u64,
     },
+    IncludeHashMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
+    IncludeHashRequired {
+        path: String,
+    },
 
     // --- Conversion errors (E060-E069) ---
     ParseConversion {
@@ -216,6 +224,8 @@ impl ErrorKind {
             Self::IncludeCycle { .. } => "E052",
             Self::IncludeParseFailed { .. } => "E053",
             Self::IncludeFileTooLarge { .. } => "E054",
+            Self::IncludeHashMismatch { .. } => "E055",
+            Self::IncludeHashRequired { .. } => "E056",
             Self::ParseConversion { .. } => "E060",
             Self::JsonParse { .. } => "E061",
             Self::JsonRange => "E062",
@@ -398,6 +408,18 @@ impl fmt::Display for ErrorKind {
                 f,
                 "include: file \"{path}\" is {size} bytes, exceeds {limit} byte limit"
             ),
+            Self::IncludeHashMismatch {
+                path,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "include: integrity check failed for \"{path}\": expected {expected}, got {actual}"
+            ),
+            Self::IncludeHashRequired { path } => write!(
+                f,
+                "include: integrity hash required for \"{path}\" (--require-integrity)"
+            ),
             Self::ParseConversion {
                 builtin,
                 input,
@@ -538,6 +560,21 @@ impl PartialEq for ErrorKind {
                     limit: l2,
                 },
             ) => p1 == p2 && s1 == s2 && l1 == l2,
+            (
+                Self::IncludeHashMismatch {
+                    path: p1,
+                    expected: e1,
+                    actual: a1,
+                },
+                Self::IncludeHashMismatch {
+                    path: p2,
+                    expected: e2,
+                    actual: a2,
+                },
+            ) => p1 == p2 && e1 == e2 && a1 == a2,
+            (Self::IncludeHashRequired { path: p1 }, Self::IncludeHashRequired { path: p2 }) => {
+                p1 == p2
+            }
             (
                 Self::ParseConversion {
                     builtin: b1,
@@ -907,6 +944,33 @@ impl EvalError {
     ) -> Self {
         Self {
             kind: ErrorKind::IncludeFileTooLarge { path, size, limit },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn include_hash_mismatch(
+        path: String,
+        expected: String,
+        actual: String,
+        definition_span: Span,
+    ) -> Self {
+        Self {
+            kind: ErrorKind::IncludeHashMismatch {
+                path,
+                expected,
+                actual,
+            },
+            definition_span,
+            materialization_span: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn include_hash_required(path: String, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::IncludeHashRequired { path },
             definition_span,
             materialization_span: None,
             stack: Vec::new(),
@@ -1331,6 +1395,16 @@ mod tests {
             limit: 10_000_000
         }
         .is_catchable());
+        assert!(ErrorKind::IncludeHashMismatch {
+            path: "x.llt".to_string(),
+            expected: "blake3:abc".to_string(),
+            actual: "blake3:def".to_string()
+        }
+        .is_catchable());
+        assert!(ErrorKind::IncludeHashRequired {
+            path: "x.llt".to_string()
+        }
+        .is_catchable());
         assert!(ErrorKind::ParseConversion {
             builtin: "to-int".to_string(),
             input: "abc".to_string(),
@@ -1470,6 +1544,14 @@ mod tests {
                 path: "x".to_string(),
                 size: 1000,
                 limit: 100,
+            },
+            ErrorKind::IncludeHashMismatch {
+                path: "x".to_string(),
+                expected: "blake3:abc".to_string(),
+                actual: "blake3:def".to_string(),
+            },
+            ErrorKind::IncludeHashRequired {
+                path: "x".to_string(),
             },
             ErrorKind::ParseConversion {
                 builtin: "to-int".to_string(),
@@ -1631,6 +1713,16 @@ mod tests {
             path: "big.llt".to_string(),
             size: 100_000_000,
             limit: 10_000_000
+        }
+        .is_cacheable());
+        assert!(ErrorKind::IncludeHashMismatch {
+            path: "x.llt".to_string(),
+            expected: "blake3:abc".to_string(),
+            actual: "blake3:def".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::IncludeHashRequired {
+            path: "x.llt".to_string()
         }
         .is_cacheable());
         assert!(ErrorKind::ParseConversion {
@@ -1950,6 +2042,26 @@ mod tests {
                 }
             ),
             "include: file \"huge.llt\" is 2000000 bytes, exceeds 1000000 byte limit"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::IncludeHashMismatch {
+                    path: "config.llt".to_string(),
+                    expected: "blake3:abc123".to_string(),
+                    actual: "blake3:def456".to_string()
+                }
+            ),
+            "include: integrity check failed for \"config.llt\": expected blake3:abc123, got blake3:def456"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::IncludeHashRequired {
+                    path: "config.llt".to_string()
+                }
+            ),
+            "include: integrity hash required for \"config.llt\" (--require-integrity)"
         );
 
         // Conversion errors (E060-E069)

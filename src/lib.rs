@@ -230,6 +230,12 @@ pub fn value_to_json(
                 Ok(JV::Object(obj))
             }
         }
+        Value::Overlay(l, r) => {
+            // Flatten overlay to concrete dict, then serialize.
+            let map =
+                builtins::flatten_overlay(&l, &r, "to-json", ctx, depth, ast::Span::origin())?;
+            value_to_json(&value::Value::Dict(map), ctx, depth)
+        }
         Value::Function { .. } => Err(error::EvalError::value_not_serializable(
             "Function".to_string(),
             ast::Span::origin(),
@@ -324,6 +330,11 @@ pub fn value_to_display_string(
             Ok(format!("Seq({}, ...)", head_str))
         }
         value::Value::Proxy { .. } => Ok("Proxy".to_string()),
+        value::Value::Overlay(l, r) => {
+            // Flatten overlay to concrete dict, then display.
+            let map = builtins::flatten_overlay(l, r, "display", ctx, depth, ast::Span::origin())?;
+            value_to_display_string(&value::Value::Dict(map), ctx, depth)
+        }
     }
 }
 
