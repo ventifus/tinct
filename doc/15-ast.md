@@ -30,7 +30,7 @@ struct Document {
 
 The `parse()` function returns `Result<Spanned<File>, ParseError>`.
 
-The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the last expression of the first document. Multi-expression inputs discard all but the last expression; multi-document inputs discard all but the first document. No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
+The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the last expression of the first document. Multi-expression inputs discard all but the last expression; multi-document inputs discard all but the first document (`---`-separated multi-doc input returns only the first document). No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
 
 ### Core Expression Type
 
@@ -129,7 +129,7 @@ struct Entry {
 
 /// A named argument in a call expression
 struct NamedArg {
-    name: String,
+    name: String,  // The name field is always the bare identifier without $ prefix even when source uses $key: syntax.
     value: Spanned<Expr>,
 }
 ```

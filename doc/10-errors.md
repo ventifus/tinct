@@ -128,17 +128,17 @@ Rule (1) sets the materialization span on first decoration. Rule (2) adds subseq
 
 ### Part 4: Error Propagation
 
-Errors propagate upward through materialization chains via Rust's `?` operator (early return of `Result::Err`). Every `materialize` call site is a potential decoration point.
+Errors propagate upward through materialization chains via Rust's `?` operator (early return of `Result::Err`). Every `materialize` call site is a potential decoration point. Rules use the same judgment notation as [Evaluation](08-evaluation.md) §Forcing Rules: `Σ_θ` denotes the `EvalContext` captured at thunk construction time.
 
 **[PROP-EVAL]** — Unevaluated thunk evaluation:
 
 ```
-eval(expr, env, d+1) ⇒ Err(ε)
+eval(expr, env, Σ_θ, d+1) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
 if ε'.kind.is_cacheable():
   thunk.state ← Failed(ε')
 else:
-  thunk.state ← Unevaluated(expr, env)   // restore original state
+  thunk.state ← Unevaluated(expr, env, Σ_θ)   // restore original state
 ──────────────────────────
 materialize(thunk, mat_span, d) ⇒ Err(ε')
 ```
@@ -148,12 +148,12 @@ Note: `eval()` may internally call `materialize()` recursively (e.g., for Pendin
 **[PROP-BUILTIN]** — PendingBuiltin execution:
 
 ```
-func(args, named, pd, cs) ⇒ Err(ε)
+func(args, named, Σ_θ, pd, cs) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
 if ε'.kind.is_cacheable():
   thunk.state ← Failed(ε')
 else:
-  thunk.state ← PendingBuiltin(func, args, named, pd, cs)   // restore
+  thunk.state ← PendingBuiltin(func, args, named, pd, cs, Σ_θ)   // restore
 ──────────────────────────
 materialize(thunk, mat_span, d) ⇒ Err(ε')
 ```

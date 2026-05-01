@@ -43,7 +43,7 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 
 **Why parent scope for keys:** The two-environment pattern (`parent_env` for keys, `dict_env` for values) ensures that computed keys are pure with respect to the dict's own bindings. A key expression like `[$a]` in `[x: 1 [$a]: 2]` resolves `$a` in the *enclosing* scope, not the dict scope — users might expect `$a` to reference the sibling binding `x: 1`, but this would create ordering dependence (does `x` exist when the key is evaluated?) and break the letrec invariant that all entries are mutually visible *as thunks* before any are forced.
 
-Implementation: keys are evaluated via `eval_key(key_expr, parent_env, ctx, depth)` (lines 631 in `src/eval.rs`) before the shared `dict_env` is populated with value thunks. This sequencing is critical: all keys must be known before string-keyed entries can be inserted into `dict_env` as bindings (lines 656-660).
+Implementation: keys are evaluated via `eval_key(key_expr, parent_env, ctx, depth)` (in `eval_dict` in `src/eval.rs`) before the shared `dict_env` is populated with value thunks. This sequencing is critical: all keys must be known before string-keyed entries can be inserted into `dict_env` as bindings (in the dict environment binding loop in `eval_dict`).
 
 **Effectful key expressions:** Computed keys may contain effectful operations (currently only `$include`). These effects execute in the parent scope context, not the dict's letrec scope. For example, `[$include "keys.llt"]` in a dict key position evaluates the included file with access to the parent environment's bindings, not the dict's own entries. This is consistent with the scoping rule but means included files used as keys cannot reference the dict's own bindings.
 
@@ -279,11 +279,11 @@ force(θ, d) ⇒ error("circular dependency")
 θ.state ← Failed(err)         (memoize the cycle error)
 ```
 
-**Cycle detection recovery strategy:** When a thunk in `InProgress` state is re-encountered during materialization (indicating a circular dependency), the evaluator constructs a `CircularDependency` error, decorates it with the materialization span (if provided), and transitions the thunk to `Failed` state via `cache_failure()` before propagating the error (`eval.rs:1265-1278`). The `InProgress → Failed` transition is permanent — subsequent access to the same thunk returns the cached error without re-detecting the cycle. The error caching happens *before* propagation to ensure that all references to the cyclic thunk see the same error.
+**Cycle detection recovery strategy:** When a thunk in `InProgress` state is re-encountered during materialization (indicating a circular dependency), the evaluator constructs a `CircularDependency` error, decorates it with the materialization span (if provided), and transitions the thunk to `Failed` state via `cache_failure()` before propagating the error (in `materialize()` InProgress case in `src/eval.rs`). The `InProgress → Failed` transition is permanent — subsequent access to the same thunk returns the cached error without re-detecting the cycle. The error caching happens *before* propagation to ensure that all references to the cyclic thunk see the same error.
 
 **State management after cycle detection:** The thunk is left in `Failed` state, not restored to its original state (`Unevaluated`, `PendingBuiltin`, etc.). This is correct because circular dependencies are semantic errors, not transient resource exhaustion — retrying the same thunk will always produce the same cycle. The cached error may be refined with additional materialization spans as the error propagates through the call stack (via the `Failed → Failed` diagnostic self-edge), but the error identity is fixed.
 
-**Error propagation path:** After transitioning to `Failed`, the error is returned via `Err(err_boxed)`. Callers higher in the materialization stack see the error and propagate it upward. If the same thunk is accessed from a different call site later, the `Failed` case (lines 1242-1264) fires immediately, returning the cached error (potentially with an updated materialization span for the new access site).
+**Error propagation path:** After transitioning to `Failed`, the error is returned via `Err(err_boxed)`. Callers higher in the materialization stack see the error and propagate it upward. If the same thunk is accessed from a different call site later, the `Failed` case (in `materialize()` in `src/eval.rs`) fires immediately, returning the cached error (potentially with an updated materialization span for the new access site).
 
 **[FORCE-GUARD]**
 ```
@@ -363,13 +363,13 @@ force(θ', d+1) ⇒ v
 force(θ, d) ⇒ v
 ```
 
-If `force(f_θ)` produces a value that is neither Function nor Builtin, the forcing fails with a type mismatch error (`eval.rs:1043-1049`), which is cached in Failed state.
+If `force(f_θ)` produces a value that is neither Function nor Builtin, the forcing fails with a type mismatch error (in `materialize()` PendingCall case in `src/eval.rs`), which is cached in Failed state.
 
 Error variants for FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN follow FORCE-EVAL-ERR: on any error, `θ.state ← Failed(e)` before propagation.
 
-**Error decoration:** All errors are decorated via `attach_materialization_context` (`eval.rs:803-831`) before caching, adding the materialization span (if not already set) and origin stack frames. The decoration happens in the `map_err(&decorate)` chain before `cache_failure` is called.
+**Error decoration:** All errors are decorated via `attach_materialization_context` (in `src/eval.rs`) before caching, adding the materialization span (if not already set) and origin stack frames. The decoration happens in the `map_err(&decorate)` chain before `cache_failure` is called.
 
-**Fast path:** In FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN, if θ' is already Materialized, skip the recursive `force` and extract the value directly. This is observationally equivalent to the general rule — FORCE-CACHED fires immediately on the recursive `force(θ', d+1)` — but avoids the function call overhead (`eval.rs:944-945` for PendingBuiltin, `eval.rs:1020-1022` for PendingCall).
+**Fast path:** In FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN, if θ' is already Materialized, skip the recursive `force` and extract the value directly. This is observationally equivalent to the general rule — FORCE-CACHED fires immediately on the recursive `force(θ', d+1)` — but avoids the function call overhead (in `materialize()` PendingBuiltin and PendingCall cases in `src/eval.rs`).
 
 **Value::Proxy access dispatch.** Dot access (`$proxy.field`) and bracket access (`$proxy[key]`) on a `Value::Proxy` are not part of the thunk lifecycle — they occur *after* materialization produces a Proxy value. The evaluator dispatches to `invoke_proxy_handler`, which materializes the handler thunk (sharing-preserving via Launchbury memoization) and invokes it with the key. Each proxy access costs one depth level via `materialize(handler, ..., depth + 1)`. Proxy-handler-returns-Proxy chains are bounded by `MAX_EVAL_DEPTH`.
 
@@ -419,6 +419,18 @@ The iterative evaluator (§Iterative Evaluator) uses explicit `Cont` variants on
 - The monotonicity proof and semantic properties remain unchanged — the 7-state DAG (Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed) is the stable design.
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Rc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
 - MAX_EVAL_DEPTH is replaced by configurable resource limits (`--max-depth`, `--max-memory`) rather than hardcoded safety bounds
+
+## Error Reporting
+
+Error semantics are specified in [Error Handling](10-errors.md). This section summarizes the key concepts; see doc/10 for formal rules and implementation mappings.
+
+**Dual-span model:** Every error carries a definition site (where the error-producing expression was written) and a materialization site (where a consumer forced the thunk that failed). The `attach_materialization_context` function decorates errors with these spans during propagation through the `map_err(&decorate)` chain.
+
+**Stack frame accumulation:** When an error propagates through multiple materialization layers (e.g., `θ₁ → θ₂ → θ₃`), each layer adds a stack frame via DECORATE (doc/10 §Part 3). The first materialization site becomes `mat_span`; subsequent sites become stack frames. Deduplication guards prevent redundant frames.
+
+**Error caching:** Cacheable errors (all except `DepthExceeded`) are memoized in `Failed` state via `cache_failure()`. Subsequent access returns the cached error with additional materialization context. Non-cacheable errors (`DepthExceeded`) restore the thunk to its original state, allowing retry at a shallower depth. See MEMO-CACHE and MEMO-SKIP rules in doc/10 §Part 5.
+
+**Error condition specifications:** The trigger conditions for all `ErrorKind` variants (when each error is raised) are documented in [Error Handling](10-errors.md) §Part 2: Error Sources. Propagation rules (PROP-EVAL, PROP-BUILTIN, PROP-RESULT, PROP-CYCLE, PROP-DEPTH) are in doc/10 §Part 4.
 
 ## Selective Materialization — Formal Specification
 
@@ -906,7 +918,7 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 
 **Cycle handling:** When a thunk pointer is encountered for the second time within the same deep materialization (cache entry is `None`), the function returns `Rc::clone(thunk)` — the original thunk, not forced (in `deep_materialize_thunk`). This prevents infinite recursion on cyclic structures (e.g., `[x: $x]` or mutual dict references). The cycle is detected at the *structure* level (same thunk pointer seen twice during traversal), not the *value* level (the thunk's own `InProgress` sentinel, which detects cycles within a single thunk's evaluation).
 
-**Sharing preservation:** When a thunk appears multiple times in the input value tree (e.g., `let shared = [expensive: [call $f]] in [a: $shared  b: $shared]`), the cache ensures the deep-materialized result is a *single* `Rc<Thunk>` shared by all references. Without the cache, `deep_materialize` would create independent copies for each occurrence, breaking `Rc::ptr_eq` and wasting memory.
+**Sharing preservation:** When a thunk appears multiple times in the input value tree (e.g., `let shared = [expensive: [call $f]] in [a: $shared  b: $shared]`), the cache ensures the deep-materialized result is a *single* `Rc<Thunk>` shared by all references. Without the cache, `deep_materialize` would create independent copies for each occurrence, breaking `Rc::ptr_eq` and wasting memory. The `Rc::ptr_eq` invariant holds only within one `deep_materialize` call; two separate calls on overlapping trees produce distinct output pointers.
 
 **Cache cleanup on error:** If `materialize()` or recursive `deep_materialize_impl()` fails, the cache entry is removed before propagating the error (in `deep_materialize_impl`). This prevents cache poisoning: a failed thunk leaves no stale `None` sentinel that would cause subsequent encounters to incorrectly return an unevaluated thunk.
 
