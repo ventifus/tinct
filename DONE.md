@@ -2040,6 +2040,29 @@ Minor wording and span improvements.
 - [x] Fix $try materializes body with None — passes Some(&call_span)
 - [x] Fix lib.rs serialization depth exceeded — depth_exceeded(MAX_EVAL_DEPTH) (E040)
 
+### sandbox-a: Filesystem Allowlist and `--allow-path` flag
+
+Path-ancestor allowlist check in `builtin_include` with `--allow-path` CLI flag.
+`EvalContext` is already done; `EvalConfig` has `base_dir: cap_std::fs::Dir`,
+`no_fs: bool`, `require_integrity: bool` — just needs `allowed_paths`.
+
+- [x] Add `allowed_paths: Vec<std::path::PathBuf>` to `EvalConfig` in `src/eval.rs` — empty
+  means "allow all" (current behavior); populated via `--allow-path` flags. [Minor]
+- [x] Add `--allow-path <path>` argument to the `eval` subcommand in `src/main.rs` — accepts
+  multiple values (`clap` `action = ArgAction::Append`); canonicalize each path at startup
+  via `std::fs::canonicalize` and store in `EvalConfig::allowed_paths`. Default: empty
+  (unrestricted). [Minor]
+- [x] Add allowlist check in `builtin_include` (`src/builtins.rs`) — after the fd is opened
+  and the canonical path is known (inode-keyed cache lookup), check that the canonical path
+  starts with at least one entry in `ctx.config.allowed_paths`; if not, return
+  `EvalError::include_forbidden` (same as `no_fs=true`). [Minor]
+- [x] Update `EvalContext::with_base_dir()` to inherit `allowed_paths` from parent config —
+  nested `$include` calls share the same allowlist as the top-level invocation. (`src/eval.rs:155-165`) [Nit]
+- [x] CLI test: `--allow-path .` permits include of a file in the current dir; `--allow-path /tmp` rejects include of a file in current dir. (`tests/cli_tests.rs`) [Minor]
+- [x] CLI test: `../` traversal — a file in the cwd tries to include `../sibling.llt`; rejected when `--allow-path .` (because canonical path is outside `.`). [Minor]
+- [x] CLI test: absolute path outside allowlist fails; symlink that resolves outside allowlist fails (symlink resolution is already done by cap-std). [Minor]
+- [x] LSP: set `allowed_paths` to empty (unrestricted) in `DocumentStore::new()` since LSP already sets `no_fs=true`; document that `no_fs` takes priority. [Nit]
+
 ### builtins-message-polish: Builtin Error Message Polish
 
 - [x] Fix $to-float NaN/Infinity error message — "to-float: X parses to a non-finite value (NaN/Infinity not allowed)" instead of "cannot parse"
