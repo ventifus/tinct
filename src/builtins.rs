@@ -1505,6 +1505,20 @@ fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     )))
 }
 
+/// Construct a single builtin registration entry as a `(&'static str, BuiltinFn)` pair.
+///
+/// `builtin!("name", fn)` expands to `("name", fn)`.  The macro co-locates the
+/// string name with the function reference so that grep/rename tools and code
+/// review catch mismatches that a plain tuple would hide (e.g., `("keys", builtin_length)`).
+///
+/// For operator names (`+`, `-`, `*`, `/`) and hyphenated names (`to-int`) the
+/// string literal must be written explicitly because they are not valid Rust identifiers.
+macro_rules! builtin {
+    ($name:literal, $func:expr) => {
+        ($name, $func as BuiltinFn)
+    };
+}
+
 /// Returns all builtin definitions as (name, function) pairs.
 ///
 /// All builtins conform to the standard `BuiltinFn` signature, including `if`
@@ -1513,69 +1527,69 @@ fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
     vec![
         // Arithmetic
-        ("+", builtin_add),
-        ("-", builtin_sub),
-        ("*", builtin_mul),
-        ("/", builtin_div_float),
+        builtin!("+", builtin_add),
+        builtin!("-", builtin_sub),
+        builtin!("*", builtin_mul),
+        builtin!("/", builtin_div_float),
         // Comparison
-        ("=", builtin_eq),
-        ("<", builtin_lt),
+        builtin!("=", builtin_eq),
+        builtin!("<", builtin_lt),
         // Control
-        ("if", builtin_if),
+        builtin!("if", builtin_if),
         // Dict primitives
-        ("keys", builtin_keys),
-        ("length", builtin_length),
-        ("merge", builtin_merge),
-        ("append", builtin_append),
+        builtin!("keys", builtin_keys),
+        builtin!("length", builtin_length),
+        builtin!("merge", builtin_merge),
+        builtin!("append", builtin_append),
         // Strings
-        ("str", builtin_str),
-        ("split", builtin_split),
-        ("replace", builtin_replace),
-        ("upper", builtin_upper),
-        ("lower", builtin_lower),
-        ("trim", builtin_trim),
+        builtin!("str", builtin_str),
+        builtin!("split", builtin_split),
+        builtin!("replace", builtin_replace),
+        builtin!("upper", builtin_upper),
+        builtin!("lower", builtin_lower),
+        builtin!("trim", builtin_trim),
         // Numeric
-        ("floor", builtin_floor),
-        ("round", builtin_round),
+        builtin!("floor", builtin_floor),
+        builtin!("round", builtin_round),
         // Parsing
-        ("to-int", builtin_to_int),
-        ("to-float", builtin_to_float),
+        builtin!("to-int", builtin_to_int),
+        builtin!("to-float", builtin_to_float),
         // Evaluation control
-        ("eval", builtin_eval),
-        ("error", builtin_error),
-        ("try", builtin_try),
-        ("apply", builtin_apply),
-        ("until", builtin_until),
+        builtin!("eval", builtin_eval),
+        builtin!("error", builtin_error),
+        builtin!("try", builtin_try),
+        builtin!("apply", builtin_apply),
+        builtin!("until", builtin_until),
         // Type introspection
-        ("type-of", builtin_type_of),
+        builtin!("type-of", builtin_type_of),
         // I/O
-        ("from-json", builtin_from_json),
-        ("include", builtin_include),
+        builtin!("from-json", builtin_from_json),
+        builtin!("include", builtin_include),
         // Sequences
-        ("seq", builtin_seq),
-        ("head", builtin_head),
-        ("tail", builtin_tail),
-        ("collect", builtin_collect),
-        ("seq?", builtin_seq_check),
-        ("range", builtin_range),
-        ("repeat", builtin_repeat),
-        ("cycle", builtin_cycle),
-        ("iterate", builtin_iterate),
-        ("unfold", builtin_unfold),
-        ("map", builtin_map),
-        ("filter", builtin_filter),
-        ("take", builtin_take),
-        ("drop", builtin_drop),
-        ("reduce", builtin_reduce),
-        ("join", builtin_join),
-        ("concat", builtin_concat),
+        builtin!("seq", builtin_seq),
+        builtin!("head", builtin_head),
+        builtin!("tail", builtin_tail),
+        builtin!("collect", builtin_collect),
+        builtin!("seq?", builtin_seq_check),
+        builtin!("range", builtin_range),
+        builtin!("repeat", builtin_repeat),
+        builtin!("cycle", builtin_cycle),
+        builtin!("iterate", builtin_iterate),
+        builtin!("unfold", builtin_unfold),
+        builtin!("map", builtin_map),
+        builtin!("filter", builtin_filter),
+        builtin!("take", builtin_take),
+        builtin!("drop", builtin_drop),
+        builtin!("reduce", builtin_reduce),
+        builtin!("join", builtin_join),
+        builtin!("concat", builtin_concat),
         // List operations (moved from LLT stdlib to Rust for performance)
-        ("rest", builtin_rest),
-        ("cons", builtin_cons),
-        ("reverse", builtin_reverse),
-        ("sort", builtin_sort),
+        builtin!("rest", builtin_rest),
+        builtin!("cons", builtin_cons),
+        builtin!("reverse", builtin_reverse),
+        builtin!("sort", builtin_sort),
         // Proxy
-        ("proxy", builtin_proxy),
+        builtin!("proxy", builtin_proxy),
     ]
 }
 

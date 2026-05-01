@@ -1,0 +1,7 @@
+# $_ in func position does NOT trigger WRAP-CALL (func position excluded).
+# [call $_ $x] has $_ only in func position → no lambda wrapping.
+# We verify by calling it: provide $_ as a bound function via explicit fn.
+# [fn [_] [call $_ 99]] passes identity, which calls identity(99) = 99.
+[call [fn [_] [call $_ 99]] [fn [x] $x]]
+===
+Int(99)

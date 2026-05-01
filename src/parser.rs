@@ -2082,6 +2082,65 @@ mod tests {
         assert!(err.message.contains("maximum nesting depth exceeded"));
     }
 
+    /// Verify that nesting up to MAX_PARSE_DEPTH - 1 (200 levels below limit) succeeds.
+    ///
+    /// This regression test guards the lower boundary of the depth limit: inputs
+    /// well below 256 must parse successfully. The parser is iterative (Vec<StackFrame>),
+    /// so 200 levels creates no Rust call-stack pressure.
+    #[test]
+    fn test_depth_limit_well_below_maximum_succeeds() {
+        const DEPTH: usize = 200;
+        assert!(
+            DEPTH < MAX_PARSE_DEPTH,
+            "test depth must be less than MAX_PARSE_DEPTH"
+        );
+
+        let mut input = String::new();
+        for _ in 0..DEPTH {
+            input.push('[');
+        }
+        input.push('1'); // innermost value
+        for _ in 0..DEPTH {
+            input.push(']');
+        }
+
+        let result = parse2(&input);
+        assert!(
+            result.is_ok(),
+            "parsing {DEPTH} levels of nesting should succeed (limit is {MAX_PARSE_DEPTH}), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    /// Verify that exactly MAX_PARSE_DEPTH nesting levels is rejected.
+    ///
+    /// The limit is strictly enforced: ≥ MAX_PARSE_DEPTH levels produces an error.
+    /// This is one level below the 257-level test to confirm the exact boundary.
+    #[test]
+    fn test_depth_limit_at_exact_boundary_rejected() {
+        let mut input = String::new();
+        for _ in 0..MAX_PARSE_DEPTH {
+            input.push('[');
+        }
+        input.push('1');
+        for _ in 0..MAX_PARSE_DEPTH {
+            input.push(']');
+        }
+
+        let result = parse2(&input);
+        assert!(
+            result.is_err(),
+            "exactly MAX_PARSE_DEPTH levels should be rejected"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .message
+                .contains("maximum nesting depth exceeded"),
+            "error message should describe the depth limit"
+        );
+    }
+
     #[test]
     fn test_type_assert_simple() {
         let output = parse2("[@Number 42]").expect("parse failed");

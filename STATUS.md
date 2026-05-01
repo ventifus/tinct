@@ -1,6 +1,6 @@
 # Implementation Status
 
-High-level guide to what's done, in progress, and not yet started. Updated 2026-04-28.
+High-level guide to what's done, in progress, and not yet started. Updated 2026-05-01.
 For granular task tracking see TODO.md. For completed work see DONE.md.
 
 ---
@@ -8,19 +8,6 @@ For granular task tracking see TODO.md. For completed work see DONE.md.
 ## Not Started
 
 These are substantial features with zero implementation despite having complete designs.
-
-### Iterative Evaluator / CEK Machine (`iterative-eval`)
-
-The biggest remaining feature. Design: complete — see `doc/16-architecture.md §Iterative Evaluator`.
-Implementation: zero. All work items still open.
-
-What it delivers: removes the 64MB worker thread stack workaround, replaces
-`MAX_EVAL_DEPTH` with configurable resource limits, enables tail-call optimization,
-fixes lazy `eval_call` and `$apply` (currently force their arguments eagerly).
-
-Key tasks: convert `materialize()` and `eval()` hot paths to explicit `Vec<Frame>`,
-implement TCO for `call` expressions and recursive stdlib functions, verify thunk
-lifecycle invariants carry over.
 
 ### Sandboxing (`sandbox`)
 
@@ -31,11 +18,10 @@ What it delivers: untrusted tinct program execution via filesystem allowlist
 (`--allow-path`), Landlock ACLs, seccomp-bpf network/process isolation, rlimit
 resource caps. Prerequisite for the `doc/whatif/io.md` capability model.
 
-### Parser Rewrite (`Parser Rewrite E2`)
-
-Status: **Completed** (sprints parser-core-a through parser-core-c3). The hand-written iterative parser (`src/parser.rs` + `src/lexer.rs`) is now the production parser. The pest PEG parser was removed in sprint parser-core-c3 (commit cc8333c).
-
-Remaining work: Phase 3 (AST-based formatter, blocked on bare-word vs quoted-string preservation) and Phase 4 (error recovery).
+Note: `EvalContext` refactor (prerequisite for `EvalConfig::allowed_paths`) is already
+complete. `--no-fs` and `--timeout` adversarial eval flags are also complete
+(`eval-sandbox-flags`, `sandbox-polish-a/b/c`). Only the Landlock/seccomp/rlimit and
+allowlist-check implementation remain.
 
 ---
 
@@ -43,75 +29,51 @@ Remaining work: Phase 3 (AST-based formatter, blocked on bare-word vs quoted-str
 
 These features have substantial work done but meaningful gaps remain.
 
-### Row Unification Correctness (`row-unification-h`, `h-b`)
+### Row Unification Performance (`row-unification-perf`, `perf-foundations`)
 
-Status: algorithm complete (subsprints c–g merged), correctness gaps remain.
+~20 open items. All are allocation reductions and fast-paths; none affect correctness.
 
-Open issues:
-- `check_call` missing TypeVar arm for letrec forward references — `[call $forward-fn ...]`
-  produces "expected function type" error when callee is not yet bound (`src/typecheck.rs:864`)
-- `ann_mapping` cross-kind collision — TypeVar and RowVar names share one HashMap, violating
-  Rémy (1994) sort separation; `[fn [x@a y@[name: a ...a]] ...]` is mishandled
-- `Pass 3b or_insert` discards `state.subst` binding when both maps bind the same variable
-- Bracket access `$x["field"]` does not generate row constraints; dot access `$x.field` does —
-  inconsistency means bracket form infers less precisely than dot form
-- 6 items in h, 4 in h-b
+Biggest remaining wins:
+- `IndexMap→HashMap` for `Substitution` and `TypeEnv.bindings` (~20% lookup savings)
+- AST clone elimination — `Expr::Fn.body`, `CallArg`, `eval_dict` entry body all
+  deep-clone AST subtrees on every call/iteration (three `Rc<Spanned<Expr>>` migration sites)
+- `ThunkState::PendingBuiltin.named` — `IndexMap::new()` allocated at ~30 sequence step
+  sites; change to `Option<IndexMap<...>>` to skip allocation when no named args
+- `builtin_map` Dict path `format!()` per entry — `Cow::Owned(format!(...))` on every
+  mapped element (Critical)
+- `EvalContext::with_base_dir()` fresh `Rc<EvalConfig>` per `$include` (Critical)
+- `unify_rows` closed-row fast-path — skips 5+ allocations on dominant path (Major)
+- Per-variable depth limit in `Substitution::apply()` — currently only prevents
+  infinite TypeVar chains; structural depth limit still missing (Critical)
 
-### Row Unification Performance (`row-unification-perf`, `perf-b`, `perf-c`)
-
-~17 open items. All are allocation reductions and fast-paths; none affect correctness.
-
-Biggest wins: `IndexMap→HashMap` for `Substitution` and `TypeEnv` (20% lookup savings),
-empty-substitution fast-paths (avoid 2 HashSet allocs per expression on the common empty
-path), closed-row fast-path in `unify_rows` (skips 5+ collection allocs on the dominant path).
+Note: `row-unification-perf-b` and `perf-c` sprints are complete; the remaining items
+live in `perf-foundations` and require no further design work.
 
 ### Type System Completeness (`type-extensions`, `theoretical-foundations`)
 
-Major open items:
+Most code fixes are done. Remaining open items:
 
 | Item | Impact |
 |------|--------|
-| `TypeEnv::with_builtins()` | Builtins not in type env — all corpus typecheck tests ignored |
-| `Type::Seq` inference | Sequence builtins infer as `Any`; blocks LSP hover for seq results |
-| Named argument unification | Named args never checked against param types |
-| IntLiteral→Float unsound arm | `unify(IntLiteral, Float)` succeeds; `is_subtype` rejects — inconsistency |
-| Any-complex-type level zeroing | Vars inside `Fn/Record` unified with `Any` not zeroed; can over-generalize |
-| Variadic param typed wrong | `...args` typed as `Record([], Closed)` — should be `Any` |
-| TypeVar annotation aliasing | Same `@a` in two sibling dict entries overwrites levels, incorrect schemes |
-| `Type::Error` sentinel | No cascading-error suppression; one type error produces 5–10 follow-ons |
-| Type alias shadowing | Policy decided (allow), implementation not done |
-| doc/06 + doc/07 stale content | 8+ open doc fixes for removed `Open` variant, TypeScheme field names, etc. |
+| Named argument type-checking | Named arg value types inferred but not checked against param types; full fix requires `Type::Function` to carry `params: Vec<(String, Type)>` |
+| `Substitution::apply()` depth counter conflatation | Conflates chain depth with structural width; silent wrong type for records with >256 fields |
+| `check_call` CALL-POLY `unify()` re-application | `unify()` re-applies subst only once; confirm Robinson invariant holds |
+| `doc/06-type-inference.md:531` stale | `collect_type_vars()` signature claim still mentions wrong BTreeSet element type |
+| Gradual typing | Deferred — major research project, tracked in `doc/whatif/gradual-typing.md` |
+| Type class constraints | Deferred — tracked in `doc/whatif/typeclasses.md` |
 
-### TypeAssert Structural Part 2 (`typeassert-structural-b`)
+Previously open items now resolved: `TypeEnv::with_builtins()`, `Type::Seq` inference
+stubs, variadic param typed as `Any`, TypeVar annotation aliasing, TypeVar-to-Any level
+zeroing, `Type::Error` sentinel, type alias shadowing, `TypeScheme` kinded split, and
+all related doc/06–07 stale content fixes.
 
-Two open Critical bugs:
-- All three `ThunkState::Guarded` failure paths skip `decorate()` — user sees only the
-  `[@Type ...]` definition-site span, never the access site where the type mismatch occurred
-- `ThunkState::Guarded` absent from formal spec in `doc/08-evaluation.md` — state set,
-  DAG, transition table, and FORCE-* rules all enumerate 6 states; Guarded is a live 7th
+### Parser Error Recovery (`parser-error-recovery`)
 
-Additional open: LSP double-typecheck panic on AST reuse, `$filter` empty Dict returns
-`Dict({})` instead of Seq, TypeAssert corpus test coverage nearly zero.
+Phase 4 of the parser rewrite. Two items open, both effectively deferred:
 
-### Float NaN/Infinity Invariant (`float-nan-infinity`)
-
-Policy decided: reject NaN/Infinity at arithmetic result sites and `$from-json` entry
-("all floats are finite" invariant, matching Jsonnet/Nickel/CUE). Implementation: zero.
-
-Five straightforward tasks: add `is_nan()||is_infinite()` check to `$+`, `$-`, `$*`,
-`$/`, and the `$from-json` JSON number parser path. Shared helper `check_float_result()`
-reduces duplication.
-
-### Sequence Correctness Gaps (`seq-resource-safety`, `eval-lazy-fixes`)
-
-Open issues:
-- `$filter` seq-step depth accumulation: N consecutive predicate failures consume ~2N
-  depth, hitting `MAX_EVAL_DEPTH` at ~128 consecutive misses
-- `$take` depth not incremented per step — constrains composed pipelines
-- `filter_dict_step` depth not incremented (vs `filter_seq_step` which correctly uses `depth+1`)
-- `TypeAssert` forces materialization in `eval()` even when result is never used
-- `$filter` empty Dict returns wrong type (Dict instead of Seq)
-- `$filter` dict path O(n) clone per call (use `Rc::clone` instead)
+- Error token insertion on bracket-level errors (`Expr::Error(Span)` AST node is ready;
+  token-skipping parser refactor is significant work)
+- Multi-error collection per file (requires `ParseOutput` error list + caller updates)
 
 ---
 
@@ -119,11 +81,46 @@ Open issues:
 
 Core algorithms are in place. Remaining items are doc fixes, nits, and minor edge cases.
 
-- **include-fd-hardening** — 7 items open (TOCTOU fix, inode-keyed cache, file-type guards)
-- **TypeAssert structural part 1** — proxy contracts implemented; open items are tests and chaperone semantics
-- **Row unification a–g** — algorithm complete; open items are doc fixes and nit-level cleanup
-- **Underscore desugaring** — `src/desugar.rs` complete; one or two minor follow-ons
-- **Bidirectional typing** — `check_expr` implemented; a few correctness gaps tracked in `type-extensions`
+- **Iterative Evaluator** (`iterative-eval`) — Sprints a through b5 and d complete.
+  The 64MB worker thread is removed. `materialize()` is fully iterative (work-stack).
+  `eval_call` emits `PendingCall` thunks (no synchronous recursion). Access chains are
+  iterative via `DotAccessForce`/`BracketForceTarget` continuations. `TypeAssert` uses
+  `Cont::TypeAssertCheck` deferred in CEK loop. `$apply` lazy via `PendingBuiltin`.
+  `deep_materialize_impl` is iterative via `DeepEntries`/`DeepSeqTail`. Remaining:
+  `eval_step()` still delegates to `eval_recursive` for most `Expr` variants (stub only);
+  `DictEntries`/`DocumentPipeline`/`DictBuildKey`/`BindArgDefault` Cont variants deferred.
+
+- **Parser Rewrite E2** — Phase 1–3 complete (production iterative parser + AST-based
+  formatter). Phase 4 (error recovery) has 2 open deferred items (see In Progress above).
+
+- **TypeAssert Structural (Parts 1 & 2)** — Both parts complete. Proxy contracts
+  implemented with chaperone semantics (Strickland et al. 2012). Critical bugs fixed:
+  all `ThunkState::Guarded` failure paths now call `decorate()`; `ThunkState::Guarded`
+  added to formal spec in `doc/08-evaluation.md` (7-state model, `[FORCE-GUARD]` rule).
+  LSP double-typecheck panic fixed. Elaboration gap closed. Full corpus test coverage added.
+
+- **Row unification a–h** — Algorithm complete through sprint h. All correctness gaps
+  resolved: `check_call` TypeVar arm for letrec forward refs, `ann_mapping` cross-kind
+  collision, Pass 3b `or_insert` discard, bracket access now generates row constraints.
+  Perf sprints (a–c) complete; remaining allocation reductions tracked in perf-foundations.
+
+- **Float NaN/Infinity Invariant** — Complete. All five arithmetic result sites (`$+`,
+  `$-`, `$*`, `$/` float paths and `$from-json` number parser) reject NaN/Infinity via
+  shared `check_float_result()` helper. "All floats are finite" invariant enforced.
+
+- **Sequence Correctness Gaps** — Complete (`seq-resource-safety`, `eval-lazy-fixes`).
+  `$filter` seq-step depth accumulation fixed (internal loop). `$take` and
+  `filter_dict_step` depth correctly incremented. `TypeAssert` premature materialization
+  gated. `$filter` dict path O(n) clone fixed. `$filter` empty Dict correct (not a bug).
+
+- **include-fd-hardening** — Complete. `cap-std` adopted; three-path TOCTOU replaced
+  with single fd-based flow; `include_guard`/`include_cache` keys use `(dev, ino)` pairs;
+  file-type guards reject FIFOs and device nodes. Hash integrity checking (`blake3`,
+  `sha3-256`, `sha3-512`, `sha256`) with `--require-integrity` flag and `llt hash`
+  subcommand complete.
+
+- **Underscore desugaring** — `src/desugar.rs` complete.
+- **Bidirectional typing** — `check_expr` implemented; all correctness gaps resolved.
 
 ---
 
@@ -131,24 +128,28 @@ Core algorithms are in place. Remaining items are doc fixes, nits, and minor edg
 
 These areas have continuous work but are not blocking major feature completion.
 
-**Stdlib Expansion** — ~25 missing convenience functions identified by cross-language
-analysis (Jsonnet, jq, Nix, Dhall). All implementable in tinct. Includes: `partition`,
-`flat-map`, `group-by`, `deep-merge`, `walk`, `take-while`, `drop-while`, `zip-with`,
-`sort-on`, string predicates, numeric primitives.
+**Stdlib Expansion** — Several convenience functions still open: `zip-with`,
+`map-indexed`, `map-keys`, `sort-on`, `flatten-all`, `range-step`, `$has?` Rust
+primitive, `substr`/`slice-str`, `starts-with?`, `ends-with?`, `chars`, runtime
+assertion guards. Most one-liners over existing primitives.
 
-**Error Context Enrichment** — Richer error messages, structured error types (replacing
-raw `EvalError::new()` calls), source-accurate spans in more error paths.
+**Error Context Enrichment** — `$include` chain threading (nested include path in errors),
+secondary span support ("evaluated to this" labels), cycle path reconstruction, source
+snippets with carets (rustc-style), REPL span-aware recovery still open.
 
-**API Hygiene** — `lib.rs` re-exports for `ErrorKind`, `EvalConfig`, `EvalState`;
-error type migrations; doc comment fixes.
+**API Hygiene** — `eval↔builtins` circular dependency (extract `eval_core.rs` interface
+or trait objects), builtin registration macro to prevent name/arity drift, `Type::Any`
+split into `AnyGradual`/`AnyPoly` for gradual typing correctness, `cargo audit` CI gate.
 
 **Performance Foundations** (`perf-foundations`) — Arena allocation, flat environments,
-string interning. All deferred behind the iterative evaluator, which is a natural
-prerequisite for environment reuse.
+string interning, AST `Rc<Spanned<Expr>>` migration, SmallVec for args/frames. All
+benefit from the now-complete iterative evaluator as a natural prerequisite for
+environment reuse and arena scoping.
 
-**Test Infrastructure** — Corpus coverage gaps (letrec mutual recursion, forward
-reference, parse depth limit), ignored typecheck corpus tests (blocked on
-`TypeEnv::with_builtins()`).
+**Test Infrastructure** — Fuzzing targets (`fuzz/`), property-based testing (proptest),
+benchmarks (criterion), LSP corpus tests, per-file test functions (Nickel
+`test_resources!` pattern), insta snapshot tests, pretty-print round-trip idempotence,
+error corpus span assertions, `$_` edge-case corpus, include caching corpus.
 
 **Documentation Divergences** — Various doc/code mismatches identified by specialist
 agents. None are correctness-critical.
@@ -159,16 +160,20 @@ agents. None are correctness-critical.
 
 Based on dependencies and unblocking value:
 
-1. **Float NaN/Infinity** (5 items) — closes a correctness/security invariant with minimal effort
-2. **TypeAssert Part 2 criticals** — fixes two Critical span bugs; unblocks error quality
-3. **Type-extensions code fixes** — IntLiteral-Float soundness, TypeEnv::with_builtins(),
-   TypeVar aliasing; unblocks corpus typecheck tests and LSP hover
-4. **Row unification h + h-b** — closes correctness gaps in the type system's biggest
-   recent feature; prerequisite for reliable polymorphic inference
-5. **Row unification perf** — allocation hotspot cleanup; improves inference throughput
-6. **Sequence correctness gaps** — closes depth-tracking bugs in filter/take chains
-7. **Iterative evaluator** — largest single remaining sprint; delivers TCO, configurable
-   depth, lazy eval_call
+1. **Sandboxing** (~13 items) — closes the largest remaining security gap; `EvalContext`
+   refactor and `--no-fs`/`--timeout` flags are already done, so the Landlock/seccomp/
+   rlimit implementation is self-contained
+2. **perf-foundations** — `IndexMap→HashMap` for `Substitution`, AST `Rc<Spanned<Expr>>`
+   migration (three sites), `PendingBuiltin.named` Option, `builtin_map` static label,
+   `unify_rows` closed-row fast-path; all high-value, no design work needed
+3. **Type system remaining** — `Substitution::apply()` depth counter fix (Critical),
+   named arg type-checking (requires `Type::Function` param-name extension)
+4. **Test infrastructure** — fuzzing targets, LSP corpus, property tests (proptest);
+   improves regression safety for ongoing work
+5. **Stdlib expansion** — remaining convenience functions; `$has?` Rust primitive unblocks
+   lazy has-checking
+6. **Error context enrichment** — include chain threading and source snippets; improves
+   debug experience substantially
 
 ### Whatif "Adopt Now" Items are Independent
 
