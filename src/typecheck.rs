@@ -233,6 +233,15 @@ fn typecheck_document(
                         last_dict_schemes = Some(schemes);
                         last_expr = Some(expr);
                     } else {
+                        // Record the inferred dict type in type_map so LSP hover works
+                        // for non-last Dict positions in a document. infer_dict is called
+                        // directly here (bypassing infer_expr), so type_map insertion
+                        // must be done explicitly — infer_expr's auto-insert at line 522
+                        // is not reached for this code path.
+                        if let Some(ref mut map) = type_map {
+                            let key = (expr.span.start.offset, expr.span.end.offset);
+                            map.insert(key, ty.clone());
+                        }
                         let mut new_env = TypeEnv::with_parent(&env);
                         // Thread schemes into the environment
                         for (name, scheme) in &schemes {

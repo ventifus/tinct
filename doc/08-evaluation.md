@@ -938,6 +938,7 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 | Environments | `Rc<RefCell<Environment>>` with `IndexMap<String, Rc<Thunk>>` + parent chain | O(depth) variable lookup |
 | Dict keys | `Key::String(String)` | Cloned 2× per dict entry (env bindings + dict_map) |
 | Thunk origin | `origin: String` | Allocated per thunk, usually empty |
+| Type inference sets | `HashSet<String>` in `collect_type_vars`, `collect_row_vars`, `collect_all_vars`, `instantiate_scheme`, `instantiate_at_level`, `generalize` | Transient per-call allocations in `src/types.rs`; each call allocates a fresh `HashSet`, collects variable names via tree traversal, then drops the set. Hot paths during type inference — `instantiate_scheme` is called per polymorphic variable reference, `generalize` per dict entry at Pass 4. Planned elimination: Phase 2's flat environments with de Bruijn indices remove the need for name-based variable collection entirely. Phase 1 mitigation: pre-sized `HashSet::with_capacity` based on scheme quantifier count, or `SmallVec`-backed collection for schemes with few variables (the common case). |
 
 **Phase 1:** Backward-compatible optimizations. Baseline: ~113 `Rc::new(Thunk)` calls in eval.rs, ~142 `IndexMap::new()` calls in builtins.rs. Expected impact: 75-85% of addressable allocation cost.
 

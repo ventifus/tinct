@@ -213,6 +213,10 @@ impl fmt::Display for Value {
 /// (derived via `#[derive(PartialEq)]` on line 31) and `$=` builtin semantics
 /// (src/builtins_math.rs) which allow cross-type Int/Float comparison (separate
 /// from Value equality used for Dict keys).
+///
+/// Structural equality for thunk memoization. Note: differs from `$=` (which promotes
+/// Int→Float for cross-type comparison). `Value::PartialEq` uses structural equality;
+/// `$=` uses arithmetic promotion.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {

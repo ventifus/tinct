@@ -217,6 +217,10 @@ impl fmt::Display for Document {
     }
 }
 
+/// Authoritative display representation for error messages. This is the canonical
+/// rendering of an `Expr` node used in type errors, eval errors, and diagnostics.
+/// For pretty-printing of source code, see `src/formatter.rs` (`Formatter` struct),
+/// which preserves whitespace and formatting from the original source.
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

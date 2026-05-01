@@ -431,6 +431,9 @@ mod tests {
         // Test the cycle detection path.
         // When a thunk pointer is already in the cache with None value
         // (the cycle sentinel), process_force should return the original thunk unchanged.
+        //
+        // Uses `Thunk::new_materialized` to isolate cache-lookup logic from evaluation;
+        // real cycles are encountered after `materialize()` has already transitioned the thunk.
         let span = test_span(1, 1, 1, 5);
         let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
 
