@@ -1,0 +1,5 @@
+# Laziness: thunk containing error is not forced when unused
+[unused: [call $error "not forced"]  used: 42]
+[result: $used]
+===
+Dict({"result": Int(42)})

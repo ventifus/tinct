@@ -1404,7 +1404,11 @@ fn check_call_with_scheme(
     }
 
     match &func_ty {
-        Type::Function { params, ret, variadic } => {
+        Type::Function {
+            params,
+            ret,
+            variadic,
+        } => {
             // Arity check: named args fill remaining parameter slots by name (Kotlin model in
             // eval_call.rs), so count positional + named against total params.
             // TODO(named-arg-types): When Type::Function carries param names, validate that each
@@ -1586,7 +1590,11 @@ fn check_call(
     }
 
     match &func_ty {
-        Type::Function { params, ret, variadic } => {
+        Type::Function {
+            params,
+            ret,
+            variadic,
+        } => {
             // Arity check: named args fill remaining parameter slots by name (Kotlin model in
             // eval_call.rs), so count positional + named against total params.
             // TODO(named-arg-types): When Type::Function carries param names, validate that each
@@ -1645,7 +1653,11 @@ fn check_call(
             let inst_ty = instantiate_at_level(&func_ty, state);
 
             let (inst_params, inst_ret) = match &inst_ty {
-                Type::Function { params, ret, variadic: _ } => (params, ret),
+                Type::Function {
+                    params,
+                    ret,
+                    variadic: _,
+                } => (params, ret),
                 _ => unreachable!("instantiate_at_level preserves Function variant"),
             };
 
@@ -3089,7 +3101,11 @@ mod tests {
     fn test_fn_unannotated() {
         let ty = infer("[fn [x] 42]");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, vec![Type::Any]);
                 assert_eq!(*ret, Type::IntLiteral(42));
             }
@@ -3101,7 +3117,11 @@ mod tests {
     fn test_fn_annotated_params() {
         let ty = infer("[fn [x@Number] $x]");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, vec![Type::Number]);
                 assert_eq!(*ret, Type::Number);
             }
@@ -3840,7 +3860,11 @@ mod tests {
         let ty =
             infer("[fn [f@[type: [Fn@Number [Int]] default: [fn [x] $x]]] [@Number [call $f 42]]]");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1);
                 match &params[0] {
                     Type::Function {
@@ -3865,7 +3889,11 @@ mod tests {
             "[fn [p@[type: [name: String  age: Number] default: [name: Alice  age: 30]]] $p.name]",
         );
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1);
                 match &params[0] {
                     Type::Record(row) => {
@@ -3889,7 +3917,11 @@ mod tests {
             other => panic!("expected Record, got {other}"),
         };
         match result_ty {
-            Some(Type::Function { params, ret, variadic }) => {
+            Some(Type::Function {
+                params,
+                ret,
+                variadic,
+            }) => {
                 assert_eq!(params, vec![Type::Int]);
                 assert_eq!(*ret, Type::Number);
             }
@@ -3909,7 +3941,11 @@ mod tests {
         // f has type Fn(Int -> Fn(Int -> Int))
         // [call $f 0] has return type Fn(Int -> Int)
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1);
                 // param type: Fn(Int -> Fn(Int -> Int))
                 match &params[0] {
@@ -4027,7 +4063,11 @@ mod tests {
         match ty {
             // After Fix 1: type alias annotation names become fresh internal vars.
             // The param type and return type should both be TypeVars (different ones).
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1, "expected 1 param");
                 assert!(
                     matches!(params[0], Type::TypeVar(_, _)),
@@ -4057,7 +4097,11 @@ mod tests {
         match ty {
             // After Fix 1: annotation names become fresh internal vars.
             // Two distinct names (a, b, c) → three distinct TypeVars.
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 2, "expected 2 params");
                 assert!(
                     matches!(params[0], Type::TypeVar(_, _)),
@@ -4089,7 +4133,11 @@ mod tests {
             "x",
         );
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, vec![Type::Number, Type::Number]);
                 assert_eq!(*ret, Type::Number);
             }
@@ -4106,7 +4154,11 @@ mod tests {
         match ty {
             // After Fix 1: annotation name `a` becomes a fresh internal var.
             // Return type is concrete Bool (not affected).
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1, "expected 1 param");
                 assert!(
                     matches!(params[0], Type::TypeVar(_, _)),
@@ -4129,7 +4181,11 @@ mod tests {
             // After Fix 1: annotation names a, b, c become fresh internal vars.
             // The outer function: param is TypeVar (a), return is inner Function.
             // The inner function: param is TypeVar (b), return is TypeVar (c).
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1, "outer should have 1 param");
                 assert!(
                     matches!(params[0], Type::TypeVar(_, _)),
@@ -4191,7 +4247,11 @@ mod tests {
     fn test_fn_type_standalone_fn_annotation() {
         let ty = infer("Fn@Number");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert!(params.is_empty());
                 assert_eq!(*ret, Type::Number);
             }
@@ -4206,7 +4266,11 @@ mod tests {
             "x",
         );
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, vec![Type::Number]);
                 assert_eq!(*ret, Type::Number);
             }
@@ -4405,7 +4469,11 @@ mod tests {
         let alias = env.get_type_alias("Identity");
         assert!(alias.is_some(), "Identity alias should be registered");
         match alias.unwrap() {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1, "Identity should have 1 param");
                 // The param and return must be the SAME TypeVar (both reference annotation `a`)
                 assert_eq!(
@@ -4430,7 +4498,11 @@ mod tests {
         let env = doc_env("[Mapper: [type [Fn@b [a b]]]]\n[x: 1]");
         let alias = env.get_type_alias("Mapper").unwrap();
         match alias {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 2, "Mapper should have 2 params");
                 assert!(
                     matches!(params[0], Type::TypeVar(_, _)),
@@ -4460,7 +4532,11 @@ mod tests {
         let env = doc_env("[Add: [type [Fn@Number [Number Number]]]]\n[x: 1]");
         let alias = env.get_type_alias("Add").unwrap();
         match alias {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, &vec![Type::Number, Type::Number]);
                 assert_eq!(**ret, Type::Number);
             }
@@ -4475,7 +4551,11 @@ mod tests {
         let env = doc_env("[Pred: [type [Fn@Bool [a]]]]\n[x: 1]");
         let alias = env.get_type_alias("Pred").unwrap();
         match alias {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1, "Pred should have 1 param");
                 assert!(
                     matches!(params[0], Type::TypeVar(_, _)),
@@ -5040,7 +5120,11 @@ mod tests {
                     .expect("id should be a field in outer");
 
                 match id_type {
-                    Type::Function { params, ret, variadic } => {
+                    Type::Function {
+                        params,
+                        ret,
+                        variadic,
+                    } => {
                         // Params and return should involve type variables (from annotation @a)
                         assert!(
                             matches!(params.get(0), Some(Type::TypeVar(_, _))),
@@ -5062,15 +5146,22 @@ mod tests {
 
     #[test]
     fn test_let_gen_document_boundary_threading() {
-        // Type schemes should thread across document boundaries
-        // Simpler test: just check that $id is accessible across documents
-        let env = file_env("[id: 42]\n---\n[result: $id]");
+        // Type schemes should thread across document boundaries.
+        // Verify that a polymorphic function defined in one document can be used
+        // in a subsequent document, and that its scheme has type variables.
+        let env = file_env("[id: [fn [x@a] $x]]\n---\n[r: [call $id 42]]");
 
         // Check that $id is available in the final environment
-        assert!(env.get("id").is_some(), "id should be in scope");
+        let id_scheme = env.get("id").expect("id should be in scope");
+
+        // Verify the scheme has type variables (polymorphic)
+        assert!(
+            !id_scheme.type_vars.is_empty() || !id_scheme.row_vars.is_empty(),
+            "id's scheme should have type variables (polymorphic)"
+        );
 
         // Check that result refers to id correctly
-        assert!(env.get("result").is_some(), "result should be in scope");
+        assert!(env.get("r").is_some(), "r should be in scope");
     }
 
     #[test]
@@ -5239,7 +5330,11 @@ mod tests {
         let env = doc_env("[IntFn: [type [Fn@Int [Int]]]]\n[f: [@IntFn [fn [x] $x]]]");
         let f_scheme = env.get("f").unwrap();
         match &f_scheme.body {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, &vec![Type::Int]);
                 assert_eq!(**ret, Type::Int);
             }
@@ -5261,7 +5356,11 @@ mod tests {
             "x",
         );
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 // When checking mode is skipped (has_inference_vars), params and ret stay as TypeVars.
                 // We can't check specific names (they're fresh), just that they're TypeVars.
                 assert_eq!(params.len(), 1, "expected 1 param");
@@ -5430,7 +5529,11 @@ mod tests {
         // because check_expr records expected.clone() at the lambda checking mode exit.
         let ty = result_field("[f: [@[Fn@Number [Int]] [fn@Int [x] $x]]]", "f");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 // Lambda checking mode propagates expected param type Int
                 assert_eq!(
                     params,
@@ -5505,7 +5608,11 @@ mod tests {
         // Verify the recorded function type
         let ty = result_field("[f: [@[Fn@Int [Int]] [fn@c [x] $x]]]", "f");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, vec![Type::Int], "param from expected type");
                 assert_eq!(*ret, Type::Int, "return from expected type");
             }
@@ -5550,7 +5657,11 @@ mod tests {
         // (subst applied, though it's a no-op for concrete types).
         let ty = result_field("[data: [x: 42]]\n[f: [@[Fn@Int [Int]] [fn [n] $n]]]", "f");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, vec![Type::Int], "param from expected type");
                 assert_eq!(*ret, Type::Int, "return from expected type");
             }
@@ -5591,7 +5702,11 @@ mod tests {
         // With concrete expected type, lambda checking mode fires as before
         let ty = result_field("[f: [@[Fn@Int [Int]] [fn [x] $x]]]", "f");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, vec![Type::Int], "concrete param propagated");
                 assert_eq!(*ret, Type::Int, "concrete ret propagated");
             }
@@ -5605,7 +5720,11 @@ mod tests {
             "f",
         );
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert_eq!(params, vec![Type::Int], "param from expected type");
                 assert_eq!(*ret, Type::Int, "ret from expected type");
             }
@@ -5676,7 +5795,11 @@ mod tests {
         // Zero-param monomorphic function (CALL-MONO): the function type is correct.
         let ty = result_field("[f: [fn@Int [] 42]]", "f");
         match ty {
-            Type::Function { params, ret, variadic } => {
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 assert!(params.is_empty(), "zero-param fn should have no params");
                 assert_eq!(
                     *ret,
@@ -5897,7 +6020,11 @@ mod tests {
         match ty {
             Type::Record(Row { fields, .. }) => {
                 match fields.get("f") {
-                    Some(Type::Function { params, ret, variadic }) => {
+                    Some(Type::Function {
+                        params,
+                        ret,
+                        variadic,
+                    }) => {
                         // Param and return should unify to the same type variable
                         assert_eq!(
                             params[0], **ret,

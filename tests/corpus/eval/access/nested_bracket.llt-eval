@@ -1,0 +1,5 @@
+# Nested bracket access chains
+[outer: [inner: [value: 99]]]
+[$outer[inner][value]]
+===
+Dict({0: Int(99)})
