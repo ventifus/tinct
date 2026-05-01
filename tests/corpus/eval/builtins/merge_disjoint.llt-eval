@@ -1,0 +1,4 @@
+# merge: two dicts with disjoint keys
+[call $merge [a: 1] [b: 2]]
+===
+Dict({"a": Int(1), "b": Int(2)})

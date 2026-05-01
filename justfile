@@ -132,8 +132,8 @@ update-precise PKG VER:
 tree:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo tree
 
-# Run full CI pipeline (check, test, lint, fmt-check)
-ci: check test lint fmt-check
+# Run full CI pipeline (check, test, lint, fmt-check, audit)
+ci: check test lint fmt-check audit
     @echo "✅ All CI checks passed!"
 
 # Start interactive REPL

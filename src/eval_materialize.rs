@@ -11,6 +11,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, Expr, Param, Span, Spanned};
+use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     annotation_has_structural_fields, eval, eval_dict, eval_key, eval_recursive, format_field_path,
@@ -170,6 +171,10 @@ pub(crate) struct GuardedValidateData {
     pub(crate) origin: Cow<'static, str>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
+    /// EvalContext for flattening Value::Overlay results. None when inner thunk was already
+    /// Materialized/Failed at guard-push time (these states can't produce new Overlays).
+    pub(crate) ctx: Option<Rc<EvalContext>>,
+    pub(crate) depth: usize,
 }
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
@@ -654,6 +659,20 @@ pub(crate) fn force_step(
         }
 
         let inner_span = inner.span;
+        // Extract ctx from the inner thunk's current state for use during GuardedValidate
+        // when the materialized result is a Value::Overlay (needs flattening with ctx).
+        // The inner thunk has not yet been materialized, so its state still carries ctx.
+        // For Materialized/Failed/InProgress inner thunks, ctx isn't needed (these can't
+        // produce new Overlay values during re-materialization).
+        let guard_ctx: Option<Rc<EvalContext>> = {
+            let state = inner.state();
+            match &*state {
+                ThunkState::Unevaluated { ctx, .. } => Some(Rc::clone(ctx)),
+                ThunkState::PendingBuiltin { ctx, .. } => Some(Rc::clone(ctx)),
+                ThunkState::PendingCall { ctx, .. } => Some(Rc::clone(ctx)),
+                _ => None,
+            }
+        };
         stack.push(Cont::GuardedValidate(Box::new(GuardedValidateData {
             thunk: Rc::clone(thunk),
             inner: Rc::clone(&inner),
@@ -664,6 +683,8 @@ pub(crate) fn force_step(
             origin,
             thunk_span,
             mat_span,
+            ctx: guard_ctx,
+            depth,
         })));
         Action::Materialize {
             thunk: Rc::clone(&inner),
@@ -900,12 +921,42 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 origin,
                 thunk_span,
                 mat_span,
+                ctx: guard_ctx,
+                depth: guard_depth,
             } = *data;
             let decorate =
                 |e| attach_materialization_context(e, mat_span.as_ref(), &origin, thunk_span);
 
             match result {
                 Ok(value) => {
+                    // Flatten Overlay to Dict before record validation.
+                    // Value::Overlay is produced by $merge; guard wrapping it needs flattened entries.
+                    let value = match value {
+                        Value::Overlay(l, r) => {
+                            if let Some(ref ctx) = guard_ctx {
+                                match flatten_overlay(
+                                    &l,
+                                    &r,
+                                    "type guard",
+                                    ctx,
+                                    guard_depth,
+                                    guard_span,
+                                ) {
+                                    Ok(map) => Value::Dict(map),
+                                    Err(e) => {
+                                        let e = decorate(e);
+                                        thunk.cache_failure(&e);
+                                        return Action::Continue(Err(e));
+                                    }
+                                }
+                            } else {
+                                // ctx unavailable (inner was already Materialized at push time);
+                                // cannot flatten. Treat as Dict-compatible for non-Record types.
+                                Value::Overlay(l, r)
+                            }
+                        }
+                        other => other,
+                    };
                     // For Record types, apply proxy contract wrapping
                     if let Type::Record(ref row) = expected {
                         if let Value::Dict(ref entries) = value {
@@ -1099,66 +1150,88 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
         } => {
             // Result is the materialized target value
             match result {
-                Ok(target_val) => match target_val {
-                    Value::Dict(map) => {
-                        // Use StrKey wrapper to avoid allocating Key::String
-                        match map.get(&crate::value::StrKey(&field)) {
-                            Some(thunk) => {
-                                // Field found - need to materialize it
-                                Action::Materialize {
-                                    thunk: Rc::clone(thunk),
-                                    mat_span: Some(access_span),
-                                    depth,
+                Ok(target_val) => {
+                    // Flatten Overlay to Dict before key lookup.
+                    let target_val = match target_val {
+                        Value::Overlay(l, r) => {
+                            match flatten_overlay(
+                                &l,
+                                &r,
+                                &format!(".{field}"),
+                                &ctx,
+                                depth,
+                                access_span,
+                            ) {
+                                Ok(map) => Value::Dict(map),
+                                Err(mut e) => {
+                                    e.push_frame(format!("accessing .{field}"), access_span);
+                                    return Action::Continue(Err(e));
                                 }
                             }
-                            None => {
-                                // Key not found
-                                let available_keys: Vec<String> =
-                                    map.keys().map(|k| k.to_string()).collect();
-                                let mut err = EvalError::key_not_found(
-                                    &field,
-                                    available_keys,
-                                    access_span, // Use access_span as thunk span
-                                )
-                                .with_materialization_span(access_span);
-                                err.push_frame(format!("accessing .{field}"), access_span);
-                                Action::Continue(Err(err.into()))
+                        }
+                        other => other,
+                    };
+                    match target_val {
+                        Value::Dict(map) => {
+                            // Use StrKey wrapper to avoid allocating Key::String
+                            match map.get(&crate::value::StrKey(&field)) {
+                                Some(thunk) => {
+                                    // Field found - need to materialize it
+                                    Action::Materialize {
+                                        thunk: Rc::clone(thunk),
+                                        mat_span: Some(access_span),
+                                        depth,
+                                    }
+                                }
+                                None => {
+                                    // Key not found
+                                    let available_keys: Vec<String> =
+                                        map.keys().map(|k| k.to_string()).collect();
+                                    let mut err = EvalError::key_not_found(
+                                        &field,
+                                        available_keys,
+                                        access_span, // Use access_span as thunk span
+                                    )
+                                    .with_materialization_span(access_span);
+                                    err.push_frame(format!("accessing .{field}"), access_span);
+                                    Action::Continue(Err(err.into()))
+                                }
                             }
                         }
-                    }
-                    Value::Proxy { handler } => {
-                        // Proxy handler invocation
-                        match invoke_proxy_handler(
-                            &handler,
-                            Value::String(field.clone()),
-                            &ctx,
-                            &access_span,
-                            depth,
-                        ) {
-                            Ok(thunk) => Action::Materialize {
-                                thunk,
-                                mat_span: Some(access_span),
+                        Value::Proxy { handler } => {
+                            // Proxy handler invocation
+                            match invoke_proxy_handler(
+                                &handler,
+                                Value::String(field.clone()),
+                                &ctx,
+                                &access_span,
                                 depth,
-                            },
-                            Err(mut e) => {
-                                e.push_frame(format!("accessing .{field}"), access_span);
-                                Action::Continue(Err(e))
+                            ) {
+                                Ok(thunk) => Action::Materialize {
+                                    thunk,
+                                    mat_span: Some(access_span),
+                                    depth,
+                                },
+                                Err(mut e) => {
+                                    e.push_frame(format!("accessing .{field}"), access_span);
+                                    Action::Continue(Err(e))
+                                }
                             }
                         }
+                        other => {
+                            // Type mismatch
+                            let mut err = EvalError::type_mismatch_ctx(
+                                "dot access".to_string(),
+                                "Dict or Proxy",
+                                other.type_name(),
+                                access_span, // Use access_span as thunk span
+                            )
+                            .with_materialization_span(access_span);
+                            err.push_frame(format!("accessing .{field}"), access_span);
+                            Action::Continue(Err(err.into()))
+                        }
                     }
-                    other => {
-                        // Type mismatch
-                        let mut err = EvalError::type_mismatch_ctx(
-                            "dot access".to_string(),
-                            "Dict or Proxy",
-                            other.type_name(),
-                            access_span, // Use access_span as thunk span
-                        )
-                        .with_materialization_span(access_span);
-                        err.push_frame(format!("accessing .{field}"), access_span);
-                        Action::Continue(Err(err.into()))
-                    }
-                },
+                }
                 Err(mut e) => {
                     // Target materialization failed
                     e.push_frame(format!("accessing .{field}"), access_span);
@@ -1175,82 +1248,104 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
         } => {
             // Result is the materialized target value
             match result {
-                Ok(target_val) => match target_val {
-                    Value::Dict(map) => {
-                        // Evaluate the key expression (synchronous for now)
-                        match eval_key(&key_expr, &env, &ctx, depth) {
-                            Ok(key) => match map.get(&key) {
-                                Some(thunk) => {
-                                    // Field found - return it to be forced
-                                    Action::Materialize {
-                                        thunk: Rc::clone(thunk),
-                                        mat_span: Some(access_span),
-                                        depth,
-                                    }
+                Ok(target_val) => {
+                    // Flatten Overlay to Dict before key lookup.
+                    let target_val = match target_val {
+                        Value::Overlay(l, r) => {
+                            match flatten_overlay(
+                                &l,
+                                &r,
+                                "bracket access",
+                                &ctx,
+                                depth,
+                                access_span,
+                            ) {
+                                Ok(map) => Value::Dict(map),
+                                Err(mut e) => {
+                                    e.push_frame("accessing [..]".to_string(), access_span);
+                                    return Action::Continue(Err(e));
                                 }
-                                None => {
-                                    let available_keys: Vec<String> =
-                                        map.keys().map(|k| k.to_string()).collect();
-                                    let mut err = EvalError::key_not_found(
-                                        &key.to_string(),
-                                        available_keys,
-                                        access_span,
-                                    )
-                                    .with_materialization_span(access_span);
-                                    err.push_frame("accessing [..]".to_string(), access_span);
-                                    Action::Continue(Err(err.into()))
-                                }
-                            },
-                            Err(mut e) => {
-                                e.push_frame("accessing [..]".to_string(), access_span);
-                                Action::Continue(Err(e))
                             }
                         }
-                    }
-                    Value::Proxy { handler } => {
-                        // Evaluate the key and call proxy handler
-                        match eval_key(&key_expr, &env, &ctx, depth) {
-                            Ok(key) => {
-                                let key_val = match key {
-                                    Key::Int(n) => Value::Int(n),
-                                    Key::String(s) => Value::String(s),
-                                };
-                                match invoke_proxy_handler(
-                                    &handler,
-                                    key_val,
-                                    &ctx,
-                                    &access_span,
-                                    depth,
-                                ) {
-                                    Ok(thunk) => Action::Materialize {
-                                        thunk,
-                                        mat_span: Some(access_span),
-                                        depth,
-                                    },
-                                    Err(mut e) => {
-                                        e.push_frame("accessing [..]".to_string(), access_span);
-                                        Action::Continue(Err(e))
+                        other => other,
+                    };
+                    match target_val {
+                        Value::Dict(map) => {
+                            // Evaluate the key expression (synchronous for now)
+                            match eval_key(&key_expr, &env, &ctx, depth) {
+                                Ok(key) => match map.get(&key) {
+                                    Some(thunk) => {
+                                        // Field found - return it to be forced
+                                        Action::Materialize {
+                                            thunk: Rc::clone(thunk),
+                                            mat_span: Some(access_span),
+                                            depth,
+                                        }
                                     }
+                                    None => {
+                                        let available_keys: Vec<String> =
+                                            map.keys().map(|k| k.to_string()).collect();
+                                        let mut err = EvalError::key_not_found(
+                                            &key.to_string(),
+                                            available_keys,
+                                            access_span,
+                                        )
+                                        .with_materialization_span(access_span);
+                                        err.push_frame("accessing [..]".to_string(), access_span);
+                                        Action::Continue(Err(err.into()))
+                                    }
+                                },
+                                Err(mut e) => {
+                                    e.push_frame("accessing [..]".to_string(), access_span);
+                                    Action::Continue(Err(e))
                                 }
                             }
-                            Err(mut e) => {
-                                e.push_frame("accessing [..]".to_string(), access_span);
-                                Action::Continue(Err(e))
+                        }
+                        Value::Proxy { handler } => {
+                            // Evaluate the key and call proxy handler
+                            match eval_key(&key_expr, &env, &ctx, depth) {
+                                Ok(key) => {
+                                    let key_val = match key {
+                                        Key::Int(n) => Value::Int(n),
+                                        Key::String(s) => Value::String(s),
+                                    };
+                                    match invoke_proxy_handler(
+                                        &handler,
+                                        key_val,
+                                        &ctx,
+                                        &access_span,
+                                        depth,
+                                    ) {
+                                        Ok(thunk) => Action::Materialize {
+                                            thunk,
+                                            mat_span: Some(access_span),
+                                            depth,
+                                        },
+                                        Err(mut e) => {
+                                            e.push_frame("accessing [..]".to_string(), access_span);
+                                            Action::Continue(Err(e))
+                                        }
+                                    }
+                                }
+                                Err(mut e) => {
+                                    e.push_frame("accessing [..]".to_string(), access_span);
+                                    Action::Continue(Err(e))
+                                }
                             }
                         }
+                        other => {
+                            let mut err = EvalError::type_mismatch_ctx(
+                                "bracket access".to_string(),
+                                "Dict or Proxy",
+                                other.type_name(),
+                                access_span,
+                            )
+                            .with_materialization_span(access_span);
+                            err.push_frame("accessing [..]".to_string(), access_span);
+                            Action::Continue(Err(err.into()))
+                        }
                     }
-                    other => {
-                        let mut err = EvalError::type_mismatch_ctx(
-                            "bracket access".to_string(),
-                            "Dict or Proxy",
-                            other.type_name(),
-                            access_span,
-                        )
-                        .with_materialization_span(access_span);
-                        err.push_frame("accessing [..]".to_string(), access_span);
-                        Action::Continue(Err(err.into()))
-                    }
-                },
+                }
                 Err(mut e) => {
                     // Target materialization failed
                     e.push_frame("accessing [..]".to_string(), access_span);
@@ -1273,6 +1368,23 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 Ok(value) => match *resolved {
                     Some(expected) => match &expected {
                         Type::Record(row) => {
+                            // Flatten Overlay to Dict before record type assertion.
+                            let value = match value {
+                                Value::Overlay(l, r) => {
+                                    match flatten_overlay(
+                                        &l,
+                                        &r,
+                                        "type assert",
+                                        &ctx,
+                                        depth,
+                                        expr_span,
+                                    ) {
+                                        Ok(map) => Value::Dict(map),
+                                        Err(e) => return Action::Continue(Err(e)),
+                                    }
+                                }
+                                other => other,
+                            };
                             if let Value::Dict(entries) = &value {
                                 let default_opt = annotation
                                     .node
@@ -1399,7 +1511,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // field names or types, but we can verify the value is a Dict
                             // (the carrier type for records). This closes the elaboration
                             // gap for eval-only mode (doc/07 §--no-typecheck mode).
-                            if !matches!(value, Value::Dict(_)) {
+                            if !matches!(value, Value::Dict(_) | Value::Overlay(..)) {
                                 let actual = value.type_name();
                                 if let Some(default_expr) =
                                     annotation.node.get_property(DEFAULT_ANNOTATION_KEY)

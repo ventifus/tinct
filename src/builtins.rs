@@ -107,11 +107,110 @@ pub(crate) fn stringify(value: &Value) -> String {
     }
 }
 
-/// Helper: require that a materialized value is a Dict, returning the inner IndexMap.
+/// Flatten a `Value::Overlay(L, R)` into an `IndexMap` by materializing both sides.
+///
+/// L entries are inserted first, then R entries overwrite on key collision (R wins).
+/// Both L and R must materialize as `Value::Dict` or `Value::Overlay` (recursively).
+/// Errors if either side materializes to a non-dict value.
+///
+/// **Iterative implementation:** Uses an explicit work stack to unwind deeply nested
+/// `Overlay(Overlay(A, B), C)` chains without consuming Rust call stack depth.
+/// Chains arise from stdlib accumulator patterns (e.g., `$remove`, `$from-entries`,
+/// `$take-while`) that build a dict via repeated `$merge [acc] [entry]` calls.
+/// A chain of depth N no longer overflows the Rust stack.
+///
+/// `name` is the builtin name for error messages. `ctx` and `depth` are for
+/// materialization. `call_span` is used as the materialization span.
+pub(crate) fn flatten_overlay(
+    left: &Rc<Thunk>,
+    right: &Rc<Thunk>,
+    name: &str,
+    ctx: &Rc<crate::eval::EvalContext>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
+    // Work stack: each entry is a thunk to materialize and add as a layer.
+    // We push L before R so that when we pop, R is processed first (override wins).
+    // But to maintain correct left-to-right override order, we collect layers and reverse.
+    //
+    // Algorithm:
+    //   stack = [(left, false), (right, true)]  -- (thunk, is_override)
+    //   layers = []
+    //   while stack not empty:
+    //     (thunk, is_override) = stack.pop()
+    //     val = materialize(thunk)
+    //     if val is Dict: layers.push((map, is_override))
+    //     if val is Overlay(L, R): push (L, is_override) then (R, is_override)  [R on top → processed before L]
+    //   result = apply layers left-to-right (each layer overwrites previous on collision)
+    //
+    // Stack ordering: push L first (processed later = base), R second (processed sooner = override).
+    // We want final application order: L base first, R override second.
+    // So collect into layers stack: L pushed first, R pushed on top.
+    // When we pop for processing: R is processed first → appended to layers first.
+    // Then reverse layers to get [L_base, ..., R_override] order.
+
+    let mut work_stack: Vec<Rc<Thunk>> = Vec::new();
+    // Push in reverse order: left first (processed last = base layer), right second (processed first = override).
+    work_stack.push(Rc::clone(left));
+    work_stack.push(Rc::clone(right));
+
+    // Collect flat layers in processing order (right to left).
+    let mut layers: Vec<IndexMap<Key, Rc<Thunk>>> = Vec::new();
+
+    while let Some(thunk) = work_stack.pop() {
+        let span = thunk.span;
+        let val = materialize(&thunk, Some(&call_span), ctx, depth)?;
+        match val {
+            Value::Dict(map) => {
+                layers.push(map);
+            }
+            Value::Overlay(l, r) => {
+                // Unwind: push L first (base, processed later), R second (override, processed sooner).
+                work_stack.push(l);
+                work_stack.push(r);
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    name.to_string(),
+                    "Dict",
+                    other.type_name(),
+                    span,
+                )
+                .into())
+            }
+        }
+    }
+
+    // layers is in processing order: [rightmost_override, ..., leftmost_base].
+    // Reverse to get [leftmost_base, ..., rightmost_override] for correct application.
+    layers.reverse();
+
+    let total_cap = layers.iter().map(|m| m.len()).sum();
+    let mut result: IndexMap<Key, Rc<Thunk>> = IndexMap::with_capacity(total_cap);
+    for map in layers {
+        for (key, thunk) in map {
+            result.insert(key, thunk);
+        }
+    }
+    Ok(result)
+}
+
+/// Helper: require that a materialized value is a Dict (or Overlay), returning the inner IndexMap.
+/// Overlays are flattened on demand by materializing L and R and merging.
+///
 /// `def_span` should be the thunk's span (where the value was defined), not call_span.
-fn require_dict(name: &str, value: Value, def_span: Span) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
+/// `call_span` is used as the materialization site span for errors during flattening.
+fn require_dict(
+    name: &str,
+    value: Value,
+    def_span: Span,
+    ctx: &Rc<crate::eval::EvalContext>,
+    depth: usize,
+    call_span: Span,
+) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
     match value {
         Value::Dict(map) => Ok(map),
+        Value::Overlay(l, r) => flatten_overlay(&l, &r, name, ctx, depth, call_span),
         other => {
             Err(
                 EvalError::type_mismatch_ctx(name.to_string(), "Dict", other.type_name(), def_span)
@@ -173,7 +272,7 @@ fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
     let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let map = require_dict("keys", val, args[0].span)?;
+    let map = require_dict("keys", val, args[0].span, &ctx, depth, call_span)?;
 
     let origin = call_span;
     let mut result = IndexMap::with_capacity(map.len());
@@ -208,46 +307,34 @@ fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
     let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let map = require_dict("length", val, args[0].span)?;
+    let map = require_dict("length", val, args[0].span, &ctx, depth, call_span)?;
     ok_val(Value::Int(map.len() as i64), call_span)
 }
 
-/// `merge`: Takes 2 args (both Dicts). Returns a right-biased merge: all
-/// entries from the left dict, then all entries from the right dict. If both
-/// have the same key, right wins. Values remain as thunks (no materialization
-/// of values).
+/// `merge`: Takes 2 args (both Dicts). Returns a lazy `Value::Overlay(L, R)` — R
+/// overrides L on key collision. Construction is O(1): neither L nor R is
+/// materialized at merge time. Flattening to an IndexMap is deferred until the
+/// overlay is actually accessed (via `require_dict`, `value_to_json`, etc.).
+///
+/// Type validation (both args must be Dicts) is also deferred to flatten time,
+/// which means type errors surface at access time rather than at call time.
+/// This is the expected behavior for a lazy overlay.
 fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
-        ctx,
+        ..
     } = ctx_arg;
     reject_named("merge", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
-    let left_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    // arg[1] is forced synchronously; BuiltinForceArg only covers arg[0].
-    // Acceptable: the right dict is typically a small literal or bound variable.
-    let right_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let left = require_dict("merge", left_val, args[0].span)?;
-    let right = require_dict("merge", right_val, args[1].span)?;
-
-    // TODO: left+right over-allocates when keys overlap; max under-allocates when they don't.
-    // Investigate a better heuristic (e.g., left + right/2) if merge becomes a hot path.
-    let mut result = IndexMap::with_capacity(left.len() + right.len());
-    // Insert all left entries
-    for (key, thunk) in &left {
-        result.insert(key.clone(), Rc::clone(thunk));
-    }
-    // Insert all right entries (overwrites on collision)
-    for (key, thunk) in &right {
-        result.insert(key.clone(), Rc::clone(thunk));
-    }
-    ok_val(Value::Dict(result), call_span)
+    // O(1): store thunk pointers without forcing either side.
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Overlay(Rc::clone(&args[0]), Rc::clone(&args[1])),
+        call_span,
+    )))
 }
 
 /// `append`: Takes 2 args: a Dict and any value. Returns a new dict with the
@@ -273,7 +360,7 @@ fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // arg[1] (the value to append) is NOT materialized — it is inserted as a thunk
     // (Rc::clone at line below), preserving laziness of the appended value.
     let dict_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let mut map = require_dict("append", dict_val, args[0].span)?;
+    let mut map = require_dict("append", dict_val, args[0].span, &ctx, depth, call_span)?;
 
     // Compute the next integer key: max existing int key + 1, or 0 if none.
     let next_key = map
@@ -662,18 +749,7 @@ fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let func_val = materialize(&args[0], None, &ctx, depth)?;
     let args_val = materialize(&args[1], None, &ctx, depth)?;
 
-    let arg_dict = match args_val {
-        Value::Dict(map) => map,
-        _ => {
-            return Err(EvalError::type_mismatch_ctx(
-                "apply".to_string(),
-                "Dict",
-                args_val.type_name(),
-                call_span,
-            )
-            .into())
-        }
-    };
+    let arg_dict = require_dict("apply", args_val, args[1].span, &ctx, depth, call_span)?;
 
     // Split dict entries: integer-keyed → positional, string-keyed → named
     let mut int_entries: Vec<(i64, Rc<Thunk>)> = Vec::with_capacity(arg_dict.len());
@@ -864,7 +940,59 @@ fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     json_to_value(&parsed, depth, call_span)
 }
 
-/// `include`: takes 1 arg (String file path), evaluates the file, returns its result.
+/// Parse an integrity hash string of the form `"algo:hexdigest"`.
+///
+/// Returns `(algo, hex)` on success. Only `"blake3"` is currently supported.
+/// Validates that the algorithm is known and the digest is the correct length and format.
+fn parse_integrity_hash(s: &str, call_span: Span) -> EvalResult<(&str, &str)> {
+    let Some((algo, hex)) = s.split_once(':') else {
+        return Err(EvalError::include_io_error(
+            s.to_string(),
+            "integrity hash must be \"algo:hexdigest\" (e.g. \"blake3:abc123...\")".to_string(),
+            call_span,
+        )
+        .into());
+    };
+    match algo {
+        "blake3" => {
+            // BLAKE3 output is 32 bytes = 64 hex chars.
+            if hex.len() != 64 {
+                return Err(EvalError::include_io_error(
+                    s.to_string(),
+                    format!("blake3 digest must be 64 hex characters, got {}", hex.len()),
+                    call_span,
+                )
+                .into());
+            }
+            if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(EvalError::include_io_error(
+                    s.to_string(),
+                    "blake3 digest must contain only hex characters (0-9, a-f, A-F)".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+        other => {
+            return Err(EvalError::include_io_error(
+                s.to_string(),
+                format!("unsupported hash algorithm \"{other}\"; supported: blake3"),
+                call_span,
+            )
+            .into());
+        }
+    }
+    Ok((algo, hex))
+}
+
+/// Compute the blake3 hash of `bytes` and return a lowercase hex string.
+fn blake3_hex(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+/// `include`: takes 1 or 2 args (path, optional "algo:hexdigest"), evaluates the file,
+/// returns its result. The optional second argument is an integrity hash; if provided,
+/// the file bytes are hashed and compared to the expected digest before evaluation.
 ///
 /// Path resolution: relative paths are resolved against the including file's
 /// directory. Absolute paths are used as-is. Cycle detection prevents A→B→A
@@ -884,8 +1012,34 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::include_forbidden(call_span).into());
     }
 
-    let val = expect_one_arg("include", args, named, &ctx, depth, call_span)?;
-    let file_path_str = require_string("include", val, args[0].span)?;
+    // Accept 1 or 2 positional args; reject named args.
+    if args.is_empty() || args.len() > 2 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    reject_named("include", named, call_span)?;
+
+    let path_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let file_path_str = require_string("include", path_val, args[0].span)?;
+
+    // Parse optional integrity hash from the second argument.
+    // owned_hash = Some((algo, hexdigest)) when a hash was provided.
+    let owned_hash: Option<(String, String)> = if args.len() == 2 {
+        let hash_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+        let hash_str = require_string("include", hash_val, args[1].span)?;
+        parse_integrity_hash(&hash_str, call_span)?; // validates format
+        let colon_pos = hash_str.find(':').unwrap(); // safe: validated above
+        Some((
+            hash_str[..colon_pos].to_string(),
+            hash_str[colon_pos + 1..].to_string(),
+        ))
+    } else {
+        None
+    };
+
+    // Enforce --require-integrity: every $include must supply a hash.
+    if ctx.config.require_integrity && owned_hash.is_none() {
+        return Err(EvalError::include_hash_required(file_path_str.clone(), call_span).into());
+    }
 
     // Open the file using cap-std. Absolute paths are rejected by cap-std (RESOLVE_BENEATH).
     let base_dir = &ctx.config.base_dir;
@@ -939,9 +1093,11 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         (0u64, hash)
     };
 
-    // Check cache: if we've already evaluated this file, return the cached result.
-    if let Some(cached) = ctx.state.borrow().include_cache.get(&file_id) {
-        return Ok(Rc::clone(cached));
+    // Cache lookup: skip when a hash is provided (must read bytes to verify integrity).
+    if owned_hash.is_none() {
+        if let Some(cached) = ctx.state.borrow().include_cache.get(&file_id) {
+            return Ok(Rc::clone(cached));
+        }
     }
 
     // Cycle detection: check if this file is currently being evaluated.
@@ -953,12 +1109,40 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     }
 
-    // Read the file from the fd.
+    // Read the file bytes from the fd.
     use std::io::Read;
-    let mut source = String::new();
+    let mut bytes = Vec::new();
     let mut file_handle = fd;
-    file_handle.read_to_string(&mut source).map_err(|e| {
+    file_handle.read_to_end(&mut bytes).map_err(|e| {
         EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
+    })?;
+
+    // Integrity check: verify hash before parsing or evaluating.
+    if let Some((_algo, expected_hex)) = &owned_hash {
+        let actual_hex = blake3_hex(&bytes);
+        // Case-insensitive hex comparison (user may provide uppercase).
+        if !actual_hex.eq_ignore_ascii_case(expected_hex) {
+            return Err(EvalError::include_hash_mismatch(
+                file_path_str.clone(),
+                format!("blake3:{expected_hex}"),
+                format!("blake3:{actual_hex}"),
+                call_span,
+            )
+            .into());
+        }
+        // Hash verified — return cached evaluation if available.
+        if let Some(cached) = ctx.state.borrow().include_cache.get(&file_id) {
+            return Ok(Rc::clone(cached));
+        }
+    }
+
+    // Convert bytes to UTF-8 source.
+    let source = String::from_utf8(bytes).map_err(|e| {
+        EvalError::include_io_error(
+            file_path_str.clone(),
+            format!("file is not valid UTF-8: {e}"),
+            call_span,
+        )
     })?;
 
     // Parse.
@@ -1078,6 +1262,230 @@ pub(crate) use crate::builtins_seq_reduce::{
     builtin_concat, builtin_concat_seq_step, builtin_join, builtin_reduce, builtin_reduce_seq_step,
 };
 
+/// `rest`: Returns all elements of a collection except the first, reindexed 0..n-1.
+///
+/// - Takes 1 arg: a Dict or Seq.
+/// - Seq path: O(1) — delegates to `$tail` (returns the Seq's tail directly).
+/// - Dict path: O(n) — drops the first entry by insertion order, rebuilds with dense
+///   integer keys starting at 0. Same asymptotic cost as the LLT implementation, but
+///   avoids interpreter loop overhead.
+/// Inherently materializing for Dict: must copy all remaining entries.
+/// Lazy for Seq: O(1) tail extraction.
+fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("rest", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    // Seq path: delegate to $tail (O(1), preserves laziness).
+    if matches!(val, Value::Seq { .. }) {
+        return builtin_tail(BuiltinArgs {
+            args,
+            named,
+            depth,
+            call_span,
+            ctx,
+        });
+    }
+    let map = require_dict("rest", val, args[0].span, &ctx, depth, call_span)?;
+
+    // Skip the first entry (index 0 by insertion order), reindex rest as 0..n-1.
+    let mut result = IndexMap::with_capacity(map.len().saturating_sub(1));
+    for (new_idx, (_old_key, thunk)) in map.into_iter().skip(1).enumerate() {
+        let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
+            EvalError::internal("collection index overflow".to_string(), call_span)
+        })?);
+        result.insert(new_key, thunk);
+    }
+    ok_val(Value::Dict(result), call_span)
+}
+
+/// `cons`: Prepend an element to a collection, reindexing all entries from 0.
+///
+/// - Takes 2 args: (element, collection).
+/// - Seq path: O(1) — delegates to `$seq x xs` (returns a lazy Seq).
+/// - Dict path: O(n) — builds a new dict with the element at key 0, followed by
+///   the existing entries reindexed as 1..n. Same asymptotic cost as the LLT
+///   implementation, but avoids interpreter loop overhead.
+/// Inherently materializing for Dict: must copy all existing entries.
+/// Lazy for Seq: O(1) prepend.
+fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("cons", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    // args[0] is the element to prepend (kept as thunk — preserves laziness).
+    // args[1] is the collection to prepend to (must be materialized to dispatch on type).
+    let xs_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    // Seq path: delegate to $seq (O(1), preserves laziness).
+    if matches!(xs_val, Value::Seq { .. }) {
+        return builtin_seq(BuiltinArgs {
+            args,
+            named,
+            depth,
+            call_span,
+            ctx,
+        });
+    }
+    let map = require_dict("cons", xs_val, args[1].span, &ctx, depth, call_span)?;
+
+    let mut result = IndexMap::with_capacity(map.len() + 1);
+    // Insert the new element at key 0.
+    result.insert(Key::Int(0), Rc::clone(&args[0]));
+    // Insert existing entries reindexed as 1..n.
+    for (new_idx, (_old_key, thunk)) in map.into_iter().enumerate() {
+        let new_key = Key::Int(i64::try_from(new_idx + 1).map_err(|_| {
+            EvalError::internal("collection index overflow".to_string(), call_span)
+        })?);
+        result.insert(new_key, thunk);
+    }
+    ok_val(Value::Dict(result), call_span)
+}
+
+/// `reverse`: Reverse the entries of a dict list, reindexing from 0.
+///
+/// - Takes 1 arg: a Dict.
+/// - Materializes the dict, collects entries in reverse insertion order,
+///   builds a new dict with dense integer keys 0..n-1.
+/// - O(n) — avoids the recursive LLT accumulator pattern.
+/// Inherently materializing: must know all entries to reverse order.
+fn builtin_reverse(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("reverse", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let map = require_dict("reverse", val, args[0].span, &ctx, depth, call_span)?;
+
+    let mut result = IndexMap::with_capacity(map.len());
+    // Collect values in reverse insertion order.
+    let entries: Vec<_> = map.into_iter().collect();
+    for (new_idx, (_old_key, thunk)) in entries.into_iter().rev().enumerate() {
+        let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
+            EvalError::internal("collection index overflow".to_string(), call_span)
+        })?);
+        result.insert(new_key, thunk);
+    }
+    ok_val(Value::Dict(result), call_span)
+}
+
+/// Compare two materialized `Value`s for sort ordering.
+///
+/// Mirrors the `<` builtin semantics:
+/// - Int vs Int, Float vs Float, Int/Float cross-type (promote Int to f64)
+/// - String vs String (lexicographic)
+/// - Bool vs Bool (false < true)
+/// - Mixed incompatible types: returns `Err` (type error).
+///
+/// Returns `Ok(std::cmp::Ordering)` on success, `Err` on incompatible types.
+fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp::Ordering> {
+    let result = match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Int(x), Value::Float(y)) => (*x as f64)
+            .partial_cmp(y)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Float(x), Value::Int(y)) => x
+            .partial_cmp(&(*y as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Value::String(x), Value::String(y)) => x.cmp(y),
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                "sort".to_string(),
+                "Int, Float, String, or Bool (homogeneous collection)",
+                &format!("{} and {}", a.type_name(), b.type_name()),
+                call_span,
+            )
+            .into());
+        }
+    };
+    Ok(result)
+}
+
+/// `sort`: Sort a dict list by natural ordering.
+///
+/// - Takes 1 arg: a Dict (list-like, integer-keyed).
+/// - Materializes all values, sorts by natural ordering (same semantics as `<`).
+/// - O(n log n) using Rust's `sort_by` with the `compare_values` helper.
+/// - Errors on mixed incompatible types (e.g. Int and String in same collection).
+/// - Errors on Seq input (callers must `$collect` first).
+/// Inherently materializing: must inspect all values to determine sort order.
+fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("sort", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let map = require_dict("sort", val, args[0].span, &ctx, depth, call_span)?;
+
+    // Materialize all values so we can compare them.
+    let mut pairs: Vec<(Value, Span)> = Vec::with_capacity(map.len());
+    for (_key, thunk) in &map {
+        let mat = materialize(thunk, Some(&call_span), &ctx, depth)?;
+        pairs.push((mat, thunk.span));
+    }
+
+    // Sort by natural ordering. Collect any comparison error.
+    let mut sort_error: Option<Box<crate::error::EvalError>> = None;
+    pairs.sort_by(|(a, _), (b, _)| {
+        if sort_error.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        match compare_values(a, b, call_span) {
+            Ok(ord) => ord,
+            Err(e) => {
+                sort_error = Some(e);
+                std::cmp::Ordering::Equal
+            }
+        }
+    });
+    if let Some(e) = sort_error {
+        return Err(e);
+    }
+
+    // Build result dict with dense integer keys 0..n-1, wrapping sorted values as thunks.
+    let mut result = IndexMap::with_capacity(pairs.len());
+    for (new_idx, (mat_val, orig_span)) in pairs.into_iter().enumerate() {
+        let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
+            EvalError::internal("collection index overflow".to_string(), call_span)
+        })?);
+        result.insert(
+            new_key,
+            Rc::new(Thunk::new_materialized(mat_val, orig_span)),
+        );
+    }
+    ok_val(Value::Dict(result), call_span)
+}
+
 fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -1161,6 +1569,11 @@ pub fn standard_builtins() -> Vec<(&'static str, BuiltinFn)> {
         ("reduce", builtin_reduce),
         ("join", builtin_join),
         ("concat", builtin_concat),
+        // List operations (moved from LLT stdlib to Rust for performance)
+        ("rest", builtin_rest),
+        ("cons", builtin_cons),
+        ("reverse", builtin_reverse),
+        ("sort", builtin_sort),
         // Proxy
         ("proxy", builtin_proxy),
     ]
@@ -1241,6 +1654,9 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 
     let dict = match val {
         Value::Dict(map) => map,
+        Value::Overlay(l, r) => {
+            flatten_overlay(&l, &r, "prelude", &bootstrap_ctx, 0, Span::origin())?
+        }
         other => {
             return Err(crate::error::EvalError::internal(
                 format!("prelude must evaluate to a Dict, got {}", other.type_name()),
@@ -1330,6 +1746,19 @@ mod tests {
             Value::Dict(map),
             test_span(1, 1, 1, 5),
         ))
+    }
+
+    /// Helper: flatten a Value (Dict or Overlay) to an IndexMap for test assertions.
+    /// Since `builtin_merge` now returns `Value::Overlay` (lazy), tests that previously
+    /// expected `Value::Dict` must use this helper to get the concrete entries.
+    fn flatten_val(val: Value) -> IndexMap<Key, Rc<Thunk>> {
+        match val {
+            Value::Dict(map) => map,
+            Value::Overlay(l, r) => {
+                flatten_overlay(&l, &r, "test", &test_ctx(), 0, test_span(1, 1, 1, 5)).unwrap()
+            }
+            other => panic!("expected Dict or Overlay, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3706,16 +4135,13 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 4);
-                assert!(map.contains_key(&Key::String("a".into())));
-                assert!(map.contains_key(&Key::String("b".into())));
-                assert!(map.contains_key(&Key::String("c".into())));
-                assert!(map.contains_key(&Key::String("d".into())));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // builtin_merge now returns Value::Overlay; flatten to verify contents.
+        let map = flatten_val(result);
+        assert_eq!(map.len(), 4);
+        assert!(map.contains_key(&Key::String("a".into())));
+        assert!(map.contains_key(&Key::String("b".into())));
+        assert!(map.contains_key(&Key::String("c".into())));
+        assert!(map.contains_key(&Key::String("d".into())));
     }
 
     #[test]
@@ -3734,18 +4160,14 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 3);
-                let x = materialize(&map[&Key::String("x".into())], None, &test_ctx(), 0).unwrap();
-                assert_eq!(x, Value::Int(1));
-                let y = materialize(&map[&Key::String("y".into())], None, &test_ctx(), 0).unwrap();
-                assert_eq!(y, Value::Int(99));
-                let z = materialize(&map[&Key::String("z".into())], None, &test_ctx(), 0).unwrap();
-                assert_eq!(z, Value::Int(3));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let map = flatten_val(result);
+        assert_eq!(map.len(), 3);
+        let x = materialize(&map[&Key::String("x".into())], None, &test_ctx(), 0).unwrap();
+        assert_eq!(x, Value::Int(1));
+        let y = materialize(&map[&Key::String("y".into())], None, &test_ctx(), 0).unwrap();
+        assert_eq!(y, Value::Int(99)); // R overrides L
+        let z = materialize(&map[&Key::String("z".into())], None, &test_ctx(), 0).unwrap();
+        assert_eq!(z, Value::Int(3));
     }
 
     #[test]
@@ -3757,10 +4179,8 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) => assert_eq!(map.len(), 0),
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let map = flatten_val(result);
+        assert_eq!(map.len(), 0);
     }
 
     #[test]
@@ -3774,14 +4194,10 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 1);
-                let v = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
-                assert_eq!(v, Value::String("only".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let map = flatten_val(result);
+        assert_eq!(map.len(), 1);
+        let v = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+        assert_eq!(v, Value::String("only".into()));
     }
 
     #[test]
@@ -3795,18 +4211,16 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 1);
-                let v = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
-                assert_eq!(v, Value::String("only".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let map = flatten_val(result);
+        assert_eq!(map.len(), 1);
+        let v = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+        assert_eq!(v, Value::String("only".into()));
     }
 
     #[test]
     fn merge_preserves_thunks() {
+        // With lazy overlay, the original thunks are preserved as-is (Rc::clone)
+        // when the overlay is flattened.
         let span = test_span(1, 1, 1, 5);
         let left_thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
         let right_thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
@@ -3823,13 +4237,10 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) => {
-                assert!(Rc::ptr_eq(&map[&Key::String("a".into())], &left_thunk));
-                assert!(Rc::ptr_eq(&map[&Key::String("b".into())], &right_thunk));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Flatten and verify thunk identity is preserved through the overlay.
+        let map = flatten_val(result);
+        assert!(Rc::ptr_eq(&map[&Key::String("a".into())], &left_thunk));
+        assert!(Rc::ptr_eq(&map[&Key::String("b".into())], &right_thunk));
     }
 
     #[test]
@@ -3848,21 +4259,17 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) => {
-                let keys: Vec<&Key> = map.keys().collect();
-                assert_eq!(
-                    keys,
-                    vec![
-                        &Key::String("b".into()),
-                        &Key::String("a".into()),
-                        &Key::String("d".into()),
-                        &Key::String("c".into()),
-                    ]
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let map = flatten_val(result);
+        let keys: Vec<&Key> = map.keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                &Key::String("b".into()),
+                &Key::String("a".into()),
+                &Key::String("d".into()),
+                &Key::String("c".into()),
+            ]
+        );
     }
 
     #[test]
@@ -4047,46 +4454,67 @@ mod tests {
 
     #[test]
     fn merge_first_arg_non_dict() {
+        // With lazy overlay, builtin_merge succeeds (O(1) — no type check at call time).
+        // The type error fires when the overlay is flattened (at access time).
         let d = thunk_dict(IndexMap::new());
-        let err = builtin_merge(BuiltinArgs {
+        let result = builtin_merge(BuiltinArgs {
             args: &[thunk(Value::Int(1)), d],
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(err.message().contains("merge"), "got: {}", err.message());
-        assert!(
-            err.message().contains("expected Dict"),
-            "got: {}",
-            err.message()
-        );
-        assert!(err.message().contains("got Int"), "got: {}", err.message());
+        });
+        // builtin_merge itself succeeds — returns Overlay(Int(1), {})
+        let overlay_thunk = result.unwrap();
+        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &test_ctx(), 0).unwrap();
+        // Flatten fires the type error: left side is Int, not Dict
+        match overlay_val {
+            Value::Overlay(l, r) => {
+                let err =
+                    flatten_overlay(&l, &r, "merge", &test_ctx(), 0, call_span()).unwrap_err();
+                assert!(
+                    err.message().contains("expected Dict"),
+                    "got: {}",
+                    err.message()
+                );
+                assert!(err.message().contains("got Int"), "got: {}", err.message());
+            }
+            other => panic!("expected Overlay, got {other:?}"),
+        }
     }
 
     #[test]
     fn merge_second_arg_non_dict() {
+        // With lazy overlay, builtin_merge succeeds (O(1) — no type check at call time).
+        // The type error fires when the overlay is flattened (at access time).
         let d = thunk_dict(IndexMap::new());
-        let err = builtin_merge(BuiltinArgs {
+        let result = builtin_merge(BuiltinArgs {
             args: &[d, thunk(Value::String("nope".into()))],
             named: &no_named(),
             depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(err.message().contains("merge"), "got: {}", err.message());
-        assert!(
-            err.message().contains("expected Dict"),
-            "got: {}",
-            err.message()
-        );
-        assert!(
-            err.message().contains("got String"),
-            "got: {}",
-            err.message()
-        );
+        });
+        let overlay_thunk = result.unwrap();
+        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &test_ctx(), 0).unwrap();
+        // Flatten fires the type error: right side is String, not Dict
+        match overlay_val {
+            Value::Overlay(l, r) => {
+                let err =
+                    flatten_overlay(&l, &r, "merge", &test_ctx(), 0, call_span()).unwrap_err();
+                assert!(
+                    err.message().contains("expected Dict"),
+                    "got: {}",
+                    err.message()
+                );
+                assert!(
+                    err.message().contains("got String"),
+                    "got: {}",
+                    err.message()
+                );
+            }
+            other => panic!("expected Overlay, got {other:?}"),
+        }
     }
 
     #[test]
@@ -5898,8 +6326,15 @@ mod tests {
         assert!(names.contains(&"reduce"), "missing reduce");
         assert!(names.contains(&"join"), "missing join");
         assert!(names.contains(&"concat"), "missing concat");
-        // Total count
-        assert_eq!(names.len(), 46, "expected 46 builtins, got {}", names.len());
+        // List operations (moved from LLT to Rust)
+        assert!(names.contains(&"rest"), "missing rest");
+        assert!(names.contains(&"cons"), "missing cons");
+        assert!(names.contains(&"reverse"), "missing reverse");
+        assert!(names.contains(&"sort"), "missing sort");
+        // Also assert proxy is present
+        assert!(names.contains(&"proxy"), "missing proxy");
+        // Total count: 47 original (incl. proxy) + 4 new list ops = 51
+        assert_eq!(names.len(), 51, "expected 51 builtins, got {}", names.len());
     }
 
     #[test]
@@ -7512,10 +7947,13 @@ mod tests {
             err.message()
         );
 
-        // Two arguments
+        // Three arguments (only 1 or 2 accepted; 3 is an arity error)
         let args = vec![
             thunk(Value::String("a.llt".into())),
-            thunk(Value::String("b.llt".into())),
+            thunk(Value::String(
+                "blake3:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            )),
+            thunk(Value::String("extra".into())),
         ];
         let err = builtin_include(BuiltinArgs {
             args: &args,
@@ -7847,6 +8285,198 @@ mod tests {
             error_msg
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_with_correct_blake3_hash() {
+        // $include with a correct blake3 hash should succeed.
+        let dir = std::env::temp_dir().join("llt_test_include_hash_ok");
+        std::fs::create_dir_all(&dir).ok();
+        let content = "[x: 99]";
+        write_temp_file(&dir, "hashed.llt", content);
+        let expected_hex = blake3_hex(content.as_bytes());
+        let ctx = include_ctx(&dir);
+
+        let args = vec![
+            thunk(Value::String("hashed.llt".into())),
+            thunk(Value::String(format!("blake3:{expected_hex}"))),
+        ];
+        let result = mat(builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        }));
+        match result {
+            Value::Dict(map) => {
+                let val = materialize(
+                    map.get(&Key::String("x".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
+                assert_eq!(val, Value::Int(99));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_with_wrong_blake3_hash_errors() {
+        // $include with a wrong blake3 hash should return IncludeHashMismatch.
+        let dir = std::env::temp_dir().join("llt_test_include_hash_mismatch");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "data.llt", "[x: 1]");
+        let wrong_hex = "0".repeat(64);
+        let ctx = include_ctx(&dir);
+
+        let args = vec![
+            thunk(Value::String("data.llt".into())),
+            thunk(Value::String(format!("blake3:{wrong_hex}"))),
+        ];
+        let err = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("integrity check failed"),
+            "got: {}",
+            err.message()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_hash_invalid_format_errors() {
+        // A hash string without a colon should produce an error.
+        let dir = std::env::temp_dir().join("llt_test_include_hash_format");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "file.llt", "[x: 1]");
+        let ctx = include_ctx(&dir);
+
+        let args = vec![
+            thunk(Value::String("file.llt".into())),
+            thunk(Value::String("notahash".into())),
+        ];
+        let err = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("integrity hash must be"),
+            "got: {}",
+            err.message()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_hash_unsupported_algo_errors() {
+        // An unsupported algorithm should produce a clear error.
+        let dir = std::env::temp_dir().join("llt_test_include_hash_algo");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "file.llt", "[x: 1]");
+        let ctx = include_ctx(&dir);
+
+        let args = vec![
+            thunk(Value::String("file.llt".into())),
+            thunk(Value::String("md5:abc".into())),
+        ];
+        let err = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("unsupported hash algorithm"),
+            "got: {}",
+            err.message()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_require_integrity_rejects_hashless() {
+        // With require_integrity=true, a hashless $include should error with IncludeHashRequired.
+        let dir = std::env::temp_dir().join("llt_test_include_require_integrity");
+        std::fs::create_dir_all(&dir).ok();
+        write_temp_file(&dir, "file.llt", "[x: 1]");
+
+        let stdlib_env = create_stdlib_env().expect("stdlib env");
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(&dir, cap_std::ambient_authority())
+            .expect("open dir");
+        let ctx = crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true);
+
+        let args = vec![thunk(Value::String("file.llt".into()))];
+        let err = builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        })
+        .unwrap_err();
+        assert!(
+            err.message().contains("integrity hash required"),
+            "got: {}",
+            err.message()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_require_integrity_accepts_hashed() {
+        // With require_integrity=true, a $include with a correct hash should succeed.
+        let dir = std::env::temp_dir().join("llt_test_include_require_integrity_ok");
+        std::fs::create_dir_all(&dir).ok();
+        let content = "[y: 55]";
+        write_temp_file(&dir, "ok.llt", content);
+        let hex = blake3_hex(content.as_bytes());
+
+        let stdlib_env = create_stdlib_env().expect("stdlib env");
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(&dir, cap_std::ambient_authority())
+            .expect("open dir");
+        let ctx = crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true);
+
+        let args = vec![
+            thunk(Value::String("ok.llt".into())),
+            thunk(Value::String(format!("blake3:{hex}"))),
+        ];
+        let result = mat(builtin_include(BuiltinArgs {
+            args: &args,
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        }));
+        match result {
+            Value::Dict(map) => {
+                let val = materialize(
+                    map.get(&Key::String("y".into())).unwrap(),
+                    None,
+                    &test_ctx(),
+                    0,
+                )
+                .unwrap();
+                assert_eq!(val, Value::Int(55));
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10108,5 +10738,201 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    // -------------------------------------------------------------------------
+    // Unit tests: builtin_rest, builtin_cons, builtin_reverse, builtin_sort
+    // -------------------------------------------------------------------------
+
+    fn make_int_dict(vals: &[i64]) -> Value {
+        let mut map = IndexMap::new();
+        for (i, &v) in vals.iter().enumerate() {
+            map.insert(Key::Int(i as i64), thunk(Value::Int(v)));
+        }
+        Value::Dict(map)
+    }
+
+    fn extract_int_at(map: &IndexMap<Key, Rc<Thunk>>, idx: i64) -> i64 {
+        match crate::eval::materialize(map.get(&Key::Int(idx)).unwrap(), None, &test_ctx(), 0)
+            .unwrap()
+        {
+            Value::Int(n) => n,
+            other => panic!("expected Int at index {idx}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rest_three_elements_drops_first() {
+        let result = mat(builtin_rest(BuiltinArgs {
+            args: &[thunk(make_int_dict(&[10, 20, 30]))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        let m = match result {
+            Value::Dict(m) => m,
+            other => panic!("expected Dict, got {:?}", other),
+        };
+        assert_eq!(m.len(), 2);
+        assert_eq!(extract_int_at(&m, 0), 20);
+        assert_eq!(extract_int_at(&m, 1), 30);
+    }
+
+    #[test]
+    fn rest_single_element_returns_empty() {
+        let result = mat(builtin_rest(BuiltinArgs {
+            args: &[thunk(make_int_dict(&[42]))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        match result {
+            Value::Dict(m) => assert!(m.is_empty()),
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rest_empty_dict_returns_empty() {
+        let result = mat(builtin_rest(BuiltinArgs {
+            args: &[thunk(Value::Dict(IndexMap::new()))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        match result {
+            Value::Dict(m) => assert!(m.is_empty()),
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cons_prepends_element() {
+        let result = mat(builtin_cons(BuiltinArgs {
+            args: &[thunk(Value::Int(0)), thunk(make_int_dict(&[1, 2, 3]))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        let m = match result {
+            Value::Dict(m) => m,
+            other => panic!("expected Dict, got {:?}", other),
+        };
+        assert_eq!(m.len(), 4);
+        assert_eq!(extract_int_at(&m, 0), 0);
+        assert_eq!(extract_int_at(&m, 1), 1);
+        assert_eq!(extract_int_at(&m, 3), 3);
+    }
+
+    #[test]
+    fn cons_onto_empty_dict() {
+        let result = mat(builtin_cons(BuiltinArgs {
+            args: &[thunk(Value::Int(99)), thunk(Value::Dict(IndexMap::new()))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        let m = match result {
+            Value::Dict(m) => m,
+            other => panic!("expected Dict, got {:?}", other),
+        };
+        assert_eq!(m.len(), 1);
+        assert_eq!(extract_int_at(&m, 0), 99);
+    }
+
+    #[test]
+    fn reverse_three_elements() {
+        let result = mat(builtin_reverse(BuiltinArgs {
+            args: &[thunk(make_int_dict(&[10, 20, 30]))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        let m = match result {
+            Value::Dict(m) => m,
+            other => panic!("expected Dict, got {:?}", other),
+        };
+        assert_eq!(m.len(), 3);
+        assert_eq!(extract_int_at(&m, 0), 30);
+        assert_eq!(extract_int_at(&m, 1), 20);
+        assert_eq!(extract_int_at(&m, 2), 10);
+    }
+
+    #[test]
+    fn reverse_empty_dict() {
+        let result = mat(builtin_reverse(BuiltinArgs {
+            args: &[thunk(Value::Dict(IndexMap::new()))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        match result {
+            Value::Dict(m) => assert!(m.is_empty()),
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sort_integers_ascending() {
+        let result = mat(builtin_sort(BuiltinArgs {
+            args: &[thunk(make_int_dict(&[3, 1, 4, 1, 5]))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        let m = match result {
+            Value::Dict(m) => m,
+            other => panic!("expected Dict, got {:?}", other),
+        };
+        assert_eq!(m.len(), 5);
+        let expected = [1i64, 1, 3, 4, 5];
+        for (i, &exp) in expected.iter().enumerate() {
+            assert_eq!(extract_int_at(&m, i as i64), exp, "at index {i}");
+        }
+    }
+
+    #[test]
+    fn sort_strings_lexicographic() {
+        let mut map = IndexMap::new();
+        for (i, s) in ["banana", "apple", "cherry"].iter().enumerate() {
+            map.insert(Key::Int(i as i64), thunk(Value::String(s.to_string())));
+        }
+        let result = mat(builtin_sort(BuiltinArgs {
+            args: &[thunk(Value::Dict(map))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        let m = match result {
+            Value::Dict(m) => m,
+            other => panic!("expected Dict, got {:?}", other),
+        };
+        let v0 =
+            crate::eval::materialize(m.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+        assert_eq!(v0, Value::String("apple".into()));
+    }
+
+    #[test]
+    fn sort_empty_dict() {
+        let result = mat(builtin_sort(BuiltinArgs {
+            args: &[thunk(Value::Dict(IndexMap::new()))],
+            named: &no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        match result {
+            Value::Dict(m) => assert!(m.is_empty()),
+            other => panic!("expected Dict, got {:?}", other),
+        }
     }
 }

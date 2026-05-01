@@ -19,7 +19,8 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::builtins::{
-    ok_val, reject_named, require_string, stringify, MAX_COLLECT_SIZE, MAX_STRING_SIZE,
+    flatten_overlay, ok_val, reject_named, require_string, stringify, MAX_COLLECT_SIZE,
+    MAX_STRING_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
@@ -49,6 +50,13 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let init_thunk = Rc::clone(&args[1]);
     let xs = materialize(&args[2], None, &ctx, depth)?;
 
+    // Flatten Overlay to Dict before dispatch.
+    let xs = match xs {
+        Value::Overlay(l, r) => {
+            Value::Dict(flatten_overlay(&l, &r, "reduce", &ctx, depth, call_span)?)
+        }
+        other => other,
+    };
     match xs {
         Value::Dict(ref map) => {
             // Dict path: build a chain of PendingCall thunks
@@ -189,6 +197,13 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let sep_str = require_string("join", sep, args[0].span)?;
 
     let xs = materialize(&args[1], None, &ctx, depth)?;
+    // Flatten Overlay to Dict before dispatch.
+    let xs = match xs {
+        Value::Overlay(l, r) => {
+            Value::Dict(flatten_overlay(&l, &r, "join", &ctx, depth, call_span)?)
+        }
+        other => other,
+    };
     match xs {
         Value::Dict(ref map) => {
             // Dict path: iterate values, materialize, stringify, join
@@ -322,6 +337,13 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let ys_span = args[1].span;
     let xs = materialize(&args[0], None, &ctx, depth)?;
     let ys_thunk = Rc::clone(&args[1]);
+    // Flatten Overlay to Dict before dispatch.
+    let xs = match xs {
+        Value::Overlay(l, r) => {
+            Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, depth, call_span)?)
+        }
+        other => other,
+    };
 
     match xs {
         Value::Seq { head, tail } => {
@@ -331,7 +353,7 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // only manifest deep in the PendingBuiltin chain at high stack depth.
             let ys_val = materialize(&ys_thunk, None, &ctx, depth)?;
             match ys_val {
-                Value::Dict(_) | Value::Seq { .. } => {}
+                Value::Dict(_) | Value::Seq { .. } | Value::Overlay(..) => {}
                 other => {
                     return Err(EvalError::type_mismatch_ctx(
                         "concat".to_string(),
@@ -370,7 +392,7 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 // Without this check, concat([], 42) would silently succeed.
                 let ys = materialize(&ys_thunk, None, &ctx, depth)?;
                 match ys {
-                    Value::Dict(_) | Value::Seq { .. } => {}
+                    Value::Dict(_) | Value::Seq { .. } | Value::Overlay(..) => {}
                     other => {
                         return Err(EvalError::type_mismatch_ctx(
                             "concat".to_string(),
@@ -386,6 +408,13 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
 
             let ys = materialize(&ys_thunk, None, &ctx, depth)?;
+            // Flatten Overlay ys to Dict for the dict-concat path.
+            let ys = match ys {
+                Value::Overlay(l, r) => {
+                    Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, depth, call_span)?)
+                }
+                other => other,
+            };
             match ys {
                 Value::Dict(ref ys_map) => {
                     let mut result = IndexMap::with_capacity(xs_map.len() + ys_map.len());

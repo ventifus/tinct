@@ -6,7 +6,8 @@ use std::process;
 use std::rc::Rc;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_source, json_to_value,
-    materialize, parse, value_to_display_string, value_to_json, Span, Thunk, MAX_FILE_SIZE,
+    materialize, parse, value_to_display_string, value_to_json, EvalContext, Span, Thunk,
+    MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -38,6 +39,10 @@ enum Commands {
         #[arg(long)]
         no_fs: bool,
 
+        /// Require all $include calls to provide an integrity hash. Hashless includes error.
+        #[arg(long)]
+        require_integrity: bool,
+
         /// Wall-clock timeout (e.g. "5s", "500ms", "2m"). Exit code 2 on expiry.
         #[arg(long)]
         timeout: Option<String>,
@@ -56,6 +61,11 @@ enum Commands {
         in_place: bool,
 
         /// Input LLT file. Use `-` to read from stdin.
+        file: String,
+    },
+    /// Compute and print the blake3 integrity hash of a file (for use with $include).
+    Hash {
+        /// File to hash.
         file: String,
     },
     /// Start an interactive REPL session.
@@ -84,9 +94,18 @@ fn main() {
             format,
             eval,
             no_fs,
+            require_integrity,
             timeout,
             file,
-        } => run_eval(&file, &format, eval, no_fs, timeout.as_deref()),
+        } => run_eval(
+            &file,
+            &format,
+            eval,
+            no_fs,
+            require_integrity,
+            timeout.as_deref(),
+        ),
+        Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
             check,
             in_place,
@@ -197,6 +216,7 @@ fn run_eval(
     format: &OutputFormat,
     force_eval: bool,
     no_fs: bool,
+    require_integrity: bool,
     timeout: Option<&str>,
 ) -> Result<(), String> {
     // Install timeout handler if requested (must happen before evaluation)
@@ -256,7 +276,8 @@ fn run_eval(
         .map_err(|e| format!("cannot open base directory: {e}"))?;
 
     // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
-    let eval_ctx = tinct::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
+    let eval_ctx =
+        EvalContext::new_with_options(base_dir, Rc::clone(&env), no_fs, require_integrity);
 
     let initial_input = stdin_input;
 
@@ -331,6 +352,28 @@ fn run_fmt(file_path: &str, check: bool, in_place: bool) -> Result<(), String> {
     }
 
     print!("{formatted}");
+    Ok(())
+}
+
+/// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
+/// Used to generate integrity hashes for `$include` second arguments.
+fn run_hash(file_path: &str) -> Result<(), String> {
+    let file = std::fs::File::open(file_path).map_err(|e| format!("error reading file: {e}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("error reading file: {e}"))?;
+    if metadata.len() > MAX_FILE_SIZE {
+        return Err(format!(
+            "file is {} bytes, exceeds the 10 MB limit",
+            metadata.len()
+        ));
+    }
+    let mut buf = Vec::new();
+    file.take(MAX_FILE_SIZE + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("error reading file: {e}"))?;
+    let hash = blake3::hash(&buf);
+    println!("blake3:{}", hash.to_hex());
     Ok(())
 }
 

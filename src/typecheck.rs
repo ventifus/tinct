@@ -1456,6 +1456,10 @@ fn check_call_with_scheme(
             // propagating the error immediately. Collect all argument errors, then report them.
             // unify(Error, param_ty) = Ok(()) by the Error-absorption rule in unify(), so the
             // rest of argument unification continues without spurious additional errors.
+            debug_assert!(
+                func_ty.has_inference_vars(),
+                "check_call_with_scheme: func_ty must have inference vars after instantiation (invariant violated)"
+            );
             let mut arg_types = Vec::with_capacity(args.len());
             let mut arg_errors: Option<Vec<TypeError>> = None;
             for a in args {

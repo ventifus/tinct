@@ -91,6 +91,9 @@ pub struct EvalConfig {
     pub base_dir: cap_std::fs::Dir,
     pub stdlib_env: Rc<RefCell<Environment>>,
     pub no_fs: bool,
+    /// When true, every `$include` call must supply an integrity hash.
+    /// Hashless includes are rejected with `IncludeHashRequired`.
+    pub require_integrity: bool,
 }
 
 /// Mutable evaluation state (include guard, caching).
@@ -120,11 +123,21 @@ impl EvalContext {
         stdlib_env: Rc<RefCell<Environment>>,
         no_fs: bool,
     ) -> Rc<Self> {
+        Self::new_with_options(base_dir, stdlib_env, no_fs, false)
+    }
+
+    pub fn new_with_options(
+        base_dir: cap_std::fs::Dir,
+        stdlib_env: Rc<RefCell<Environment>>,
+        no_fs: bool,
+        require_integrity: bool,
+    ) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
                 no_fs,
+                require_integrity,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -143,6 +156,7 @@ impl EvalContext {
                 base_dir,
                 stdlib_env: Rc::clone(&self.config.stdlib_env),
                 no_fs: self.config.no_fs,
+                require_integrity: self.config.require_integrity,
             }),
             state: Rc::clone(&self.state),
         })
@@ -421,6 +435,18 @@ pub(crate) fn eval_recursive(
                         // [VM-RECORD-PROXY]: shape check + guard wrapping
                         // TODO(iterative-eval): this materializes eagerly — defer to CEK machine for lazy structural checking
                         let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
+                        // Flatten Overlay to Dict before record type assertion.
+                        let value = match value {
+                            Value::Overlay(l, r) => Value::Dict(crate::builtins::flatten_overlay(
+                                &l,
+                                &r,
+                                "type assert",
+                                ctx,
+                                depth + 1,
+                                expr.span,
+                            )?),
+                            other => other,
+                        };
                         if let Value::Dict(entries) = &value {
                             // Use helper to validate and wrap record
                             // If validation fails and default: is present, use default
@@ -528,7 +554,7 @@ pub(crate) fn eval_recursive(
                     // tag check. Without elaboration we cannot validate field names or types,
                     // but we can at least verify the value is a Dict (the carrier type for
                     // records). This closes the elaboration gap for eval-only mode.
-                    if !matches!(value, Value::Dict(_)) {
+                    if !matches!(value, Value::Dict(_) | Value::Overlay(..)) {
                         let actual = value.type_name();
                         if let Some(default_expr) =
                             annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
@@ -634,21 +660,17 @@ pub fn eval_document(
         let thunk = eval(expr, Rc::clone(&current_env), ctx, depth)?;
         let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
 
-        match value {
-            Value::Dict(map) => {
-                let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-                    &current_env,
-                ))));
-                for (key, val_thunk) in &map {
-                    // Only string keys become scope bindings; int keys are positional, not named.
-                    if let Key::String(name) = key {
-                        child_env
-                            .borrow_mut()
-                            .insert(name.clone(), Rc::clone(val_thunk));
-                    }
-                }
-                current_env = child_env;
-            }
+        // Flatten Overlay to Dict for scope chain binding.
+        let map = match value {
+            Value::Dict(map) => map,
+            Value::Overlay(l, r) => crate::builtins::flatten_overlay(
+                &l,
+                &r,
+                "document pipeline",
+                ctx,
+                depth + 1,
+                expr.span,
+            )?,
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "document pipeline".to_string(),
@@ -658,6 +680,20 @@ pub fn eval_document(
                 )
                 .into());
             }
+        };
+        {
+            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+                &current_env,
+            ))));
+            for (key, val_thunk) in &map {
+                // Only string keys become scope bindings; int keys are positional, not named.
+                if let Key::String(name) = key {
+                    child_env
+                        .borrow_mut()
+                        .insert(name.clone(), Rc::clone(val_thunk));
+                }
+            }
+            current_env = child_env;
         }
     }
 
@@ -5321,7 +5357,7 @@ mod tests {
             expr: Box::new(sp(Expr::VarRef("utils".into()))),
             field: "run".into(),
         };
-        assert_eq!(func_label(&expr), "call $utils.run");
+        assert_eq!(func_label(&expr), "call <dot-access>");
     }
 
     #[test]
@@ -5333,7 +5369,7 @@ mod tests {
             })),
             field: "c".into(),
         };
-        assert_eq!(func_label(&expr), "call $a.b.c");
+        assert_eq!(func_label(&expr), "call <dot-access>");
     }
 
     #[test]

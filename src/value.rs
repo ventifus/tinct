@@ -111,6 +111,9 @@ pub enum Value {
     Seq { head: Rc<Thunk>, tail: Rc<Thunk> },
     /// Proxy object — field access calls the handler function with the field name
     Proxy { handler: Rc<Thunk> },
+    /// Lazy overlay: R overrides L (right-biased merge). Flattened to Dict on demand.
+    /// Construction is O(1) — neither L nor R is materialized at merge time.
+    Overlay(Rc<Thunk>, Rc<Thunk>),
 }
 
 impl Value {
@@ -126,6 +129,7 @@ impl Value {
             Value::Builtin { .. } => "Builtin",
             Value::Seq { .. } => "Seq",
             Value::Proxy { .. } => "Proxy",
+            Value::Overlay(..) => "Dict",
         }
     }
 }
@@ -148,6 +152,7 @@ impl fmt::Debug for Value {
             Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "Proxy"),
+            Value::Overlay(..) => write!(f, "Overlay(...)"),
         }
     }
 }
@@ -182,6 +187,7 @@ impl fmt::Display for Value {
             Value::Builtin { name, .. } => write!(f, "<builtin {name}>"),
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
+            Value::Overlay(..) => write!(f, "[<overlay>]"),
         }
     }
 }
@@ -224,7 +230,8 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
-            // Dict, Function, Builtin, Seq, and Proxy are not structurally compared
+            // Dict, Function, Builtin, Seq, Proxy, and Overlay are not structurally compared.
+            // Overlay would require materializing both sides, breaking laziness.
             _ => false,
         }
     }

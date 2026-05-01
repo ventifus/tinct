@@ -23,6 +23,7 @@
 #     Numeric:     floor
 #     Runtime:     error  try  type-of
 #     Sequences:   seq?  seq  head  tail  collect  concat
+#     List ops:    rest  cons  reverse  sort
 #
 # Helper functions use a -impl suffix to distinguish them from public API.
 # All functions in this dict can reference each other (letrec semantics).
@@ -317,47 +318,19 @@ nth-impl: [fn [xs ks n len]
 last: [fn [xs]
     [call $get $xs [call $get [call $keys $xs] [call $builtin-sub [call $length $xs] 1]]]]
 
-# All elements except the first, reindexed from 0.
-# If xs is Seq: O(1) tail extraction.
-# If xs is Dict: O(n) eager copy with reindexing.
-rest: [fn [xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $tail $xs]
-        [call $rest-impl $xs 1 [call $length $xs] []]]]
+# rest: Rust-native builtin. Dict: O(n) drop-first-and-reindex. Seq: O(1) tail (delegates to $tail).
+# See src/builtins.rs for implementation.
 
-rest-impl: [fn [xs i len acc]
-    [call $builtin-if [call $>= $i $len]
-        $acc
-        [call $rest-impl $xs [call $builtin-add $i 1] $len
-            [call $append $acc $xs[$i]]]]]
-
-# Prepend an element to a list, reindexing from 0.
-# If xs is Seq: O(1) prepend via $seq.
-# If xs is Dict: O(n) eager copy with reindexing.
-cons: [fn [x xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $seq $x $xs]
-        [call $cons-impl $x $xs 0 [call $length $xs] [0: $x]]]]
-
-cons-impl: [fn [x xs i len acc]
-    [call $builtin-if [call $>= $i $len]
-        $acc
-        [call $cons-impl $x $xs [call $builtin-add $i 1] $len
-            [call $append $acc $xs[$i]]]]]
+# cons: Rust-native builtin. Dict: O(n) prepend-and-reindex. Seq: O(1) prepend (delegates to $seq).
+# See src/builtins.rs for implementation.
 
 # Append an element to the end of a list.
 conj: [fn [xs x] [call $append $xs $x]]
 
 # concat is a Rust-native builtin (dual-dispatch on Dict/Seq).
 
-# Reverse a list. Inherently materializing: must know all entries to reverse.
-reverse: [fn [xs] [call $reverse-impl $xs [call $builtin-sub [call $length $xs] 1] []]]
-
-reverse-impl: [fn [xs i acc]
-    [call $builtin-if [call $builtin-lt $i 0]
-        $acc
-        [call $reverse-impl $xs [call $builtin-sub $i 1]
-            [call $append $acc $xs[$i]]]]]
+# reverse: Rust-native builtin. O(n) — reverses insertion order, reindexes from 0.
+# See src/builtins.rs for implementation.
 
 # Rebuild a collection with dense 0..n integer keys. Inherently materializing: must traverse all entries.
 reindex: [fn [xs] [call $reindex-impl $xs [call $keys $xs] 0 []]]
@@ -375,11 +348,9 @@ reindex-step: [fn [xs ks i acc current-key]
 # Sorting (Mergesort)
 # ============================================================================
 
-# Sort a list using natural ordering. Inherently materializing: must compare values to determine order.
-sort: [fn [xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $error "sort: expected Dict, got Seq -- collect the Seq first"]
-        [call $sort-by [fn [a b] [call $builtin-lt $a $b]] $xs]]]
+# sort: Rust-native builtin. O(n log n) natural ordering sort (same semantics as $<).
+# Errors on Seq input (callers must $collect first), and on mixed incompatible types.
+# See src/builtins.rs for implementation.
 
 # Sort a list using a custom comparator. Inherently materializing: must compare values to determine order.
 sort-by: [fn [cmp xs]

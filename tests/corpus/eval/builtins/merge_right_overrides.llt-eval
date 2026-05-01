@@ -1,0 +1,4 @@
+# merge: right-biased override (R overrides L on collision)
+[call $merge [a: 1] [a: 2]]
+===
+Dict({"a": Int(2)})

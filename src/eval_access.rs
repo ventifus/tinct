@@ -10,6 +10,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::{Expr, Span, Spanned};
+use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval, eval_key, materialize, EvalContext};
 use crate::eval_call::{invoke_function, CallContext};
@@ -140,6 +141,10 @@ pub(crate) fn eval_range_access(
 
     let map = match target_val {
         Value::Dict(map) => map,
+        Value::Overlay(l, r) => {
+            flatten_overlay(&l, &r, "range access", ctx, depth + 1, *access_span)
+                .map_err(push_frame)?
+        }
         Value::Proxy { .. } => {
             return Err(push_frame(
                 EvalError::type_mismatch_ctx(
