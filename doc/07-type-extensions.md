@@ -398,6 +398,8 @@ type_var_occurs(α, τ):
   otherwise         → false
 
 row_var_occurs(ρ, Row { fields, tail }):
+  # Note: The implementation threads a `visited: &mut HashSet<String>` argument to prevent
+  # infinite loops on cyclic substitutions. The pseudocode omits this bookkeeping.
   (any(row_var_occurs_in_type(ρ, τ) for τ in fields.values()))
   ∨ match tail:
       RowVar(σ) → ρ == σ

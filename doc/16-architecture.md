@@ -209,7 +209,7 @@ struct Thunk {
 enum ThunkState {
     Unevaluated,
     PendingBuiltin(name, args),   // deferred builtin call
-    PendingCall(func, args),      // deferred function application (lazy $map, $update, etc.)
+    PendingCall(func, args, named, call_span, caller_env, ctx),  // deferred function application (lazy $map, $update, etc.); caller_env captures caller's environment for default param evaluation
     InProgress,                   // cycle detection — hitting this during materialization means circular dep
     Materialized(Value),
     Failed(Box<EvalError>),       // error memoization — cached so re-access returns same error
@@ -344,3 +344,30 @@ The following security features are documented in `doc/12-tooling.md` and tracke
 - All dependencies are actively maintained stable crates (clap, indexmap, serde_json, lsp-server, lsp-types, rustyline)
 - No known CVEs as of last audit (April 2026)
 - `cargo audit` not yet automated in CI (planned)
+
+## Testing Strategy
+
+Tinct uses a multi-layer testing approach that matches the component architecture. Each layer has its own testing discipline:
+
+**Unit tests** (per module, ~1000+ tests total):
+- Parser unit tests in `src/parser.rs` — test module at bottom of file
+- Evaluator unit tests in `src/eval.rs` — thunk lifecycle, state transitions, depth limits, error caching
+- Type checker unit tests in `src/types.rs` — unification, substitution, occurs check, row polymorphism
+- Builtin unit tests in `src/builtins.rs` — argument validation, error paths, edge cases
+
+**Corpus tests** (end-to-end, ~200+ tests):
+- `tests/corpus/valid/<category>/` — parsing + evaluation succeeds, output matches expected
+- `tests/corpus/invalid/<category>/` — parsing or evaluation fails, error message matches expected
+- Format: `.txt` files with `===` delimiter between input and expected output
+- Coverage: all language features, edge cases, error conditions
+
+**CLI integration tests** (REPL and LSP):
+- REPL session tests — multi-command interactions, environment persistence, `$eval` behavior
+- LSP protocol tests — document sync, hover, diagnostics, incremental updates
+- File I/O sandboxing tests — `--no-fs` flag, include guards, path canonicalization
+
+**Testing discipline**:
+- New language features require both unit tests (isolated behavior) and corpus tests (end-to-end)
+- Error paths must have corpus tests with substring matching (resilient to internal error message changes)
+- Whitespace variations and access chain interactions should be tested for grammar changes
+- Depth limit tests must use 16MB stack threads to avoid Rust stack overflow before LLT depth limit

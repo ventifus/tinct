@@ -98,7 +98,7 @@ pub(crate) fn eval_call(
 
     // Return PendingCall thunk — function dispatch happens iteratively in run().
     // PendingCallDispatch forces func_thunk, matches Function vs Builtin, and invokes.
-    // For tail-recursive functions, the loop depth stays constant — unlimited TCO!
+    // For tail-recursive functions, the loop depth stays constant — prerequisite for unlimited TCO via CEK machine.
     Ok(Rc::new(Thunk::new_pending_call(
         func_thunk,
         pos_thunks,

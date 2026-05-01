@@ -1453,6 +1453,11 @@ fn check_call_with_scheme(
                 // borrow-checker workaround. Without seeding, param_ty is unified against
                 // arg_ty in an empty substitution context, missing bindings for TypeVars
                 // that state.subst already resolved (Damas & Milner 1982, Theorem 2).
+                //
+                // Fresh type vars from instantiate_scheme are call-site-local and should not escape.
+                // The local substitution is consumed by subst.apply(ret) and does not need to propagate
+                // upstream — only the constraints accumulated during argument unification (merged back
+                // into state.subst at lines 1475-1480) need to be visible to downstream inference.
                 let mut subst = Substitution {
                     type_map: state.subst.type_map.clone(),
                     row_map: state.subst.row_map.clone(),
@@ -1881,6 +1886,10 @@ fn expand_type_alias(
     // (e.g., `a` in `[Fn@a [a]]`) consistently map to the same fresh TypeVar.
     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
     let mut alias_row_map: HashMap<String, String> = HashMap::new();
+    // The `let _ = resolve_type_expr(...)` discards the resolved type intentionally — the call
+    // is for validation side-effects (error propagation) only. Standalone type alias expressions
+    // have no runtime type; returning Any is correct. The actual type alias definition is
+    // registered in the TypeEnv during dict inference (see infer_dict Pass 2).
     let _ = resolve_type_expr(
         inner,
         env,

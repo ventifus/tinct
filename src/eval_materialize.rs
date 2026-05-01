@@ -202,6 +202,11 @@ pub(crate) struct BuiltinForceArgData {
 ///
 /// **Size budget:** Large variants are boxed so the enum fits within 96 bytes
 /// (one cache line), keeping the continuation stack cache-friendly.
+///
+/// **Context capture convention:** Some variants carry `ctx` for proxy dispatch
+/// (e.g., `GuardedValidate`), while others read `ctx` from the thunk being forced.
+/// Variants that dispatch to proxy handlers need their own `ctx` because the proxy
+/// handler may be evaluated in a different scope than the target thunk.
 pub(crate) enum Cont {
     /// Memoize the result into the parent thunk. Used after materializing
     /// result thunks from Unevaluated/PendingBuiltin/PendingCall branches.

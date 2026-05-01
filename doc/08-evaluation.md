@@ -230,6 +230,8 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 | InProgress → Materialized | `set_state(Materialized(v))` | Direct write |
 | InProgress → Failed | `cache_failure(err)` | Via `transition()` |
 | InProgress → Guarded | `set_state(Guarded(...))` | Direct write — **backward edge**, non-cacheable DepthExceeded only; restores original state to allow retry at lower depth (see [FORCE-GUARD-DEPTH]) |
+| InProgress → PendingBuiltin | `set_state(PendingBuiltin(...))` | Direct write — **backward edge**, non-cacheable DepthExceeded only; restores original state for retry at lower depth |
+| InProgress → PendingCall | `set_state(PendingCall(...))` | Direct write — **backward edge**, non-cacheable DepthExceeded only; restores original state for retry at lower depth |
 | Failed → Failed | `set_state(Failed(e'))` | Direct write (diagnostic refinement only) |
 
 **Monotonicity proof sketch:** The graph has no cycles (the single backward edge is acyclic: InProgress cannot return to itself through Guarded). Each source state (Unevaluated, PendingBuiltin, PendingCall, Guarded) transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the backward `InProgress → Guarded` edge for non-cacheable DepthExceeded errors (see Exception below); this preserves semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
@@ -386,10 +388,10 @@ The builtin receives `pd` (the pending depth captured at PendingBuiltin construc
 
 **[FORCE-CALL]**
 ```
-θ.state = PendingCall(f_θ, args, named, cs, Σ_θ)
+θ.state = PendingCall(f_θ, args, named, cs, Σ_caller, Σ_θ)
 θ.state ← InProgress
 force(f_θ, d+1) ⇒ Function(params, body, env)
-invoke(params, body, env, args, named, Σ_θ) ⇒ θ'
+invoke(params, body, env, args, named, Σ_caller) ⇒ θ'
 force(θ', d+1) ⇒ v
 θ.state ← Materialized(v)
 ───────────────────────────
@@ -398,10 +400,10 @@ force(θ, d) ⇒ v
 
 **[FORCE-CALL-BUILTIN]**
 ```
-θ.state = PendingCall(f_θ, args, named, cs, Σ_θ)
+θ.state = PendingCall(f_θ, args, named, cs, Σ_caller, Σ_θ)
 θ.state ← InProgress
 force(f_θ, d+1) ⇒ Builtin(func)
-func(args, named, Σ_θ, d, cs) ⇒ θ'
+func(args, named, Σ_caller, d, cs) ⇒ θ'
 force(θ', d+1) ⇒ v
 θ.state ← Materialized(v)
 ───────────────────────────

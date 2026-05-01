@@ -56,6 +56,9 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
 /// Used by the `--no-typecheck` fallback to distinguish structural record annotations
 /// (which should enforce a Dict tag check per doc/07-type-extensions.md §--no-typecheck mode)
 /// from metadata-only annotations (which have nothing to validate against).
+///
+/// **Parser guarantee:** PropertyDict entries always have `Expr::Str` keys; non-`Expr::Str`
+/// keys are treated as non-structural (the `_ => None` arm will never match in well-formed ASTs).
 pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool {
     match annotation {
         Annotation::Simple(_) => false,
@@ -407,7 +410,7 @@ pub(crate) fn eval_recursive(
                 match &expected {
                     Type::Record(row) => {
                         // [VM-RECORD-PROXY]: shape check + guard wrapping
-                        // Must materialize eagerly to perform shape check
+                        // TODO(iterative-eval): this materializes eagerly — defer to CEK machine for lazy structural checking
                         let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
                         if let Value::Dict(entries) = &value {
                             // Use helper to validate and wrap record
