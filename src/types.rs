@@ -62,6 +62,12 @@ pub enum Type {
     #[allow(clippy::enum_variant_names)]
     TypeVar(String, u32),
     Any,
+    /// Sentinel for failed sub-expression inference. Prevents cascade errors: when a
+    /// sub-expression fails type inference, its result is `Error` rather than propagating
+    /// the failure to parent expressions. `unify(Error, T)` is a no-op for all T (silent
+    /// absorption), so parent expressions can continue inference without spurious downstream
+    /// errors. `is_subtype(Error, _)` returns false; Error is not a subtype of anything.
+    Error,
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -90,6 +96,7 @@ impl PartialEq for Type {
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             (Type::Any, Type::Any) => true,
+            (Type::Error, Type::Error) => true,
             _ => false,
         }
     }
@@ -106,6 +113,12 @@ impl Type {
     /// including nested positions, so `Seq[Any] <: Seq[τ]` holds for all τ. This is intentional
     /// for gradual typing.
     pub fn is_subtype(sub: &Type, sup: &Type) -> bool {
+        // Error is not a subtype of anything (not even itself), and nothing is a subtype of Error.
+        // It is a sentinel for failed inference and should not satisfy any constraint.
+        // This check must come BEFORE the Any check to prevent Error <: Any returning true.
+        if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
+            return false;
+        }
         if matches!(sub, Type::Any) || matches!(sup, Type::Any) {
             return true;
         }
@@ -1100,6 +1113,12 @@ pub fn unify(
     }
 
     match (&a, &b) {
+        // Error absorption: unify(Error, T) = Ok(()) for all T.
+        // Error is a sentinel for failed sub-expression inference; absorbing it silently
+        // prevents cascade errors in parent expressions. No substitution is modified —
+        // Error carries no information that should propagate to type variables.
+        (Type::Error, _) | (_, Type::Error) => Ok(()),
+
         // Any-unification with level zeroing: prevent generalization of Any-touched vars
         (Type::Any, Type::TypeVar(name, _)) => {
             state.levels.insert(name.clone(), 0);
@@ -1481,6 +1500,7 @@ impl fmt::Display for Type {
             }
             Type::Seq(elem) => write!(f, "Seq[{elem}]"),
             Type::Proxy => write!(f, "Proxy"),
+            Type::Error => write!(f, "<error>"),
         }
     }
 }
@@ -6166,5 +6186,100 @@ mod tests {
                 break;
             }
         }
+    }
+
+    // --- Type::Error sentinel ---
+
+    #[test]
+    fn test_error_display() {
+        assert_eq!(format!("{}", Type::Error), "<error>");
+    }
+
+    #[test]
+    fn test_error_eq() {
+        assert_eq!(Type::Error, Type::Error);
+        assert_ne!(Type::Error, Type::Int);
+        assert_ne!(Type::Error, Type::Any);
+    }
+
+    #[test]
+    fn test_error_is_not_subtype_of_anything() {
+        assert!(!Type::is_subtype(&Type::Error, &Type::Int));
+        assert!(!Type::is_subtype(&Type::Error, &Type::Str));
+        assert!(!Type::is_subtype(&Type::Error, &Type::Any));
+        assert!(!Type::is_subtype(&Type::Error, &Type::Error));
+        assert!(!Type::is_subtype(&Type::Int, &Type::Error));
+        assert!(!Type::is_subtype(&Type::Any, &Type::Error));
+    }
+
+    #[test]
+    fn test_error_has_no_inference_vars() {
+        assert!(!Type::Error.has_inference_vars());
+    }
+
+    #[test]
+    fn test_error_collect_vars_empty() {
+        let mut type_vars = HashSet::new();
+        let mut row_vars = HashSet::new();
+        Type::Error.collect_all_vars(&mut type_vars, &mut row_vars);
+        assert!(type_vars.is_empty());
+        assert!(row_vars.is_empty());
+    }
+
+    #[test]
+    fn test_unify_error_with_any_type_succeeds() {
+        // unify(Error, T) = Ok(()) for all T — error absorption
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // Error with concrete types
+        assert!(unify(&Type::Error, &Type::Int, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Int, &Type::Error, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Error, &Type::Str, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Error, &Type::Bool, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Error, &Type::Any, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Any, &Type::Error, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Error, &Type::Error, &mut subst, &mut state, span).is_ok());
+
+        // Substitution must not be modified — Error carries no binding information
+        assert!(
+            subst.is_empty(),
+            "unify(Error, T) must not create any bindings in the substitution"
+        );
+    }
+
+    #[test]
+    fn test_unify_error_with_typevar_does_not_bind() {
+        // unify(Error, TypeVar) = Ok(()) — Error absorbs without binding the TypeVar
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        state.levels.insert("a".into(), 1);
+
+        let result = unify(
+            &Type::Error,
+            &Type::TypeVar("a".into(), 1),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(result.is_ok());
+        // TypeVar "a" must not be bound — Error does not carry type information
+        assert!(
+            subst.type_map.is_empty(),
+            "TypeVar must not be bound when unified with Error"
+        );
+    }
+
+    #[test]
+    fn test_apply_preserves_error() {
+        // Substitution::apply must pass Error through unchanged
+        let subst = Substitution::new();
+        assert_eq!(subst.apply(&Type::Error), Type::Error);
+
+        let mut subst_with_binding = Substitution::new();
+        subst_with_binding.type_map.insert("a".into(), Type::Int);
+        assert_eq!(subst_with_binding.apply(&Type::Error), Type::Error);
     }
 }
