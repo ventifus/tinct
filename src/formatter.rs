@@ -5,6 +5,8 @@
 // `impl Display for Expr` in `src/ast.rs` — that is the normative representation
 // for error output. This `Formatter` operates on the raw parse output (token spans)
 // to reconstruct well-formatted source, not to describe what an expression means.
+use std::rc::Rc;
+
 use crate::ast::{Annotation, Document, Entry, Expr, NamedArg, Param, Spanned};
 use crate::parser::{parse2, ParseError, ParseOutput};
 
@@ -483,7 +485,7 @@ impl<'a> Formatter<'a> {
     fn format_call(
         &mut self,
         func: &Spanned<Expr>,
-        args: &[Spanned<Expr>],
+        args: &[Rc<Spanned<Expr>>],
         named_args: &[Spanned<NamedArg>],
     ) {
         self.output.push_str("[call ");

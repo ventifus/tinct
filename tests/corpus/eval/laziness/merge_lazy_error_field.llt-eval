@@ -1,0 +1,7 @@
+# Laziness: $merge does not force dict arguments at construction
+# Error field is not forced unless accessed
+[r: [call $merge [x: [call $/ 1 0]] [y: 2]]]
+---
+[result: $r.y]
+===
+Dict({"result": Int(2)})

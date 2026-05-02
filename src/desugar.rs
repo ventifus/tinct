@@ -13,6 +13,7 @@
 //! See doc/04-functions.md §`$_` Desugaring for the complete formal specification.
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, Param, Spanned};
+use std::rc::Rc;
 
 /// Desugar a complete file (all documents).
 ///
@@ -26,7 +27,8 @@ pub fn desugar_file(file: &mut File) {
 
 /// Desugar a single document (all expressions).
 fn desugar_document(doc: &mut Document) {
-    for expr_spanned in &mut doc.expressions {
+    for expr_rc in &mut doc.expressions {
+        let expr_spanned = Rc::make_mut(expr_rc);
         desugar_expr(expr_spanned, 0);
     }
 }
@@ -59,7 +61,7 @@ fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
             // After wrapping, the body is at depth+1 (inside the generated lambda)
             // We need to recurse into the wrapped body
             if let Expr::Fn { body, .. } = &mut expr.node {
-                desugar(body, 1);
+                desugar(Rc::make_mut(body), 1);
             }
             return;
         }
@@ -176,7 +178,7 @@ fn wrap_expr_in_lambda(expr: &mut Spanned<Expr>) {
             },
             span,
         )],
-        body: Box::new(Spanned::new(original_node, span)),
+        body: Rc::new(Spanned::new(original_node, span)),
         desugared: true,
     };
 }
@@ -236,10 +238,16 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         } => {
             desugar(func, depth);
             for arg in args {
-                desugar(arg, depth);
+                // Skip shared Rcs to avoid deep clone stack overflow (see desugar_entry comment)
+                if let Some(arg_mut) = Rc::get_mut(arg) {
+                    desugar(arg_mut, depth);
+                }
             }
             for named_arg_spanned in named_args {
-                desugar(&mut named_arg_spanned.node.value, depth);
+                // Skip shared Rcs to avoid deep clone stack overflow (see desugar_entry comment)
+                if let Some(value_mut) = Rc::get_mut(&mut named_arg_spanned.node.value) {
+                    desugar(value_mut, depth);
+                }
             }
         }
 
@@ -267,7 +275,10 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             desugar_annotation_option(return_ann, depth);
 
             // Recurse into body at new depth
-            desugar(body, new_depth);
+            // Skip shared Rcs to avoid deep clone stack overflow (see desugar_entry comment)
+            if let Some(body_mut) = Rc::get_mut(body) {
+                desugar(body_mut, new_depth);
+            }
         }
 
         // TypeAlias: recurse into the aliased expression
@@ -301,7 +312,14 @@ fn desugar_entry(entry: &mut Entry, depth: usize) {
     if let Some(key_spanned) = &mut entry.key {
         desugar(key_spanned, depth);
     }
-    desugar(&mut entry.value, depth);
+    // Try to get mutable access without cloning. Rc::get_mut returns Some only if
+    // there's exactly one strong reference (no sharing). For shared Rcs (only created
+    // by error recovery in parser.rs:925, 1483), skip desugaring to avoid deep clone
+    // stack overflow. Error-recovery ASTs are already semantically broken, so skipping
+    // $_ desugaring on them is acceptable.
+    if let Some(value_mut) = Rc::get_mut(&mut entry.value) {
+        desugar(value_mut, depth);
+    }
 }
 
 /// Desugar an annotation (if it's a PropertyDict with expression values).
@@ -409,7 +427,7 @@ mod tests {
     fn test_wrap_call_with_direct_arg() {
         let mut expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("f".into()))),
-            args: vec![sp(Expr::VarRef("_".into()))],
+            args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
             named_args: vec![],
         });
 
@@ -438,7 +456,7 @@ mod tests {
     fn test_no_wrap_call_func_position() {
         let mut expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("_".into()))),
-            args: vec![sp(Expr::Int(1))],
+            args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
         });
 
@@ -464,9 +482,9 @@ mod tests {
                 annotation: None,
                 variadic: false,
             })],
-            body: Box::new(sp(Expr::Call {
+            body: Rc::new(sp(Expr::Call {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![sp(Expr::VarRef("_".into()))],
+                args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
                 named_args: vec![],
             })),
             desugared: false,
@@ -498,7 +516,7 @@ mod tests {
     fn test_wrap_dict_value() {
         let mut expr = sp(Expr::Dict(vec![sp(Entry {
             key: Some(sp(Expr::Str("a".into()))),
-            value: sp(Expr::VarRef("_".into())),
+            value: Rc::new(sp(Expr::VarRef("_".into()))),
         })]));
 
         desugar_expr(&mut expr, 0);
@@ -528,7 +546,7 @@ mod tests {
     fn test_no_wrap_dict_key() {
         let mut expr = sp(Expr::Dict(vec![sp(Entry {
             key: Some(sp(Expr::VarRef("_".into()))),
-            value: sp(Expr::Int(42)),
+            value: Rc::new(sp(Expr::Int(42))),
         })]));
 
         desugar_expr(&mut expr, 0);
@@ -696,7 +714,7 @@ mod tests {
             args: vec![],
             named_args: vec![sp(NamedArg {
                 name: "x".into(),
-                value: sp(Expr::VarRef("_".into())),
+                value: Rc::new(sp(Expr::VarRef("_".into()))),
             })],
         });
 
@@ -736,18 +754,18 @@ mod tests {
         let mut expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("filter".into()))),
             args: vec![
-                sp(Expr::Call {
+                Rc::new(sp(Expr::Call {
                     func: Box::new(sp(Expr::VarRef(">".into()))),
                     args: vec![
-                        sp(Expr::DotAccess {
+                        Rc::new(sp(Expr::DotAccess {
                             expr: Box::new(sp(Expr::VarRef("_".into()))),
                             field: "age".into(),
-                        }),
-                        sp(Expr::Int(30)),
+                        })),
+                        Rc::new(sp(Expr::Int(30))),
                     ],
                     named_args: vec![],
-                }),
-                sp(Expr::VarRef("users".into())),
+                })),
+                Rc::new(sp(Expr::VarRef("users".into()))),
             ],
             named_args: vec![],
         });
@@ -812,15 +830,15 @@ mod tests {
         let mut file = File {
             documents: vec![sp(Document {
                 expressions: vec![
-                    sp(Expr::Call {
+                    Rc::new(sp(Expr::Call {
                         func: Box::new(sp(Expr::VarRef("f".into()))),
-                        args: vec![sp(Expr::VarRef("_".into()))],
+                        args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
                         named_args: vec![],
-                    }),
-                    sp(Expr::Dict(vec![sp(Entry {
+                    })),
+                    Rc::new(sp(Expr::Dict(vec![sp(Entry {
                         key: Some(sp(Expr::Str("x".into()))),
-                        value: sp(Expr::VarRef("_".into())),
-                    })])),
+                        value: Rc::new(sp(Expr::VarRef("_".into()))),
+                    })]))),
                 ],
             })],
         };
@@ -852,7 +870,7 @@ mod tests {
         // Desugared lambda: [call $f $_] → [fn [_] [call $f $_]] with desugared=true
         let mut desugared_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("f".into()))),
-            args: vec![sp(Expr::VarRef("_".into()))],
+            args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
             named_args: vec![],
         });
         desugar_expr(&mut desugared_expr, 0);
@@ -874,7 +892,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             })],
-            body: Box::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
             desugared: false,
         });
         desugar_expr(&mut user_fn, 0);
@@ -901,9 +919,9 @@ mod tests {
                 annotation: None,
                 variadic: false,
             })],
-            body: Box::new(sp(Expr::Call {
+            body: Rc::new(sp(Expr::Call {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![sp(Expr::VarRef("_".into()))],
+                args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
                 named_args: vec![],
             })),
             desugared: false,
@@ -948,7 +966,7 @@ mod tests {
     fn test_wrap_call_both_direct() {
         let mut expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("_".into()))),
-            args: vec![sp(Expr::VarRef("_".into()))],
+            args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
             named_args: vec![],
         });
 
@@ -988,9 +1006,9 @@ mod tests {
                 annotation: None,
                 variadic: false,
             })],
-            body: Box::new(sp(Expr::Call {
+            body: Rc::new(sp(Expr::Call {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![sp(Expr::VarRef("_".into()))], // $_ in arg position
+                args: vec![Rc::new(sp(Expr::VarRef("_".into())))], // $_ in arg position
                 named_args: vec![],
             })),
             desugared: false,
@@ -1056,15 +1074,15 @@ mod tests {
         let mut expr = sp(Expr::Dict(vec![
             sp(Entry {
                 key: Some(sp(Expr::Str("a".into()))),
-                value: sp(Expr::VarRef("_".into())), // DIRECT value → WRAP-DICT fires
+                value: Rc::new(sp(Expr::VarRef("_".into()))), // DIRECT value → WRAP-DICT fires
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("b".into()))),
-                value: sp(Expr::Call {
+                value: Rc::new(sp(Expr::Call {
                     func: Box::new(sp(Expr::VarRef("f".into()))),
-                    args: vec![sp(Expr::VarRef("_".into()))],
+                    args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
                     named_args: vec![],
-                }),
+                })),
             }),
         ]));
 
@@ -1126,23 +1144,23 @@ mod tests {
                 annotation: None,
                 variadic: false,
             })],
-            body: Box::new(sp(Expr::Fn {
+            body: Rc::new(sp(Expr::Fn {
                 return_ann: None,
                 params: vec![sp(Param {
                     name: "x".into(),
                     annotation: Some(sp(Annotation::PropertyDict(vec![
                         sp(Entry {
                             key: Some(sp(Expr::Str("type".into()))),
-                            value: sp(Expr::VarRef("Number".into())),
+                            value: Rc::new(sp(Expr::VarRef("Number".into()))),
                         }),
                         sp(Entry {
                             key: None,
-                            value: sp(Expr::VarRef("_".into())),
+                            value: Rc::new(sp(Expr::VarRef("_".into()))),
                         }),
                     ]))),
                     variadic: false,
                 })],
-                body: Box::new(sp(Expr::VarRef("x".into()))),
+                body: Rc::new(sp(Expr::VarRef("x".into()))),
                 desugared: false,
             })),
             desugared: false,

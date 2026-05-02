@@ -1,0 +1,4 @@
+# Laziness: $if does not force the false branch when condition is true
+[call $if true 1 [call $/ 1 0]]
+===
+Int(1)

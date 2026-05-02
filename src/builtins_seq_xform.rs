@@ -9,12 +9,11 @@
 //!
 //! Registration in `standard_builtins()` remains in `builtins.rs`.
 
-use std::borrow::Cow;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::builtins::{flatten_overlay, ok_val, reject_named};
+use crate::builtins::{builtin, flatten_overlay, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Key, Thunk, ThunkState, Value};
@@ -60,7 +59,7 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     call_span,
                     Rc::clone(&ctx.config.stdlib_env),
                     value_thunk.span,
-                    Cow::Borrowed("map"),
+                    Some(Rc::from("map")),
                     Rc::clone(&ctx),
                 ));
                 new_map.insert(key.clone(), pending_call);
@@ -76,18 +75,17 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 call_span,
                 Rc::clone(&ctx.config.stdlib_env),
                 head.span,
-                Cow::Borrowed("map head"),
+                Some(Rc::from("map head")),
                 Rc::clone(&ctx),
             ));
             let tail_args = vec![Rc::clone(&f_thunk), Rc::clone(&tail)];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
-                "map",
-                builtin_map,
+                builtin!("map", builtin_map),
                 tail_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $map"),
+                Some(Rc::from("call $map")),
                 Rc::clone(&ctx),
             ));
             ok_val(
@@ -155,13 +153,12 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let filter_args = vec![Rc::clone(&pred_thunk), dict_thunk, idx_thunk];
 
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
-                "filter",
-                builtin_filter_dict_step,
+                builtin!("filter", builtin_filter_dict_step),
                 filter_args,
                 None,
                 depth,
                 call_span,
-                Cow::Borrowed("call $filter"),
+                Some(Rc::from("call $filter")),
                 Rc::clone(&ctx),
             ));
             Ok(result_thunk)
@@ -174,13 +171,12 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // recursive tail PendingBuiltins.
             let filter_args = vec![Rc::clone(&pred_thunk), Rc::clone(&args[1])];
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
-                "filter",
-                builtin_filter_seq_step,
+                builtin!("filter", builtin_filter_seq_step),
                 filter_args,
                 None,
                 depth,
                 call_span,
-                Cow::Borrowed("call $filter"),
+                Some(Rc::from("call $filter")),
                 Rc::clone(&ctx),
             ));
             Ok(result_thunk)
@@ -275,7 +271,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
             call_span,
             Rc::clone(&ctx.config.stdlib_env),
             value_thunk.span,
-            Cow::Borrowed("filter-dict pred"),
+            Some(Rc::from("filter-dict pred")),
             Rc::clone(&ctx),
         ));
         let pred_result = materialize(&pred_call, None, &ctx, depth)?;
@@ -302,13 +298,12 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
                 next_idx_thunk,
             ];
             let tail = Rc::new(Thunk::new_pending_builtin(
-                "filter",
-                builtin_filter_dict_step,
+                builtin!("filter", builtin_filter_dict_step),
                 tail_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $filter"),
+                Some(Rc::from("call $filter")),
                 Rc::clone(&ctx),
             ));
 
@@ -366,7 +361,7 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                     call_span,
                     Rc::clone(&ctx.config.stdlib_env),
                     head.span,
-                    Cow::Borrowed("filter-seq pred"),
+                    Some(Rc::from("filter-seq pred")),
                     Rc::clone(&ctx),
                 ));
                 let pred_result = materialize(&pred_call, None, &ctx, depth)?;
@@ -388,13 +383,12 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                     // Include this element; defer the rest lazily
                     let tail_args = vec![Rc::clone(&pred_thunk), tail];
                     let new_tail = Rc::new(Thunk::new_pending_builtin(
-                        "filter",
-                        builtin_filter_seq_step,
+                        builtin!("filter", builtin_filter_seq_step),
                         tail_args,
                         None,
                         depth + 1,
                         call_span,
-                        Cow::Borrowed("call $filter"),
+                        Some(Rc::from("call $filter")),
                         Rc::clone(&ctx),
                     ));
                     return ok_val(
@@ -475,13 +469,12 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let new_head = Rc::clone(&head);
             let tail_args = vec![ok_val(Value::Int(n_int - 1), call_span)?, Rc::clone(&tail)];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
-                "take",
-                builtin_take,
+                builtin!("take", builtin_take),
                 tail_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $take"),
+                Some(Rc::from("call $take")),
                 Rc::clone(&ctx),
             ));
             ok_val(
@@ -556,13 +549,12 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let n_minus_1 = Rc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
             let step_args = vec![n_minus_1, tail];
             Ok(Rc::new(Thunk::new_pending_builtin(
-                "drop",
-                builtin_drop_seq_step,
+                builtin!("drop", builtin_drop_seq_step),
                 step_args,
                 None,
                 depth,
                 call_span,
-                Cow::Borrowed("call $drop"),
+                Some(Rc::from("call $drop")),
                 Rc::clone(&ctx),
             )))
         }
@@ -618,13 +610,12 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
             let n_minus_1 = Rc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
             let step_args = vec![n_minus_1, tail];
             Ok(Rc::new(Thunk::new_pending_builtin(
-                "drop",
-                builtin_drop_seq_step,
+                builtin!("drop", builtin_drop_seq_step),
                 step_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $drop"),
+                Some(Rc::from("call $drop")),
                 Rc::clone(&ctx),
             )))
         }

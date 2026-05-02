@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use smallvec::SmallVec;
+
 use crate::ast::Span;
 
 /// Convenience type alias for evaluation results.
@@ -187,6 +189,11 @@ pub enum ErrorKind {
     // --- Evaluation structure (E070-E079) ---
     CircularDependency {
         name: String,
+        /// Full cycle chain: `[(origin_label, span), ...]`.
+        /// Each entry represents a thunk in the evaluation chain leading to the cycle.
+        /// Empty if cycle path tracking was disabled or the cycle was detected before
+        /// the stack was populated.
+        cycle_path: Vec<(String, Span)>,
     },
 
     // --- User-generated (E080-E089) ---
@@ -437,8 +444,17 @@ impl fmt::Display for ErrorKind {
             } => write!(f, "{builtin}: cannot parse {input:?} as {target}"),
             Self::JsonParse { detail } => write!(f, "from-json: invalid JSON: {detail}"),
             Self::JsonRange => write!(f, "JSON number outside representable range"),
-            Self::CircularDependency { name } => {
-                write!(f, "circular dependency detected while evaluating {name}")
+            Self::CircularDependency { name, cycle_path } => {
+                write!(f, "circular dependency detected while evaluating {name}")?;
+                if !cycle_path.is_empty() {
+                    write!(f, "\n  cycle:")?;
+                    for (label, span) in cycle_path {
+                        write!(f, " {} ({})", label, span)?;
+                        write!(f, " →")?;
+                    }
+                    write!(f, " [back to {}]", name)?;
+                }
+                Ok(())
             }
             Self::UserError { message } => write!(f, "{message}"),
             Self::Internal { message } => write!(f, "{message}"),
@@ -603,9 +619,16 @@ impl PartialEq for ErrorKind {
             ) => b1 == b2 && i1 == i2 && t1 == t2,
             (Self::JsonParse { detail: d1 }, Self::JsonParse { detail: d2 }) => d1 == d2,
             (Self::JsonRange, Self::JsonRange) => true,
-            (Self::CircularDependency { name: n1 }, Self::CircularDependency { name: n2 }) => {
-                n1 == n2
-            }
+            (
+                Self::CircularDependency {
+                    name: n1,
+                    cycle_path: p1,
+                },
+                Self::CircularDependency {
+                    name: n2,
+                    cycle_path: p2,
+                },
+            ) => n1 == n2 && p1 == p2,
             (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
             (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
             // This wildcard correctly returns false for cross-variant comparisons
@@ -633,7 +656,7 @@ pub struct EvalError {
     pub kind: ErrorKind,
     pub definition_span: Span,
     pub materialization_span: Option<Span>,
-    pub stack: Vec<StackFrame>,
+    pub stack: SmallVec<[StackFrame; 8]>,
     /// Optional secondary span with a label, e.g. "evaluated to Bool" pointing at a value site.
     /// Displayed after the primary error line when present.
     pub secondary_span: Option<(Span, String)>,
@@ -653,7 +676,7 @@ impl EvalError {
             kind: ErrorKind::Internal { message },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -695,7 +718,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -709,7 +732,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -722,7 +745,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -732,19 +755,24 @@ impl EvalError {
             kind: ErrorKind::ArityMismatch { expected, got },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
 
-    pub fn circular_dependency(name: &str, definition_span: Span) -> Self {
+    pub fn circular_dependency(
+        name: &str,
+        definition_span: Span,
+        cycle_path: Vec<(String, Span)>,
+    ) -> Self {
         Self {
             kind: ErrorKind::CircularDependency {
                 name: name.to_string(),
+                cycle_path,
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -754,7 +782,7 @@ impl EvalError {
             kind: ErrorKind::DepthExceeded { limit },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -764,7 +792,7 @@ impl EvalError {
             kind: ErrorKind::UserError { message },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -774,7 +802,7 @@ impl EvalError {
             kind: ErrorKind::NamedArgRejected { builtin },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -784,7 +812,7 @@ impl EvalError {
             kind: ErrorKind::IntegerOverflow { op },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -803,7 +831,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -813,7 +841,7 @@ impl EvalError {
             kind: ErrorKind::DivisionByZero { op },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -823,7 +851,7 @@ impl EvalError {
             kind: ErrorKind::FloatNotFinite { builtin, value },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -833,7 +861,7 @@ impl EvalError {
             kind: ErrorKind::EmptyCollection { op },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -843,7 +871,7 @@ impl EvalError {
             kind: ErrorKind::ValueNotSerializable { value_type },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -853,7 +881,7 @@ impl EvalError {
             kind: ErrorKind::FloatOutOfRange { builtin, value },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -863,7 +891,7 @@ impl EvalError {
             kind: ErrorKind::UndefinedVariable { name },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -876,7 +904,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -886,7 +914,7 @@ impl EvalError {
             kind: ErrorKind::NamedArgConflict { param },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -900,7 +928,7 @@ impl EvalError {
             kind: ErrorKind::UnknownNamedArg { name, valid_params },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -912,7 +940,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -922,7 +950,7 @@ impl EvalError {
             kind: ErrorKind::JsonDepthExceeded { limit },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -932,7 +960,7 @@ impl EvalError {
             kind: ErrorKind::IncludeForbidden,
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -944,7 +972,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -954,7 +982,7 @@ impl EvalError {
             kind: ErrorKind::IncludeNotAvailable,
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -964,7 +992,7 @@ impl EvalError {
             kind: ErrorKind::IncludeIoError { path, detail },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -974,7 +1002,7 @@ impl EvalError {
             kind: ErrorKind::IncludeCycle { path },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -984,7 +1012,7 @@ impl EvalError {
             kind: ErrorKind::IncludeParseFailed { path, detail },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -999,7 +1027,7 @@ impl EvalError {
             kind: ErrorKind::IncludeFileTooLarge { path, size, limit },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -1018,7 +1046,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -1028,7 +1056,7 @@ impl EvalError {
             kind: ErrorKind::IncludeHashRequired { path },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -1038,7 +1066,7 @@ impl EvalError {
             kind: ErrorKind::IncludePathNotAllowed { path },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -1057,7 +1085,7 @@ impl EvalError {
             },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -1067,7 +1095,7 @@ impl EvalError {
             kind: ErrorKind::JsonParse { detail },
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -1077,7 +1105,7 @@ impl EvalError {
             kind: ErrorKind::JsonRange,
             definition_span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -1089,7 +1117,7 @@ impl EvalError {
             },
             definition_span: span,
             materialization_span: None,
-            stack: Vec::new(),
+            stack: SmallVec::new(),
             secondary_span: None,
         }
     }
@@ -1249,6 +1277,83 @@ impl fmt::Display for EvalError {
 
 impl std::error::Error for EvalError {}
 
+/// Render a source snippet with caret annotations for the given span.
+///
+/// Returns `None` for synthetic spans (`Span::origin()` at 0:0-0:0), which have no source line.
+/// Returns `None` if the span is out of bounds for the source.
+///
+/// For single-line spans (most common), shows:
+/// ```text
+///    {line_num} | {source_line}
+///               | {carets}
+/// ```
+///
+/// For multi-line spans, shows the first line with `...` indicating continuation:
+/// ```text
+///    {line_num} | {first_line}
+///               | {carets}...
+/// ```
+///
+/// This is a rustc-style snippet renderer. Callers hold the source text (REPL has `input: &str`,
+/// CLI has the file contents) and pass it alongside the error's `definition_span`.
+pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
+    // Suppress synthetic spans (Span::origin() is 0:0-0:0)
+    if span.start.offset == 0 && span.end.offset == 0 {
+        return None;
+    }
+
+    // Split source into lines
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Span uses 1-based line numbers
+    if span.start.line < 1 || span.start.line > lines.len() {
+        return None; // Span out of bounds
+    }
+
+    let line_idx = span.start.line - 1;
+    let line_text = lines[line_idx];
+
+    // Calculate column positions (1-based in Span)
+    let start_col = span.start.column.saturating_sub(1);
+    let end_col = if span.start.line == span.end.line {
+        // Single-line span: use end column
+        span.end.column.saturating_sub(1).min(line_text.len())
+    } else {
+        // Multi-line span: underline to end of first line
+        line_text.len()
+    };
+
+    // Ensure start_col doesn't exceed line length
+    let start_col = start_col.min(line_text.len());
+    let caret_length = if end_col > start_col {
+        end_col - start_col
+    } else {
+        1 // At least one caret for zero-width or collapsed spans
+    };
+
+    // Build the snippet:
+    //    N | source line
+    //      | ^^^^...
+    let line_num_width = span.start.line.to_string().len();
+    let padding = " ".repeat(line_num_width);
+
+    let mut snippet = String::new();
+    snippet.push_str(&format!("  {} | {}\n", span.start.line, line_text));
+
+    // Caret line: padding, " | ", spaces to start_col, carets
+    snippet.push_str(&padding);
+    snippet.push_str(" | ");
+    snippet.push_str(&" ".repeat(start_col));
+    snippet.push_str(&"^".repeat(caret_length));
+
+    // For multi-line spans, append "..." to indicate continuation
+    if span.start.line != span.end.line {
+        snippet.push_str("...");
+    }
+
+    Some(snippet)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1308,7 +1413,7 @@ mod tests {
     #[test]
     fn test_eval_error_circular_dependency() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::circular_dependency("$x", span);
+        let err = EvalError::circular_dependency("$x", span, Vec::new());
         assert_eq!(
             err.message(),
             "circular dependency detected while evaluating $x"
@@ -1496,7 +1601,8 @@ mod tests {
         .is_catchable());
         assert!(ErrorKind::JsonRange.is_catchable());
         assert!(ErrorKind::CircularDependency {
-            name: "$x".to_string()
+            name: "$x".to_string(),
+            cycle_path: Vec::new(),
         }
         .is_catchable());
         assert!(ErrorKind::UserError {
@@ -1646,6 +1752,7 @@ mod tests {
             ErrorKind::JsonRange,
             ErrorKind::CircularDependency {
                 name: "$x".to_string(),
+                cycle_path: Vec::new(),
             },
             ErrorKind::UserError {
                 message: "test".to_string(),
@@ -1823,7 +1930,8 @@ mod tests {
         .is_cacheable());
         assert!(ErrorKind::JsonRange.is_cacheable());
         assert!(ErrorKind::CircularDependency {
-            name: "$x".to_string()
+            name: "$x".to_string(),
+            cycle_path: Vec::new(),
         }
         .is_cacheable());
         assert!(ErrorKind::UserError {
@@ -2190,7 +2298,8 @@ mod tests {
             format!(
                 "{}",
                 ErrorKind::CircularDependency {
-                    name: "$x".to_string()
+                    name: "$x".to_string(),
+                    cycle_path: Vec::new(),
                 }
             ),
             "circular dependency detected while evaluating $x"
@@ -2464,7 +2573,7 @@ mod tests {
                     },
                     definition_span: test_span(1, 1, 1, 5),
                     materialization_span: None,
-                    stack: Vec::new(),
+                    stack: SmallVec::new(),
                     secondary_span: None,
                 },
                 "[E002]",
@@ -2478,7 +2587,7 @@ mod tests {
                 "[E020]",
             ),
             (
-                EvalError::circular_dependency("$x", test_span(1, 1, 1, 5)),
+                EvalError::circular_dependency("$x", test_span(1, 1, 1, 5), Vec::new()),
                 "[E070]",
             ),
             (
@@ -3441,5 +3550,59 @@ mod tests {
              Update all_error_kind_variants() if variants were added or removed.",
             variants.len()
         );
+    }
+
+    // ── render_span_snippet tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_render_span_snippet_single_line() {
+        let source = "line1\nlet x = 42\nline3";
+        let span = Span {
+            start: crate::ast::Position {
+                offset: 6,
+                line: 2,
+                column: 1,
+            },
+            end: crate::ast::Position {
+                offset: 9,
+                line: 2,
+                column: 4,
+            },
+        };
+        let snippet = render_span_snippet(source, span).unwrap();
+
+        // Should show line 2 with "let" underlined
+        assert!(snippet.contains("2 | let x = 42"));
+        assert!(snippet.contains("  | ^^^"));
+        assert!(!snippet.contains("...")); // single-line span, no continuation marker
+    }
+
+    #[test]
+    fn test_render_span_snippet_origin_suppressed() {
+        let source = "test source";
+        let snippet = render_span_snippet(source, Span::origin());
+        assert_eq!(snippet, None); // Span::origin() is 0:0-0:0, should return None
+    }
+
+    #[test]
+    fn test_render_span_snippet_multiline() {
+        let source = "line1\nlet x = [\n  42\n]\nline5";
+        let span = Span {
+            start: crate::ast::Position {
+                offset: 6,
+                line: 2,
+                column: 1,
+            },
+            end: crate::ast::Position {
+                offset: 21,
+                line: 4,
+                column: 2,
+            },
+        };
+        let snippet = render_span_snippet(source, span).unwrap();
+
+        // Should show first line with carets to end + "..." continuation marker
+        assert!(snippet.contains("2 | let x = ["));
+        assert!(snippet.contains("..."));
     }
 }

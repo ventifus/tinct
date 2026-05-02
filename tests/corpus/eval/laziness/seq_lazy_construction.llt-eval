@@ -1,0 +1,6 @@
+# Laziness: $seq does not force head argument when only tail is accessed
+[r: [call $seq [call $/ 1 0] []]]
+---
+[result: [call $tail $r]]
+===
+Dict({"result": Seq()})

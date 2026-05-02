@@ -57,7 +57,7 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
 fn reset_elaboration(file: &File) {
     for doc in &file.documents {
         for expr in &doc.node.expressions {
-            reset_expr(expr);
+            reset_expr(expr.as_ref());
         }
     }
 }
@@ -221,7 +221,8 @@ fn typecheck_document(
     let mut last_record_type: Option<(Type, u32)> = None;
     let mut last_expr: Option<&Spanned<Expr>> = None;
 
-    for (i, expr) in exprs.iter().enumerate() {
+    for (i, expr_rc) in exprs.iter().enumerate() {
+        let expr = expr_rc.as_ref();
         let is_last = i == exprs.len() - 1;
 
         // Special handling for Dict expressions at document level to preserve schemes
@@ -1369,7 +1370,7 @@ fn check_range_access(
 fn check_call_with_scheme(
     scheme: &TypeScheme,
     func_span: Span,
-    args: &[Spanned<Expr>],
+    args: &[Rc<Spanned<Expr>>],
     named_args: &[Spanned<NamedArg>],
     env: &Rc<TypeEnv>,
     span: Span,
@@ -1565,7 +1566,7 @@ fn check_call_with_scheme(
 /// Both require `Type::Function` to carry param names. See TODO(named-arg-types) inline comments.
 fn check_call(
     func: &Spanned<Expr>,
-    args: &[Spanned<Expr>],
+    args: &[Rc<Spanned<Expr>>],
     named_args: &[Spanned<NamedArg>],
     env: &Rc<TypeEnv>,
     span: Span,
@@ -3682,7 +3683,7 @@ mod tests {
         let ann = Annotation::PropertyDict(vec![Spanned::new(
             Entry {
                 key: Some(sp(Expr::Int(42))),
-                value: sp(Expr::Str("Int".into())),
+                value: Rc::new(sp(Expr::Str("Int".into()))),
             },
             span,
         )]);
@@ -3708,7 +3709,7 @@ mod tests {
         let ann = Annotation::PropertyDict(vec![Spanned::new(
             Entry {
                 key: None,
-                value: sp(Expr::Str("Int".into())),
+                value: Rc::new(sp(Expr::Str("Int".into()))),
             },
             span,
         )]);
@@ -3734,7 +3735,7 @@ mod tests {
         let ann = Annotation::PropertyDict(vec![Spanned::new(
             Entry {
                 key: Some(sp(Expr::Str("x".into()))),
-                value: sp(Expr::Str("NoSuchType".into())),
+                value: Rc::new(sp(Expr::Str("NoSuchType".into()))),
             },
             span,
         )]);
@@ -3761,7 +3762,7 @@ mod tests {
         let ann = Annotation::PropertyDict(vec![Spanned::new(
             Entry {
                 key: Some(sp(Expr::Str("default".into()))),
-                value: sp(Expr::Int(30)),
+                value: Rc::new(sp(Expr::Int(30))),
             },
             span,
         )]);
@@ -3789,10 +3790,10 @@ mod tests {
         let ann = Annotation::PropertyDict(vec![Spanned::new(
             Entry {
                 key: None,
-                value: sp(Expr::Annotated {
+                value: Rc::new(sp(Expr::Annotated {
                     name: "Fn".into(),
                     annotation: Spanned::new(Annotation::Simple("Int".into()), span),
-                }),
+                })),
             },
             span,
         )]);
@@ -7332,7 +7333,7 @@ mod tests {
             Expr::Fn {
                 return_ann: None,
                 params: vec![param_x, param_y],
-                body: Box::new(body),
+                body: Rc::new(body),
                 desugared: false,
             },
             span,

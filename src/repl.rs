@@ -22,7 +22,7 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{create_stdlib_env, MAX_FILE_SIZE};
 use crate::eval::{deep_materialize, eval_file_with_input, materialize};
-use crate::parser::parse;
+use crate::parser::parse2;
 use crate::value::{Environment, Key, Thunk, Value};
 use crate::value_to_display_string;
 
@@ -150,7 +150,18 @@ impl ReplSession {
             ));
         }
 
-        let mut file = parse(input).map_err(|e| format!("{e}"))?;
+        let parse_output = parse2(input).map_err(|e| format!("{e}"))?;
+
+        // Display all recovered parse errors (non-fatal errors inside bracket forms)
+        if !parse_output.errors.is_empty() {
+            for err in &parse_output.errors {
+                eprintln!("parse error: {}", err);
+            }
+            // Continue evaluation despite parse errors — the AST contains Expr::Error nodes
+        }
+
+        let mut file = parse_output.file;
+
         // Desugar $_ implicit lambdas before evaluation
         crate::desugar::desugar_file(&mut file.node);
         // Type errors are advisory; evaluation proceeds regardless.
@@ -168,11 +179,39 @@ impl ReplSession {
             Some(Rc::clone(&self.prev_result)),
             0,
         )
-        .map_err(|e| format!("{e}"))?;
+        .map_err(|e| {
+            let mut error_str = format!("{e}");
+            if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
+                error_str.push('\n');
+                error_str.push_str(&snippet);
+            }
+            error_str
+        })?;
 
-        let val = materialize(&result_thunk, None, &self.ctx, 0).map_err(|e| format!("{e}"))?;
-        let forced = deep_materialize(&val, &self.ctx, 0, None).map_err(|e| format!("{e}"))?;
-        let display = value_to_display_string(&forced, &self.ctx, 0).map_err(|e| format!("{e}"))?;
+        let val = materialize(&result_thunk, None, &self.ctx, 0).map_err(|e| {
+            let mut error_str = format!("{e}");
+            if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
+                error_str.push('\n');
+                error_str.push_str(&snippet);
+            }
+            error_str
+        })?;
+        let forced = deep_materialize(&val, &self.ctx, 0, None).map_err(|e| {
+            let mut error_str = format!("{e}");
+            if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
+                error_str.push('\n');
+                error_str.push_str(&snippet);
+            }
+            error_str
+        })?;
+        let display = value_to_display_string(&forced, &self.ctx, 0).map_err(|e| {
+            let mut error_str = format!("{e}");
+            if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
+                error_str.push('\n');
+                error_str.push_str(&snippet);
+            }
+            error_str
+        })?;
 
         // Success: commit the result to session state.
         self.prev_result = result_thunk;
@@ -790,5 +829,60 @@ mod tests {
         // part of the string (in_string stays true until EOF), so it should not
         // contribute to the bracket count.
         assert_eq!(bracket_count("\"[unclosed"), 0);
+    }
+
+    // ── Integration tests: REPL session behavior ────────────────────────────
+
+    /// Multi-line input spanning multiple expressions: the REPL should accumulate
+    /// lines until is_balanced() returns true, then evaluate the joined buffer.
+    /// This test verifies that a function body defined across multiple lines
+    /// evaluates correctly when submitted as a single (joined) input string.
+    #[test]
+    fn test_session_multiline_function_body() {
+        let mut session = ReplSession::new().unwrap();
+
+        // Simulate the REPL's buffer-join behavior: lines are joined with '\n'
+        // and submitted together once the brackets are balanced.
+        let multiline_input = "[add:\n  [fn [x y]\n    [call $+ $x $y]]]";
+        session.eval_input(multiline_input).unwrap();
+
+        let result = session.eval_input("[call $add 10 32]").unwrap();
+        assert_eq!(result, "Int(42)");
+    }
+
+    /// Syntax errors in the REPL do not kill the session: the environment is
+    /// unchanged after a parse error, and subsequent successful inputs work.
+    #[test]
+    fn test_session_syntax_error_does_not_kill_session() {
+        let mut session = ReplSession::new().unwrap();
+
+        // Establish a binding.
+        session.eval_input("[x: 100]").unwrap();
+
+        // Submit a syntax error (unclosed bracket — parse2 returns Err for unbalanced input).
+        // The session should return Err, but state must be preserved.
+        let err = session.eval_input("[broken syntax !!!@#$");
+        // May or may not be a parse error depending on recovery — just ensure session survives.
+        drop(err);
+
+        // The session is still alive: previous binding is accessible.
+        assert_eq!(session.eval_input("$x").unwrap(), "Int(100)");
+    }
+
+    /// Function definition in one eval_input followed by a call in a separate
+    /// eval_input: tests that the definition persists across session steps and
+    /// that named/positional arguments work.
+    #[test]
+    fn test_session_function_def_then_call_separate_steps() {
+        let mut session = ReplSession::new().unwrap();
+
+        // Step 1: define a function with two parameters.
+        session
+            .eval_input("[square: [fn [n] [call $* $n $n]]]")
+            .unwrap();
+
+        // Step 2: call the function in a separate eval.
+        let result = session.eval_input("[call $square 9]").unwrap();
+        assert_eq!(result, "Int(81)");
     }
 }

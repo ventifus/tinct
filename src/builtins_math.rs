@@ -262,12 +262,21 @@ pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match condition {
         Value::Bool(true) => Ok(Rc::clone(&args[1])),
         Value::Bool(false) => Ok(Rc::clone(&args[2])),
-        _ => Err(EvalError::type_mismatch_ctx(
-            "if".to_string(),
-            "Bool",
-            condition.type_name(),
-            args[0].span,
-        )
-        .into()),
+        _ => {
+            let mut err = EvalError::type_mismatch_ctx(
+                "if".to_string(),
+                "Bool",
+                condition.type_name(),
+                args[0].span,
+            );
+            // Add secondary span if different from definition span
+            if call_span != args[0].span {
+                err = err.with_secondary_span(
+                    args[0].span,
+                    format!("condition evaluated to {} here", condition.type_name()),
+                );
+            }
+            Err(err.into())
+        }
     }
 }

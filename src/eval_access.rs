@@ -3,7 +3,6 @@
 //! This module contains `eval_range_access` and `invoke_proxy_handler`, extracted
 //! from `eval.rs` to keep that module focused on the core evaluation loop.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -15,12 +14,6 @@ use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval, eval_key, materialize, EvalContext};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{Environment, Key, Thunk, Value};
-
-thread_local! {
-    /// Shared empty IndexMap for named arguments when none are provided.
-    /// Avoids per-call allocation in invoke_proxy_handler.
-    static EMPTY_NAMED_ARGS: IndexMap<String, Rc<Thunk>> = IndexMap::new();
-}
 
 /// Check whether `k` falls in the half-open range `[start, end)`.
 /// `None` bounds are treated as unbounded (i.e. negative/positive infinity).
@@ -83,28 +76,25 @@ pub(crate) fn invoke_proxy_handler(
             params,
             body,
             env: closure_env,
-        } => EMPTY_NAMED_ARGS.with(|empty| {
-            invoke_function(&CallContext {
-                params: &params,
-                body: &body,
-                closure_env: &closure_env,
-                positional: &[key_arg],
-                named: empty,
-                default_env: &closure_env,
-                call_span: *access_span,
-                depth: depth + 1,
-                origin: Cow::Borrowed("proxy field access"),
-                ctx,
-            })
+        } => invoke_function(&CallContext {
+            params: &params,
+            body: &body,
+            closure_env: &closure_env,
+            positional: &[key_arg],
+            named: None,
+            default_env: &closure_env,
+            call_span: *access_span,
+            depth: depth + 1,
+            origin: Some(Rc::from("proxy field access")),
+            ctx,
         }),
-        Value::Builtin { name, func } => Ok(Rc::new(Thunk::new_pending_builtin(
-            name,
-            func,
+        Value::Builtin(def) => Ok(Rc::new(Thunk::new_pending_builtin(
+            def,
             vec![key_arg],
             None,
             depth + 1,
             *access_span,
-            Cow::Borrowed("proxy field access"),
+            Some(Rc::from("proxy field access")),
             Rc::clone(ctx),
         ))),
         _ => Err(EvalError::type_mismatch(
@@ -132,7 +122,8 @@ pub(crate) fn eval_range_access(
         e.push_frame("accessing [..:..]".to_string(), *access_span);
         e
     };
-    let target_thunk = eval(target, Rc::clone(env), ctx, depth + 1).map_err(&push_frame)?;
+    let target_thunk =
+        eval(Rc::new(target.clone()), Rc::clone(env), ctx, depth + 1).map_err(&push_frame)?;
     let target_val =
         materialize(&target_thunk, Some(access_span), ctx, depth + 1).map_err(push_frame)?;
 

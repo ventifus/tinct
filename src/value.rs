@@ -1,6 +1,5 @@
 //! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
 
-use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fmt;
@@ -16,7 +15,7 @@ use crate::types::Type;
 /// Arguments passed to built-in functions.
 pub struct BuiltinArgs<'a> {
     pub args: &'a [Rc<Thunk>],
-    pub named: &'a IndexMap<String, Rc<Thunk>>,
+    pub named: Option<&'a IndexMap<String, Rc<Thunk>>>,
     pub depth: usize,
     pub call_span: Span,
     pub ctx: Rc<crate::eval::EvalContext>,
@@ -26,6 +25,36 @@ pub struct BuiltinArgs<'a> {
 /// positional args, named args, evaluation depth, and call-site span.
 /// Returns an `Rc<Thunk>` to allow builtins to participate in lazy evaluation.
 pub type BuiltinFn = fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>;
+
+/// Strictness annotation for builtin argument demand (Wadler & Hughes 1987).
+#[repr(u8)]
+#[non_exhaustive]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Strictness {
+    /// W&H "id" — identity projection. Argument never forced at dispatch site.
+    Id,
+    /// W&H "seq" — force to WHNF before builtin is called.
+    Seq,
+    /// W&H spine projection — force structural layer without element values.
+    Spine,
+}
+
+/// Builtin function definition with strictness metadata.
+#[derive(Copy, Clone)]
+pub struct BuiltinDef {
+    pub func: BuiltinFn,
+    pub name: &'static str,
+    pub pos_strictness: &'static [Strictness],
+}
+
+impl fmt::Debug for BuiltinDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BuiltinDef")
+            .field("name", &self.name)
+            .field("pos_strictness", &self.pos_strictness)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +135,7 @@ pub enum Value {
         env: Rc<RefCell<Environment>>,
     },
     /// Rust-native built-in function
-    Builtin { name: &'static str, func: BuiltinFn },
+    Builtin(BuiltinDef),
     /// Lazy linked-list sequence (head element, tail sequence)
     Seq { head: Rc<Thunk>, tail: Rc<Thunk> },
     /// Proxy object — field access calls the handler function with the field name
@@ -126,7 +155,7 @@ impl Value {
             Value::Bool(_) => "Bool",
             Value::Dict(_) => "Dict",
             Value::Function { .. } => "Function",
-            Value::Builtin { .. } => "Builtin",
+            Value::Builtin(_) => "Builtin",
             Value::Seq { .. } => "Seq",
             Value::Proxy { .. } => "Proxy",
             Value::Overlay(..) => "Dict",
@@ -149,7 +178,7 @@ impl fmt::Debug for Value {
                 let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
                 write!(f, "Function({})", names.join(", "))
             }
-            Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
+            Value::Builtin(def) => write!(f, "Builtin({})", def.name),
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::Overlay(..) => write!(f, "Overlay(...)"),
@@ -184,7 +213,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "] ...]")
             }
-            Value::Builtin { name, .. } => write!(f, "<builtin {name}>"),
+            Value::Builtin(def) => write!(f, "<builtin {}>", def.name),
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::Overlay(..) => write!(f, "[<overlay>]"),
@@ -237,6 +266,19 @@ impl PartialEq for Value {
     }
 }
 
+// Size assertion: ensure Value::Dict (IndexMap) remains the dominant variant.
+// Value enum size is dominated by Dict(IndexMap). BuiltinDef is Copy (40 bytes:
+// 8-byte fn ptr + 2 fat ptrs for &str and &[Strictness]). IndexMap size varies
+// by version; indexmap 2.x uses ~72 bytes on 64-bit platforms.
+const _: () = {
+    const EXPECTED_MAX: usize = 80;
+    const ACTUAL: usize = std::mem::size_of::<Value>();
+    assert!(
+        ACTUAL <= EXPECTED_MAX,
+        "Value size increased beyond expected maximum"
+    );
+};
+
 #[derive(Debug, Clone)]
 pub enum ThunkState {
     Unevaluated {
@@ -245,8 +287,7 @@ pub enum ThunkState {
         ctx: Rc<crate::eval::EvalContext>,
     },
     PendingBuiltin {
-        name: &'static str,
-        func: BuiltinFn,
+        def: BuiltinDef,
         args: Box<Vec<Rc<Thunk>>>,
         /// Named args for this builtin call. `None` means no named args (the common case);
         /// avoids allocating an empty `IndexMap` for the many internal `PendingBuiltin`
@@ -259,7 +300,9 @@ pub enum ThunkState {
     PendingCall {
         func: Rc<Thunk>,
         args: Box<Vec<Rc<Thunk>>>,
-        named: Box<IndexMap<String, Rc<Thunk>>>,
+        /// Named args for this call. `None` means no named args (the common case);
+        /// avoids allocating an empty `IndexMap` for positional-only calls.
+        named: Option<Box<IndexMap<String, Rc<Thunk>>>>,
         call_span: Span,
         caller_env: Rc<RefCell<Environment>>,
         ctx: Rc<crate::eval::EvalContext>,
@@ -284,8 +327,9 @@ pub struct Thunk {
     state: RefCell<ThunkState>,
     pub(crate) span: Span,
     /// Label describing this thunk's origin (e.g. "call $f").
+    /// `None` for anonymous thunks (the common case); eliminates per-thunk String allocation.
     /// Used for stack trace construction when materialization fails.
-    pub(crate) origin: Cow<'static, str>,
+    pub(crate) origin: Option<Rc<str>>,
 }
 
 impl Thunk {
@@ -298,7 +342,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::Unevaluated { expr, env, ctx }),
             span,
-            origin: Cow::Borrowed(""),
+            origin: None,
         }
     }
 
@@ -306,26 +350,24 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::Materialized(value)),
             span,
-            origin: Cow::Borrowed(""),
+            origin: None,
         }
     }
 
     /// `named`: pass `None` when there are no named args (the common case for internal
     /// thunks); pass `Some(map)` only when named args are actually present.
     pub fn new_pending_builtin(
-        name: &'static str,
-        func: BuiltinFn,
+        def: BuiltinDef,
         args: Vec<Rc<Thunk>>,
         named: Option<IndexMap<String, Rc<Thunk>>>,
         depth: usize,
         span: Span,
-        origin: Cow<'static, str>,
+        origin: Option<Rc<str>>,
         ctx: Rc<crate::eval::EvalContext>,
     ) -> Self {
         Self {
             state: RefCell::new(ThunkState::PendingBuiltin {
-                name,
-                func,
+                def,
                 args: Box::new(args),
                 named,
                 depth,
@@ -344,14 +386,19 @@ impl Thunk {
         call_span: Span,
         caller_env: Rc<RefCell<Environment>>,
         span: Span,
-        origin: Cow<'static, str>,
+        origin: Option<Rc<str>>,
         ctx: Rc<crate::eval::EvalContext>,
     ) -> Self {
+        let named = if named.is_empty() {
+            None
+        } else {
+            Some(Box::new(named))
+        };
         Self {
             state: RefCell::new(ThunkState::PendingCall {
                 func,
                 args: Box::new(args),
-                named: Box::new(named),
+                named,
                 call_span,
                 caller_env,
                 ctx,
@@ -367,7 +414,6 @@ impl Thunk {
         field_path: Vec<String>,
         guard_span: Span,
     ) -> Self {
-        let origin = Cow::Borrowed("type guard");
         Self {
             state: RefCell::new(ThunkState::Guarded {
                 inner,
@@ -376,13 +422,13 @@ impl Thunk {
                 guard_span,
             }),
             span: guard_span,
-            origin,
+            origin: Some(Rc::from("type guard")),
         }
     }
 
     /// Set the origin label for this thunk (used in stack traces).
-    pub fn with_origin(mut self, label: Cow<'static, str>) -> Self {
-        self.origin = label;
+    pub fn with_origin(mut self, label: Rc<str>) -> Self {
+        self.origin = Some(label);
         self
     }
 
@@ -456,8 +502,7 @@ impl Thunk {
     pub fn take_pending_builtin(
         &self,
     ) -> Option<(
-        &'static str,
-        BuiltinFn,
+        BuiltinDef,
         Vec<Rc<Thunk>>,
         Option<IndexMap<String, Rc<Thunk>>>,
         usize,
@@ -467,14 +512,13 @@ impl Thunk {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingBuiltin {
-                name,
-                func,
+                def,
                 args,
                 named,
                 depth,
                 call_span,
                 ctx,
-            } => Some((name, func, *args, named, depth, call_span, ctx)),
+            } => Some((def, *args, named, depth, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -488,7 +532,7 @@ impl Thunk {
     ) -> Option<(
         Rc<Thunk>,
         Vec<Rc<Thunk>>,
-        IndexMap<String, Rc<Thunk>>,
+        Option<IndexMap<String, Rc<Thunk>>>,
         Span,
         Rc<RefCell<Environment>>,
         Rc<crate::eval::EvalContext>,
@@ -502,7 +546,7 @@ impl Thunk {
                 call_span,
                 caller_env,
                 ctx,
-            } => Some((func, *args, *named, call_span, caller_env, ctx)),
+            } => Some((func, *args, named.map(|b| *b), call_span, caller_env, ctx)),
             other => {
                 *state = other;
                 None
@@ -564,8 +608,8 @@ impl fmt::Debug for Thunk {
                 s
             }
         };
-        if !self.origin.is_empty() {
-            s.field("origin", &self.origin);
+        if let Some(ref label) = self.origin {
+            s.field("origin", label);
         }
         s.finish()
     }
@@ -736,10 +780,11 @@ mod tests {
                 ctx.call_span,
             )))
         }
-        let b = Value::Builtin {
-            name: "test",
+        let b = Value::Builtin(BuiltinDef {
             func: dummy,
-        };
+            name: "test",
+            pos_strictness: &[],
+        });
         assert_ne!(b.clone(), b);
     }
 
@@ -985,10 +1030,11 @@ mod tests {
                 ctx.call_span,
             )))
         }
-        let builtin = Value::Builtin {
-            name: "test_fn",
+        let builtin = Value::Builtin(BuiltinDef {
             func: dummy_builtin,
-        };
+            name: "test_fn",
+            pos_strictness: &[],
+        });
         assert_eq!(format!("{builtin}"), "<builtin test_fn>");
     }
 
@@ -1065,10 +1111,11 @@ mod tests {
                 ctx.call_span,
             )))
         }
-        let builtin = Value::Builtin {
-            name: "test_builtin",
+        let builtin = Value::Builtin(BuiltinDef {
             func: dummy_builtin,
-        };
+            name: "test_builtin",
+            pos_strictness: &[],
+        });
         assert_eq!(format!("{builtin:?}"), "Builtin(test_builtin)");
     }
 
@@ -1159,14 +1206,18 @@ mod tests {
         );
 
         let span = test_span(1, 1, 1, 5);
+        let dummy_def = BuiltinDef {
+            func: dummy_builtin,
+            name: "test-builtin",
+            pos_strictness: &[],
+        };
         let thunk = Thunk::new_pending_builtin(
-            "test-builtin",
-            dummy_builtin,
+            dummy_def,
             vec![],
             None,
             0,
             span,
-            Cow::Borrowed("test builtin call"),
+            Some(Rc::from("test builtin call")),
             Rc::clone(&ctx1),
         );
 
@@ -1182,7 +1233,7 @@ mod tests {
         let taken = thunk.take_pending_builtin();
         assert!(taken.is_some(), "take_pending_builtin should succeed");
 
-        let (_name, _func, _args, _named, _depth, _call_span, taken_ctx) = taken.unwrap();
+        let (_def, _args, _named, _depth, _call_span, taken_ctx) = taken.unwrap();
         assert!(
             Rc::ptr_eq(&taken_ctx, &ctx1),
             "PendingBuiltin should evaluate using captured ctx1"
@@ -1220,7 +1271,7 @@ mod tests {
             span,
             Rc::new(RefCell::new(Environment::new())), // caller_env
             span,
-            Cow::Borrowed("test call"),
+            Some(Rc::from("test call")),
             Rc::clone(&ctx1),
         );
 
@@ -1441,11 +1492,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx = Rc::new(EvalContext::new(
-            base_dir,
-            Rc::new(RefCell::new(Environment::new())),
-            false,
-        ));
+        let ctx = EvalContext::new(base_dir, Rc::new(RefCell::new(Environment::new())), false);
 
         // Create a PendingBuiltin thunk (using a dummy builtin function)
         fn dummy_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Rc<Thunk>> {
@@ -1456,14 +1503,18 @@ mod tests {
             )))
         }
 
+        let dummy_def = BuiltinDef {
+            func: dummy_builtin,
+            name: "dummy",
+            pos_strictness: &[],
+        };
         let thunk = Thunk::new_pending_builtin(
-            "dummy",
-            dummy_builtin,
+            dummy_def,
             vec![],
             None,
             0,
             span,
-            Cow::Borrowed("test"),
+            Some(Rc::from("test")),
             Rc::clone(&ctx),
         );
 
@@ -1497,11 +1548,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx = Rc::new(EvalContext::new(
-            base_dir,
-            Rc::new(RefCell::new(Environment::new())),
-            false,
-        ));
+        let ctx = EvalContext::new(base_dir, Rc::new(RefCell::new(Environment::new())), false);
 
         fn error_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Rc<Thunk>> {
             Err(Box::new(EvalError::new(
@@ -1510,14 +1557,18 @@ mod tests {
             )))
         }
 
+        let error_def = BuiltinDef {
+            func: error_builtin,
+            name: "error_builtin",
+            pos_strictness: &[],
+        };
         let thunk = Thunk::new_pending_builtin(
-            "error_builtin",
-            error_builtin,
+            error_def,
             vec![],
             None,
             0,
             span,
-            Cow::Borrowed("test"),
+            Some(Rc::from("test")),
             Rc::clone(&ctx),
         );
 
