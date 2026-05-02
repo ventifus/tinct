@@ -2354,6 +2354,20 @@ Show the full include path in nested include errors: "included from A at line X,
 - [x] Update `doc/09-documents.md` §$include INCLUDE-EVAL rule — add note that the include
   chain is available for error annotation; update the `Σ` include state definition. [Nit]
 
+### error-ux: Error UX Features
+
+User-facing error presentation improvements.
+
+- [x] Research: source text availability at EvalError display time — see doc/whatif/source-text-availability.md. Decision: option (c) caller-pairs-with-source. Source text not stored in EvalError. `render_span_snippet(source, span) -> Option<String>` helper; REPL wires into eval_input (source in scope); CLI wires into main.rs display site; LSP is Phase 3. Matches Nickel's `to_diagnostic(files)` pattern.
+- [x] Source snippets in error output — include source context with carets like rustc (span-integrity-checker review)
+- [x] Design: REPL source snippet display — see doc/10-errors.md §Part 10 and doc/whatif/source-text-availability.md. Caller-pairs-with-source: render_span_snippet(source, span) -> Option<String> helper; eval_input appends snippet to error string (input: &str in scope at each map_err site); CLI wires at main.rs display; StepResult unchanged.
+- [x] Implement source snippet rendering — add `render_span_snippet(source: &str, span: Span) -> Option<String>` to `src/error.rs`; wire into REPL (`src/repl.rs` each `.map_err` site appends snippet using `input` in scope) and CLI (`src/main.rs` display site); add corpus/unit tests for single-line, multi-line, and Span::origin() suppression (`src/error.rs`, `src/repl.rs`, `src/main.rs`)
+- [x] Design: `tinct explain <error-code>` command — Elm-inspired; design how extended help text is stored (static `match ErrorKind` arms, a `lazy_static` map, or a Markdown file per error code), the CLI subcommand interface (`tinct explain E010`), and whether help includes an example program. (`src/error.rs`, `src/main.rs`) [design, integration-verifier]
+- [x] `tinct explain <error-code>` command for extended help on error categories (span-integrity-checker review, Elm-inspired)
+- [x] Add LSP `related_information` for materialization-site spans and stack frames (currently discarded) (secondary_span field already existed in EvalError)
+- [x] Use `ErrorKind::code()` for LSP diagnostic error code — eval_error_to_diagnostic now sets `code: Some(NumberOrString::String(kind.code()))` (`src/lsp/analysis.rs`) [Minor, span-integrity-checker C32]
+- [x] Add `desugar_file()` call to LSP `DocumentState::new()` — pipeline is parse→typecheck→eval, missing the desugar step. User code containing `$_` will see un-desugared ASTs in LSP. (`src/lsp/document.rs:54`) [Minor, computer-scientist C32; fix applied C69]
+
 ## Stdlib Documentation
 
 ### stdlib-docs: Stdlib Documentation Implementation
