@@ -31,6 +31,10 @@ default:
 build:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo build
 
+# Build the project as root (use when Cargo.lock is not writable by the host user)
+build-root:
+    {{container}} run {{run_flags}} {{rust_image}} cargo build
+
 # Build the project (release mode)
 build-release:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo build --release
@@ -54,6 +58,10 @@ test-one TEST:
 # Run only lib unit tests (no integration tests)
 test-lib:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --lib
+
+# Run only lib unit tests as root (use when target/ is owned by root)
+test-lib-root:
+    {{container}} run {{run_flags}} {{rust_image}} cargo test --lib
 
 # Run only corpus tests
 test-corpus:
