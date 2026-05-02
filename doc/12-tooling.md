@@ -97,10 +97,10 @@ tinct --allow-path / eval main.llt                           # unrestricted
 
 ```tinct
 # Without hash: normal include (no integrity check)
-[call $include "config/settings.llt"]
+[include "config/settings.llt"]
 
 # With hash: content is verified before evaluation
-[call $include "config/settings.llt" "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e"]
+[include "config/settings.llt" "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e"]
 ```
 
 The hash is a quoted string with the format `"algo:hexdigest"`. The algorithm name and hex digest are separated by `:`.
@@ -138,10 +138,10 @@ sha3-256:a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
 
 (The example digests above are the BLAKE3 and SHA3-256 hashes of the empty string — real files produce different values.)
 
-Use the output as the second argument to `[call $include ...]`:
+Use the output as the second argument to `[include ...]`:
 
 ```tinct
-[call $include "config/settings.llt" "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e"]
+[include "config/settings.llt" "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e"]
 ```
 
 **Cache integration:** When a file is first included with a hash, `builtin_include` reads the raw bytes (`Vec<u8>`), computes the hash, verifies it matches the expected value, and stores `{evaluated_result, hash_map: HashMap<Algo, HexDigest>}` in the session cache keyed by canonical path. On subsequent includes of the same path:
@@ -161,7 +161,7 @@ include: hash mismatch for 'config/settings.llt'
 
 **Conflicting hashes:** If the same file is included twice with different expected hashes for the same algorithm, the second include errors — the hash verified on the first read is stored in `hash_map`; if the second caller's expected hash differs from it, the mismatch error fires without re-reading the file.
 
-**Require-integrity mode:** `--require-integrity` makes any `[call $include ...]` without a hash a hard error. Use for environments where all dependencies must be content-addressed:
+**Require-integrity mode:** `--require-integrity` makes any `[include ...]` without a hash a hard error. Use for environments where all dependencies must be content-addressed:
 
 ```bash
 llt eval --require-integrity --allow-path ./vendor main.llt
@@ -171,7 +171,7 @@ Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redun
 
 **Use cases:** Pinning a shared config file in CI so an unreviewed change fails loudly. Verifying third-party tinct libraries. High-security evaluation environments where all includes must be content-addressed.
 
-**Builtin change:** `builtin_include` gains an optional second positional argument — the hash string. No grammar or parser changes. All existing `[call $include "path"]` calls without a hash continue to work unchanged.
+**Builtin change:** `builtin_include` gains an optional second positional argument — the hash string. No grammar or parser changes. All existing `[include "path"]` calls without a hash continue to work unchanged.
 
 ### Network Sandbox (seccomp-bpf)
 

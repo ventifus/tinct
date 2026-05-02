@@ -38,7 +38,7 @@ All arithmetic operations materialize both arguments and return computed values.
 
 **Error cases:**
 - All: Type mismatch if either arg is not Int or Float
-- `/`: Division by zero (catchable via `$try`)
+- `/`: Division by zero (catchable via `try`)
 
 ## Comparison
 
@@ -58,7 +58,7 @@ Both comparison operators materialize both arguments and return Bool values.
 |---------|-------|-----------|----------|-------------|
 | `if` | 3 | `S × Sc × Sc → Θ` | Selective | Materializes condition; returns chosen branch thunk without forcing it |
 
-**Selective materialization:** Exactly one of the branch arguments is returned; the other is never materialized. This is the foundation for short-circuit evaluation in the stdlib (`$and`, `$or`, `$when`, `$unless`, `$cond`).
+**Selective materialization:** Exactly one of the branch arguments is returned; the other is never materialized. This is the foundation for short-circuit evaluation in the stdlib (`and`, `or`, `when`, `unless`, `cond`).
 
 **Error cases:** Type mismatch if condition is not Bool.
 

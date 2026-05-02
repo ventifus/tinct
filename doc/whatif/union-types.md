@@ -1,68 +1,80 @@
-# What If: Union Types for tinct
+# What If: Union Types and Algebraic Subtyping
 
-What would it take to add union types to tinct's type system?
+What would it take to add union types to tinct, and where does the full endpoint lead?
 
 ## Current State
 
-tinct cannot express "a value that is either type A or type B." The main
-consequence: dual-dispatch builtins (`$map`, `$filter`, `$take`, `$drop`,
-`$reduce`, `$join`) accept both Dict and Seq but are typed as `Any` because
-`Dict | Seq` is not expressible.
+tinct's type system is Hindley-Milner with Robinson unification, **[U-SUBSUME]**
+as a ground-type compatibility escape hatch, bidirectional checking, literal
+subtypes (`IntLiteral(42) <: Int <: Number`), `Any` as both top and bottom, and
+Rémy-style row polymorphism for open/closed records.
+
+The subtype lattice is small and closed:
 
 ```
-# Current: imprecise
-$map : Any → Any → Any
-
-# Desired: precise
-$map : (a → b) → (Dict a | Seq a) → (Dict b | Seq b)
+Any (top and bottom — gradual)
+├── Number
+│   ├── Int
+│   │   └── IntLiteral(n)
+│   └── Float
+├── Str
+│   └── StringLiteral(s)
+├── Bool
+├── Null
+├── Fn(params → ret)       (contravariant params, covariant ret)
+├── Seq(τ)                 (covariant element type)
+└── Record(fields, tail)   (covariant fields, open/closed tail)
 ```
-
-Other uses for union types:
-- `$if` return type: `$if $cond $then-branch $else-branch` should have type
-  `type($then) | type($else)`, not `Any`
-- Nullable values: `Int | Null` instead of `Any`
-- Error returns: `Result a = [ok: a] | [err: String]`
 
 ### What's Missing
 
-1. **No `Type::Union` variant.** The type representation has no way to
-   express "A or B" — the only escape hatch is `Any`.
-2. **No union subtyping rules.** `is_subtype` has no injection or
-   elimination rules for unions.
-3. **No syntax for union annotations.** The grammar cannot parse `Int | Str`
-   in type position.
-4. **`$if` returns `Any`.** Branch result types are joined via `unify`, which
-   either finds a common type or falls back to `Any`.
-5. **Dual-dispatch builtins are untyped.** Builtins that accept both Dict
-   and Seq are typed as `Any → Any` because the argument type cannot be
-   expressed precisely.
+1. **No `Type::Union` variant.** The only escape hatch for "A or B" is `Any`.
+2. **No union subtyping rules.** `is_subtype` has no injection or elimination rules.
+3. **No syntax for union annotations.** The grammar cannot parse `Int | Str` in type position.
+4. **`$if` returns `Any`.** Branch result types are joined via `unify`, which falls back to `Any`.
+5. **Dual-dispatch builtins untyped.** `$map`, `$filter`, etc. are typed `Any → Any`
+   because `Dict | Seq` cannot be expressed.
+6. **[U-SUBSUME] is ad hoc.** It handles ground types only; there is no uniform
+   subtyping in the constraint solver for type constructors.
+7. **No intersection types.** `HasName & HasAge` cannot be expressed without
+   constructing an explicit record type.
 
-## What Union Types Would Provide
+## What It Would Provide
 
-1. **Precise typing for dual-dispatch builtins.** `$map`, `$filter`, etc.
-   could be typed as `(a → b) → (Dict a | Seq a) → (Dict b | Seq b)`
-   instead of `Any → Any → Any`.
-2. **Nullable value types.** `Int | Null` instead of collapsing to `Any`,
-   enabling the type checker to enforce null handling.
-3. **Tagged union / result types.** `[ok: a] | [err: String]` for error
-   handling patterns, with static checking that both cases are handled.
-4. **More precise `$if` return types.** `$if $cond 42 "hello"` could have
-   type `Int | Str` instead of `Any`.
-5. **Foundation for sum types.** Union types are a prerequisite for
-   algebraic data types and discriminated union patterns.
+### Annotation-Only Unions (Phase 2 — conservative)
+
+- **Precise typing for dual-dispatch builtins.** `$map : (a → b) → (Dict a | Seq a) → (Dict b | Seq b)`
+- **Nullable value types.** `Int | Null` instead of collapsing to `Any`
+- **Tagged union / result types.** `[ok: a] | [err: String]` with static checking
+- **More precise `$if` return types.** Annotated unions on user-defined functions
+- **Foundation for `[union ...]` ADTs.** `Type::Union` is the prerequisite for
+  `doc/whatif/algebraic-data-types.md` Phase 2
+
+### Full Algebraic Subtyping (Phase 3 — endpoint)
+
+Dolan & Mycroft (2017) and Parreaux (2020, Simple-sub) resolve the fundamental
+tension: **Robinson unification computes equality constraints, but subtyping needs
+inequality constraints.** Key insight: type variables in *input* (negative) positions
+carry different constraints than those in *output* (positive) positions.
+
+This gives:
+
+1. **Inferred union types** — `$if true 1 "hello"` infers `Int | Str`, not `Any`
+2. **Inferred intersection types** — variables with multiple upper bounds compact to `A & B`
+3. **Principal types with subtyping** — the most general type, proven (Dolan 2016, Theorem 4.1)
+4. **No [U-SUBSUME]** — subtyping built into the solver uniformly across all type constructors
+5. **Width subtyping for records** — `{x: Int, y: Str} <: {x: Int}` without requiring
+   row variables at every call site
+6. **Type simplification** — compact principal types via constraint compaction (Parreaux 2020)
 
 ## Design
 
-### Annotation-Only Unions (Core Design)
+### Annotation-Only Unions
 
-The core design adds unions as an annotation-level construct: unions appear
-in explicit type annotations and builtin signatures, but `unify` never
-produces them. This is the conservative approach — it avoids the complexity
-of algebraic subtyping while covering the primary use cases.
+The core design adds unions as an annotation-level construct: unions appear in
+explicit type annotations and builtin signatures, but `unify` never produces them.
 
 #### Syntax
-
-Union types use `|` in type annotation position:
 
 ```lisp
 # In type annotations
@@ -84,9 +96,8 @@ enum Type {
 }
 ```
 
-Unions are maintained in a canonical form: flattened (no `Union` inside
-`Union`), sorted by a stable type ordering, and deduplicated. This ensures
-`Int | Str` and `Str | Int` are the same `Type` value.
+Unions are maintained in canonical form: flattened, sorted by stable type ordering,
+and deduplicated. `Int | Str` and `Str | Int` are the same `Type` value.
 
 #### Subtyping Rules
 
@@ -98,176 +109,200 @@ Three new rules extend `is_subtype`:
 [UNION-ELIM]   If A <: C and B <: C, then A | B <: C
 ```
 
-These are the standard covariant union rules from Pierce (2002), Chapter 15.
-They are decidable and preserve transitivity.
-
-#### Unification Behavior
-
-`unify(Int, Str)` still fails. Unions only appear in annotations, not from
-inference. When checking `expr : Int | Str`, the type checker uses
-`is_subtype(inferred, Int | Str)` in checking mode — unification is not
-involved.
-
-This means `$if true 1 "hello"` still infers `Any` (no union from
-inference). Inferred unions require algebraic subtyping (Phase 3).
-
-#### Interaction with Row Polymorphism
-
-Union types interact with records: `[x: Int] | [y: Str]` is a union of two
-record types, not a single record. Width subtyping and row variable
-unification remain unchanged — unions are orthogonal to row polymorphism
-at the annotation-only level.
-
-The deeper interaction (row polymorphism with algebraic subtyping) is
-addressed by Lorenz et al. (2024) and deferred to Phase 3.
+Standard covariant union rules from Pierce (2002), Chapter 15. Decidable,
+preserve transitivity. `unify(Int, Str)` still fails — unions only appear in
+annotations, not from inference.
 
 #### Interaction with `Any`
 
-`Any` is currently used where union types would be more precise. With
-annotation-only unions, `Any` remains the inferred join for incompatible
-types. Splitting `Any` into `Unknown` (gradual) + `Top` (subtyping ceiling)
-is a prerequisite for full union semantics — see `doc/whatif/gradual-typing.md`.
+`Any` remains the inferred join for incompatible types. Splitting `Any` into
+`Unknown` (gradual) + `Top` (subtyping ceiling) is required for full union
+semantics but deferred to Phase 3 — see `doc/whatif/gradual-typing.md`.
+
+### Full Algebraic Subtyping: Simple-sub
+
+Adopt Simple-sub (Parreaux 2020) as a constraint-solving replacement for
+[U-SUBSUME] + Robinson unification.
+
+**Why Simple-sub over Dolan's biunification:** Dolan (2017) uses automata-theoretic
+type simplification — theoretically elegant but complex and producing hard-to-read
+types without simplification. Simple-sub achieves the same principal type guarantees
+with a simpler algorithm (~500 lines for the core), bounds as concrete types rather
+than automata states, and better error messages.
+
+#### Core Mechanism
+
+1. **`unify(t1, t2)` becomes `constrain(t1 <: t2)`** with polarity-aware structural decomposition:
+   - `constrain(Fn(A → B) <: Fn(C → D))` → `constrain(C <: A)` + `constrain(B <: D)`
+   - `constrain(Record(R1) <: Record(R2))` → constrain shared fields covariantly
+2. **Type variables carry bounds instead of equality bindings:**
+   ```rust
+   struct TypeVarBounds {
+       lower: Vec<Type>,  // types that are subtypes of this var (positive positions)
+       upper: Vec<Type>,  // types that are supertypes of this var (negative positions)
+   }
+   ```
+   Satisfiable iff `join(lower) <: meet(upper)`.
+3. **Union and intersection types emerge from bound compaction** — not user-written
+   syntax but inferred result types when a variable has multiple lower/upper bounds.
+4. **[U-SUBSUME] eliminated** — subtyping is built into the solver.
+
+#### Interaction with Row Polymorphism
+
+Row variables become bounds-carrying variables tracking which fields *must* be
+present (lower bound) and which *may* be present (upper bound). Width subtyping
+is built into the lattice: `{x: Int, y: Str} <: {x: Int}` without extra machinery.
+Marques, Florido & Vasconcelos (2024) extend Simple-sub with row variables
+specifically, providing a direct implementation template.
+
+#### Interaction with `Any`
+
+`Any` as both top and bottom is unsound in algebraic subtyping — it collapses
+the lattice. The split:
+
+- `Top` — supertype of everything (TypeScript's `unknown`)
+- `Bottom` — subtype of everything (TypeScript's `never`)
+- `Unknown` — *consistent* with everything (gradual typing, separate relation)
+
+Every use of `Any` must be audited and reclassified. This is the highest-risk
+single change. See `doc/whatif/gradual-typing.md` Phase 2.
+
+#### Interaction with Let-Generalization
+
+Generalization still uses levels (Kiselyov 2013), but generalized variables carry
+their bounds into the type scheme. Instantiation creates fresh variables with copies
+of those bounds — not just fresh unconstrained variables.
+
+#### Error Message Strategy
+
+Each `constrain()` call records its source span and reason. When bounds are
+unsatisfiable, the error traces back through the provenance chain to show *why*
+bounds conflict, not just *that* they conflict. This is harder than point-of-failure
+reporting but is the standard mitigation — MLsub's poor error quality was a known
+problem; Simple-sub's concrete bounds help.
 
 ## What Would Change
 
-### Type Representation (`src/types.rs`)
+### For Annotation-Only Unions (Phase 2)
 
-**Current:** `Type` enum has no union variant. Incompatible types cause
-unification failure or collapse to `Any`.
-**Proposed:** Add `Union(Vec<Type>)` variant with canonical form invariant.
-Add `normalize_union()` for flattening, sorting, deduplication.
-**Impact:** Moderate — new variant propagates through `is_subtype`,
-`apply_substitution`, `collect_type_vars`, `display`. Does not affect
-`unify`.
+| Component | Current | Change | Impact |
+|-----------|---------|--------|--------|
+| `src/types.rs` | No union variant | Add `Union(Vec<Type>)` + `normalize_union()` | Moderate — propagates through `is_subtype`, `apply_substitution`, `collect_type_vars`, `display` |
+| `src/types.rs` `is_subtype` | No union rules | Add `[UNION-INJ-L]`, `[UNION-INJ-R]`, `[UNION-ELIM]` | Minor — three new match arms |
+| `src/typecheck.rs` | No union annotations | Parse union annotations; checking mode via new `is_subtype` rules | Minor |
+| `src/parser.rs` | No `\|` in type position | Add `\|` as type-level operator (looser than `→`) | Minor |
+| `src/eval.rs` | — | No changes; unions erased at runtime | None |
+| `src/builtins.rs` | Dual-dispatch typed `Any → Any` | Update signatures to use `Union` types | Minor |
 
-### Subtyping (`src/types.rs` — `is_subtype`)
+### For Full Algebraic Subtyping (Phase 3)
 
-**Current:** No union rules. Subtyping covers literals, base types, records,
-functions, sequences.
-**Proposed:** Add `[UNION-INJ-L]`, `[UNION-INJ-R]`, `[UNION-ELIM]` rules.
-`is_subtype(T, Union(ts))` succeeds if `T <: t_i` for some `t_i`.
-`is_subtype(Union(ts), T)` succeeds if `t_i <: T` for all `t_i`.
-**Impact:** Minor — three new match arms, no changes to existing rules.
-
-### Type Checker (`src/typecheck.rs`)
-
-**Current:** No special handling for union annotations. Checking mode uses
-`is_subtype` for concrete expected types.
-**Proposed:** Extend checking mode to handle `Union` expected types (already
-covered by new `is_subtype` rules). Parse union type annotations into
-`Type::Union`. No changes to inference mode — unions are not inferred.
-**Impact:** Minor — annotation parsing and subtype checking, no new
-inference logic.
-
-### Parser (`src/parser.rs`, `src/grammar.pest`)
-
-**Current:** Type annotation grammar does not include `|`.
-**Proposed:** Add `|` as a type-level operator in annotation position.
-Precedence: `|` binds looser than `→` (function arrow).
-**Impact:** Minor — grammar extension in annotation position only.
-
-### Evaluator (`src/eval.rs`)
-
-**Current:** No runtime representation of unions.
-**Proposed:** No changes. Unions are erased at runtime — they exist only
-in the type system. Values are `Int` or `Str`, never `Int | Str`.
-**Impact:** None.
-
-### Builtins (`src/builtins.rs`)
-
-**Current:** Dual-dispatch builtins typed as `Any → Any`.
-**Proposed:** Update builtin type signatures to use `Union` types.
-`$map : (a → b) → Union(Dict(a), Seq(a)) → Union(Dict(b), Seq(b))`.
-**Impact:** Minor — signature changes only, no runtime behavior changes.
+| Component | Current | Change | Impact |
+|-----------|---------|--------|--------|
+| `src/types.rs` | `Any` as single top/bottom; vars bind to concrete types | `Any` → `Top`/`Bottom`/`Unknown`; vars carry `TypeVarBounds`; add `Intersection(Vec<Type>)` | **Fundamental** — every `match` on `Type` gains new arms |
+| `src/types.rs` `unify` | Robinson + [U-SUBSUME] | Replace with `constrain(t1 <: t2)` + polarity-aware decomposition | **Fundamental** — every `unify()` call site changes |
+| `src/typecheck.rs` | Algorithm W threading substitutions | Same AST-walking structure; inequality constraints; bounds-carrying type schemes | **Major** — extensive but systematic migration |
+| `src/types.rs` `is_subtype` | Simple predicate ~15 arms | Subsumed by constraint accumulation; `is_subtype` becomes `constrain` call | **Major** |
+| Row polymorphism | Rémy four-case unification | Row vars carry bounds; four-case → constraint decomposition; width subtyping built in | **Moderate-to-Major** |
+| Bidirectional checking | Required for soundness | Becomes optional (improves error locality but not required) | Simplification |
+| `TypeAssert` | `is_subtype(inferred, asserted)` | `constrain(inferred <: asserted)` | Minor |
+| `src/error.rs` | Point-of-unification-failure errors | Constraint provenance chain; bounds-conflict explanation | **Major** |
 
 ## Phased Adoption
 
 ### Phase 1: Type Classes (no union types)
 
-Solve the dual-dispatch typing problem without union types by adding
-constrained polymorphism (see `doc/whatif/typeclasses.md`):
+Solve the dual-dispatch typing problem without union types via constrained
+polymorphism (see `doc/whatif/typeclasses.md`):
 
 ```
 $map : Functor f => (a → b) → f a → f b
 ```
 
-where `Functor` has instances for Dict and Seq. This covers the primary
-motivation (precise typing for `$map`, `$filter`, etc.) without any union
-type machinery.
+Covers the primary motivation (precise `$map`, `$filter`, etc. typing) without
+any union type machinery.
 
 ### Phase 2: Annotation-Only Unions
 
-Add `Type::Union(Vec<Type>)` with subtyping rules `[UNION-INJ-L]`,
-`[UNION-INJ-R]`, `[UNION-ELIM]`. Unions appear only in explicit type
-annotations and builtin signatures — `unify` never produces them.
+Add `Type::Union(Vec<Type>)` with subtyping rules `[UNION-INJ-L]`, `[UNION-INJ-R]`,
+`[UNION-ELIM]`. Unions appear only in explicit type annotations and builtin
+signatures — `unify` never produces them.
 
-This enables:
-- `Int | Null` for nullable values
-- `[ok: a] | [err: String]` for result types
-- Explicit union annotations on user-defined functions
+This enables: `Int | Null` for nullable values, `[ok: a] | [err: String]` for
+result types, explicit union annotations on user-defined functions, and is the
+prerequisite for `[union ...]` ADT declarations (see `doc/whatif/algebraic-data-types.md`).
 
-Implementation: add `Union` variant to `Type`. Extend `is_subtype` with
-three new rules. Extend `is_consistent` (from gradual typing, see
-`doc/whatif/gradual-typing.md`) for union consistency. No changes to
-`unify` — unions are not inferred, only checked.
+### Phase 3: Full Algebraic Subtyping (Simple-sub)
 
-### Phase 3: Inferred Unions (Simple-sub)
+If annotation-only unions prove insufficient — specifically when `$if` return
+types and other inferred positions need unions — adopt Simple-sub for full
+algebraic subtyping with inferred union and intersection types. Four sub-phases:
 
-If annotation-only unions prove insufficient — specifically, if `$if`
-return types and other inferred positions need unions — adopt Simple-sub
-(Parreaux 2020) for full algebraic subtyping with inferred union and
-intersection types. See `doc/whatif/algebraic-subtypes.md` for the
-complete analysis.
+**3a. Constraint Infrastructure:** Add `TypeVarBounds { lower, upper }` alongside
+existing substitution. New `constrain(t1 <: t2)` function with polarity-aware
+structural decomposition. Existing `unify()` continues to work — adds
+infrastructure without removing anything.
 
-This is the heaviest phase: `unify` becomes `constrain`, type variables
-carry bounds instead of bindings, and `Any` must split into
-Top/Bottom/Gradual. Only adopt if Phases 1–2 are insufficient.
+**3b. Migrate Call Sites:** Replace `unify()` with `constrain()` one subsystem at
+a time: literal-to-base promotion, function application, record width subtyping,
+let-generalization.
+
+**3c. Union/Intersection from Bound Compaction:** With constraint solver in place,
+`Type::Union` and `Type::Intersection` appear in inferred types when a variable
+has multiple lower (union) or upper (intersection) bounds.
+
+**3d. `Any` Split:** Split `Type::Any` into `Top`, `Bottom`, and `Unknown`.
+Required for lattice soundness. Coordinate with `doc/whatif/gradual-typing.md` Phase 2.
 
 ### Prerequisites
 
-- Phase 1 requires `let-generalization` and `builtin-type-signatures`
-- Phase 2 requires Phase 1 (type classes provide the Functor abstraction
-  that makes unions less urgent) and `gradual-typing` Phase 2 (splitting
-  `Any` into `Unknown` + `Top`)
-- Phase 3 requires `doc/whatif/algebraic-subtypes.md` adoption
+- Phase 1: `let-generalization` and `builtin-type-signatures` complete
+- Phase 2: Phase 1 complete; `gradual-typing` Phase 2 (`Any` → `Unknown` + `Top`)
+- Phase 3: `row-polymorphism` stable; `gradual-typing` Phase 2 complete;
+  Phase 2 complete (Phase 3 requires `Type::Union` already existing)
 
 ### Trigger
 
-Phase 1 (type classes): see `doc/whatif/typeclasses.md` §Trigger.
+**Phase 2:** When nullable types (`Int | Null`) are needed, or tagged union
+patterns become common, or `$try` result types need `[ok: a] | [err: String]` precision.
 
-Phase 2 (annotation unions): begin when:
-- Nullable types are needed (`Int | Null` instead of `Any`)
-- Tagged union / sum type patterns become common in user code
-- `$try` result types need `[ok: a] | [err: String]` precision
-
-Phase 3 (inferred unions): begin when:
-- `$if` return types need inferred unions (not just annotated)
-- Annotation-only unions create too much annotation burden
-- Row polymorphism needs width subtyping built into the lattice
+**Phase 3:** When `$if` return types need inferred unions (not just annotated),
+annotation-only unions create too much annotation burden, or Rémy-style row
+unification interacts badly with [U-SUBSUME] causing false positives.
 
 ## References
 
-- Dolan, S. & Mycroft, A. (2017). "Polymorphism, subtyping, and type
-  inference in MLsub." In *POPL '17*, pp. 228–242. ACM.
-  — Algebraic subtyping: union and intersection types with decidable
-  inference. Foundation for Phase 3 inferred unions.
-- Parreaux, L. (2020). "The simple essence of algebraic subtyping." In
-  *ICFP '20*, Article 124. ACM.
-  — Simplified presentation of MLsub. Direct implementation reference for
-  Phase 3's `constrain`-based inference.
-- Lorenz, J. et al. (2024). "Towards algebraic subtyping for extensible
-  records." arXiv:2407.06747.
-  — Addresses the interaction between algebraic subtyping and row
-  polymorphism, directly relevant to union types over record types.
+- Dolan, S. (2016). *Algebraic Subtyping.* PhD thesis, University of Cambridge.
+  — Full theoretical treatment: row types (Chapter 6), automata simplification,
+  principal type proofs (Theorem 4.1).
+- Dolan, S. & Mycroft, A. (2017). "Polymorphism, subtyping, and type inference
+  in MLsub." In *POPL '17*, pp. 228–242. ACM.
+  — Conference distillation. Proves principal types for the system. Foundation
+  for Phase 3 inferred unions.
+- Parreaux, L. (2020). "The simple essence of algebraic subtyping." In *ICFP '20*,
+  Article 124. ACM.
+  — Simplified algorithm closer to Algorithm W. Reference implementation ~500 lines.
+  Direct implementation reference for Phase 3.
+- Marques, R., Florido, M. & Vasconcelos, P. (2024). "Towards algebraic subtyping
+  for extensible records." arXiv:2407.06747.
+  — Extends Simple-sub with row variables. Directly applicable to tinct's row
+  polymorphism + algebraic subtyping combination.
 - Pierce, B.C. (2002). *Types and Programming Languages.* MIT Press.
-  Chapter 15 (subtyping), Chapter 24 (existential types).
-  — Standard subtyping rules for union types: [UNION-INJ-L], [UNION-INJ-R],
-  [UNION-ELIM].
-- Dunfield, J. & Pfenning, F. (2004). "Tridirectional typechecking."
-  In *POPL '04*, pp. 281–292. ACM.
-  — Datasort refinements and union/intersection types in a bidirectional
-  checking framework. Relevant to checking mode for union annotations.
-- Tobin-Hochstadt, S. & Felleisen, M. (2010). "Logical types for untyped
-  languages." In *ICFP '10*, pp. 117–128. ACM.
-  — Occurrence typing in Typed Racket: union types with path-sensitive
-  narrowing. Practical reference for unions + narrowing interaction.
+  — Standard subtyping rules [UNION-INJ-L], [UNION-INJ-R], [UNION-ELIM]
+  (Chapter 15). Existential types (Chapter 24).
+- Dunfield, J. & Pfenning, F. (2004). "Tridirectional typechecking." In *POPL '04*,
+  pp. 281–292. ACM.
+  — Datasort refinements and union/intersection types in bidirectional checking.
+  Relevant to checking mode for union annotations.
+- Dunfield, J. & Krishnaswami, N. (2021). "Bidirectional typing." *ACM Computing
+  Surveys*, 54(5), Article 98.
+  — Survey covering bidirectional checking and subtyping interaction. Relevant to
+  whether bidirectional checking should be retained under algebraic subtyping.
+- Tobin-Hochstadt, S. & Felleisen, M. (2010). "Logical types for untyped languages."
+  In *ICFP '10*, pp. 117–128. ACM.
+  — Occurrence typing in Typed Racket: union types with path-sensitive narrowing.
+  Practical reference for unions + narrowing interaction.
+- Traytel, D., Berghofer, S. & Nipkow, T. (2011). "Extending Hindley-Milner type
+  inference with coercive structural subtyping." In *APLAS '11*, LNCS 7078,
+  pp. 89–104. Springer.
+  — Alternative approach using coercions rather than biunification. Less expressive
+  but simpler; useful as a design contrast.

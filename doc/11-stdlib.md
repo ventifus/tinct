@@ -7,19 +7,19 @@
 **Most stdlib functions are data-last** to enable `->` threading (pipeline composition):
 
 ```tinct
-[call $-> $users
-  [call $filter $is-active]
-  [call $map $get-name]
-  [call $sort]]
+[-> users
+  [filter is-active]
+  [map get-name]
+  [sort]]
 ```
 
-Each function receives data as its **last** parameter: `[call $map $fn $data]`, `[call $filter $pred $data]`, etc. This aligns with Unix pipe semantics (`data | transform`) and allows partial application patterns in languages with currying.
+Each function receives data as its **last** parameter: `[map fn data]`, `[filter pred data]`, etc. This aligns with Unix pipe semantics (`data | transform`) and allows partial application patterns in languages with currying.
 
 **Exceptions: `get-or` and `get-in-or` are data-first**:
 
 ```tinct
-[call $get-or $config $key $default]      # data-first
-[call $get-in-or $config $path $default]  # data-first
+[get-or config key default]      # data-first
+[get-in-or config path default]  # data-first
 ```
 
 **Rationale:** Data-first order mirrors bracket access syntax `$data[$key]` and follows Clojure's `get` convention, making lookups read naturally as "from collection, get key, or default." The trade-off: these functions don't compose directly with `->` threading (they would require wrapping in a lambda to reorder arguments).
@@ -50,9 +50,9 @@ Everything else can be a regular function in the stdlib:
 
 ```tinct
 # These are stdlib functions, not special forms:
-[call $if [call $> $x 0] positive non-positive]
-[call $and [call $valid? $input] [call $process $input]]  # process never called if invalid
-[call $or $cached-value [call $expensive-compute]]        # compute skipped if cached
+[if [> x 0] positive non-positive]
+[and [valid? input] [process input]]  # process never called if invalid
+[or cached-value [expensive-compute]]  # compute skipped if cached
 ```
 
 ### Language vs Stdlib
@@ -164,21 +164,21 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Key implications for lazy evaluation:**
 
 ```tinct
-# $map on dict is lazy — returns dict with PendingCall thunks
-big-result: [call $map [fn [x] [call $expensive $x]] $big-dict]
-$big-result.widget          # Only this one element gets computed
+# map on dict is lazy — returns dict with PendingCall thunks
+big-result: [map [fn [x] [expensive x]] big-dict]
+big-result.widget          # Only this one element gets computed
 
-# $filter on dict returns a Seq (must evaluate predicates to decide inclusion)
+# filter on dict returns a Seq (must evaluate predicates to decide inclusion)
 # Other fields on kept users remain thunks until accessed
-expensive: [call $collect [call $filter [fn [x] [call $> $x.price 100]] $products]]
+expensive: [collect [filter [fn [x] [> x.price 100]] products]]
 
-# $sort must materialize everything — can't sort without comparing
-sorted: [call $sort $big-list]  # All values materialized immediately
+# sort must materialize everything — can't sort without comparing
+sorted: [sort big-list]  # All values materialized immediately
 
 # Infinite sequences — lazy all the way
-naturals: [call $range 0]   # O(1), nothing computed
-squares: [call $map [fn [n] [call $* $n $n]] $naturals]  # still O(1)
-first-ten: [call $collect [call $take 10 $squares]]
+naturals: [range 0]   # O(1), nothing computed
+squares: [map [fn [n] [* n n]] naturals]  # still O(1)
+first-ten: [collect [take 10 squares]]
 # -> [0 1 4 9 16 25 36 49 64 81]
 ```
 
@@ -209,33 +209,33 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 
 | Function | Derivation | Notes |
 |----------|-----------|-------|
-| `<` | `[fn [a b] [call $builtin-lt $a $b]]` | Shadowable; calls stable alias `$builtin-lt` |
-| `=` | `[fn [a b] [call $builtin-eq $a $b]]` | Shadowable; calls stable alias `$builtin-eq` |
-| `+` | `[fn [a b] [call $builtin-add $a $b]]` | Shadowable; calls `$builtin-add` |
-| `-` | `[fn [a b] [call $builtin-sub $a $b]]` | Shadowable; calls `$builtin-sub` |
-| `*` | `[fn [a b] [call $builtin-mul $a $b]]` | Shadowable; calls `$builtin-mul` |
-| `/` | `[fn [a b] [call $builtin-div $a $b]]` | Shadowable; calls `$builtin-div` |
-| `if` | `[fn [c t e] [call $builtin-if $c $t $e]]` | Shadowable; calls `$builtin-if` |
-| `filter` | `[fn [pred xs] [call $builtin-filter $pred $xs]]` | Shadowable; calls `$builtin-filter` |
-| `map` | `[fn [f xs] [call $builtin-map $f $xs]]` | Shadowable; calls `$builtin-map` |
-| `reduce` | `[fn [f init xs] [call $builtin-reduce $f $init $xs]]` | Shadowable; calls `$builtin-reduce` |
-| `take` | `[fn [n xs] [call $builtin-take $n $xs]]` | Shadowable; calls `$builtin-take` |
-| `drop` | `[fn [n xs] [call $builtin-drop $n $xs]]` | Shadowable; calls `$builtin-drop` |
-| `not` | `[fn [x] [call $builtin-if $x false true]]` | Uses `$builtin-if` directly |
-| `>` | `[fn [a b] [call $builtin-lt $b $a]]` | Argument swap |
-| `<=` | `[fn [a b] [call $not [call $builtin-lt $b $a]]]` | Negated `>` |
-| `>=` | `[fn [a b] [call $not [call $builtin-lt $a $b]]]` | Negated `<` |
-| `and` | `[fn [a b] [call $builtin-if $a $b false]]` | Short-circuit via lazy args |
-| `or` | `[fn [a b] [call $builtin-if $a $a $b]]` | Pass-through: returns `a` if truthy |
-| `quot` | `[fn [a b] [call $trunc [call $builtin-div $a $b]]]` | Truncation toward zero |
-| `mod` | `[fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]` | Algebraic identity |
-| `ceil` | `[fn [x] [call $builtin-sub 0 [call $floor [call $builtin-sub 0 $x]]]]` | `ceil(x) = -floor(-x)` |
-| `trunc` | `[fn [x] [call $builtin-if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]` | Conditional floor/ceil |
-| `words` | `[call $builtin-filter [fn [w] [call $not [call $builtin-eq $w ""]]] [call $split " " $s]]` | Uses stable `$builtin-filter`, `$builtin-eq` |
+| `<` | `[fn [a b] [builtin-lt a b]]` | Shadowable; calls stable alias `builtin-lt` |
+| `=` | `[fn [a b] [builtin-eq a b]]` | Shadowable; calls stable alias `builtin-eq` |
+| `+` | `[fn [a b] [builtin-add a b]]` | Shadowable; calls `builtin-add` |
+| `-` | `[fn [a b] [builtin-sub a b]]` | Shadowable; calls `builtin-sub` |
+| `*` | `[fn [a b] [builtin-mul a b]]` | Shadowable; calls `builtin-mul` |
+| `/` | `[fn [a b] [builtin-div a b]]` | Shadowable; calls `builtin-div` |
+| `if` | `[fn [c t e] [builtin-if c t e]]` | Shadowable; calls `builtin-if` |
+| `filter` | `[fn [pred xs] [builtin-filter pred xs]]` | Shadowable; calls `builtin-filter` |
+| `map` | `[fn [f xs] [builtin-map f xs]]` | Shadowable; calls `builtin-map` |
+| `reduce` | `[fn [f init xs] [builtin-reduce f init xs]]` | Shadowable; calls `builtin-reduce` |
+| `take` | `[fn [n xs] [builtin-take n xs]]` | Shadowable; calls `builtin-take` |
+| `drop` | `[fn [n xs] [builtin-drop n xs]]` | Shadowable; calls `builtin-drop` |
+| `not` | `[fn [x] [builtin-if x false true]]` | Uses `builtin-if` directly |
+| `>` | `[fn [a b] [builtin-lt b a]]` | Argument swap |
+| `<=` | `[fn [a b] [not [builtin-lt b a]]]` | Negated `>` |
+| `>=` | `[fn [a b] [not [builtin-lt a b]]]` | Negated `<` |
+| `and` | `[fn [a b] [builtin-if a b false]]` | Short-circuit via lazy args |
+| `or` | `[fn [a b] [builtin-if a a b]]` | Pass-through: returns `a` if truthy |
+| `quot` | `[fn [a b] [trunc [builtin-div a b]]]` | Truncation toward zero |
+| `mod` | `[fn [a b] [builtin-sub a [builtin-mul [quot a b] b]]]` | Algebraic identity |
+| `ceil` | `[fn [x] [builtin-sub 0 [floor [builtin-sub 0 x]]]]` | `ceil(x) = -floor(-x)` |
+| `trunc` | `[fn [x] [builtin-if [>= x 0] [floor x] [ceil x]]]` | Conditional floor/ceil |
+| `words` | `[builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]` | Uses stable `builtin-filter`, `builtin-eq` |
 
 **Why shadowable wrappers matter:**
 
-Any `$include`d stdlib module can shadow the primary-name operators in lexical scope. `stdlib/sql.llt` uses this to provide SQL-aware versions of `$filter`, `$map`, `$<`, `$=`, `$and`, `$if`, etc. that propagate SQL expression trees when applied to proxy rows. Each shadow calls the stable `$builtin-X` alias for non-SQL fallback. User code written after `$include "stdlib/sql.llt"` gets transparent SQL dispatch without any API changes. See `doc/whatif/lib-sql.md`.
+Any `include`d stdlib module can shadow the primary-name operators in lexical scope. `stdlib/sql.llt` uses this to provide SQL-aware versions of `filter`, `map`, `<`, `=`, `and`, `if`, etc. that propagate SQL expression trees when applied to proxy rows. Each shadow calls the stable `builtin-X` alias for non-SQL fallback. User code written after `[include "stdlib/sql.llt"]` gets transparent SQL dispatch without any API changes. See `doc/whatif/lib-sql.md`.
 
 **Loading mechanism:**
 
@@ -246,9 +246,9 @@ The Tinct stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `inc
 3. User code's environment inherits from the stdlib environment
 
 ```
-Rust primitives ($builtin-lt, $builtin-eq, $builtin-add, $builtin-if, $builtin-filter, $proxy, ...)
+Rust primitives (builtin-lt, builtin-eq, builtin-add, builtin-if, builtin-filter, proxy, ...)
   └── Tinct prelude (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
-        └── User code / domain stdlib ($include "stdlib/sql.llt" shadows filter, map, <, =, ...)
+        └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
               └── User predicates and programs
 ```
 
@@ -279,15 +279,15 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `identity` | `[fn [x] $x]` | Returns its argument unchanged |
-| `const` | `[fn [x] [fn [y] $x]]` | Returns first argument, ignores second. Classic K combinator |
+| `identity` | `[fn [x] x]` | Returns its argument unchanged |
+| `const` | `[fn [x] [fn [y] x]]` | Returns first argument, ignores second. Classic K combinator |
 
 **Logic:**
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `not` | `[fn [x] ...]` | Boolean negation |
-| `and` | `[fn [a b] ...]` | Short-circuit AND: returns `$b` if `$a` is true, else `false` |
+| `and` | `[fn [a b] ...]` | Short-circuit AND: returns `b` if `a` is true, else `false` |
 | `or` | `[fn [a b] ...]` | Short-circuit OR: returns first arg unchanged when truthy, otherwise evaluates and returns second arg |
 | `any?` | `[fn [pred xs] ...]` | True if predicate holds for any element in collection |
 | `all?` | `[fn [pred xs] ...]` | True if predicate holds for all elements in collection |
@@ -328,10 +328,10 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `when` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is true, else `[]` |
-| `unless` | `[fn [pred body] ...]` | Returns `$body` if `$pred` is false, else `[]` |
+| `when` | `[fn [pred body] ...]` | Returns `body` if `pred` is true, else `[]` |
+| `unless` | `[fn [pred body] ...]` | Returns `body` if `pred` is false, else `[]` |
 | `cond` | `[fn [pairs] ...]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
-| `until` | `[fn [pred f x] ...]` | Iterate function until predicate holds. Applies `$f` repeatedly to `$x` until `pred($x)` is true. Recursive; hits MAX_EVAL_DEPTH (~256) on large inputs |
+| `until` | `[fn [pred f x] ...]` | Iterate function until predicate holds. Applies `f` repeatedly to `x` until `pred(x)` is true. Recursive; hits MAX_EVAL_DEPTH (~256) on large inputs |
 
 **Field Interception:**
 
@@ -344,14 +344,14 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `get` | `[fn [xs k] ...]` | Get value by key (bracket access wrapper) |
-| `has?` | `[fn [xs k] ...]` | Check if a key exists (uses `$try` around access) |
+| `has?` | `[fn [xs k] ...]` | Check if a key exists (uses `try` around access) |
 | `get-or` | `[fn [xs k default] ...]` | Get value by key with fallback default |
 | `get-in` | `[fn [xs path] ...]` | Traverse nested dicts by a list of keys; errors on missing key |
 | `get-in-or` | `[fn [xs path default] ...]` | Traverse nested dicts with fallback default |
 | `empty?` | `[fn [xs] ...]` | Check if a collection has zero entries |
 | `set` | `[fn [xs k v] ...]` | Return new dict with key added/updated |
 | `remove` | `[fn [xs k] ...]` | Return new dict with key removed |
-| `update` | `[fn [xs k f] ...]` | Apply function `$f` to the value at key `$k` |
+| `update` | `[fn [xs k f] ...]` | Apply function `f` to the value at key `k` |
 | `values` | `[fn [xs] ...]` | Get all values as an integer-indexed list; preserves dict insertion order |
 | `entries` | `[fn [xs] ...]` | Get all entries as a list of `[key: k value: v]` dicts; preserves dict insertion order |
 | `from-entries` | `[fn [pairs] ...]` | Reconstruct a dict from a list or Seq of `[key: k value: v]` pairs |
@@ -381,9 +381,9 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `map` | `[fn [f xs] ...]` | Apply function to every value, preserving keys. On dicts, returns a dict with PendingCall thunks (lazy); on seqs, returns a lazy seq. Note: unlike `$filter`, `$map` preserves key types — dict input returns dict output. |
+| `map` | `[fn [f xs] ...]` | Apply function to every value, preserving keys. On dicts, returns a dict with PendingCall thunks (lazy); on seqs, returns a lazy seq. Note: unlike `filter`, `map` preserves key types — dict input returns dict output. |
 | `map-entries` | `[fn [f xs] ...]` | Apply function to every entry `[key: k value: v]`; f receives the entry dict and returns the **new value** (keys are preserved unchanged) |
-| `filter` | `[fn [pred xs] ...]` | Keep values where predicate returns true. **Asymmetry:** returns Seq when input is Dict (keys are not preserved — must evaluate predicates to determine which values survive, breaking the key-value relationship); returns lazy Seq when input is Seq. Use `$collect` to convert the result back to a dict. See also `$map`, which preserves dict keys. |
+| `filter` | `[fn [pred xs] ...]` | Keep values where predicate returns true. **Asymmetry:** returns Seq when input is Dict (keys are not preserved — must evaluate predicates to determine which values survive, breaking the key-value relationship); returns lazy Seq when input is Seq. Use `collect` to convert the result back to a dict. See also `map`, which preserves dict keys. |
 | `reduce` | `[fn [f init xs] ...]` | Left fold (Rust builtin; dual-dispatch Dict/Seq) |
 | `fold` | `[fn [f init xs] ...]` | Alias for `reduce` — left fold, identical semantics; use whichever name fits context |
 | `foldr` | `[fn [f acc xs] ...]` | Right fold: fold from the right, equivalent to `fold(f, acc, reverse(xs))` |
@@ -452,8 +452,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `range` | `[fn [start] ...]` or `[fn [start end] ...]` | Seq of integers from start (inclusive); infinite if 1-arg, finite (end exclusive) if 2-arg |
-| `repeat` | `[fn [val] ...]` | Infinite Seq of copies of val; for finite, use `[call $take n [call $repeat val]]` |
-| `cycle` | `[fn [xs] ...]` | Infinite Seq cycling through dict entries; for finite, use `[call $take n [call $cycle xs]]` |
+| `repeat` | `[fn [val] ...]` | Infinite Seq of copies of val; for finite, use `[take n [repeat val]]` |
+| `cycle` | `[fn [xs] ...]` | Infinite Seq cycling through dict entries; for finite, use `[take n [cycle xs]]` |
 | `iterate` | `[fn [f x] ...]` | Infinite seq: x, f(x), f(f(x)), ... |
 | `unfold` | `[fn [step seed] ...]` | Seq from step function; step returns `[value state]` or `[]` to stop |
 | `take` | `[fn [n xs] ...]` | Dual-dispatch: on Dict, take first n entries preserving keys; on Seq, return finite Seq of first n elements |
@@ -484,7 +484,7 @@ Not language syntax. Implemented in stdlib:
 
 ```tinct
 ->: [fn [x ...stages]
-    [call $builtin-reduce [fn [acc f] [call $f $acc]] $x $stages]]
+    [builtin-reduce [fn [acc f] [f acc]] x stages]]
 ```
 
 ## Equality and Comparison — Formal Specification
@@ -495,7 +495,7 @@ This section formalizes the two primitive comparison builtins (`$=` and `$<`) an
 
 Two builtins form the comparison basis. All others are derived compositions.
 
-**EQ — Total equality (`$=`):**
+**EQ — Total equality (`=`):**
 
 ```
 EQ(θ₁, θ₂, d, s) :
@@ -505,7 +505,7 @@ EQ(θ₁, θ₂, d, s) :
   ⟨v₁, v₂⟩ ↦ Bool(dispatch_eq(v₁, v₂))
 ```
 
-**LT — Partial ordering (`$<`):**
+**LT — Partial ordering (`<`):**
 
 ```
 LT(θ₁, θ₂, d, s) :
@@ -566,15 +566,15 @@ Promotion is **symmetric**: `EQ-PROMOTE-IF` and `EQ-PROMOTE-FI` always produce t
 
 ### Part 4: Derived Relations
 
-Three comparison operators are derived from `$<` and `$not` in `stdlib/prelude.llt`:
+Three comparison operators are derived from `<` and `not` in `stdlib/prelude.llt`:
 
 ```
-GT(a, b)  ≡  LT(b, a)               # >:  [fn [a b] [call $< $b $a]]
-LEQ(a, b) ≡  ¬LT(b, a)              # <=: [fn [a b] [call $not [call $< $b $a]]]
-GEQ(a, b) ≡  ¬LT(a, b)              # >=: [fn [a b] [call $not [call $< $a $b]]]
+GT(a, b)  ≡  LT(b, a)               # >:  [fn [a b] [< b a]]
+LEQ(a, b) ≡  ¬LT(b, a)              # <=: [fn [a b] [not [< b a]]]
+GEQ(a, b) ≡  ¬LT(a, b)              # >=: [fn [a b] [not [< a b]]]
 ```
 
-Note: `$<=` is defined as `¬GT` (not as `LT ∨ EQ`), and `$>=` as `¬LT` (not as `GT ∨ EQ`). These are equivalent for total orders but diverge in the presence of NaN (see Part 5). The stdlib definitions are correct because `$<` is a strict weak order on each comparable type (NaN is incomparable to everything, and `¬(NaN < x)` correctly yields `true` for `$>=`... but see the NaN anomaly below).
+Note: `<=` is defined as `¬GT` (not as `LT ∨ EQ`), and `>=` as `¬LT` (not as `GT ∨ EQ`). These are equivalent for total orders but diverge in the presence of NaN (see Part 5). The stdlib definitions are correct because `<` is a strict weak order on each comparable type (NaN is incomparable to everything, and `¬(NaN < x)` correctly yields `true` for `>=`... but see the NaN anomaly below).
 
 ### Part 5: IEEE 754 NaN Behavior
 
@@ -589,27 +589,27 @@ LT-FLOAT with NaN:   NaN < x   → false      (for any x, including NaN)
 **Consequence for derived relations:**
 
 ```
-[call $=  NaN NaN]  → false    (NaN ≠ NaN — correct per IEEE 754)
-[call $<  NaN 1.0]  → false    (NaN is unordered)
-[call $>  NaN 1.0]  → false    (= $< 1.0 NaN → false)
-[call $<= NaN 1.0]  → true     (= $not [$< 1.0 NaN] = $not false = true — ANOMALY)
-[call $>= NaN 1.0]  → true     (= $not [$< NaN 1.0] = $not false = true — ANOMALY)
+[= NaN NaN]  → false    (NaN ≠ NaN — correct per IEEE 754)
+[< NaN 1.0]  → false    (NaN is unordered)
+[> NaN 1.0]  → false    (= [< 1.0 NaN] → false)
+[<= NaN 1.0] → true     (= [not [< 1.0 NaN]] = [not false] = true — ANOMALY)
+[>= NaN 1.0] → true     (= [not [< NaN 1.0]] = [not false] = true — ANOMALY)
 ```
 
-The `$<=` and `$>=` anomalies arise because the stdlib derives them via negation of the *swapped* `$<`, rather than via `LT ∨ EQ`. Under IEEE 754, `¬(b < a)` is *not* equivalent to `a ≤ b` when either operand is NaN. This is a known deviation: IEEE 754 §5.11 defines `totalOrder` separately from the partial comparison predicates.
+The `<=` and `>=` anomalies arise because the stdlib derives them via negation of the *swapped* `<`, rather than via `LT ∨ EQ`. Under IEEE 754, `¬(b < a)` is *not* equivalent to `a ≤ b` when either operand is NaN. This is a known deviation: IEEE 754 §5.11 defines `totalOrder` separately from the partial comparison predicates.
 
 **NaN-vs-NaN anomaly:**
 
 ```
-[call $<= NaN NaN]  → true     (= $not [$< NaN NaN] = $not false = true)
-[call $>= NaN NaN]  → true     (= $not [$< NaN NaN] = $not false = true)
+[<= NaN NaN] → true     (= [not [< NaN NaN]] = [not false] = true)
+[>= NaN NaN] → true     (= [not [< NaN NaN]] = [not false] = true)
 ```
 
-Both `$<= NaN NaN` and `$>= NaN NaN` return `true`, even though `$= NaN NaN` returns `false`. Tinct reports NaN as both "less-than-or-equal-to itself" and "greater-than-or-equal-to itself" while simultaneously reporting it as "not equal to itself."
+Both `[<= NaN NaN]` and `[>= NaN NaN]` return `true`, even though `[= NaN NaN]` returns `false`. Tinct reports NaN as both "less-than-or-equal-to itself" and "greater-than-or-equal-to itself" while simultaneously reporting it as "not equal to itself."
 
-**NaN/Infinity rejection (decided):** Tinct enforces the invariant that **all floats are finite**. Non-finite values are rejected at two layers: (1) `$from-json` rejects `f64::INFINITY` and `f64::NAN` from `serde_json::Number::as_f64()` at parse time, closing the entry path, and (2) arithmetic builtins (`$+`, `$-`, `$*`, `$/`) reject non-finite results via a shared `check_float_result` helper, catching overflow (`1e308 + 1e308`) at point of origin. This matches the consensus approach for config languages targeting JSON output (Jsonnet, Nickel, CUE all reject non-finite floats). With this invariant, the `$<=`/`$>=` NaN anomaly documented above becomes unreachable — it is retained as documentation of IEEE 754 behavior but cannot occur in practice.
+**NaN/Infinity rejection (decided):** Tinct enforces the invariant that **all floats are finite**. Non-finite values are rejected at two layers: (1) `from-json` rejects `f64::INFINITY` and `f64::NAN` from `serde_json::Number::as_f64()` at parse time, closing the entry path, and (2) arithmetic builtins (`+`, `-`, `*`, `/`) reject non-finite results via a shared `check_float_result` helper, catching overflow (`1e308 + 1e308`) at point of origin. This matches the consensus approach for config languages targeting JSON output (Jsonnet, Nickel, CUE all reject non-finite floats). With this invariant, the `<=`/`>=` NaN anomaly documented above becomes unreachable — it is retained as documentation of IEEE 754 behavior but cannot occur in practice.
 
-**Pragmatic justification for the anomaly documentation:** The `$<=`/`$>=` NaN anomaly is documented but not fixed (no `$is-nan` check in derived comparisons) because the finite-float invariant makes it unreachable. If the invariant were ever relaxed, the negation-based derivation would need revisiting.
+**Pragmatic justification for the anomaly documentation:** The `<=`/`>=` NaN anomaly is documented but not fixed (no `is-nan` check in derived comparisons) because the finite-float invariant makes it unreachable. If the invariant were ever relaxed, the negation-based derivation would need revisiting.
 
 ### Part 6: Key Ordering (`Key::PartialOrd`)
 
@@ -640,7 +640,7 @@ The divergence is intentional: `Value::PartialEq` uses Rust's native dispatch (n
 
 ### Part 8: Properties
 
-**P1 — EQ reflexivity (conditional):** `∀v. dispatch_eq(v, v) = true` **iff** `v ∉ {NaN, Dict, Function, Builtin, Seq}`. NaN violates reflexivity per IEEE 754. Dict/Function/Builtin/Seq return false even for identity (same Rc pointer) because no structural comparison is performed — structural dict equality would violate lazy evaluation by forcing all field thunks (e.g., comparing `[x: [call $/ 1 0]]` with itself would force the division-by-zero error in an unreferenced field). **Future breaking change:** if typeclasses add user-defined equality, `[call $= [x: 1] [x: 1]]` would change from `false` to `true`. Current code relying on dicts always being unequal may break.
+**P1 — EQ reflexivity (conditional):** `∀v. dispatch_eq(v, v) = true` **iff** `v ∉ {NaN, Dict, Function, Builtin, Seq}`. NaN violates reflexivity per IEEE 754. Dict/Function/Builtin/Seq return false even for identity (same Rc pointer) because no structural comparison is performed — structural dict equality would violate lazy evaluation by forcing all field thunks (e.g., comparing `[x: [/ 1 0]]` with itself would force the division-by-zero error in an unreferenced field). **Future breaking change:** if typeclasses add user-defined equality, `[= [x: 1] [x: 1]]` would change from `false` to `true`. Current code relying on dicts always being unequal may break.
 
 **P2 — EQ symmetry:** `∀v₁, v₂. dispatch_eq(v₁, v₂) = dispatch_eq(v₂, v₁)`. Holds unconditionally — the dispatch table is symmetric (EQ-PROMOTE-IF and EQ-PROMOTE-FI produce identical results; EQ-INCOMP is symmetric; IEEE 754 `==` is symmetric).
 
@@ -654,17 +654,17 @@ The divergence is intentional: `Value::PartialEq` uses Rust's native dispatch (n
 
 **P7 — LT/EQ trichotomy (conditional):** Trichotomy holds within each type (excluding NaN): exactly one of `dispatch_lt(a, b)`, `dispatch_eq(a, b)`, `dispatch_lt(b, a)` is true. Two violations: (1) NaN — all three are false; (2) cross-type Int/Float at the precision boundary — promotion may cause both `dispatch_lt` and `dispatch_eq` to disagree with same-type comparisons (same caveat as P3).
 
-**P8 — Totality of EQ:** `$=` never errors. For any two values (including incompatible types), it returns a Bool. This is the defining characteristic that distinguishes it from `$<`.
+**P8 — Totality of EQ:** `=` never errors. For any two values (including incompatible types), it returns a Bool. This is the defining characteristic that distinguishes it from `<`.
 
-**P9 — Partiality of LT:** `$<` errors on type pairs not in the dispatch table (LT-ERROR). The comparable domain is: {Int, Float} × {Int, Float} ∪ String × String ∪ Bool × Bool.
+**P9 — Partiality of LT:** `<` errors on type pairs not in the dispatch table (LT-ERROR). The comparable domain is: {Int, Float} × {Int, Float} ∪ String × String ∪ Bool × Bool.
 
-**P10 — Materialization obligation:** Both `$=` and `$<` call `materialize(θ, _, d)` on both arguments before dispatch. This is a forcing operation (§Thunk Lifecycle: FORCE-EVAL, FORCE-BUILTIN, or FORCE-CALL depending on the thunk's state) — the thunk moves from Unevaluated/PendingCall/PendingBuiltin to Evaluated, and the resulting value is cached for subsequent access. If materialization detects a cycle (thunk in InProgress state), it raises a circular dependency error via FORCE-CYCLE — comparison dispatch is never reached. Note: for Dict/Seq values, `$=` materializes the outer structure (forces the thunk to produce a `Value::Dict` or `Value::Seq`) but does NOT recursively force field values — it matches on the Value variant and returns `false` (EQ-INCOMP) immediately.
+**P10 — Materialization obligation:** Both `=` and `<` call `materialize(θ, _, d)` on both arguments before dispatch. This is a forcing operation (§Thunk Lifecycle: FORCE-EVAL, FORCE-BUILTIN, or FORCE-CALL depending on the thunk's state) — the thunk moves from Unevaluated/PendingCall/PendingBuiltin to Evaluated, and the resulting value is cached for subsequent access. If materialization detects a cycle (thunk in InProgress state), it raises a circular dependency error via FORCE-CYCLE — comparison dispatch is never reached. Note: for Dict/Seq values, `=` materializes the outer structure (forces the thunk to produce a `Value::Dict` or `Value::Seq`) but does NOT recursively force field values — it matches on the Value variant and returns `false` (EQ-INCOMP) immediately.
 
 ## Merge — Formal Specification
 
-This section formalizes `$merge`, the only builtin that allows key collision. The specification defines operational semantics (right-biased merge with insertion-order preservation), algebraic properties, interaction with record typing (closed records and row variables), and the lazy overlay compatibility invariant.
+This section formalizes `merge`, the only builtin that allows key collision. The specification defines operational semantics (right-biased merge with insertion-order preservation), algebraic properties, interaction with record typing (closed records and row variables), and the lazy overlay compatibility invariant.
 
-`$merge` is the composition primitive: it underlies shared base config (`$merge $base $overrides`), `$set` (single-key overlay), `$from-entries` (construction from pairs), and `$map` on dicts (per-entry rebuild). Its semantics propagate through these dependents.
+`merge` is the composition primitive: it underlies shared base config (`[merge base overrides]`), `set` (single-key overlay), `from-entries` (construction from pairs), and `map` on dicts (per-entry rebuild). Its semantics propagate through these dependents.
 
 ### Part 1: Notation
 
@@ -714,7 +714,7 @@ Left keys retain their positions. Right keys that collide replace the value at t
 
 **Strictness:** `S × S → D` (§Selective Materialization). Both operands are materialized eagerly to produce the result dict. Values are `Rc::clone` (thunk pointers copied, not forced). See Part 5 for a planned lazy overlay optimization.
 
-When both operands are list-dicts (integer keys `0..n`), `$merge` performs positional override, not concatenation: `merge([a b c], [x y])` produces `{0:x, 1:y, 2:c}`. Use `$concat` for list concatenation.
+When both operands are list-dicts (integer keys `0..n`), `merge` performs positional override, not concatenation: `merge([a b c], [x y])` produces `{0:x, 1:y, 2:c}`. Use `concat` for list concatenation.
 
 **Error cases:**
 
@@ -729,7 +729,7 @@ Named arguments are rejected (`reject_named`).
 
 ### Part 3: Typing Rules
 
-**Typing:** `$merge` is typed via `TypeEnv::with_builtins()`, which registers precise builtin signatures. When an operand has type `TypeVar(α)`, the type checker falls back to T-MERGE-ANY (treating unresolved type variables as `Any`). With row-variable unification, option (a) — unifying `α` with a fresh open record type — becomes available.
+**Typing:** `merge` is typed via `TypeEnv::with_builtins()`, which registers precise builtin signatures. When an operand has type `TypeVar(α)`, the type checker falls back to T-MERGE-ANY (treating unresolved type variables as `Any`). With row-variable unification, option (a) — unifying `α` with a fresh open record type — becomes available.
 
 **[T-MERGE] Closed records:**
 
@@ -797,11 +797,11 @@ Iteration-order proof: In `L ⊕ R`, the result order is `[keys from L in L's or
 
 **P7 — Monoid structure:** `(Dict, ⊕, ∅)` forms a monoid over ordered maps: ⊕ is associative on both content and iteration order (P4) with identity element ∅ (P2, P3). It is not a commutative monoid (P5). This justifies n-ary merge as a left fold: `merge*(D₁, ..., Dₙ) = (...((D₁ ⊕ D₂) ⊕ D₃)... ⊕ Dₙ)`, where later operands take priority. By P4, any grouping produces the same result.
 
-**P8 — Value preservation:** `$merge` never materializes, transforms, or copies values. It copies thunk pointers (`Rc::clone`). After `D = L ⊕ R`, for any key k, `D(k)` is the exact same `Rc<Thunk>` as `R(k)` or `L(k)` — not a new thunk wrapping the old one. This preserves sharing (§Thunk Lifecycle: evaluate-at-most-once).
+**P8 — Value preservation:** `merge` never materializes, transforms, or copies values. It copies thunk pointers (`Rc::clone`). After `D = L ⊕ R`, for any key k, `D(k)` is the exact same `Rc<Thunk>` as `R(k)` or `L(k)` — not a new thunk wrapping the old one. This preserves sharing (§Thunk Lifecycle: evaluate-at-most-once).
 
 ### Part 5: Lazy Overlay Compatibility (Planned Future Design)
 
-**Current implementation:** `$merge` eagerly materializes both operands (lines 437-438 in `builtins.rs`). The specification below describes a planned lazy overlay optimization that would defer materialization.
+**Current implementation:** `merge` eagerly materializes both operands (lines 437-438 in `builtins.rs`). The specification below describes a planned lazy overlay optimization that would defer materialization.
 
 The lazy overlay representation would defer the merge operation itself:
 
@@ -843,8 +843,8 @@ The overlay introduces two observable differences, both intentional:
 ### Part 7: Worked Example
 
 ```tinct
-base:  [timeout: 30  retries: 3  env: staging]
-prod:  [call $merge $base [env: prod  timeout: 60]]
+base:  [timeout: 30  retries: 3  env: "staging"]
+prod:  [merge base [env: "prod"  timeout: 60]]
 ```
 
 Applying MERGE:

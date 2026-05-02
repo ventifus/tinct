@@ -7,16 +7,16 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 ```tinct
 [
     # Won't run unless `result` is actually used
-    result: [call $expensive-computation $data]
+    result: [expensive-computation data]
 
     # Infinite sequences -- only compute what you take
-    naturals: [call $range 0]
-    first-ten-evens: [call $collect
-        [call $take 10
-            [call $filter [fn [n] [call $= 0 [call $mod $n 2]]] $naturals]]]
+    naturals: [range 0]
+    first-ten-evens: [collect
+        [take 10
+            [filter [fn [n] [= 0 [mod n 2]]] naturals]]]
 
     # Short-circuit: if condition is true, never evaluate the else branch
-    value: [call $if $condition $cheap-option $very-expensive-option]
+    value: [if condition cheap-option very-expensive-option]
 ]
 ```
 
@@ -26,14 +26,14 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 
 ```tinct
 [
-    x: [call $+ $y 1]    # thunk — when materialized, looks up $y → 6
+    x: [+ y 1]    # thunk — when materialized, looks up y → 6
     y: 5
 ]
 
 # Mutual recursion works
 [
-    even?: [fn [n] [call $if [call $= $n 0] true  [call $odd?  [call $- $n 1]]]]
-    odd?:  [fn [n] [call $if [call $= $n 0] false [call $even? [call $- $n 1]]]]
+    even?: [fn [n] [if [= n 0] true  [odd?  [- n 1]]]]
+    odd?:  [fn [n] [if [= n 0] false [even? [- n 1]]]]
 ]
 ```
 
@@ -41,11 +41,11 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 
 **Key evaluation scope:** Dict keys are evaluated in the *parent* scope, not the dict's own letrec scope. This means key expressions cannot reference sibling bindings within the same dict. This is intentional for letrec correctness: keys must be deterministic regardless of entry order, and allowing keys to depend on sibling values (which are still unevaluated thunks) would introduce order-dependence or require eager evaluation of referenced entries.
 
-**Why parent scope for keys:** The two-environment pattern (`parent_env` for keys, `dict_env` for values) ensures that computed keys are pure with respect to the dict's own bindings. A key expression like `[$a]` in `[x: 1 [$a]: 2]` resolves `$a` in the *enclosing* scope, not the dict scope — users might expect `$a` to reference the sibling binding `x: 1`, but this would create ordering dependence (does `x` exist when the key is evaluated?) and break the letrec invariant that all entries are mutually visible *as thunks* before any are forced.
+**Why parent scope for keys:** The two-environment pattern (`parent_env` for keys, `dict_env` for values) ensures that computed keys are pure with respect to the dict's own bindings. A key expression like `[$a]` in `[x: 1 $a: 2]` resolves `a` in the *enclosing* scope, not the dict scope — users might expect `a` to reference the sibling binding `x: 1`, but this would create ordering dependence (does `x` exist when the key is evaluated?) and break the letrec invariant that all entries are mutually visible *as thunks* before any are forced.
 
 Implementation: keys are evaluated via `eval_key(key_expr, parent_env, ctx, depth)` (in `eval_dict` in `src/eval.rs`) before the shared `dict_env` is populated with value thunks. This sequencing is critical: all keys must be known before string-keyed entries can be inserted into `dict_env` as bindings (in the dict environment binding loop in `eval_dict`).
 
-**Effectful key expressions:** Computed keys may contain effectful operations (currently only `$include`). These effects execute in the parent scope context, not the dict's letrec scope. For example, `[$include "keys.llt"]` in a dict key position evaluates the included file with access to the parent environment's bindings, not the dict's own entries. This is consistent with the scoping rule but means included files used as keys cannot reference the dict's own bindings.
+**Effectful key expressions:** Computed keys may contain effectful operations (currently only `$include`). These effects execute in the parent scope context, not the dict's letrec scope. For example, `[include "keys.llt"]` in a dict key position evaluates the included file with access to the parent environment's bindings, not the dict's own entries. This is consistent with the scoping rule but means included files used as keys cannot reference the dict's own bindings.
 
 **Circular dependencies** are detected at materialization-time and reported with a clear cycle trace.
 
@@ -57,10 +57,10 @@ The `Environment` struct's `parent` field implements this: each nested dict gets
 [
     x: 10
     inner: [
-        x: 20              # shadows outer x
-        y: [call $+ $x 1]  # $x is 20 (inner), not 10 (outer)
+        x: 20          # shadows outer x
+        y: [+ x 1]     # x is 20 (inner), not 10 (outer)
     ]
-    z: [call $+ $x 1]      # $x is 10 (outer)
+    z: [+ x 1]         # x is 10 (outer)
 ]
 ```
 
@@ -84,10 +84,10 @@ The tail thunk evaluates to either another `Seq` or `[]` (done). Since thunks ar
 
 ```tinct
 # Computation (lazy, possibly infinite)
-evens: [call $filter [fn [n] [call $= 0 [call $mod $n 2]]] [call $range 0]]
+evens: [filter [fn [n] [= 0 [mod n 2]]] [range 0]]
 
 # Data (materialized, finite, dict with integer keys)
-first-ten: [call $collect [call $take 10 $evens]]
+first-ten: [collect [take 10 evens]]
 # -> [0 2 4 6 8 10 12 14 16 18]
 ```
 
@@ -97,12 +97,12 @@ first-ten: [call $collect [call $take 10 $evens]]
 
 | Function | Finite | Infinite | Description |
 |----------|--------|----------|-------------|
-| `range` | `[call $range 0 10]` | `[call $range 0]` | Integers from start (inclusive); 2-arg has end (exclusive), 1-arg is infinite |
-| `repeat` | `[call $take 5 [call $repeat x]]` | `[call $repeat x]` | Infinite Seq of val; use `take` for finite |
-| `cycle` | `[call $take 3 [call $cycle xs]]` | `[call $cycle xs]` | Infinite Seq cycling through dict entries; use `take` for finite |
-| `seq` | -- | -- | Low-level: `[call $seq $head $tail-thunk]` |
-| `iterate` | -- | `[call $iterate $f $x]` | `x, f(x), f(f(x)), ...` |
-| `unfold` | varies | varies | `[call $unfold $step $seed]`; step returns `[value state]` or `[]` |
+| `range` | `[range 0 10]` | `[range 0]` | Integers from start (inclusive); 2-arg has end (exclusive), 1-arg is infinite |
+| `repeat` | `[take 5 [repeat x]]` | `[repeat x]` | Infinite Seq of val; use `take` for finite |
+| `cycle` | `[take 3 [cycle xs]]` | `[cycle xs]` | Infinite Seq cycling through dict entries; use `take` for finite |
+| `seq` | -- | -- | Low-level: `[seq head tail-thunk]` |
+| `iterate` | -- | `[iterate f x]` | `x, f(x), f(f(x)), ...` |
+| `unfold` | varies | varies | `[unfold step seed]`; step returns `[value state]` or `[]` |
 
 **Sequence operations (lazy -- return sequences):**
 
@@ -151,12 +151,12 @@ first-ten: [call $collect [call $take 10 $evens]]
 | `$map` on Seq | Productive if source is productive and `f` terminates |
 | `$filter` on Seq | Productive if source is productive, predicate terminates, **and infinitely many elements pass** (or source is finite) |
 
-**`$seq` is the raw constructor with user-managed obligations.** `[call $seq $head $tail]` wraps two thunks into a Seq without forcing either. This enables guarded corecursion:
+**`$seq` is the raw constructor with user-managed obligations.** `[seq head tail]` wraps two thunks into a Seq without forcing either. This enables guarded corecursion:
 
 ```tinct
-ones: [call $seq 1 $ones]
-# Works: $seq does NOT force $ones. The tail thunk captures $ones
-# as an unevaluated reference. Each $tail observation produces a
+ones: [seq 1 ones]
+# Works: seq does NOT force ones. The tail thunk captures ones
+# as an unevaluated reference. Each tail observation produces a
 # new Seq(1, <thunk>) without diverging.
 ```
 
@@ -187,21 +187,21 @@ Corpus tests are required for each sequence constructor (`$range`, `$repeat`, `$
 | Dict | Dict (lazy values via PendingCall thunks) | Seq (must evaluate predicates) |
 | Seq | Seq (lazy) | Seq (lazy) |
 
-`$map` on a dict is the key insight: it returns a dict with the **same keys** but each value wrapped in a `PendingCall` thunk. No computation happens until a specific value is accessed. This gives `[call $map $f $big-dict]` O(n) construction and O(1) per-element access.
+`$map` on a dict is the key insight: it returns a dict with the **same keys** but each value wrapped in a `PendingCall` thunk. No computation happens until a specific value is accessed. This gives `[map f big-dict]` O(n) construction and O(1) per-element access.
 
 `$filter` on a dict must return a Seq because the output keys are unknown without evaluating predicates. Use `$collect` to get a dict back.
 
 ```tinct
-# $map on dict: same keys, lazy values (no computation yet)
-prices-usd: [call $map [fn [p] [call $* $p 1.1]] $prices-eur]
-$prices-usd.widget    # only this one price is computed
+# map on dict: same keys, lazy values (no computation yet)
+prices-usd: [map [fn [p] [* p 1.1]] prices-eur]
+prices-usd.widget    # only this one price is computed
 
-# $filter on dict: returns seq (must evaluate predicates to decide inclusion)
-expensive: [call $collect [call $filter [fn [p] [call $> $p 100]] $prices-eur]]
+# filter on dict: returns seq (must evaluate predicates to decide inclusion)
+expensive: [collect [filter [fn [p] [> p 100]] prices-eur]]
 
-# $map on seq: returns seq (lazy)
-doubled: [call $map [fn [n] [call $* $n 2]] [call $range 0]]
-# nothing computed until $take/$collect
+# map on seq: returns seq (lazy)
+doubled: [map [fn [n] [* n 2]] [range 0]]
+# nothing computed until take/collect
 ```
 
 #### Testing Requirements
@@ -457,13 +457,13 @@ Implicit decisions in the current implementation, made explicit:
 
 These states are defunctionalized continuations (Reynolds 1972). Each is observationally equivalent to an Unevaluated thunk holding an expression that would perform the same computation:
 
-- `PendingBuiltin(f, args, named, pd, cs, Σ_θ)` ≡ `Unevaluated([call $f ...args ...named], env, Σ_θ)` where env binds the arg thunks
+- `PendingBuiltin(f, args, named, pd, cs, Σ_θ)` ≡ `Unevaluated([f ...args ...named], env, Σ_θ)` where env binds the arg thunks
 - `PendingCall(f_θ, args, named, cs, Σ_θ)` ≡ `Unevaluated([call <force f_θ> ...args ...named], env, Σ_θ)`
 - `Guarded(θ_inner, τ, path, span)` ≡ `Unevaluated(<force θ_inner then validate ∈ τ>, env, Σ_θ)` — a proxy contract monitor (Findler & Felleisen 2002)
 
 The equivalence for PendingCall holds because `eval` of `[call ...]` already performs dynamic dispatch on the callee — if `f_θ` materializes to a Builtin rather than a Function, both the PendingCall path (FORCE-CALL-BUILTIN) and the hypothetical Unevaluated path would dispatch to the same builtin.
 
-The difference is operational: PendingBuiltin/PendingCall avoid constructing AST nodes for deferred computations. A formal adequacy proof would show bisimulation: every forcing sequence starting with `PendingBuiltin(f, args, ...)` produces the same value as forcing `Unevaluated([call $f ...args], env)`. This is conjectured based on the defunctionalization correspondence (Reynolds 1972; Danvy & Nielsen 2003) but not mechanically verified.
+The difference is operational: PendingBuiltin/PendingCall avoid constructing AST nodes for deferred computations. A formal adequacy proof would show bisimulation: every forcing sequence starting with `PendingBuiltin(f, args, ...)` produces the same value as forcing `Unevaluated([f ...args], env)`. This is conjectured based on the defunctionalization correspondence (Reynolds 1972; Danvy & Nielsen 2003) but not mechanically verified.
 
 ### Relationship to CEK Machine Migration
 
@@ -821,13 +821,13 @@ Standard library functions defined in `stdlib/prelude.llt` inherit their materia
 
 | Function | Definition | Inherited behavior |
 |----------|------------|-------------------|
-| `not` | `[fn [x] [call $if $x false true]]` | Materializing — forces x via `$if`'s condition position |
-| `and` | `[fn [a b] [call $if $a $b false]]` | Selective — forces a; b forced only if a is true |
-| `or` | `[fn [a b] [call $if $a $a $b]]` | Selective — forces a; b forced only if a is false; returns a if truthy |
-| `when` | `[fn [pred body] [call $if $pred $body []]]` | Selective — forces pred; body forced only if pred is true |
-| `unless` | `[fn [pred body] [call $if $pred [] $body]]` | Selective — forces pred; body forced only if pred is false |
-| `cond` | Recursive via `cond-impl` → `cond-check` → `$if` | Selective — forces conditions left-to-right via nested `$if`; first matching branch returned as thunk |
-| `assert` | `[fn [cond msg] [call $if $cond true [call $error $msg]]]` | Selective — forces cond; error raised only if cond is false |
+| `not` | `[fn [x] [if x false true]]` | Materializing — forces x via `if`'s condition position |
+| `and` | `[fn [a b] [if a b false]]` | Selective — forces a; b forced only if a is true |
+| `or` | `[fn [a b] [if a a b]]` | Selective — forces a; b forced only if a is false; returns a if truthy |
+| `when` | `[fn [pred body] [if pred body []]]` | Selective — forces pred; body forced only if pred is true |
+| `unless` | `[fn [pred body] [if pred [] body]]` | Selective — forces pred; body forced only if pred is false |
+| `cond` | Recursive via `cond-impl` → `cond-check` → `if` | Selective — forces conditions left-to-right via nested `if`; first matching branch returned as thunk |
+| `assert` | `[fn [cond msg] [if cond true [error msg]]]` | Selective — forces cond; error raised only if cond is false |
 
 **Inheritance proof sketch:** Each derived function's selectivity follows by inlining its definition and applying DELTA-IF-TRUE/DELTA-IF-FALSE. For `$and`:
 
@@ -870,8 +870,8 @@ This table documents the laziness behavior of every operation and the rationale 
 |-----------|----------|-----------|
 | **Control Flow** | | |
 | `$if` | Returns branch thunk directly (no materialization of branch) | The chosen branch stays lazy until accessed by caller |
-| `$and` | Materializes first arg; second only if first is true (short-circuit via `$if`) | Short-circuit via `[fn [a b] [call $if $a $b false]]` |
-| `$or` | Materializes first arg; second only if first is false (short-circuit via `$if`) | Short-circuit via `[fn [a b] [call $if $a $a $b]]`; returns a if truthy |
+| `$and` | Materializes first arg; second only if first is true (short-circuit via `$if`) | Short-circuit via `[fn [a b] [if a b false]]` |
+| `$or` | Materializes first arg; second only if first is false (short-circuit via `$if`) | Short-circuit via `[fn [a b] [if a a b]]`; returns a if truthy |
 | `$not` | Materializes argument | Must inspect value |
 | `$when`, `$unless` | Materializes condition; body returned as thunk | Body returned lazy via `$if` |
 | `$cond` | Materializes conditions left-to-right; first matching branch returned as thunk | Delegates to `$if`; no code change needed |
@@ -971,9 +971,9 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 
 **Cache lifecycle:** The cache is created per `deep_materialize` call and dropped on return. It is *not* shared across multiple top-level `deep_materialize` invocations — each call to `$eval` or CLI evaluation creates a fresh cache. The cache is global *within* a single call: all branches of a nested dict or sequence tree share the same cache instance.
 
-**Cycle handling:** When a thunk pointer is encountered for the second time within the same deep materialization (cache entry is `None`), the function returns `Rc::clone(thunk)` — the original thunk, not forced (in `deep_materialize_thunk`). This prevents infinite recursion on cyclic structures (e.g., `[x: $x]` or mutual dict references). The cycle is detected at the *structure* level (same thunk pointer seen twice during traversal), not the *value* level (the thunk's own `InProgress` sentinel, which detects cycles within a single thunk's evaluation).
+**Cycle handling:** When a thunk pointer is encountered for the second time within the same deep materialization (cache entry is `None`), the function returns `Rc::clone(thunk)` — the original thunk, not forced (in `deep_materialize_thunk`). This prevents infinite recursion on cyclic structures (e.g., `[x: x]` or mutual dict references). The cycle is detected at the *structure* level (same thunk pointer seen twice during traversal), not the *value* level (the thunk's own `InProgress` sentinel, which detects cycles within a single thunk's evaluation).
 
-**Sharing preservation:** When a thunk appears multiple times in the input value tree (e.g., `let shared = [expensive: [call $f]] in [a: $shared  b: $shared]`), the cache ensures the deep-materialized result is a *single* `Rc<Thunk>` shared by all references. Without the cache, `deep_materialize` would create independent copies for each occurrence, breaking `Rc::ptr_eq` and wasting memory. The `Rc::ptr_eq` invariant holds only within one `deep_materialize` call; two separate calls on overlapping trees produce distinct output pointers.
+**Sharing preservation:** When a thunk appears multiple times in the input value tree (e.g., `let shared = [expensive: [f]] in [a: shared  b: shared]`), the cache ensures the deep-materialized result is a *single* `Rc<Thunk>` shared by all references. Without the cache, `deep_materialize` would create independent copies for each occurrence, breaking `Rc::ptr_eq` and wasting memory. The `Rc::ptr_eq` invariant holds only within one `deep_materialize` call; two separate calls on overlapping trees produce distinct output pointers.
 
 **Cache cleanup on error:** If `materialize()` or recursive `deep_materialize_impl()` fails, the cache entry is removed before propagating the error (in `deep_materialize_impl`). This prevents cache poisoning: a failed thunk leaves no stale `None` sentinel that would cause subsequent encounters to incorrectly return an unevaluated thunk.
 
@@ -1012,11 +1012,11 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 - **Flat environments with slot indices**: Replace `IndexMap<String, Rc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe (each call writes to its own activation frame).
 - **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection.
 
-**Arena lifetime and persistent values:** The arena lifetime is **one document section** — the text between `---` boundaries (or the entire file for single-section documents). At each `---` boundary, values reachable from the section result are **selectively migrated** from the arena to `Rc`-backed persistent storage, bound as `$$` for the next section, and the section's arena is dropped.
+**Arena lifetime and persistent values:** The arena lifetime is **one document section** — the text between `---` boundaries (or the entire file for single-section documents). At each `---` boundary, values reachable from the section result are **selectively migrated** from the arena to `Rc`-backed persistent storage, bound as `%` for the next section, and the section's arena is dropped.
 
 **Selective migration** is a scoped copying pass that preserves thunk state — it translates storage, not evaluation state. Unevaluated thunks stay unevaluated (lazy), Materialized thunks keep their cached values, closures retain their environment chains. The `---` boundary is **not** a strictness point. This preserves the existing lazy pipeline semantics (§Scope Chain Semantics, DOC-PIPELINE): the `---` boundary does not force evaluation.
 
-The migration algorithm traces from `$$` (the section result) and rewrites arena handles to `Rc`-backed storage:
+The migration algorithm traces from `%` (the section result) and rewrites arena handles to `Rc`-backed storage:
 
 ```
 migrate(value, arena, thunk_table, env_table) → Rc<Thunk>:
@@ -1045,7 +1045,7 @@ Two-phase allocation: `Rc::new(placeholder())` is inserted into the table *befor
 
 AST nodes (`Rc<Spanned<Expr>>`) are reference-counted and arena-independent — they are shared, not copied. The builtins environment (root of every parent chain) is always `Rc`-backed and never arena-allocated — it is the base case that terminates `migrate_env` recursion.
 
-Within a section, all thunks are arena-allocated and lazy. Letrec entries reference each other freely within the arena. At `---`, only thunks reachable from `$$` are migrated — unreachable intermediate thunks (temporaries, shadowed bindings) are reclaimed when the arena drops.
+Within a section, all thunks are arena-allocated and lazy. Letrec entries reference each other freely within the arena. At `---`, only thunks reachable from `%` are migrated — unreachable intermediate thunks (temporaries, shadowed bindings) are reclaimed when the arena drops.
 
 **What migrates correctly:**
 
@@ -1062,15 +1062,15 @@ Per execution context:
 | Context | Arena lifetime | Cross-boundary value | Notes |
 |---------|---------------|---------------------|-------|
 | CLI (single section) | Entire eval | None | One arena, dropped at end. No migration. |
-| CLI (multi-section) | Per section | `$$` (selectively migrated) | Arena per section, migrate at `---` |
-| REPL | Per input | `$$` (selectively migrated) | Each input is implicitly a section |
-| LSP | Per section | `$$` (selectively migrated) | Editing section N re-evaluates N+ with cached `$$` from N-1 |
+| CLI (multi-section) | Per section | `%` (selectively migrated) | Arena per section, migrate at `---` |
+| REPL | Per input | `%` (selectively migrated) | Each input is implicitly a section |
+| LSP | Per section | `%` (selectively migrated) | Editing section N re-evaluates N+ with cached `%` from N-1 |
 
-**Cost model:** Migration is O(thunks reachable from `$$`), not O(total section thunks). For sections where `$$` is a small result derived from large intermediate computations, migration cost is much lower than deep-materialization. For sections where most thunks are reachable from `$$`, cost approaches deep-materialization minus the forcing cost (migration copies state; deep-materialization evaluates).
+**Cost model:** Migration is O(thunks reachable from `%`), not O(total section thunks). For sections where `%` is a small result derived from large intermediate computations, migration cost is much lower than deep-materialization. For sections where most thunks are reachable from `%`, cost approaches deep-materialization minus the forcing cost (migration copies state; deep-materialization evaluates).
 
 **Rejected alternatives:** (1) Session-scoped arena — unbounded memory growth during long REPL sessions; requires stop-the-world compaction with pointer fixup across all live references. (2) Hybrid arena+Rc — two allocation paths; every thunk creation must decide arena vs Rc; closures capturing thunks make escape analysis intractable. (3) Deep-materialization at `---` — changes language semantics (lazy→eager), breaks closures (env chains hold dangling arena handles after drop), and diverges on infinite sequences in `$$`. (4) Per-eval copy-out without section granularity — forces materialization of intermediate values within a section, losing laziness benefits.
 
-**LSP incremental re-evaluation:** Migrated `$$` values are self-contained `Rc`-backed storage with no arena references. The LSP caches `$$` per section. Editing section N re-uses cached `$$` from section N-1 (already migrated, no re-evaluation) and re-evaluates only sections N through the end.
+**LSP incremental re-evaluation:** Migrated `%` values are self-contained `Rc`-backed storage with no arena references. The LSP caches `%` per section. Editing section N re-uses cached `%` from section N-1 (already migrated, no re-evaluation) and re-evaluates only sections N through the end.
 
 **`$include` interaction:** Included files are evaluated in their own arena. The include cache stores migrated results — the cache outlives any single section's arena. An `$include` call returns an already-migrated `Rc`-backed value, which is arena-independent and can be used freely across sections. This creates a controlled one-way dependency within sections: arena-allocated thunks may reference `Rc`-backed `$include` results, but never the reverse. This is structurally determined (section-local = arena, imported = Rc) and does not require per-thunk escape analysis — the "hybrid arena+Rc" alternative (rejected above) fails because it requires per-thunk decisions, not because mixing storage backends is inherently unsound.
 
@@ -1220,7 +1220,7 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 | `eval_bracket_access()` → `eval()` + `materialize()` ×2 | `Action::Eval` + `Cont::BracketForceTarget` → `Cont::BracketForceKey` |
 | `eval_range_access()` → `materialize()` ×3 | `Action::Materialize` + `Cont::RangeForceTarget` → `Cont::RangeForceStart` → `Cont::RangeForceEnd` |
 | `eval_dict()` → computed key materialization | `Action::Eval` + `Cont::DictBuildKey` |
-| `eval_document()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DocumentScope` (`$$` bound as `Unevaluated` thunk, never materialized) |
+| `eval_document()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DocumentScope` (`%` bound as `Unevaluated` thunk, never materialized) |
 | `bind_args_thunks()` → default eval | `Action::Eval` + `Cont::BindArgDefault` |
 | `materialize()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::Memoize` |
 | `materialize()` → builtin call + `materialize()` | Builtin dispatch + `Cont::PendingBuiltinForceResult` |

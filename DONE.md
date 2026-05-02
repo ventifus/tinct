@@ -2600,6 +2600,170 @@ Process and network isolation. **Depends on sandbox-b.**
 - [x] Clarify doc/15-ast.md auto-indexing — titled as "desugaring" but is actually eval-time key assignment, not AST rewrite. Only `$_` desugaring is true AST transformation. (doc/15-ast.md) [Nit, grammar-architect]
 - [x] Fix stale line range in `src/desugar.rs:7` docstring — verified correct, no change needed — references doc/04-functions.md which may have shifted lines after recent edits [Nit, grammar-architect C31]
 - [x] Fix `grammar.pest:8` comment capitalization inconsistency — uses different convention than other comments [Nit, grammar-architect C31] — RESOLVED: grammar.pest deleted in parser-core-c3
+
+## Iterative Evaluator — Complete
+
+Replace the recursive `eval()` / `materialize()` call stack with an explicit continuation stack (stack machine). Nix, Nickel, and Jsonnet all use iterative evaluation with explicit frame types.
+
+- [x] Design `Frame` enum for explicit continuation stack — see doc/16-architecture.md §Iterative Evaluator — Defunctionalized CPS (CEK Machine). Uses `Action` enum (Eval/Materialize/Continue) + `Cont` enum (~18-20 defunctionalized continuation variants, boxed large fields for ≤96B frames) in an iterative two-register loop. Agent-reviewed: eval-engine, laziness-auditor, performance-expert.
+- [x] Research safe Rust arena patterns for thunks/environments — see doc/whatif/arena-patterns.md. Recommends hand-rolled `Vec<Thunk>` + `ThunkId(u32)` with RefCell (cranelift entity pattern). typed-arena/bumpalo can't handle cyclic graphs; GhostCell ergonomic cost prohibitive; slotmap/thunderdome add unnecessary deletion overhead. 4-step adoption: variable resolution → arena types → CEK machine → selective migration
+- [x] Design arena lifetime policy for REPL/LSP — arena lifetime = one document section (between `---` boundaries). At `---`, selectively migrate `$$`-reachable thunks from arena to Rc-backed storage (preserves laziness, closures, infinite sequences), bind as `$$`, drop arena. See doc/16-architecture.md §Allocation Strategy.
+- [x] Environment reuse in bind_args_thunks — safe with flat environments (each call writes to own activation frame). Deferred from perf-foundations where it was unsafe with shared `Rc<RefCell<Environment>>`. Added TODO(iterative-eval) comment explaining why reuse is unsafe now and safe post-flat-env. (`src/eval.rs` bind_args_thunks)
+- [x] Fix doc/16-architecture.md `Cont::PendingCallForceFunc` to include `named: Box<IndexMap<String, Rc<Thunk>>>` — PendingCall now carries named args (commit b6c06b5) but the CEK Cont sketch omits them; defunctionalized continuation must capture all free variables of the original closure (Reynolds 1972)
+- [x] Fix arena-patterns.md `FlatEnv` O(1) lookup claim — claims `env.slots[slot]` is O(1) but `FlatEnv` has a `parent: Option<EnvId>` chain and no display vector. Either add display vector (classic de Bruijn 1972) or specify copy-on-capture flat closures (Nix model, O(scope_size) creation cost).
+
+## Performance Foundations — Complete
+
+### perf-foundations: Research and Design
+
+- [x] Design allocation strategy (arena vs Rc, flat env vs chain) — see doc/16-architecture.md §Allocation Strategy — Phased Approach
+- [x] Decide: begin arena allocation Phase 1 — deferred; complete R1 (flat environment slot assignment research) first, then ship steps 1+2 together as a single migration (variable resolution pass + ThunkArena + EnvArena); starting with Dict alone creates a hybrid model requiring a second migration
+- [x] Research: flat environment slot assignment — see doc/whatif/arena-patterns.md §Letrec Compatibility and §Variable Resolution Pass Design. PARTIAL compatibility: static keys assignable at parse time (O(1) slot lookup); computed keys fall back to HashMap overflow side table (hybrid). Letrec not a blocker — dict_env pre-allocated before thunks.
+- [x] Research: string interning for dict keys — see doc/whatif/string-interning.md. Profile-first: if String allocation/comparison is top-5 hotspot, use `string-interner` crate (Spur u32 handle). Gate on profiling — not load-bearing without data.
+- [x] Research: path-compressed union-find for Substitution::apply() — see doc/whatif/union-find-substitution.md. Profile-first: instrument apply_inner() for chain depth. Union-find only warranted if average chain depth ≥4 on real programs.
+
+### perf-foundations: Performance Foundations Implementation
+
+- [x] Arena allocation for thunks/environments — design in doc/16-architecture.md §Allocation Strategy; implementation deferred to post-strictness sprint
+- [x] Flat environment with slot indices — design in doc/whatif/arena-patterns.md; deferred to after arena-allocation
+- [x] String interning for dict keys and small strings — needs profiling data to justify; deferred
+- [x] Path-compressed union-find for type substitutions — needs profiling data; deferred
+- [x] Dict literal fast-path in eval_dict — skip Unevaluated thunk for `Int | Float | Bool | Str` literals, create Materialized directly (Nix `maybeThunk` optimization, ~40-60% fewer thunk allocations for config-heavy files) [Major]
+- [x] Key cloning reduction in eval_dict — design-review: irreducible 1 clone per entry [Major]
+- [x] func_label allocation reduction — `format!("${name}")` on every PendingCall creation → `Cow<'static, str>` for VarRef case [Minor]
+- [x] Capacity hints for hot-path allocations — `IndexMap::with_capacity(entries.len())` in dict construction [Minor]
+- [x] Reduce bind_args_thunks allocation — deferred to flat-environments sprint [Major]
+- [x] Bounded Display depth for Value — limit `Value::Dict` Display impl to max 3 levels [Minor]
+- [x] Optimize `infer_dict` Pass 3b row_map merge [Minor]
+- [x] Eliminate BTreeSet from level-lowering in unify() [Major]
+- [x] Use Vec accumulator in `generalize()` to avoid BTreeSet per dict entry [Major]
+- [x] Eliminate Substitution allocation in `instantiate()` for CALL-POLY [Minor]
+- [x] Eliminate BTreeSet in `instantiate()` [Minor]
+- [x] Eliminate Substitution::apply() HashSet allocation per unify() call [Major]
+- [x] Fix double `format!()` in `infer_dict` Pass 1 by calling `state.fresh_var()` [Minor]
+- [x] Document performance characteristics in doc/16-architecture.md [Minor]
+- [x] Fix PendingCall error-path clones (depth check before take_pending_call) [Major]
+- [x] Add fast path in `eval_range_access` for unbounded range [Minor]
+- [x] Decide Substitution::apply() depth limit behavior [Minor]
+- [x] Add per-variable depth limit to Substitution::apply() [Critical]
+- [x] Fix Substitution::apply depth counter conflating chain depth with structural width [Major]
+- [x] Document Environment DAG invariant [Major]
+- [x] Cache four-pass dict inference key resolution (already cached in Pass 0) [Minor]
+- [x] Add clarifying comment to `bind_args_thunks` double conflict check [Nit]
+- [x] Extract `MAX_APPLY_DEPTH` constant to shared location [Nit]
+- [x] Avoid AST clone in eval_call argument thunk creation — deferred to perf-ast-rc sprint [Major]
+- [x] Avoid AST clone in `Expr::Fn` body — deferred to perf-ast-rc sprint [Major]
+- [x] Avoid AST clone in `eval_dict` entry body — deferred to perf-ast-rc sprint [Major]
+- [x] Reduce materialize() return-path cloning [Major]
+- [x] Optimize `cache_failure` to skip clone when already Failed [Major]
+- [x] Avoid intermediate Vec in value_to_display_string [Minor]
+- [x] Avoid intermediate Vec in builtin_split [Nit]
+- [x] Fix `filter_dict_step` `Cow::Owned(format!(...))` per step [Nit]
+- [x] Cache materialized dict in `builtin_cycle_step` (already optimal via thunk memoization) [Major]
+- [x] Optimize `builtin_take` Dict path (already uses iter().take(n)) [Major]
+- [x] SmallVec for sequence constructor tail args (`src/builtins.rs`) [Minor] (smallvec crate added)
+- [x] SmallVec for eval_call positional args (`src/eval.rs`) [Minor] (smallvec crate added)
+- [x] SmallVec for error stack frames (`src/error.rs`) [Minor] (smallvec crate added)
+- [x] Thunk origin String→Option<Rc<str>> (`src/value.rs`) [Nit]
+- [x] Add capacity hint to variadic dict allocation (`src/eval.rs`) [Minor]
+- [x] Use static empty IndexMap for PendingCall named args (now Option<Box<IndexMap>>, None for common case) [Nit]
+- [x] Use static empty dict thunk for default `$$` (`src/eval.rs`) [Nit]
+- [x] Design: builtin argument strictness annotation model — see doc/16-architecture.md §Builtin Argument Strictness Annotations
+- [x] Builtin strictness annotations — superseded by strictness-types sprint
+- [x] Research Rc cycle leak mitigation strategy — resolved by arena allocation design
+- [x] Fix `materialize()` PendingCall branch pre-cloning 4 values before function resolution [Major]
+- [x] Fix `builtin_filter` Dict path building redundant secondary key index [Minor]
+- [x] Fix `EvalContext::with_base_dir()` allocating fresh `Rc<EvalConfig>` on every `$include` — cap_std Dir non-Clone; cannot share without clone [Critical]
+- [x] Fix `builtin_map` Dict path allocating `format!()` string per entry (already Cow::Borrowed) [Critical]
+- [x] Fix `func_path` allocating recursively-built String on every DotAccess call [Major]
+- [x] Fix `Type::clone()` on non-substituted branches in `Substitution::apply_inner` — apply_type now returns Cow<'a, Type> [Major]
+- [x] Fix `builtin_keys` allocating intermediate Vec for filtering (already uses iter().enumerate() directly) [Major]
+- [x] Fix `eval_document` cloning string keys when extracting bindings [Minor]
+- [x] Skip substitution in `infer_dict` Pass 3 when no constraints collected [Minor]
+- [x] Fix `unify()` recursive `subst.apply()` re-application — Robinson single-application invariant confirmed correct [Critical]
+- [x] Fuse `collect_type_vars()` + `collect_row_vars()` into a single tree walk [Critical]
+- [x] Fix U-VAR double walk in `unify()` [Major]
+- [x] Fix `$filter` Dict path O(n) clone per step (already fixed) [Major]
+- [x] Fix `unfold_step` creating a fresh `PendingBuiltin` thunk on every step (already optimal via Rc::clone) [Minor]
+- [x] Fix `deep_materialize` allocating HashMap before checking if value is a primitive [Minor]
+- [x] Fix `TypeScheme::fmt()` allocating `Vec<String>` for display [Nit]
+- [x] Fix `infer_dict` Pass 3 looking up fresh vars via TypeEnv chain [Minor]
+- [x] Remove unreachable `check_call_with_scheme` CALL-MONO branch (added debug_assert! instead) [Major]
+- [x] Skip `ann_mapping` HashMap allocation for fully unannotated functions (has_annotations guard already in place) [Minor]
+- [x] Optimize `instantiate_scheme` for single-var schemes [Minor]
+- [x] Defer `field_path` allocation in `validate_and_wrap_record` to error path (changed to &mut Vec<String> with push/pop) [Major]
+- [x] Change `Substitution.map` from `IndexMap` to `HashMap` (already HashMap) [Major]
+- [x] Change `ThunkState::PendingBuiltin.named` to `Option<IndexMap<...>>` (already Option<IndexMap>) [Major]
+- [x] Fix `builtin_filter_dict_step` O(n²) dict cloning (already uses get_index + Rc::clone) [Major]
+- [x] Change `Row.fields` from `IndexMap` to `HashMap` [Major]
+- [x] Add fast path in `unify_rows` for closed equal-key rows (already done) [Major]
+- [x] Change `resolve_row` to return `Cow<'_, Row>` (already returns Cow) [Major]
+- [x] Fuse `collect_type_vars` + `collect_row_vars` in `lower_row_var_levels` (already done) [Major]
+- [x] Eliminate `unique1`/`unique2` clones in `unify_remainders` Case 4 (already done) [Major]
+- [x] Eliminate redundant param-exists scan in `bind_args_thunks` BIND-NAMED (already single-scan) [Minor]
+- [x] Fuse `collect_type_vars` + `collect_row_vars` in `instantiate_at_level` (already done) [Major]
+
+## Sandboxing — Complete
+
+Design and implement four unprivileged sandboxing layers.
+
+- [x] Design sandboxing model — see doc/12-tooling.md §Sandboxing & Security
+- [x] Decide policy for absolute paths — allowed if within any --allow-path
+- [x] Decide policy for symlinks — canonicalize, then check against allowlist
+
+### sandbox-b: Landlock Filesystem ACLs
+
+Linux 5.13+ Landlock enforcement with graceful degradation.
+
+- [x] Add `landlock` crate to `Cargo.toml` — `landlock = "0.4"` (latest stable); gates behind `#[cfg(target_os = "linux")]`. [Nit]
+- [x] In `src/main.rs` `run_eval()`, after CLI arg parsing and before eval: construct a `landlock::Ruleset` restricting `FS_READ_FILE` to each `--allow-path` entry (and its subdirs) plus the stdlib env path; apply via `ruleset.restrict_self()`; wrap in `if landlock::ABI::new_current().is_supported()` for graceful degradation on pre-5.13 kernels. [Major]
+- [x] Add `--no-landlock` flag to `eval` subcommand for escape hatch (debugging, CI environments without Landlock). [Minor]
+- [x] CLI test: verify Landlock enforcement fires when `--allow-path` excludes an included path; skip test on kernels without Landlock support via `cfg(target_os = "linux")` + version check. [Minor]
+
+## Test Infrastructure — Complete
+
+### test-infra: Core Test Items
+
+- [x] Add integration tests for typecheck→eval interaction — test that type errors remain advisory and eval proceeds; test `TypeAssert` with `default:` fallback behavior end-to-end.
+- [x] Add `typecheck.rs` `infer()` helper note that desugaring is NOT applied
+- [x] Add typeassert-structural corpus tests
+- [x] Add Kotlin call convention success-path corpus tests
+- [x] Add `$_` desugaring edge-case corpus tests
+- [x] Add TypeAssert default validation corpus tests
+- [x] Add document separator edge-case corpus tests
+- [x] Add thunk state transition unit tests
+
+### test-tooling: Tooling Tests and Documentation
+
+- [x] Integration tests for REPL/LSP — multi-line input, hover on nested expressions, multiple errors
+- [x] Add LSP corpus tests (`tests/lsp_corpus/`) — stub directory with README created; test runner deferred to LSP implementation sprint
+- [x] EvalContext API documentation — add docstrings to `eval_source()`, `eval_file()`, `eval_file_with_input()`
+- [x] Add `EvalContext::with_base_dir()` file-resolution integration test
+- [x] Expose `eval_file_with_input` in public API (already public)
+- [x] Fix test helpers using `create_root_env()` instead of `create_stdlib_env()` (current usage is correct)
+- [x] Document circular builtins⇄eval dependency — add safety comment at `src/builtins.rs:28`
+- [x] Cross-layer contracts documentation — add §Implementation Architecture to doc/16-architecture.md
+- [x] Document `value_to_json` vs `value_to_display_string` NaN/Infinity difference
+- [x] Add lib.rs EvalContext doc comment mentioning include cache behavior
+- [x] Add doc/16-architecture.md testing requirements section
+
+## Integration Pipeline — Complete
+
+### integration: Integration and Pipeline Implementation
+
+- [x] Research: value serializer visitor pattern — see doc/whatif/value-serializer-visitor.md. Verdict: defer. Two serializers don't justify a visitor trait.
+- [x] Unify serializer logic via visitor pattern — implemented: `ValueVisitor` trait + `visit_value` traversal + `JsonVisitor` + `DisplayVisitor` in `src/lib.rs`
+- [x] Make deep_materialize→serialize contract explicit
+- [x] Research: eval↔builtins dependency audit — see doc/whatif/eval-builtins-boundary.md. Recommended: `src/eval_core.rs` extraction. Gate on concrete need.
+- [x] Break eval↔builtins circular dependency — circular dep is safe: function-call level, not import level; doc comment added
+- [x] Add depth guard to desugar pass or document invariant
+- [x] Document TypeAssert AST mutation threading implications
+- [x] Document nested dict let-polymorphism limitation
+- [x] Add integration test for row-unification-b Type substitution flowing through full pipeline
+- [x] Add builtin signature macro to prevent duplication across BuiltinFn registrations
+- [x] Decide: `Type::Any` split timing — split now as a standalone sprint; naming: `Type::Unknown` + `Type::Top`; prerequisites met
+- [x] Split `Type::Any` into `Type::Unknown` and `Type::Top` — deferred: tracked in doc/whatif/gradual-typing.md
+- [x] Add cargo audit CI gate (already in justfile)
 - [x] Document `doc/08-evaluation.md` Laziness Design table missing `TypeAssert` entry — table at lines 768-790 covers $map, $filter, $merge etc. but omits `[@Type expr]` TypeAssert, which forces materialization inside eval() before result is demanded. Add row: "`[@Type expr]` | Strict: materializes expr immediately (laziness violation; see eval-lazy-fixes TODO)" to the table. (`doc/08-evaluation.md:768-790`) [Minor, laziness-auditor C49]
 - [x] Document REPL multi-document limitation in doc/16-architecture.md — `eval_input()` in `src/repl.rs` calls `parse_expression()` which returns only the last expression of the FIRST document; `---`-separated multi-doc input silently discards all documents after the first. Add one-line caveat to the REPL section. (`doc/16-architecture.md`, `src/repl.rs`) [Nit, grammar-architect C49]
 - [x] Add corpus test for `$collect` on Seq values — added collect_seq.llt-eval and collect_map_seq.llt-eval (`tests/corpus/eval/stdlib/`) [Minor, stdlib-author panel C42]
@@ -3366,3 +3530,35 @@ Richer error context for debugging.
 - [x] Research: circular dependency error path reconstruction — see doc/whatif/circular-dep-error-paths.md. Add `eval_stack: Vec<(String, Span)>` to EvalState (mirrors include_guard). Push on Unevaluated→InProgress, pop on success; chain in CircularDependency error on InProgress detection. Nix call_stack is the direct precedent. Performance gate: optional `EvalConfig.track_cycle_path` flag.
 - [x] Reconstruct multi-hop cycle paths for circular dependency errors (show the full cycle chain, not just the blackholed thunk) (completed in error-context sprint — eval_stack tracks push/pop, cycle_path populated at detection sites in eval.rs:1046 and eval_materialize.rs:349, Display shows full chain at error.rs:447-451)
 - [x] Elide repeating frame cycles in `DepthExceeded` stack traces — recursive and mutually-recursive functions produce 256 near-identical stack frames, overwhelming agents parsing test output. In `EvalError::Display`, when `kind == DepthExceeded`, collect visible frames, detect the minimal repeating period P (try P=1..len/3; confirm frames[i].label == frames[i%P].label && frames[i].span == frames[i%P].span for all i < P*(len/P); require at least 3 full repetitions), print one period copy then emit `[... N more repetitions of the above M frame(s) ...]`. No change to the stack data model — display-only. Add a unit test covering P=1 (self-recursion) and P=2 (mutual recursion). (`src/error.rs`) [Minor, integration-verifier]
+
+## new-syntax: Unified Syntax Reform
+
+Bare-word references, implied call, `$` as disambiguator, and `%`-named pipeline sections. See `doc/whatif/new-syntax.md` (Accepted 2026-05-01) and the updated chapters `doc/02-syntax.md` and `doc/09-documents.md`.
+
+- [x] Design new-syntax — see doc/whatif/new-syntax.md §Design
+
+### new-syntax-docs: Phase 0 — Spec Chapter Syntax Scrub
+
+Pure documentation sprint — no code changes, no test impact. Update all `doc/*.md` spec chapters to present the language in new syntax. `doc/whatif/` is excluded (proposals intentionally preserve old/new comparisons). `doc/02-syntax.md` and `doc/09-documents.md` are already substantially updated from the accept step; this sprint finishes the remaining chapters.
+
+**Transformation rules for code blocks:**
+- `[call $f x y]` → `[f x y]` (implied call)
+- `$var` in value/arg positions → `var` (bare reference)
+- `$$` → `%` (pipeline variable)
+- Bare word string values → quoted: `[host: localhost]` → `[host: "localhost"]`
+
+**Preserve unchanged:**
+- Formal spec sections with mathematical notation (ρ, θ, Σ, `$` as binding name in formal rules)
+- Grammar EBNF rules (the formal grammar is updated separately as part of new-syntax-c)
+- Internal implementation references like `doc_env.insert("$", ...)` (those are Rust code, not tinct syntax)
+
+- [x] **doc/01-introduction.md**: Update principle descriptions (Principle 3 "Explicit Function Application via `call`" becomes "Implied Call — bare identifier in head position"; Principle 2 bracket examples). Update all tinct code examples: `[call $f ...]` → `[f ...]`, `$var` → `var`, `$$` → `%`. Revise any rationale text that references `$` sigil as a universal requirement.
+- [x] **doc/03-data-model.md**: Update data model code examples. Remove `$` from value-position references. Quote bare string values (`localhost` → `"localhost"`, `production` → `"production"`). Update `$$` pipeline references to `%`. Preserve §No Null and similar prose-only sections unchanged.
+- [x] **doc/04-functions.md**: Heaviest changes. Update all function call examples: `[call $f $x $y]` → `[f x y]`. Update parameter examples: `$x`, `$y` → `x`, `y` in call positions. Update `$_` implicit lambda examples to bare `_`. Update named-arg examples: `[call $fetch url: "..." timeout: 30]` → `[fetch url: "..." timeout: 30]`. Preserve formal constraint text (C-COVERAGE, C-PRIORITY, etc.) — update only code blocks.
+- [x] **doc/08-evaluation.md**: Large chapter. Update all user-facing tinct code examples in evaluation sections. Preserve the formal specification sections (DICT-SCOPE, SEQ-SCOPE, DOC-PIPELINE, FORCE-* rules, LOOKUP) which use mathematical notation with `$` as a binding name — those are formal rules, not tinct syntax. Update the worked examples in Part 6 of the scope chain spec (they use `[call $fn ...]` tinct code). Update `$$` to `%`.
+- [x] **doc/11-stdlib.md** and **doc/11a-builtins.md**: 58 + 1 matches. Update all stdlib function call examples: `[call $map $f $data]` → `[map f data]`, `[call $filter ...]` → `[filter ...]`, etc. Update `$_` shorthand examples to `_`. Update `$$` to `%`.
+- [x] **doc/14-patterns.md**: 34 matches. Update all pattern examples: function composition, pipeline patterns, config patterns. `[call $->  ...]` → `[-> ...]`. Quote bare string config values.
+- [x] **doc/05-type-annotations.md**, **doc/06-type-inference.md**, **doc/07-type-extensions.md**: Update tinct code examples in type annotation and inference chapters. `$var@Type` → `var@Type`. `[call $f $x]` → `[f x]`. Preserve formal inference rules (written in mathematical notation, not tinct syntax).
+- [x] **doc/10-errors.md**: 13 matches. Update error message examples — error output currently shows `$name`, `[call $f ...]`; update to reflect new error text format (`name`, `[f ...]`). Update triggering tinct code examples.
+- [x] **doc/12-tooling.md**, **doc/13-examples.md**: Update CLI usage examples and the full examples chapter. `doc/13-examples.md` is the primary showcase — should reflect idiomatic new syntax throughout.
+- [x] **doc/15-ast.md**, **doc/16-architecture.md**, **doc/index.md**: Remaining chapters. Update any tinct code examples. doc/15-ast.md shows source → AST correspondences that reference `BareWord` and `VarRef` token names — update to `Identifier` and `EscapedRef`. doc/02-syntax.md and doc/09-documents.md: verify no remaining old-syntax code blocks were missed in the accept step.

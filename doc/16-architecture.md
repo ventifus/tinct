@@ -14,7 +14,7 @@
        │
        ▼
 ┌─────────────┐
-│   Desugar   │  Source-to-source AST transformation: rewrites $_ implicit
+│   Desugar   │  Source-to-source AST transformation: rewrites _ implicit
 │             │  lambdas to explicit [fn [_] ...] forms (src/desugar.rs)
 └──────┬──────┘
        │
@@ -34,7 +34,7 @@
 └─────────────┘
 ```
 
-> **Note:** The Desugar pass is mandatory and must run after parsing and before both type checking and evaluation. Both downstream phases assume `$_` has been eliminated — skipping desugar causes the type checker to see `VarRef("_")` instead of `Fn` nodes, producing spurious "undefined variable _" errors.
+> **Note:** The Desugar pass is mandatory and must run after parsing and before both type checking and evaluation. Both downstream phases assume `_` has been eliminated — skipping desugar causes the type checker to see `VarRef("_")` instead of `Fn` nodes, producing spurious "undefined variable _" errors.
 
 > **Note:** The type checker runs after desugaring but type errors are advisory — evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
 

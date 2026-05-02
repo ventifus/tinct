@@ -4,7 +4,7 @@
 
 **Input:**
 ```tinct
-[name: Alice  age: 30]
+[name: "Alice"  age: 30]
 ```
 
 **AST:**
@@ -21,7 +21,7 @@ Note: Entries with explicit `key:` syntax produce `Entry { key: Some(...), value
 
 **Input:**
 ```tinct
-[a b c]
+["a" "b" "c"]
 ```
 
 **AST:**
@@ -40,7 +40,7 @@ Note: Unkeyed entries produce `Entry { key: None, value: ... }` nodes. The evalu
 **Input:**
 ```tinct
 [
-    database: [host: localhost  port: 5432]
+    database: [host: "localhost"  port: 5432]
     api: [endpoint: "/v1"]
 ]
 ```
@@ -70,7 +70,7 @@ Note: Nested dicts are simply `Dict` expressions appearing as entry values. Letr
 
 **Input:**
 ```tinct
-[call $fetch "https://example.com" timeout: 60 retries: 3]
+[fetch "https://example.com" timeout: 60 retries: 3]
 ```
 
 **AST:**
@@ -91,7 +91,7 @@ Note: Named arguments appear in a separate `named_args` list in the Call AST nod
 
 **Input:**
 ```tinct
-[fn@Number [x@Number  y@[type: Number  default: 0]] [call $+ $x $y]]
+[fn@Number [x@Number  y@[type: Number  default: 0]] [+ x y]]
 ```
 
 **AST:**
@@ -115,17 +115,17 @@ Fn {
 
 Note: Parameter annotations can be simple type names (`Simple("Number")`) or property dicts containing `type`, `default`, or `description` fields. The type checker validates annotations against the inferred parameter types.
 
-### 8.6 Pipeline with `$_` Shorthand
+### 8.6 Pipeline with `_` Shorthand
 
 **Input:**
 ```tinct
-[call $-> $data.users
-    [call $filter [call $> $_.age 30] $_]
-    [call $map $_.name $_]
-    $sort]
+[-> data.users
+    [filter [> _.age 30] _]
+    [map _.name _]
+    sort]
 ```
 
-Note: `$_` desugaring is a **pre-typecheck AST transformation**, not a parser or evaluator concern. The parser produces the AST as-is — `$_` is just `VarRef("_")`. A desugaring pass (`desugar_file()` and `desugar_expr()`) then rewrites `$_`-containing expressions into implicit lambdas before type checking and evaluation. See doc/04-functions.md §`$_` Desugaring for the formal rewrite rules and scope boundary definition.
+Note: `_` desugaring is a **pre-typecheck AST transformation**, not a parser or evaluator concern. The parser produces the AST as-is — `_` is just `VarRef("_")`. A desugaring pass (`desugar_file()` and `desugar_expr()`) then rewrites `_`-containing expressions into implicit lambdas before type checking and evaluation. See doc/04-functions.md §`_` Desugaring for the formal rewrite rules and scope boundary definition.
 
 **AST:**
 ```json
@@ -162,13 +162,13 @@ Call {
 }
 ```
 
-Note: After desugaring, `$_`-containing expressions become `Fn { params: [Param { name: "_", ... }], body: ... }` nodes. The desugaring happens before type checking.
+Note: After desugaring, `_`-containing expressions become `Fn { params: [Param { name: "_", ... }], body: ... }` nodes. The desugaring happens before type checking.
 
 ### 8.7 Access Chains
 
 **Input:**
 ```tinct
-$config.services[0].host
+config.services[0].host
 ```
 
 **AST:**
@@ -191,7 +191,7 @@ Note: Access chains parse as nested AST nodes. The evaluator reduces inside-out:
 
 **Input:**
 ```tinct
-$data[2..5]
+data[2..5]
 ```
 
 **AST:**
@@ -209,7 +209,7 @@ Note: Range access uses half-open interval semantics `[start, end)`. `None` boun
 
 **Input:**
 ```tinct
-[@Number $expr]
+[@Number expr]
 ```
 
 **AST:**
@@ -226,7 +226,7 @@ Note: `TypeAssert` nodes materialize the inner expression and check its type. Ty
 
 **Input:**
 ```tinct
-[@[type: Number  default: 0] $config.port]
+[@[type: Number  default: 0] config.port]
 ```
 
 **AST:**
@@ -270,8 +270,8 @@ The type checker interprets `Annotated { name: "Fn", ... }` as a function type c
 ```tinct
 [
     # Configuration
-    host: localhost  # server hostname
-    port: 8080       # server port
+    host: "localhost"  # server hostname
+    port: 8080         # server port
 ]
 ```
 
@@ -289,7 +289,7 @@ Note: Comments are discarded during tokenization and do not appear in the AST.
 
 **Input:**
 ```tinct
-[fn [f ...args] [call $map $f $args]]
+[fn [f ...args] [map f args]]
 ```
 
 **AST:**
@@ -314,7 +314,7 @@ Note: Variadic parameters (marked with `...`) collect all remaining positional a
 
 **Input:**
 ```tinct
-[call $f $x $y timeout: 60]
+[f x y timeout: 60]
 ```
 
 **AST:**
@@ -336,7 +336,7 @@ Note: Call syntax distinguishes positional (`args`) and named (`named_args`) arg
 ```tinct
 [x: 10]
 
-[y: [call $+ $x 1]]
+[y: [+ x 1]]
 ```
 
 **AST:**
@@ -346,7 +346,7 @@ File {
         Document {
             expressions: [
                 Dict([Entry { key: Some(Str("x")), value: Int(10) }]),
-                Dict([Entry { key: Some(Str("y")), value: Call { func: VarRef("+"), args: [VarRef("x"), Int(1)] } }]),
+                Dict([Entry { key: Some(Str("y")), value: Call { func: VarRef("+"), args: [VarRef("x"), Int(1)], named_args: [] } }]),
             ]
         }
     ]
@@ -359,9 +359,9 @@ Note: Multiple top-level expressions in a document are merged into a single dict
 
 **Input:**
 ```tinct
-[data: [name: Alice  age: 30]]
+[data: [name: "Alice"  age: 30]]
 ---
-[result: $$.data]
+[result: %.data]
 ```
 
 **AST:**
@@ -375,11 +375,11 @@ File {
         },
         Document {
             expressions: [
-                Dict([Entry { key: Some(Str("result")), value: DotAccess { expr: VarRef("$"), field: "data" } }])
+                Dict([Entry { key: Some(Str("result")), value: DotAccess { expr: VarRef("%"), field: "data" } }])
             ]
         }
     ]
 }
 ```
 
-Note: The `---` separator creates separate documents. The `$$` pipeline reference accesses the result of the previous document. Each document is evaluated independently.
+Note: The `---` separator creates separate documents. The `%` pipeline reference accesses the result of the previous document. Each document is evaluated independently.

@@ -8,16 +8,16 @@ This document describes the tinct language syntax: its design rationale, formal 
 
 ### Single Bracket Syntax
 
-**`[]` is the only bracket type.** No `()` in the language. Every expression uses `[]`. The `call` keyword distinguishes function application from data — the bracket type is not needed for this. Positional and named entries may be freely interleaved — auto-indices are assigned sequentially to positional entries regardless of where named entries appear. See Principle 2 for the auto-indexing and parsing rules.
+**`[]` is the only bracket type.** No `()` in the language. Every expression uses `[]`. A bare identifier in head position signals function application — the bracket type is not needed for this. Positional and named entries may be freely interleaved — auto-indices are assigned sequentially to positional entries regardless of where named entries appear. See Principle 2 for the auto-indexing and parsing rules.
 
 **Why single brackets:**
 - Simpler — one bracket type, one concept
 - `()` and `{}` are both freed for future use
-- `call` already signals function application — `()` was redundant
+- Bare identifier in head position signals application, approaching Lisp's `(f x y)` ergonomics
 - `[]` is familiar from JSON, Python, JavaScript
 - True unification: there's one data structure, so there's one syntax
 
-**Parser complexity trade-off:** Single brackets with overloaded semantics require careful disambiguation: keyword recognition (`call`/`fn`/`type` vs dict entries), access chain whitespace sensitivity (`$a.b` vs `$a .b`), and special-form parsing. This complexity is concentrated in the parser — the evaluator and user-facing syntax remain simple.
+**Parser complexity trade-off:** Single brackets with overloaded semantics require careful disambiguation: head-position classification (call vs dict vs data sequence), keyword recognition (`call`/`fn`/`type` vs dict entries), access chain whitespace sensitivity (`a.b` vs `a .b`), and special-form parsing. This complexity is concentrated in the parser — the evaluator and user-facing syntax remain simple.
 
 ### Special Forms vs Stdlib Functions
 
@@ -45,30 +45,33 @@ Everything else can be a regular function in the stdlib:
 
 ```tinct
 # These are stdlib functions, not special forms:
-[call $if [call $> $x 0] positive non-positive]
-[call $and [call $valid? $input] [call $process $input]]  # process never called if invalid
-[call $or $cached-value [call $expensive-compute]]        # compute skipped if cached
+[if [> x 0] positive non-positive]
+[and [valid? input] [process input]]  # process never called if invalid
+[or cached-value [expensive-compute]]        # compute skipped if cached
 ```
 
 ### Special Form Recognition
 
-**The parser recognizes special forms by keyword.** When the first entry of a `[]` is a bare word matching `call`, `fn`, or `type`, the parser emits a specialized AST node. Otherwise it emits a `Dict` node.
+**The parser recognizes special forms by keyword.** When the first entry of a `[]` is an identifier matching `call`, `fn`, or `type` (not followed by `:`), the parser emits a specialized AST node. Any other identifier in head position (not keyword, not followed by `:`) triggers implied call — a `Call` node with the identifier as the function. A `$`-prefixed identifier in head position produces a data sequence.
 
 ```tinct
-[call $f $x]          # CallExpr — first entry is bare word "call"
-[fn [x] $x]           # FnExpr
-[type [Fn@b [a]]]     # TypeExpr
+[f x]                 # CallExpr — implied call: bare identifier "f" in head
+[f x y]              # CallExpr — call f(x, y)
+[call f x]           # CallExpr — explicit call (identical AST to implied)
+[fn [x] x]           # FnExpr
+[type [Fn@b [a]]]    # TypeExpr
 
-[call: something]     # Dict — "call" followed by ":" is a key, not a keyword
-[$call $x $y]         # Dict — $call is a variable reference, not the keyword
-[mycall $f $x]        # Dict — "mycall" is not a recognized keyword
+[call: something]    # Dict — "call" followed by ":" is a key, not a keyword
+[$f x y]             # Dict (data sequence) — $-prefixed head prevents call
+[f]                  # CallExpr — zero-argument call to f
+[$f]                 # Dict — single-element sequence containing ref(f)
 [call
-: value]              # CallExpr — newline breaks colon_ahead (it only matches spaces/tabs, not newlines)
+: value]             # CallExpr — newline breaks colon_ahead (it only matches spaces/tabs, not newlines)
 ```
 
-**Note on `colon_ahead`:** The lookahead pattern that rejects `call:` as a dict key only matches horizontal whitespace (spaces and tabs). A newline between the keyword and colon breaks the pattern, so `[call\n: x]` is a CallExpr, not a dict entry. This is documented formally in §6 Complete Grammar (`colon_ahead = ws_chars* ~ ":"` where `ws_chars = " " | "\t"`).
+**Note on `colon_ahead`:** The lookahead pattern that rejects `call:` as a dict key only matches horizontal whitespace (spaces and tabs). A newline between a head identifier and a colon breaks the pattern — `[name\n: val]` is a (malformed) implied call, not a dict entry. This matches the existing rule for `[call\n: x]` and is documented formally in §6 Complete Grammar (`colon_ahead = ws_chars* ~ ":"` where `ws_chars = " " | "\t"`).
 
-**Why parser-level:** The distinction between special forms and data must be unambiguous before evaluation. If deferred to the evaluator, `[call $f $x]` would first be constructed as a dict `[0: call  1: $f  2: $x]`, then the evaluator would need to inspect key 0 — but at that point the dict is already a thunk and the string `"call"` is indistinguishable from user data that happens to contain the word "call". Parser-level recognition avoids this ambiguity entirely.
+**Why parser-level:** The distinction between calls and data must be unambiguous before evaluation. The head-position rule classifies brackets at parse time, before any thunks are created. This preserves lazy evaluation semantics — the evaluator never needs to eagerly inspect the head of a bracket expression to determine its role.
 
 ---
 
@@ -123,67 +126,71 @@ The following punctuation characters are used as inline literals throughout the 
 
 **Quoting forces string interpretation.** `"true"` is the string `"true"`, `"42"` is the string `"42"`. Quoting is the escape hatch from literal recognition.
 
-**Why lexer-level:** If `true` and `42` were bare-word strings that the evaluator later reinterpreted, it would break the "bare words are always strings" rule in confusing ways — `hello` would be a string but `true` would secretly be a boolean. By having the lexer recognize these patterns first, the rule becomes precise: bare words that don't match any prior pattern (sigil, numeric, boolean) are strings.
+**Why lexer-level:** If `true` and `42` were bare identifiers that the evaluator later reinterpreted, it would break the reference model in confusing ways — `hello` would resolve as a variable reference but `true` would secretly be a boolean. By having the lexer recognize these patterns first, the rule becomes precise: bare words that don't match any prior pattern (sigil, numeric, boolean, quoted string) are variable references.
 
 Literals are recognized in precedence order. The first matching rule wins.
 
-#### 2.3.1 Variable References
+#### 2.3.1 Variable References and `$` Disambiguation
 
-**`$` sigils.** Bare words are always string literals. `$word` is always a variable reference. This applies uniformly — no positional rules, no special cases.
+**Bare words are variable references.** Any identifier that isn't a numeric literal, boolean literal, or quoted string resolves as a variable reference — no sigil required. String literals must be quoted.
 
 ```tinct
 [
-    name: Alice                  # key "name", value is string "Alice"
-    greeting: [call $str "Hello " $name]  # $name references the binding -> "Alice"
-    $computed-key: some-value    # key is a reference (computed), value is string
+    name: "Alice"                # key "name", value is string "Alice" (quoted)
+    greeting: [str "Hello " name]  # name references the binding -> "Alice"
+    $computed-key: val           # $-prefixed key: computed key (reference)
+    env: "production"            # strings must be quoted in value position
 ]
 ```
 
-**Why `$`:**
-- Dict keys can be references too — `[$key: $value]` — no special syntax needed for computed keys
-- `[name: $name]` is visually clear: key "name" gets the *value* of `name`
-- Functions are values: `[call $map ...]` makes it obvious `map` is a reference being looked up, not a keyword
-- Bare strings don't need quotes: `[env: production]` just works
-- Synergy with string interpolation (if added): `"Hello $name"`
+**`$` is a position-dependent disambiguator**, not a universal reference sigil:
 
-**No special case for `call`.** The function position uses `$` like any other reference. This reinforces that functions are regular values.
+| Position | Default interpretation | `$` overrides to |
+|----------|----------------------|------------------|
+| Key (before `:`) | String key | Computed key (reference) |
+| Head (first in `[]`) | Call (when bare identifier) | Data — NOT a call |
+| Other value | Reference | Reference (redundant, harmless) |
 
-`$` starts a variable reference. The identifier after `$` follows these character rules:
+```tinct
+[f x y]              # call: f(x, y) — bare identifier in head
+[$f x y]             # data: sequence [ref(f), ref(x), ref(y)] — $-head prevents call
+[$key: val]          # computed key: resolves key, uses as key
+[f $x y]             # call f(x, y) — $x and x are identical in non-head position
+```
+
+**`%` and `%name` are ordinary identifiers** used by convention for pipeline references. `%` refers to the previous document's output; `%name` refers to a named section's output. See §5.
+
+**Identifier character rules** (denylist approach — any character valid except structural delimiters):
 
 ```ebnf
-var_ref = @{ "$" ~ var_ident }
-var_ident = @{ var_ident_char+ }
-var_ident_char = _{
+identifier = @{ ident_char+ }
+ident_char = _{
     !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".")
     ~ ANY
 }
 ```
 
-Identifier characters use a denylist approach — any character is valid except structural delimiters and `.` (which triggers dot access). This means `$` itself is a valid identifier character: `$$` is VarRef("$") (the inter-document pipeline), `$$foo` is VarRef("$foo"), and `$0` is VarRef("0").
+The denylist provides extensibility for new operators without reserved keywords and enables full Unicode identifier support. `.` is excluded so `a.b` is dot access, not a single identifier.
 
-**Denylist rationale:** The denylist approach (allow-by-default, exclude structural delimiters) provides extensibility for new operators without reserved keywords, and enables full Unicode identifier support (emoji, non-Latin scripts) without explicit allow-lists.
+**`$` (escaped reference)** follows the same character rules:
 
-**Unicode homograph risk:** Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions; tinct currently accepts all Unicode identifier characters without NFC normalization.
-
-The token ends at the first excluded character. `.` and `[` are **not** part of the variable name — they are separate access operators that the parser chains onto the reference.
-
-A bare `$` not followed by any valid identifier character is a parse error.
-
-Examples: `$name`, `$has?`, `$my-var`, `$_private`, `$get-or`, `$+`, `$>=`, `$->`, `$$`, `$$foo`, `$0`
-
-```tinct
-$name                    # Token: VarRef("name")
-$has?                    # Token: VarRef("has?")
-$my-var                  # Token: VarRef("my-var")
-$_private                # Token: VarRef("_private")
-$$                       # Token: VarRef("$") — inter-document pipeline
-$$foo                    # Token: VarRef("$foo")
-$0                       # Token: VarRef("0")
-$data.name               # Tokens: VarRef("data"), Dot, BareWord("name")
-$data[0]                 # Tokens: VarRef("data"), BracketAccess, Int(0), CloseBracket
+```ebnf
+escaped_ref = @{ "$" ~ ident_char+ }
 ```
 
-A bare `$` not followed by any valid identifier character is a parse error.
+`$` itself is a valid identifier character: `$+`, `$>=`, `$->`, `$0` are all valid escaped references. A bare `$` not followed by any identifier character is a parse error.
+
+**Access chains** attach to identifiers the same way they attach to escaped references — the dot or bracket must immediately follow with no whitespace:
+
+```tinct
+name.field           # Tokens: Identifier("name"), Dot, Identifier("field")
+name[0]              # Tokens: Identifier("name"), BracketAccess, Int(0), CloseBracket
+name .field          # Tokens: Identifier("name"), Identifier(".field") — NOT access
+```
+
+**Unicode homograph risk:** Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions; tinct accepts all Unicode identifier characters without NFC normalization.
+
+**`fn` parameter lists:** Bare words inside `[fn [x y] ...]` parameter lists are parameter name declarations, not variable references. They are parsed by a dedicated `parse_param_list` path and do not follow value-position rules.
 
 #### 2.3.2 Numeric Literals
 
@@ -227,80 +234,78 @@ The parser handles quoted strings as atomic units — no implicit whitespace ski
 
 Quoting forces string interpretation: `"true"` is the string `"true"`, `"42"` is the string `"42"`.
 
-#### 2.3.5 Bare Words
+#### 2.3.5 Identifiers (Variable References)
 
-Bare words are the fallback — any token that doesn't match a prior rule. They are unquoted string literals.
+Identifiers are the fallback — any token that doesn't match a prior rule. They are variable references, not string literals. Strings require quotes.
 
 ```ebnf
-bare_word = @{ bare_word_start ~ bare_word_cont* }
+identifier = @{ ident_start ~ ident_cont* }
 
-bare_word_start = _{
+ident_start = _{
     !("$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@"
       | " " | "\t" | "\r" | "\n"
       | "...")
-    ~ bare_word_char
+    ~ ident_char
 }
 
-bare_word_cont = _{
+ident_cont = _{
     !(" " | "\t" | "\r" | "\n"
       | "[" | "]" | ":" | ";" | "#" | "\"" | "@")
-    ~ bare_word_char
+    ~ ident_char
 }
 
-bare_word_char = _{
+ident_char = _{
     !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$")
     ~ ANY
 }
 ```
 
-`bare_word_char` uses a denylist — any character except structural delimiters and `$` (which starts variable references). Both `@` and `$` are excluded from `bare_word_char`, meaning they are excluded from `bare_word_cont` as well (since `bare_word_cont` requires `bare_word_char`). `bare_word_start` and `bare_word_cont` add additional exclusions on top of `bare_word_char`: `bare_word_start` additionally excludes `$`, `"..."`, and `#`; `bare_word_cont` additionally excludes `#`. The `"..."` exclusion is only needed at token start (variadic sigil context).
+`ident_char` uses a denylist — any character except structural delimiters and `$`. Both `@` and `$` are excluded, so they always end an identifier. The `"..."` exclusion is only needed at token start (variadic sigil context).
 
-**Valid characters (denylist approach):** Like variable identifiers, bare words use a denylist — any character is valid *except* structural delimiters: whitespace, `[`, `]`, `:`, `;`, `#`, `"`, `@`, and `$`. This means `[a-zA-Z0-9_/.-]`, Unicode, and most other characters are all valid in bare words. Bare words are the default — anything that isn't a recognized special token is a bare word.
+**Valid characters (denylist approach):** Any character is valid *except* structural delimiters: whitespace, `[`, `]`, `:`, `;`, `#`, `"`, `@`, and `$`. This means `[a-zA-Z0-9_/.-]`, Unicode, `%`, and most other characters are all valid in identifiers. Identifiers are the default — anything that isn't a recognized special token is an identifier (a variable reference).
 
 **Cannot start with:** `$`, `@`, `#`, `[`, `]`, `:`, `;`, `"`, or `...` (variadic sigil). These characters have special meaning at the start of a token.
 
-**Bare word terminators** — a bare word ends at:
+**Identifier terminators** — an identifier ends at:
 
 | Character | Purpose |
 |-----------|---------|
-| Whitespace | Ends the bare word |
-| `[` | Ends the bare word (starts bracket access or new expression) |
-| `]` | Ends the bare word (closes enclosing expression) |
-| `:` | Ends the bare word (key-value separator) |
-| `;` | Ends the bare word (entry separator) |
-| `#` | Ends the bare word (starts comment) |
-| `@` | Ends the bare word (starts annotation) |
-| `$` | Ends the bare word (starts variable reference) |
+| Whitespace | Ends the identifier |
+| `[` | Ends the identifier (may start bracket access if no whitespace) |
+| `]` | Ends the identifier (closes enclosing expression) |
+| `:` | Ends the identifier (key-value separator) |
+| `;` | Ends the identifier (entry separator) |
+| `#` | Ends the identifier (starts comment) |
+| `@` | Ends the identifier (starts annotation) |
+| `$` | Ends the identifier (starts escaped reference) |
 
 ```tinct
-hello                    # Bare word: "hello"
-some.file.txt            # Bare word: "some.file.txt"
-path/to/file             # Bare word: "path/to/file"
-my-key                   # Bare word: "my-key"
-config..bak              # Bare word: "config..bak"
-日本語                    # Bare word: "日本語" (Unicode)
+hello                    # Identifier: ref "hello"
+my-key                   # Identifier: ref "my-key"
+%config                  # Identifier: ref "%config" (pipeline convention)
+日本語                    # Identifier: ref "日本語" (Unicode)
+"has spaces"             # NOT an identifier — quoted string
+"hello"                  # Quoted string (the only way to get a string value)
 
-# These are NOT bare words — first character is special
-$name                    # Variable reference (starts with $)
-"has spaces"             # Quoted string (starts with ")
-#comment                 # Comment (starts with #)
-[list]                   # Bracketed expression (starts with [)
+# Strings containing dots, slashes, etc. must be quoted under new syntax:
+"some.file.txt"          # Quoted string — dot would trigger access chain on identifier
+"path/to/file"           # Quoted string
 ```
 
-Examples: `hello`, `some.file.txt`, `path/to/file`, `my-key`, `config..bak`
+**Note on dot in identifiers:** The tinct parser allows `.` in `ident_char`, so `file.txt` is technically a valid identifier token. However, an identifier immediately followed by `.` with no whitespace triggers dot access — `config.host` is `config` then `.host`, not the identifier `config.host`. Values containing dots that are not intended as access chains must be quoted. The tree-sitter grammar excludes `.` from identifier characters entirely for simplicity.
 
-**Tree-sitter divergence on dot in bare words:** The tinct parser allows `.` in `bare_word_char`, enabling filenames like `file.txt` as bare words. It uses whitespace-sensitive lexing to disambiguate `$a.b` (access) from `$a .b` (two tokens). The tree-sitter grammar (`tree-sitter-llt/grammar.js`) excludes `.` from `bare_word_char` entirely, requiring such values to be quoted: `"file.txt"`. This divergence is intentional: tree-sitter's incremental parsing model makes whitespace-sensitive lookahead expensive, and excluding `.` from bare words simplifies the access chain tokenization by using `token.immediate()` instead. This is a confirmed design decision: the main parser prioritizes ergonomics (unquoted filenames), tree-sitter prioritizes incremental parsing performance.
+**Tree-sitter divergence:** The tinct parser's whitespace-sensitive access detection (`had_whitespace_before` + `last_significant_token`) handles `a.b` (access) vs `a .b` (two tokens). The tree-sitter grammar (`tree-sitter-llt/grammar.js`) excludes `.` from identifier characters, requiring values like `"file.txt"` to be quoted. This divergence is intentional — tree-sitter prioritizes incremental parsing performance over dot-in-identifier ergonomics.
 
 ### 2.4 Token Precedence
 
 When classifying a bare token, the tokenizer applies rules in this order:
 
-1. `$` sigil → `var_ref`
+1. `$` sigil → `escaped_ref` (disambiguator — prevents call in head position, computes key in key position)
 2. Numeric → `float_lit` or `int_lit`
 3. `true`/`false` → `bool_lit`
-4. `"` → `quoted_string`
-5. If followed by `@` (in value position), treat as annotated value (`Fn@Number` → `annotated_bare`). This rule applies at the `atom` level only (value position). At the bracket-expression level, `[fn@Type ...]` is handled by `fn_form`'s explicit `fn_annotation?` component, making `fn` there a keyword, not an annotated bare word.
-6. Everything else → `bare_word`
+4. `"` → `quoted_string` (the only way to produce a string literal in value position)
+5. If followed by `@` immediately (no whitespace), treat as annotated value (`Fn@Number` → `annotated_bare`). This rule applies at the `atom` level only (value position). At the bracket-expression level, `[fn@Type ...]` is handled by `fn_form`'s explicit `fn_annotation?` component, making `fn` there a keyword, not an annotated identifier.
+6. Everything else → `identifier` (variable reference)
 
 This order is enforced by the hand-written parser's token dispatch logic.
 
@@ -433,7 +438,7 @@ doc_separator = @{ "---" ~ !bare_word_char }
 
 **File:** The outermost unit. Contains documents separated by `---`.
 
-**Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — the only connection is `$$`, which carries the previous document's output as a lazy value. For the first document, `$$` is `[]`. For evaluation semantics of `$$` binding, `$include` cycle detection, and document pipeline caching, see [Documents](09-documents.md).
+**Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — the only connection is `%`, which carries the previous document's output as a lazy value. For the first document, `%` is `[]`. For evaluation semantics of `%` binding, `$include` cycle detection, and document pipeline caching, see [Documents](09-documents.md).
 
 **Expression:** A single value (bracket expression, atom, access expression, etc.). The `!doc_separator` negative lookahead prevents `---` from being consumed as a bare word.
 
@@ -443,14 +448,29 @@ An empty file (or one containing only whitespace/comments) is valid and produces
 
 ### 3.2 Bracket Expressions
 
-A bracket expression is the fundamental syntactic unit. The parser examines the first entry to determine whether it is a special form or a dict:
+A bracket expression is the fundamental syntactic unit. The parser examines the first entry to determine interpretation via a priority table:
+
+| Priority | Condition | Interpretation | Example |
+|----------|-----------|----------------|---------|
+| 1 | Empty `[]` | Empty dict | `[]` |
+| 2 | `@` first | Type assertion | `[@Type expr]` |
+| 3 | Keyword in head (`call`, `fn`, `type`), not followed by `:` (horizontal) | Special form | `[fn [x] x]` |
+| 4 | First entry is keyed (head followed by `:` with no intervening newline) | Dict | `[name: "Alice"]` |
+| 5 | Identifier in head (not keyword) | Implied call | `[f x y]` → `f(x, y)` |
+| 6 | `$`-prefixed head (`escaped_ref`) | Data sequence | `[$f x y]` |
+| 7 | Literal in head | Data sequence | `[1 2 3]` |
+
+**`[f]` is a zero-argument call** to `f` (Priority 5). To construct a single-element data sequence containing a reference, use `[$f]` (Priority 6).
+
+**Newline before colon breaks Priority 4.** `[name\n: val]` is not a keyed entry — the colon lookahead only checks horizontal whitespace (spaces and tabs), consistent with keyword disambiguation. This produces a zero-argument implied call to `name`, which is a parse error (no body).
 
 ```ebnf
 bracket_expr = {
     "[" ~ "]"                           // empty: []
     | "[" ~ type_assert_body ~ "]"      // type assertion: [@Type expr]
     | "[" ~ special_form ~ "]"          // call, fn, type
-    | "[" ~ dict_entries ~ "]"          // data: entries
+    | "[" ~ call_implied ~ "]"          // implied call: bare identifier in head
+    | "[" ~ dict_entries ~ "]"          // data: entries (escaped_ref head, literal head, or keyed)
 }
 ```
 
@@ -468,23 +488,37 @@ special_form = {
 
 #### 3.3.1 `call` — Function Application
 
+Function application has two forms — implied and explicit — that produce identical AST nodes:
+
+**Implied call** (preferred): bare identifier in head position:
+```tinct
+[f x y]              # call f(x, y)
+[map double data]    # call map(double, data)
+[f x name: "val"]   # call f with named argument
+```
+
+**Explicit `call`** (for computed functions or documentation clarity):
+```tinct
+[call f x y]                        # same AST as [f x y]
+[call [get-handler request] data]   # function from another call
+[call % data]                       # pipeline value used as function
+```
+
+The `call` keyword is required when the function expression is not a bare identifier — e.g., the result of another call, a dot-access, or a bracket-access.
+
 ```ebnf
 call_form = { keyword_call ~ value ~ call_args }
+
+call_implied = { identifier ~ call_args }  // identifier not a keyword, not followed by ":"
 
 call_args = { (named_arg | value)* }
 
 named_arg = { named_arg_key ~ ":" ~ value }
 
-named_arg_key = @{ "$" ~ var_ident | bare_word }
+named_arg_key = @{ escaped_ref | identifier }
 ```
 
 Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See doc/04-functions.md for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
-
-Examples:
-```tinct
-[call $f $x $y]
-[call $fetch "https://example.com" timeout: 60]
-```
 
 #### 3.3.2 `fn` — Function Definition
 
@@ -506,10 +540,10 @@ variadic_param = @{ "..." ~ param_name }
 
 Examples:
 ```tinct
-[fn [x] $x]
-[fn@Number [x@Number y@Number] [call $+ $x $y]]
-[fn@[type: Number  doc: "Sum"] [x@Number  y@[type: Number  default: 0]] [call $+ $x $y]]
-[fn [f ...args] [call $map $f $args]]
+[fn [x] x]
+[fn@Number [x@Number y@Number] [+ x y]]
+[fn@[type: Number  doc: "Sum"] [x@Number  y@[type: Number  default: 0]] [+ x y]]
+[fn [f ...args] [map f args]]
 ```
 
 #### 3.3.3 `type` — Type Alias
@@ -526,10 +560,10 @@ Examples:
 
 ### 3.4 Access Chains
 
-Access chains attach to variable references and bracket accesses. Whitespace-sensitivity is achieved by the hand-written lexer using `last_significant_token` tracking — no implicit whitespace skipping between the variable reference and the `.` or `[`.
+Access chains attach to identifiers, escaped references, and bracket accesses. Whitespace-sensitivity is achieved by the hand-written lexer using `last_significant_token` tracking — no implicit whitespace skipping between the reference and the `.` or `[`. Both bare identifiers (`name.field`) and escaped references (`$name.field`) trigger access chain detection.
 
 ```ebnf
-access_expr = ${ var_ref ~ access_chain+ }
+access_expr = ${ (identifier | escaped_ref) ~ access_chain+ }
 
 access_chain = ${ dot_access | bracket_access_chain }
 
@@ -679,10 +713,10 @@ The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annot
 **Every entry's value is exactly one token or one `[]` expression.** There are no multi-value entries. Whitespace separates entries — after parsing a key's value (one token or one `[]`), the next whitespace-separated token is the start of a new entry.
 
 ```tinct
-[name: Alice age: 30]           # Two key-value pairs: name->Alice, age->30
-[key: [a b c]]                  # One key-value pair: key->[a b c] (nested [] is a single value)
-[call $f $x $y]                 # Function call — $f is the function, $x and $y are arguments
-[x: 1 y]                       # OK — x->1 is named; y is auto-indexed as 0
+[name: "Alice" age: 30]         # Two key-value pairs: name->"Alice", age->30
+[key: [$a $b $c]]               # One key-value pair: key->[ref(a), ref(b), ref(c)] (nested [] is a single value)
+[f x y]                         # Function call — f is the function, x and y are arguments
+[x: 1 $y]                       # OK — x->1 is named; ref(y) is auto-indexed as 0
 ```
 
 **Nested `[]` counts as a single value.** When a key's value starts with `[`, the parser consumes the entire balanced bracket expression as that key's value:
@@ -883,30 +917,36 @@ bare_word_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") 
 
 | Input | Interpretation | Rule |
 |-------|---------------|------|
-| `$name` | VarRef | `$` sigil |
-| `42` | Int literal | Numeric before bare word |
+| `name` | Variable reference | Identifier (fallback) |
+| `$name` | Escaped reference (disambiguator) | `$` sigil |
+| `42` | Int literal | Numeric before identifier |
 | `3.14` | Float literal | Float before int |
-| `true` | Bool literal | Bool before bare word |
-| `hello` | Bare word string | Fallback |
-| `"hello"` | Quoted string | Quote delimited |
+| `true` | Bool literal | Bool before identifier |
+| `"hello"` | Quoted string literal | Quote delimited |
 | `"true"` | Quoted string (value `true`) | Quoting overrides |
+| `hello` | Reference to `hello` | Identifier |
+| `[f x]` | Call `f(x)` | Identifier in head, not keyword |
+| `[$f x]` | Data sequence `[ref(f), ref(x)]` | Escaped ref in head |
+| `[f]` | Zero-arg call `f()` | Identifier in head |
+| `[$f]` | Single-element sequence `[ref(f)]` | Escaped ref in head |
+| `a.b` | Access chain | No whitespace before `.`, identifier enables access |
+| `a .b` | Ref `a` then ref `.b` | Whitespace before `.` |
+| `a[0]` | Bracket access | No whitespace before `[`, identifier enables access |
+| `a [0]` | Call `a([0])` | Whitespace before `[` → separate expression, call |
 | `$a.b` | Access chain | No whitespace before `.` |
-| `$a .b` | VarRef then bare word | Whitespace before `.` |
-| `$a[0]` | Bracket access | No whitespace before `[` |
-| `$a [0]` | VarRef then nested expr | Whitespace before `[` |
+| `$a [0]` | Escaped ref then nested expr | Whitespace before `[` |
 | `x@Number` | Param with annotation | `@` in param context |
 | `fn@String` | fn with return annotation | `@` after `fn` keyword |
 | `Fn@Number` | Annotated value | `@` in value context |
-| `[@T $e]` | Type assertion | `@` first in `[]` |
-| `call` (first in `[]`) | Keyword | Special form recognition |
-| `call@Type` (first in `[]`) | Annotated { name: 'call', ... } (NOT keyword) | @ after bare word converts keyword candidate to annotated value |
-| `call:` | Key (not keyword) | Colon makes it a key |
-| `$call` | VarRef (not keyword) | `$` makes it a reference |
-| `a..b` | Bare word `a..b` | `..` outside bracket access |
-| `$a[2..5]` | Range access | `..` inside bracket access |
-| `config..bak` | Bare word `config..bak` | `..` outside bracket access |
+| `[@T e]` | Type assertion | `@` first in `[]` |
+| `call` (first in `[]`) | Keyword | Special form recognition (Priority 3) |
+| `call@Type` (first in `[]`) | Annotated (NOT keyword) | `@` after identifier converts keyword candidate |
+| `call:` | Dict key | Colon makes it a key |
+| `%config` | Reference to pipeline section `config` | Identifier with `%` prefix (convention) |
+| `a..b` | Identifier `a..b` | `..` outside bracket access |
+| `a[2..5]` | Range access | `..` inside bracket access |
 | `---` (between exprs) | Document separator | `doc_separator` rule |
-| `----` | Bare word | `!bare_word_char` prevents separator match |
+| `----` | Identifier | `!ident_char` prevents separator match |
 
 ---
 
@@ -919,68 +959,81 @@ bare_word_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") 
 # Sequential expressions form a scope chain
 
 [x: 10]                         # Expression 1
-[y: [call $+ $x 1]]            # Expression 2 (sees x from parent scope)
+[y: [+ x 1]]                   # Expression 2 (sees x from parent scope)
 ---                             # Document separator (total isolation)
-[z: $$.x]                      # New document ($$ is previous doc's output)
+[z: %.x]                       # New document (% is previous doc's output)
+
+# Named pipeline sections
+--- %defaults
+[host: "localhost"  port: 8080]
+
+--- %overrides
+[host: "prod.example.com"  tls: true]
+
+---
+[merge %defaults %overrides]   # access both named sections
 
 # Data
-[key: value]                    # Dict (key and value are strings)
-[a b c]                         # List (equivalent to [0: a  1: b  2: c])
+[key: "value"]                  # Dict (keys are bare, values are quoted strings)
+[$a $b $c]                      # Data sequence of references (escaped-ref head)
 []                              # Empty dict/list
 "hello world"                   # Quoted string (needed for spaces/special chars)
-hello                           # Bare string
 42                              # Int
 3.14                            # Float
 true false                      # Bool
 
 # Mixed keyed/unkeyed
-[call $f $x timeout: 60]        # Positional + named entries in one []
-[a b key: val c]                # OK — positional and named freely interleaved
+[f x timeout: 60]               # Implied call with named argument
+[a "b" key: "val" c]           # Positional and named freely interleaved
 
-# References
-$x                              # Variable reference
-[$key: $value]                  # Computed key and value
+# References (bare words)
+x                               # Variable reference
+[$key: value]                   # Computed key ($-prefix) and bare reference value
 
-# Key-based access (brackets and dot — semantically equivalent to $get)
-$person.name                    # equivalent to [call $get $person name]
-$config.database.host           # equivalent to chained $get
-$data[5]                        # equivalent to [call $get $data 5]  key 5
-$data[-1]                       # equivalent to [call $get $data -1] key -1, NOT last
-$dict[$key]                     # equivalent to [call $get $dict $key]
-$data[2..5]                     # key-range slice: keys in [2, 5)
-$config.services[0].host        # mixed chaining
+# Key-based access (brackets and dot — semantically equivalent to get)
+person.name                     # equivalent to [get person "name"]
+config.database.host            # equivalent to chained get
+data[5]                         # equivalent to [get data 5]  key 5
+data[-1]                        # equivalent to [get data -1] key -1, NOT last
+dict[key]                       # equivalent to [get dict key]
+data[2..5]                      # key-range slice: keys in [2, 5)
+config.services[0].host         # mixed chaining
 
 # Position-based access (functions, not syntax)
-[call $nth $data 0]       # first entry by position
-[call $nth $data -1]      # last entry (negative = from end)
-[call $last $data]              # last entry (alias)
-[call $slice $data 2 5]         # entries at positions 2, 3, 4
+[nth data 0]                    # first entry by position
+[nth data -1]                   # last entry (negative = from end)
+[last data]                     # last entry (alias)
+[slice data 2 5]                # entries at positions 2, 3, 4
 
-# Function application (exact arity required)
-[call $f $arg1 $arg2]           # Positional args
-[call $f $arg1 opt: $val]       # Named args (bare key-value)
+# Function application — implied call (preferred)
+[f arg1 arg2]                   # Positional args
+[f arg1 opt: val]               # Named args
 
-# Implicit lambda ($_ shorthand)
-[call $+ $_ 1]                  # desugars to [fn [_] [call $+ $_ 1]]
-[call $> $_.age 30]             # desugars to [fn [_] [call $> $_.age 30]]
+# Function application — explicit call (for computed functions)
+[call [get-handler request] data]   # function from another call
+[call % data]                       # pipeline value used as function
+
+# Implicit lambda (_ shorthand — same as $_ before)
+[+ _ 1]                         # desugars to [fn [_] [+ _ 1]]
+[> _.age 30]                    # desugars to [fn [_] [> _.age 30]]
 
 # Apply (spread list into function args)
-[call $apply $f $arg-list]      # Spreads list entries as positional args
+[apply f arg-list]              # Spreads list entries as positional args
 
 # Function definition
 [fn@Number [x@Number  y@Number]
-  [call $+ $x $y]]
+  [+ x y]]
 
 # Named function (just a dict entry)
 add: [fn@Number [x@Number  y@Number]
-  [call $+ $x $y]]
+  [+ x y]]
 
 # Named parameters (Kotlin model: any parameter can be named)
 fetch: [fn@String [url@String  timeout@[type: Number  default: 30]]
   ...]
 
 # Variadic parameters
-apply-all: [fn [f ...args] [call $map $f $args]]
+apply-all: [fn [f ...args] [map f args]]
 
 # Type alias
 Name: [type TypeExpression]
@@ -992,8 +1045,8 @@ fn@Type                         # Return type (shorthand)
 fn@[type: T  doc: "..."]        # Return type with properties
 
 # @ type assertions (on expressions)
-[@Number $expr]                 # Assert type, throw on mismatch
-[@[type: Number  default: 0] $expr]  # Safe cast with fallback
+[@Number expr]                  # Assert type, throw on mismatch
+[@[type: Number  default: 0] expr]  # Safe cast with fallback
 
 # Type expressions
 [key: Type ...]                 # Open record type
@@ -1003,22 +1056,22 @@ fn@[type: T  doc: "..."]        # Return type with properties
 Any                             # Dynamic escape hatch
 
 # Materialization (explicit, runtime-supported)
-[call $eval $$]                 # Recursively force all thunks into memory
+[eval %]                        # Recursively force all thunks into memory
 
 # Include
-utils: [call $include "lib/utils.llt"]   # Namespaced
-[call $include "lib/utils.llt"]          # Merged into scope (as top-level expression)
+utils: [include "lib/utils.llt"]   # Namespaced
+[include "lib/utils.llt"]          # Merged into scope (as top-level expression)
 
 # Conditionals (stdlib functions)
-[call $if $cond $then $else]    # Returns $then or $else
-[call $when $cond $body]        # Returns $body or [] (expression-safe)
-[call $unless $cond $body]      # Returns $body or [] (expression-safe)
+[if cond then else]             # Returns then or else
+[when cond body]                # Returns body or [] (expression-safe)
+[unless cond body]              # Returns body or [] (expression-safe)
 
-# Pipelines (using $_ shorthand for multi-arg functions)
-[call $-> $data
-    [call $filter [call $> $_.age 30] $_]  # two $_ levels: inner = element, outer = collection
-    [call $map $_.name $_]                 # inner $_.name = element transform, outer $_ = collection
-    $sort]                                 # Already 1-arg, no $_ needed
+# Pipelines (using _ shorthand for multi-arg functions)
+[-> data
+    [filter [> _.age 30] _]    # two _ levels: inner = element, outer = collection
+    [map _.name _]             # inner _.name = element transform, outer _ = collection
+    sort]                      # Already 1-arg, no _ needed
 
 # Comments
 # This is a comment

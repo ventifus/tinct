@@ -105,7 +105,7 @@ Implementation:
 Γ(x) = ∀α₁...αₙ. τ
 τ' = instantiate_scheme(∀α₁...αₙ. τ, ℓ_current)
 ────────────────────────────────── [VAR-POLY]
-Γ ⊢ $x : τ'
+Γ ⊢ x : τ'
 ```
 
 Each variable reference instantiates its type scheme with fresh variables at ℓ_current. When n = 0, this returns the body directly (monomorphic binding — no allocation).
@@ -175,7 +175,7 @@ Three rules depending on the function type. Arity is always checked.
 Γ ⊢ [call f a₁...aₙ] ⇒ σᵣ
 ```
 
-Monomorphic path with checking: each argument is **checked** against its parameter type using subsumption. `[call $add "hello"]` where `$add : Fn(Int Int → Int)` produces a type error because `String ≮: Int`. The `check_expr` call synthesizes the argument type and applies `[SUB]`.
+Monomorphic path with checking: each argument is **checked** against its parameter type using subsumption. `[add "hello"]` where `add : Fn(Int Int → Int)` produces a type error because `String ≮: Int`. The `check_expr` call synthesizes the argument type and applies `[SUB]`.
 
 ```
 Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_type_vars(Fn(...)) = true
@@ -187,7 +187,7 @@ S = unify(σ'₁ ≐ τ₁, ..., σ'ₙ ≐ τₙ)                  [with U-SUBS
 Γ ⊢ [call f a₁...aₙ] ⇒ S(σ'ᵣ)
 ```
 
-**Implementation note:** When the function expression is a VarRef to a polymorphic scheme (e.g., `[call $id 42]` where `id` is bound to `∀a. Fn(a → a)`), `check_call_with_scheme` is invoked directly with the scheme, bypassing the VAR-POLY instantiation step. This optimization instantiates the scheme once instead of twice (VAR-POLY followed by CALL-POLY). For other function expressions (inline lambdas, compound access chains), the normal path applies: infer the function expression (which may instantiate a scheme via VAR-POLY), then proceed to CALL-POLY. See `src/typecheck.rs` `infer_expr` Call case for the dispatch logic (lines ~441-451).
+**Implementation note:** When the function expression is a VarRef to a polymorphic scheme (e.g., `[id 42]` where `id` is bound to `∀a. Fn(a → a)`), `check_call_with_scheme` is invoked directly with the scheme, bypassing the VAR-POLY instantiation step. This optimization instantiates the scheme once instead of twice (VAR-POLY followed by CALL-POLY). For other function expressions (inline lambdas, compound access chains), the normal path applies: infer the function expression (which may instantiate a scheme via VAR-POLY), then proceed to CALL-POLY. See `src/typecheck.rs` `infer_expr` Call case for the dispatch logic (lines ~441-451).
 
 Polymorphic path with unification: arguments are **synthesized** (not checked), then unified against instantiated parameter types. Unification binds type variables via [U-VAR] and handles concrete-type comparisons via [U-SUBSUME] (bidirectional subsumption fallback). This is critical for confluence: when multiple arguments constrain the same type variable with different precision (e.g., `IntLiteral(42)` and `Int`), the subsumptive fallback ensures type checking succeeds regardless of argument order. See the Unification section for [U-SUBSUME] details.
 
@@ -210,7 +210,7 @@ In practice, this divergence rarely surfaces because CALL-MONO only fires for mo
 ```
 Γ ⊢ f ⇒ Any
 ────────────────────────────────── [CALL-ANY]
-Γ ⊢ [call f a₁...aₙ] ⇒ Any
+Γ ⊢ [f a₁...aₙ] ⇒ Any
 ```
 
 Calling a value typed as Any returns Any. Arguments are still synthesized (for type map population and nested error detection) but not checked against parameter types.
@@ -622,10 +622,10 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 **Interaction with `Any` and unannotated parameters:**
 
-- Unannotated function parameters still receive type `Any` (not a fresh type variable). `[fn [x] $x]` remains `Fn(Any → Any)`.
+- Unannotated function parameters still receive type `Any` (not a fresh type variable). `[fn [x] x]` remains `Fn(Any → Any)`.
 - `Any` in unification acts as a universal match ([U-ANY-L], [U-ANY-R]) but sets ℓ(α) = 0 for any type variable α it touches ([U-ANY-VAR], [U-VAR-ANY]), preventing generalization.
 - Annotated type variables (e.g., `x@a`) create fresh type variables at ℓ_current. These participate in generalization normally.
-- The practical effect: let-generalization benefits code that uses type annotations. `[id: [fn [x@a] $x]]` generalizes `id` to `∀a. Fn(a → a)`; subsequent `[call $id 42]` and `[call $id "hello"]` each get independent instantiations.
+- The practical effect: let-generalization benefits code that uses type annotations. `[id: [fn [x@a] x]]` generalizes `id` to `∀a. Fn(a → a)`; subsequent `[id 42]` and `[id "hello"]` each get independent instantiations.
 
 **Interaction with CALL-POLY.** When a call expression targets a `VarRef`, the inference engine inspects the scheme directly before any instantiation. This determines the routing:
 
@@ -682,16 +682,16 @@ Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) →
 
 ## Limitations and Non-Guarantees
 
-1. **Named args not unified.** Named arguments in `[call ...]` are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
+1. **Named args not unified.** Named arguments in call expressions are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
 
 2. **Any is both top and bottom.** `Any <: τ` and `τ <: Any` for all τ. In subtyping theory, this makes `Any` simultaneously the top and bottom element of the type lattice, which is unsound in general (antisymmetry fails: `Any <: Int` and `Int <: Any` but `Any ≠ Int`). In tinct's advisory type system this is intentional — `Any` marks the boundary between typed and untyped code, and `[@Type expr]` is the explicit narrowing mechanism.
 
-   **Concrete consequence — TypeAssert escape via Any.** An unannotated function `$f` has type `Fn(Any → Any)`. Calling `$f` returns `Any`. A TypeAssert `[@Int [call $f "hello"]]` passes type checking because `Any <: Int` ([S-ANY-BOT]), but the runtime value is a string. The type annotation is misleading — it narrows `Any` to `Int` statically while the runtime value may be anything. This is the primary way tinct's type system fails the Damas-Milner principal type guarantee (Damas & Milner, 1982): the type `Int` is assigned to an expression whose runtime value has type `String`. Corpus test: `tests/corpus/eval/typecheck/principal_type_any_escape.llt-eval`.
+   **Concrete consequence — TypeAssert escape via Any.** An unannotated function `f` has type `Fn(Any → Any)`. Calling `f` returns `Any`. A TypeAssert `[@Int [f "hello"]]` passes type checking because `Any <: Int` ([S-ANY-BOT]), but the runtime value is a string. The type annotation is misleading — it narrows `Any` to `Int` statically while the runtime value may be anything. This is the primary way tinct's type system fails the Damas-Milner principal type guarantee (Damas & Milner, 1982): the type `Int` is assigned to an expression whose runtime value has type `String`. Corpus test: `tests/corpus/eval/typecheck/principal_type_any_escape.llt-eval`.
 
-   **Mitigation path:** Garcia et al. (2016) show how to systematically derive a gradual type system from a static one. The key insight is replacing `Any <: τ` (unsound bottom) with a **consistency** relation `Any ~ τ` (symmetric, non-transitive) that triggers runtime casts at the `Any`/concrete boundary. Under AGT, `[@Int [call $f "hello"]]` would insert a runtime cast that fails when the actual value is a string — making the TypeAssert a true contract rather than a static-only assertion. This is tracked in TODO.md (gradual typing migration).
+   **Mitigation path:** Garcia et al. (2016) show how to systematically derive a gradual type system from a static one. The key insight is replacing `Any <: τ` (unsound bottom) with a **consistency** relation `Any ~ τ` (symmetric, non-transitive) that triggers runtime casts at the `Any`/concrete boundary. Under AGT, `[@Int [f "hello"]]` would insert a runtime cast that fails when the actual value is a string — making the TypeAssert a true contract rather than a static-only assertion. This is tracked in TODO.md (gradual typing migration).
 
 3. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
 
 4. **Variadic params typed as Any.** Variadic parameters (`...args`) are assigned type `Any`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
 
-5. **Nested dicts do not receive full let-polymorphism.** Only top-level dict entries are generalized in Pass 4 of the DICT-GEN rule. Inner dict entries remain at the outer level and are not independently generalized. For example, in `[outer: [inner: [fn [x] $x]]]`, the `inner` entry's function receives the same level as `outer`, not a deeper level, so forward references within the nested dict do not benefit from polymorphic instantiation.
+5. **Nested dicts do not receive full let-polymorphism.** Only top-level dict entries are generalized in Pass 4 of the DICT-GEN rule. Inner dict entries remain at the outer level and are not independently generalized. For example, in `[outer: [inner: [fn [x] x]]]`, the `inner` entry's function receives the same level as `outer`, not a deeper level, so forward references within the nested dict do not benefit from polymorphic instantiation.

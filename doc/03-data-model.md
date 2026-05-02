@@ -24,9 +24,9 @@ A list is equivalent to a dict with integer keys:
 **`[]` is the only bracket type.** There is one syntax for the one fundamental data structure. Entries with `key:` are keyed; entries without get auto-incrementing integer keys. Both can appear in the same `[]`.
 
 ```tinct
-[name: Alice  age: 30]          # All keyed — a "dict"
+[name: "Alice"  age: 30]        # All keyed — a "dict"
 [a b c]                         # All auto-indexed — a "list" = [0: a  1: b  2: c]
-[call $f $x timeout: 60]        # Mixed — positional + named
+[f x timeout: 60]               # Mixed — positional + named (implied call)
 []                              # Empty — list and dict are identical
 ```
 
@@ -46,11 +46,11 @@ A list is equivalent to a dict with integer keys:
 
 ## Duplicate Keys Are Errors
 
-**Duplicate keys in dict literals are an error.** Use `$merge` for intentional overrides.
+**Duplicate keys in dict literals are an error.** Use `merge` for intentional overrides.
 
 ```tinct
-[name: Alice  name: Bob]              # → Error: duplicate key "name"
-[call $merge [name: Alice] [name: Bob]]  # → [name: Bob]  (right-biased, intentional)
+[name: "Alice"  name: "Bob"]              # → Error: duplicate key "name"
+[merge [name: "Alice"] [name: "Bob"]]     # → [name: "Bob"]  (right-biased, intentional)
 ```
 
 **Why:** Duplicate keys + lazy evaluation creates confusing semantics — depending on the scoping model, derived values may see different bindings of the same key. Prohibiting duplicates eliminates the ambiguity entirely and catches copy-paste errors.
@@ -71,22 +71,22 @@ z@Number                        # accepts either
 
 | Left | Op | Right | Result |
 |------|-----|-------|--------|
-| Int | `$+`, `$-`, `$*` | Int | Int |
+| Int | `+`, `-`, `*` | Int | Int |
 | Int | any | Float | Float |
 | Float | any | Int | Float |
 | Float | any | Float | Float |
-| any | `$/` | any | Float (always) |
-| Int | `$quot`, `$mod` | Int | Int |
+| any | `/` | any | Float (always) |
+| Int | `quot`, `mod` | Int | Int |
 
 ```tinct
-[call $+ 5 3]                   # → 8 (Int)
-[call $+ 5 3.0]                 # → 8.0 (Float)
-[call $/ 10 3]                  # → 3.333... (Float — $/ always returns Float)
-[call $quot 10 3]               # → 3 (Int — truncated integer division, prelude function using $trunc)
-[call $mod 10 3]                # → 1 (Int — remainder)
+[+ 5 3]                         # → 8 (Int)
+[+ 5 3.0]                       # → 8.0 (Float)
+[/ 10 3]                        # → 3.333... (Float — / always returns Float)
+[quot 10 3]                     # → 3 (Int — truncated integer division, prelude function using trunc)
+[mod 10 3]                      # → 1 (Int — remainder)
 ```
 
-**Integer arithmetic uses checked semantics.** `Int` operations (`$+`, `$-`, `$*`) use Rust's `checked_add`/`checked_sub`/`checked_mul`, so overflow returns an error rather than wrapping or panicking. This prevents silent data corruption on large values. Width-specific types like `Int32` could enforce narrower range constraints via the contracts system.
+**Integer arithmetic uses checked semantics.** `Int` operations (`+`, `-`, `*`) use Rust's `checked_add`/`checked_sub`/`checked_mul`, so overflow returns an error rather than wrapping or panicking. This prevents silent data corruption on large values. Width-specific types like `Int32` could enforce narrower range constraints via the contracts system.
 
 **Dict key integration:** `Int` values are directly usable as dict keys. `Float` values cannot be used as keys — floating-point equality semantics make them unreliable as hash keys.
 
@@ -99,23 +99,23 @@ The promotion table is built into the evaluator. User-defined numeric types part
 **No `null` value in the language.** Accessing a nonexistent key is an error.
 
 ```tinct
-[call $get $person name]         # → Alice
-[call $get $person occupation]   # → Error: key "occupation" not found
+[get person "name"]              # → "Alice"
+[get person "occupation"]        # → Error: key "occupation" not found
 
 # Safe alternative with default
-[call $get-or $config timeout 30]  # → 30 if "timeout" is missing
+[get-or config "timeout" 30]    # → 30 if "timeout" is missing
 
 # Check existence
-[call $has? $config timeout]       # → true/false
+[has? config "timeout"]          # → true/false
 ```
 
 **Why no null:**
 - **Row polymorphism catches it at compile time.** A function taking `[name: String ...]` guarantees `name` exists. Most missing-key bugs never reach runtime.
-- **Lazy eval provides a safety net.** `[x: [call $get $dict maybe-missing]]` doesn't error until `$x` is materialized. If you never use `$x`, no error.
+- **Lazy eval provides a safety net.** `[x: [get dict "maybe-missing"]]` doesn't error until `x` is materialized. If you never use `x`, no error.
 - **No null confusion.** Can't confuse "key exists with null" vs "key is missing." Every key that exists has a real value.
 - **Clean data representation.** Config files have no `null` noise — every key is meaningful.
 
-**JSON null mapping:** Since Tinct has no null value, `$from-json` (and CLI stdin JSON injection) maps JSON `null` to `[]` (empty dict). This means it is impossible to distinguish "was null" from "was empty object" after conversion. This is an intentional trade-off -- Tinct's "no null" design prioritizes simplicity over round-trip fidelity with JSON.
+**JSON null mapping:** Since Tinct has no null value, `from-json` (and CLI stdin JSON injection) maps JSON `null` to `[]` (empty dict). This means it is impossible to distinguish "was null" from "was empty object" after conversion. This is an intentional trade-off -- Tinct's "no null" design prioritizes simplicity over round-trip fidelity with JSON.
 
 ## Data Access — Two Modes
 
@@ -125,24 +125,24 @@ Data access has two distinct modes: **key-based** (look up by key) and **positio
 
 ```tinct
 # Dot notation (string keys)
-$person.name                    # ≡ [call $get $person name]
-$config.database.host           # ≡ chained $get
+person.name                     # ≡ [get person "name"]
+config.database.host            # ≡ chained get
 
 # Bracket notation (any key type)
-$data[5]                        # Integer key 5
-$data[-1]                       # Integer key -1 (NOT last element)
-$data[$key]                     # Computed key lookup
-$config.services[0].host        # Mixed chaining — key 0 on services
+data[5]                         # Integer key 5
+data[-1]                        # Integer key -1 (NOT last element)
+data[key]                       # Computed key lookup
+config.services[0].host         # Mixed chaining — key 0 on services
 ```
 
-**Rules:** Only `$ref.key` / `$ref[key]` — the left side must start with `$`. Bare `foo.bar` is just a string containing a dot. Brackets are always key-based — `$data[5]` finds the entry whose key is 5, not the 5th entry by position.
+**Rules:** Identifiers can start access chains directly — `foo.bar` and `$foo.bar` are both valid. Brackets are always key-based — `data[5]` finds the entry whose key is 5, not the 5th entry by position.
 
 **Key-range slicing** with `..`:
 
 ```tinct
-$data[2..5]                     # Entries with keys in [2, 5)
-$data[2..]                      # Entries with keys ≥ 2
-$data[..3]                      # Entries with keys < 3
+data[2..5]                      # Entries with keys in [2, 5)
+data[2..]                       # Entries with keys ≥ 2
+data[..3]                       # Entries with keys < 3
 ```
 
 Key-range slicing requires keys to be comparable. All-integer or all-string keys work; mixed-type keys are an error (caught by the type system). The range operator uses `..` (not `:`, which would conflict with the key-value separator).
@@ -150,13 +150,13 @@ Key-range slicing requires keys to be comparable. All-integer or all-string keys
 **Position-based access** — stdlib functions:
 
 ```tinct
-[call $nth $data 0]       # First entry (position 0)
-[call $nth $data -1]      # Last entry (negative = from end)
-[call $last $data]              # Last entry (alias)
-[call $slice $data 2 5]         # Entries at positions 2, 3, 4
+[nth data 0]                    # First entry (position 0)
+[nth data -1]                   # Last entry (negative = from end)
+[last data]                     # Last entry (alias)
+[slice data 2 5]                # Entries at positions 2, 3, 4
 ```
 
-**Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `$data[0]` (key 0) and `[call $nth $data 0]` (position 0) return the same thing — you never need `$nth` unless you specifically want insertion-order semantics on sparse data.
+**Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `data[0]` (key 0) and `[nth data 0]` (position 0) return the same thing — you never need `nth` unless you specifically want insertion-order semantics on sparse data.
 
 ### Lazy Sequences — Value::Seq
 
@@ -170,47 +170,47 @@ Sequences are dual-dispatch targets: `$map` on a Seq returns a lazy Seq, `$filte
 
 ```tinct
 # List operations — integer keys only, always renumber
-[call $first [alice bob carol]]         # → alice
-[call $rest [alice bob carol]]          # → [bob carol] = [0: bob  1: carol]
-[call $cons z [a b c]]                  # → [z a b c] = [0: z  1: a  2: b  3: c]
-[call $conj [a b c] d]                  # → [a b c d] = [0: a  1: b  2: c  3: d]
-[call $concat [a b] [c d]]             # → [a b c d] = [0: a  1: b  2: c  3: d]
-[call $reverse [a b c]]                 # → [c b a] = [0: c  1: b  2: a]
-[call $sort [cherry apple banana]]      # → [apple banana cherry] — sorts by value, discards original keys
-[call $reindex [0: a  5: b  10: c]]     # → [a b c] = [0: a  1: b  2: c]
+[first [alice bob carol]]               # → alice
+[rest [alice bob carol]]                # → [bob carol] = [0: bob  1: carol]
+[cons z [a b c]]                        # → [z a b c] = [0: z  1: a  2: b  3: c]
+[conj [a b c] d]                        # → [a b c d] = [0: a  1: b  2: c  3: d]
+[concat [a b] [c d]]                    # → [a b c d] = [0: a  1: b  2: c  3: d]
+[reverse [a b c]]                       # → [c b a] = [0: c  1: b  2: a]
+[sort [cherry apple banana]]            # → [apple banana cherry] — sorts by value, discards original keys
+[reindex [0: a  5: b  10: c]]           # → [a b c] = [0: a  1: b  2: c]
 ```
 
 **Why this split:**
 - No ambiguity about which operations renumber — it's determined by the category, not the data
 - List operations always give you clean, predictable lists
 - Dict operations never silently destroy your key structure
-- `$filter` returns a Seq of matching values (since inclusion requires predicate evaluation, keys are not preserved) — use `$collect` to get a dict back
+- `filter` returns a Seq of matching values (since inclusion requires predicate evaluation, keys are not preserved) — use `collect` to get a dict back
 - The type system enforces the boundary: list operations require `[a]` (integer-keyed)
 
 ```tinct
-# $filter returns a Seq of matching values (dual-dispatch)
-$data: [alice bob carol dave]
-[call $filter [fn [x] [call $not [call $= $x bob]]] $data]
-# → Seq(alice, carol, dave)    use $collect for a dict
+# filter returns a Seq of matching values (dual-dispatch)
+data: [alice bob carol dave]
+[filter [fn [x] [not [= x bob]]] data]
+# → Seq(alice, carol, dave)    use collect for a dict
 
-# Pipe through $collect for a clean list
-[call $collect [call $filter [fn [x] [call $not [call $= $x bob]]] $data]]
+# Pipe through collect for a clean list
+[collect [filter [fn [x] [not [= x bob]]] data]]
 # → [0: alice  1: carol  2: dave]
 
-# $filter on string-keyed dicts also returns Seq of values
-[call $collect [call $filter [fn [v] [call $> $v 0]] [x: 1  y: -2  z: 3]]]
+# filter on string-keyed dicts also returns Seq of values
+[collect [filter [fn [v] [> v 0]] [x: 1  y: -2  z: 3]]]
 # → [0: 1  1: 3]
 ```
 
-**`$conj` on sparse data:** `$conj` delegates to `$append`, which uses the maximum existing integer key + 1 as the new key (or 0 if no integer keys exist). This avoids key collisions even on sparse data:
+**`conj` on sparse data:** `conj` delegates to `append`, which uses the maximum existing integer key + 1 as the new key (or 0 if no integer keys exist). This avoids key collisions even on sparse data:
 
 ```tinct
-# Dense list — $conj works as expected
-[call $conj [a b c] d]                  # → [0: a  1: b  2: c  3: d]
+# Dense list — conj works as expected
+[conj [a b c] d]                        # → [0: a  1: b  2: c  3: d]
 
 # Sparse data — no collision, key 11 is used (max 10 + 1)
-$sparse: [0: a  5: b  10: c]
-[call $conj $sparse d]                  # → [0: a  5: b  10: c  11: d]
+sparse: [0: a  5: b  10: c]
+[conj sparse d]                         # → [0: a  5: b  10: c  11: d]
 ```
 
 ### Access Chain Evaluation — Formal Specification
@@ -408,37 +408,37 @@ The type checker mirrors the access algebra with type-level projections:
 **Example 1: Chained dot access**
 
 ```tinct
-[config: [database: [host: localhost  port: 5432]]]
+[config: [database: [host: "localhost"  port: 5432]]]
 
-[call $str $config.database.host]
+[str config.database.host]
 ```
 
-Chain: `dot("database") · dot("host")` applied to `$config`.
+Chain: `dot("database") · dot("host")` applied to `config`.
 1. `eval(VarRef("config"), ρ)` → `θ_config`
 2. `force_dict(θ_config)` → `{database: θ_db}`. `map[String("database")]` → `θ_db`. Result: `θ_db` (lazy).
 3. `force_dict(θ_db)` → `{host: θ_host, port: θ_port}`. `map[String("host")]` → `θ_host`. Result: `θ_host` (lazy).
-4. `$str` forces `θ_host` → `"localhost"`.
+4. `str` forces `θ_host` → `"localhost"`.
 
 Note: `θ_port` is never forced — Property 2 (result laziness) means accessing `.host` does not evaluate `.port`.
 
 **Example 2: Mixed chain with bracket**
 
 ```tinct
-$services[0].host
+services[0].host
 ```
 
 Chain: `bracket(Int(0)) · dot("host")`.
-1. `force_dict($services)` → map. `eval_key(Int(0))` → `Key::Int(0)`. `map[Int(0)]` → `θ_svc0`.
+1. `force_dict(services)` → map. `eval_key(Int(0))` → `Key::Int(0)`. `map[Int(0)]` → `θ_svc0`.
 2. `force_dict(θ_svc0)` → `{host: θ_host, ...}`. `map[String("host")]` → `θ_host`.
 
 **Example 3: Range access**
 
 ```tinct
-$data: [a: 1  b: 2  c: 3  d: 4]
-$data[b..d]
+data: [a: 1  b: 2  c: 3  d: 4]
+data["b".."d"]
 ```
 
-`force_dict($data)` → `{a: θ₁, b: θ₂, c: θ₃, d: θ₄}`. Bounds: `s = String("b")`, `e = String("d")`.
+`force_dict(data)` → `{a: θ₁, b: θ₂, c: θ₃, d: θ₄}`. Bounds: `s = String("b")`, `e = String("d")`.
 - `key_in_range(String("a"), "b", "d")`: `"a" < "b"` → `after_start` = false → exclude.
 - `key_in_range(String("b"), "b", "d")`: `"b" ≥ "b"` ∧ `"b" < "d"` → include.
 - `key_in_range(String("c"), "b", "d")`: `"c" ≥ "b"` ∧ `"c" < "d"` → include.

@@ -2,27 +2,30 @@
 
 ## Explicit Function Application
 
-**`call` keyword.** No implicit head evaluation. Brackets are always data.
+**Implied call via bare identifier in head position.** When a bare identifier appears in head position, the bracket is a function call. The `call` keyword is optional — it remains valid for backwards compatibility and computed function expressions.
 
 ```tinct
-[a b c]                # Data — always
-[call $f $a $b $c]     # Function call — $f is the function, $a $b $c are arguments
+["a" "b" "c"]          # Data — literal in head position
+[f a b c]              # Function call — bare identifier "f" in head
+[call f a b c]         # Explicit call (identical AST to implied)
 ```
 
-Syntactically, `[call $f $x]` is a bracket expression with unkeyed entries (the same parsing mechanism as `[a b c]`). The `call` keyword triggers special-form recognition: the parser interprets the remaining entries as function + arguments, not as data. The AST represents this as a `Call` node with `func`, `args`, and `named_args` — not as a dict.
+Syntactically, `[f x]` is a bracket expression with unkeyed entries (the same parsing mechanism as `["a" "b" "c"]`). A bare identifier in head position triggers implied call: the parser interprets the expression as function + arguments. The AST represents this as a `Call` node with `func`, `args`, and `named_args` — not as a dict.
 
-**Why:** Enables full lazy evaluation. Without `call`, the evaluator must eagerly materialize the head of every bracketed expression. With `call`, the entire application (including the function) can remain a thunk until materialized.
+**Why:** Enables full lazy evaluation. Without `call`, the evaluator must eagerly materialize the head of every bracketed expression. With `call`, the entire application (including the function) can remain a thunk until materialized. The parser-level head-position rule preserves this property while making function calls more concise.
 
-**Parser recognition:** The parser checks the first entry of every `[]`. If it matches a keyword (`call`, `fn`, `type`), the parser emits a specialized AST node. Otherwise it emits a `Dict` node. This is a parser-level decision, not an evaluator-level one.
+**Parser recognition:** The parser checks the first entry of every `[]`. If it matches a keyword (`call`, `fn`, `type`), the parser emits a specialized AST node. If it's a bare identifier (not followed by `:`), the parser emits a `Call` node (implied call). Otherwise it emits a `Dict` node. This is a parser-level decision, not an evaluator-level one.
 
 ```tinct
-[call $f $x $y]                # Parsed as CallExpr — arity checked at eval time
-[fn [x] [call $+ $x 1]]       # Parsed as FnExpr — function definition
+[f x y]                        # Parsed as CallExpr — implied call
+[call f x y]                   # Parsed as CallExpr — explicit call (identical AST)
+[fn [x] [+ x 1]]               # Parsed as FnExpr — function definition
 ```
 
 **Edge cases:**
 - `[call: something]` — the `:` makes `call` a key, not a keyword. Parsed as `Dict`.
-- `$call` — a variable reference, not the keyword. `[$call $x]` is a `Dict`, not a `CallExpr`.
+- `[f]` — zero-argument call to `f` (Lisp-consistent: `(f)` is always application).
+- `[$f]` — data: single-element sequence containing `ref(f)`. The `$` prefix prevents call interpretation.
 
 **No built-in alias.** Users can define their own shorthand in stdlib or user code.
 
@@ -38,14 +41,14 @@ named_arg = { named_arg_key ~ ":" ~ value }
 named_arg_key = @{ "$" ~ var_ident | bare_word }
 ```
 
-**Note:** Both `$timeout: 60` and `timeout: 60` create a named argument with name `"timeout"`. The `$` prefix is syntactic sugar for readability (mirroring the `$var` variable reference syntax) — the parser strips the `$` prefix, storing only `"timeout"` in the AST's `NamedArg.name` field. This ensures the argument name matches the parameter name directly during binding without prefix-stripping at evaluation time.
+**Note:** Both `$timeout: 60` and `timeout: 60` create a named argument with name `"timeout"`. The `$` prefix is syntactic sugar for readability (mirroring the escaped reference syntax) — the parser strips the `$` prefix, storing only `"timeout"` in the AST's `NamedArg.name` field. This ensures the argument name matches the parameter name directly during binding without prefix-stripping at evaluation time.
 
-Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time — the parser recognizes `call` as a keyword and emits a `Call` AST node, but arity checking beyond function-position detection is deferred to the evaluator (which has access to the function's parameter list). See [Call Convention — Formal Specification](#call-convention--formal-specification) for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
+Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time — the parser recognizes `call` as a keyword (or implied call from bare identifier in head position) and emits a `Call` AST node, but arity checking beyond function-position detection is deferred to the evaluator (which has access to the function's parameter list). See [Call Convention — Formal Specification](#call-convention--formal-specification) for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
 
 Examples:
 ```tinct
-[call $f $x $y]
-[call $fetch "https://example.com" timeout: 60]
+[f x y]
+[fetch "https://example.com" timeout: 60]
 ```
 
 ## Function Definition
@@ -54,8 +57,8 @@ Examples:
 
 ```tinct
 [
-    double: [fn@Number [x@Number] [call $* $x 2]]
-    add: [fn@Number [x@Number y@Number] [call $+ $x $y]]
+    double: [fn@Number [x@Number] [* x 2]]
+    add: [fn@Number [x@Number y@Number] [+ x y]]
 ]
 ```
 
@@ -81,10 +84,10 @@ variadic_param = @{ "..." ~ param_name }
 
 Examples:
 ```tinct
-[fn [x] $x]
-[fn@Number [x@Number y@Number] [call $+ $x $y]]
-[fn@[type: Number  doc: "Sum"] [x@Number  y@[type: Number  default: 0]] [call $+ $x $y]]
-[fn [f ...args] [call $map $f $args]]
+[fn [x] x]
+[fn@Number [x@Number y@Number] [+ x y]]
+[fn@[type: Number  doc: "Sum"] [x@Number  y@[type: Number  default: 0]] [+ x y]]
+[fn [f ...args] [map f args]]
 ```
 
 ## Function Arguments
@@ -92,7 +95,7 @@ Examples:
 **Named args supported for any parameter (Kotlin model).**
 
 ```tinct
-[call $fetch "https://example.com" timeout: 30  retries: 3]
+[fetch "https://example.com" timeout: 30  retries: 3]
 ```
 
 ## Variadic Parameters
@@ -101,86 +104,86 @@ Examples:
 
 ```tinct
 ->: [fn [data ...stages]
-    [call $reduce [fn [acc f] [call $f $acc]] $data $stages]]
+    [reduce [fn [acc f] [f acc]] data stages]]
 
 # Called as:
-[call $-> $data $step1 $step2 $step3]
-# $data = ..., $stages = [$step1 $step2 $step3]
+[-> data step1 step2 step3]
+# data = ..., stages = [step1 step2 step3]
 ```
 
-## Lambdas and `$_` Shorthand
+## Lambdas and `_` Shorthand
 
 ### No Auto-Curry
 
-**`call` requires exact arity.** Passing too few or too many arguments is an error. Use lambdas or `$_` shorthand to adapt arity.
+**`call` requires exact arity.** Passing too few or too many arguments is an error. Use lambdas or `_` shorthand to adapt arity.
 
 ```tinct
-add: [fn@Number [x@Number y@Number] [call $+ $x $y]]
+add: [fn@Number [x@Number y@Number] [+ x y]]
 
-[call $add 1 2]                # → 3 (exact arity)
-[call $add 1]                  # ERROR: $add expects 2 arguments, got 1
+[add 1 2]                      # → 3 (exact arity)
+[add 1]                        # ERROR: add expects 2 arguments, got 1
 ```
 
-**`$_` implicit lambda shorthand:** Any `[...]` expression that directly contains `$_` (not nested inside an inner `[...]`) is automatically wrapped in a single-argument function. `$_` becomes the parameter. All occurrences of `$_` in that bracket refer to the same parameter.
+**`_` implicit lambda shorthand:** Any `[...]` expression that directly contains `_` (not nested inside an inner `[...]`) is automatically wrapped in a single-argument function. `_` becomes the parameter. All occurrences of `_` in that bracket refer to the same parameter.
 
 ```tinct
-[call $add $_ 1]               # → [fn [_] [call $add $_ 1]]
-[call $> $_.age 30]            # → [fn [_] [call $> $_.age 30]]
-$_.name                        # → [fn [_] $_.name]  (access chain, no brackets)
+[add _ 1]                      # → [fn [_] [add _ 1]]
+[> _.age 30]                   # → [fn [_] [> _.age 30]]
+_.name                         # → [fn [_] _.name]  (access chain, no brackets)
 ```
 
-**`$_` in dict values:** `$_` desugaring also applies to dict literals. If any entry value directly contains `$_`, the entire dict is wrapped in an implicit lambda:
+**`_` in dict values:** `_` desugaring also applies to dict literals. If any entry value directly contains `_`, the entire dict is wrapped in an implicit lambda:
 
 ```tinct
-[name: $_.name  age: $_.age]   # → [fn [_] [name: $_.name  age: $_.age]]
+[name: _.name  age: _.age]     # → [fn [_] [name: _.name  age: _.age]]
 ```
 
 This is useful for creating projection functions in pipelines:
 
 ```tinct
-[call $map [name: $_.name  age: $_.age] $users]
+[map [name: _.name  age: _.age] users]
 ```
 
-**`$_` in func position:** `$_` in the function position of `[call $_ ...]` does **not** trigger implicit lambda desugaring. Only `$_` in arguments, named arguments, dict values, and access chains triggers desugaring. `[call $_ $x]` is a call where the function is looked up from the variable `_`, not an implicit lambda.
+**`_` in func position:** `_` in the function position of `[_ ...]` does **not** trigger implicit lambda desugaring. Only `_` in arguments, named arguments, dict values, and access chains triggers desugaring. `[_ x]` is a call where the function is looked up from the variable `_`, not an implicit lambda.
 
-**`$_` in access chain keys/bounds:** `$_` in the key position of bracket access (e.g., `$data[$_]`) or in range bounds (e.g., `$data[$_..5]`) does **not** trigger desugaring. Only `$_` as the *target* of an access chain (e.g., `$_[0]`, `$_.name`) triggers implicit lambda wrapping.
+**`_` in access chain keys/bounds:** `_` in the key position of bracket access (e.g., `data[_]`) or in range bounds (e.g., `data[_..5]`) does **not** trigger desugaring. Only `_` as the *target* of an access chain (e.g., `_[0]`, `_.name`) triggers implicit lambda wrapping.
 
-**Scoping rule:** The lambda boundary is the innermost `[...]` that directly contains `$_`. Nested bracket expressions that contain their own `$_` create separate lambdas:
+**Scoping rule:** The lambda boundary is the innermost `[...]` that directly contains `_`. Nested bracket expressions that contain their own `_` create separate lambdas:
 
 ```tinct
-[call $filter [call $> $_.age 30] $users]
-#            └─── inner $_ ───┘
-# Inner [call $> $_.age 30] contains $_ → becomes [fn [_] [call $> $_.age 30]]
-# Outer [call $filter ...] does NOT contain $_ directly → stays as-is
-# Result: [call $filter [fn [_] [call $> $_.age 30]] $users]
+[filter [> _.age 30] users]
+#       └─ inner _ ─┘
+# Inner [> _.age 30] contains _ → becomes [fn [_] [> _.age 30]]
+# Outer [filter ...] does NOT contain _ directly → stays as-is
+# Result: [filter [fn [_] [> _.age 30]] users]
 ```
 
-**Pipeline interaction:** `$->` threads a value through a list of single-argument functions. Each pipeline step is either a function reference (for 1-arg functions) or a `$_` expression that creates an implicit lambda:
+**Pipeline interaction:** `->` threads a value through a list of single-argument functions. Each pipeline step is either a function reference (for 1-arg functions) or a `_` expression that creates an implicit lambda:
 
 ```tinct
-[call $-> $data.users
-    [call $filter [call $> $_.age 30] $_]   # two $_ levels: inner = element, outer = collection
-    [call $map $_.name $_]                  # inner $_.name = element transform, outer $_ = collection
-    $sort]                                  # ref: already 1-arg
+[-> data.users
+    [filter [> _.age 30] _]    # two _ levels: inner = element, outer = collection
+    [map _.name _]             # inner _.name = element transform, outer _ = collection
+    sort]                      # ref: already 1-arg
 ```
 
-Desugaring of `[call $filter [call $> $_.age 30] $_]`:
-1. Inner `[call $> $_.age 30]` contains `$_` → `[fn [_] [call $> $_.age 30]]`
-2. Outer `[call $filter ... $_]` still contains `$_` → `[fn [_] [call $filter [fn [_] [call $> $_.age 30]] $_]]`
-3. Each `$_` binds to its innermost enclosing lambda (lexical scoping)
+Desugaring of `[filter [> _.age 30] _]`:
+1. Inner `[> _.age 30]` contains `_` → `[fn [_] [> _.age 30]]`
+2. Outer `[filter ... _]` still contains `_` → `[fn [_] [filter [fn [_] [> _.age 30]] _]]`
+3. Each `_` binds to its innermost enclosing lambda (lexical scoping)
 
-**`$apply` spreads a list into function arguments:**
+**`apply` spreads a list into function arguments:**
 
 ```tinct
 args: [5 10]
-[call $apply $+ $args]         # → [call $+ 5 10] → 15
+[apply + args]                 # → [+ 5 10] → 15
 ```
 
 **Why not auto-curry:** Auto-currying makes arity errors silent. Pass too few arguments and you get a partial application instead of an error. Explicit arity checking catches mistakes.
 
-### `$_` Desugaring — Formal Specification
+### `_` Desugaring — Formal Specification
 
-`$_` desugaring is a **pre-typecheck source-to-source AST transformation**. It runs after parsing and before both type checking and evaluation. The type checker and evaluator both see the desugared form (Scala, Clojure, and Elixir all desugar placeholder syntax before evaluation — none gate on the runtime environment). See Pombrio & Krishnamurthi (2014) for the formal framework motivating pre-evaluation desugaring; Krishnamurthi (2012, PLAI) for the standard pipeline ordering.
+`_` desugaring is a **pre-typecheck source-to-source AST transformation**. It runs after parsing and before both type checking and evaluation. The type checker and evaluator both see the desugared form (Scala, Clojure, and Elixir all desugar placeholder syntax before evaluation — none gate on the runtime environment). See Pombrio & Krishnamurthi (2014) for the formal framework motivating pre-evaluation desugaring; Krishnamurthi (2012, PLAI) for the standard pipeline ordering.
 
 **Pipeline placement:**
 
@@ -190,7 +193,7 @@ source → parse → desugar_underscores → typecheck → eval
 
 The pass operates on `Spanned<File>` (multi-document) and `Spanned<Expr>` (single expression for REPL). Both `eval_source()` and REPL entry points call the desugar pass after parsing.
 
-**DIRECT predicate.** Tests whether an expression is `$_` or an access chain rooted at `$_`. Operates on **raw** (pre-desugaring) AST nodes. Access chain keys, range bounds, and dict entry keys are excluded — only the access *target* triggers desugaring:
+**DIRECT predicate.** Tests whether an expression is `_` or an access chain rooted at `_`. Operates on **raw** (pre-desugaring) AST nodes. Access chain keys, range bounds, and dict entry keys are excluded — only the access *target* triggers desugaring:
 
 ```
 DIRECT(e) = match e with:
@@ -201,7 +204,7 @@ DIRECT(e) = match e with:
   | _                        → false
 ```
 
-**Rewrite rules.** The pass checks WRAP conditions on **raw** (un-desugared) children *before* recursing. DIRECT subtrees are left as-is inside the generated `Fn` body — they are variable references to the `_` parameter, not candidates for further wrapping. Non-DIRECT children are recursed into at depth+1 (inside the generated lambda, `_` is bound). This avoids the greedy-wrapping problem where naive bottom-up traversal would wrap `$_.age` before its enclosing Call could claim it (Visser 1998).
+**Rewrite rules.** The pass checks WRAP conditions on **raw** (un-desugared) children *before* recursing. DIRECT subtrees are left as-is inside the generated `Fn` body — they are variable references to the `_` parameter, not candidates for further wrapping. Non-DIRECT children are recursed into at depth+1 (inside the generated lambda, `_` is bound). This avoids the greedy-wrapping problem where naive bottom-up traversal would wrap `_.age` before its enclosing Call could claim it (Visser 1998).
 
 ```
 DESUGAR(e, depth) =
@@ -230,7 +233,7 @@ DESUGAR(e, depth) =
             [e{value=DESUGAR(e.value, depth + 1)}
              | e ∈ entries]))
 
-  -- WRAP-DOT/BRACKET/RANGE: standalone access chain rooted at $_
+  -- WRAP-DOT/BRACKET/RANGE: standalone access chain rooted at _
   -- Only fires when no enclosing Call/Dict claimed it
   | DotAccess(target, field)
       where DIRECT(target)
@@ -257,36 +260,36 @@ DESUGAR(e, depth) =
 |------|-----------|--------|
 | WRAP-CALL | Any arg or named arg value is DIRECT (func position excluded) | Wrap in `Fn([_], Call(...))` |
 | WRAP-DICT | Any entry value is DIRECT | Wrap in `Fn([_], Dict(...))` |
-| WRAP-DOT | Standalone `$_.field` (not inside a Call/Dict that claims it) | Wrap in `Fn([_], DotAccess(...))` |
-| WRAP-BRACKET | Standalone `$_[key]` | Wrap in `Fn([_], BracketAccess(...))` |
-| WRAP-RANGE | Standalone `$_[lo..hi]` | Wrap in `Fn([_], RangeAccess(...))` |
+| WRAP-DOT | Standalone `_.field` (not inside a Call/Dict that claims it) | Wrap in `Fn([_], DotAccess(...))` |
+| WRAP-BRACKET | Standalone `_[key]` | Wrap in `Fn([_], BracketAccess(...))` |
+| WRAP-RANGE | Standalone `_[lo..hi]` | Wrap in `Fn([_], RangeAccess(...))` |
 
 **Exclusions.** The following positions do **not** trigger desugaring:
 
-- **Func position in Call:** The function position is excluded from the DIRECT check (not from the wrapping). WRAP-CALL fires when any arg or named value is DIRECT, regardless of whether the function itself is also DIRECT. When both func and an arg are DIRECT (e.g., `[call $_ $_]`), wrapping produces `[fn [_] [call $_ $_]]` where both references bind to the same `_` parameter. A bare `[call $_ $x]` (func is DIRECT, no args are DIRECT) does not trigger WRAP-CALL; the func `$_` falls through to PASS and is recursed normally.
-- **Bracket access keys:** `$data[$_]` — `$_` in the key position is not checked by DIRECT on the target.
-- **Range bounds:** `$data[$_..5]` — bounds are not checked by DIRECT on the target.
-- **Dict entry keys:** `[$_: value]` — WRAP-DICT checks `DIRECT(entry.value)` only, never `entry.key`.
-- **TypeAssert values:** `[@Number $_.age]` — TypeAssert is not a WRAP form. The inner `$_.age` triggers WRAP-DOT independently, producing `[@Number [fn [_] $_.age]]` (a type assertion on a function). This is likely a user error; the type checker will report a mismatch.
+- **Func position in Call:** The function position is excluded from the DIRECT check (not from the wrapping). WRAP-CALL fires when any arg or named value is DIRECT, regardless of whether the function itself is also DIRECT. When both func and an arg are DIRECT (e.g., `[_ _]`), wrapping produces `[fn [_] [_ _]]` where both references bind to the same `_` parameter. A bare `[_ x]` (func is DIRECT, no args are DIRECT) does not trigger WRAP-CALL; the func `_` falls through to PASS and is recursed normally.
+- **Bracket access keys:** `data[_]` — `_` in the key position is not checked by DIRECT on the target.
+- **Range bounds:** `data[_..5]` — bounds are not checked by DIRECT on the target.
+- **Dict entry keys:** `[_: value]` — WRAP-DICT checks `DIRECT(entry.value)` only, never `entry.key`.
+- **TypeAssert values:** `[@Number _.age]` — TypeAssert is not a WRAP form. The inner `_.age` triggers WRAP-DOT independently, producing `[@Number [fn [_] _.age]]` (a type assertion on a function). This is likely a user error; the type checker will report a mismatch.
 
-**Boundary forms and scoping.** `Dict`, `Call`, and `Fn` are **lambda boundaries**. The WRAP rules check raw children before recursing, so each `$_` binds to the innermost enclosing bracket that triggers a WRAP rule:
+**Boundary forms and scoping.** `Dict`, `Call`, and `Fn` are **lambda boundaries**. The WRAP rules check raw children before recursing, so each `_` binds to the innermost enclosing bracket that triggers a WRAP rule:
 
 ```
-[call $filter [call $> $_.age 30] $users]
+[filter [> _.age 30] users]
 
 Traversal (top-down check, selective recursion):
-  1. Outer Call: DIRECT($users)? No. DIRECT([call $> $_.age 30])? No (Call is
+  1. Outer Call: DIRECT(users)? No. DIRECT([> _.age 30])? No (Call is
      not DIRECT). No WRAP. RECURSE_CHILDREN.
-  2. Inner Call: DIRECT($_.age)? Yes (in args). WRAP-CALL fires.
-     → Fn([_], [call $> $_.age 30])
-  3. Outer Call now has args = [<fn>, $users] — neither is DIRECT. Unchanged.
-  Result: [call $filter [fn [_] [call $> $_.age 30]] $users]  ✓
+  2. Inner Call: DIRECT(_.age)? Yes (in args). WRAP-CALL fires.
+     → Fn([_], [> _.age 30])
+  3. Outer Call now has args = [<fn>, users] — neither is DIRECT. Unchanged.
+  Result: [filter [fn [_] [> _.age 30]] users]  ✓
 ```
 
-**Shadowing.** If `_` is a parameter of an enclosing `Fn`, inner `$_` references refer to that parameter — they are ordinary variable references, not desugaring triggers. The `depth` parameter tracks this lexically:
+**Shadowing.** If `_` is a parameter of an enclosing `Fn`, inner `_` references refer to that parameter — they are ordinary variable references, not desugaring triggers. The `depth` parameter tracks this lexically:
 
-- `depth = 0`: `$_` is unbound, WRAP rules apply.
-- `depth > 0`: `$_` is bound by an enclosing `Fn([_] ...)`, RECURSE_CHILDREN only.
+- `depth = 0`: `_` is unbound, WRAP rules apply.
+- `depth > 0`: `_` is bound by an enclosing `Fn([_] ...)`, RECURSE_CHILDREN only.
 
 This replaced the eval-time `env.borrow().get("_").is_none()` check with a purely syntactic scope analysis. The lexical approach is more precise: desugaring depends only on AST structure, never on the runtime environment.
 
@@ -294,9 +297,9 @@ This replaced the eval-time `env.borrow().get("_").is_none()` check with a purel
 
 1. **Syntactic determinism.** The desugaring result depends only on the AST structure, never on the runtime environment. The same expression always desugars the same way.
 2. **Idempotence.** Applying `DESUGAR` to an already-desugared AST produces no changes (the generated `Fn` nodes have `_` as a single parameter, setting depth > 0 for inner references).
-3. **Type visibility.** After desugaring, the type checker sees `Fn` nodes and can infer function types for `$_` expressions. With the current type checker (unannotated params default to `Type::Any`), `[call $add $_ 1]` types as `Fn(Any → Number)`. With future bidirectional checking, the call-site context could refine the parameter type — e.g., `[call $map $_.name $users]` where `$users: Seq[[name: Str ...]]` could check the lambda against `Fn([name: Str ...] → Str)`. Row-polymorphic parameter inference (see row-unification section) would further improve this to `Fn([name: α ...ρ] → α)`.
+3. **Type visibility.** After desugaring, the type checker sees `Fn` nodes and can infer function types for `_` expressions. With the current type checker (unannotated params default to `Type::Any`), `[add _ 1]` types as `Fn(Any → Number)`. With future bidirectional checking, the call-site context could refine the parameter type — e.g., `[map _.name users]` where `users: Seq[[name: Str ...]]` could check the lambda against `Fn([name: Str ...] → Str)`. Row-polymorphic parameter inference (see row-unification section) would further improve this to `Fn([name: α ...ρ] → α)`.
 
-**Span preservation.** Generated `Fn` nodes reuse the span of the original expression. Error messages reference user-written syntax (`[call $add $_ 1]`), not the desugared form (`[fn [_] [call $add $_ 1]]`).
+**Span preservation.** Generated `Fn` nodes reuse the span of the original expression. Error messages reference user-written syntax (`[add _ 1]`), not the desugared form (`[fn [_] [add _ 1]]`).
 
 **Implementation sketch:**
 
@@ -316,7 +319,7 @@ fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
 }
 ```
 
-**Migration from eval-time desugaring.** The implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) was removed when the AST pass was activated. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) moved to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) now call `desugar_expr()` before `eval()`. The migration resolved TODO.md:44 ("$_ desugaring AST shape mismatch between type checker and evaluator").
+**Migration from eval-time desugaring.** The implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) was removed when the AST pass was activated. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) moved to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) now call `desugar_expr()` before `eval()`. The migration resolved TODO.md:44 ("_ desugaring AST shape mismatch between type checker and evaluator").
 
 #### Testing Requirements
 
@@ -583,9 +586,9 @@ Trace all five phases for a call with interleaved required/optional parameters:
 
 ```tinct
 greet: [fn [greeting@[default: "hello"] name sep@[default: " "]]
-    [call $str $greeting $sep $name]]
+    [str greeting sep name]]
 
-[call $greet name: "Alice"]
+[greet name: "Alice"]
 ```
 
 **BIND-SPLIT:** `params = [greeting, name, sep]`. No variadic.
@@ -612,7 +615,7 @@ Result: `env₃ = {greeting↦"hello", name↦θ_Alice, sep↦" "}`
 
 **Result:** `env_call = {greeting↦"hello", name↦θ_Alice, sep↦" "}`. Evaluates to `"hello Alice"`.
 
-Without the Kotlin model, this call would fail — `name` has no `default:`, so it couldn't be named. The caller would have to write `[call $greet "hello" "Alice"]`, defeating the purpose of `greeting`'s default.
+Without the Kotlin model, this call would fail — `name` has no `default:`, so it couldn't be named. The caller would have to write `[greet "hello" "Alice"]`, defeating the purpose of `greeting`'s default.
 
 **`PendingCall` thunk state:**
 
@@ -634,4 +637,4 @@ Both support lazy evaluation, but `PendingCall` works at the Tinct function leve
 
 **Error reporting:** When `PendingCall` materialization fails, the definition-site span comes from the function's body, the materialization-site span from where the thunk was forced, and a stack frame is added with the deferred call's creation span (from `call_span`).
 
-**Motivation:** Operations like `$map` on dicts need to create new thunks that apply a function to each value, but they can't store AST nodes (the function comes from a runtime variable). `PendingCall` lets them defer function application without needing to construct new AST `CallExpr` nodes.
+**Motivation:** Operations like `map` on dicts need to create new thunks that apply a function to each value, but they can't store AST nodes (the function comes from a runtime variable). `PendingCall` lets them defer function application without needing to construct new AST `CallExpr` nodes.
