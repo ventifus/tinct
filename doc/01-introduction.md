@@ -17,13 +17,13 @@ Tinct:          Tinct (data + transformation)       = One language
 
 ### Pipeline Model
 
-Data flows through stages. Within a file, `---` separates independent documents. Each document's output becomes `$$` for the next:
+Data flows through stages. Within a file, `---` separates independent documents. Each document's output becomes `%` for the next:
 
 ```
 file.llt
-├── document 1 (data)         → $$ for doc 2
+├── document 1 (data)         → % for doc 2
 ├── ---
-├── document 2 (transform)    → $$ for doc 3
+├── document 2 (transform)    → % for doc 3
 ├── ---
 └── document 3 (output)       → final value, serialized by CLI
 ```
@@ -34,7 +34,7 @@ Within a document, sequential expressions form a scope chain — each expression
 
 Designed for LLMs to generate and modify:
 - Fewer tokens than JSON (no mandatory quotes on keys, no commas)
-- Consistent syntax — everything is `[key: value]` or `[call $f $args]`
+- Consistent syntax — everything is `[key: value]` or `[f args]`
 - Composition eliminates repetition, reducing token count further
 
 ---
@@ -65,9 +65,9 @@ A list is equivalent to a dict with integer keys:
 **`[]` is the only bracket type.** There is one syntax for the one fundamental data structure. Entries with `key:` are keyed; entries without get auto-incrementing integer keys. Both can appear in the same `[]`.
 
 ```tinct
-[name: Alice  age: 30]          # All keyed — a "dict"
+[name: "Alice"  age: 30]        # All keyed — a "dict"
 [a b c]                         # All auto-indexed — a "list" = [0: a  1: b  2: c]
-[call $f $x timeout: 60]        # Mixed — positional + named
+[f x timeout: 60]               # Mixed — positional + named (implied call)
 []                              # Empty — list and dict are identical
 ```
 
@@ -75,31 +75,33 @@ A list is equivalent to a dict with integer keys:
 
 **Positional and named entries may appear in any order.** Auto-indices are assigned sequentially to positional entries regardless of where named entries appear. For function calls, the binding priority chain (§Call Convention, C-PRIORITY) resolves positional arguments by index, then named arguments fill remaining parameters, then defaults apply.
 
-### Principle 3: Explicit Function Application
+### Principle 3: Implied Call — Bare Identifier in Head Position
 
-**`call` keyword.** No implicit head evaluation. Brackets are always data.
+**A bare identifier in head position signals function application.** Brackets containing an identifier head are calls. `$` on the head element prevents call interpretation, making the bracket a data sequence.
 
 ```tinct
-[a b c]                # Data — always
-[call $f $a $b $c]     # Function call — $f is the function, $a $b $c are arguments
+[a b c]                # Call: a(b, c) — bare identifier in head
+[f x y]                # Call: f(x, y)
+[$f x y]               # Data: sequence [ref(f), ref(x), ref(y)] — $ prevents call
 ```
 
-Syntactically, `[call $f $x]` is a bracket expression with unkeyed entries (the same parsing mechanism as `[a b c]`). The `call` keyword triggers special-form recognition: the parser interprets the remaining entries as function + arguments, not as data. The AST represents this as a `Call` node with `func`, `args`, and `named_args` — not as a dict.
+Syntactically, `[f x]` is a bracket expression with unkeyed entries (the same parsing mechanism as `[a b c]`). The bare identifier `f` in head position triggers call interpretation: the parser interprets the head as the function and remaining entries as arguments. The AST represents this as a `Call` node with `func`, `args`, and `named_args` — not as a dict.
 
-**Why:** Enables full lazy evaluation. Without `call`, the evaluator must eagerly materialize the head of every bracketed expression. With `call`, the entire application (including the function) can remain a thunk until materialized.
+**Why:** Enables full lazy evaluation. The head-position rule is a parser-level decision (made before evaluation), so the evaluator never needs to eagerly inspect the head of a bracket expression to determine its role. The entire application (including the function) can remain a thunk until materialized.
 
-**Parser recognition:** The parser checks the first entry of every `[]`. If it matches a keyword (`call`, `fn`, `type`), the parser emits a specialized AST node. Otherwise it emits a `Dict` node. This is a parser-level decision, not an evaluator-level one.
+**Parser recognition:** The parser checks the first entry of every `[]`. If it matches a keyword (`call`, `fn`, `type`), the parser emits a specialized AST node. If it's a bare identifier (not a keyword, not followed by `:`), it's an implied call. Otherwise it emits a `Dict` node. This is a parser-level decision, not an evaluator-level one.
 
 ```tinct
-[call $f $x $y]                # Parsed as CallExpr — requires exact arity
-[fn [x] [call $+ $x 1]]       # Parsed as FnExpr — function definition
+[f x y]                        # Parsed as CallExpr (implied call) — requires exact arity
+[call f x]                     # Parsed as CallExpr (explicit call) — same AST as [f x]
+[fn [x] [+ x 1]]               # Parsed as FnExpr — function definition
 ```
 
 **Edge cases:**
 - `[call: something]` — the `:` makes `call` a key, not a keyword. Parsed as `Dict`.
-- `$call` — a variable reference, not the keyword. `[$call $x]` is a `Dict`, not a `CallExpr`.
+- `[f]` — zero-argument call to `f`. To construct a single-element data sequence containing a reference, use `[$f]`.
 
-**No built-in alias.** Users can define their own shorthand in stdlib or user code.
+**`call` remains valid.** Both `[f x]` and `[call f x]` produce identical AST. The `call` keyword is required when the function is a computed expression rather than a bare identifier (e.g., `[call [get-handler request] data]`).
 
 ### Principle 4: Lazy Evaluation
 
@@ -108,16 +110,16 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 ```tinct
 [
     # Won't run unless `result` is actually used
-    result: [call $expensive-computation $data]
+    result: [expensive-computation data]
 
     # Infinite sequences -- only compute what you take
-    naturals: [call $range 0]
-    first-ten-evens: [call $collect
-        [call $take 10
-            [call $filter [fn [n] [call $= 0 [call $mod $n 2]]] $naturals]]]
+    naturals: [range 0]
+    first-ten-evens: [collect
+        [take 10
+            [filter [fn [n] [= 0 [mod n 2]]] naturals]]]
 
     # Short-circuit: if condition is true, never evaluate the else branch
-    value: [call $if $condition $cheap-option $very-expensive-option]
+    value: [if condition cheap-option very-expensive-option]
 ]
 ```
 
@@ -128,8 +130,8 @@ Build complex things from simple things. No repetition.
 ```tinct
 [
     base: [timeout: 30  retries: 3]
-    dev:  [call $merge $base [env: dev]]
-    prod: [call $merge $base [env: prod  timeout: 60]]
+    dev:  [merge base [env: "dev"]]
+    prod: [merge base [env: "prod"  timeout: 60]]
 ]
 ```
 

@@ -1,5 +1,7 @@
 # What If: Unified Syntax Reform for tinct
 
+**State:** Accepted — 2026-05-01
+
 What would it take to adopt bare-word references, implied call, `$`
 disambiguation, and `%` pipeline naming as a single coherent syntax
 reform?
@@ -317,7 +319,10 @@ follows, not the one that preceded it. Named sections bind their
 output as `%name` in all subsequent sections. `%` always refers
 to the immediately previous section's output, whether that
 section was named or not. Duplicate section names within a file
-are a parse error.
+are a parse error. A bare `%` with no following identifier on a
+section header (i.e., `--- %` followed by whitespace or end of
+line) is also a parse error — it would ambiguously rebind the
+anonymous pipeline variable.
 
 The first section may omit its `---` header (no name, no
 pragmas), or include one:
@@ -532,10 +537,34 @@ bracket expression to determine its role.
 
 ### Interaction with Type Inference
 
-No impact. Variable references produce the same type inference
-behavior regardless of spelling. `Call` nodes from implied call
-are structurally identical to explicit `call` nodes. Unification,
+Implied call and bare-word references have no impact on the core
+inference algorithm: `Call` nodes from implied call are structurally
+identical to explicit `call` nodes, and variable references produce
+the same env-lookup behavior regardless of spelling. Unification,
 generalization, and substitution are unchanged.
+
+However, the following type checker changes are required by this
+proposal:
+
+- **Pipeline binding rename**: `typecheck_document` currently
+  inserts the section output type under key `"$"` for the next
+  document's env. This must become `"%"`. Named-section bindings
+  (`%name`) must also accumulate across the document loop.
+- **Section output annotation**: `--- %name@Type` requires the
+  type checker to validate the section's inferred output type
+  against the declared annotation. This must be resolved against
+  the post-body env (type aliases declared inside the section are
+  visible). It is distinct from `TypeAssert` and does not support
+  the `default:` fallback.
+- **`expects:` input contract**: `--- expects: Type` requires
+  checking that the current `%` binding's inferred type conforms to
+  the declared type. Resolved against the pre-body env (incoming
+  type). Emits a `TypeError` (advisory), consistent with the rest
+  of the type system.
+- **Cross-file pipeline**: Multi-file `tinct eval f1.llt f2.llt`
+  requires `typecheck_file` to accept an `incoming_type: Option<Type>`
+  representing `%`'s type from the preceding file, so that cross-file
+  `expects:` contracts can be validated statically.
 
 ### Interaction with Row Polymorphism
 
@@ -559,6 +588,15 @@ Outside strings, `name` is a reference (no `$` needed). Inside
 `i"..."`, `$name` marks an interpolation point. The two contexts
 don't conflict — `$` marks interpolation inside strings (like
 Ruby's `#{}`) and disambiguation outside strings.
+
+### Interaction with `$_` Desugaring
+
+No impact. The `$_` implicit lambda desugaring operates on the
+`VarRef("_")` AST node, not on the surface spelling. Under the new
+syntax, bare `_` produces the same `Expr::VarRef("_")` AST node as
+the current `$_`. The desugar pass sees no difference — both forms
+trigger identical desugaring rules. Users can write bare `_` in all
+positions where `$_` was previously written.
 
 ### Interaction with Macros
 
@@ -902,10 +940,13 @@ position remains valid — both `x` and `$x` resolve as references.
 ### Prerequisites
 
 - **Phase 1:** No dependencies. Pipeline naming is self-contained.
-- **Phase 2:** Phase 1 stable. String interpolation design finalized
-  (to confirm `$` inside `i"..."` is the interpolation marker).
-  Parser-rewrite Phase 3 (AST-based formatter) shipped — the
-  new-syntax formatter rendering rules require it as a base.
+- **Phase 2:** Phase 1 stable. String interpolation design compatible
+  with `$` as the interpolation marker inside `i"..."` — compatibility
+  is guaranteed by construction (string-internal `$` is orthogonal to
+  expression-grammar changes). The AST-based formatter (parser-rewrite
+  Phase 3) is not required — the token-stream formatter handles the
+  token rename cleanly: `Identifier(s)` renders as `s`, `EscapedRef(s)`
+  renders as `$s`.
 
 ### Trigger
 

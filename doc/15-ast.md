@@ -6,7 +6,7 @@ Every grammar rule maps to an AST node. All nodes carry source span information 
 
 Tinct uses a **hand-written iterative descent parser** composed of two phases:
 
-1. **Tokenization** (`src/lexer.rs`): Converts raw input into a flat token stream with accurate source spans. The lexer handles whitespace-sensitive disambiguation (e.g., `$a.b` vs `$a .b`, `word@annotation` vs `word @annotation`) by tracking whitespace gaps and emitting context-aware tokens (`BracketAccess`, `ImmediateAt`, `Dot`).
+1. **Tokenization** (`src/lexer.rs`): Converts raw input into a flat token stream with accurate source spans. The lexer handles whitespace-sensitive disambiguation (e.g., `a.b` vs `a .b`, `word@annotation` vs `word @annotation`) by tracking whitespace gaps and emitting context-aware tokens (`BracketAccess`, `ImmediateAt`, `Dot`).
 
 2. **Parsing** (`src/parser.rs`): Consumes the token stream using an explicit `Vec<StackFrame>` to avoid Rust call-stack recursion. The iterative parser enforces a maximum nesting depth (`MAX_PARSE_DEPTH = 256`) before allocating stack frames, preventing unbounded memory use.
 
@@ -90,7 +90,7 @@ enum Expr {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<Param>>,
         body: Box<Spanned<Expr>>,
-        // True if created by `$_` underscore desugaring (src/desugar.rs), false if user-written.
+        // True if created by `_` underscore desugaring (src/desugar.rs), false if user-written.
         // Used for origin tracking (Pombrio & Krishnamurthi 2014) — tooling can distinguish
         // sugar-generated from explicit lambdas.
         desugared: bool,
@@ -158,16 +158,16 @@ enum Annotation {
 | `Int(42)` | `42` | Integer literal |
 | `Float(3.14)` | `3.14` | Float literal |
 | `Bool(true)` | `true` | Boolean literal |
-| `Str("hello")` | `hello` or `"hello"` | String literal (bare word or quoted) |
-| `VarRef("x")` | `$x` | Variable reference |
-| `DotAccess` | `$a.b` | Key access: `b` on `$a` |
-| `BracketAccess` | `$a[0]` | Key access: `0` on `$a` |
-| `RangeAccess` | `$a[2..5]` | Key-range slice |
-| `Dict(entries)` | `[a b c]` or `[k: v]` | Dict/list literal |
-| `Call` | `[call $f $x]` | Function application |
+| `Str("hello")` | `"hello"` | String literal (quoted) |
+| `VarRef("x")` | `x` or `$x` | Variable reference (bare identifier or escaped) |
+| `DotAccess` | `a.b` | Key access: `b` on `a` |
+| `BracketAccess` | `a[0]` | Key access: `0` on `a` |
+| `RangeAccess` | `a[2..5]` | Key-range slice |
+| `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
+| `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |
 | `Fn` | `[fn [x] body]` | Function definition |
 | `TypeAlias` | `[type expr]` | Type alias declaration |
-| `TypeAssert` | `[@T $expr]` | Type assertion |
+| `TypeAssert` | `[@T expr]` | Type assertion |
 | `Annotated` | `Fn@Number` | Annotated bare word |
 | `Rest(None)` | `...` | Open record marker |
 | `Rest(Some("r"))` | `...r` | Named row variable |
@@ -183,9 +183,9 @@ These constraints are enforced by the parser. Violations produce parse errors wi
 Positional (auto-indexed) and keyed (named) entries may appear in any order within `[]`, for both dict entries and call arguments. Auto-indices are assigned sequentially to positional entries regardless of interleaving:
 
 ```tinct
-[a b key: val]        # valid: 0: a, 1: b, key: val
-[key: val a b]        # valid: key: val, 0: a, 1: b
-[a key: val b]        # valid: 0: a, key: val, 1: b
+[$a $b key: val]        # valid: 0: ref(a), 1: ref(b), key: val
+[key: val $a $b]        # valid: key: val, 0: ref(a), 1: ref(b)
+[$a key: val $b]        # valid: 0: ref(a), key: val, 1: ref(b)
 ```
 
 Rest entries (`...` and `...name`) may also appear at any position.
@@ -205,8 +205,8 @@ Rest entries (`...` and `...name`) may also appear at any position.
 Duplicate keys within a single `[]` literal are parse errors:
 
 ```tinct
-[name: Alice  name: Bob]          # ERROR: duplicate key "name"
-[a b a]                           # Not a duplicate — auto-indexed as 0: a, 1: b, 2: a
+[name: "Alice"  name: "Bob"]          # ERROR: duplicate key "name"
+["a" "b" "a"]                         # Not a duplicate — auto-indexed as 0: "a", 1: "b", 2: "a"
 ```
 
 Duplicate detection applies to explicit keys only. Auto-indexed entries cannot duplicate because the counter always increments.
@@ -274,13 +274,13 @@ Dot notation and bracket notation desugar to nested access nodes:
 
 | Surface syntax | AST |
 |---------------|-----|
-| `$data.name` | `DotAccess(VarRef("data"), "name")` |
-| `$data[5]` | `BracketAccess(VarRef("data"), Int(5))` |
-| `$data[$key]` | `BracketAccess(VarRef("data"), VarRef("key"))` |
-| `$data[2..5]` | `RangeAccess(VarRef("data"), Some(Int(2)), Some(Int(5)))` |
-| `$data[2..]` | `RangeAccess(VarRef("data"), Some(Int(2)), None)` |
-| `$data[..3]` | `RangeAccess(VarRef("data"), None, Some(Int(3)))` |
-| `$a.b[0].c` | `DotAccess(BracketAccess(DotAccess(VarRef("a"), "b"), Int(0)), "c")` |
+| `data.name` | `DotAccess(VarRef("data"), "name")` |
+| `data[5]` | `BracketAccess(VarRef("data"), Int(5))` |
+| `data[key]` | `BracketAccess(VarRef("data"), VarRef("key"))` |
+| `data[2..5]` | `RangeAccess(VarRef("data"), Some(Int(2)), Some(Int(5)))` |
+| `data[2..]` | `RangeAccess(VarRef("data"), Some(Int(2)), None)` |
+| `data[..3]` | `RangeAccess(VarRef("data"), None, Some(Int(3)))` |
+| `a.b[0].c` | `DotAccess(BracketAccess(DotAccess(VarRef("a"), "b"), Int(0)), "c")` |
 
 ### Auto-Indexing
 
@@ -288,12 +288,12 @@ Entries without explicit keys receive auto-incrementing integer keys. The counte
 
 | Surface syntax | Logical structure |
 |---------------|------------------|
-| `[a b c]` | `[0: a  1: b  2: c]` |
-| `[greet Andrew timeout: 60]` | `[0: greet  1: Andrew  timeout: 60]` |
+| `[$a $b $c]` | `[0: ref(a)  1: ref(b)  2: ref(c)]` |
+| `[greet "Andrew" timeout: 60]` | `[0: ref(greet)  1: "Andrew"  timeout: 60]` |
 
 In the AST, auto-indexed entries have `key: None`. The integer keys are assigned during evaluation, not parsing.
 
-**Note:** Auto-indexing is an eval-time key assignment, not an AST transformation. The AST preserves `key: None` for positional entries. This differs from `$_` implicit lambda desugaring (§Desugaring Rules), which is a true AST rewrite performed by the parser.
+**Note:** Auto-indexing is an eval-time key assignment, not an AST transformation. The AST preserves `key: None` for positional entries. This differs from `_` implicit lambda desugaring (§Desugaring Rules), which is a true AST rewrite performed by the parser.
 
 ### Annotation Shorthand
 
@@ -322,10 +322,10 @@ The parser examines the first token of every `[]` to detect special forms:
 Edge cases:
 - `[call: something]` — `call` followed by `:` (with no newline between) makes it a key, not a keyword. Parsed as `Dict`.
 - `[call\n: something]` — newline between `call` and `:` allows keyword recognition; parsed as `Call` with no arguments (the `: something` is parsed separately as an error or discarded depending on context).
-- `[$call $x]` — `$call` is a variable reference, not the bare keyword `call`. Parsed as `Dict`.
+- `[$call x]` — `$call` is an escaped reference in head position, not the bare keyword `call`. Parsed as `Dict` (data sequence).
 
-### `$_` Implicit Lambda Desugaring
+### `_` Implicit Lambda Desugaring
 
-See [Functions](04-functions.md) for `$_` implicit lambda desugaring rules.
+See [Functions](04-functions.md) for `_` implicit lambda desugaring rules.
 
-**Origin Tracking:** The `Expr::Fn.desugared: bool` field (line 96) tracks whether a lambda was user-written (`false`) or generated by `$_` desugaring (`true`). This origin tagging follows Pombrio & Krishnamurthi (2014)'s approach to preserving provenance through AST transformations. Tooling can use this field to distinguish sugar-generated lambdas from explicit lambdas — useful for error messages, IDE navigation, and debugging. For example, a type error in a desugared lambda could point to the original `$_` expression rather than the generated `[fn [_] ...]` form.
+**Origin Tracking:** The `Expr::Fn.desugared: bool` field (line 96) tracks whether a lambda was user-written (`false`) or generated by `_` desugaring (`true`). This origin tagging follows Pombrio & Krishnamurthi (2014)'s approach to preserving provenance through AST transformations. Tooling can use this field to distinguish sugar-generated lambdas from explicit lambdas — useful for error messages, IDE navigation, and debugging. For example, a type error in a desugared lambda could point to the original `_` expression rather than the generated `[fn [_] ...]` form.

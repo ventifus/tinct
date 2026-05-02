@@ -42,11 +42,11 @@ fetch: [fn@String [url@String
     ...]
 
 # Call with bare key-value named args
-[call $fetch "https://example.com" timeout: 60]
-# $url = "https://example.com", $timeout = 60, $retries = 3 (default)
+[fetch "https://example.com" timeout: 60]
+# url = "https://example.com", timeout = 60, retries = 3 (default)
 ```
 
-**Named args at the call site** are bare `key: value` pairs inside `[call ...]`. This is natural — the call expression is a dict, with integer-keyed entries for positional args and string-keyed entries for named args.
+**Named args at the call site** are bare `key: value` pairs inside the call brackets. This is natural — the call expression is a dict, with integer-keyed entries for positional args and string-keyed entries for named args.
 
 ### Formal Grammar
 
@@ -70,29 +70,29 @@ annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
 
 ## `@` on Expressions — Type Assertions
 
-**`[@Type $expr]` is a type assertion expression.** Materializes the value, checks its type, throws on mismatch. No `as` keyword needed — `@` handles it.
+**`[@Type expr]` is a type assertion expression.** Materializes the value, checks its type, throws on mismatch. No `as` keyword needed — `@` handles it.
 
 ```tinct
-data: [call $from-json $input]        # type: Any
+data: [from-json input]        # type: Any
 
 # Type assertion — throws if wrong
-name: [@String $data.name]
+name: [@String data.name]
 
 # Inline in a call
-[call $+ [@Number $x] 1]
+[+ [@Number x] 1]
 
 # Complex type
-users: [@[Person] [call $from-json $input]]
+users: [@[Person] [from-json input]]
 ```
 
 **With property dict — safe cast with fallback:**
 
 ```tinct
 # Returns "anonymous" if type check fails (no exception)
-name: [@[type: String  default: anonymous] $data.name]
+name: [@[type: String  default: "anonymous"] data.name]
 
 # Returns 8080 if not a valid number
-port: [@[type: Number  default: 8080] $config.port]
+port: [@[type: Number  default: 8080] config.port]
 ```
 
 **`default:` meaning by context:**
@@ -112,7 +112,7 @@ Both are "fallback value when the expected thing isn't there."
 ```ebnf
 type_assert_body = { "@" ~ annotation_value ~ value }
 ```
-`[@Number $expr]` asserts `$expr` has type `Number`. When a `default:` is provided (e.g., `[@[type: Number  default: 0] $expr]`), the default value is evaluated in the same environment as the asserted expression.
+`[@Number expr]` asserts `expr` has type `Number`. When a `default:` is provided (e.g., `[@[type: Number  default: 0] expr]`), the default value is evaluated in the same environment as the asserted expression.
 
 ## Return Type on `fn@`
 
@@ -120,20 +120,20 @@ type_assert_body = { "@" ~ annotation_value ~ value }
 
 ```tinct
 # Return type annotated — compiler checks body matches
-double: [fn@Number [x@Number] [call $* $x 2]]
+double: [fn@Number [x@Number] [* x 2]]
 
 # Return type omitted — compiler infers Number
-double: [fn [x@Number] [call $* $x 2]]
+double: [fn [x@Number] [* x 2]]
 
 # Wrong return type — compile error
-double: [fn@String [x@Number] [call $* $x 2]]    # Error: body returns Number, not String
+double: [fn@String [x@Number] [* x 2]]    # Error: body returns Number, not String
 ```
 
 **`Fn@Return [Params]` for function types.** Function type expressions mirror function definitions:
 
 ```tinct
 # Definition:  fn@Return [params] body
-[fn@Number [x@Number y@Number] [call $+ $x $y]]
+[fn@Number [x@Number y@Number] [+ x y]]
 
 # Type:        Fn@Return [ParamTypes]
 [Fn@Number [Number Number]]
@@ -179,21 +179,21 @@ double: [fn@String [x@Number] [call $* $x 2]]    # Error: body returns Number, n
 - Uppercase: concrete types (`String`, `Number`, `Person`)
 - Lowercase: type variables (`a`, `b`, `k`, `v`)
 - `Any`: escape hatch for dynamic data
-- `[@Type $expr]`: type assertion / runtime cast from `Any`
+- `[@Type expr]`: type assertion / runtime cast from `Any`
 - `[Fn@Return [ParamTypes]]`: function type (mirrors `fn@Return [params]`)
 
 **Literal types.** Integer and string literals carry their value in the type: `42` has type `IntLiteral(42)`, `"hello"` has type `StringLiteral("hello")`. Literal types are subtypes of their base types: `IntLiteral(n)` <: `Int` <: `Number`, `StringLiteral(s)` <: `String`. All bindings in Tinct are immutable, so literal types never widen implicitly -- they widen only when an annotation demands the base type. Float and Bool literals do not need literal type variants: float equality is fragile (rounding) and NaN is not reflexively equal, so computed key resolution on float literals would be misleading; Bool only has two values and is trivially enumerable without a literal type.
 
-**Literal types enable computed key resolution.** When a dict has a computed key like `[$k: 42]`, the type checker infers the type of `$k` in the parent scope. If it resolves to a literal type (e.g., `StringLiteral("name")`), the type checker extracts the literal value and uses it as the field name. If the key expression resolves to a non-literal type (e.g., `String`) or `Any`, the type checker cannot determine the field name statically -- the entry's value is still type-checked, but the field is excluded from the Record type. This is the conservative correct behavior: the Record only contains fields whose names are statically known.
+**Literal types enable computed key resolution.** When a dict has a computed key like `[$k: 42]`, the type checker infers the type of `k` in the parent scope. If it resolves to a literal type (e.g., `StringLiteral("name")`), the type checker extracts the literal value and uses it as the field name. If the key expression resolves to a non-literal type (e.g., `String`) or `Any`, the type checker cannot determine the field name statically -- the entry's value is still type-checked, but the field is excluded from the Record type. This is the conservative correct behavior: the Record only contains fields whose names are statically known.
 
 ```tinct
-[k: hello  $k: 42]       # type: [k: StringLiteral("hello")  hello: IntLiteral(42)]
-                          # $k resolves to StringLiteral("hello") → field name "hello"
+[k: "hello"  $k: 42]       # type: [k: StringLiteral("hello")  hello: IntLiteral(42)]
+                            # k resolves to StringLiteral("hello") → field name "hello"
 
-[k: hello]
-[$k: 42]                  # scope chain: $k resolves from parent → field "hello"
+[k: "hello"]
+[$k: 42]                    # scope chain: k resolves from parent → field "hello"
 
-[k: $dynamic  $k: 42]    # $k has type String (not literal) → field excluded from Record
+[k: dynamic  $k: 42]        # k has type String (not literal) → field excluded from Record
 ```
 
 **Dict values are never type-annotated.** Always inferred from literals/expressions.
@@ -202,7 +202,7 @@ double: [fn@String [x@Number] [call $* $x 2]]    # Error: body returns Number, n
 
 **Substitution idempotence invariant.** `Substitution::apply()` is idempotent: applying the same substitution twice yields the same result as applying it once. This is achieved by transitive chasing in `apply_inner()` — when resolving a type variable, the substitution follows the binding chain to a fixpoint rather than performing a single lookup. This guarantees that `apply(apply(ty, s), s) = apply(ty, s)` for all types `ty` and substitutions `s`, which is a standard requirement for unification-based type inference (Robinson, 1965).
 
-**Alpha-equivalence and variable naming.** Variable names are significant in tinct — `[fn [x] $x]` and `[fn [y] $y]` are not alpha-equivalent at the source level. The type checker uses string-based variable lookup, so type variables introduced by annotations bind by name. However, `instantiate()` performs alpha-renaming by generating fresh names (`_t0`, `_t1`, ...) for each call site, ensuring that polymorphic function types do not share type variables across independent call sites. This is a deliberate choice: source-level names matter for readability and error messages, while inference-time freshening prevents unintended unification between call sites.
+**Alpha-equivalence and variable naming.** Variable names are significant in tinct — `[fn [x] x]` and `[fn [y] y]` are not alpha-equivalent at the source level. The type checker uses string-based variable lookup, so type variables introduced by annotations bind by name. However, `instantiate()` performs alpha-renaming by generating fresh names (`_t0`, `_t1`, ...) for each call site, ensuring that polymorphic function types do not share type variables across independent call sites. This is a deliberate choice: source-level names matter for readability and error messages, while inference-time freshening prevents unintended unification between call sites.
 
 **Type alias entries are excluded from record fields.** A `[type ...]` entry registers an alias in the type environment but does not contribute a field to the enclosing record's type. This matches the evaluator, which returns an empty dict for type alias entries.
 

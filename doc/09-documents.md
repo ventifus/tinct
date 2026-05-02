@@ -2,12 +2,13 @@
 
 ## Pipeline Model
 
-Data flows through stages. Within a file, `---` separates independent documents. Each document's output becomes `$$` for the next:
+Data flows through stages. Within a file, `---` separates independent documents. Each document's output becomes `%` for the next. Documents can be named with `--- %name` to allow later sections to reference them by name:
 
     file.llt
-    ├── document 1 (data)         → $$ for doc 2
+    ├── --- %raw                  (optional header naming the section)
+    ├── document 1 (data)         → % for doc 2, also bound as %raw
     ├── ---
-    ├── document 2 (transform)    → $$ for doc 3
+    ├── document 2 (transform)    → % for doc 3
     ├── ---
     └── document 3 (output)       → final value, serialized by CLI
 
@@ -20,9 +21,9 @@ A Tinct **file** contains one or more **documents** separated by `---`. Each doc
 ```
 file
 ├── document 1
-│   ├── expression 1  (e.g., [call $include "utils.llt"])
-│   ├── expression 2  (e.g., [x: 10  double: [fn [n] [call $* $n 2]]])
-│   └── expression 3  (e.g., [result: [call $double $x]])
+│   ├── expression 1  (e.g., [include "utils.llt"])
+│   ├── expression 2  (e.g., [x: 10  double: [fn [n] [* n 2]]])
+│   └── expression 3  (e.g., [result: [double x]])
 ├── ---
 └── document 2
     ├── expression 1
@@ -51,8 +52,8 @@ Builtins ($+, $eval, $if, ...)
 ```tinct
 [
   x: 10
-  double: [fn [n] [call $* $n 2]]
-  y: [call $double $x]            # sees $x and $double (same dict, letrec)
+  double: [fn [n] [* n 2]]
+  y: [double x]            # sees x and double (same dict, letrec)
 ]
 ```
 
@@ -60,8 +61,8 @@ All entries share one environment. Order of definition does not matter -- `y` ca
 
 ```tinct
 [
-  even?: [fn [n] [call $if [call $= $n 0] true  [call $odd?  [call $- $n 1]]]]
-  odd?:  [fn [n] [call $if [call $= $n 0] false [call $even? [call $- $n 1]]]]
+  even?: [fn [n] [if [= n 0] true  [odd?  [- n 1]]]]
+  odd?:  [fn [n] [if [= n 0] false [even? [- n 1]]]]
 ]
 ```
 
@@ -71,18 +72,18 @@ All entries share one environment. Order of definition does not matter -- `y` ca
 # Expression 1: establishes bindings
 [
   x: 10
-  double: [fn [n] [call $* $n 2]]
+  double: [fn [n] [* n 2]]
 ]
 
 # Expression 2: sees Expression 1's bindings via parent scope
 [
-  y: [call $double $x]    # $x and $double visible from parent
-  x: 20                   # shadows Expression 1's x
-  z: [call $+ $x $y]      # $x is 20 (local letrec), $y is 20
+  y: [double x]    # x and double visible from parent
+  x: 20            # shadows Expression 1's x
+  z: [+ x y]       # x is 20 (local letrec), y is 20
 ]
 ```
 
-Expression 2 creates a fresh letrec environment with Expression 1's environment as its parent. Within Expression 2, `$x` resolves to the local binding (20), not Expression 1's binding (10). `$double` is found by walking up to the parent.
+Expression 2 creates a fresh letrec environment with Expression 1's environment as its parent. Within Expression 2, `x` resolves to the local binding (20), not Expression 1's binding (10). `double` is found by walking up to the parent.
 
 **Nested dicts (lexical scope):**
 
@@ -90,18 +91,18 @@ Inner dicts see enclosing dicts' bindings by walking the parent chain. Siblings 
 
 ```tinct
 [
-  db: [host: localhost  port: 5432]
+  db: [host: "localhost"  port: 5432]
   cache: [
-    host: redis.local
-    # $db walks up to parent, finds sibling entry
-    same_host: [call $= $host $db.host]
+    host: "redis.local"
+    # db walks up to parent, finds sibling entry
+    same_host: [= host db.host]
   ]
 ]
 ```
 
-Here, `$db` inside `cache` walks up to the parent dict and finds the sibling `db` entry. `$host` resolves to `redis.local` (the local binding shadows any outer `host`).
+Here, `db` inside `cache` walks up to the parent dict and finds the sibling `db` entry. `host` resolves to `"redis.local"` (the local binding shadows any outer `host`).
 
-The builtin scope (stdlib functions like `$+`, `$map`, `$eval`, etc.) is the root of the parent chain. Every expression's scope ultimately inherits from builtins.
+The builtin scope (stdlib functions like `+`, `map`, `eval`, etc.) is the root of the parent chain. Every expression's scope ultimately inherits from builtins.
 
 ### Comparison with Other Languages
 
@@ -133,7 +134,7 @@ Formalizes the two scoping mechanisms described above (letrec within dicts, sequ
 
 **Keys.** Dict entries have keys `k ∈ Key = String(s) | Int(n)`. Only `String` keys produce scope bindings; `Int` keys are positional and do not enter any environment.
 
-**Document pipeline variable.** The variable written `$$` in tinct source code appears as `$` in formal notation — `$` is the actual identifier name per the lexer rules. `$$` is syntactic sugar for `VarRef("$")`.
+**Document pipeline variable.** The variable written `%` in tinct source code appears as `%` in formal notation. `%` is an ordinary identifier (`VarRef("%")`). Named sections bind as `%name` (`VarRef("%name")`). The `Σ` (sigma) map accumulates named-section thunks across documents within a file; `Σ` is file-local and does not cross file boundaries.
 
 **Notation conventions.** `ρ(x)` denotes lookup of name `x` in environment `ρ` (defined formally in Part 3). `ρ[x ↦ θ]` denotes extending `ρ`'s bindings with `x` bound to thunk `θ`. `dom(ρ)` is the set of names bound directly in `ρ` (not including parent bindings). `eval(e, ρ, d)` is the evaluation judgment from §Thunk Lifecycle. The rules below use an implementation-oriented notation mixing imperative state updates (`ρ.B[s] ← θ`) with declarative judgments, following the same convention as §Thunk Lifecycle — Formal Specification Part 2.
 
@@ -182,7 +183,7 @@ Base case:
 
 Recursive case:
   exprs = [e₁, ..., eₙ]                       (document expressions, n ≥ 1)
-  ρ₀ = ρ_input                                (initial scope — typically builtins + $$)
+  ρ₀ = ρ_input                                (initial scope — typically builtins + %)
 
   ∀i ∈ 1..n-1:                                (intermediate expressions)
     θᵢ = eval(eᵢ, ρᵢ₋₁, d)
@@ -204,27 +205,33 @@ When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_d
 
 **Dict-type constraint:** Intermediate expressions must evaluate to `Dict`. This is not a type system constraint (the type checker does not enforce it) but a runtime invariant. If `vᵢ` is not a `Dict`, evaluation fails with a type mismatch error.
 
-**[DOC-PIPELINE]** — Document isolation via `$$`
+**[DOC-PIPELINE]** — Document isolation via `%` and named sections
 
 ```
+Σ₀ = {}                                     (named-section map)
 documents = [doc₁, ..., docₘ]               (file documents separated by ---)
 ρ_base = ρ_builtins                          (shared root scope)
 θ₀ = input_thunk                             (external input or empty dict)
 d = depth                                    (evaluation depth; 0 at top-level)
 
 ∀j ∈ 1..m:
-  ρ_docⱼ = ({$ ↦ θⱼ₋₁}, Some(ρ_base))     (fresh scope with only $$ bound)
+  pipeline_bindings = {% ↦ θⱼ₋₁}
+                    ∪ {%n ↦ Σⱼ₋₁(n) | n ∈ dom(Σⱼ₋₁)}
+  ρ_docⱼ = (pipeline_bindings, Some(ρ_base))   (fresh scope with % and %names bound)
   θⱼ = eval_document(docⱼ.exprs, ρ_docⱼ, d)
+  Σⱼ = if docⱼ.name = Some(n)
+       then Σⱼ₋₁[n ↦ θⱼ]
+       else Σⱼ₋₁
 
 ────────────────────────────────────────────
 eval_file(documents, ρ_base, input_thunk, d) ⇒ θₘ
 ```
 
-The binding name is `$`; the user-facing syntax `$$` desugars to `VarRef("$")` (see Part 1). At top-level invocation `d = 0`, but when called from `$include` (`builtins.rs:1126`), `d = depth + 1`, propagating the depth counter into nested file evaluation.
+The anonymous pipeline variable is `%` — the binding name is `"%"`, and `%` in source resolves to `VarRef("%")`. Named sections bind as `%name` (binding name `"%name"`). At top-level invocation `d = 0`; when called from `include` (`builtins.rs:1126`), `d = depth + 1`.
 
-Documents are totally isolated — `ρ_docⱼ` inherits only from `ρ_base` (builtins), not from prior documents' scope chains. Data flows exclusively through `$$` (`θⱼ₋₁`). This is the `let*` analog at the document level, but with no shared scope between documents.
+Documents are totally isolated — `ρ_docⱼ` inherits only from `ρ_base` (builtins), not from prior documents' scope chains. Data flows exclusively through pipeline bindings (`%` and `%name`). Named section bindings accumulate strictly in order — a section cannot reference its own name or a later section's name (both produce `UndefinedVariable`). Duplicate section names within a file are a parse error. A bare `%` with no following identifier on a section header (`--- %` followed by whitespace or end-of-line) is also a parse error.
 
-**Lazy pipeline boundary:** `θⱼ₋₁` is passed to the next document without materialization. The `---` boundary does not force evaluation — the pipeline is lazy end-to-end. This follows from the thunk lifecycle: no forcing rule is triggered at the document boundary, and `θⱼ₋₁` retains its current thunk state (which may be `Unevaluated`, `PendingBuiltin`, or `Materialized`). See Semantic Commitment 4 in §Thunk Lifecycle — Formal Specification.
+**Lazy pipeline boundary:** `θⱼ₋₁` is passed without materialization. Named section thunks in `Σⱼ` are also stored as raw unevaluated thunks — the `---` boundary does not force evaluation. The pipeline is lazy end-to-end. See Semantic Commitment 4 in §Thunk Lifecycle — Formal Specification.
 
 #### Part 3: Variable Lookup
 
@@ -289,7 +296,7 @@ The formal rules map directly to the implementation:
 |------------|----------------|--------|
 | DICT-SCOPE | `eval_dict()` | `eval.rs:309-352` |
 | SEQ-SCOPE | `eval_document()` | `eval.rs:199-249` |
-| DOC-PIPELINE | `eval_file_with_input()` | `eval.rs:281-307` |
+| DOC-PIPELINE | `eval_file_with_input()` (binds `%` + `%name`) | `eval.rs:281-307` |
 | LOOKUP | `Environment::get()` | `value.rs:445-460` |
 | Key isolation | `eval_key(key_expr, parent_env, d)` | `eval.rs:327` |
 | String-key filter | `if let Key::String(name) = key` | `eval.rs:234, 347` |
@@ -308,25 +315,25 @@ The formal rules map directly to the implementation:
 
 ```tinct
 [
-  even?: [fn [n] [call $if [call $= $n 0] true  [call $odd?  [call $- $n 1]]]]
-  odd?:  [fn [n] [call $if [call $= $n 0] false [call $even? [call $- $n 1]]]]
-  result: [call $even? 4]
+  even?: [fn [n] [if [= n 0] true  [odd?  [- n 1]]]]
+  odd?:  [fn [n] [if [= n 0] false [even? [- n 1]]]]
+  result: [even? 4]
 ]
 ```
 
 DICT-SCOPE creates `ρ_dict` with parent `ρ_builtins`:
 - `ρ_dict.B = {even? ↦ θ₁, odd? ↦ θ₂, result ↦ θ₃}` where all `θᵢ = Unevaluated(eᵢ, ρ_dict)`
-- Forcing `θ₃` evaluates `[call $even? 4]` in `ρ_dict`
+- Forcing `θ₃` evaluates `[even? 4]` in `ρ_dict`
 - `lookup(even?, ρ_dict)` → `θ₁` (clause 1) → forces `θ₁` → creates closure capturing `ρ_dict`
-- The closure body references `$odd?` → `lookup(odd?, ρ_dict)` → `θ₂` (clause 1) ✓ mutual visibility
+- The closure body references `odd?` → `lookup(odd?, ρ_dict)` → `θ₂` (clause 1) ✓ mutual visibility
 - Evaluation terminates: `even?(4) → odd?(3) → even?(2) → odd?(1) → even?(0) → true`
 
 **Example 2: Sequential scope chain with shadowing**
 
 ```tinct
-[x: 10  double: [fn [n] [call $* $n 2]]]
+[x: 10  double: [fn [n] [* n 2]]]
 
-[x: 20  y: [call $double $x]]
+[x: 20  y: [double x]]
 ```
 
 SEQ-SCOPE with `ρ₀ = ρ_builtins`:
@@ -339,83 +346,103 @@ SEQ-SCOPE with `ρ₀ = ρ_builtins`:
    - `lookup(x, ρ_dict₂)` → `θ_20` (local, clause 1 — shadows `ρ₁`'s `x`)
 5. Return `θ_last` (the thunk for `e₂`, lazy)
 
-**Example 3: Document pipeline with `$$`**
+**Example 3: Document pipeline with `%`**
 
 ```tinct
 [base_port: 8080]
 
 ---
 
-[port: [call $+ $$.base_port 1]]
+[port: [+ %.base_port 1]]
 ```
 
-DOC-PIPELINE (with `d = 0`):
-1. `ρ_doc₁ = ({$ ↦ θ_empty}, Some(ρ_builtins))`. Evaluate doc₁ → `θ₁ = Dict({base_port: θ_8080})`
-2. `ρ_doc₂ = ({$ ↦ θ₁}, Some(ρ_builtins))`. Note: `ρ_doc₂` has NO access to `ρ_doc₁`'s bindings — `$base_port` would fail. Data flows only through `$$`.
-3. `$$.base_port` resolves: `lookup($, ρ_doc₂)` → `θ₁` (the variable name is `$`, spelled `$$` in source), then access chain `.base_port` on the dict.
+DOC-PIPELINE (with `d = 0`, `Σ₀ = {}`):
+1. `pipeline_bindings₁ = {% ↦ θ_empty}`. Evaluate doc₁ → `θ₁ = Dict({base_port: θ_8080})`. `Σ₁ = {}` (no name on doc₁).
+2. `pipeline_bindings₂ = {% ↦ θ₁}`. `ρ_doc₂` has NO access to `ρ_doc₁`'s bindings — `base_port` would fail. Data flows only through `%`.
+3. `%.base_port` resolves: `lookup(%, ρ_doc₂)` → `θ₁`, then access chain `.base_port` on the dict.
 
-## Between Documents: Total Isolation via `$$`
+## Between Documents: Total Isolation via `%`
 
 `---` separates independent documents. Documents have no shared scope — as if they were in separate files.
 
-Data flows between documents via `$$`, a variable injected into each document's root scope containing the previous document's output. For the first document in a file, `$$` is `[]` (empty dict). `$$` is VarRef("$") -- no grammar special case needed since `$` is a valid identifier character under the denylist rules.
+Data flows between documents via `%`, a variable injected into each document's root scope containing the previous document's output. For the first document in a file, `%` is `[]` (empty dict). `%` is `VarRef("%")` — an ordinary identifier with no grammar special case.
 
-**`$$` typing is context-dependent.** The static type of `$$` varies: it is an empty closed record `[]` when no stdin is provided (first document, no pipeline input), or `Any` when stdin JSON is parsed via `from-json` (since the JSON shape is unknown at compile time). The type checker assigns `$$` its type based on the evaluation context, but the static type system cannot capture the full range of runtime shapes `$$` may take. This is a known limitation — `[@Type $$]` type assertions are the escape hatch for narrowing `$$` to a specific record type.
-
-The name `$_` was considered but is used as the implicit lambda shorthand (see "No Auto-Curry" section).
+**Named sections** bind a document's output as `%name` for use by all subsequent documents:
 
 ```tinct
-# Document 1 — $$ is []
+--- %defaults
+[host: "localhost"  port: 8080  workers: 4]
+
+--- %overrides
+[host: "prod.example.com"  tls: true]
+
+---
+[merge %defaults %overrides]   # multi-input: both named sections accessible
+```
+
+**`%` typing is context-dependent.** The static type of `%` varies: it is an empty closed record `[]` when no input is provided (first document, no pipeline input), or `Any` when stdin JSON is parsed via `from-json` (since the JSON shape is unknown at compile time). `[@Type %]` type assertions are the escape hatch for narrowing `%` to a specific record type. Section headers can declare input contracts with `expects:` and output types with `@Type`:
+
+```tinct
+--- %validated@ValidatedConfig expects: [name: String  port: Int]
+[validate server-schema %]
+```
+
+```tinct
+# Document 1 — % is []
 [
   users: [
-    [name: Alice  age: 30]
-    [name: Bob    age: 25]
+    [name: "Alice"  age: 30]
+    [name: "Bob"    age: 25]
   ]
 ]
 ---
-# Document 2 — $$ is Document 1's output (lazy)
+# Document 2 — % is Document 1's output (lazy)
 [
-  adults: [call $filter [fn [u] [call $>= $u.age 18]] $$.users]
+  adults: [filter [fn [u] [>= u.age 18]] %.users]
 ]
 ---
-# Document 3 — $$ is Document 2's output (lazy)
+# Document 3 — % is Document 2's output (lazy)
 # Final expression is the program's output, serialized by the CLI
-[call $eval $$]
+[eval %]
 ```
 
-The `---` boundary does **not** materialize the previous document. `$$` is a lazy dict — values are materialized only when accessed.
+The `---` boundary does **not** materialize the previous document. `%` is a lazy dict — values are materialized only when accessed.
 
 ### Formal Grammar
 
-A tinct file contains one or more documents separated by `---`. Each document contains one or more expressions. This is the top-level grammar:
+A tinct file contains one or more documents separated by `---`. Each `---` line may carry a section header. This is the top-level grammar:
 
 ```ebnf
-file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
-document      = { expression* }
-expression    = { !doc_separator ~ value }
-doc_separator = @{ "---" ~ !bare_word_char }
+file          = SOI ~ document ~ (section_header ~ document)* ~ EOI
+document      = expression*
+expression    = !section_header ~ value
+section_header = "---" ~ header_components? ~ NEWLINE
+header_components = section_name? ~ output_annotation? ~ expects_pragma?
+section_name  = "%" ~ ident_char+         // e.g., %config — bare % alone is a parse error
+output_annotation = "@" ~ annotation_value
+expects_pragma = "expects" ~ ":" ~ annotation_value
 ```
 
-**File:** The outermost unit. Contains documents separated by `---`.
+**File:** The outermost unit. Contains documents separated by `---` section headers.
 
-**Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — the only connection is `$$`, which carries the previous document's output as a lazy value. For the first document, `$$` is `[]`.
+**Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — data flows through pipeline bindings (`%` and `%name`), not the scope chain.
 
-**Expression:** A single value (bracket expression, atom, access expression, etc.). The `!doc_separator` negative lookahead prevents `---` from being consumed as a bare word.
+**Section header:** The `---` line, optionally carrying a name (`--- %config`), output type annotation (`--- %config@Config`), and/or input contract (`--- expects: InputType`). All components are optional; a bare `---` is valid. A bare `%` with no identifier after it on the header line is a parse error.
 
-**`doc_separator`:** Three hyphens `---` not followed by a `bare_word_char`. This prevents `----` or `---foo` from matching as a separator. The rule is atomic (`@{}`) so that whitespace is not skipped between the hyphens and the lookahead.
+**`doc_separator`:** Three hyphens `---` not followed by an `ident_char`. This prevents `----` or `---foo` from matching as a separator.
 
 An empty file (or one containing only whitespace/comments) is valid and produces a file with one document containing zero expressions. An empty document produces an empty Dict `[]`.
 
 ## Include Mechanism
 
-`$include` evaluates a file and returns its dict. Two usage patterns:
+`include` evaluates a file and returns its dict. Two usage patterns:
 
 **Namespaced** (like Python's `import module`):
 
 ```tinct
 [
-  utils: [call $include "lib/utils.llt"]
-  result: [call $utils.double 21]
+  utils: [include "lib/utils.llt"]
+  result: [utils.double 21]
 ]
 ```
 
@@ -424,11 +451,11 @@ An empty file (or one containing only whitespace/comments) is valid and produces
 Uses the sequential-expression scope chain. The included dict becomes a scope in the parent chain:
 
 ```tinct
-[call $include "lib/utils.llt"]
+[include "lib/utils.llt"]
 
-# $double is visible via parent scope
+# double is visible via parent scope
 [
-  result: [call $double 21]
+  result: [double 21]
 ]
 ```
 
@@ -445,8 +472,8 @@ If the included file needs to reference local bindings, use namespaced import in
 
 ```tinct
 [
-  utils: [call $include "lib/utils.llt"]
-  result: [call $utils.make-config localhost 5432]
+  utils: [include "lib/utils.llt"]
+  result: [utils.make-config "localhost" 5432]
 ]
 ```
 
@@ -468,7 +495,7 @@ This chain is reconstructed dynamically from the active `$include` call stack at
 
 ## Document Pipeline and $include — Formal Specification
 
-This section formalizes the inter-file include mechanism. The intra-file document pipeline (`$$` threading via `---` boundaries) and intra-document scope chains are already formalized in §Scope Chain Semantics — Formal Specification (DOC-PIPELINE and SEQ-SCOPE rules, respectively). This section covers `$include`: path resolution, cycle detection, result caching, and the eager materialization invariant.
+This section formalizes the inter-file include mechanism. The intra-file document pipeline (`%` threading via `---` boundaries) and intra-document scope chains are already formalized in §Scope Chain Semantics — Formal Specification (DOC-PIPELINE and SEQ-SCOPE rules, respectively). This section covers `$include`: path resolution, cycle detection, result caching, and the eager materialization invariant.
 
 ### Part 1: Include State
 
@@ -574,7 +601,7 @@ On error at any step (file read, parse, eval, materialize), the `base_dir` and `
 
 The `d + 1` depth propagation means nested includes consume evaluation depth. Deep include chains eventually hit `MAX_EVAL_DEPTH`, providing an independent bound on include recursion beyond the guard set.
 
-The included file evaluates with `Σ.stdlib_env` as its root scope and `$$` initialized to the empty dict (`eval_file` passes `None` as `initial_input` to `eval_file_with_input`, which defaults to `Materialized(Dict([]))`). It does *not* receive the including file's scope chain — include isolation is strict (Property 5).
+The included file evaluates with `Σ.stdlib_env` as its root scope and `%` initialized to the empty dict (`eval_file` passes `None` as `initial_input` to `eval_file_with_input`, which defaults to `Materialized(Dict([]))`). It does *not* receive the including file's scope chain — include isolation is strict (Property 5).
 
 ### Part 4: Eager Materialization Invariant
 
@@ -612,7 +639,7 @@ This is consistent with Nix's `import` (which also eagerly evaluates the importe
 
 **P4 — Include determinism (conditional):** For a fixed filesystem state, the document pipeline `eval_file(file, ρ, d)` is deterministic. When the filesystem changes between evaluations, results may differ — `$include` is the sole source of nondeterminism in tinct (see §Thunk Lifecycle — Semantic Properties, Determinism; also Semantic Commitment 2 in §Thunk Lifecycle — Semantic Commitments).
 
-**P5 — Include isolation:** An included file has no access to the including file's scope chain. Included files evaluate in `Σ.stdlib_env` (builtins + stdlib only), with `$$` initialized to the empty dict:
+**P5 — Include isolation:** An included file has no access to the including file's scope chain. Included files evaluate in `Σ.stdlib_env` (builtins + stdlib only), with `%` initialized to the empty dict:
 
 ```
 include(path, Σ, d, s):
@@ -623,12 +650,12 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 
 ```tinct
 # Namespaced: included file returns a dict, caller accesses its bindings
-[utils: [call $include "lib/utils.llt"]
- result: [call $utils.double 21]]
+[utils: [include "lib/utils.llt"]
+ result: [utils.double 21]]
 
 # Merged: included file's dict becomes a parent scope via SEQ-SCOPE
-[call $include "lib/utils.llt"]
-[result: [call $double 21]]
+[include "lib/utils.llt"]
+[result: [double 21]]
 ```
 
 ### Part 6: Implementation Correspondence
@@ -657,7 +684,7 @@ Tinct is a pure data transformation language with no in-language side effects, m
 tinct eval file.llt              # evaluate, output result as JSON
 tinct eval --eval file.llt       # deep-force all thunks before serializing (surfaces errors before partial output)
 tinct eval -                     # read Tinct source from stdin
-cat data.json | tinct eval file.llt  # stdin JSON parsed and injected as $$ for first document
+cat data.json | tinct eval file.llt  # stdin JSON parsed and injected as % for first document
 ```
 
 This is the Jsonnet/Nix model: the language produces data, an external tool handles I/O. Unreferenced dict entries are never computed. There is no `$write`, `$read`, `$stdout`, `$stdin`, or channel system.
@@ -665,16 +692,16 @@ This is the Jsonnet/Nix model: the language produces data, an external tool hand
 `$eval` is a runtime-supported function that recursively forces all thunks in its argument. It performs full materialization: the entire structure is forced into memory. The implementation caps recursion at depth 256 and returns an error if exceeded. On infinite or cyclic structures, `$eval` will hit the depth limit rather than diverging. Use `$take` to bound infinite sequences before passing them to `$eval`.
 
 ```tinct
-# Without $eval: CLI serializes lazily (streaming, may partially output then hit an error)
-[result: [call $map $$.data [fn [x] [call $+ $x 1]]]]
+# Without eval: CLI serializes lazily (streaming, may partially output then hit an error)
+[result: [map %.data [fn [x] [+ x 1]]]]
 
-# With $eval: everything forced into memory first (errors caught before any output)
-[result: [call $eval [call $map $$.data [fn [x] [call $+ $x 1]]]]]
+# With eval: everything forced into memory first (errors caught before any output)
+[result: [eval [map %.data [fn [x] [+ x 1]]]]]
 
-# Safe on infinite sequences: $take bounds before $eval
-[result: [call $eval [call $take 100 $$.sequence]]]
+# Safe on infinite sequences: take bounds before eval
+[result: [eval [take 100 %.sequence]]]
 ```
 
 **Why pure?** In-language I/O in a lazy language creates a forcing problem: side-effecting expressions buried in lazy dict entries may never execute, and execution order becomes unpredictable. By making the language pure, lazy evaluation is semantically transparent — the result is the same regardless of evaluation order. The CLI is the only I/O boundary, and it forces exactly what it needs to serialize the output.
 
-**Security:** External input (stdin, files) is parsed by the CLI and injected as structured data (`$$`). The language never evaluates untrusted input as code. `$from-json` is a pure function that converts a JSON string to a dict — safe on untrusted input.
+**Security:** External input (stdin, files) is parsed by the CLI and injected as structured data (`%`). The language never evaluates untrusted input as code. `$from-json` is a pure function that converts a JSON string to a dict — safe on untrusted input.

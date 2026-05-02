@@ -12,10 +12,9 @@ makes the best case for its feature: "What would it take to do this well?"
 | [Type Predicates](type-predicates.md) | `$int?`, `$str?`, `$dict?` — one predicate per Value variant |
 | [Path-Sensitive Narrowing](narrowing.md) | Refine variable types inside `$if` branches from equality/type guards |
 | [Parameterized Type Aliases](parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site, fixing name-collision bugs |
-| [Union Types](union-types.md) | `Int \| Str` — annotation-only unions for dual-dispatch builtins and nullable types |
+| [Union Types and Algebraic Subtyping](union-types.md) | `Int \| Str` annotations (Phase 2) → Simple-sub inferred unions/intersections (Phase 3) |
 | [Type Classes](typeclasses.md) | `Eq a => a → a → Bool` — constrained polymorphism for `$=`, `$+`, `$map` |
 | [Formal Gradual Typing](gradual-typing.md) | Formalize `Any` semantics; split into `Unknown` / `Top`; add consistency relation |
-| [Algebraic Subtyping](algebraic-subtypes.md) | Replace `[U-SUBSUME]` + Robinson with Simple-sub (Parreaux 2020) for inferred unions |
 | [Structural Contracts](structural-contracts.md) | `$$@Type` pipeline boundary checking + `$validate` schema-as-dict runtime constraints |
 
 ## Data Types
@@ -102,6 +101,7 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 | Proposal | Summary | Accepted |
 |----------|---------|---------|
 | [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; AST-based formatter rewrite | 2026-04-28 |
+| [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections; three-sprint implementation plan | 2026-05-01 |
 
 ### Adopt Now
 
@@ -139,10 +139,10 @@ These proposals have accepted designs but explicit gating conditions not yet met
 |----------|-----------------|
 | [Gradual Typing](gradual-typing.md) | whatif not yet accepted; `Any`-as-top-and-bottom causing a real false positive, or union types forcing the split. Note: `Type::Any` split (`Unknown`+`Top`) is a standalone sprint independent of this whatif. |
 | [Type Classes](typeclasses.md) | Phase 1 (`$deep-eq`/`$shallow-eq` builtins) ships now; Phase 2 (constrained type vars) after `Type::Any` split |
-| [Union Types](union-types.md) | Nullable types or tagged union patterns becoming common in user code |
+| [Union Types and Algebraic Subtyping](union-types.md) Phase 2 | Nullable types or tagged union patterns becoming common in user code |
+| [Union Types and Algebraic Subtyping](union-types.md) Phase 3 | Annotation-only unions proving insufficient; `$if` return types need inferred unions |
 | [Algebraic Data Types](algebraic-data-types.md) Phase 2 | `union-types.md` Phase 2 implemented (`Type::Union` exists) |
 | [Nominal Variants](nominal-variants.md) | Structural ADTs Phase 2 complete; two constructors with identical payload shapes needed |
-| [Algebraic Subtyping](algebraic-subtypes.md) | Union types proving insufficient without inferred unions |
 | [Narrowing](narrowing.md) | `typeassert-structural-b` + let-generalization + bidirectional typing all complete |
 | [Macros](macros.md) | A second syntactic desugaring beyond `$_`, or user-requested domain-specific syntax |
 | [Quasiquoting](quasiquoting.md) | Macro system adoption |
@@ -154,10 +154,6 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
 | [Evaluation Semantics Verification](eval-semantics-verification.md) Phase 2+ | Phase 1 complete with zero failures; formal semantics in doc/08-evaluation.md |
-
-### Strategic (Not a Sprint)
-
-**[Unified Syntax Reform](new-syntax.md)** — Bare-word references + implied call + `%`-named pipeline sections would reduce token count ~30–40% across all tinct code. Breaks all existing bare-word string values. No user code, so adoption is a clean internal cutover — no migration tooling needed. Requires parser-rewrite Phase 3 (AST-based formatter) as prerequisite. Adopt as a deliberate project milestone, not a feature sprint.
 
 ### Additive Capability (No TODO Replacement)
 
@@ -189,7 +185,7 @@ union-types (Ph 2) ──── algebraic-data-types (Ph 2) ──────�
        │                         │                                    │
        │                  nominal-variants (Ph 2)         pattern-matching (Ph 5)
        │                                                              │
-       └──── algebraic-subtypes ─── gradual-typing ─── algebraic-data-types (Ph 3)
+       └──── union-types (Ph 3) ─── gradual-typing ─── algebraic-data-types (Ph 3)
 
 type-classes (Ph 1: $deep-eq/$shallow-eq) ── type-classes (Ph 2: constrained vars)
                                                     │
@@ -200,7 +196,7 @@ quasiquoting ─── macros ─── call-aliases
 io (Ph 1) ─── templating
            └── tls (Ph 2)
 
-string-interpolation ─── new-syntax (Ph 4 default flip)
+string-interpolation ─── new-syntax (accepted; $ as interpolation marker inside i"..." is compatible)
 
 structural-contracts ─── numeric-types (Ph 1)
 parameterized-type-aliases ─── algebraic-data-types (Ph 4, recursive ADTs)
@@ -232,10 +228,6 @@ Either path is valid. Both can coexist; for the dual-dispatch problem specifical
 
 ### Supersession
 
-**[Union Types](union-types.md) Phase 2 vs [Algebraic Subtyping](algebraic-subtypes.md)**
-
-Union types Phase 2 adds annotation-only unions. Algebraic subtyping makes unions *inferred*. If algebraic subtyping is adopted, annotation-only Phase 2 becomes a stepping stone rather than an endpoint — not a conflict, but the motivation changes.
-
 **[Nominal Variants](nominal-variants.md) making [Algebraic Data Types](algebraic-data-types.md) conventions redundant for some use cases**
 
 For use cases where opaque construction matters, nominal variants are strictly more expressive. Structural ADTs remain correct for JSON interop (structural variants round-trip; nominal variants don't reconstruct from `$from-json`). These coexist — but for any specific type declaration, the user must choose.
@@ -248,7 +240,7 @@ Nominal `[call Ok 42]` → `{"Ok": 42}`. `$from-json` always produces structural
 
 ### The One-Way Migration Door
 
-**[Unified Syntax Reform](new-syntax.md)** — Once the default flip (Phase 4) executes, all existing tinct code and all whatif example syntax needs updating. Plan as a coordinated rewrite, not a background change.
+**[Unified Syntax Reform](new-syntax.md)** — Accepted 2026-05-01. Implementation is a clean internal cutover (no user code) in three sprints: `new-syntax-a` (% pipeline), `new-syntax-b` (core migration), `new-syntax-c` (polish). After Phase 2 commits, all existing tinct examples and other whatif docs need syntax updates.
 
 ### No Conflict (Apparent but Not Real)
 

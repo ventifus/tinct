@@ -6,13 +6,13 @@
 
 ```tinct
 [
-    x: [call $/ 1 0]              # Thunk created — no error yet
-    y: [call $+ $x 1]             # Materializing $x raises: "division by zero"
-    z: 42                          # Fine — $x never materialized through $z
+    x: [/ 1 0]              # Thunk created — no error yet
+    y: [+ x 1]              # Materializing x raises: "division by zero"
+    z: 42                   # Fine — x never materialized through z
 ]
 ```
 
-**Why:** Simple default path — most code lets errors propagate. Lazy eval means unmaterialized errors never happen ("pay for what you use"). `$try` available when explicit handling is needed.
+**Why:** Simple default path — most code lets errors propagate. Lazy eval means unmaterialized errors never happen ("pay for what you use"). `try` available when explicit handling is needed.
 
 **Implementation note:** Thunks must record definition-site source location. When materialized, the materialization-site span is passed as a parameter to `materialize()`, not stored in the thunk. Error messages include both locations and a reconstructed call stack showing the chain of materializations. The evaluator depth limit (256) counts nesting depth of evaluation calls, not total operations — deeply nested function calls hit the limit, but a linear chain of thunks does not.
 
@@ -22,9 +22,9 @@ Errors in tinct are lazy — they don't occur until a value is materialized:
 
 ```tinct
 [
-    x: [call $/ 1 0]        # No error yet — x is a thunk
-    y: [call $+ $x 1]       # Materializing y forces x → error
-    z: 42                    # Fine — x never forced through z
+    x: [/ 1 0]        # No error yet — x is a thunk
+    y: [+ x 1]        # Materializing y forces x → error
+    z: 42             # Fine — x never forced through z
 ]
 ```
 
@@ -32,24 +32,24 @@ Accessing `z` succeeds. Accessing `y` fails with the division-by-zero error from
 
 Once a thunk fails, the error is cached permanently. Subsequent accesses return the same error with additional stack frame context showing where the re-access occurred.
 
-## `$try` — Catching Errors in Stdlib
+## `try` — Catching Errors in Stdlib
 
-`$try` takes a zero-argument function and returns a tagged dict:
+`try` takes a zero-argument function and returns a tagged dict:
 
 ```tinct
 # Explicit catching via stdlib
-safe: [call $try [fn [] [call $/ 10 2]]]       # → [ok: 5]
-safe: [call $try [fn [] [call $/ 1 0]]]        # → [err: "/: division by zero"]
-safe: [call $try-or [fn [] [call $/ 1 0]] 0]   # → 0
+safe: [try [fn [] [/ 10 2]]]       # → [ok: 5]
+safe: [try [fn [] [/ 1 0]]]        # → [err: "/: division by zero"]
+safe: [try-or [fn [] [/ 1 0]] 0]   # → 0
 ```
 
-**`$try` return shape:** `$try` returns a tagged dict — `[ok: value]` on success or `[err: message]` on failure. This is an ordinary dict, not a special type. Pattern match on the key to distinguish outcomes. The `message` is the error's message string — spans and stack traces are not included in the caught value.
+**`try` return shape:** `try` returns a tagged dict — `[ok: value]` on success or `[err: message]` on failure. This is an ordinary dict, not a special type. Pattern match on the key to distinguish outcomes. The `message` is the error's message string — spans and stack traces are not included in the caught value.
 
-**What `$try` catches:** Errors from evaluating the function's body. Errors from materializing the function itself (e.g., if the function argument is a broken thunk) are *not* caught — they propagate to `$try`'s caller.
+**What `try` catches:** Errors from evaluating the function's body. Errors from materializing the function itself (e.g., if the function argument is a broken thunk) are *not* caught — they propagate to `try`'s caller.
 
-**Uncatchable errors:** `DepthExceeded` and `ResourceLimitExceeded` errors are not catchable by `$try` — they propagate through `$try` to the caller. Resource limit exhaustion is a boundary condition that must halt evaluation, not be masked by error handling. See `is_catchable()` in the Error Semantics formal specification below.
+**Uncatchable errors:** `DepthExceeded` and `ResourceLimitExceeded` errors are not catchable by `try` — they propagate through `try` to the caller. Resource limit exhaustion is a boundary condition that must halt evaluation, not be masked by error handling. See `is_catchable()` in the Error Semantics formal specification below.
 
-**`$try-or`** is a stdlib convenience: `[call $try-or [fn [] expr] default]` returns `default` if `expr` fails.
+**`try-or`** is a stdlib convenience: `[try-or [fn [] expr] default]` returns `default` if `expr` fails.
 
 ## Error Semantics — Formal Specification
 
@@ -72,7 +72,7 @@ An evaluation error `ε` is a record with five fields:
 
 The **definition site** and **materialization site** form a dual-span model: "the error was *defined* here but *triggered* there." When both sites are the same (e.g., an immediate expression like `[call $/ 1 0]`), the materialization site is omitted.
 
-Example: given `[x: [call $/ 1 0]  y: $x]`, accessing `y` produces an error with definition site at `[call $/ 1 0]` (where the division was written) and materialization site at `$x` (where the thunk was first forced).
+Example: given `[x: [/ 1 0]  y: x]`, accessing `y` produces an error with definition site at `[/ 1 0]` (where the division was written) and materialization site at `x` (where the thunk was first forced).
 
 **Secondary span — value origin (Nickel dual-position pattern):** For lazy evaluation errors where the **value that caused the failure** was produced far from the error site, `sec_span` carries a labeled pointer to the value's creation span. This is the Nickel `EvaluationError` dual-position pattern: "error triggered here, but the offending value came from there." The `Thunk.span` field (set at thunk creation time) provides this origin span without requiring any additional storage.
 
@@ -82,7 +82,7 @@ Example: given `[x: [call $/ 1 0]  y: $x]`, accessing `y` produces an error with
 |------|------------------------|--------------------------|-------|
 | `ThunkState::Guarded` validation failure | TypeAssert annotation span (`guard_span`) | `inner.span` (the annotated expression's creation span) | `"value produced here"` |
 | Builtin argument type mismatch (`require_num`, `require_string`, `require_dict`, `require_bool`) | Call expression span (`call_span`) | `args[i].span` (failing argument's creation span) | `"argument produced here"` |
-| `$if` condition type mismatch (non-Bool condition) | Condition expression span | condition thunk's `span` | `"condition evaluated to {type} here"` |
+| `if` condition type mismatch (non-Bool condition) | Condition expression span | condition thunk's `span` | `"condition evaluated to {type} here"` |
 
 `sec_span` is always optional and never overwrites `def_span`/`mat_span`. When the secondary span equals `def_span`, it is suppressed (no duplicate location notes). Display format: `"\n  note: {label} at {span}"`.
 
@@ -100,7 +100,7 @@ All errors are constructed via `EvalError` methods that create an error with a s
 | `arity_mismatch(expected, got, span)` | `ArityMismatch { expected, got }` | `"arity mismatch: expected {expected} arguments, got {got}"` | Call expression |
 | `circular_dependency(name, span)` | `CircularDependency { name }` | `"circular dependency detected while evaluating {name}"` | Thunk definition |
 | `depth_exceeded(limit, span)` | `DepthExceeded { limit }` | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
-| `user_error(message, span)` | `UserError { message }` | `"{message}"` (user-provided) | `$error` call site |
+| `user_error(message, span)` | `UserError { message }` | `"{message}"` (user-provided) | `error` call site |
 | `integer_overflow(op, span)` | `IntegerOverflow { op }` | `"{op}: integer overflow"` | Arithmetic expression |
 | `division_by_zero(op, span)` | `DivisionByZero { op }` | `"{op}: division by zero"` | Division expression |
 | `float_not_finite(builtin, value, span)` | `FloatNotFinite { builtin, value }` | `"{builtin}: {value} is not a finite number"` | Builtin call expression |
@@ -114,11 +114,11 @@ See `src/error.rs` for the full set of `ErrorKind` variants and their constructo
 
 **Special error properties:**
 
-- **`DepthExceeded` and `ResourceLimitExceeded` are not catchable:** `$try` does not catch `DepthExceeded` or `ResourceLimitExceeded` errors — they propagate to the runtime. Resource limit errors like stack overflow should not be suppressible by user code (follows GHC's `StackOverflow` and Racket's `exn:fail:resource` semantics). The `is_catchable()` method returns `false` for these variants, `true` for all others.
+- **`DepthExceeded` and `ResourceLimitExceeded` are not catchable:** `try` does not catch `DepthExceeded` or `ResourceLimitExceeded` errors — they propagate to the runtime. Resource limit errors like stack overflow should not be suppressible by user code (follows GHC's `StackOverflow` and Racket's `exn:fail:resource` semantics). The `is_catchable()` method returns `false` for these variants, `true` for all others.
 
 - **`DepthExceeded` is not cacheable:** Failed thunk state does not cache `DepthExceeded` errors — a thunk that fails at one depth may succeed at a shallower depth. The `is_cacheable()` method returns `false` for `DepthExceeded`, `true` for all other variants (including `ResourceLimitExceeded`, which is cacheable because resource limits are absolute, not context-dependent). This implements the PROP-DEPTH non-memoization rule from Part 5.
 
-- **`IncludeForbidden` is catchable (intentional):** Unlike `DepthExceeded` and `ResourceLimitExceeded`, the `IncludeForbidden` error (E042, raised when `$include` is called in `--no-fs` mode) is catchable via `$try`. This follows the Nix `tryEval` model — programs can gracefully degrade when filesystem access is unavailable (e.g., falling back to embedded defaults when external config files cannot be loaded). The tradeoff is that an attacker can detect `--no-fs` mode by wrapping `$include` in `$try` and observing whether it returns `[err: "filesystem access is disabled (--no-fs)"]`. This is accepted because the alternative (making `IncludeForbidden` uncatchable) would prevent legitimate graceful degradation patterns. Programs that need to behave identically regardless of sandbox mode should avoid filesystem access entirely, rather than relying on `IncludeForbidden` being undetectable.
+- **`IncludeForbidden` is catchable (intentional):** Unlike `DepthExceeded` and `ResourceLimitExceeded`, the `IncludeForbidden` error (E042, raised when `include` is called in `--no-fs` mode) is catchable via `try`. This follows the Nix `tryEval` model — programs can gracefully degrade when filesystem access is unavailable (e.g., falling back to embedded defaults when external config files cannot be loaded). The tradeoff is that an attacker can detect `--no-fs` mode by wrapping `include` in `try` and observing whether it returns `[err: "filesystem access is disabled (--no-fs)"]`. This is accepted because the alternative (making `IncludeForbidden` uncatchable) would prevent legitimate graceful degradation patterns. Programs that need to behave identically regardless of sandbox mode should avoid filesystem access entirely, rather than relying on `IncludeForbidden` being undetectable.
 
 ### Part 3: Error Decoration
 
@@ -262,7 +262,7 @@ MEMO-REACCESS mirrors DECORATE but operates on the cached error. Cache updates a
 
 **Permanence:** Once a thunk reaches Failed, it never returns to any other state (§Thunk Lifecycle, Semantic Commitment #1). No retry, no recovery. This includes I/O failures from `$include`. The only exception: non-cacheable errors (DepthExceeded) trigger MEMO-SKIP instead of MEMO-CACHE — the thunk state is restored rather than transitioning to Failed, because depth errors are context-dependent, not intrinsic to the thunk.
 
-### Part 6: `$try` Catching Boundary
+### Part 6: `try` Catching Boundary
 
 **[TRY]** — Error catching:
 
@@ -308,19 +308,19 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 (Catchable error variant: same structure, `Err(ε), ε.kind.is_catchable() ⇒ Dict({err ↦ θ(ε.kind.to_string())})`; uncatchable errors re-raised per TRY-UNCATCHABLE)
 
-**Catching boundary:** `$try` catches errors at the zero-argument function body boundary. The function is materialized *outside* the catch — if the function thunk itself fails to materialize, that error propagates to `$try`'s caller (not caught). Only errors from *calling* the function (evaluating its body) are caught.
+**Catching boundary:** `try` catches errors at the zero-argument function body boundary. The function is materialized *outside* the catch — if the function thunk itself fails to materialize, that error propagates to `try`'s caller (not caught). Only errors from *calling* the function (evaluating its body) are caught.
 
-**Error-to-value conversion:** `$try` extracts only the message string (`ε.kind.to_string()`). The spans and stack frames are discarded — `$try` is for program-level error handling, not diagnostic reporting. The result is an ordinary dict with key `ok` or `err`, not a special type.
+**Error-to-value conversion:** `try` extracts only the message string (`ε.kind.to_string()`). The spans and stack frames are discarded — `try` is for program-level error handling, not diagnostic reporting. The result is an ordinary dict with key `ok` or `err`, not a special type.
 
-**Arity constraint:** The function must take zero parameters. If `params.len() > 0`, `$try` raises an error (not caught): `"try: expected a zero-argument function, got {n} parameters"`.
+**Arity constraint:** The function must take zero parameters. If `params.len() > 0`, `try` raises an error (not caught): `"try: expected a zero-argument function, got {n} parameters"`.
 
-**Interaction with Failed state:** When `$try` forces a Failed thunk *inside* the body, the cached error is returned via MEMO-REACCESS and caught by `$try`. The Failed thunk's cache is updated (stack frame added) but the error is converted to `[err: message]` — it does not propagate past `$try`.
+**Interaction with Failed state:** When `try` forces a Failed thunk *inside* the body, the cached error is returned via MEMO-REACCESS and caught by `try`. The Failed thunk's cache is updated (stack frame added) but the error is converted to `[err: message]` — it does not propagate past `try`.
 
-**`$try` interaction with structured errors:** `$try` currently extracts `ε.kind.to_string()` — the Display output of ErrorKind. This preserves the behavior that the caught value is a human-readable error message string, not a structured error object. Error codes are not exposed through `$try`.
+**`try` interaction with structured errors:** `try` currently extracts `ε.kind.to_string()` — the Display output of ErrorKind. This preserves the behavior that the caught value is a human-readable error message string, not a structured error object. Error codes are not exposed through `try`.
 
-**Rationale:** `$try` is for program-level error recovery ("did it fail?"), not error introspection. Programs that need to distinguish error kinds should use type checking and validation, not `$try`-and-parse. Exposing structured error data through `$try` would create a coupling between error representation (an implementation detail) and user programs.
+**Rationale:** `try` is for program-level error recovery ("did it fail?"), not error introspection. Programs that need to distinguish error kinds should use type checking and validation, not `try`-and-parse. Exposing structured error data through `try` would create a coupling between error representation (an implementation detail) and user programs.
 
-**Display stability:** Error codes are stable across releases (see Error Codes below). Display message *wording* is not part of the stability contract — message text may be refined for clarity across releases. Programs that match on `$try` error strings (e.g., `[call $= $result.err "division by zero"]`) are inherently fragile and should not rely on exact wording.
+**Display stability:** Error codes are stable across releases (see Error Codes below). Display message *wording* is not part of the stability contract — message text may be refined for clarity across releases. Programs that match on `try` error strings (e.g., `[call $= $result.err "division by zero"]`) are inherently fragile and should not rely on exact wording.
 
 ### Part 7: Properties
 
@@ -332,7 +332,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **E4 — Materialization site is first-access:** `ε.mat_span` records the first site that triggered materialization. Subsequent access sites become stack frames. This is enforced by DECORATE rule (1) (set only if None) and MEMO-REACCESS rule (1).
 
-**E5 — `$try` isolation:** Errors caught by `$try` do not propagate to `$try`'s caller. `$try` converts errors to values — the error is consumed, not rethrown. There is no `$rethrow` mechanism.
+**E5 — `try` isolation:** Errors caught by `try` do not propagate to `try`'s caller. `try` converts errors to values — the error is consumed, not rethrown. There is no `$rethrow` mechanism.
 
 **E6 — Depth errors are non-caching:** DepthExceeded errors have `is_cacheable() = false`, triggering MEMO-SKIP instead of MEMO-CACHE. The thunk state is restored to its pre-InProgress state, allowing the same thunk to succeed at a shallower call depth. This is the only error source that does not cache.
 
@@ -340,7 +340,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **E8 — DECORATE idempotence:** Applying DECORATE twice with the same arguments produces the same result as applying it once: `DECORATE(DECORATE(ε, s, o, t), s, o, t) = DECORATE(ε, s, o, t)`. This follows from the deduplication guards in rules (1)–(3).
 
-**Typing:** `$try` has type `Any → Any` — more precisely it expects `Fn(→ τ)` and returns `[ok: τ] | [err: Str]`, but neither the constraint on the argument nor the union result type can be expressed without union types — see [Type System Extensions](07-type-extensions.md) §Expressiveness. `$error` has type `Str → Any` — the argument is materialized and coerced to String; the return type is `Any` because the function never returns a value (it always raises an error), and tinct has no bottom type.
+**Typing:** `try` has type `Any → Any` — more precisely it expects `Fn(→ τ)` and returns `[ok: τ] | [err: Str]`, but neither the constraint on the argument nor the union result type can be expressed without union types — see [Type System Extensions](07-type-extensions.md) §Expressiveness. `error` has type `Str → Any` — the argument is materialized and coerced to String; the return type is `Any` because the function never returns a value (it always raises an error), and tinct has no bottom type.
 
 **Runtime vs. static errors:** Runtime errors (`EvalError`, cached in `Failed` thunks) are distinct from the type inference engine's `Type::Error` marker. `Type::Error` represents the type of expressions that are statically known to produce errors (e.g., undefined variables caught during type checking); `EvalError` is the runtime value produced during evaluation.
 
@@ -399,8 +399,8 @@ pub struct EvalError {
 pub enum ErrorKind {
     // --- Access errors (E000-E009) ---
     KeyNotFound { key: String, available_keys: Vec<String> },
-    /// `name` stores the identifier without `$` prefix (e.g., `"x"` not `"$x"`).
-    /// Display adds the `$` back: `"undefined variable: $x"`.
+    /// `name` stores the identifier (e.g., `"x"`).
+    /// Display format: `"undefined variable: x"`.
     UndefinedVariable { name: String },
 
     // --- Type errors (E010-E019) ---
@@ -491,7 +491,7 @@ pub enum ArityBound {
 - **One variant per user-distinguishable error class.** If two errors should produce different suggestions, they get different variants. If they differ only in wording, they share a variant with a field.
 - **`TypeMismatch` vs `TypeAssertFailed`:** `TypeMismatch` is an evaluator/builtin dispatch error ("merge got the wrong type"). `TypeAssertFailed` is a user-written runtime type guard failure (`[@Int "hello"]`). Different error class, different suggestions, different error code. `ThunkState::Guarded` validation (§TypeAssert Runtime Validation) produces `TypeAssertFailed` for guard failures.
 - **`context: Option<String>` in `TypeMismatch`** carries the builtin name when the mismatch originates from a builtin (e.g., `"merge"` in `"merge: expected Dict, got Int"`). `None` for generic type mismatches from the evaluator. The `expected` field is human-readable, not machine-parseable — it may contain compound descriptions like `"Dict or Seq"`. Programmatic matching on expected types is not supported; use the error code and `context` field instead.
-- **`DivisionByZero` carries `op`** to preserve the operator prefix in Display output (e.g., `"/: division by zero"`). This maintains `$try` message compatibility and future-proofs for additional division operators.
+- **`DivisionByZero` carries `op`** to preserve the operator prefix in Display output (e.g., `"/: division by zero"`). This maintains `try` message compatibility and future-proofs for additional division operators.
 - **`FloatNotFinite`** covers NaN, Infinity, and -Infinity — all non-finite `f64` values. Named `NotFinite` rather than `OutOfRange` because NaN is not a range concept.
 - **`FloatOutOfRange`** (E036) covers finite values outside the `i64` range (e.g., `1e19`). Named `OutOfRange` rather than `NotFinite` because the value is mathematically finite — it simply exceeds the integer domain of `$floor`/`$round`. Distinct from `FloatNotFinite` because the conditions and user-facing diagnostics differ: `FloatNotFinite` is "not a finite number", `FloatOutOfRange` is "out of range for Int".
 - **`DepthExceeded` vs `JsonDepthExceeded`:** Eval depth (recursive thunk forcing) and JSON nesting depth (`$from-json` parsing) are semantically different limits with different error codes. A JSON depth error at E041 does not indicate runaway evaluation.
@@ -603,7 +603,7 @@ impl ErrorKind {
         !matches!(self, Self::DepthExceeded { .. })
     }
 
-    /// Returns `false` for errors that `$try` must not catch.
+    /// Returns `false` for errors that `try` must not catch.
     /// Resource limit errors (`DepthExceeded`, `ResourceLimitExceeded`) should
     /// propagate to the runtime, not be suppressible by user code.
     /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
@@ -639,7 +639,7 @@ impl fmt::Display for ErrorKind {
                 Ok(())
             }
             Self::UndefinedVariable { name } =>
-                write!(f, "undefined variable: ${name}"),
+                write!(f, "undefined variable: {name}"),
             Self::TypeMismatch { context: Some(ctx), expected, got } =>
                 write!(f, "{ctx}: expected {expected}, got {got}"),
             Self::TypeMismatch { context: None, expected, got } =>
@@ -783,9 +783,9 @@ impl EvalError {
 
 The freeform `EvalError::new(message, span)` is replaced by `EvalError::internal(message, span)` which constructs `ErrorKind::Internal`. This preserves backward compatibility during migration while making escape-hatch usage explicit and greppable.
 
-### Part 6: `$try` Interaction
+### Part 6: `try` Interaction
 
-See the `$try` Catching Boundary section above (Error Semantics Part 6) for the formal specification of `$try` semantics.
+See the `try` Catching Boundary section above (Error Semantics Part 6) for the formal specification of `try` semantics.
 
 ### Part 7: Rendering Separation
 
@@ -828,7 +828,7 @@ Error messages (generated by `ErrorKind::Display`) follow these rules, adapted f
 | Lowercase start | `"expected Dict, got Int"` | `"Expected Dict, got Int"` |
 | No trailing punctuation | `"key not found: x"` | `"key not found: x."` |
 | No questions | `"/: division by zero"` | `"did you divide by zero?"` |
-| Include the value/name | `"undefined variable: $x"` | `"undefined variable"` |
+| Include the value/name | `"undefined variable: x"` | `"undefined variable"` |
 | No internal jargon | `"circular dependency"` | `"thunk in InProgress state"` |
 | Builtin prefix when relevant | `"merge: expected Dict"` | `"type mismatch in merge"` |
 | Use "expected X, got Y" | `"expected Int, got String"` | `"Int required but String given"` |
@@ -846,7 +846,7 @@ Error messages (generated by `ErrorKind::Display`) follow these rules, adapted f
 | Message generation | `ErrorKind::Display` impl (`error.rs`) |
 | `EvalError` struct | `struct EvalError` in `src/error.rs` (modified: `message` → `kind`) |
 | Constructor migration | `error.rs` (existing constructors updated) |
-| `$try` extraction | `builtins.rs` builtin_try (`e.kind.to_string()`) |
+| `try` extraction | `builtins.rs` builtin_try (`e.kind.to_string()`) |
 | Freeform escape hatch | `EvalError::internal()` → `ErrorKind::Internal` |
 | PROP-DEPTH non-caching | `eval.rs` depth check constructs `ErrorKind::DepthExceeded`, integrated via `ErrorKind::is_cacheable()` method |
 
@@ -875,11 +875,11 @@ Builtin error messages are prefixed with the builtin name when the error origina
 
 | Builtin | Message pattern | Definition site |
 |---------|----------------|-----------------|
-| `$merge` | `"merge: expected Dict, got {type}"` | Call expression |
-| `$map`, `$filter`, etc. | `"{name}: expected Dict or Seq, got {type}"` | Call expression |
-| `$try` | `"try: expected a zero-argument function, got {n} parameters"` | Call expression |
-| `$+`, `$-`, `$*` | `"integer overflow"` | Call expression |
-| `$<` | `"type mismatch: expected comparable types"` | Call expression |
+| `merge` | `"merge: expected Dict, got {type}"` | Call expression |
+| `map`, `filter`, etc. | `"{name}: expected Dict or Seq, got {type}"` | Call expression |
+| `try` | `"try: expected a zero-argument function, got {n} parameters"` | Call expression |
+| `+`, `-`, `*` | `"integer overflow"` | Call expression |
+| `<` | `"type mismatch: expected comparable types"` | Call expression |
 
 ## Error Categories — Complete Reference
 
@@ -887,8 +887,8 @@ All 31 `ErrorKind` variants map to stable error codes and human-readable message
 
 | ErrorKind Variant | Error Code | Message Pattern | Definition Site |
 |-------------------|------------|----------------|-----------------|
-| **KeyNotFound** | E001 | `"key not found: {key}"` (base); appends `" (did you mean: '{suggestion}')"` when a close match exists (Jaro-Winkler > 0.8), or `" (available keys: {k1}, {k2}, ...)"` (up to 5) when no close match exists and `available_keys` is non-empty | Access expression (`$dict.key`, `$dict[key]`) |
-| **UndefinedVariable** | E002 | `"undefined variable: ${name}"` | Variable reference expression |
+| **KeyNotFound** | E001 | `"key not found: {key}"` (base); appends `" (did you mean: '{suggestion}')"` when a close match exists (Jaro-Winkler > 0.8), or `" (available keys: {k1}, {k2}, ...)"` (up to 5) when no close match exists and `available_keys` is non-empty | Access expression (`dict.key`, `dict[key]`) |
+| **UndefinedVariable** | E002 | `"undefined variable: {name}"` | Variable reference expression |
 | **TypeMismatch** | E010 | `"type mismatch: expected {expected}, got {got}"` or `"{context}: expected {expected}, got {got}"` | Expression that produced the wrong type |
 | **TypeAssertFailed** | E011 | `"type assertion failed: expected {expected}, got {got}"` | Type assertion expression (`[@Type expr]`) |
 | **ArityMismatch** | E020 | `"arity mismatch: expected {bound}, got {n}"` | Call expression |
@@ -904,19 +904,19 @@ All 31 `ErrorKind` variants map to stable error codes and human-readable message
 | **ValueNotSerializable** | E035 | `"cannot serialize {value_type} to JSON"` | Value being serialized |
 | **FloatOutOfRange** | E036 | `"{builtin}: {value} is out of range for Int"` | Builtin call expression |
 | **DepthExceeded** | E040 | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
-| **JsonDepthExceeded** | E041 | `"maximum JSON nesting depth exceeded ({limit})"` | `$from-json` call expression |
-| **IncludeForbidden** | E042 | `"filesystem access is disabled (--no-fs)"` | `$include` call expression |
+| **JsonDepthExceeded** | E041 | `"maximum JSON nesting depth exceeded ({limit})"` | `from-json` call expression |
+| **IncludeForbidden** | E042 | `"filesystem access is disabled (--no-fs)"` | `include` call expression |
 | **ResourceLimitExceeded** | E043 | `"{message}"` (implementation-defined) | Context-dependent |
-| **IncludeNotAvailable** | E050 | `"include: not available in this context"` | `$include` call expression |
-| **IncludeIoError** | E051 | `"include: cannot access \"{path}\": {detail}"` | `$include` call expression |
-| **IncludeCycle** | E052 | `"circular include detected: \"{path}\""` | `$include` call expression |
-| **IncludeParseFailed** | E053 | `"include: parse error in \"{path}\": {detail}"` | `$include` call expression |
-| **IncludeFileTooLarge** | E054 | `"include: file \"{path}\" is {size} bytes, exceeds {limit} byte limit"` | `$include` call expression |
+| **IncludeNotAvailable** | E050 | `"include: not available in this context"` | `include` call expression |
+| **IncludeIoError** | E051 | `"include: cannot access \"{path}\": {detail}"` | `include` call expression |
+| **IncludeCycle** | E052 | `"circular include detected: \"{path}\""` | `include` call expression |
+| **IncludeParseFailed** | E053 | `"include: parse error in \"{path}\": {detail}"` | `include` call expression |
+| **IncludeFileTooLarge** | E054 | `"include: file \"{path}\" is {size} bytes, exceeds {limit} byte limit"` | `include` call expression |
 | **ParseConversion** | E060 | `"{builtin}: cannot parse {input:?} as {target}"` | Builtin call expression |
-| **JsonParse** | E061 | `"from-json: invalid JSON: {detail}"` | `$from-json` call expression |
-| **JsonRange** | E062 | `"JSON number outside representable range"` | `$from-json` call expression |
+| **JsonParse** | E061 | `"from-json: invalid JSON: {detail}"` | `from-json` call expression |
+| **JsonRange** | E062 | `"JSON number outside representable range"` | `from-json` call expression |
 | **CircularDependency** | E070 | `"circular dependency detected while evaluating {name}"` | Thunk definition (dict entry) |
-| **UserError** | E080 | `"{message}"` (user-provided) | `$error` call expression |
+| **UserError** | E080 | `"{message}"` (user-provided) | `error` call expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
 The 31 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
@@ -929,9 +929,9 @@ The following span assignments should be implemented:
 
 | Finding | Current behavior | Correct behavior |
 |---------|-----------------|------------------|
-| Builtin errors use `call_span` for definition site | Error points to `[call $merge ...]` for both spans | `def_span` should be the operand that caused the error; `call_span` becomes `mat_span` |
-| Access chain errors lack materialization site | `$dict.key` errors show only definition site | Should include materialization site when access is in a different expression than the dict |
-| Builtin name missing from stack frames | Stack traces show generic `"materialized"` for builtin-originating errors | Should include the builtin name as the stack frame label (e.g., `"in $merge at ..."`) |
+| Builtin errors use `call_span` for definition site | Error points to `[merge ...]` for both spans | `def_span` should be the operand that caused the error; `call_span` becomes `mat_span` |
+| Access chain errors lack materialization site | `dict.key` errors show only definition site | Should include materialization site when access is in a different expression than the dict |
+| Builtin name missing from stack frames | Stack traces show generic `"materialized"` for builtin-originating errors | Should include the builtin name as the stack frame label (e.g., `"in merge at ..."`) |
 | Depth limit errors lack call-site context | `def_span` points to the thunk being forced | Should also include `mat_span` pointing to the call site that triggered the depth limit |
-| Access vs. call span attribution | Access expression errors (`$d.k`) and call expression errors (`[call $f ...]`) use the same span logic | Access chains should attribute `def_span` to the access target; call expressions should attribute `def_span` to the call site |
-| Desugared lambda spans | `wrap_expr_in_lambda` (for `$_.field` desugaring) assigns outer expression span to both Fn node and body | Type errors in desugared lambda bodies point to outer call site; inner expression span is lost during AST transformation |
+| Access vs. call span attribution | Access expression errors (`d.k`) and call expression errors (`[f ...]`) use the same span logic | Access chains should attribute `def_span` to the access target; call expressions should attribute `def_span` to the call site |
+| Desugared lambda spans | `wrap_expr_in_lambda` (for `_.field` desugaring) assigns outer expression span to both Fn node and body | Type errors in desugared lambda bodies point to outer call site; inner expression span is lost during AST transformation |
