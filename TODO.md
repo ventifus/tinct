@@ -141,20 +141,6 @@ Process and network isolation. **Depends on sandbox-b.**
 
 Enhance error reporting with richer context types inspired by Elm, Nickel, and rustc patterns.
 
-### error-context: Error Context & Suggestions
-
-Richer error context for debugging.
-
-- [x] Add available keys to `key_not_found` errors for "did you mean?" suggestions (use `strsim` crate for edit-distance matching) (completed in error-context sprint — strsim Jaro-Winkler > 0.8 threshold, available_keys field on KeyNotFound, fallback to listing up to 5 keys)
-- [x] Filter `Span::origin()` frames from user-facing stack trace output — stdlib calls and synthetic values produce frames with `Span::origin()` (0:0-0:0) that are noise in error output. Filter in `EvalError::Display`: skip frames where `frame.span == Span::origin()`. Derived from Nickel's `group_by_calls()` stdlib-frame filtering pattern. (`src/error.rs:788-791`) [Minor, span-integrity-checker T4] (completed in cycle-findings-c46-a)
-- [x] Filter stdlib/prelude.llt frames from user-facing stack traces (Nickel `group_by_calls` pattern) (completed in error-context sprint — label-suffix filter: frames ending in -impl/-step/-check are hidden from Display output; note: this is label-convention-based, not file-path-based like Nickel's group_by_calls; a future file-path-based approach remains possible)
-- [ ] Build `$include` chain threading — nested include errors should show the full include path ("included from A at line X") — see `error-context-include-chain` sprint below
-- [x] Design: secondary span model in EvalError — see doc/10-errors.md §Part 1: Error Representation. Field, builder, and Display already implemented. Three population sites: (1) Guarded validation failure (inner.span, "value produced here"), (2) builtin require_* mismatch (args[i].span, "argument produced here"), (3) $if condition type mismatch (condition.span, "condition evaluated to {type} here"). Suppress when sec_span == def_span.
-- [ ] Populate secondary_span at three eval sites — Guarded type assertion failure, builtin require_* argument type mismatch, $if non-Bool condition — using Thunk.span as value origin; suppress when sec_span == def_span; add corpus tests for each site (`src/eval_materialize.rs`, `src/builtins.rs`, `tests/corpus/`)
-- [x] Research: circular dependency error path reconstruction — see doc/whatif/circular-dep-error-paths.md. Add `eval_stack: Vec<(String, Span)>` to EvalState (mirrors include_guard). Push on Unevaluated→InProgress, pop on success; chain in CircularDependency error on InProgress detection. Nix call_stack is the direct precedent. Performance gate: optional `EvalConfig.track_cycle_path` flag.
-- [ ] Reconstruct multi-hop cycle paths for circular dependency errors (show the full cycle chain, not just the blackholed thunk)
-- [x] Elide repeating frame cycles in `DepthExceeded` stack traces — recursive and mutually-recursive functions produce 256 near-identical stack frames, overwhelming agents parsing test output. In `EvalError::Display`, when `kind == DepthExceeded`, collect visible frames, detect the minimal repeating period P (try P=1..len/3; confirm frames[i].label == frames[i%P].label && frames[i].span == frames[i%P].span for all i < P*(len/P); require at least 3 full repetitions), print one period copy then emit `[... N more repetitions of the above M frame(s) ...]`. No change to the stack data model — display-only. Add a unit test covering P=1 (self-recursion) and P=2 (mutual recursion). (`src/error.rs`) [Minor, integration-verifier]
-
 ### error-ux: Error UX Features
 
 User-facing error presentation improvements.
