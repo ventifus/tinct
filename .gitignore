@@ -21,6 +21,11 @@ Cargo.lock
 *.profdata
 *.profraw
 
+# Fuzzing (cargo-fuzz artifacts — corpus and crashes can be large)
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+
 # Training materials (cloned repos for agent training)
 .training/
 

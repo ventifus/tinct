@@ -1514,3 +1514,238 @@ fn eval_deep_materialize_seq() {
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!([0, 1, 2]));
 }
+
+// ---------------------------------------------------------------------------
+// sandbox-b: --no-landlock flag (Landlock filesystem ACL, Linux 5.13+)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_landlock_flag_accepted() {
+    // --no-landlock must be a recognized flag (clap should not reject it).
+    // Even without --allow-path, passing --no-landlock should not error.
+    let (path, _dir) = write_temp_llt("no_landlock_flag", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--no-landlock", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    // Must succeed — the flag is a no-op when no --allow-path is given.
+    assert!(
+        output.status.success(),
+        "expected success with --no-landlock flag alone; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+fn no_landlock_with_allow_path_accepted() {
+    // --no-landlock combined with --allow-path must be accepted. The flag
+    // disables Landlock kernel enforcement while still using the application-
+    // level allowlist. This is the graceful degradation path for kernels < 5.13
+    // or environments where Landlock is unavailable.
+    let dir = TempDir::new("no_landlock_allow_path");
+    let included = dir.path().join("data.llt");
+    fs::write(&included, "[value: 99]").unwrap();
+    let main = dir.path().join("main.llt");
+    fs::write(&main, "[call $include \"data.llt\"]").unwrap();
+
+    let dir_str = dir.path().to_str().unwrap();
+    let output = Command::new(tinct_bin())
+        .args([
+            "eval",
+            "--no-landlock",
+            "--allow-path",
+            dir_str,
+            main.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "--no-landlock with --allow-path should succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"value": 99}));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn landlock_with_allow_path_permits_include() {
+    // On Linux, --allow-path activates Landlock by default. $include from the
+    // allowed directory must succeed. This test confirms Landlock does not
+    // accidentally block access to explicitly allowed paths.
+    let dir = TempDir::new("landlock_allow_path_permit");
+    let included = dir.path().join("lib.llt");
+    fs::write(&included, "[result: 42]").unwrap();
+    let main = dir.path().join("main.llt");
+    fs::write(&main, "[call $include \"lib.llt\"]").unwrap();
+
+    let dir_str = dir.path().to_str().unwrap();
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--allow-path", dir_str, main.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "Landlock should allow access to explicitly allowed path; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"result": 42}));
+}
+
+// ---------------------------------------------------------------------------
+// sandbox-c: rlimit resource caps (--max-memory, --max-cpu, --max-fds)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn max_memory_flag_accepted() {
+    // --max-memory flag must be recognized and not cause errors on programs
+    // that fit comfortably within the limit. 256 MB is well above what a
+    // simple evaluation needs.
+    let (path, _dir) = write_temp_llt("max_memory_flag", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args([
+            "eval",
+            "--max-memory",
+            "268435456", // 256 MB
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success with --max-memory 256MB; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+#[cfg(unix)]
+fn max_memory_zero_disables_limit() {
+    // --max-memory 0 must disable the memory limit (no RLIMIT_AS applied).
+    // A simple program must still succeed with this flag.
+    let (path, _dir) = write_temp_llt("max_memory_zero", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--max-memory", "0", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success with --max-memory 0 (disabled); stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+#[cfg(unix)]
+fn max_cpu_flag_accepted() {
+    // --max-cpu flag must be recognized and not interfere with fast-completing
+    // programs. 10 seconds is generous for a trivial eval.
+    let (path, _dir) = write_temp_llt("max_cpu_flag", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--max-cpu", "10", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success with --max-cpu 10; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+#[cfg(unix)]
+fn max_fds_flag_accepted() {
+    // --max-fds flag must be recognized and not interfere with simple programs.
+    // 32 FDs is above the minimum needed by the process (stdin/stdout/stderr +
+    // a few internal fds).
+    let (path, _dir) = write_temp_llt("max_fds_flag", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--max-fds", "32", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success with --max-fds 32; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+#[cfg(unix)]
+fn max_fds_zero_disables_limit() {
+    // --max-fds 0 must disable the FD limit (no RLIMIT_NOFILE applied).
+    let (path, _dir) = write_temp_llt("max_fds_zero", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--max-fds", "0", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success with --max-fds 0 (disabled); stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+#[cfg(unix)]
+fn all_sandbox_flags_compose() {
+    // All sandbox flags can be combined without conflict. This is the full
+    // sandboxed invocation mode: --no-fs blocks $include, --max-memory caps
+    // heap, --max-fds caps open files, --timeout caps wall-clock time.
+    let (path, _dir) = write_temp_llt("all_sandbox_flags", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args([
+            "eval",
+            "--no-fs",
+            "--no-landlock",
+            "--max-memory",
+            "268435456", // 256 MB
+            "--max-fds",
+            "32",
+            "--timeout",
+            "5s",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "all sandbox flags should compose without error; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}

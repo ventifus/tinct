@@ -528,6 +528,7 @@ impl Substitution {
         let mut visited_types = HashSet::new();
         let mut visited_rows = HashSet::new();
         self.apply_type(ty, 0, &mut visited_types, &mut visited_rows)
+            .into_owned()
     }
 
     /// Apply substitution with externally-supplied visited sets.
@@ -543,22 +544,23 @@ impl Substitution {
             return ty.clone();
         }
         self.apply_type(ty, 0, visited_types, visited_rows)
+            .into_owned()
     }
 
-    fn apply_type(
+    fn apply_type<'a>(
         &self,
-        ty: &Type,
+        ty: &'a Type,
         depth: usize,
         visited_types: &mut HashSet<String>,
         visited_rows: &mut HashSet<String>,
-    ) -> Type {
+    ) -> Cow<'a, Type> {
         if depth >= MAX_APPLY_DEPTH {
-            return ty.clone();
+            return Cow::Borrowed(ty);
         }
         match ty {
             Type::TypeVar(name, level) => {
                 if visited_types.contains(name) {
-                    return ty.clone();
+                    return Cow::Borrowed(ty);
                 }
                 match self.type_map.get(name) {
                     Some(bound) => {
@@ -567,36 +569,45 @@ impl Substitution {
                         // is cycle-protected by visited_types; depth guards structural
                         // recursion only. Resetting prevents premature truncation of
                         // long-but-shallow substitution chains (items 5/6).
-                        let result = self.apply_type(bound, 0, visited_types, visited_rows);
+                        let result = self
+                            .apply_type(bound, 0, visited_types, visited_rows)
+                            .into_owned();
                         visited_types.remove(name);
-                        result
+                        Cow::Owned(result)
                     }
-                    None => Type::TypeVar(name.clone(), *level),
+                    None => Cow::Owned(Type::TypeVar(name.clone(), *level)),
                 }
             }
             Type::Record(row) => {
                 let applied_row = self.apply_row(row, depth + 1, visited_types, visited_rows);
-                Type::Record(applied_row)
+                Cow::Owned(Type::Record(applied_row))
             }
             Type::Function {
                 params,
                 ret,
                 variadic,
-            } => Type::Function {
+            } => Cow::Owned(Type::Function {
                 params: params
                     .iter()
-                    .map(|p| self.apply_type(p, depth + 1, visited_types, visited_rows))
+                    .map(|p| {
+                        self.apply_type(p, depth + 1, visited_types, visited_rows)
+                            .into_owned()
+                    })
                     .collect(),
-                ret: Box::new(self.apply_type(ret, depth + 1, visited_types, visited_rows)),
+                ret: Box::new(
+                    self.apply_type(ret, depth + 1, visited_types, visited_rows)
+                        .into_owned(),
+                ),
                 variadic: *variadic,
-            },
-            Type::Seq(elem) => Type::Seq(Box::new(self.apply_type(
-                elem,
-                depth + 1,
-                visited_types,
-                visited_rows,
+            }),
+            Type::Seq(elem) => Cow::Owned(Type::Seq(Box::new(
+                self.apply_type(elem, depth + 1, visited_types, visited_rows)
+                    .into_owned(),
             ))),
-            _ => ty.clone(),
+            // Primitive types (Int, Float, Bool, Str, etc.) have no type variables;
+            // return a borrow to avoid cloning the whole type tree when substitution
+            // does not apply. Cow::Borrowed eliminates the clone on the hot path.
+            _ => Cow::Borrowed(ty),
         }
     }
 
@@ -611,14 +622,18 @@ impl Substitution {
             return row.clone();
         }
 
-        // Apply substitution to field types
+        // Apply substitution to field types. apply_type returns Cow<'_, Type>;
+        // .into_owned() is called here because new_fields needs owned Types.
+        // Primitive field types (Int, Str, etc.) avoid cloning inside apply_type
+        // and only allocate here when ownership is required for the HashMap.
         let new_fields: HashMap<String, Type> = row
             .fields
             .iter()
             .map(|(k, v)| {
                 (
                     k.clone(),
-                    self.apply_type(v, depth + 1, visited_types, visited_rows),
+                    self.apply_type(v, depth + 1, visited_types, visited_rows)
+                        .into_owned(),
                 )
             })
             .collect();
@@ -1254,6 +1269,54 @@ fn unify_rows(
     }
 }
 
+/// Lower levels of all type/row variables in `ty` to min(their level, cap_level).
+/// Performs occurs check simultaneously: returns true if `occurs_name` appears in the tree.
+/// No allocation — directly updates `state.levels` in a single recursive walk.
+fn lower_levels_check_occurs(
+    ty: &Type,
+    occurs_name: &str,
+    cap_level: u32,
+    state: &mut InferState,
+) -> bool {
+    match ty {
+        Type::TypeVar(name, _) => {
+            let found = name == occurs_name;
+            let current_level = state.levels.get(name).copied().unwrap_or(0);
+            state
+                .levels
+                .insert(name.clone(), current_level.min(cap_level));
+            found
+        }
+        Type::Record(row) => {
+            let mut found = false;
+            for ty in row.fields.values() {
+                found |= lower_levels_check_occurs(ty, occurs_name, cap_level, state);
+            }
+            if let RowTail::RowVar(name, _) = &row.tail {
+                let current_level = state.levels.get(name).copied().unwrap_or(0);
+                state
+                    .levels
+                    .insert(name.clone(), current_level.min(cap_level));
+            }
+            found
+        }
+        Type::Function {
+            params,
+            ret,
+            variadic: _,
+        } => {
+            let mut found = false;
+            for p in params {
+                found |= lower_levels_check_occurs(p, occurs_name, cap_level, state);
+            }
+            found |= lower_levels_check_occurs(ret, occurs_name, cap_level, state);
+            found
+        }
+        Type::Seq(elem) => lower_levels_check_occurs(elem, occurs_name, cap_level, state),
+        _ => false,
+    }
+}
+
 /// Unify two types under Robinson's algorithm extended with Rémy-style row polymorphism
 /// and Damas-Milner level-based let-generalization.
 ///
@@ -1338,26 +1401,15 @@ pub fn unify(
 
         // U-VAR-LEVEL: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (Type::TypeVar(name, _), _) => {
-            // Fused occurs check + variable collection: one tree walk instead of two.
-            // collect_all_vars_check_occurs returns true if `name` appears in the type tree
-            // (infinite-type guard), and simultaneously populates type_vars and row_vars.
-            let mut type_vars_in_b = HashSet::new();
-            let mut row_vars_in_b = HashSet::new();
-            if b.collect_all_vars_check_occurs(name, &mut type_vars_in_b, &mut row_vars_in_b) {
+            // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
+            // lower_levels_check_occurs returns true if `name` appears in the type tree
+            // (infinite-type guard), and simultaneously lowers all var levels to cap_level.
+            let alpha_level = state.levels.get(name).copied().unwrap_or(0);
+            if lower_levels_check_occurs(&b, name, alpha_level, state) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {b}"),
                     span,
                 ));
-            }
-            let alpha_level = state.levels.get(name).copied().unwrap_or(0);
-            // Lower all type vars and row vars in b to min(their level, α's level)
-            for beta in type_vars_in_b {
-                let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
-                state.levels.insert(beta, beta_level.min(alpha_level));
-            }
-            for rho in row_vars_in_b {
-                let rho_level = state.levels.get(&rho).copied().unwrap_or(0);
-                state.levels.insert(rho, rho_level.min(alpha_level));
             }
             subst.type_map.insert(name.clone(), b);
             subst.check_size(span)?;
@@ -1365,24 +1417,13 @@ pub fn unify(
         }
         // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (_, Type::TypeVar(name, _)) => {
-            // Fused occurs check + variable collection: one tree walk instead of two.
-            let mut type_vars_in_a = HashSet::new();
-            let mut row_vars_in_a = HashSet::new();
-            if a.collect_all_vars_check_occurs(name, &mut type_vars_in_a, &mut row_vars_in_a) {
+            // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
+            let alpha_level = state.levels.get(name).copied().unwrap_or(0);
+            if lower_levels_check_occurs(&a, name, alpha_level, state) {
                 return Err(TypeError::new(
                     format!("infinite type: {name} occurs in {a}"),
                     span,
                 ));
-            }
-            let alpha_level = state.levels.get(name).copied().unwrap_or(0);
-            // Lower all type vars and row vars in a to min(their level, α's level)
-            for beta in type_vars_in_a {
-                let beta_level = state.levels.get(&beta).copied().unwrap_or(0);
-                state.levels.insert(beta, beta_level.min(alpha_level));
-            }
-            for rho in row_vars_in_a {
-                let rho_level = state.levels.get(&rho).copied().unwrap_or(0);
-                state.levels.insert(rho, rho_level.min(alpha_level));
             }
             subst.type_map.insert(name.clone(), a);
             subst.check_size(span)?;

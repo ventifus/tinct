@@ -1,0 +1,36 @@
+[package]
+name = "tinct-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.tinct]
+path = ".."
+features = []  # no cli/repl/lsp — keep the fuzz binary small
+
+# Each fuzz target is a separate binary. cargo-fuzz builds them with nightly
+# and libFuzzer instrumentation. Run with: cargo fuzz run <name>
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "eval_source"
+path = "fuzz_targets/eval_source.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "typecheck_source"
+path = "fuzz_targets/typecheck_source.rs"
+test = false
+doc = false

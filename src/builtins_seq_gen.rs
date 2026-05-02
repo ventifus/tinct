@@ -7,12 +7,11 @@
 //!
 //! Registration in `standard_builtins()` remains in `builtins.rs`.
 
-use std::borrow::Cow;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::builtins::{ok_val, reject_named};
+use crate::builtins::{builtin, ok_val, reject_named};
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Thunk, Value};
@@ -64,13 +63,12 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let head = ok_val(Value::Int(start_int), call_span)?;
         let tail_args = vec![ok_val(Value::Int(next_start), call_span)?];
         let tail = Rc::new(Thunk::new_pending_builtin(
-            "range",
-            builtin_range,
+            builtin!("range", builtin_range),
             tail_args,
             None,
             depth + 1,
             call_span,
-            Cow::Borrowed("call $range"),
+            Some(Rc::from("call $range")),
             Rc::clone(&ctx),
         ));
         ok_val(Value::Seq { head, tail }, call_span)
@@ -103,13 +101,12 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 ok_val(Value::Int(end_int), call_span)?,
             ];
             let tail = Rc::new(Thunk::new_pending_builtin(
-                "range",
-                builtin_range,
+                builtin!("range", builtin_range),
                 tail_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $range"),
+                Some(Rc::from("call $range")),
                 Rc::clone(&ctx),
             ));
             ok_val(Value::Seq { head, tail }, call_span)
@@ -139,13 +136,12 @@ pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let head = Rc::clone(&args[0]);
     let tail_args = vec![Rc::clone(&args[0])];
     let tail = Rc::new(Thunk::new_pending_builtin(
-        "repeat",
-        builtin_repeat,
+        builtin!("repeat", builtin_repeat),
         tail_args,
         None,
         depth + 1,
         call_span,
-        Cow::Borrowed("call $repeat"),
+        Some(Rc::from("call $repeat")),
         Rc::clone(&ctx),
     ));
     ok_val(Value::Seq { head, tail }, call_span)
@@ -216,13 +212,12 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         ok_val(Value::Int(next_idx), call_span)?,
     ];
     let tail = Rc::new(Thunk::new_pending_builtin(
-        "cycle",
-        builtin_cycle_step,
+        builtin!("cycle", builtin_cycle_step),
         tail_args,
         None,
         depth + 1,
         call_span,
-        Cow::Borrowed("call $cycle"),
+        Some(Rc::from("call $cycle")),
         Rc::clone(&ctx),
     ));
 
@@ -257,7 +252,7 @@ pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // Start cycling from index 0
             builtin_cycle_step(BuiltinArgs {
                 args: &[Rc::clone(&args[0]), ok_val(Value::Int(0), call_span)?],
-                named: &IndexMap::new(),
+                named: None,
                 depth,
                 call_span,
                 ctx: Rc::clone(&ctx),
@@ -307,20 +302,19 @@ pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         Rc::clone(&ctx.config.stdlib_env),
         call_span,
-        Cow::Borrowed("iterate"),
+        Some(Rc::from("iterate")),
         Rc::clone(&ctx),
     ));
 
     // tail = iterate(f, f(x))
     let tail_args = vec![Rc::clone(&f), f_of_x];
     let tail = Rc::new(Thunk::new_pending_builtin(
-        "iterate",
-        builtin_iterate,
+        builtin!("iterate", builtin_iterate),
         tail_args,
         None,
         depth + 1,
         call_span,
-        Cow::Borrowed("call $iterate"),
+        Some(Rc::from("call $iterate")),
         Rc::clone(&ctx),
     ));
 
@@ -356,7 +350,7 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
         call_span,
         Rc::clone(&ctx.config.stdlib_env),
         call_span,
-        Cow::Borrowed("unfold"),
+        Some(Rc::from("unfold")),
         Rc::clone(&ctx),
     ));
     let step_result = materialize(&step_result_thunk, None, &ctx, depth)?;
@@ -378,13 +372,12 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
             // tail = unfold_step(step, next_seed)
             let tail_args = vec![step, next_seed];
             let tail = Rc::new(Thunk::new_pending_builtin(
-                "unfold",
-                builtin_unfold_step,
+                builtin!("unfold", builtin_unfold_step),
                 tail_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $unfold"),
+                Some(Rc::from("call $unfold")),
                 Rc::clone(&ctx),
             ));
 
@@ -433,13 +426,12 @@ pub(crate) fn builtin_unfold(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Return PendingBuiltin wrapping unfold_step — fully lazy
     let tail_args = vec![Rc::clone(&args[0]), Rc::clone(&args[1])];
     let result = Rc::new(Thunk::new_pending_builtin(
-        "unfold",
-        builtin_unfold_step,
+        builtin!("unfold", builtin_unfold_step),
         tail_args,
         None,
         depth,
         call_span,
-        Cow::Borrowed("call $unfold"),
+        Some(Rc::from("call $unfold")),
         Rc::clone(&ctx),
     ));
     Ok(result)

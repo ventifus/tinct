@@ -10,6 +10,7 @@
 //! uses an explicit stack for bracket nesting, making it safe for deeply nested inputs.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::ast::*;
 use crate::lexer::{self, Token};
@@ -203,7 +204,12 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             func: Box::new(adjust_spanned_expr(*func, base)),
             args: args
                 .into_iter()
-                .map(|a| adjust_spanned_expr(a, base))
+                .map(|a| {
+                    Rc::new(adjust_spanned_expr(
+                        Rc::try_unwrap(a).unwrap_or_else(|rc| (*rc).clone()),
+                        base,
+                    ))
+                })
                 .collect(),
             named_args: named_args
                 .into_iter()
@@ -211,7 +217,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
                     span: adjust_span(na.span, base),
                     node: NamedArg {
                         name: na.node.name,
-                        value: adjust_spanned_expr(na.node.value, base),
+                        value: Rc::new(adjust_spanned_expr((*na.node.value).clone(), base)),
                     },
                 })
                 .collect(),
@@ -240,7 +246,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
                     },
                 })
                 .collect(),
-            body: Box::new(adjust_spanned_expr(*body, base)),
+            body: Rc::new(adjust_spanned_expr((*body).clone(), base)),
             desugared,
         },
         Expr::TypeAlias(inner) => Expr::TypeAlias(Box::new(adjust_spanned_expr(*inner, base))),
@@ -284,7 +290,7 @@ fn adjust_entries(entries: Vec<Spanned<Entry>>, base: Position) -> Vec<Spanned<E
             span: adjust_span(se.span, base),
             node: Entry {
                 key: se.node.key.map(|k| adjust_spanned_expr(k, base)),
-                value: adjust_spanned_expr(se.node.value, base),
+                value: Rc::new(adjust_spanned_expr((*se.node.value).clone(), base)),
             },
         })
         .collect()
@@ -297,11 +303,15 @@ fn adjust_entries(entries: Vec<Spanned<Entry>>, base: Position) -> Vec<Spanned<E
 /// Property dict annotations are parsed by extracting the bracket sub-string from `input` and
 /// re-parsing it as a standalone expression via `parse2`, then converting the resulting
 /// `Expr::Dict` into `Annotation::PropertyDict`.
+///
+/// If `recovered_errors` is provided, certain errors will be recovered from by returning an
+/// error annotation placeholder and collecting the error instead of propagating it.
 fn parse_annotation(
     tokens: &[Spanned<Token>],
     start_index: usize,
     leading_comments: &mut BTreeMap<usize, Vec<String>>,
     input: &str,
+    recovered_errors: Option<&mut Vec<ParseError>>,
 ) -> Result<(Spanned<Annotation>, usize), ParseError> {
     let mut i = start_index;
 
@@ -322,10 +332,20 @@ fn parse_annotation(
     i += skip_whitespace_tokens(tokens, i, leading_comments);
 
     if i >= tokens.len() {
-        return Err(ParseError {
+        let err = ParseError {
             message: "unexpected end of input after @".to_string(),
             span: None,
-        });
+        };
+        if let Some(errors) = recovered_errors {
+            errors.push(err);
+            // Return a placeholder error annotation
+            let placeholder_span = tokens[start_index].span;
+            return Ok((
+                Spanned::new(Annotation::Simple("Error".to_string()), placeholder_span),
+                i,
+            ));
+        }
+        return Err(err);
     }
 
     let ann_token = &tokens[i];
@@ -359,10 +379,19 @@ fn parse_annotation(
                 }
             }
             if !found {
-                return Err(ParseError {
+                let err = ParseError {
                     message: "unclosed bracket in property dict annotation".to_string(),
                     span: Some(bracket_start_span),
-                });
+                };
+                if let Some(errors) = recovered_errors {
+                    errors.push(err);
+                    // Return a placeholder error annotation
+                    return Ok((
+                        Spanned::new(Annotation::Simple("Error".to_string()), bracket_start_span),
+                        tokens.len(),
+                    ));
+                }
+                return Err(err);
             }
 
             let ann_span = Span {
@@ -377,10 +406,24 @@ fn parse_annotation(
             let sub_source = &input[byte_start..byte_end];
 
             // Re-parse the sub-string as a standalone expression.
-            let sub_output = parse2(sub_source).map_err(|e| ParseError {
-                message: format!("error in property dict annotation: {}", e.message),
-                span: Some(ann_span),
-            })?;
+            let sub_output = match parse2(sub_source) {
+                Ok(output) => output,
+                Err(e) => {
+                    let err = ParseError {
+                        message: format!("error in property dict annotation: {}", e.message),
+                        span: Some(ann_span),
+                    };
+                    if let Some(errors) = recovered_errors {
+                        errors.push(err);
+                        // Return a placeholder error annotation
+                        return Ok((
+                            Spanned::new(Annotation::Simple("Error".to_string()), ann_span),
+                            end_i + 1,
+                        ));
+                    }
+                    return Err(err);
+                }
+            };
 
             // Extract the first expression from the first document.
             let first_expr = sub_output
@@ -392,23 +435,34 @@ fn parse_annotation(
                 .and_then(|doc| doc.node.expressions.into_iter().next());
 
             match first_expr {
-                Some(spanned_expr) => match spanned_expr.node {
+                Some(spanned_expr_rc) => match &spanned_expr_rc.node {
                     Expr::Dict(entries) => {
                         // The sub-parse produced spans relative to sub_source (offset 0 = `[`).
                         // Adjust all entry spans back to the original file's coordinate space.
                         let base = bracket_start_span.start;
-                        let adjusted = adjust_entries(entries, base);
+                        let adjusted = adjust_entries(entries.clone(), base);
                         Ok((
                             Spanned::new(Annotation::PropertyDict(adjusted), ann_span),
                             end_i + 1,
                         ))
                     }
-                    other => Err(ParseError {
-                        message: format!(
-                            "property dict annotation must be a dict expression, got: {other}"
-                        ),
-                        span: Some(ann_span),
-                    }),
+                    other => {
+                        let err = ParseError {
+                            message: format!(
+                                "property dict annotation must be a dict expression, got: {other}"
+                            ),
+                            span: Some(ann_span),
+                        };
+                        if let Some(errors) = recovered_errors {
+                            errors.push(err);
+                            // Return a placeholder error annotation
+                            return Ok((
+                                Spanned::new(Annotation::Simple("Error".to_string()), ann_span),
+                                end_i + 1,
+                            ));
+                        }
+                        Err(err)
+                    }
                 },
                 None => {
                     // Empty bracket: @[] — treat as empty PropertyDict
@@ -419,24 +473,45 @@ fn parse_annotation(
                 }
             }
         }
-        _ => Err(ParseError {
-            message: format!(
-                "expected annotation name or bracket dict after @, found {:?}",
-                ann_token.node
-            ),
-            span: Some(ann_token.span),
-        }),
+        _ => {
+            let err = ParseError {
+                message: format!(
+                    "expected annotation name or bracket dict after @, found {:?}",
+                    ann_token.node
+                ),
+                span: Some(ann_token.span),
+            };
+            if let Some(errors) = recovered_errors {
+                errors.push(err);
+                // Return a placeholder error annotation.
+                // Do NOT advance past CloseBracket — the main loop needs to see it to pop the frame.
+                // For other invalid tokens, advance by 1 to avoid infinite loop.
+                return Ok((
+                    Spanned::new(Annotation::Simple("Error".to_string()), ann_token.span),
+                    if matches!(ann_token.node, Token::CloseBracket) {
+                        i
+                    } else {
+                        i + 1
+                    },
+                ));
+            }
+            Err(err)
+        }
     }
 }
 
 /// Parse a function parameter list: `[param1 param2@Type ...rest]`
 /// Expects the current token to be OpenBracket. Advances index past CloseBracket.
 /// Returns (Vec<Param>, next_index) on success.
+///
+/// If `recovered_errors` is provided, certain errors will be recovered from by collecting
+/// valid parameters and recording errors instead of failing.
 fn parse_param_list(
     tokens: &[Spanned<Token>],
     i: &mut usize,
     leading_comments: &mut BTreeMap<usize, Vec<String>>,
     input: &str,
+    mut recovered_errors: Option<&mut Vec<ParseError>>,
 ) -> Result<Vec<Spanned<Param>>, ParseError> {
     let _param_list_start = *i;
 
@@ -470,10 +545,16 @@ fn parse_param_list(
             Token::Ellipsis => {
                 // Variadic param: ...name
                 if saw_variadic {
-                    return Err(ParseError {
+                    let err = ParseError {
                         message: "multiple variadic parameters".to_string(),
                         span: Some(tokens[*i].span),
-                    });
+                    };
+                    if let Some(errors) = recovered_errors.as_deref_mut() {
+                        errors.push(err);
+                        *i += 1; // Skip the invalid ellipsis
+                        continue;
+                    }
+                    return Err(err);
                 }
                 saw_variadic = true;
                 let ellipsis_span = tokens[*i].span;
@@ -482,10 +563,15 @@ fn parse_param_list(
                 *i += skip_whitespace_tokens(tokens, *i, leading_comments);
 
                 if *i >= tokens.len() {
-                    return Err(ParseError {
+                    let err = ParseError {
                         message: "expected parameter name after '...'".to_string(),
                         span: Some(ellipsis_span),
-                    });
+                    };
+                    if let Some(errors) = recovered_errors.as_deref_mut() {
+                        errors.push(err);
+                        break; // End of input, exit loop
+                    }
+                    return Err(err);
                 }
 
                 match &tokens[*i].node {
@@ -506,27 +592,45 @@ fn parse_param_list(
 
                         // Check for illegal annotation on variadic param
                         if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
-                            return Err(ParseError {
+                            let err = ParseError {
                                 message: "annotations on variadic parameters are not allowed"
                                     .to_string(),
                                 span: Some(tokens[*i].span),
-                            });
+                            };
+                            if let Some(errors) = recovered_errors.as_deref_mut() {
+                                errors.push(err);
+                                *i += 1; // Skip the annotation token
+                                continue;
+                            }
+                            return Err(err);
                         }
                     }
                     _ => {
-                        return Err(ParseError {
+                        let err = ParseError {
                             message: "expected parameter name after '...'".to_string(),
                             span: Some(tokens[*i].span),
-                        });
+                        };
+                        if let Some(errors) = recovered_errors.as_deref_mut() {
+                            errors.push(err);
+                            *i += 1; // Skip the invalid token
+                            continue;
+                        }
+                        return Err(err);
                     }
                 }
             }
             Token::BareWord(name) => {
                 if saw_variadic {
-                    return Err(ParseError {
+                    let err = ParseError {
                         message: "parameter after variadic parameter".to_string(),
                         span: Some(tokens[*i].span),
-                    });
+                    };
+                    if let Some(errors) = recovered_errors.as_deref_mut() {
+                        errors.push(err);
+                        *i += 1; // Skip the invalid param
+                        continue;
+                    }
+                    return Err(err);
                 }
 
                 let param_start_span = tokens[*i].span;
@@ -536,9 +640,28 @@ fn parse_param_list(
                 // Check for annotation: param@Type or param@[type: ...]
                 let annotation =
                     if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
-                        let (ann, next_i) = parse_annotation(tokens, *i, leading_comments, input)?;
-                        *i = next_i;
-                        Some(ann)
+                        match parse_annotation(
+                            tokens,
+                            *i,
+                            leading_comments,
+                            input,
+                            recovered_errors.as_deref_mut(),
+                        ) {
+                            Ok((ann, next_i)) => {
+                                *i = next_i;
+                                Some(ann)
+                            }
+                            Err(e) => {
+                                // Invariant: parse_annotation with Some(errors) should always return Ok
+                                // with a placeholder. Err here means we're NOT in recovery mode.
+                                if recovered_errors.is_none() {
+                                    return Err(e);
+                                }
+                                // If we reach here, parse_annotation failed despite being in recovery mode.
+                                // This shouldn't happen (indicates a programming error), but handle gracefully.
+                                None
+                            }
+                        }
                     } else {
                         None
                     };
@@ -562,10 +685,16 @@ fn parse_param_list(
                 ));
             }
             _ => {
-                return Err(ParseError {
+                let err = ParseError {
                     message: format!("unexpected token in param list: {:?}", tokens[*i].node),
                     span: Some(tokens[*i].span),
-                });
+                };
+                if let Some(errors) = recovered_errors.as_deref_mut() {
+                    errors.push(err);
+                    *i += 1; // Skip the unexpected token
+                    continue;
+                }
+                return Err(err);
             }
         }
     }
@@ -635,8 +764,8 @@ enum StackFrame {
 /// enforces the C-PRIORITY binding order (see `doc/04-functions.md §Call Convention`).
 #[derive(Debug, Clone, PartialEq)]
 enum CallArg {
-    Positional(Spanned<Expr>),
-    Named(String, Spanned<Expr>),
+    Positional(Rc<Spanned<Expr>>),
+    Named(String, Rc<Spanned<Expr>>),
 }
 
 /// Parse output: AST plus comment side-channels for the formatter.
@@ -697,8 +826,10 @@ fn skip_to_closing_bracket(tokens: &[Spanned<Token>], from_idx: usize) -> usize 
 /// Called when an error occurs while processing tokens inside an existing `StackFrame`. This function:
 /// 1. Records the error in `recovered_errors`.
 /// 2. Pops the innermost `StackFrame` (which contained the error).
-/// 3. Pushes `Expr::Error(error_span)` to the new innermost frame (or document if now at top level).
-/// 4. Skips `i` past the `]` that closes the abandoned frame, accounting for nested brackets.
+/// 3. For Dict/Call frames: builds a partial expression with valid entries collected so far,
+///    plus an `Expr::Error` entry for the malformed part.
+/// 4. For other frames: pushes `Expr::Error(error_span)` to the parent.
+/// 5. Skips `i` past the `]` that closes the abandoned frame, accounting for nested brackets.
 ///
 /// After calling this, the caller should `continue` the main token loop.
 ///
@@ -712,7 +843,7 @@ fn recover_from_bracket_error(
     tokens: &[Spanned<Token>],
     skip_from_idx: usize,
     stack: &mut Vec<StackFrame>,
-    current_document_expressions: &mut Vec<Spanned<Expr>>,
+    current_document_expressions: &mut Vec<Rc<Spanned<Expr>>>,
     recovered_errors: &mut Vec<ParseError>,
 ) -> usize {
     recovered_errors.push(error);
@@ -720,19 +851,136 @@ fn recover_from_bracket_error(
     // Pop the frame that contained the error (the innermost one).
     // If the stack is empty, we have nothing to pop — this shouldn't happen if the caller
     // checked `!stack.is_empty()`, but handle it gracefully.
-    if !stack.is_empty() {
-        stack.pop();
-    }
+    let frame = if !stack.is_empty() { stack.pop() } else { None };
 
-    // Push Expr::Error into the parent context (the new top after popping).
-    let error_expr = Spanned::new(Expr::Error(error_span), error_span);
+    // Build a partial expression with valid entries plus an error marker.
+    let partial_expr = if let Some(frame) = frame {
+        match frame {
+            StackFrame::Dict {
+                entries,
+                span_start,
+                ..
+            } => {
+                // If there are valid entries, build a partial dict with them plus an error entry.
+                // If there are no valid entries, just emit Expr::Error.
+                if entries.is_empty() {
+                    Spanned::new(Expr::Error(error_span), error_span)
+                } else {
+                    let mut partial_entries = entries
+                        .into_iter()
+                        .map(|e| {
+                            let entry_span = if let Some(ref key) = e.key {
+                                Span {
+                                    start: key.span.start,
+                                    end: e.value.span.end,
+                                }
+                            } else {
+                                e.value.span
+                            };
+                            Spanned::new(e, entry_span)
+                        })
+                        .collect::<Vec<_>>();
 
+                    // Add the error as an auto-indexed entry
+                    partial_entries.push(Spanned::new(
+                        Entry {
+                            key: None,
+                            value: Rc::new(Spanned::new(Expr::Error(error_span), error_span)),
+                        },
+                        error_span,
+                    ));
+
+                    let dict_span = Span {
+                        start: span_start,
+                        end: error_span.end,
+                    };
+                    Spanned::new(Expr::Dict(partial_entries), dict_span)
+                }
+            }
+            StackFrame::Call {
+                args, span_start, ..
+            } => {
+                // Build a partial call with valid args plus an error arg.
+                // If there's no function (empty args), or first arg is named, use plain error.
+                if args.is_empty() {
+                    // No function — can't build a call, use plain error
+                    Spanned::new(Expr::Error(error_span), error_span)
+                } else {
+                    match &args[0] {
+                        CallArg::Positional(func) => {
+                            let func = Rc::clone(func);
+                            let mut positional_args = Vec::new();
+                            let mut named_args = Vec::new();
+
+                            // Check original args length before consuming it
+                            let has_args_beyond_func = args.len() > 1;
+
+                            for arg in args.into_iter().skip(1) {
+                                match arg {
+                                    CallArg::Positional(expr) => positional_args.push(expr),
+                                    CallArg::Named(name, expr) => {
+                                        named_args.push(Spanned::new(
+                                            NamedArg {
+                                                name,
+                                                value: Rc::clone(&expr),
+                                            },
+                                            expr.span,
+                                        ));
+                                    }
+                                }
+                            }
+
+                            // Only build a partial call if there were actual args beyond the function.
+                            // If args.len() == 1, it's just [call $f] with an error — emit plain Error.
+                            if !has_args_beyond_func {
+                                Spanned::new(Expr::Error(error_span), error_span)
+                            } else {
+                                // Add the error as a positional argument
+                                positional_args.push(Rc::new(Spanned::new(
+                                    Expr::Error(error_span),
+                                    error_span,
+                                )));
+
+                                let call_span = Span {
+                                    start: span_start,
+                                    end: error_span.end,
+                                };
+                                Spanned::new(
+                                    Expr::Call {
+                                        func: Box::new(
+                                            Rc::try_unwrap(func).unwrap_or_else(|rc| (*rc).clone()),
+                                        ),
+                                        args: positional_args,
+                                        named_args,
+                                    },
+                                    call_span,
+                                )
+                            }
+                        }
+                        CallArg::Named(_, _) => {
+                            // Invalid: first arg is named. Use plain error.
+                            Spanned::new(Expr::Error(error_span), error_span)
+                        }
+                    }
+                }
+            }
+            _ => {
+                // For other frame types (Fn, TypeAlias, TypeAssert, BracketAccessKey),
+                // we can't meaningfully preserve partial state, so just emit Error.
+                Spanned::new(Expr::Error(error_span), error_span)
+            }
+        }
+    } else {
+        Spanned::new(Expr::Error(error_span), error_span)
+    };
+
+    // Push the partial expression to the parent context.
     if stack.is_empty() {
-        current_document_expressions.push(error_expr);
+        current_document_expressions.push(Rc::new(partial_expr));
     } else {
         // push_value can itself error (e.g. duplicate key). If it does, we just ignore it —
-        // we're already in recovery mode and the error_expr is best-effort.
-        let _ = push_value(stack, current_document_expressions, error_expr);
+        // we're already in recovery mode and the partial_expr is best-effort.
+        let _ = push_value(stack, current_document_expressions, partial_expr);
     }
 
     // Skip past the matching `]`. `skip_to_closing_bracket` expects to be called with
@@ -766,7 +1014,7 @@ fn recover_from_failed_open(
     tokens: &[Spanned<Token>],
     skip_from_idx: usize,
     stack: &mut Vec<StackFrame>,
-    current_document_expressions: &mut Vec<Spanned<Expr>>,
+    current_document_expressions: &mut Vec<Rc<Spanned<Expr>>>,
     recovered_errors: &mut Vec<ParseError>,
 ) -> usize {
     recovered_errors.push(error);
@@ -775,7 +1023,7 @@ fn recover_from_failed_open(
     let error_expr = Spanned::new(Expr::Error(error_span), error_span);
 
     if stack.is_empty() {
-        current_document_expressions.push(error_expr);
+        current_document_expressions.push(Rc::new(error_expr));
     } else {
         let _ = push_value(stack, current_document_expressions, error_expr);
     }
@@ -820,7 +1068,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     let mut stack: Vec<StackFrame> = Vec::new();
 
     // Current document being built (one or more expressions)
-    let mut current_document_expressions: Vec<Spanned<Expr>> = Vec::new();
+    let mut current_document_expressions: Vec<Rc<Spanned<Expr>>> = Vec::new();
 
     // All documents in the file
     let mut documents: Vec<Spanned<Document>> = Vec::new();
@@ -915,7 +1163,13 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         let return_ann = if i < token_vec.len()
                             && matches!(&token_vec[i].node, Token::ImmediateAt)
                         {
-                            match parse_annotation(&token_vec, i, &mut leading_comments, input) {
+                            match parse_annotation(
+                                &token_vec,
+                                i,
+                                &mut leading_comments,
+                                input,
+                                Some(&mut recovered_errors),
+                            ) {
                                 Ok((ann, next_i)) => {
                                     i = next_i;
                                     Some(ann)
@@ -957,8 +1211,13 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         let params = if i < token_vec.len()
                             && matches!(&token_vec[i].node, Token::OpenBracket)
                         {
-                            match parse_param_list(&token_vec, &mut i, &mut leading_comments, input)
-                            {
+                            match parse_param_list(
+                                &token_vec,
+                                &mut i,
+                                &mut leading_comments,
+                                input,
+                                Some(&mut recovered_errors),
+                            ) {
                                 Ok(ps) => ps,
                                 Err(param_err) => {
                                     // The [fn ...] bracket was opened but the Fn frame was not
@@ -1067,7 +1326,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             span: Some(span),
                         });
                     }
-                    current_document_expressions.pop().unwrap()
+                    let rc = current_document_expressions.pop().unwrap();
+                    Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
                 } else {
                     match pop_last_value_from_frame(&mut stack, span) {
                         Ok(t) => t,
@@ -1122,7 +1382,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         let error_expr = Spanned::new(Expr::Error(error_span), error_span);
                         // Push to parent context (stack has already had the frame popped).
                         if stack.is_empty() {
-                            current_document_expressions.push(error_expr);
+                            current_document_expressions.push(Rc::new(error_expr.clone()));
                         } else {
                             // Ignore secondary errors during recovery.
                             let _ = push_value(
@@ -1199,7 +1459,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             });
                         } else {
                             let func = match &args[0] {
-                                CallArg::Positional(expr) => Ok(expr.clone()),
+                                CallArg::Positional(expr) => Ok(Rc::clone(expr)),
                                 CallArg::Named(name, _) => Err(ParseError {
                                     message: format!(
                                         "call function cannot be a named argument (got `{name}:`)",
@@ -1223,7 +1483,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                                 named_args.push(Spanned::new(
                                                     NamedArg {
                                                         name,
-                                                        value: expr.clone(),
+                                                        value: Rc::clone(&expr),
                                                     },
                                                     expr.span,
                                                 ));
@@ -1232,7 +1492,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                     }
 
                                     let call_expr = Expr::Call {
-                                        func: Box::new(func),
+                                        func: Box::new(
+                                            Rc::try_unwrap(func).unwrap_or_else(|rc| (*rc).clone()),
+                                        ),
                                         args: positional_args,
                                         named_args,
                                     };
@@ -1267,7 +1529,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             let fn_expr = Expr::Fn {
                                 return_ann,
                                 params,
-                                body: Box::new(body),
+                                body: Rc::new(body),
                                 desugared: false,
                             };
 
@@ -1584,7 +1846,13 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     let name = s.clone();
                     let name_span = span;
                     i += 1; // Move to ImmediateAt token
-                    match parse_annotation(&token_vec, i, &mut leading_comments, input) {
+                    match parse_annotation(
+                        &token_vec,
+                        i,
+                        &mut leading_comments,
+                        input,
+                        Some(&mut recovered_errors),
+                    ) {
                         Ok((annotation, next_i)) => {
                             i = next_i;
                             let full_span = Span {
@@ -1820,7 +2088,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             span: Some(span),
                         });
                     }
-                    current_document_expressions.pop().unwrap()
+                    let rc = current_document_expressions.pop().unwrap();
+                    Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
                 } else {
                     // Inside a frame — pop the last value from the current frame
                     match pop_last_value_from_frame(&mut stack, span) {
@@ -1882,7 +2151,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         let spanned_access = Spanned::new(dot_access_expr, dot_access_span);
 
                         if stack.is_empty() {
-                            current_document_expressions.push(spanned_access);
+                            current_document_expressions.push(Rc::new(spanned_access.clone()));
                         } else if let Err(push_err) = push_value(
                             &mut stack,
                             &mut current_document_expressions,
@@ -1975,7 +2244,13 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     match stack.last_mut() {
                         Some(StackFrame::TypeAssert {
                             ref mut annotation, ..
-                        }) => match parse_annotation(&token_vec, i, &mut leading_comments, input) {
+                        }) => match parse_annotation(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            input,
+                            Some(&mut recovered_errors),
+                        ) {
                             Ok((ann, next_i)) => {
                                 *annotation = Some(ann);
                                 i = next_i;
@@ -2228,7 +2503,7 @@ fn pop_last_value_from_frame(
                 }
             }
             *pending_key = last_entry.key;
-            Ok(last_entry.value)
+            Ok(Rc::try_unwrap(last_entry.value).unwrap_or_else(|rc| (*rc).clone()))
         }
         Some(StackFrame::Call { ref mut args, .. }) => {
             if args.is_empty() {
@@ -2238,7 +2513,9 @@ fn pop_last_value_from_frame(
                 });
             }
             match args.pop().unwrap() {
-                CallArg::Positional(expr) => Ok(expr),
+                CallArg::Positional(expr) => {
+                    Ok(Rc::try_unwrap(expr).unwrap_or_else(|rc| (*rc).clone()))
+                }
                 CallArg::Named(name, _expr) => Err(ParseError {
                     message: format!("dot access cannot operate on named argument '{}'", name),
                     span: Some(span),
@@ -2315,11 +2592,11 @@ fn pop_last_value_from_frame(
 /// Helper: push an expression to the parent frame or current document.
 fn push_expr_to_parent(
     stack: &mut Vec<StackFrame>,
-    current_document_expressions: &mut Vec<Spanned<Expr>>,
+    current_document_expressions: &mut Vec<Rc<Spanned<Expr>>>,
     expr: Spanned<Expr>,
 ) -> Result<(), ParseError> {
     if stack.is_empty() {
-        current_document_expressions.push(expr);
+        current_document_expressions.push(Rc::new(expr));
         Ok(())
     } else {
         match stack.last_mut() {
@@ -2328,12 +2605,12 @@ fn push_expr_to_parent(
             }) => {
                 entries.push(Entry {
                     key: None,
-                    value: expr,
+                    value: Rc::new(expr),
                 });
                 Ok(())
             }
             Some(StackFrame::Call { ref mut args, .. }) => {
-                args.push(CallArg::Positional(expr));
+                args.push(CallArg::Positional(Rc::new(expr)));
                 Ok(())
             }
             Some(StackFrame::Fn { ref mut body, .. }) => {
@@ -2409,11 +2686,11 @@ fn push_expr_to_parent(
 /// Helper: push a value expression, handling keyed entries in dict/call contexts.
 fn push_value(
     stack: &mut Vec<StackFrame>,
-    current_document_expressions: &mut Vec<Spanned<Expr>>,
+    current_document_expressions: &mut Vec<Rc<Spanned<Expr>>>,
     expr: Spanned<Expr>,
 ) -> Result<(), ParseError> {
     if stack.is_empty() {
-        current_document_expressions.push(expr);
+        current_document_expressions.push(Rc::new(expr));
         return Ok(());
     }
 
@@ -2438,13 +2715,13 @@ fn push_value(
                 // This value completes a keyed entry
                 entries.push(Entry {
                     key: Some(key),
-                    value: expr,
+                    value: Rc::new(expr),
                 });
             } else {
                 // Auto-indexed entry
                 entries.push(Entry {
                     key: None,
-                    value: expr,
+                    value: Rc::new(expr),
                 });
             }
             Ok(())
@@ -2456,10 +2733,10 @@ fn push_value(
         }) => {
             if let Some((name, _)) = pending_key.take() {
                 // This value completes a named argument
-                args.push(CallArg::Named(name, expr));
+                args.push(CallArg::Named(name, Rc::new(expr)));
             } else {
                 // Positional argument
-                args.push(CallArg::Positional(expr));
+                args.push(CallArg::Positional(Rc::new(expr)));
             }
             Ok(())
         }
@@ -2517,24 +2794,39 @@ pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
         });
     }
 
-    Ok(first_doc.node.expressions[0].clone())
+    Ok((*first_doc.node.expressions[0]).clone())
 }
 
 /// Parse tinct source text with error recovery.
 ///
-/// This is a convenience wrapper around `parse2()`. Unlike `parse()`, which returns
-/// `Err` on the first error, `parse_with_recovery()` always returns a `ParseOutput`
-/// (assuming the lexer succeeds). Errors that occur inside bracket forms are recovered
-/// from: the parser substitutes `Expr::Error` nodes and continues. Recovered errors are
-/// available in `ParseOutput.errors`.
+/// This function ALWAYS succeeds (returns a `ParseOutput`), even when there are parse errors.
+/// Unlike `parse()` and `parse2()` (which return `Err` on fatal errors like lexer failure
+/// or unclosed brackets at top level), this function converts all fatal errors into
+/// `ParseOutput.errors` and returns a synthetic AST.
 ///
-/// Fatal errors (lexer failure, unclosed brackets) still cause this function to return
-/// `Err(...)`.
+/// Errors that occur inside bracket forms are recovered from: the parser substitutes
+/// `Expr::Error` nodes and continues. Fatal errors (lexer failure, unclosed brackets at
+/// top level) are also recovered: they are recorded in `ParseOutput.errors` and a minimal
+/// empty `File` AST is returned.
 ///
-/// Use this function when you want to report multiple parse errors at once (e.g. in an
-/// LSP diagnostic pass or a batch linting tool) rather than stopping at the first error.
-pub fn parse_with_recovery(input: &str) -> Result<ParseOutput, ParseError> {
-    parse2(input)
+/// Use this function when you want to report ALL parse errors at once (e.g. in an LSP
+/// diagnostic pass or a batch linting tool) and always need an AST, even if it's empty.
+pub fn parse_with_recovery(input: &str) -> ParseOutput {
+    match parse2(input) {
+        Ok(output) => output,
+        Err(fatal_error) => {
+            // Fatal error (lexer failure, unclosed brackets, etc.)
+            // Construct a synthetic empty File with the error recorded.
+            let empty_file = Spanned::new(File { documents: vec![] }, Span::origin());
+            ParseOutput {
+                file: empty_file,
+                source: input.to_string(),
+                leading_comments: BTreeMap::new(),
+                trailing_comments: BTreeMap::new(),
+                errors: vec![fatal_error],
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2544,7 +2836,7 @@ mod tests {
     /// Helper: parse successfully and return the first expression from the first document.
     fn parse_expr(input: &str) -> Spanned<Expr> {
         let output = parse2(input).expect("parse failed");
-        output.file.node.documents[0].node.expressions[0].clone()
+        (*output.file.node.documents[0].node.expressions[0]).clone()
     }
 
     #[test]
@@ -2899,7 +3191,7 @@ mod tests {
     #[test]
     fn test_type_assert_no_annotation() {
         // [@] — type-assert with @; parse_annotation sees CloseBracket after @ → error
-        let output = parse2("[@]").expect("recovery should succeed");
+        let output = parse_with_recovery("[@]");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for type-assert without annotation"
@@ -4398,11 +4690,11 @@ mod tests {
         }
     }
 
-    /// parse_with_recovery is a convenience wrapper that calls parse2() and returns ParseOutput.
+    /// parse_with_recovery is an infallible wrapper that always returns ParseOutput.
     /// Valid input produces ParseOutput.errors=[] and a well-formed AST.
     #[test]
     fn test_parse_with_recovery_valid_input() {
-        let output = parse_with_recovery("[a: 1 b: 2]").expect("parse_with_recovery failed");
+        let output = parse_with_recovery("[a: 1 b: 2]");
         assert!(
             output.errors.is_empty(),
             "expected no errors for valid input, got: {:?}",
@@ -4413,17 +4705,113 @@ mod tests {
         assert!(matches!(doc.expressions[0].node, Expr::Dict(_)));
     }
 
-    /// parse_with_recovery on errored input returns Ok with errors collected.
+    /// parse_with_recovery on errored input returns ParseOutput with errors collected.
     #[test]
     fn test_parse_with_recovery_error_input() {
-        let output =
-            parse_with_recovery("[fn]").expect("parse_with_recovery should not return Err");
+        let output = parse_with_recovery("[fn]");
         assert_eq!(output.errors.len(), 1, "expected 1 recovered error");
         assert!(
             output.errors[0].message.contains("fn form requires a body"),
             "expected fn-body error, got: {}",
             output.errors[0].message
         );
+    }
+
+    /// parse_with_recovery on fatal errors (unclosed brackets) returns synthetic empty File.
+    #[test]
+    fn test_parse_with_recovery_fatal_error() {
+        let output = parse_with_recovery("[");
+        assert_eq!(output.errors.len(), 1, "expected 1 fatal error");
+        assert!(
+            output.errors[0].message.contains("unclosed bracket"),
+            "expected unclosed-bracket error, got: {}",
+            output.errors[0].message
+        );
+        assert_eq!(
+            output.file.node.documents.len(),
+            0,
+            "expected empty documents for fatal error"
+        );
+    }
+
+    /// Task 1: Partial dict preservation - valid entries before error are kept.
+    #[test]
+    fn test_recovery_partial_dict_preservation() {
+        // [a: 1  a: 2] — has one valid entry (a: 1) before the duplicate key error
+        // Should recover with a partial dict containing the valid entry plus an error entry
+        let output = parse2("[a: 1  a: 2]").expect("recovery should succeed");
+        assert_eq!(output.errors.len(), 1, "expected exactly 1 recovered error");
+        assert!(
+            output.errors[0].message.contains("duplicate key"),
+            "expected 'duplicate key' error, got: {}",
+            output.errors[0].message
+        );
+
+        let doc = &output.file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 1, "expected 1 expression");
+
+        // The recover_from_bracket_error() function builds a partial dict when there are
+        // valid entries, adding an error entry for the failed part
+        match &doc.expressions[0].node {
+            Expr::Dict(entries) => {
+                // Should have 2 entries: the valid "a: 1" plus the error entry
+                assert_eq!(entries.len(), 2, "expected 2 entries (1 valid + 1 error)");
+
+                // First entry should be a: 1
+                match &entries[0].node.key.as_ref().unwrap().node {
+                    Expr::Str(s) => assert_eq!(s, "a", "expected key 'a'"),
+                    other => panic!("expected key 'a', got {other:?}"),
+                }
+                match &entries[0].node.value.node {
+                    Expr::Int(n) => assert_eq!(*n, 1, "expected value 1"),
+                    other => panic!("expected value 1, got {other:?}"),
+                }
+
+                // Second entry should be an error (auto-indexed, no key)
+                assert!(
+                    entries[1].node.key.is_none(),
+                    "expected error entry to have no key"
+                );
+                assert!(
+                    matches!(entries[1].node.value.node, Expr::Error(_)),
+                    "expected Expr::Error as second entry value"
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    /// Task 2: Annotation recovery - invalid token after @ should recover without infinite loop.
+    #[test]
+    fn test_recovery_annotation_invalid_token() {
+        // [@123 x: 1] — invalid token (Int) after @, should recover without infinite loop
+        let output = parse_with_recovery("[@123 x: 1]");
+        assert!(
+            !output.errors.is_empty(),
+            "expected at least 1 recovered error"
+        );
+        assert!(
+            output.errors[0]
+                .message
+                .contains("expected annotation name or bracket dict after @"),
+            "expected annotation error, got: {}",
+            output.errors[0].message
+        );
+        // The annotation error cascades: invalid token after @ is recovered, but the
+        // subsequent `:` in TypeAssert context triggers a second recovery that produces
+        // Expr::Error for the whole form. This is correct — the form is malformed.
+        assert_eq!(output.file.node.documents.len(), 1, "expected 1 document");
+        let doc = &output.file.node.documents[0].node;
+        assert!(
+            !doc.expressions.is_empty(),
+            "expected at least 1 expression"
+        );
+        match &doc.expressions[0].node {
+            Expr::Error(_) | Expr::Dict(_) => {
+                // Either Expr::Error (cascading recovery) or Dict (partial preservation)
+            }
+            other => panic!("expected Error or Dict, got {other:?}"),
+        }
     }
 
     /// skip_to_closing_bracket correctly finds the matching ] accounting for nesting.

@@ -83,7 +83,7 @@ const _: () = {
 };
 
 /// Error types with source spans and stack traces.
-pub use error::{ArityBound, ErrorKind, EvalError, EvalResult, StackFrame};
+pub use error::{render_span_snippet, ArityBound, ErrorKind, EvalError, EvalResult, StackFrame};
 
 /// Formatter: canonical source reformatter.
 pub use formatter::format_source;
@@ -241,8 +241,8 @@ pub fn value_to_json(
             ast::Span::origin(),
         )
         .into()),
-        Value::Builtin { name, .. } => Err(error::EvalError::value_not_serializable(
-            format!("Builtin ({name})"),
+        Value::Builtin(def) => Err(error::EvalError::value_not_serializable(
+            format!("Builtin ({})", def.name),
             ast::Span::origin(),
         )
         .into()),
@@ -322,7 +322,7 @@ pub fn value_to_display_string(
             let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
             Ok(format!("Function({})", names.join(", ")))
         }
-        value::Value::Builtin { name, .. } => Ok(format!("Builtin({name})")),
+        value::Value::Builtin(def) => Ok(format!("Builtin({})", def.name)),
         value::Value::Seq { head, .. } => {
             // Materialize and display head element
             let head_val = eval::materialize(head, None, ctx, depth)?;
@@ -599,10 +599,11 @@ mod tests {
                 ast::Span::origin(),
             )))
         }
-        let b = Value::Builtin {
-            name: "test",
+        let b = Value::Builtin(value::BuiltinDef {
             func: dummy,
-        };
+            name: "test",
+            pos_strictness: &[],
+        });
         let err = value_to_json(&b, &test_ctx(), 0).unwrap_err();
         assert!(
             err.message()
@@ -897,6 +898,72 @@ mod tests {
         assert_eq!(
             output, "Int(99)",
             "expected main value Int(99), got: {output}"
+        );
+    }
+
+    // --- Integration tests: render_span_snippet in error output ---
+
+    /// `eval_source_with_snippets` integration test: verify that when an error occurs
+    /// in a user-written source string, the error Display produced by main.rs / REPL
+    /// includes a source snippet (rustc-style underline). This exercises
+    /// `render_span_snippet` being called with a real eval error's definition_span.
+    ///
+    /// The test simulates the pattern used in main.rs `run_eval` and `repl.rs` `eval_input`:
+    /// parse source → eval → on error, call render_span_snippet with the source string
+    /// and the error's definition_span, then check the snippet is present.
+    #[test]
+    fn test_eval_source_with_source_snippets() {
+        // Source that will produce an eval error with a real source span.
+        // Accessing an undefined variable gives an UndefinedVariable error whose
+        // definition_span points at the VarRef expression in the source.
+        let source = "$undefined_var";
+
+        // Parse the source manually to get a real AST with spans.
+        let mut file = parse(source).expect("parse should succeed");
+        desugar::desugar_file(&mut file.node);
+        let _ = typecheck::typecheck_file(&file.node);
+        let env = builtins::create_stdlib_env().expect("stdlib failed");
+        let ctx = test_ctx();
+
+        // Evaluate: this should fail because $undefined_var is not defined.
+        let eval_result = eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0);
+        assert!(
+            eval_result.is_err(),
+            "expected eval to fail for undefined variable"
+        );
+        let err = eval_result.unwrap_err();
+
+        // Verify the error has a non-synthetic definition_span.
+        assert_ne!(
+            err.definition_span,
+            ast::Span::origin(),
+            "error should have a real source span, not Span::origin()"
+        );
+
+        // render_span_snippet should produce a snippet for this error.
+        let snippet = error::render_span_snippet(source, err.definition_span);
+        assert!(
+            snippet.is_some(),
+            "render_span_snippet should return Some for a real source span"
+        );
+        let snippet_text = snippet.unwrap();
+
+        // The snippet should contain the source line.
+        assert!(
+            snippet_text.contains("$undefined_var"),
+            "snippet should contain the source line with the variable reference, got: {snippet_text}"
+        );
+
+        // The snippet should contain caret underlines (error indicator).
+        assert!(
+            snippet_text.contains('^'),
+            "snippet should contain caret underlines, got: {snippet_text}"
+        );
+
+        // The snippet should include a line number prefix in the format "N | ...".
+        assert!(
+            snippet_text.contains(" | "),
+            "snippet should include line number format 'N | ...', got: {snippet_text}"
         );
     }
 }

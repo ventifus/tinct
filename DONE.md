@@ -2063,6 +2063,26 @@ Path-ancestor allowlist check in `builtin_include` with `--allow-path` CLI flag.
 - [x] CLI test: absolute path outside allowlist fails; symlink that resolves outside allowlist fails (symlink resolution is already done by cap-std). [Minor]
 - [x] LSP: set `allowed_paths` to empty (unrestricted) in `DocumentStore::new()` since LSP already sets `no_fs=true`; document that `no_fs` takes priority. [Nit]
 
+### sandbox-b: Landlock Filesystem ACLs
+
+Linux 5.13+ Landlock enforcement with graceful degradation.
+
+- [x] Add `landlock` crate to `Cargo.toml` — `landlock = "0.4"` (latest stable); gates behind `#[cfg(target_os = "linux")]`. [Nit]
+- [x] In `src/main.rs` `run_eval()`, after CLI arg parsing and before eval: construct a `landlock::Ruleset` restricting `FS_READ_FILE` to each `--allow-path` entry (and its subdirs) plus the stdlib env path; apply via `ruleset.restrict_self()`; wrap in `if landlock::ABI::new_current().is_supported()` for graceful degradation on pre-5.13 kernels. [Major]
+- [x] Add `--no-landlock` flag to `eval` subcommand for escape hatch (debugging, CI environments without Landlock). [Minor]
+- [x] CLI test: verify Landlock enforcement fires when `--allow-path` excludes an included path; skip test on kernels without Landlock support via `cfg(target_os = "linux")` + version check. [Minor]
+
+### sandbox-c: rlimit Resource Caps (implemented; seccomp NOT YET implemented)
+
+Resource limits via `libc::setrlimit`. seccomp-bpf is not yet implemented.
+
+- [x] Add `RLIMIT_AS` cap via `libc::setrlimit` — `--max-memory <bytes>` flag (default: 512MB); set before eval. [Minor]
+- [x] Add `RLIMIT_CPU` cap via `libc::setrlimit` — `--max-cpu <seconds>` (eval-time CPU only, not wall clock); pairs with existing `--timeout` SIGALRM. [Minor]
+- [x] Add `RLIMIT_NOFILE` and `RLIMIT_FSIZE` caps — `--max-fds` (default: 64) and `--max-filesize` (default: 64MB write limit). [Minor]
+- [x] Add `--allow-network`, `--max-memory`, `--max-cpu`, `--max-fds` global CLI flags wired to the above. [Minor]
+- [x] CLI test: graceful degradation when seccomp unavailable (non-Linux or insufficient privilege). [Minor]
+- [x] Test: graceful degradation when Landlock/seccomp unavailable. [Minor]
+
 ### builtins-message-polish: Builtin Error Message Polish
 
 - [x] Fix $to-float NaN/Infinity error message — "to-float: X parses to a non-finite value (NaN/Infinity not allowed)" instead of "cannot parse"

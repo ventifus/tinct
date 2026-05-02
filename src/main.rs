@@ -14,7 +14,8 @@ use tinct::{
 // Exit codes for llt eval
 const EXIT_ERROR: i32 = 1;
 const EXIT_TIMEOUT: i32 = 2;
-// EXIT_RESOURCE: i32 = 3; // reserved for future --max-memory/--max-cpu
+// Note: RLIMIT_AS violations cause SIGSEGV/SIGKILL from the kernel, not a clean exit code.
+// RLIMIT_CPU violations cause SIGXCPU (soft) or SIGKILL (hard). Both terminate without EXIT_ERROR.
 
 /// tinct -- a unified data representation and transformation language.
 #[derive(Parser)]
@@ -54,6 +55,29 @@ enum Commands {
         /// at startup. Use `.` to allow the current working directory.
         #[arg(long, value_name = "PATH")]
         allow_path: Vec<PathBuf>,
+
+        /// Disable Landlock filesystem ACL enforcement even when --allow-path is set.
+        /// By default, when --allow-path is specified on Linux, Landlock is applied as
+        /// defense-in-depth. This flag skips that step (e.g., for older kernels or
+        /// environments where Landlock is not available).
+        #[arg(long)]
+        no_landlock: bool,
+
+        /// Maximum virtual address space (bytes) the process may use. Enforced via
+        /// RLIMIT_AS. Default: 512 MB. Set to 0 to disable. (Unix only)
+        #[arg(long, value_name = "BYTES")]
+        max_memory: Option<u64>,
+
+        /// Maximum CPU time (seconds) the process may consume. Enforced via
+        /// RLIMIT_CPU. Sends SIGXCPU on soft limit, SIGKILL on hard limit.
+        /// Complements --timeout (wall-clock). (Unix only)
+        #[arg(long, value_name = "SECONDS")]
+        max_cpu: Option<u64>,
+
+        /// Maximum number of open file descriptors. Enforced via RLIMIT_NOFILE.
+        /// Default: 64. Set to 0 to disable. (Unix only)
+        #[arg(long, value_name = "COUNT")]
+        max_fds: Option<u64>,
 
         /// Input LLT file. Use `-` to read LLT source from stdin.
         file: String,
@@ -110,6 +134,10 @@ fn main() {
             require_integrity,
             timeout,
             allow_path,
+            no_landlock,
+            max_memory,
+            max_cpu,
+            max_fds,
             file,
         } => run_eval(
             &file,
@@ -119,6 +147,10 @@ fn main() {
             require_integrity,
             timeout.as_deref(),
             allow_path,
+            no_landlock,
+            max_memory,
+            max_cpu,
+            max_fds,
         ),
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
@@ -227,6 +259,144 @@ fn install_timeout(duration_str: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Apply rlimit resource caps (Unix only).
+///
+/// Sets RLIMIT_AS (virtual memory), RLIMIT_CPU (CPU time), and RLIMIT_NOFILE
+/// (open file descriptors) via `libc::setrlimit`. These are process-wide hard
+/// limits enforced by the kernel and cannot be raised by the process after being
+/// set.
+///
+/// Default values are applied when the caller passes `None`:
+/// - `max_memory`: 512 MB RLIMIT_AS limit (controls virtual address space; also
+///   caps the maximum heap size the process can mmap).
+/// - `max_cpu`: No limit by default (must be explicitly requested).
+/// - `max_fds`: 64 RLIMIT_NOFILE (prevents FD exhaustion from crafted $include
+///   chains; still leaves room for stdin/stdout/stderr + eval fds).
+///
+/// A value of `Some(0)` disables that particular limit.
+#[cfg(unix)]
+fn setup_rlimits(
+    max_memory: Option<u64>,
+    max_cpu: Option<u64>,
+    max_fds: Option<u64>,
+) -> Result<(), String> {
+    // Helper: apply a single rlimit. Must be called within an unsafe block.
+    // resource: the POSIX constant (RLIMIT_AS, RLIMIT_CPU, etc.)
+    // limit_val: soft and hard limit value (same for both — we set a hard cap).
+    // name: label for error messages.
+    let apply_rlimit = |resource: libc::__rlimit_resource_t,
+                        limit_val: libc::rlim_t,
+                        name: &str|
+     -> Result<(), String> {
+        let rlim = libc::rlimit {
+            rlim_cur: limit_val,
+            rlim_max: limit_val,
+        };
+        let ret = unsafe { libc::setrlimit(resource as u32, &rlim) };
+        if ret != 0 {
+            return Err(format!(
+                "failed to set {} limit to {}: {}",
+                name,
+                limit_val,
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    };
+
+    // RLIMIT_AS: virtual address space limit.
+    // Default: 512 MB. Prevents heap exhaustion from crafted inputs.
+    // Value of 0 means: caller explicitly disabled this limit.
+    let memory_limit = max_memory.unwrap_or(512 * 1024 * 1024) as libc::rlim_t;
+    if memory_limit > 0 {
+        apply_rlimit(libc::RLIMIT_AS, memory_limit, "RLIMIT_AS (max-memory)")?;
+    }
+
+    // RLIMIT_CPU: CPU time in seconds.
+    // No default — only applied when explicitly requested.
+    // This complements --timeout (wall-clock); RLIMIT_CPU limits compute time only.
+    if let Some(cpu_secs) = max_cpu {
+        if cpu_secs > 0 {
+            apply_rlimit(
+                libc::RLIMIT_CPU,
+                cpu_secs as libc::rlim_t,
+                "RLIMIT_CPU (max-cpu)",
+            )?;
+        }
+    }
+
+    // RLIMIT_NOFILE: open file descriptor count.
+    // Default: 64 (leaves room for stdin/stdout/stderr + builtins + $include fds).
+    // Value of 0 means: caller explicitly disabled this limit.
+    let fd_limit = max_fds.unwrap_or(64) as libc::rlim_t;
+    if fd_limit > 0 {
+        apply_rlimit(libc::RLIMIT_NOFILE, fd_limit, "RLIMIT_NOFILE (max-fds)")?;
+    }
+
+    Ok(())
+}
+
+/// Apply Landlock filesystem ACL enforcement (Linux 5.13+ only, defense-in-depth).
+///
+/// When `--allow-path` entries are specified, the Landlock LSM is configured to
+/// restrict the process to read-only access on the given paths. If the current
+/// kernel does not support Landlock (older than 5.13, or the feature is disabled),
+/// this function returns `Ok(())` without error — the application-level allowlist
+/// (`EvalConfig.allowed_paths`) and cap-std remain the primary enforcement.
+///
+/// Landlock is applied as defense-in-depth: if a bug in the application-level check
+/// allows an unauthorized path to reach `open()`, Landlock catches it at the kernel
+/// level.
+///
+/// Note: Landlock does not eliminate TOCTOU races on its own (it checks paths at
+/// `open()` time). The cap-std `RESOLVE_BENEATH` sandbox is the TOCTOU mitigation.
+/// Landlock adds an independent kernel-level check.
+///
+/// Requires either `CAP_SYS_ADMIN` or `PR_SET_NO_NEW_PRIVS` (the latter is set
+/// automatically by the landlock crate). Gracefully degrades on kernels < 5.13.
+#[cfg(target_os = "linux")]
+fn setup_landlock(allowed_paths: &[PathBuf]) -> Result<(), String> {
+    use landlock::{AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI};
+
+    // V3 corresponds to Linux 5.19+. The crate gracefully degrades to a lower ABI
+    // version if the running kernel doesn't support V3 (best-effort restriction).
+    let abi = ABI::V3;
+
+    // Build the initial ruleset with read-only filesystem access.
+    let mut ruleset_created = Ruleset::default()
+        .handle_access(AccessFs::from_read(abi))
+        .map_err(|e| format!("landlock: failed to configure ruleset: {e}"))?
+        .create()
+        .map_err(|e| format!("landlock: failed to create ruleset: {e}"))?;
+
+    // Add one PathBeneath rule for each allowed path.
+    // PathBeneath grants read access to the path and everything underneath it.
+    for path in allowed_paths {
+        let fd = PathFd::new(path).map_err(|e| {
+            format!(
+                "landlock: cannot open allowed path \"{}\": {e}",
+                path.display()
+            )
+        })?;
+        let rule = PathBeneath::new(fd, AccessFs::from_read(abi));
+        ruleset_created = ruleset_created.add_rule(rule).map_err(|e| {
+            format!(
+                "landlock: failed to add rule for \"{}\": {e}",
+                path.display()
+            )
+        })?;
+    }
+
+    // restrict_self() applies the ruleset to the current thread group.
+    // On kernels < 5.13, this returns Ok(status) where status.ruleset is
+    // NotEnforced — the call does not fail, it just has no effect.
+    let _status = ruleset_created
+        .restrict_self()
+        .map_err(|e| format!("landlock: failed to restrict self: {e}"))?;
+
+    Ok(())
+}
+
 fn run_eval(
     file_path: &str,
     format: &OutputFormat,
@@ -235,6 +405,10 @@ fn run_eval(
     require_integrity: bool,
     timeout: Option<&str>,
     allow_path: Vec<PathBuf>,
+    no_landlock: bool,
+    max_memory: Option<u64>,
+    max_cpu: Option<u64>,
+    max_fds: Option<u64>,
 ) -> Result<(), String> {
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
@@ -248,6 +422,20 @@ fn run_eval(
             process::exit(EXIT_ERROR);
         }
     }
+
+    // Apply rlimit resource caps (Unix only). Must happen early, before any
+    // significant allocation, so that any heap limit is immediately enforced.
+    #[cfg(unix)]
+    setup_rlimits(max_memory, max_cpu, max_fds)?;
+    // On non-Unix platforms, rlimit flags are accepted for CLI compatibility
+    // but have no effect (POSIX rlimits are not available).
+    #[cfg(not(unix))]
+    {
+        let _ = max_memory;
+        let _ = max_cpu;
+        let _ = max_fds;
+    }
+
     // Read the LLT source
     let source = read_source(file_path)?;
 
@@ -307,6 +495,18 @@ fn run_eval(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    // Apply Landlock filesystem ACL enforcement (Linux only, defense-in-depth).
+    // Must be called after path canonicalization so the allowed paths are stable.
+    // Only activated when --allow-path is given and --no-landlock is not set.
+    #[cfg(target_os = "linux")]
+    if !no_landlock && !canonical_allowed_paths.is_empty() {
+        setup_landlock(&canonical_allowed_paths)?;
+    }
+    // On non-Linux platforms, --no-landlock is accepted for CLI compatibility
+    // but has no effect (Landlock is a Linux-only API).
+    #[cfg(not(target_os = "linux"))]
+    let _ = no_landlock;
+
     // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
     let eval_ctx = EvalContext::new_with_all_options(
         base_dir,
@@ -320,14 +520,35 @@ fn run_eval(
 
     // Evaluate
     let thunk = eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, initial_input, 0)
-        .map_err(|e| format!("{e}"))?;
+        .map_err(|e| {
+            let mut error_str = format!("{e}");
+            if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                error_str.push('\n');
+                error_str.push_str(&snippet);
+            }
+            error_str
+        })?;
 
     // Materialize the result
-    let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+    let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| {
+        let mut error_str = format!("{e}");
+        if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+            error_str.push('\n');
+            error_str.push_str(&snippet);
+        }
+        error_str
+    })?;
 
     // Optionally deep-force all thunks
     let val = if force_eval {
-        deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| format!("{e}"))?
+        deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
+            let mut error_str = format!("{e}");
+            if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                error_str.push('\n');
+                error_str.push_str(&snippet);
+            }
+            error_str
+        })?
     } else {
         val
     };
@@ -335,7 +556,14 @@ fn run_eval(
     // Serialize and output
     match format {
         OutputFormat::Json => {
-            let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+            let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
+                let mut error_str = format!("{e}");
+                if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                    error_str.push('\n');
+                    error_str.push_str(&snippet);
+                }
+                error_str
+            })?;
             let output = serde_json::to_string_pretty(&json)
                 .map_err(|e| format!("JSON serialization error: {e}"))?;
             println!("{output}");
@@ -346,10 +574,23 @@ fn run_eval(
             let display_val = if force_eval {
                 &val
             } else {
-                &deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| format!("{e}"))?
+                &deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
+                    let mut error_str = format!("{e}");
+                    if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                        error_str.push('\n');
+                        error_str.push_str(&snippet);
+                    }
+                    error_str
+                })?
             };
-            let output =
-                value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+            let output = value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| {
+                let mut error_str = format!("{e}");
+                if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                    error_str.push('\n');
+                    error_str.push_str(&snippet);
+                }
+                error_str
+            })?;
             println!("{output}");
         }
     }

@@ -3,6 +3,7 @@
 use crate::types::Type;
 use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 /// Byte offset + line/column position in source text
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +61,7 @@ pub struct File {
 /// A document -- one or more expressions forming a scope chain
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
-    pub expressions: Vec<Spanned<Expr>>,
+    pub expressions: Vec<Rc<Spanned<Expr>>>,
 }
 
 /// The central expression type
@@ -103,7 +104,7 @@ pub enum Expr {
     /// Function application via `[call $f ...]`
     Call {
         func: Box<Spanned<Expr>>,
-        args: Vec<Spanned<Expr>>,
+        args: Vec<Rc<Spanned<Expr>>>,
         named_args: Vec<Spanned<NamedArg>>,
     },
     /// Function definition via `[fn [params] body]`
@@ -116,7 +117,7 @@ pub enum Expr {
     Fn {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<Param>>,
-        body: Box<Spanned<Expr>>,
+        body: Rc<Spanned<Expr>>,
         desugared: bool,
     },
     /// Type alias declaration via `[type expr]`
@@ -155,14 +156,14 @@ pub enum Expr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub key: Option<Spanned<Expr>>,
-    pub value: Spanned<Expr>,
+    pub value: Rc<Spanned<Expr>>,
 }
 
 /// A named argument in a call expression
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamedArg {
     pub name: String,
-    pub value: Spanned<Expr>,
+    pub value: Rc<Spanned<Expr>>,
 }
 
 /// A function parameter
@@ -188,7 +189,7 @@ impl Annotation {
             Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
                 let key_expr = entry.node.key.as_ref()?;
                 match &key_expr.node {
-                    Expr::Str(name) if name == key => Some(&entry.node.value),
+                    Expr::Str(name) if name == key => Some(entry.node.value.as_ref()),
                     _ => None,
                 }
             }),
@@ -297,7 +298,7 @@ impl fmt::Display for Expr {
                         write!(f, "@{}", ann.node)?;
                     }
                 }
-                write!(f, "] {}]", body.node)
+                write!(f, "] {}]", body.as_ref().node)
             }
             Expr::TypeAlias(inner) => write!(f, "[type {}]", inner.node),
             Expr::TypeAssert {
@@ -409,11 +410,11 @@ mod tests {
         let entries = vec![
             sp(Entry {
                 key: Some(sp(Expr::Str("type".into()))),
-                value: sp(Expr::Str("Number".into())),
+                value: Rc::new(sp(Expr::Str("Number".into()))),
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("min".into()))),
-                value: sp(Expr::Int(0)),
+                value: Rc::new(sp(Expr::Int(0))),
             }),
         ];
         let expr = Expr::TypeAssert {
@@ -440,7 +441,7 @@ mod tests {
     fn test_display_annotated_with_property_dict() {
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::VarRef("required".into()))),
-            value: sp(Expr::Bool(true)),
+            value: Rc::new(sp(Expr::Bool(true))),
         })];
         let expr = Expr::Annotated {
             name: "port".into(),
@@ -463,7 +464,7 @@ mod tests {
     fn test_display_call_with_args() {
         let expr = Expr::Call {
             func: Box::new(sp(Expr::VarRef("add".into()))),
-            args: vec![sp(Expr::Int(1)), sp(Expr::Int(2))],
+            args: vec![Rc::new(sp(Expr::Int(1))), Rc::new(sp(Expr::Int(2)))],
             named_args: vec![],
         };
         assert_eq!(format!("{expr}"), "[call $add 1 2]");
@@ -476,7 +477,7 @@ mod tests {
             args: vec![],
             named_args: vec![sp(NamedArg {
                 name: "port".into(),
-                value: sp(Expr::Int(8080)),
+                value: Rc::new(sp(Expr::Int(8080))),
             })],
         };
         assert_eq!(format!("{expr}"), "[call $config port: 8080]");
@@ -486,10 +487,10 @@ mod tests {
     fn test_display_call_with_both_arg_types() {
         let expr = Expr::Call {
             func: Box::new(sp(Expr::VarRef("deploy".into()))),
-            args: vec![sp(Expr::Str("prod".into()))],
+            args: vec![Rc::new(sp(Expr::Str("prod".into())))],
             named_args: vec![sp(NamedArg {
                 name: "replicas".into(),
-                value: sp(Expr::Int(3)),
+                value: Rc::new(sp(Expr::Int(3))),
             })],
         };
         assert_eq!(format!("{expr}"), "[call $deploy \"prod\" replicas: 3]");
@@ -500,7 +501,7 @@ mod tests {
         let expr = Expr::Fn {
             return_ann: None,
             params: vec![],
-            body: Box::new(sp(Expr::Int(42))),
+            body: Rc::new(sp(Expr::Int(42))),
             desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [] 42]");
@@ -522,7 +523,7 @@ mod tests {
                     variadic: false,
                 }),
             ],
-            body: Box::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
             desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [x y] $x]");
@@ -533,7 +534,7 @@ mod tests {
         let expr = Expr::Fn {
             return_ann: Some(sp(Annotation::Simple("Number".into()))),
             params: vec![],
-            body: Box::new(sp(Expr::Int(0))),
+            body: Rc::new(sp(Expr::Int(0))),
             desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn@Number [] 0]");
@@ -548,7 +549,7 @@ mod tests {
                 annotation: Some(sp(Annotation::Simple("Int".into()))),
                 variadic: false,
             })],
-            body: Box::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::VarRef("x".into()))),
             desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [x@Int] $x]");
@@ -563,7 +564,7 @@ mod tests {
                 annotation: None,
                 variadic: true,
             })],
-            body: Box::new(sp(Expr::VarRef("args".into()))),
+            body: Rc::new(sp(Expr::VarRef("args".into()))),
             desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [...args] $args]");
@@ -580,11 +581,11 @@ mod tests {
         let expr = Expr::Dict(vec![
             sp(Entry {
                 key: Some(sp(Expr::VarRef("a".into()))),
-                value: sp(Expr::Int(1)),
+                value: Rc::new(sp(Expr::Int(1))),
             }),
             sp(Entry {
                 key: Some(sp(Expr::VarRef("b".into()))),
-                value: sp(Expr::Int(2)),
+                value: Rc::new(sp(Expr::Int(2))),
             }),
         ]);
         assert_eq!(format!("{expr}"), "[$a: 1  $b: 2]");
@@ -595,11 +596,11 @@ mod tests {
         let expr = Expr::Dict(vec![
             sp(Entry {
                 key: None,
-                value: sp(Expr::Int(10)),
+                value: Rc::new(sp(Expr::Int(10))),
             }),
             sp(Entry {
                 key: None,
-                value: sp(Expr::Int(20)),
+                value: Rc::new(sp(Expr::Int(20))),
             }),
         ]);
         assert_eq!(format!("{expr}"), "[10  20]");
@@ -624,11 +625,11 @@ mod tests {
         let ann = Annotation::PropertyDict(vec![
             sp(Entry {
                 key: Some(sp(Expr::Str("type".into()))),
-                value: sp(Expr::Str("Number".into())),
+                value: Rc::new(sp(Expr::Str("Number".into()))),
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("default".into()))),
-                value: sp(Expr::Int(42)),
+                value: Rc::new(sp(Expr::Int(42))),
             }),
         ]);
         assert_eq!(format!("{ann}"), "[\"type\": \"Number\"  \"default\": 42]");
@@ -637,7 +638,7 @@ mod tests {
     #[test]
     fn test_display_document_single_expression() {
         let doc = Document {
-            expressions: vec![sp(Expr::Int(42))],
+            expressions: vec![Rc::new(sp(Expr::Int(42)))],
         };
         assert_eq!(format!("{doc}"), "42");
     }
@@ -646,9 +647,9 @@ mod tests {
     fn test_display_document_multiple_expressions() {
         let doc = Document {
             expressions: vec![
-                sp(Expr::VarRef("x".into())),
-                sp(Expr::Int(10)),
-                sp(Expr::Bool(true)),
+                Rc::new(sp(Expr::VarRef("x".into()))),
+                Rc::new(sp(Expr::Int(10))),
+                Rc::new(sp(Expr::Bool(true))),
             ],
         };
         assert_eq!(format!("{doc}"), "$x\n10\ntrue");
@@ -666,7 +667,7 @@ mod tests {
     fn test_display_file_single_document() {
         let file = File {
             documents: vec![sp(Document {
-                expressions: vec![sp(Expr::Int(1))],
+                expressions: vec![Rc::new(sp(Expr::Int(1)))],
             })],
         };
         assert_eq!(format!("{file}"), "1");
@@ -677,10 +678,10 @@ mod tests {
         let file = File {
             documents: vec![
                 sp(Document {
-                    expressions: vec![sp(Expr::Int(1))],
+                    expressions: vec![Rc::new(sp(Expr::Int(1)))],
                 }),
                 sp(Document {
-                    expressions: vec![sp(Expr::Int(2))],
+                    expressions: vec![Rc::new(sp(Expr::Int(2)))],
                 }),
             ],
         };

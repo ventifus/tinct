@@ -49,7 +49,7 @@ pub fn deep_materialize(
         | Value::String(_)
         | Value::Bool(_)
         | Value::Function { .. }
-        | Value::Builtin { .. } => return Ok(val.clone()),
+        | Value::Builtin(_) => return Ok(val.clone()),
         _ => {}
     }
     let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
@@ -142,7 +142,7 @@ fn deep_materialize_impl(
         | Value::String(_)
         | Value::Bool(_)
         | Value::Function { .. }
-        | Value::Builtin { .. } => return Ok(root_val.clone()),
+        | Value::Builtin(_) => return Ok(root_val.clone()),
         _ => {}
     }
 
@@ -596,7 +596,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::Call {
                 func: Box::new(sp(Expr::VarRef("g".into()))),
-                args: vec![sp(Expr::VarRef("x".into()))],
+                args: vec![Rc::new(sp(Expr::VarRef("x".into())))],
                 named_args: vec![],
             })),
             env: Rc::clone(&env),
@@ -607,11 +607,11 @@ mod tests {
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::VarRef("g".into()))),
-            args: vec![sp(Expr::Int(1))],
+            args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
         });
         // eval() returns a PendingCall thunk (lazy call not yet materialized)
-        let error_thunk = eval(&call_expr, Rc::clone(&env), &ctx, 0).unwrap();
+        let error_thunk = eval(Rc::new(call_expr.clone()), Rc::clone(&env), &ctx, 0).unwrap();
 
         // Confirm both dict entries are Rc::ptr_eq (true sharing, not clones)
         let error_thunk2 = Rc::clone(&error_thunk);

@@ -7,6 +7,9 @@ container := "podman"
 # Rust version to use
 rust_version := "1.86"
 
+# Nightly image — required for cargo-fuzz / libfuzzer instrumentation
+nightly_image := "rust:nightly"
+
 # Container image
 rust_image := "rust:" + rust_version
 
@@ -54,7 +57,7 @@ test-lib:
 
 # Run only corpus tests
 test-corpus:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test corpus_tests
+    {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests
 
 # Run clippy (linter)
 lint:
@@ -201,9 +204,34 @@ bench:
 coverage:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add llvm-tools-preview 2>/dev/null; cargo llvm-cov --open"
 
-# Property-based testing via proptest (future addition — install proptest crate first)
+# Property-based testing via proptest (planned — see doc/whatif/eval-semantics-verification.md §Part A)
 proptest:
-    @echo "proptest: add proptest to Cargo.toml dependencies, then add fuzz targets under fuzz/fuzz_targets/"
+    @echo "proptest: add proptest = \"1\" to [dev-dependencies] in Cargo.toml, then run: just test"
+
+# ---------------------------------------------------------------------------
+# Fuzz Testing (cargo-fuzz, requires nightly Rust)
+# Targets: parse  eval_source  typecheck_source
+# Corpus and crash artifacts land in fuzz/corpus/ and fuzz/artifacts/ (gitignored).
+# ---------------------------------------------------------------------------
+
+# Run a named fuzz target for TIME seconds (default 60s).
+# Example: just fuzz parse 300
+fuzz TARGET TIME="60":
+    {{container}} run {{run_flags}} {{user_flag}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz run {{TARGET}} -- -max_total_time={{TIME}}"
+
+# Quick smoke run: each target for 30 seconds — catches immediate panics
+fuzz-smoke:
+    just fuzz parse 30
+    just fuzz eval_source 30
+    just fuzz typecheck_source 30
+
+# Build all fuzz targets without running (compile check on nightly)
+fuzz-build:
+    {{container}} run {{run_flags}} {{user_flag}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz build"
+
+# List available fuzz targets
+fuzz-list:
+    {{container}} run {{run_flags}} {{user_flag}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz list"
 
 # Generate stdlib reference docs from annotations
 # TODO: implement — parse doc comments from stdlib/prelude.llt and src/builtins.rs,

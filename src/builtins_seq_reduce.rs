@@ -13,13 +13,12 @@
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
-use std::borrow::Cow;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
 use crate::builtins::{
-    flatten_overlay, ok_val, reject_named, require_string, stringify, MAX_COLLECT_SIZE,
+    builtin, flatten_overlay, ok_val, reject_named, require_string, stringify, MAX_COLLECT_SIZE,
     MAX_STRING_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
@@ -69,7 +68,7 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     call_span,
                     Rc::clone(&ctx.config.stdlib_env),
                     value_thunk.span,
-                    Cow::Borrowed("reduce"),
+                    Some(Rc::from("reduce")),
                     Rc::clone(&ctx),
                 ));
             }
@@ -84,13 +83,12 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Rc::clone(&tail),
             ];
             Ok(Rc::new(Thunk::new_pending_builtin(
-                "reduce",
-                builtin_reduce_seq_step,
+                builtin!("reduce", builtin_reduce_seq_step),
                 step_args,
                 None,
                 depth,
                 call_span,
-                Cow::Borrowed("call $reduce"),
+                Some(Rc::from("call $reduce")),
                 Rc::clone(&ctx),
             )))
         }
@@ -133,7 +131,7 @@ pub(crate) fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
         call_span,
         Rc::clone(&ctx.config.stdlib_env),
         tail_thunk.span,
-        Cow::Borrowed("reduce"),
+        Some(Rc::from("reduce")),
         Rc::clone(&ctx),
     ));
 
@@ -153,13 +151,12 @@ pub(crate) fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                 Rc::clone(&tail),
             ];
             Ok(Rc::new(Thunk::new_pending_builtin(
-                "reduce",
-                builtin_reduce_seq_step,
+                builtin!("reduce", builtin_reduce_seq_step),
                 step_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $reduce"),
+                Some(Rc::from("call $reduce")),
                 Rc::clone(&ctx),
             )))
         }
@@ -368,13 +365,12 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // ys_thunk is now Materialized (memoized). Build the lazy step chain.
             let step_args = vec![tail, ys_thunk];
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
-                "concat",
-                builtin_concat_seq_step,
+                builtin!("concat", builtin_concat_seq_step),
                 step_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $concat"),
+                Some(Rc::from("call $concat")),
                 Rc::clone(&ctx),
             ));
             ok_val(
@@ -485,13 +481,12 @@ pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
             // Continue chaining: head from xs, tail is concat(tail, ys)
             let step_args = vec![tail, ys_thunk];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
-                "concat",
-                builtin_concat_seq_step,
+                builtin!("concat", builtin_concat_seq_step),
                 step_args,
                 None,
                 depth + 1,
                 call_span,
-                Cow::Borrowed("call $concat"),
+                Some(Rc::from("call $concat")),
                 Rc::clone(&ctx),
             ));
             ok_val(
