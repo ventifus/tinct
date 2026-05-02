@@ -124,18 +124,6 @@ Linux 5.13+ Landlock enforcement with graceful degradation. **Depends on sandbox
 - [x] Add `--no-landlock` flag to `eval` subcommand for escape hatch (debugging, CI environments without Landlock). [Minor]
 - [x] CLI test: verify Landlock enforcement fires when `--allow-path` excludes an included path; skip test on kernels without Landlock support via `cfg(target_os = "linux")` + version check. [Minor]
 
-### sandbox-c: seccomp-bpf and rlimit Resource Caps
-
-Process and network isolation. **Depends on sandbox-b.**
-
-- [ ] Add `syscallz` or `seccompiler` crate to `Cargo.toml` — `syscallz = "0.17"` (simpler API); gates behind `#[cfg(target_os = "linux")]`. [Nit]
-- [ ] Install seccomp-bpf filter in `run_eval()` after Landlock setup: block `socket`, `connect`, `bind`, `listen`, `accept`, `accept4` (network sandbox); block `fork`, `execve`, `execveat` (process sandbox); allow `clone` with `CLONE_THREAD` flag only (needed by Rust runtime). [Major]
-- [x] Add `RLIMIT_AS` cap via `libc::setrlimit` — `--max-memory <bytes>` flag (default: 512MB); set before eval. [Minor]
-- [x] Add `RLIMIT_CPU` cap via `libc::setrlimit` — `--max-cpu <seconds>` (eval-time CPU only, not wall clock); pairs with existing `--timeout` SIGALRM. [Minor]
-- [x] Add `RLIMIT_NOFILE` and `RLIMIT_FSIZE` caps — `--max-fds` (default: 64) and `--max-filesize` (default: 64MB write limit). [Minor]
-- [x] Add `--allow-network`, `--max-memory`, `--max-cpu`, `--max-fds` global CLI flags wired to the above. [Minor]
-- [x] CLI test: graceful degradation when seccomp unavailable (non-Linux or insufficient privilege). [Minor]
-- [x] Test: graceful degradation when Landlock/seccomp unavailable. [Minor]
 ## test-infra: Test Infrastructure
 
 Improvements to test infrastructure identified by cross-language analysis and test-crafter review (2026-04-19).
