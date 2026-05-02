@@ -107,23 +107,6 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [x] Eliminate redundant param-exists scan in `bind_args_thunks` BIND-NAMED — `iter().position()` (scan 1) already determines existence; `iter().any()` (scan 2) at line 909 is always redundant. Replace two-scan pattern with single `match position()` arm covering both None→error and Some(idx<positional)→error cases. (`src/eval.rs:891-918`) [Minor, performance-expert C50] (already single-scan)
 - [x] Fuse `collect_type_vars` + `collect_row_vars` in `instantiate_at_level` — performs 3 full type walks + 3 allocations per CALL-POLY invocation. Same fusion fix as TODO.md:281 applied to this function. Also applies to `instantiate_scheme` which takes pre-collected lists from TypeScheme but still builds a Substitution for a single-variable rename. (`src/types.rs:949-980`) [Major, performance-expert C50] (already done)
 
-### strictness-dispatch-w1: W1 Dispatch-Time Materialization
-
-Generalize `Cont::BuiltinForceArg` to iterate all `Seq`/`Spine` positions using `def.pos_strictness`. Delete the `builtin_name == "apply"` string comparison (superseded). See `doc/16-architecture.md §W1: Dispatch-Time Materialization`.
-
-**Depends on:** `strictness-value-migration`
-
-- [ ] Add `arg_idx: usize` to `BuiltinForceArgData` (already added to struct in previous sprint); initialize to the first `Seq`/`Spine` position in `def.pos_strictness` when constructing the continuation (`src/eval_materialize.rs`)
-- [ ] In `force_step` (PendingBuiltin dispatch): replace unconditional arg[0] materialization with: scan `def.pos_strictness` for first `Seq`/`Spine` position; if found push `Cont::BuiltinForceArg { def, arg_idx, ... }` and return `Action::Materialize { thunk: args[arg_idx] }`; if none found, construct `BuiltinArgs` and call immediately (`src/eval_materialize.rs`)
-- [ ] In `apply_cont` for `Cont::BuiltinForceArg`: after arg at `arg_idx` is materialized, scan `def.pos_strictness` from `arg_idx + 1` for next `Seq`/`Spine`; if found push another `Cont::BuiltinForceArg` with incremented index; if none remain, construct `BuiltinArgs` and call `def.func` (`src/eval_materialize.rs`)
-- [ ] Delete `builtin_name == "apply"` string comparison at `src/eval_materialize.rs:1114` — now handled by general mechanism since `$apply` is annotated `[Seq, Seq]` (`src/eval_materialize.rs`)
-- [ ] Add corpus test: `[call $+ [call $/ 1 0] 2]` → division-by-zero error (Seq arg forced at dispatch, before builtin executes) (`tests/corpus/invalid/`)
-- [ ] Add corpus test: `[call $if true 1 [call $/ 1 0]]` → `1` (Id branch not forced) (`tests/corpus/eval/`)
-- [ ] Add corpus test: `[call $if false [call $/ 1 0] 2]` → `2` (Id branch not forced) (`tests/corpus/eval/`)
-- [ ] Add corpus test: `[call $merge [x: [call $/ 1 0]] [y: 2]]` → succeeds, returns overlay (Id args not forced at merge time; error deferred to field access) (`tests/corpus/eval/`)
-- [ ] Add corpus test: `$seq [call $/ 1 0] [call $seq 2 []]` → seq constructed without error (Id args not forced at construction) (`tests/corpus/eval/`)
-- [ ] All tests pass
-
 ## sandbox: Sandboxing & Security
 
 Design and implement four unprivileged sandboxing layers. See doc/12-tooling.md §Sandboxing & Security for full design.

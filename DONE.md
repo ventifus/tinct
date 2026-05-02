@@ -3288,3 +3288,20 @@ Migrate all seven migration sites atomically. See `doc/16-architecture.md §Buil
 - [x] Update all `match` arms on `Value::Builtin` throughout codebase — replace `{ name, func }` destructure with `(def)`, use `def.func`/`def.name` at each site (`src/eval.rs`, `src/eval_call.rs`, `src/eval_access.rs`, `src/lib.rs`, `src/typecheck.rs`)
 - [x] Verify `Value::Dict` still dominates `Value` enum size after adding `pos_strictness` fat pointer (24→40 bytes for `Value::Builtin`); add `const _: () = assert!(std::mem::size_of::<Value>() == EXPECTED)` (`src/value.rs`)
 - [x] All existing tests pass (no behavioral change)
+
+### strictness-dispatch-w1: W1 Dispatch-Time Materialization
+
+Generalize `Cont::BuiltinForceArg` to iterate all `Seq`/`Spine` positions using `def.pos_strictness`. Delete the `builtin_name == "apply"` string comparison (superseded). See `doc/16-architecture.md §W1: Dispatch-Time Materialization`.
+
+**Depends on:** `strictness-value-migration`
+
+- [x] Add `arg_idx: usize` to `BuiltinForceArgData` (already added to struct in previous sprint); initialize to the first `Seq`/`Spine` position in `def.pos_strictness` when constructing the continuation (`src/eval_materialize.rs`)
+- [x] In `force_step` (PendingBuiltin dispatch): replace unconditional arg[0] materialization with: scan `def.pos_strictness` for first `Seq`/`Spine` position; if found push `Cont::BuiltinForceArg { def, arg_idx, ... }` and return `Action::Materialize { thunk: args[arg_idx] }`; if none found, construct `BuiltinArgs` and call immediately (`src/eval_materialize.rs`)
+- [x] In `apply_cont` for `Cont::BuiltinForceArg`: after arg at `arg_idx` is materialized, scan `def.pos_strictness` from `arg_idx + 1` for next `Seq`/`Spine`; if found push another `Cont::BuiltinForceArg` with incremented index; if none remain, construct `BuiltinArgs` and call `def.func` (`src/eval_materialize.rs`)
+- [x] Delete `builtin_name == "apply"` string comparison at `src/eval_materialize.rs:1114` — now handled by general mechanism since `$apply` is annotated `[Seq, Seq]` (`src/eval_materialize.rs`)
+- [x] Add corpus test: `[call $+ [call $/ 1 0] 2]` → division-by-zero error (Seq arg forced at dispatch, before builtin executes) (`tests/corpus/invalid/`)
+- [x] Add corpus test: `[call $if true 1 [call $/ 1 0]]` → `1` (Id branch not forced) (`tests/corpus/eval/`)
+- [x] Add corpus test: `[call $if false [call $/ 1 0] 2]` → `2` (Id branch not forced) (`tests/corpus/eval/`)
+- [x] Add corpus test: `[call $merge [x: [call $/ 1 0]] [y: 2]]` → succeeds, returns overlay (Id args not forced at merge time; error deferred to field access) (`tests/corpus/eval/`)
+- [x] Add corpus test: `$seq [call $/ 1 0] [call $seq 2 []]` → seq constructed without error (Id args not forced at construction) (`tests/corpus/eval/`)
+- [x] All tests pass
