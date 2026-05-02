@@ -1749,3 +1749,66 @@ fn all_sandbox_flags_compose() {
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
     assert_eq!(json, serde_json::json!({"x": 1}));
 }
+
+// ---------------------------------------------------------------------------
+// sandbox-d: seccomp-bpf network and process sandbox (Linux only)
+// ---------------------------------------------------------------------------
+
+/// Seccomp filter is installed silently — on success the process prints no
+/// warning to stderr and exits with code 0. On kernels where seccomp is
+/// unavailable, a warning is printed but eval still succeeds (graceful
+/// degradation).
+#[test]
+fn seccomp_sandbox_does_not_crash_eval() {
+    // A simple program must succeed even after the seccomp filter is installed.
+    // This tests both the happy path (seccomp supported) and graceful degradation
+    // (seccomp unsupported — warning printed, eval continues).
+    let (path, _dir) = write_temp_llt("seccomp_no_crash", "[x: 42]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "eval must succeed after seccomp filter install; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit code 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON output");
+    assert_eq!(json, serde_json::json!({"x": 42}));
+}
+
+/// When seccomp degrades gracefully, any warning must go to stderr (not stdout),
+/// and stdout must remain valid JSON.
+#[test]
+fn seccomp_degradation_warning_does_not_corrupt_stdout() {
+    // On unsupported kernels setup_seccomp() prints a warning to stderr.
+    // Stdout must still contain only valid JSON. This test passes on all platforms:
+    // either seccomp works silently, or degrades with a warning — either way
+    // stdout is valid JSON and exit is 0.
+    let (path, _dir) = write_temp_llt("seccomp_stdout_clean", "[y: true]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "exit code must be 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("stdout must be valid JSON even when seccomp warning is printed to stderr");
+    assert_eq!(json, serde_json::json!({"y": true}));
+}

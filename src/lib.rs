@@ -161,7 +161,253 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     })
 }
 
-// value_to_json and value_to_display_string are kept separate; their logic diverges too much for a shared visitor.
+// --- Value Serializer Visitor Pattern ---
+//
+// `value_to_json` and `value_to_display_string` share the same structural traversal
+// (depth guard, Overlay flattening, Dict/Seq entry materialization) but diverge at
+// leaf rendering. A `ValueVisitor` trait captures the shared traversal in `visit_value`
+// while each visitor impl handles the format-specific leaf rendering.
+
+/// Visitor trait for materialised [`Value`](value::Value) trees.
+///
+/// Implement this trait to produce a format-specific output from a `Value`.
+/// The shared `visit_value` function handles structural traversal (depth limit,
+/// Overlay flattening, Dict/Seq entry materialization); visitor methods handle
+/// leaf rendering and container assembly.
+///
+/// Dict entries are pre-converted to `Self::Output` before `visit_dict` is called,
+/// so the visitor need not recurse manually.
+pub trait ValueVisitor {
+    type Output;
+
+    fn visit_int(&self, v: i64) -> Self::Output;
+    fn visit_float(&self, v: f64) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_bool(&self, v: bool) -> Self::Output;
+    fn visit_str(&self, v: &str) -> Self::Output;
+    fn visit_null(&self) -> Self::Output;
+    fn visit_dict(&self, entries: Vec<(value::Key, Self::Output)>) -> Self::Output;
+    fn visit_seq_head(&self, head: Self::Output) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_function(&self, params: &[ast::Param]) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_builtin(&self, name: &str) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_proxy(&self) -> Result<Self::Output, Box<error::EvalError>>;
+    /// Return `Some(output)` if the depth limit has been reached, `None` to continue.
+    fn depth_limit_output(
+        &self,
+        depth: usize,
+    ) -> Option<Result<Self::Output, Box<error::EvalError>>>;
+}
+
+/// Shared structural traversal for materialised `Value` trees.
+///
+/// Handles depth limiting, `Overlay` flattening, and `Dict`/`Seq` entry
+/// materialisation. Leaf rendering is delegated to the provided [`ValueVisitor`].
+///
+/// # Panics
+///
+/// Does not panic. All errors are propagated via `Result`.
+pub fn visit_value<V: ValueVisitor>(
+    val: &value::Value,
+    ctx: &Rc<eval::EvalContext>,
+    depth: usize,
+    visitor: &V,
+) -> Result<V::Output, Box<error::EvalError>> {
+    if let Some(limit_result) = visitor.depth_limit_output(depth) {
+        return limit_result;
+    }
+    match val {
+        value::Value::Int(n) => Ok(visitor.visit_int(*n)),
+        value::Value::Float(f) => visitor.visit_float(*f),
+        value::Value::String(s) => Ok(visitor.visit_str(s)),
+        value::Value::Bool(b) => Ok(visitor.visit_bool(*b)),
+        value::Value::Dict(map) => {
+            let mut entries = Vec::with_capacity(map.len());
+            for (key, thunk) in map {
+                let v = eval::materialize(thunk, None, ctx, depth)?;
+                entries.push((key.clone(), visit_value(&v, ctx, depth + 1, visitor)?));
+            }
+            Ok(visitor.visit_dict(entries))
+        }
+        value::Value::Overlay(l, r) => {
+            // Flatten overlay to a concrete dict, then visit it.
+            let map =
+                builtins::flatten_overlay(l, r, "serialize", ctx, depth, ast::Span::origin())?;
+            visit_value(&value::Value::Dict(map), ctx, depth, visitor)
+        }
+        value::Value::Seq { head, .. } => {
+            let head_val = eval::materialize(head, None, ctx, depth)?;
+            let head_out = visit_value(&head_val, ctx, depth + 1, visitor)?;
+            visitor.visit_seq_head(head_out)
+        }
+        value::Value::Function { params, .. } => visitor.visit_function(&**params),
+        value::Value::Builtin(def) => visitor.visit_builtin(def.name),
+        value::Value::Proxy { .. } => visitor.visit_proxy(),
+    }
+}
+
+// --- JSON Visitor ---
+
+struct JsonVisitor;
+
+impl ValueVisitor for JsonVisitor {
+    type Output = serde_json::Value;
+
+    fn visit_int(&self, v: i64) -> serde_json::Value {
+        serde_json::Value::Number(v.into())
+    }
+    fn visit_float(&self, v: f64) -> Result<serde_json::Value, Box<error::EvalError>> {
+        serde_json::Number::from_f64(v)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| {
+                error::EvalError::float_not_finite("to-json".to_string(), v, ast::Span::origin())
+                    .into()
+            })
+    }
+    fn visit_bool(&self, v: bool) -> serde_json::Value {
+        serde_json::Value::Bool(v)
+    }
+    fn visit_str(&self, v: &str) -> serde_json::Value {
+        serde_json::Value::String(v.to_owned())
+    }
+    fn visit_null(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+    fn visit_dict(&self, entries: Vec<(value::Key, serde_json::Value)>) -> serde_json::Value {
+        // Detect array-like dict: all keys are sequential ints 0..n
+        let is_array = !entries.is_empty()
+            && entries
+                .iter()
+                .enumerate()
+                .all(|(i, (k, _))| matches!(k, value::Key::Int(n) if *n >= 0 && *n as usize == i));
+        if is_array {
+            serde_json::Value::Array(entries.into_iter().map(|(_, v)| v).collect())
+        } else {
+            let obj: serde_json::Map<String, serde_json::Value> = entries
+                .into_iter()
+                .map(|(k, v)| {
+                    let ks = match k {
+                        value::Key::Int(n) => n.to_string(),
+                        value::Key::String(s) => s,
+                    };
+                    (ks, v)
+                })
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+    }
+    fn visit_seq_head(
+        &self,
+        _head: serde_json::Value,
+    ) -> Result<serde_json::Value, Box<error::EvalError>> {
+        // Seq is not representable in JSON; must be collected to a Dict first via $collect.
+        Err(error::EvalError::value_not_serializable("Seq".to_string(), ast::Span::origin()).into())
+    }
+    fn visit_function(
+        &self,
+        _params: &[ast::Param],
+    ) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(
+            error::EvalError::value_not_serializable("Function".to_string(), ast::Span::origin())
+                .into(),
+        )
+    }
+    fn visit_builtin(&self, name: &str) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(error::EvalError::value_not_serializable(
+            format!("Builtin ({name})"),
+            ast::Span::origin(),
+        )
+        .into())
+    }
+    fn visit_proxy(&self) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(
+            error::EvalError::value_not_serializable("Proxy".to_string(), ast::Span::origin())
+                .into(),
+        )
+    }
+    fn depth_limit_output(
+        &self,
+        depth: usize,
+    ) -> Option<Result<serde_json::Value, Box<error::EvalError>>> {
+        if depth > eval::MAX_EVAL_DEPTH {
+            Some(Err(error::EvalError::depth_exceeded(
+                eval::MAX_EVAL_DEPTH,
+                ast::Span::origin(),
+            )
+            .into()))
+        } else {
+            None
+        }
+    }
+}
+
+// --- Display Visitor ---
+
+/// Maximum display recursion depth (3 levels).
+/// Prevents deep traversal of nested structures in error messages.
+const MAX_DISPLAY_DEPTH: usize = 3;
+
+struct DisplayVisitor;
+
+impl ValueVisitor for DisplayVisitor {
+    type Output = String;
+
+    fn visit_int(&self, v: i64) -> String {
+        format!("Int({v})")
+    }
+    fn visit_float(&self, v: f64) -> Result<String, Box<error::EvalError>> {
+        Ok(format!("Float({v})"))
+    }
+    fn visit_bool(&self, v: bool) -> String {
+        format!("Bool({v})")
+    }
+    fn visit_str(&self, v: &str) -> String {
+        format!("String({v:?})")
+    }
+    fn visit_null(&self) -> String {
+        "Null".to_string()
+    }
+    fn visit_dict(&self, entries: Vec<(value::Key, String)>) -> String {
+        use std::fmt::Write;
+        let mut result = String::from("Dict({");
+        for (i, (key, val_str)) in entries.into_iter().enumerate() {
+            if i > 0 {
+                result.push_str(", ");
+            }
+            match key {
+                value::Key::Int(n) => write!(&mut result, "{n}").unwrap(),
+                value::Key::String(s) => write!(&mut result, "{s:?}").unwrap(),
+            }
+            result.push_str(": ");
+            result.push_str(&val_str);
+        }
+        result.push_str("})");
+        result
+    }
+    fn visit_seq_head(&self, head: String) -> Result<String, Box<error::EvalError>> {
+        Ok(format!("Seq({head}, ...)"))
+    }
+    fn visit_function(&self, params: &[ast::Param]) -> Result<String, Box<error::EvalError>> {
+        let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        Ok(format!("Function({})", names.join(", ")))
+    }
+    fn visit_builtin(&self, name: &str) -> Result<String, Box<error::EvalError>> {
+        Ok(format!("Builtin({name})"))
+    }
+    fn visit_proxy(&self) -> Result<String, Box<error::EvalError>> {
+        Ok("Proxy".to_string())
+    }
+    fn depth_limit_output(&self, depth: usize) -> Option<Result<String, Box<error::EvalError>>> {
+        if depth > eval::MAX_EVAL_DEPTH {
+            Some(Err(error::EvalError::internal(
+                "display depth exceeded (this is a display recursion limit, not an evaluation depth limit)".to_string(),
+                ast::Span::origin(),
+            ).into()))
+        } else if depth >= MAX_DISPLAY_DEPTH {
+            Some(Ok("...".to_string()))
+        } else {
+            None
+        }
+    }
+}
 
 /// Convert a materialized [`Value`](value::Value) to a [`serde_json::Value`].
 ///
@@ -177,85 +423,18 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
 /// Returns an error for:
 /// - `Function` / `Builtin` values (no JSON representation)
 /// - `Float` values that are NaN or infinite (not representable in JSON)
+/// - `Seq` values (must be collected to a Dict first via `$collect`)
 /// - Exceeding the maximum recursion depth ([`eval::MAX_EVAL_DEPTH`])
 pub fn value_to_json(
     val: &value::Value,
-    ctx: &std::rc::Rc<eval::EvalContext>,
+    ctx: &Rc<eval::EvalContext>,
     depth: usize,
 ) -> Result<serde_json::Value, Box<error::EvalError>> {
-    use serde_json::Value as JV;
-    use value::{Key, Value};
-
-    if depth > eval::MAX_EVAL_DEPTH {
-        return Err(
-            error::EvalError::depth_exceeded(eval::MAX_EVAL_DEPTH, ast::Span::origin()).into(),
-        );
+    // Seq has a span-bearing error; handle before the generic visitor.
+    if let value::Value::Seq { head, .. } = val {
+        return Err(error::EvalError::value_not_serializable("Seq".to_string(), head.span).into());
     }
-
-    match val {
-        Value::Int(n) => Ok(JV::Number((*n).into())),
-        Value::Float(f) => {
-            let n = serde_json::Number::from_f64(*f).ok_or_else(|| {
-                error::EvalError::float_not_finite("to-json".to_string(), *f, ast::Span::origin())
-            })?;
-            Ok(JV::Number(n))
-        }
-        Value::String(s) => Ok(JV::String(s.clone())),
-        Value::Bool(b) => Ok(JV::Bool(*b)),
-        Value::Dict(map) => {
-            // Detect array-like dict: all keys are sequential ints 0..n
-            let is_array = !map.is_empty()
-                && map
-                    .keys()
-                    .enumerate()
-                    .all(|(i, k)| matches!(k, Key::Int(n) if *n >= 0 && *n as usize == i));
-
-            if is_array {
-                let mut arr = Vec::with_capacity(map.len());
-                for (_key, thunk) in map {
-                    let v = eval::materialize(thunk, None, ctx, depth)?;
-                    arr.push(value_to_json(&v, ctx, depth + 1)?);
-                }
-                Ok(JV::Array(arr))
-            } else {
-                let mut obj = serde_json::Map::with_capacity(map.len());
-                for (key, thunk) in map {
-                    let key_str = match key {
-                        Key::Int(n) => n.to_string(),
-                        Key::String(s) => s.clone(),
-                    };
-                    let v = eval::materialize(thunk, None, ctx, depth)?;
-                    obj.insert(key_str, value_to_json(&v, ctx, depth + 1)?);
-                }
-                Ok(JV::Object(obj))
-            }
-        }
-        Value::Overlay(l, r) => {
-            // Flatten overlay to concrete dict, then serialize.
-            let map =
-                builtins::flatten_overlay(&l, &r, "to-json", ctx, depth, ast::Span::origin())?;
-            value_to_json(&value::Value::Dict(map), ctx, depth)
-        }
-        Value::Function { .. } => Err(error::EvalError::value_not_serializable(
-            "Function".to_string(),
-            ast::Span::origin(),
-        )
-        .into()),
-        Value::Builtin(def) => Err(error::EvalError::value_not_serializable(
-            format!("Builtin ({})", def.name),
-            ast::Span::origin(),
-        )
-        .into()),
-        Value::Seq { head, .. } => {
-            // Seq cannot be serialized to JSON — must be collected to a Dict first via $collect
-            Err(error::EvalError::value_not_serializable("Seq".to_string(), head.span).into())
-        }
-        Value::Proxy { .. } => Err(error::EvalError::value_not_serializable(
-            "Proxy".to_string(),
-            ast::Span::origin(),
-        )
-        .into()),
-    }
+    visit_value(val, ctx, depth, &JsonVisitor)
 }
 
 /// Convert a Value into a displayable string (LLT format, not JSON).
@@ -272,70 +451,12 @@ pub fn value_to_json(
 ///
 /// `depth` tracks recursion depth to prevent stack overflow from deeply nested
 /// dict-of-dicts structures. Uses the same limit as `eval::MAX_EVAL_DEPTH`.
-/// Maximum display recursion depth (3 levels).
-/// Prevents deep traversal of nested structures in error messages.
-const MAX_DISPLAY_DEPTH: usize = 3;
-
 pub fn value_to_display_string(
     val: &value::Value,
-    ctx: &std::rc::Rc<eval::EvalContext>,
+    ctx: &Rc<eval::EvalContext>,
     depth: usize,
 ) -> Result<String, Box<error::EvalError>> {
-    if depth > eval::MAX_EVAL_DEPTH {
-        return Err(error::EvalError::internal(
-            "display depth exceeded (this is a display recursion limit, not an evaluation depth limit)".to_string(),
-            ast::Span::origin(),
-        )
-        .into());
-    }
-
-    // Bound display depth to prevent deep traversal in error messages
-    if depth >= MAX_DISPLAY_DEPTH {
-        return Ok("...".to_string());
-    }
-
-    match val {
-        value::Value::Int(n) => Ok(format!("Int({n})")),
-        value::Value::Float(f) => Ok(format!("Float({f})")),
-        value::Value::String(s) => Ok(format!("String({s:?})")),
-        value::Value::Bool(b) => Ok(format!("Bool({b})")),
-        value::Value::Dict(map) => {
-            use std::fmt::Write;
-            let mut result = String::from("Dict({");
-            for (i, (key, thunk)) in map.iter().enumerate() {
-                if i > 0 {
-                    result.push_str(", ");
-                }
-                let v = eval::materialize(thunk, None, ctx, depth)?;
-                match key {
-                    value::Key::Int(n) => write!(&mut result, "{n}").unwrap(),
-                    value::Key::String(s) => write!(&mut result, "{s:?}").unwrap(),
-                };
-                result.push_str(": ");
-                let val_str = value_to_display_string(&v, ctx, depth + 1)?;
-                result.push_str(&val_str);
-            }
-            result.push_str("})");
-            Ok(result)
-        }
-        value::Value::Function { params, .. } => {
-            let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-            Ok(format!("Function({})", names.join(", ")))
-        }
-        value::Value::Builtin(def) => Ok(format!("Builtin({})", def.name)),
-        value::Value::Seq { head, .. } => {
-            // Materialize and display head element
-            let head_val = eval::materialize(head, None, ctx, depth)?;
-            let head_str = value_to_display_string(&head_val, ctx, depth + 1)?;
-            Ok(format!("Seq({}, ...)", head_str))
-        }
-        value::Value::Proxy { .. } => Ok("Proxy".to_string()),
-        value::Value::Overlay(l, r) => {
-            // Flatten overlay to concrete dict, then display.
-            let map = builtins::flatten_overlay(l, r, "display", ctx, depth, ast::Span::origin())?;
-            value_to_display_string(&value::Value::Dict(map), ctx, depth)
-        }
-    }
+    visit_value(val, ctx, depth, &DisplayVisitor)
 }
 
 #[cfg(test)]

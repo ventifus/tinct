@@ -336,6 +336,96 @@ fn setup_rlimits(
     Ok(())
 }
 
+/// Apply seccomp-bpf network and process sandbox (Linux only).
+///
+/// Installs a BPF filter that blocks:
+/// - Network syscalls: `socket`, `connect`, `bind`, `listen`, `accept`, `accept4`
+/// - Process creation syscalls: `fork`, `vfork`, `execve`, `execveat`
+///
+/// The `clone` syscall is intentionally NOT blocked; the Rust runtime uses it
+/// (with `CLONE_THREAD`) for thread creation. All other syscalls are allowed.
+///
+/// On architectures where a syscall does not exist (e.g. `fork`/`vfork` on
+/// aarch64), the constant is simply absent from `libc`, so we gate each entry
+/// behind a `#[cfg(target_arch)]` attribute.
+///
+/// Gracefully degrades: if seccompiler returns an error (e.g. the kernel is too
+/// old or seccomp is disabled), the error is printed as a warning and evaluation
+/// continues. This matches the Landlock degradation model used above.
+#[cfg(target_os = "linux")]
+fn setup_seccomp() -> Result<(), String> {
+    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
+    use std::collections::BTreeMap;
+
+    // Determine the target architecture for the BPF filter.
+    // seccompiler requires this to match the running kernel's architecture.
+    #[cfg(target_arch = "x86_64")]
+    let arch = TargetArch::x86_64;
+    #[cfg(target_arch = "aarch64")]
+    let arch = TargetArch::aarch64;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        // seccompiler only supports x86_64 and aarch64. On other architectures
+        // (e.g. arm, riscv64, s390x) we degrade gracefully without error.
+        return Ok(());
+    }
+
+    // Build the syscall blocklist. Each entry maps a syscall number to an empty
+    // rule vector, which means "match unconditionally" — the match_action
+    // (EPERM) fires for every invocation of that syscall.
+    let mut rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = BTreeMap::new();
+
+    // Network syscalls — block all network socket operations.
+    // LLT has no networking features; blocking these prevents any future
+    // accidental or malicious use.
+    for &nr in &[
+        libc::SYS_socket,
+        libc::SYS_connect,
+        libc::SYS_bind,
+        libc::SYS_listen,
+        libc::SYS_accept,
+        libc::SYS_accept4,
+    ] {
+        rules.insert(nr, vec![]);
+    }
+
+    // Process-creation syscalls — block spawning child processes.
+    // execve/execveat prevent privilege-escalation via external binaries.
+    // fork/vfork exist on x86_64; on aarch64 they are absent (clone covers both).
+    for &nr in &[libc::SYS_execve, libc::SYS_execveat] {
+        rules.insert(nr, vec![]);
+    }
+
+    // fork and vfork exist on x86_64 but not on aarch64.
+    #[cfg(target_arch = "x86_64")]
+    {
+        rules.insert(libc::SYS_fork, vec![]);
+        rules.insert(libc::SYS_vfork, vec![]);
+    }
+
+    // Build and compile the filter.
+    // mismatch_action = Allow: all syscalls not in `rules` are permitted.
+    // match_action = Errno(EPERM): blocked syscalls return EPERM to the caller.
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
+        arch,
+    )
+    .map_err(|e| format!("seccomp: failed to build filter: {e}"))?;
+
+    let bpf_prog: BpfProgram = filter
+        .try_into()
+        .map_err(|e| format!("seccomp: failed to compile filter: {e}"))?;
+
+    // Apply the filter to all threads via TSYNC (ensures child threads also
+    // inherit the filter, not just the calling thread).
+    seccompiler::apply_filter_all_threads(&bpf_prog)
+        .map_err(|e| format!("seccomp: failed to apply filter: {e}"))?;
+
+    Ok(())
+}
+
 /// Apply Landlock filesystem ACL enforcement (Linux 5.13+ only, defense-in-depth).
 ///
 /// When `--allow-path` entries are specified, the Landlock LSM is configured to
@@ -506,6 +596,14 @@ fn run_eval(
     // but has no effect (Landlock is a Linux-only API).
     #[cfg(not(target_os = "linux"))]
     let _ = no_landlock;
+
+    // Install seccomp-bpf network and process sandbox (Linux only).
+    // Applied after Landlock so that both kernel-level defenses are active before
+    // eval. Gracefully degrades on unsupported kernels (prints warning, continues).
+    #[cfg(target_os = "linux")]
+    if let Err(e) = setup_seccomp() {
+        eprintln!("warning: seccomp sandbox not active: {e}");
+    }
 
     // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
     let eval_ctx = EvalContext::new_with_all_options(
