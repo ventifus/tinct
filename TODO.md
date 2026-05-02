@@ -107,22 +107,6 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [x] Eliminate redundant param-exists scan in `bind_args_thunks` BIND-NAMED — `iter().position()` (scan 1) already determines existence; `iter().any()` (scan 2) at line 909 is always redundant. Replace two-scan pattern with single `match position()` arm covering both None→error and Some(idx<positional)→error cases. (`src/eval.rs:891-918`) [Minor, performance-expert C50] (already single-scan)
 - [x] Fuse `collect_type_vars` + `collect_row_vars` in `instantiate_at_level` — performs 3 full type walks + 3 allocations per CALL-POLY invocation. Same fusion fix as TODO.md:281 applied to this function. Also applies to `instantiate_scheme` which takes pre-collected lists from TypeScheme but still builds a Substitution for a single-variable rename. (`src/types.rs:949-980`) [Major, performance-expert C50] (already done)
 
-### strictness-value-migration: Value and ThunkState Migration
-
-Migrate all seven migration sites atomically. See `doc/16-architecture.md §Builtin Argument Strictness Annotations` — Complete migration site inventory table. All seven sites must change in one sprint to avoid mismatched field accesses. No behavioral change.
-
-**Depends on:** `strictness-types`
-
-- [ ] Change `Value::Builtin { name, func }` → `Value::Builtin(BuiltinDef)` in `src/value.rs`; update `type_name()`, `Display`, `Debug`, `PartialEq` impls to use `def.name` / `def.func` (`src/value.rs`)
-- [ ] Change `ThunkState::PendingBuiltin { name, func, ... }` → `{ def: BuiltinDef, ... }` in `src/value.rs` (`src/value.rs`)
-- [ ] Change `RestoreState::PendingBuiltin { name, func, ... }` → `{ def: BuiltinDef, ... }` in `src/eval_materialize.rs` (`src/eval_materialize.rs`)
-- [ ] Change `BuiltinForceArgData { builtin_name, func, ... }` → `{ def: BuiltinDef, arg_idx: usize, ... }` in `src/eval_materialize.rs`; the `arg_idx` field will be used by W1 in the next sprint (`src/eval_materialize.rs`)
-- [ ] Change `take_pending_builtin()` return tuple from `(&str, BuiltinFn, ...)` → `(BuiltinDef, ...)` in `src/value.rs`; update all callers: `src/eval.rs:1072`, `src/eval_materialize.rs:529`, test at `src/value.rs:1180` (`src/value.rs`, `src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] Change `Thunk::new_pending_builtin(name, func, ...)` → `new_pending_builtin(def, ...)` in `src/value.rs`; update all callers (~20 sites in `src/builtins_seq_reduce.rs`, `src/builtins_seq_gen.rs`, `src/builtins_seq_xform.rs`, `src/builtins.rs`, `src/eval_access.rs`) (`src/value.rs` + caller files)
-- [ ] Update all `match` arms on `Value::Builtin` throughout codebase — replace `{ name, func }` destructure with `(def)`, use `def.func`/`def.name` at each site (`src/eval.rs`, `src/eval_call.rs`, `src/eval_access.rs`, `src/lib.rs`, `src/typecheck.rs`)
-- [ ] Verify `Value::Dict` still dominates `Value` enum size after adding `pos_strictness` fat pointer (24→40 bytes for `Value::Builtin`); add `const _: () = assert!(std::mem::size_of::<Value>() == EXPECTED)` (`src/value.rs`)
-- [ ] All existing tests pass (no behavioral change)
-
 ### strictness-dispatch-w1: W1 Dispatch-Time Materialization
 
 Generalize `Cont::BuiltinForceArg` to iterate all `Seq`/`Spine` positions using `def.pos_strictness`. Delete the `builtin_name == "apply"` string comparison (superseded). See `doc/16-architecture.md §W1: Dispatch-Time Materialization`.
