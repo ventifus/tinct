@@ -107,19 +107,6 @@ Performance improvements that don't depend on the Parser Rewrite.
 - [x] Eliminate redundant param-exists scan in `bind_args_thunks` BIND-NAMED — `iter().position()` (scan 1) already determines existence; `iter().any()` (scan 2) at line 909 is always redundant. Replace two-scan pattern with single `match position()` arm covering both None→error and Some(idx<positional)→error cases. (`src/eval.rs:891-918`) [Minor, performance-expert C50] (already single-scan)
 - [x] Fuse `collect_type_vars` + `collect_row_vars` in `instantiate_at_level` — performs 3 full type walks + 3 allocations per CALL-POLY invocation. Same fusion fix as TODO.md:281 applied to this function. Also applies to `instantiate_scheme` which takes pre-collected lists from TypeScheme but still builds a Substitution for a single-variable rename. (`src/types.rs:949-980`) [Major, performance-expert C50] (already done)
 
-### strictness-types: Builtin Strictness Types and Annotations
-
-Define the `Strictness` enum, `BuiltinDef` struct, update `standard_builtins()` and registration. See doc/16-architecture.md §Builtin Argument Strictness Annotations. No behavioral change — purely additive metadata.
-
-- [ ] Add `Strictness { Id, Seq, Spine }` enum to `src/value.rs` with `#[repr(u8)]`, `#[non_exhaustive]`, derive `Copy, Clone, Debug, PartialEq, Eq` (`src/value.rs`)
-- [ ] Add `BuiltinDef { func: BuiltinFn, name: &'static str, pos_strictness: &'static [Strictness] }` struct to `src/value.rs` with derive `Copy, Clone` (`src/value.rs`)
-- [ ] Update `builtin!` macro to support 2-arg form (all-`Id`, empty slice) and 3-arg form expanding to `const S: &[Strictness] = &[...]` + `BuiltinDef { ... }` to satisfy `'static` bound (`src/builtins.rs`)
-- [ ] Change `standard_builtins()` return type from `Vec<(&'static str, BuiltinFn)>` to `Vec<BuiltinDef>`; annotate all builtins per the table in `doc/16-architecture.md §Builtin Argument Strictness Annotations` (`src/builtins.rs`)
-- [ ] Update `create_root_env()` at `src/builtins.rs:1629` to iterate `Vec<BuiltinDef>` and use `def.name`/`def.func` instead of tuple destructure (`src/builtins.rs`)
-- [ ] Update `create_root_env()` operator aliases (`Vec<(&'static str, BuiltinFn)>` at `src/builtins.rs:1642`) to `Vec<BuiltinDef>`; aliases carry alias name (e.g. `"builtin-add"`) and same `pos_strictness` as their canonical counterpart (`src/builtins.rs`)
-- [ ] Add unit test: every `BuiltinDef` in `standard_builtins()` has `pos_strictness.len() <= arity` — no annotation overruns the actual arg count (`src/builtins.rs`)
-- [ ] All existing tests pass (no behavioral change)
-
 ### strictness-value-migration: Value and ThunkState Migration
 
 Migrate all seven migration sites atomically. See `doc/16-architecture.md §Builtin Argument Strictness Annotations` — Complete migration site inventory table. All seven sites must change in one sprint to avoid mismatched field accesses. No behavioral change.
