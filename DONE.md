@@ -3272,3 +3272,19 @@ Define the `Strictness` enum, `BuiltinDef` struct, update `standard_builtins()` 
 - [x] Update `create_root_env()` operator aliases (`Vec<(&'static str, BuiltinFn)>` at `src/builtins.rs:1642`) to `Vec<BuiltinDef>`; aliases carry alias name (e.g. `"builtin-add"`) and same `pos_strictness` as their canonical counterpart (`src/builtins.rs`)
 - [x] Add unit test: every `BuiltinDef` in `standard_builtins()` has `pos_strictness.len() <= arity` — no annotation overruns the actual arg count (`src/builtins.rs`)
 - [x] All existing tests pass (no behavioral change)
+
+### strictness-value-migration: Value and ThunkState Migration
+
+Migrate all seven migration sites atomically. See `doc/16-architecture.md §Builtin Argument Strictness Annotations` — Complete migration site inventory table. All seven sites must change in one sprint to avoid mismatched field accesses. No behavioral change.
+
+**Depends on:** `strictness-types`
+
+- [x] Change `Value::Builtin { name, func }` → `Value::Builtin(BuiltinDef)` in `src/value.rs`; update `type_name()`, `Display`, `Debug`, `PartialEq` impls to use `def.name` / `def.func` (`src/value.rs`)
+- [x] Change `ThunkState::PendingBuiltin { name, func, ... }` → `{ def: BuiltinDef, ... }` in `src/value.rs` (`src/value.rs`)
+- [x] Change `RestoreState::PendingBuiltin { name, func, ... }` → `{ def: BuiltinDef, ... }` in `src/eval_materialize.rs` (`src/eval_materialize.rs`)
+- [x] Change `BuiltinForceArgData { builtin_name, func, ... }` → `{ def: BuiltinDef, arg_idx: usize, ... }` in `src/eval_materialize.rs`; the `arg_idx` field will be used by W1 in the next sprint (`src/eval_materialize.rs`)
+- [x] Change `take_pending_builtin()` return tuple from `(&str, BuiltinFn, ...)` → `(BuiltinDef, ...)` in `src/value.rs`; update all callers: `src/eval.rs:1072`, `src/eval_materialize.rs:529`, test at `src/value.rs:1180` (`src/value.rs`, `src/eval.rs`, `src/eval_materialize.rs`)
+- [x] Change `Thunk::new_pending_builtin(name, func, ...)` → `new_pending_builtin(def, ...)` in `src/value.rs`; update all callers (~20 sites in `src/builtins_seq_reduce.rs`, `src/builtins_seq_gen.rs`, `src/builtins_seq_xform.rs`, `src/builtins.rs`, `src/eval_access.rs`) (`src/value.rs` + caller files)
+- [x] Update all `match` arms on `Value::Builtin` throughout codebase — replace `{ name, func }` destructure with `(def)`, use `def.func`/`def.name` at each site (`src/eval.rs`, `src/eval_call.rs`, `src/eval_access.rs`, `src/lib.rs`, `src/typecheck.rs`)
+- [x] Verify `Value::Dict` still dominates `Value` enum size after adding `pos_strictness` fat pointer (24→40 bytes for `Value::Builtin`); add `const _: () = assert!(std::mem::size_of::<Value>() == EXPECTED)` (`src/value.rs`)
+- [x] All existing tests pass (no behavioral change)
