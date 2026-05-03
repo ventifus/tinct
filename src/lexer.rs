@@ -358,6 +358,13 @@ impl<'a> Lexer<'a> {
                 self.after_access_dot = false;
                 self.lex_var_ref()
             }
+            '%' => {
+                // % starts a pipeline-variable bare word.
+                // Lexed like a VarRef (stops at '.' so %.x → BareWord("%") Dot BareWord("x")),
+                // but emits a BareWord (not a VarRef) because % is not a $ sigil.
+                self.after_access_dot = false;
+                self.lex_percent_word()
+            }
             '-' => {
                 // Could be negative number or doc separator or bare word
                 if self.peek_ahead(1) == Some('-') && self.peek_ahead(2) == Some('-') {
@@ -602,6 +609,36 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         self.tokens
             .push(Spanned::new(Token::VarRef(name), Span::new(start, end)));
+        self.last_significant_token = Some(LastSignificantToken::VarRef);
+        Ok(())
+    }
+
+    /// Lex a `%`-prefixed pipeline variable bare word.
+    ///
+    /// Reads `%` plus identifier characters (stopping at `.` so that `%.x` tokenises as
+    /// `BareWord("%")`, `Dot`, `BareWord("x")` rather than `BareWord("%.x")`).
+    /// Emits `BareWord` (not `VarRef`) because `%` is not a `$` sigil.
+    /// After emission, updates `last_significant_token` to `VarRef` so that a following
+    /// `.` without whitespace is recognised as a dot-access operator.
+    fn lex_percent_word(&mut self) -> Result<(), LexError> {
+        let start = self.current_position();
+        let word_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+        // Consume '%'
+        self.advance();
+        // Consume identifier characters (same denylist as VarRef, stops at '.')
+        while let Some(c) = self.peek_char() {
+            if self.is_var_ident_char(c) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let word_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+        let name = self.input[word_start..word_end].to_string();
+        let end = self.current_position();
+        self.tokens
+            .push(Spanned::new(Token::BareWord(name), Span::new(start, end)));
+        // Set VarRef so a following '.' without whitespace is recognised as dot-access.
         self.last_significant_token = Some(LastSignificantToken::VarRef);
         Ok(())
     }
@@ -1125,6 +1162,52 @@ mod tests {
         assert_eq!(tok("---"), vec![Token::DocSeparator]);
         assert_eq!(tok("--- "), vec![Token::DocSeparator]);
         assert_eq!(tok("----"), vec![Token::BareWord("----".into())]);
+    }
+
+    #[test]
+    fn test_percent_bare_words() {
+        // % is a valid bare_word_char, so %defaults lexes as BareWord
+        assert_eq!(tok("%defaults"), vec![Token::BareWord("%defaults".into())]);
+        assert_eq!(tok("%"), vec![Token::BareWord("%".into())]);
+        assert_eq!(tok("%+"), vec![Token::BareWord("%+".into())]);
+        // %name should also work with various characters
+        assert_eq!(tok("%config"), vec![Token::BareWord("%config".into())]);
+        assert_eq!(tok("%raw_data"), vec![Token::BareWord("%raw_data".into())]);
+    }
+
+    #[test]
+    fn test_percent_word_dot_access() {
+        // lex_percent_word stops at '.' and sets last_significant_token = VarRef so
+        // that the immediately-following '.' (no whitespace) is recognised as Dot
+        // (the dot-access operator) rather than starting a bare word.
+        // %base.x  →  BareWord("%base"), Dot, BareWord("x")
+        assert_eq!(
+            tok("%base.x"),
+            vec![
+                Token::BareWord("%base".into()),
+                Token::Dot,
+                Token::BareWord("x".into()),
+            ]
+        );
+        // Chained access: %cfg.server.port
+        assert_eq!(
+            tok("%cfg.server.port"),
+            vec![
+                Token::BareWord("%cfg".into()),
+                Token::Dot,
+                Token::BareWord("server".into()),
+                Token::Dot,
+                Token::BareWord("port".into()),
+            ]
+        );
+        // Whitespace before dot: NOT dot-access — separate tokens
+        assert_eq!(
+            tok("%base .x"),
+            vec![
+                Token::BareWord("%base".into()),
+                Token::BareWord(".x".into()),
+            ]
+        );
     }
 
     #[test]

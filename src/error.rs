@@ -347,7 +347,14 @@ impl fmt::Display for ErrorKind {
                     write!(f, " (available keys: {keys_str}{suffix})")
                 }
             }
-            Self::UndefinedVariable { name } => write!(f, "undefined variable: ${name}"),
+            Self::UndefinedVariable { name } => {
+                // % and $ names already carry their sigil; only add $ for plain names.
+                if name.starts_with('%') || name.starts_with('$') {
+                    write!(f, "undefined variable: {name}")
+                } else {
+                    write!(f, "undefined variable: ${name}")
+                }
+            }
             Self::TypeMismatch {
                 context: Some(ctx),
                 expected,

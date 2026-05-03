@@ -283,8 +283,10 @@ fn test_corpus_structure() {
         "tests/corpus/eval/type_assertions",
         "tests/corpus/eval/type_errors",
         "tests/corpus/eval/typecheck",
+        "tests/corpus/eval/pipeline",
         "tests/corpus/eval/underscore",
         // Invalid corpus
+        "tests/corpus/invalid/pipeline",
         "tests/corpus/invalid/semantic_errors",
         "tests/corpus/invalid/syntax_errors",
         // Valid corpus

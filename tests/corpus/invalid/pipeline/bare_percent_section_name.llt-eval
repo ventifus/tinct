@@ -1,0 +1,6 @@
+# Test that --- % (bare percent with no name) is a parse error
+[x: 1]
+--- %
+[y: 2]
+===
+bare % with no identifier is not allowed in section headers

@@ -1,0 +1,11 @@
+# Test named sections with %name binding
+--- %defaults
+[x: 1  y: 2]
+
+--- %overrides
+[x: 10]
+
+---
+[call $merge %defaults %overrides]
+===
+Dict({"x": Int(10), "y": Int(2)})

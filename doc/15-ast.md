@@ -22,11 +22,23 @@ struct File {
     documents: Vec<Spanned<Document>>,
 }
 
-/// A document — one or more expressions forming a scope chain
+/// A document — one or more expressions forming a scope chain,
+/// optionally carrying section-header metadata from the preceding `---` line.
 struct Document {
-    expressions: Vec<Spanned<Expr>>,
+    expressions: Vec<Rc<Spanned<Expr>>>,
+    /// Section name from `--- %name`, e.g. `"config"` (bare name, no `%` sigil).
+    /// `None` for anonymous documents.
+    name: Option<String>,
+    /// Output type annotation from `--- %name@Type` or `--- @Type`.
+    /// Stored as a parsed `Annotation` with its source span.
+    output_type: Option<Spanned<Annotation>>,
+    /// Input contract from `--- expects: Type`.
+    /// The type checker emits an advisory error if the incoming `%` type does not match.
+    expects: Option<Spanned<Annotation>>,
 }
 ```
+
+The three optional fields — `name`, `output_type`, `expects` — are populated by the section-header parser when a `---` line carries metadata (e.g. `--- %config@Config expects: InputType`). All three are `None` for anonymous documents (bare `---` or the implicit first document). The `name` string is the bare section name without the `%` sigil (`"config"`, not `"%config"`). Callers (the evaluator and type checker) add the `%` prefix when binding the value into scope (e.g. `format!("%{}", name)`). `output_type` and `expects` store the full source span of the annotation so the type checker can point to the right source location in advisory error messages.
 
 The `parse()` function returns `Result<Spanned<File>, ParseError>`.
 

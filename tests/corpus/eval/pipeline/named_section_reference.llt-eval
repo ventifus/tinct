@@ -1,0 +1,8 @@
+# Test referencing a named section from a later section
+--- %base
+[val: 100]
+
+---
+%base.val
+===
+Int(100)

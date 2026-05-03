@@ -62,6 +62,9 @@ pub struct File {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
     pub expressions: Vec<Rc<Spanned<Expr>>>,
+    pub name: Option<String>,
+    pub output_type: Option<Spanned<Annotation>>,
+    pub expects: Option<Spanned<Annotation>>,
 }
 
 /// The central expression type
@@ -639,6 +642,9 @@ mod tests {
     fn test_display_document_single_expression() {
         let doc = Document {
             expressions: vec![Rc::new(sp(Expr::Int(42)))],
+            name: None,
+            output_type: None,
+            expects: None,
         };
         assert_eq!(format!("{doc}"), "42");
     }
@@ -651,6 +657,9 @@ mod tests {
                 Rc::new(sp(Expr::Int(10))),
                 Rc::new(sp(Expr::Bool(true))),
             ],
+            name: None,
+            output_type: None,
+            expects: None,
         };
         assert_eq!(format!("{doc}"), "$x\n10\ntrue");
     }
@@ -659,6 +668,9 @@ mod tests {
     fn test_display_document_empty() {
         let doc = Document {
             expressions: vec![],
+            name: None,
+            output_type: None,
+            expects: None,
         };
         assert_eq!(format!("{doc}"), "");
     }
@@ -668,6 +680,9 @@ mod tests {
         let file = File {
             documents: vec![sp(Document {
                 expressions: vec![Rc::new(sp(Expr::Int(1)))],
+                name: None,
+                output_type: None,
+                expects: None,
             })],
         };
         assert_eq!(format!("{file}"), "1");
@@ -679,9 +694,15 @@ mod tests {
             documents: vec![
                 sp(Document {
                     expressions: vec![Rc::new(sp(Expr::Int(1)))],
+                    name: None,
+                    output_type: None,
+                    expects: None,
                 }),
                 sp(Document {
                     expressions: vec![Rc::new(sp(Expr::Int(2)))],
+                    name: None,
+                    output_type: None,
+                    expects: None,
                 }),
             ],
         };

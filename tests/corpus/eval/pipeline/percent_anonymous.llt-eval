@@ -1,0 +1,6 @@
+# Test % as alias for $$ — anonymous pipeline variable
+[x: 42]
+---
+%.x
+===
+Int(42)

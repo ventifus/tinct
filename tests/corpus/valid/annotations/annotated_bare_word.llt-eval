@@ -1,4 +1,4 @@
 # Type annotation on bare word key with value
 [x@Number: 42]
 ===
-["x"@"Number": 42]
+[x@Number: 42]
