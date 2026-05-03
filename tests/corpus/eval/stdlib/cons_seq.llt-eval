@@ -1,4 +1,4 @@
 # cons on Seq creates O(1) lazy prepend
-[call $collect [call $take 3 [call $cons 0 [call $iterate [fn [x] [call $+ $x 1]] 1]]]]
+[collect [take 3 [cons 0 [iterate [fn [x] [+ x 1]] 1]]]]
 ===
 Dict({0: Int(0), 1: Int(1), 2: Int(2)})

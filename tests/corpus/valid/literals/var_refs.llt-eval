@@ -1,3 +1,4 @@
-[$name $has? $my-var $_private $get-or]
+# In new syntax, bare identifiers are var refs. $-prefix in head position prevents call.
+[$name has? my-var _private get-or]
 ===
-[$name  $has?  $my-var  $_private  $get-or]
+[name  has?  my-var  _private  get-or]

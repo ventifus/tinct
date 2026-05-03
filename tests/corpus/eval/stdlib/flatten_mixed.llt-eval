@@ -1,5 +1,5 @@
 # flatten: mixed scalars and nested lists
 # Verifies that flatten handles both individual values and nested dictionaries
-[call $flatten [1 [2 3] 4]]
+[flatten [1 [2 3] 4]]
 ===
 Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)})

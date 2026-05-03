@@ -1,7 +1,7 @@
 # C-COVERAGE failure: required param at index 3 with no positional or named
 [
-  f: [fn [a b@[default: 2] c d] [call $+ $a $d]]
-  result: [call $f 1 c: 5]
+  f: [fn [a b@[default: 2] c d] [+ a d]]
+  result: [f 1 c: 5]
 ]
 ===
 [E024] missing argument for required parameter

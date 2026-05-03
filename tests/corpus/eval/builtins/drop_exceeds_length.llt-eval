@@ -1,4 +1,4 @@
 # drop more than collection length returns empty
-[call $drop 10 [a b c]]
+[drop 10 ["a" "b" "c"]]
 ===
 Dict({})

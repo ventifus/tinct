@@ -6,7 +6,7 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 
 **Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
 
-**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `$$` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter, LSP server with diagnostics and hover, comprehensive test suite.
+**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter, LSP server with diagnostics and hover, comprehensive test suite.
 
 ## Syntax at a Glance
 
@@ -107,16 +107,16 @@ $data.missing                              # error: key not found
 [call $get-or $data missing fallback]      # explicit optional access
 ```
 
-### `$$` pipeline
+### `%` pipeline
 
-Multi-document files pass the output of one document to the next as `$$`. Transform data across stages without intermediate variables or a shell pipeline.
+Multi-document files pass the output of one document to the next as `%`. Transform data across stages without intermediate variables or a shell pipeline.
 
 ```lisp
 [users: [...]]
 ---
-[active: [call $filter [fn [u] $u.active] $$.users]]
+[active: [filter [fn [u] u.active] %.users]]
 ---
-[call $sort $$.active]
+[sort %.active]
 ```
 
 ### Standard library
@@ -205,7 +205,7 @@ cargo run -- eval test_input.llt
 cargo run -- eval --format llt test_input.llt  # Tinct display format
 cargo run -- eval --eval test_input.llt         # Deep-force all thunks
 echo '{"x": 1}' | cargo run -- eval -           # Read Tinct from stdin
-echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as $$
+echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as %
 cargo run -- fmt test_input.llt                 # Format source file (stdout)
 cargo run -- fmt --in-place test_input.llt      # Format source file in place
 cargo run -- fmt --check test_input.llt         # Check formatting without writing
@@ -220,7 +220,7 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/lexer.rs` | Hand-written tokenizer with whitespace-sensitive access detection |
 | `src/parser.rs` | Hand-written iterative descent parser + comprehensive unit tests |
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
-| `src/eval.rs` | Evaluator: `eval()`, `materialize()` (call-site span attachment, stack frame propagation), dict construction with letrec semantics, document evaluation with scope chains and `$$` pipeline, function evaluation (`fn`/`call`), named args, variadics, arity checking, TypeAssert `default:` fallback, depth limit (256) |
+| `src/eval.rs` | Evaluator: `eval()`, `materialize()` (call-site span attachment, stack frame propagation), dict construction with letrec semantics, document evaluation with scope chains and `%` pipeline, function evaluation (`fn`/`call`), named args, variadics, arity checking, TypeAssert `default:` fallback, depth limit (256) |
 | `src/desugar.rs` | Desugarer: `$_` implicit lambda desugaring — pre-typecheck, pre-eval AST transformation (source-to-source pass between parsing and type checking) |
 | `src/builtins.rs` | Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy), `$include` resolved via `EvalContext`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
@@ -248,12 +248,12 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 Tests across multiple modules covering:
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
-- **eval.rs** -- core evaluation (literals, VarRef, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `$$` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `$_` implicit lambda desugaring, TypeAlias), depth limiting, and materialization span propagation
+- **eval.rs** -- core evaluation (literals, variable references, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `%` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `_` implicit lambda desugaring, TypeAlias), depth limiting, and materialization span propagation
 - **builtins.rs** -- all Rust-native builtins (arithmetic auto-promotion, division by zero, comparison cross-type, `if` selective materialization, dict operations, string operations, numeric floor/round with NaN/infinity guards, string parsing, eval/error/try/apply, type-of, from-json, include with cycle detection/path resolution/nested includes/stdlib access, sequences, proxy), stdlib env loading (root env + prelude)
 - **value.rs** -- Value, Thunk, and Environment types (evaluator foundation)
 - **error.rs** -- `EvalError` and `StackFrame` formatting with definition-site and materialization-site spans
 - **types.rs** -- Type enum, TypeEnv scope chain, subtyping (Number, structural records, function variance, open/closed/row-var records), unification (Hindley-Milner, type variable instantiation, substitution application, literal promotions, occurs check)
-- **typecheck.rs** -- type inference (literals, records, access chains, functions, scope chains, `$$` pipeline), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions, row polymorphism, polymorphic function call checking (instantiate + unify + apply)
+- **typecheck.rs** -- type inference (literals, records, access chains, functions, scope chains, `%` pipeline), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions, row polymorphism, polymorphic function call checking (instantiate + unify + apply)
 
 ### Corpus Tests (`tests/corpus/`)
 
@@ -278,7 +278,7 @@ tests/corpus/
     edge_cases/     -- empty input, whitespace
   invalid/
     syntax_errors/  -- missing bracket, extra tokens, unexpected colon, missing value
-  eval/             -- evaluator tests (simple dict, scope chain, $$ pipeline, functions)
+  eval/             -- evaluator tests (simple dict, scope chain, % pipeline, functions)
     builtins/       -- builtin function evaluation
     errors/         -- expected eval failures (cycle detection, arity, undefined var)
     stdlib/         -- stdlib function evaluation

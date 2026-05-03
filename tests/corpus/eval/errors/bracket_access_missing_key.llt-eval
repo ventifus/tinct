@@ -1,5 +1,5 @@
 [data: [a: 1]]
 
-$data.b
+data.b
 ===
 [E001] key not found: b (available keys: a)

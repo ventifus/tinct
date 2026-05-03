@@ -1,10 +1,10 @@
 # cond: multi-branch conditional
 [x: 5]
 
-[call $cond [
-  [[call $> $x 10] big]
-  [[call $> $x 0] positive]
-  [true other]
+[cond [
+  [[> x 10] "big"]
+  [[> x 0] "positive"]
+  [true "other"]
 ]]
 ===
 String("positive")

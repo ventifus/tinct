@@ -1,4 +1,4 @@
 # Lazy evaluation: $if returns dict thunk without forcing unchosen branch
-[call $if true [x: 1] [call $error "no"]]
+[if true [x: 1] [error "no"]]
 ===
 Dict({"x": Int(1)})

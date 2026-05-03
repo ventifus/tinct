@@ -1,8 +1,8 @@
 # Let-gen polymorphism: f is polymorphically generalized (Kiselyov 2013 levels-based let-gen).
 # It can be called at both Int and String in the same dict scope without a type error.
-[f: [fn [x@a] $x]
- r1: [call $f 42]
- r2: [call $f "hello"]]
+[f: [fn [x@a] x]
+ r1: [f 42]
+ r2: [f "hello"]]
 ===
 Dict({"f": Function(x), "r1": Int(42), "r2": String("hello")})
 

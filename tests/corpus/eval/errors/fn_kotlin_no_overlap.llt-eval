@@ -1,7 +1,7 @@
 # C-NO-OVERLAP: positional + named for same param
 [
-  f: [fn [a b c] [call $+ $a [call $+ $b $c]]]
-  result: [call $f 1 2 3 b: 99]
+  f: [fn [a b c] [+ a [+ b c]]]
+  result: [f 1 2 3 b: 99]
 ]
 ===
 [E021] parameter 'b' received both positional and named argument

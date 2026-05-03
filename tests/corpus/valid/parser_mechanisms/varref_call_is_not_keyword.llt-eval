@@ -1,6 +1,5 @@
-# $call is a variable reference, not the call keyword.
-# The parser only treats bare "call" (not prefixed by $) as a keyword.
-# This is a Dict with three positional entries (not a call expression).
-[$call $f $x]
+# $call is an EscapedRef in head position — prevents implied call interpretation.
+# This is a data sequence (not a call expression).
+[$call f x]
 ===
-[$call  $f  $x]
+[call  f  x]

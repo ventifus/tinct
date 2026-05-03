@@ -1,4 +1,4 @@
 # collect: empty dict input returns empty dict
-[call $collect []]
+[collect []]
 ===
 Dict({})

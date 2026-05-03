@@ -1,4 +1,4 @@
 [data: [username: "alice"]]
-$data.usernme
+data.usernme
 ===
 [E001] key not found: usernme (did you mean: 'username')

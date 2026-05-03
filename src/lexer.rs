@@ -42,12 +42,12 @@ pub enum Token {
     Int(i64),
     /// Float literal
     Float(f64),
-    /// Bare word (unquoted string)
-    BareWord(String),
+    /// Identifier (bare word — variable reference in value position)
+    Identifier(String),
     /// Quoted string literal (escapes already processed)
     QuotedString(String),
-    /// Variable reference `$name`
-    VarRef(String),
+    /// Escaped reference `$name` (disambiguator in head/key positions)
+    EscapedRef(String),
     /// Boolean literal (`true` or `false`)
     BoolLit(bool),
 }
@@ -70,9 +70,9 @@ impl fmt::Display for Token {
             Token::Comment(text) => write!(f, "# {text}"),
             Token::Int(n) => write!(f, "{n}"),
             Token::Float(n) => write!(f, "{n}"),
-            Token::BareWord(s) => write!(f, "{s}"),
+            Token::Identifier(s) => write!(f, "{s}"),
             Token::QuotedString(s) => write!(f, "\"{s}\""),
-            Token::VarRef(name) => write!(f, "${name}"),
+            Token::EscapedRef(name) => write!(f, "${name}"),
             Token::BoolLit(b) => write!(f, "{b}"),
         }
     }
@@ -123,7 +123,7 @@ struct Lexer<'a> {
     /// Tracks if horizontal whitespace (spaces/tabs, not newlines) was skipped before the current position.
     ///
     /// Used to disambiguate whitespace-sensitive syntax:
-    /// - `$a.b` (no gap) → dot access; `$a .b` (gap) → two separate tokens
+    /// - `$a.b` and `$a .b` (any whitespace) → dot access (whitespace not significant for `.`)
     /// - `word@annotation` (no gap) → ImmediateAt; `word @annotation` (gap) → At
     /// - `$a[0]` (no gap) → BracketAccess; `$a [0]` (gap) → OpenBracket
     ///
@@ -131,26 +131,26 @@ struct Lexer<'a> {
     had_whitespace_before: bool,
     /// Bracket nesting depth (for range operator context and MAX_LEX_DEPTH enforcement)
     bracket_depth: usize,
-    /// True if the last token was Dot in an access chain (next bare word excludes dots)
+    /// True if the last token was Dot in an access chain (next identifier excludes dots)
     after_access_dot: bool,
     /// Tracks the last significant token type for O(1) access context detection.
     ///
     /// Used to determine when `[` should emit `BracketAccess` (immediately after a value-ending token
-    /// with no whitespace gap) vs `OpenBracket`. Value-ending tokens: VarRef, CloseBracket, BareWord,
+    /// with no whitespace gap) vs `OpenBracket`. Value-ending tokens: EscapedRef, CloseBracket, Identifier,
     /// QuotedString, Int, Float, BoolLit. This enables `$a[0]` (bracket access) vs `$a [0]` (separate tokens).
     last_significant_token: Option<LastSignificantToken>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum LastSignificantToken {
-    VarRef,
+    EscapedRef,
     CloseBracket,
-    BareWordAfterDot,
+    IdentifierAfterDot,
     QuotedString,
     Int,
     Float,
     BoolLit,
-    BareWord,
+    Identifier,
     Other,
 }
 
@@ -339,7 +339,7 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 let end = self.current_position();
 
-                // Emit ImmediateAt if no whitespace before and previous token is BareWord
+                // Emit ImmediateAt if no whitespace before and previous token is Identifier
                 let token = if !self.had_whitespace_before && self.is_immediate_at_context() {
                     Token::ImmediateAt
                 } else {
@@ -359,9 +359,9 @@ impl<'a> Lexer<'a> {
                 self.lex_var_ref()
             }
             '%' => {
-                // % starts a pipeline-variable bare word.
-                // Lexed like a VarRef (stops at '.' so %.x → BareWord("%") Dot BareWord("x")),
-                // but emits a BareWord (not a VarRef) because % is not a $ sigil.
+                // % starts a pipeline-variable identifier.
+                // Lexed like an EscapedRef (stops at '.' so %.x → Identifier("%") Dot Identifier("x")),
+                // but emits Identifier (not EscapedRef) because % is not a $ sigil.
                 self.after_access_dot = false;
                 self.lex_percent_word()
             }
@@ -396,8 +396,7 @@ impl<'a> Lexer<'a> {
                         self.last_significant_token = Some(LastSignificantToken::Other);
                         Ok(())
                     } else {
-                        // Could be range or bare word
-                        // Range is only valid inside brackets
+                        // Could be range (`..` inside brackets) or two dots at top level
                         if self.bracket_depth > 0 {
                             self.after_access_dot = false;
                             self.advance();
@@ -408,25 +407,28 @@ impl<'a> Lexer<'a> {
                             self.last_significant_token = Some(LastSignificantToken::Other);
                             Ok(())
                         } else {
-                            // Bare word - after_access_dot handled in lex_bare_word_or_number
-                            self.lex_bare_word_or_number()
+                            // At top level, `..` is two consecutive dots — emit the first Dot
+                            // and let the next iteration handle the second. Calling
+                            // lex_bare_word_or_number here would infinite-loop because `.` is
+                            // not a valid identifier character.
+                            self.advance();
+                            let end = self.current_position();
+                            self.tokens
+                                .push(Spanned::new(Token::Dot, Span::new(start, end)));
+                            self.after_access_dot = true;
+                            Ok(())
                         }
                     }
                 } else {
-                    // Check if this is dot access (after VarRef, CloseBracket, or BareWord following Dot)
-                    // Only if NO whitespace preceded the dot
-                    if !self.had_whitespace_before && self.is_access_context() {
-                        self.advance();
-                        let end = self.current_position();
-                        self.tokens
-                            .push(Spanned::new(Token::Dot, Span::new(start, end)));
-                        self.after_access_dot = true;
-                        // Dot doesn't update last_significant_token (it's an operator, not a value)
-                        Ok(())
-                    } else {
-                        // Bare word - after_access_dot handled in lex_bare_word_or_number
-                        self.lex_bare_word_or_number()
-                    }
+                    // In new syntax, '.' is always a dot-access operator. Whitespace before '.'
+                    // is allowed and does not prevent dot access (unlike '[' which is
+                    // whitespace-sensitive). This matches Nix/Jsonnet behavior.
+                    self.advance();
+                    let end = self.current_position();
+                    self.tokens
+                        .push(Spanned::new(Token::Dot, Span::new(start, end)));
+                    self.after_access_dot = true;
+                    Ok(())
                 }
             }
             _ if c.is_ascii_digit() => {
@@ -457,28 +459,16 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn is_access_context(&self) -> bool {
-        // Dot is an access operator if the previous significant token was:
-        // - VarRef
-        // - CloseBracket
-        // - BareWord that followed a Dot (making this part of a chain like $a.b.c)
-        matches!(
-            self.last_significant_token,
-            Some(LastSignificantToken::VarRef)
-                | Some(LastSignificantToken::CloseBracket)
-                | Some(LastSignificantToken::BareWordAfterDot)
-        )
-    }
-
     fn is_bracket_access_context(&self) -> bool {
         // BracketAccess is emitted instead of OpenBracket when `[` follows
         // a value-ending token with no whitespace gap.
-        // Value-ending tokens: VarRef, CloseBracket, BareWordAfterDot, QuotedString, Int, Float, BoolLit
+        // Value-ending tokens: EscapedRef, Identifier, CloseBracket, IdentifierAfterDot, QuotedString, Int, Float, BoolLit
         matches!(
             self.last_significant_token,
-            Some(LastSignificantToken::VarRef)
+            Some(LastSignificantToken::EscapedRef)
+                | Some(LastSignificantToken::Identifier)
                 | Some(LastSignificantToken::CloseBracket)
-                | Some(LastSignificantToken::BareWordAfterDot)
+                | Some(LastSignificantToken::IdentifierAfterDot)
                 | Some(LastSignificantToken::QuotedString)
                 | Some(LastSignificantToken::Int)
                 | Some(LastSignificantToken::Float)
@@ -488,10 +478,10 @@ impl<'a> Lexer<'a> {
 
     fn is_immediate_at_context(&self) -> bool {
         // ImmediateAt is emitted instead of At when `@` follows
-        // a BareWord with no whitespace gap.
+        // an Identifier with no whitespace gap.
         matches!(
             self.last_significant_token,
-            Some(LastSignificantToken::BareWord)
+            Some(LastSignificantToken::Identifier)
         )
     }
 
@@ -608,24 +598,24 @@ impl<'a> Lexer<'a> {
         let name = self.input[ident_start..ident_end].to_string();
         let end = self.current_position();
         self.tokens
-            .push(Spanned::new(Token::VarRef(name), Span::new(start, end)));
-        self.last_significant_token = Some(LastSignificantToken::VarRef);
+            .push(Spanned::new(Token::EscapedRef(name), Span::new(start, end)));
+        self.last_significant_token = Some(LastSignificantToken::EscapedRef);
         Ok(())
     }
 
-    /// Lex a `%`-prefixed pipeline variable bare word.
+    /// Lex a `%`-prefixed pipeline variable identifier.
     ///
     /// Reads `%` plus identifier characters (stopping at `.` so that `%.x` tokenises as
-    /// `BareWord("%")`, `Dot`, `BareWord("x")` rather than `BareWord("%.x")`).
-    /// Emits `BareWord` (not `VarRef`) because `%` is not a `$` sigil.
-    /// After emission, updates `last_significant_token` to `VarRef` so that a following
-    /// `.` without whitespace is recognised as a dot-access operator.
+    /// `Identifier("%")`, `Dot`, `Identifier("x")` rather than `Identifier("%.x")`).
+    /// Emits `Identifier` (not `EscapedRef`) because `%` is not a `$` sigil.
+    /// After emission, updates `last_significant_token` to `EscapedRef` so that a following
+    /// `[` without whitespace is recognised for bracket-access detection.
     fn lex_percent_word(&mut self) -> Result<(), LexError> {
         let start = self.current_position();
         let word_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
         // Consume '%'
         self.advance();
-        // Consume identifier characters (same denylist as VarRef, stops at '.')
+        // Consume identifier characters (same denylist as EscapedRef, stops at '.')
         while let Some(c) = self.peek_char() {
             if self.is_var_ident_char(c) {
                 self.advance();
@@ -637,9 +627,9 @@ impl<'a> Lexer<'a> {
         let name = self.input[word_start..word_end].to_string();
         let end = self.current_position();
         self.tokens
-            .push(Spanned::new(Token::BareWord(name), Span::new(start, end)));
-        // Set VarRef so a following '.' without whitespace is recognised as dot-access.
-        self.last_significant_token = Some(LastSignificantToken::VarRef);
+            .push(Spanned::new(Token::Identifier(name), Span::new(start, end)));
+        // Set EscapedRef so a following '[' without whitespace is recognised for bracket-access detection.
+        self.last_significant_token = Some(LastSignificantToken::EscapedRef);
         Ok(())
     }
 
@@ -693,8 +683,10 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             } else {
-                // Normal bare word, dots are allowed
-                if self.is_bare_word_char(c) {
+                // Identifier (new syntax): dots are NOT allowed (they are access operators).
+                // Use is_var_ident_char which excludes '.', so `name.field` tokenizes
+                // as Identifier("name") Dot Identifier("field") — dot access chain.
+                if self.is_var_ident_char(c) {
                     self.advance();
                 } else {
                     break;
@@ -717,12 +709,12 @@ impl<'a> Lexer<'a> {
             self.last_significant_token = Some(LastSignificantToken::BoolLit);
         } else {
             self.tokens
-                .push(Spanned::new(Token::BareWord(word), Span::new(start, end)));
-            // BareWord after Dot is in access context for chaining
+                .push(Spanned::new(Token::Identifier(word), Span::new(start, end)));
+            // Identifier after Dot is in access context for chaining
             if in_access_field {
-                self.last_significant_token = Some(LastSignificantToken::BareWordAfterDot);
+                self.last_significant_token = Some(LastSignificantToken::IdentifierAfterDot);
             } else {
-                self.last_significant_token = Some(LastSignificantToken::BareWord);
+                self.last_significant_token = Some(LastSignificantToken::Identifier);
             }
         }
         Ok(())
@@ -816,14 +808,6 @@ impl<'a> Lexer<'a> {
             }
         }
     }
-
-    fn is_bare_word_char(&self, c: char) -> bool {
-        // Denylist: exclude whitespace, structural delimiters, and $
-        !matches!(
-            c,
-            ' ' | '\t' | '\r' | '\n' | '[' | ']' | ':' | ';' | '#' | '"' | '@' | '$'
-        )
-    }
 }
 
 #[cfg(test)]
@@ -872,10 +856,20 @@ mod tests {
 
     #[test]
     fn test_bare_words() {
-        assert_eq!(tok("hello"), vec![Token::BareWord("hello".into())]);
-        assert_eq!(tok("my-var"), vec![Token::BareWord("my-var".into())]);
-        assert_eq!(tok("has?"), vec![Token::BareWord("has?".into())]);
-        assert_eq!(tok("file.txt"), vec![Token::BareWord("file.txt".into())]);
+        assert_eq!(tok("hello"), vec![Token::Identifier("hello".into())]);
+        assert_eq!(tok("my-var"), vec![Token::Identifier("my-var".into())]);
+        assert_eq!(tok("has?"), vec![Token::Identifier("has?".into())]);
+        // In new syntax, dots are access operators, not bare-word chars.
+        // "file.txt" tokenizes as Identifier("file") Dot Identifier("txt").
+        // File paths with dots must be quoted strings: "file.txt".
+        assert_eq!(
+            tok("file.txt"),
+            vec![
+                Token::Identifier("file".into()),
+                Token::Dot,
+                Token::Identifier("txt".into()),
+            ]
+        );
     }
 
     #[test]
@@ -903,11 +897,11 @@ mod tests {
 
     #[test]
     fn test_var_refs() {
-        assert_eq!(tok("$x"), vec![Token::VarRef("x".into())]);
-        assert_eq!(tok("$my-var"), vec![Token::VarRef("my-var".into())]);
-        assert_eq!(tok("$$"), vec![Token::VarRef("$".into())]);
-        assert_eq!(tok("$$foo"), vec![Token::VarRef("$foo".into())]);
-        assert_eq!(tok("$0"), vec![Token::VarRef("0".into())]);
+        assert_eq!(tok("$x"), vec![Token::EscapedRef("x".into())]);
+        assert_eq!(tok("$my-var"), vec![Token::EscapedRef("my-var".into())]);
+        assert_eq!(tok("$$"), vec![Token::EscapedRef("$".into())]);
+        assert_eq!(tok("$$foo"), vec![Token::EscapedRef("$foo".into())]);
+        assert_eq!(tok("$0"), vec![Token::EscapedRef("0".into())]);
     }
 
     #[test]
@@ -920,29 +914,29 @@ mod tests {
         assert_eq!(
             tok("$a.b"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::Dot,
-                Token::BareWord("b".into())
+                Token::Identifier("b".into())
             ]
         );
         assert_eq!(
             tok("$a.b.c"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::Dot,
-                Token::BareWord("b".into()),
+                Token::Identifier("b".into()),
                 Token::Dot,
-                Token::BareWord("c".into())
+                Token::Identifier("c".into())
             ]
         );
         // Access field names only allow [a-zA-Z0-9_-?] per grammar
         assert_eq!(
             tok("$a.foo!bar"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::Dot,
-                Token::BareWord("foo".into()),
-                Token::BareWord("!bar".into())
+                Token::Identifier("foo".into()),
+                Token::Identifier("!bar".into())
             ]
         );
     }
@@ -953,40 +947,51 @@ mod tests {
         assert_eq!(
             tok("$a.b"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::Dot,
-                Token::BareWord("b".into())
+                Token::Identifier("b".into())
             ]
         );
 
-        // $a .b is VarRef then bare word
+        // $a .b — dot always emits Dot token; whitespace before dot is allowed (same behavior as Nix/Jsonnet).
         assert_eq!(
             tok("$a .b"),
-            vec![Token::VarRef("a".into()), Token::BareWord(".b".into())]
+            vec![
+                Token::EscapedRef("a".into()),
+                Token::Dot,
+                Token::Identifier("b".into())
+            ]
         );
 
-        // a.b is bare word (no $ prefix)
-        assert_eq!(tok("a.b"), vec![Token::BareWord("a.b".into())]);
+        // a.b — dots are access operators; tokenizes as Identifier Dot Identifier
+        assert_eq!(
+            tok("a.b"),
+            vec![
+                Token::Identifier("a".into()),
+                Token::Dot,
+                Token::Identifier("b".into())
+            ]
+        );
     }
 
     #[test]
     fn test_bracket_access() {
-        // VarRef precedes — BracketAccess (no whitespace)
+        // EscapedRef precedes — BracketAccess (no whitespace)
         assert_eq!(
             tok("$a[0]"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::BracketAccess,
                 Token::Int(0),
                 Token::CloseBracket
             ]
         );
 
-        // VarRef precedes with whitespace — OpenBracket
+        // EscapedRef precedes with whitespace — OpenBracket
         assert_eq!(
             tok("$a [0]"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::OpenBracket,
                 Token::Int(0),
                 Token::CloseBracket
@@ -1040,13 +1045,13 @@ mod tests {
             ]
         );
 
-        // BareWord with whitespace — OpenBracket
+        // Identifier with whitespace — OpenBracket
         assert_eq!(
             tok("call [x]"),
             vec![
-                Token::BareWord("call".into()),
+                Token::Identifier("call".into()),
                 Token::OpenBracket,
-                Token::BareWord("x".into()),
+                Token::Identifier("x".into()),
                 Token::CloseBracket
             ]
         );
@@ -1056,8 +1061,8 @@ mod tests {
             tok("[call $f][0]"),
             vec![
                 Token::OpenBracket,
-                Token::BareWord("call".into()),
-                Token::VarRef("f".into()),
+                Token::Identifier("call".into()),
+                Token::EscapedRef("f".into()),
                 Token::CloseBracket,
                 Token::BracketAccess,
                 Token::Int(0),
@@ -1065,13 +1070,13 @@ mod tests {
             ]
         );
 
-        // BareWordAfterDot precedes — BracketAccess (real usage: $a.b[0])
+        // IdentifierAfterDot precedes — BracketAccess (real usage: $a.b[0])
         assert_eq!(
             tok("$a.b[0]"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::Dot,
-                Token::BareWord("b".into()),
+                Token::Identifier("b".into()),
                 Token::BracketAccess,
                 Token::Int(0),
                 Token::CloseBracket
@@ -1085,7 +1090,7 @@ mod tests {
         assert_eq!(
             tok("$a[2..5]"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::BracketAccess,
                 Token::Int(2),
                 Token::Range,
@@ -1094,8 +1099,16 @@ mod tests {
             ]
         );
 
-        // .. outside bracket access is bare word
-        assert_eq!(tok("file..bak"), vec![Token::BareWord("file..bak".into())]);
+        // .. outside brackets: two consecutive dots, each emitted as Dot
+        assert_eq!(
+            tok("file..bak"),
+            vec![
+                Token::Identifier("file".into()),
+                Token::Dot,
+                Token::Dot,
+                Token::Identifier("bak".into())
+            ]
+        );
     }
 
     #[test]
@@ -1118,9 +1131,9 @@ mod tests {
         assert_eq!(
             tok("a\nb"),
             vec![
-                Token::BareWord("a".into()),
+                Token::Identifier("a".into()),
                 Token::Newline,
-                Token::BareWord("b".into())
+                Token::Identifier("b".into())
             ]
         );
     }
@@ -1150,9 +1163,9 @@ mod tests {
         assert_eq!(
             tok("a\r\nb"),
             vec![
-                Token::BareWord("a".into()),
+                Token::Identifier("a".into()),
                 Token::Newline,
-                Token::BareWord("b".into())
+                Token::Identifier("b".into())
             ]
         );
     }
@@ -1161,51 +1174,57 @@ mod tests {
     fn test_doc_separator() {
         assert_eq!(tok("---"), vec![Token::DocSeparator]);
         assert_eq!(tok("--- "), vec![Token::DocSeparator]);
-        assert_eq!(tok("----"), vec![Token::BareWord("----".into())]);
+        assert_eq!(tok("----"), vec![Token::Identifier("----".into())]);
     }
 
     #[test]
     fn test_percent_bare_words() {
-        // % is a valid bare_word_char, so %defaults lexes as BareWord
-        assert_eq!(tok("%defaults"), vec![Token::BareWord("%defaults".into())]);
-        assert_eq!(tok("%"), vec![Token::BareWord("%".into())]);
-        assert_eq!(tok("%+"), vec![Token::BareWord("%+".into())]);
+        // % is a valid identifier char, so %defaults lexes as Identifier via lex_percent_word
+        assert_eq!(
+            tok("%defaults"),
+            vec![Token::Identifier("%defaults".into())]
+        );
+        assert_eq!(tok("%"), vec![Token::Identifier("%".into())]);
+        assert_eq!(tok("%+"), vec![Token::Identifier("%+".into())]);
         // %name should also work with various characters
-        assert_eq!(tok("%config"), vec![Token::BareWord("%config".into())]);
-        assert_eq!(tok("%raw_data"), vec![Token::BareWord("%raw_data".into())]);
+        assert_eq!(tok("%config"), vec![Token::Identifier("%config".into())]);
+        assert_eq!(
+            tok("%raw_data"),
+            vec![Token::Identifier("%raw_data".into())]
+        );
     }
 
     #[test]
     fn test_percent_word_dot_access() {
-        // lex_percent_word stops at '.' and sets last_significant_token = VarRef so
-        // that the immediately-following '.' (no whitespace) is recognised as Dot
-        // (the dot-access operator) rather than starting a bare word.
-        // %base.x  →  BareWord("%base"), Dot, BareWord("x")
+        // lex_percent_word stops at '.' and sets last_significant_token = EscapedRef so
+        // that a following '[' without whitespace is recognised for bracket-access detection.
+        // %base.x  →  Identifier("%base"), Dot, Identifier("x")
         assert_eq!(
             tok("%base.x"),
             vec![
-                Token::BareWord("%base".into()),
+                Token::Identifier("%base".into()),
                 Token::Dot,
-                Token::BareWord("x".into()),
+                Token::Identifier("x".into()),
             ]
         );
         // Chained access: %cfg.server.port
         assert_eq!(
             tok("%cfg.server.port"),
             vec![
-                Token::BareWord("%cfg".into()),
+                Token::Identifier("%cfg".into()),
                 Token::Dot,
-                Token::BareWord("server".into()),
+                Token::Identifier("server".into()),
                 Token::Dot,
-                Token::BareWord("port".into()),
+                Token::Identifier("port".into()),
             ]
         );
-        // Whitespace before dot: NOT dot-access — separate tokens
+        // Whitespace before dot: permitted. '.' always emits a Dot token regardless of preceding whitespace.
         assert_eq!(
             tok("%base .x"),
             vec![
-                Token::BareWord("%base".into()),
-                Token::BareWord(".x".into()),
+                Token::Identifier("%base".into()),
+                Token::Dot,
+                Token::Identifier("x".into()),
             ]
         );
     }
@@ -1217,9 +1236,9 @@ mod tests {
             tok(input),
             vec![
                 Token::OpenBracket,
-                Token::BareWord("call".into()),
-                Token::VarRef("f".into()),
-                Token::BareWord("x".into()),
+                Token::Identifier("call".into()),
+                Token::EscapedRef("f".into()),
+                Token::Identifier("x".into()),
                 Token::Colon,
                 Token::Int(42),
                 Token::CloseBracket
@@ -1233,7 +1252,7 @@ mod tests {
         assert_eq!(
             tok("$a[..]"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::BracketAccess,
                 Token::Range,
                 Token::CloseBracket
@@ -1256,7 +1275,7 @@ mod tests {
     fn test_bare_cr_line_tracking() {
         // Test bare CR (Mac Classic line ending) increments line counter
         let result = tokenize("a\rb").unwrap();
-        assert_eq!(result.len(), 3); // BareWord, Newline, BareWord
+        assert_eq!(result.len(), 3); // Identifier, Newline, Identifier
         assert_eq!(result[0].span.start.line, 1);
         assert_eq!(result[0].span.start.column, 1);
         assert_eq!(result[1].span.start.line, 1); // Newline starts on line 1
@@ -1280,25 +1299,25 @@ mod tests {
         let tokens = tok("1e309");
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0], Token::Int(1));
-        assert_eq!(tokens[1], Token::BareWord("e309".into()));
+        assert_eq!(tokens[1], Token::Identifier("e309".into()));
     }
 
     #[test]
     fn test_access_field_first_char() {
         // Access field must start with ASCII_ALPHA or '_' per grammar
-        // $a.1 should tokenize as VarRef, Dot, Int (not an access chain)
+        // $a.1 should tokenize as EscapedRef, Dot, Int (not an access chain)
         assert_eq!(
             tok("$a.1"),
-            vec![Token::VarRef("a".into()), Token::Dot, Token::Int(1)]
+            vec![Token::EscapedRef("a".into()), Token::Dot, Token::Int(1)]
         );
 
         // $a._priv should work (underscore is allowed as first char)
         assert_eq!(
             tok("$a._priv"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::Dot,
-                Token::BareWord("_priv".into())
+                Token::Identifier("_priv".into())
             ]
         );
 
@@ -1308,9 +1327,9 @@ mod tests {
         assert_eq!(
             tok("$a.-foo"),
             vec![
-                Token::VarRef("a".into()),
+                Token::EscapedRef("a".into()),
                 Token::Dot,
-                Token::BareWord("-foo".into())
+                Token::Identifier("-foo".into())
             ]
         );
     }
@@ -1323,33 +1342,33 @@ mod tests {
 
     #[test]
     fn test_immediate_at() {
-        // BareWord followed by @ with no whitespace — ImmediateAt
+        // Identifier followed by @ with no whitespace — ImmediateAt
         assert_eq!(
             tok("x@Int"),
             vec![
-                Token::BareWord("x".into()),
+                Token::Identifier("x".into()),
                 Token::ImmediateAt,
-                Token::BareWord("Int".into())
+                Token::Identifier("Int".into())
             ]
         );
 
-        // BareWord followed by @ with whitespace — At
+        // Identifier followed by @ with whitespace — At
         assert_eq!(
             tok("x @Int"),
             vec![
-                Token::BareWord("x".into()),
+                Token::Identifier("x".into()),
                 Token::At,
-                Token::BareWord("Int".into())
+                Token::Identifier("Int".into())
             ]
         );
 
-        // VarRef followed by @ — At (not ImmediateAt, only fires after BareWord)
+        // EscapedRef followed by @ — At (not ImmediateAt, only fires after Identifier)
         assert_eq!(
             tok("$var@Int"),
             vec![
-                Token::VarRef("var".into()),
+                Token::EscapedRef("var".into()),
                 Token::At,
-                Token::BareWord("Int".into())
+                Token::Identifier("Int".into())
             ]
         );
     }

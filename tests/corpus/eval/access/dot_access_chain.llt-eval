@@ -1,6 +1,6 @@
 # Chained dot access through nested dictionaries
 [data: [nested: [field: 42]]]
 
-$data.nested.field
+data.nested.field
 ===
 Int(42)

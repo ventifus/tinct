@@ -1,4 +1,4 @@
 # identity: returns argument unchanged
-[call $identity 42]
+[identity 42]
 ===
 Int(42)

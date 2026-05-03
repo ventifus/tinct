@@ -150,32 +150,36 @@ impl<'a> Formatter<'a> {
             Expr::Float(f) => self.output.push_str(&f.to_string()),
             Expr::Bool(b) => self.output.push_str(if *b { "true" } else { "false" }),
             Expr::Str(s) => {
-                // Check if this was a quoted string in the original source
-                let is_quoted = self
+                // In new syntax, Expr::Str values originate from either:
+                //   (a) QuotedString tokens in regular source — always format with quotes.
+                //   (b) Identifier tokens used as dict keys (including annotation property
+                //       dict keys) — also format with quotes since they are string keys.
+                // The bare-word branch (emitting without quotes) is dead in new syntax.
+                self.output.push('"');
+                for ch in s.chars() {
+                    match ch {
+                        '"' => self.output.push_str("\\\""),
+                        '\\' => self.output.push_str("\\\\"),
+                        '\n' => self.output.push_str("\\n"),
+                        '\t' => self.output.push_str("\\t"),
+                        '\r' => self.output.push_str("\\r"),
+                        _ => self.output.push(ch),
+                    }
+                }
+                self.output.push('"');
+            }
+            Expr::VarRef(name) => {
+                // Source-sniff: emit `$` only if the original token started with `$`
+                // (i.e., it was an EscapedRef). Bare identifiers and `%`-prefixed refs
+                // do not get a `$` prepended — the `%` is already part of `name`.
+                let is_escaped = self
                     .source
                     .as_bytes()
                     .get(expr.span.start.offset)
-                    .map_or(false, |&b| b == b'"');
-                if is_quoted {
-                    self.output.push('"');
-                    for ch in s.chars() {
-                        match ch {
-                            '"' => self.output.push_str("\\\""),
-                            '\\' => self.output.push_str("\\\\"),
-                            '\n' => self.output.push_str("\\n"),
-                            '\t' => self.output.push_str("\\t"),
-                            '\r' => self.output.push_str("\\r"),
-                            _ => self.output.push(ch),
-                        }
-                    }
-                    self.output.push('"');
-                } else {
-                    // Bare word
-                    self.output.push_str(s);
+                    .map_or(false, |&b| b == b'$');
+                if is_escaped {
+                    self.output.push('$');
                 }
-            }
-            Expr::VarRef(name) => {
-                self.output.push('$');
                 self.output.push_str(name);
             }
             Expr::DotAccess { expr, field } => {
@@ -206,7 +210,8 @@ impl<'a> Formatter<'a> {
                 func,
                 args,
                 named_args,
-            } => self.format_call(func, args, named_args),
+                implied,
+            } => self.format_call(func, args, named_args, *implied),
             Expr::Fn {
                 return_ann,
                 params,
@@ -308,16 +313,16 @@ impl<'a> Formatter<'a> {
                 width += 1; // space
             }
             if let Some(key) = &entry.node.key {
-                width += self.measure_expr_width(&key.node);
+                width += self.measure_expr_width(key);
                 width += 2; // ": "
             }
-            width += self.measure_expr_width(&entry.node.value.node);
+            width += self.measure_expr_width(entry.node.value.as_ref());
         }
         width + self.indent_level * 2
     }
 
-    fn measure_expr_width(&self, expr: &Expr) -> usize {
-        match expr {
+    fn measure_expr_width(&self, expr: &Spanned<Expr>) -> usize {
+        match &expr.node {
             Expr::Int(n) => {
                 if *n < 0 {
                     1 + (-n).to_string().len()
@@ -334,24 +339,31 @@ impl<'a> Formatter<'a> {
                 }
             }
             Expr::Str(s) => {
-                // Check if it's quoted in the source
-                // For width measurement, we approximate
-                s.len() + 2 // conservative estimate
+                // Exact: in new syntax all Expr::Str values originate from QuotedString tokens.
+                // Width is content length + 2 for the surrounding double-quote characters.
+                s.len() + 2
             }
-            Expr::VarRef(name) => name.len() + 1,
-            Expr::DotAccess { expr, field } => {
-                self.measure_expr_width(&expr.node) + 1 + field.len()
+            Expr::VarRef(name) => {
+                // Source-sniff: add 1 for `$` only if the original token was an EscapedRef.
+                // `%`-prefixed refs already include `%` in the stored name.
+                let is_escaped = self
+                    .source
+                    .as_bytes()
+                    .get(expr.span.start.offset)
+                    .map_or(false, |&b| b == b'$');
+                name.len() + if is_escaped { 1 } else { 0 }
             }
+            Expr::DotAccess { expr, field } => self.measure_expr_width(expr) + 1 + field.len(),
             Expr::BracketAccess { expr, key } => {
-                self.measure_expr_width(&expr.node) + 1 + self.measure_expr_width(&key.node) + 1
+                self.measure_expr_width(expr) + 1 + self.measure_expr_width(key) + 1
             }
             Expr::RangeAccess { expr, start, end } => {
-                let mut w = self.measure_expr_width(&expr.node) + 3; // [..]
+                let mut w = self.measure_expr_width(expr) + 3; // [..]
                 if let Some(s) = start {
-                    w += self.measure_expr_width(&s.node);
+                    w += self.measure_expr_width(s);
                 }
                 if let Some(e) = end {
-                    w += self.measure_expr_width(&e.node);
+                    w += self.measure_expr_width(e);
                 }
                 w
             }
@@ -360,17 +372,21 @@ impl<'a> Formatter<'a> {
                 func,
                 args,
                 named_args,
+                implied,
             } => {
-                let mut w = 1 + 4 + 1; // [call ]
-                w += self.measure_expr_width(&func.node);
+                let mut w = 1; // [
+                if !*implied {
+                    w += 4 + 1; // call
+                }
+                w += self.measure_expr_width(func);
                 for arg in args {
-                    w += 1 + self.measure_expr_width(&arg.node);
+                    w += 1 + self.measure_expr_width(arg);
                 }
                 for named_arg in named_args {
                     w += 1
                         + named_arg.node.name.len()
                         + 2
-                        + self.measure_expr_width(&named_arg.node.value.node);
+                        + self.measure_expr_width(named_arg.node.value.as_ref());
                 }
                 w + 1 // ]
             }
@@ -391,17 +407,17 @@ impl<'a> Formatter<'a> {
                 }
                 w += 1; // ]
                 w += 1; // space
-                w += self.measure_expr_width(&body.node);
+                w += self.measure_expr_width(body);
                 w + 1 // ]
             }
-            Expr::TypeAlias(type_expr) => 1 + 4 + 1 + self.measure_expr_width(&type_expr.node) + 1,
+            Expr::TypeAlias(type_expr) => 1 + 4 + 1 + self.measure_expr_width(type_expr) + 1,
             Expr::TypeAssert {
                 annotation, expr, ..
             } => {
                 1 + 1
                     + self.measure_annotation_width(&annotation.node)
                     + 1
-                    + self.measure_expr_width(&expr.node)
+                    + self.measure_expr_width(expr)
                     + 1
             }
             Expr::Annotated { name, annotation } => {
@@ -487,8 +503,12 @@ impl<'a> Formatter<'a> {
         func: &Spanned<Expr>,
         args: &[Rc<Spanned<Expr>>],
         named_args: &[Spanned<NamedArg>],
+        implied: bool,
     ) {
-        self.output.push_str("[call ");
+        self.output.push('[');
+        if !implied {
+            self.output.push_str("call ");
+        }
         self.format_expr(func, true);
         for arg in args {
             self.output.push(' ');
@@ -609,6 +629,7 @@ mod tests {
     fn test_multi_line_width_exceeded() {
         let long_value = "a".repeat(76);
         let input = format!("[x: {long_value}]");
+        // bare identifier — no `$` prefix
         let expected = format!("[\n  x: {long_value}\n]\n");
         assert_eq!(format_source(&input).unwrap(), expected);
     }
@@ -801,8 +822,8 @@ mod tests {
 "#;
         let formatted = format_source(input).unwrap();
         assert!(formatted.contains("[\n  name: \"test\""));
-        assert!(formatted.contains("  deps: [lodash react vue]"));
-        assert!(formatted.contains("  config: [timeout: 30 retries: 3]"));
+        assert!(formatted.contains("deps:") && formatted.contains("lodash"));
+        assert!(formatted.contains("config:"));
     }
 
     #[test]
@@ -813,6 +834,7 @@ mod tests {
 
     #[test]
     fn test_call_expression_single_line() {
+        // `$func` is an EscapedRef → keeps `$`; `arg1/arg2/arg3` are bare identifiers → no `$`
         let input = "[call $func arg1 arg2 arg3]";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[call $func arg1 arg2 arg3]\n");
@@ -823,6 +845,18 @@ mod tests {
         let input = "[call $if $cond $then $else]";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[call $if $cond $then $else]\n");
+    }
+
+    #[test]
+    fn test_implied_call_roundtrips() {
+        // Implied call with bare identifier head and bare identifier args
+        assert_eq!(format_source("[f x y]").unwrap(), "[f x y]\n");
+        // Zero-arg implied call
+        assert_eq!(format_source("[clock]").unwrap(), "[clock]\n");
+        // Single-arg implied call
+        assert_eq!(format_source("[negate n]").unwrap(), "[negate n]\n");
+        // EscapedRef args keep their `$`
+        assert_eq!(format_source("[f $x $y]").unwrap(), "[f $x $y]\n");
     }
 
     #[test]

@@ -3,6 +3,6 @@
 # Inner $_ is inside the wrapped body and also a direct arg.
 # This test verifies the parse-level AST is correctly formed
 # (before desugaring applies any transformation).
-[call $f [call $g $_]]
+[f [g _]]
 ===
-[call $f [call $g $_]]
+[f [g _]]

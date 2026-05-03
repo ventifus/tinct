@@ -1,4 +1,4 @@
 # filter: error when xs is not a Dict or Seq
-[call $filter [fn [x] true] 42]
+[filter [fn [x] true] 42]
 ===
 [E010] filter: expected Dict or Seq, got Int

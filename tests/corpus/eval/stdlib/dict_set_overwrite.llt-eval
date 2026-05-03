@@ -1,4 +1,4 @@
 # set: overwrite existing key
-[call $set [x: 1 y: 2] x 99]
+[set [x: 1 y: 2] "x" 99]
 ===
 Dict({"x": Int(99), "y": Int(2)})

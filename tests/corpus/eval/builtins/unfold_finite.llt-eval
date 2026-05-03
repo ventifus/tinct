@@ -1,4 +1,4 @@
 # unfold: finite sequence stopping when condition is met
-[call $collect [call $unfold [fn [s] [call $if [call $> $s 3] [] [$s [call $+ $s 1]]]] 1]]
+[collect [unfold [fn [s] [if [> s 3] [] [$s [+ s 1]]]] 1]]
 ===
 Dict({0: Int(1), 1: Int(2), 2: Int(3)})

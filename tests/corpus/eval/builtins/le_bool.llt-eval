@@ -1,4 +1,4 @@
 # <= : less-than-or-equal on Bool (derived from <)
-[call $<= false false]
+[<= false false]
 ===
 Bool(true)

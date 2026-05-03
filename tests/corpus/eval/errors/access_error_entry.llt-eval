@@ -1,6 +1,6 @@
 # Accessing an entry that errors does trigger the error
-[x: [call $error "boom"]  y: 42]
+[x: [error "boom"]  y: 42]
 ---
-$$.x
+%.x
 ===
 [E080] boom

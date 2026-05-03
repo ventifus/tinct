@@ -1,4 +1,4 @@
 # join on Dict: no separator applied when only one element (Dict path, singleton)
-[call $join "-" [only]]
+[join "-" ["only"]]
 ===
 String("only")

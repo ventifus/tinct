@@ -1,6 +1,6 @@
 # $_ exclusion test: when BOTH func and arg are DIRECT (spec line 2071)
 # [call $_ $_] wraps to [fn [_] [call $_ $_]] (both bind to same param)
 # This creates \f -> f(f), which when called with identity fn gives identity
-[call [call $_ $_] [fn [x] $x]]
+[call [_ _] [fn [x] x]]
 ===
 Function(x)

@@ -1,4 +1,4 @@
 # Basic $_ wrapping - call arg with $_ wraps to function, calling it returns the arg
-[call [call $identity $_] 42]
+[call [identity _] 42]
 ===
 Int(42)

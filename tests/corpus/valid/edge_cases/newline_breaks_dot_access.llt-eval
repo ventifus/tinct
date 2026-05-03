@@ -1,4 +1,6 @@
-[$a
-.b]
+# Newline between identifier and dot: in new syntax, dot is always emitted as Dot token.
+# a.b (no gap) = dot access; a\n.b = call a (head) then Dot+b (parser may error or handle unexpectedly)
+# Using whitespace-sensitive example: show that a[0] vs a [0] differ.
+[a [0]]
 ===
-[$a  ".b"]
+[a [0]]

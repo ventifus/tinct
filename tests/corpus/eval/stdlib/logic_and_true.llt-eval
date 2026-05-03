@@ -1,4 +1,4 @@
 # and: both true
-[call $and true true]
+[and true true]
 ===
 Bool(true)

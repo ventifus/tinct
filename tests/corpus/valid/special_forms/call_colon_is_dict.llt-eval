@@ -1,3 +1,3 @@
-[call: something]
+[call: "something"]
 ===
 ["call": "something"]

@@ -1,4 +1,4 @@
 # filter on dict: returns seq of values passing predicate
-[call $collect [call $filter [fn [x] [call $> $x 2]] [a: 1 b: 3 c: 5]]]
+[collect [filter [fn [x] [> x 2]] [a: 1 b: 3 c: 5]]]
 ===
 Dict({0: Int(3), 1: Int(5)})

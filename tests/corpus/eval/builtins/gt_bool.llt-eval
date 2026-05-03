@@ -1,4 +1,4 @@
 # > : greater-than comparison on Bool (derived from <)
-[call $> true false]
+[> true false]
 ===
 Bool(true)

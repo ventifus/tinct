@@ -1,4 +1,4 @@
 # take: taking zero elements returns empty dict
-[call $collect [call $take 0 [call $range 0]]]
+[collect [take 0 [range 0]]]
 ===
 Dict({})

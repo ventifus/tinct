@@ -1,4 +1,4 @@
 # seq: tail is not evaluated when only head is accessed
-[call $head [call $seq 1 [call $error "tail should not be evaluated"]]]
+[head [seq 1 [error "tail should not be evaluated"]]]
 ===
 Int(1)

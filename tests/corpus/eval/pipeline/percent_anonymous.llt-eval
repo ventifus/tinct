@@ -1,4 +1,4 @@
-# Test % as alias for $$ — anonymous pipeline variable
+# Test % — anonymous pipeline variable
 [x: 42]
 ---
 %.x

@@ -1,4 +1,4 @@
 # zip with empty first dict returns empty dict
-[call $zip [] [1 2 3]]
+[zip [] [1 2 3]]
 ===
 Dict({})

@@ -1,4 +1,4 @@
 # any? - returns true when at least one element matches predicate
-[call $any? [fn [x] [call $> $x 3]] [1 2 5]]
+[any? [fn [x] [> x 3]] [1 2 5]]
 ===
 Bool(true)

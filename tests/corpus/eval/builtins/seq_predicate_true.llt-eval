@@ -1,4 +1,4 @@
 # seq?: returns true for seq
-[call $seq? [call $seq 1 []]]
+[seq? [seq 1 []]]
 ===
 Bool(true)

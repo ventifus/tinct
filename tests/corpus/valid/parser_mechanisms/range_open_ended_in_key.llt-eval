@@ -1,5 +1,5 @@
 # Open-ended range: $xs[2..] — start only, no end bound.
 # The ".." inside bracket access with no following integer is an open-ended range.
-[tail: $data[2..]]
+[tail: data[2..]]
 ===
-["tail": $data[2..]]
+["tail": data[2..]]

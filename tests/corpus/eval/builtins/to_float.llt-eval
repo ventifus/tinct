@@ -1,4 +1,4 @@
 # to-float : parse string to float
-[call $to-float "3.14"]
+[to-float "3.14"]
 ===
 Float(3.14)

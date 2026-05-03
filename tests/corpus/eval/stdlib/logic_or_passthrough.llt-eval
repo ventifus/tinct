@@ -1,4 +1,4 @@
-# or: returns truthy value, not just true
-[call $or 42 0]
+# or: returns first truthy bool value
+[or true false]
 ===
-Int(42)
+Bool(true)

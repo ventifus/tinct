@@ -1,5 +1,5 @@
 # foldr: right fold (fold over reversed list)
 # f receives (accumulator, element) just like reduce
-[call $foldr [fn [acc x] [call $append $acc $x]] [] [1 2 3]]
+[foldr [fn [acc x] [append acc x]] [] [1 2 3]]
 ===
 Dict({0: Int(3), 1: Int(2), 2: Int(1)})

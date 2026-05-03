@@ -1,4 +1,4 @@
 # <=: greater than
-[call $<= 5 3]
+[<= 5 3]
 ===
 Bool(false)

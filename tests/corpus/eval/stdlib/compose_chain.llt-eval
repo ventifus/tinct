@@ -1,5 +1,5 @@
 # compose: multi-step chain (compose f g)(x) = f(g(x))
 # double then add 10
-[call [call $compose [fn [x] [call $+ $x 10]] [fn [x] [call $* $x 2]]] 5]
+[call [compose [fn [x] [+ x 10]] [fn [x] [* x 2]]] 5]
 ===
 Int(20)

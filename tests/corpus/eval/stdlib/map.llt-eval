@@ -1,4 +1,4 @@
 # map: apply a function to every element of a list
-[call $map [fn [x] [call $* $x 2]] [10 20 30]]
+[map [fn [x] [* x 2]] [10 20 30]]
 ===
 Dict({0: Int(20), 1: Int(40), 2: Int(60)})

@@ -1,4 +1,3 @@
-[call
-: something]
+[: something]
 ===
-ERROR: `:` without a name
+ERROR: `:` without a key

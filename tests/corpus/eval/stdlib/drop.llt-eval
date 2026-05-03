@@ -1,4 +1,4 @@
 # drop: skip the first n entries (preserves original keys)
-[call $drop 2 [a b c d]]
+[drop 2 ["a" "b" "c" "d"]]
 ===
 Dict({2: String("c"), 3: String("d")})

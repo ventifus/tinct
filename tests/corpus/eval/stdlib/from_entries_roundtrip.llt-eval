@@ -1,4 +1,4 @@
 # from-entries round-trip preserves values
-[call $from-entries [call $entries [name: Alice age: 30 active: true]]]
+[from-entries [entries [name: "Alice" age: 30 active: true]]]
 ===
 Dict({"name": String("Alice"), "age": Int(30), "active": Bool(true)})

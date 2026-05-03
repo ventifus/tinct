@@ -1,6 +1,6 @@
 # Lazy evaluation: unused dict entry with error is not materialized
-[x: [call $error "boom"]  y: 42]
+[x: [error "boom"]  y: 42]
 ---
-$$.y
+%.y
 ===
 Int(42)

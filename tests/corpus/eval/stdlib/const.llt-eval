@@ -1,4 +1,4 @@
 # const combinator - returns first argument, ignores second
-[call [call $const 42] hello]
+[call [const 42] "hello"]
 ===
 Int(42)

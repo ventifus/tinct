@@ -1,4 +1,4 @@
 [data: [foo: 1 bar: 2 baz: 3]]
-$data.xyz
+data.xyz
 ===
 [E001] key not found: xyz (available keys: foo, bar, baz)

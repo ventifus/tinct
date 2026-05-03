@@ -1,4 +1,4 @@
 # >=: equal values
-[call $>= 5 5]
+[>= 5 5]
 ===
 Bool(true)

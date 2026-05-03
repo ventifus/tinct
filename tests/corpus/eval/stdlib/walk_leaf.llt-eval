@@ -1,4 +1,4 @@
 # walk: transform applied to flat value
-[call $walk [fn [x] [call $builtin-if [call $builtin-eq [call $type-of $x] Dict] $x [call $* $x 2]]] 5]
+[walk [fn [x] [builtin-if [builtin-eq [type-of x] "Dict"] x [* x 2]]] 5]
 ===
 Int(10)

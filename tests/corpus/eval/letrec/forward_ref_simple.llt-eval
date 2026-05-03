@@ -1,4 +1,4 @@
 # Letrec semantics: forward reference allowed
-[a: $b  b: 42]
+[a: b  b: 42]
 ===
 Dict({"a": Int(42), "b": Int(42)})

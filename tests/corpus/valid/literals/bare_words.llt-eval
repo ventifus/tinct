@@ -1,3 +1,5 @@
-[hello some.file.txt path/to/file my-key "email@example.com" config..bak]
+# In new syntax, bare identifiers in value position are variable references.
+# File paths and strings with special chars must be quoted.
+["hello" "some.file.txt" "path/to/file" "my-key" "email@example.com" "config..bak"]
 ===
 ["hello"  "some.file.txt"  "path/to/file"  "my-key"  "email@example.com"  "config..bak"]

@@ -1,4 +1,0 @@
-# $var: in call is not a named arg; new-parser rejects (pest parser allowed $timeout: as named arg)
-[call $f $timeout: 60]
-===
-without a name

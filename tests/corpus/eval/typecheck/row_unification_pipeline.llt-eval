@@ -1,7 +1,7 @@
 # Row-polymorphic function end-to-end pipeline test
 # get-name accepts any record with at least a `name` field
-[get-name: [fn [r] $r.name]]
+[get-name: [fn [r] r.name]]
 ---
-[result: [call $get-name [name: Alice  age: 30]]]
+[result: [call %.get-name [name: "Alice"  age: 30]]]
 ===
-{"result": "Alice"}
+Dict({"result": String("Alice")})

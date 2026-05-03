@@ -1,4 +1,4 @@
 # $_ with filter - comparison wraps to function, filter calls it for each element
-[call $filter [call $> $_ 5] [1 3 5 7 9 11]]
+[filter [> _ 5] [1 3 5 7 9 11]]
 ===
 Seq(Int(7), ...)

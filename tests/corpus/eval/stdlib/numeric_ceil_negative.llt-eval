@@ -1,4 +1,4 @@
 # ceil: negative float rounds toward zero
-[call $ceil -2.7]
+[ceil -2.7]
 ===
 Int(-2)

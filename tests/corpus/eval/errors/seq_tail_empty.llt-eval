@@ -1,4 +1,4 @@
 # tail: error on empty seq
-[call $tail []]
+[tail []]
 ===
 [E034] tail on empty collection

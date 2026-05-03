@@ -1,4 +1,4 @@
 # walk: identity function leaves structure unchanged
-[call $walk [fn [x] $x] [a: 1  b: [c: 2  d: 3]]]
+[walk [fn [x] x] [a: 1  b: [c: 2  d: 3]]]
 ===
 Dict({"a": Int(1), "b": Dict({"c": Int(2), "d": Int(3)})})

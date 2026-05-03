@@ -1081,7 +1081,7 @@ fn test_has_error_code_prefix_invalid_letters_in_number() {
 ///
 ///   [x: 1]
 ///   ---
-///   $$.x
+///   %.x
 ///   ===
 ///   1
 ///   ---           ← THIS IS THE BUG: should be in the input section
@@ -1151,7 +1151,7 @@ fn test_no_llt_separator_in_expected_section() {
 #[test]
 fn test_check_no_llt_separator_dash_in_input_allowed() {
     // `---` in the INPUT section (before `===`) is valid LLT — allowed.
-    let content = "[x: 1]\n---\n$$.x\n===\n1\n";
+    let content = "[x: 1]\n---\n%.x\n===\n1\n";
     let path = std::path::Path::new("dummy.llt-eval");
     assert!(
         check_no_llt_separator_in_expected(content, path).is_none(),
@@ -1178,7 +1178,7 @@ fn test_check_no_llt_separator_dash_in_expected_flagged() {
 #[test]
 fn test_check_no_llt_separator_no_delim_skipped() {
     // Files without `===` have no expected section — nothing to flag.
-    let content = "[x: 1]\n---\n$$.x\n";
+    let content = "[x: 1]\n---\n%.x\n";
     let path = std::path::Path::new("dummy.llt-eval");
     assert!(
         check_no_llt_separator_in_expected(content, path).is_none(),

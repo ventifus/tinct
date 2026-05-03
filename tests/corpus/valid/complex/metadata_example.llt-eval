@@ -1,9 +1,9 @@
 [
-    grammars: source.js
-    file-types: .dl
+    grammars: "source.js"
+    file-types: ".dl"
     metadata: [
         version: "1.0.0"
-        license: Apache-2.0
+        license: "Apache-2.0"
         description: [
             1: "This is a simple data structure."
             2: "This is more complex."

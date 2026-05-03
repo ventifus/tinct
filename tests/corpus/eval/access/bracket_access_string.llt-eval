@@ -1,6 +1,6 @@
 # Bracket access with string key
 [data: [name: "world"]]
 
-$data["name"]
+data["name"]
 ===
 String("world")

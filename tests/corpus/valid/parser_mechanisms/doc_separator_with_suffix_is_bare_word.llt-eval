@@ -1,6 +1,6 @@
-# "---foo" is a bare word, not a doc separator.
+# "---foo" is an identifier (not a doc separator) — must quote for string literal.
 # doc_separator = "---" NOT followed by a bare_word_char.
-# "---foo" has "f" after the three dashes, so it is parsed as a bare word.
-[x: ---foo]
+# "---foo" has "f" after the three dashes, so it is a bare identifier (VarRef).
+[x: "---foo"]
 ===
 ["x": "---foo"]

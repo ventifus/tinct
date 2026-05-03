@@ -1,6 +1,6 @@
 # Higher-order function: apply f to x
-[apply-fn: [fn [f x] [call $f $x]]]
+[apply-fn: [fn [f x] [f x]]]
 
-[call $apply-fn [fn [x] $x] 42]
+[apply-fn [fn [x] x] 42]
 ===
 Int(42)

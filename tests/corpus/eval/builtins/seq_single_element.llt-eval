@@ -1,4 +1,4 @@
 # seq: single element
-[call $collect [call $seq 99 []]]
+[collect [seq 99 []]]
 ===
 Dict({0: Int(99)})

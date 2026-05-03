@@ -1,4 +1,4 @@
 # max: single element returns itself
-[call $max [42]]
+[max [42]]
 ===
 Int(42)

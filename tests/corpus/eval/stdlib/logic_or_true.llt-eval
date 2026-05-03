@@ -1,4 +1,4 @@
 # or: first true short-circuits
-[call $or true false]
+[or true false]
 ===
 Bool(true)

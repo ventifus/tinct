@@ -1,4 +1,4 @@
 # try-or: returns default when function errors
-[call $try-or [fn [] [call $error oops]] fallback]
+[try-or [fn [] [error "oops"]] "fallback"]
 ===
 String("fallback")

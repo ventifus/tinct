@@ -1,4 +1,4 @@
 # conj: append an element to the end of a list
-[call $conj [1 2] 3]
+[conj [1 2] 3]
 ===
 Dict({0: Int(1), 1: Int(2), 2: Int(3)})

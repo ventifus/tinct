@@ -1,4 +1,4 @@
 # str : convert value to string
-[call $str 42]
+[str 42]
 ===
 String("42")

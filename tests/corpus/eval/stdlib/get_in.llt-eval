@@ -1,4 +1,4 @@
 # get-in: traverse nested dicts by a list of keys
-[call $get-in [a: [b: [c: 42]]] [a b c]]
+[get-in [a: [b: [c: 42]]] ["a" "b" "c"]]
 ===
 Int(42)

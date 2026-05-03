@@ -819,37 +819,37 @@ mod tests {
     #[test]
     fn test_pipeline_stdin_json_injection() {
         let input_json = serde_json::json!({"name": "Alice", "age": 30});
-        let result = eval_to_json_with_input("[greeting: $$.name]", Some(input_json));
+        let result = eval_to_json_with_input("[greeting: %.name]", Some(input_json));
         assert_eq!(result, serde_json::json!({"greeting": "Alice"}));
     }
 
     #[test]
     fn test_pipeline_stdin_json_array() {
         let input_json = serde_json::json!([1, 2, 3]);
-        let result = eval_to_json_with_input("[first: $$[0]]", Some(input_json));
+        let result = eval_to_json_with_input("[first: %[0]]", Some(input_json));
         assert_eq!(result, serde_json::json!({"first": 1}));
     }
 
     #[test]
     fn test_pipeline_stdin_json_passthrough() {
-        // When $$ is the whole output, it should pass through
+        // When % is the whole output, it should pass through
         let input_json = serde_json::json!({"x": 42});
-        let result = eval_to_json_with_input("$$", Some(input_json));
+        let result = eval_to_json_with_input("%", Some(input_json));
         assert_eq!(result, serde_json::json!({"x": 42}));
     }
 
     #[test]
     fn test_pipeline_no_stdin_default_empty_dict() {
-        // Without stdin input, $$ defaults to empty dict
-        let result = eval_to_json("$$");
+        // Without stdin input, % defaults to empty dict
+        let result = eval_to_json("%");
         assert_eq!(result, serde_json::json!({}));
     }
 
     #[test]
     fn test_pipeline_multi_document_with_stdin() {
-        // stdin -> doc1 -> $$ -> doc2
+        // stdin -> doc1 -> % -> doc2
         let input_json = serde_json::json!({"val": 10});
-        let source = "[result: $$.val]\n---\n[wrapped: $$.result]";
+        let source = "[result: %.val]\n---\n[wrapped: %.result]";
         let result = eval_to_json_with_input(source, Some(input_json));
         assert_eq!(result, serde_json::json!({"wrapped": 10}));
     }

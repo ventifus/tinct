@@ -1,4 +1,4 @@
 # join: join list elements into a string with separator
-[call $join ", " [hello world]]
+[join ", " ["hello" "world"]]
 ===
 String("hello, world")

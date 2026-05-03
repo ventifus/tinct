@@ -21,7 +21,9 @@ pub fn hover_at(doc: &DocumentState, offset: usize) -> Option<String> {
     // Walk the AST to find the node containing the offset.
     for document in &file.node.documents {
         for expr in &document.node.expressions {
-            if let Some(text) = hover_at_expr(&expr.node, expr.span, offset, &doc.type_map) {
+            if let Some(text) =
+                hover_at_expr(&expr.node, expr.span, offset, &doc.type_map, &doc.text)
+            {
                 return Some(text);
             }
         }
@@ -41,13 +43,35 @@ fn type_suffix(span: Span, type_map: &TypeMap) -> String {
 }
 
 /// Recursively search an expression tree for the node at the given offset.
-fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> Option<String> {
+fn hover_at_expr(
+    expr: &Expr,
+    span: Span,
+    offset: usize,
+    type_map: &TypeMap,
+    source: &str,
+) -> Option<String> {
     if !span_contains(span, offset) {
         return None;
     }
 
     match expr {
-        Expr::VarRef(name) => Some(format!("Variable: ${name}{}", type_suffix(span, type_map))),
+        Expr::VarRef(name) => {
+            // Source-sniff: emit `$name` for EscapedRef tokens (first byte is `$`),
+            // plain name for bare identifiers and `%`-prefixed refs (% is in name).
+            let is_escaped = source
+                .as_bytes()
+                .get(span.start.offset)
+                .map_or(false, |&b| b == b'$');
+            let display = if is_escaped {
+                format!("${name}")
+            } else {
+                name.clone()
+            };
+            Some(format!(
+                "Variable: {display}{}",
+                type_suffix(span, type_map)
+            ))
+        }
         Expr::Int(n) => Some(format!("Int literal: {n}{}", type_suffix(span, type_map))),
         Expr::Float(f) => Some(format!("Float literal: {f}{}", type_suffix(span, type_map))),
         Expr::Bool(b) => Some(format!("Bool literal: {b}{}", type_suffix(span, type_map))),
@@ -61,7 +85,7 @@ fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> 
             field,
         } => {
             // Check if hover is on the field name (assumes field starts after dot).
-            hover_at_expr(&target.node, target.span, offset, type_map).or_else(|| {
+            hover_at_expr(&target.node, target.span, offset, type_map, source).or_else(|| {
                 Some(format!(
                     "Field access: .{field}{}",
                     type_suffix(span, type_map)
@@ -70,29 +94,30 @@ fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> 
         }
 
         Expr::BracketAccess { expr: target, key } => {
-            hover_at_expr(&target.node, target.span, offset, type_map)
-                .or_else(|| hover_at_expr(&key.node, key.span, offset, type_map))
+            hover_at_expr(&target.node, target.span, offset, type_map, source)
+                .or_else(|| hover_at_expr(&key.node, key.span, offset, type_map, source))
         }
 
         Expr::RangeAccess {
             expr: target,
             start,
             end,
-        } => hover_at_expr(&target.node, target.span, offset, type_map)
+        } => hover_at_expr(&target.node, target.span, offset, type_map, source)
             .or_else(|| {
                 start
                     .as_ref()
-                    .and_then(|s| hover_at_expr(&s.node, s.span, offset, type_map))
+                    .and_then(|s| hover_at_expr(&s.node, s.span, offset, type_map, source))
             })
             .or_else(|| {
                 end.as_ref()
-                    .and_then(|e| hover_at_expr(&e.node, e.span, offset, type_map))
+                    .and_then(|e| hover_at_expr(&e.node, e.span, offset, type_map, source))
             }),
 
         Expr::Dict(entries) => {
             for entry in entries {
                 if let Some(ref key) = entry.node.key {
-                    if let Some(text) = hover_at_expr(&key.node, key.span, offset, type_map) {
+                    if let Some(text) = hover_at_expr(&key.node, key.span, offset, type_map, source)
+                    {
                         return Some(text);
                     }
                 }
@@ -101,6 +126,7 @@ fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> 
                     entry.node.value.span,
                     offset,
                     type_map,
+                    source,
                 ) {
                     return Some(text);
                 }
@@ -112,14 +138,21 @@ fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> 
             func,
             args,
             named_args,
-        } => hover_at_expr(&func.node, func.span, offset, type_map)
+            implied: _,
+        } => hover_at_expr(&func.node, func.span, offset, type_map, source)
             .or_else(|| {
                 args.iter()
-                    .find_map(|a| hover_at_expr(&a.node, a.span, offset, type_map))
+                    .find_map(|a| hover_at_expr(&a.node, a.span, offset, type_map, source))
             })
             .or_else(|| {
                 named_args.iter().find_map(|na| {
-                    hover_at_expr(&na.node.value.node, na.node.value.span, offset, type_map)
+                    hover_at_expr(
+                        &na.node.value.node,
+                        na.node.value.span,
+                        offset,
+                        type_map,
+                        source,
+                    )
                 })
             }),
 
@@ -130,10 +163,10 @@ fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> 
                     return Some(format!("Parameter: {}", param.node.name));
                 }
             }
-            hover_at_expr(&body.node, body.span, offset, type_map)
+            hover_at_expr(&body.node, body.span, offset, type_map, source)
         }
 
-        Expr::TypeAlias(inner) => hover_at_expr(&inner.node, inner.span, offset, type_map),
+        Expr::TypeAlias(inner) => hover_at_expr(&inner.node, inner.span, offset, type_map, source),
 
         Expr::TypeAssert {
             expr: inner,
@@ -141,7 +174,7 @@ fn hover_at_expr(expr: &Expr, span: Span, offset: usize, type_map: &TypeMap) -> 
             ..
         } => {
             // Check inner expression first, then fall back to annotation text.
-            hover_at_expr(&inner.node, inner.span, offset, type_map).or_else(|| {
+            hover_at_expr(&inner.node, inner.span, offset, type_map, source).or_else(|| {
                 Some(format!(
                     "Type assertion: @{}{}",
                     annotation.node,

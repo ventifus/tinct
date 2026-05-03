@@ -82,6 +82,7 @@ fn try_wrap(expr: &mut Spanned<Expr>) -> bool {
             func: _,
             args,
             named_args,
+            implied: _,
         } => {
             // Func position excluded from WRAP check
             let has_direct_arg = args.iter().any(|a| is_direct_underscore(&a.node))
@@ -235,6 +236,7 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             func,
             args,
             named_args,
+            implied: _,
         } => {
             desugar(func, depth);
             for arg in args {
@@ -429,6 +431,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
             named_args: vec![],
+            implied: false,
         });
 
         desugar_expr(&mut expr, 0);
@@ -458,6 +461,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("_".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
 
         desugar_expr(&mut expr, 0);
@@ -486,6 +490,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
                 args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
                 named_args: vec![],
+                implied: false,
             })),
             desugared: false,
         });
@@ -716,6 +721,7 @@ mod tests {
                 name: "x".into(),
                 value: Rc::new(sp(Expr::VarRef("_".into()))),
             })],
+            implied: false,
         });
 
         desugar_expr(&mut expr, 0);
@@ -730,6 +736,7 @@ mod tests {
                         func,
                         args,
                         named_args,
+                        ..
                     } => {
                         assert!(matches!(func.node, Expr::VarRef(ref name) if name == "f"));
                         assert_eq!(args.len(), 0);
@@ -764,10 +771,12 @@ mod tests {
                         Rc::new(sp(Expr::Int(30))),
                     ],
                     named_args: vec![],
+                    implied: false,
                 })),
                 Rc::new(sp(Expr::VarRef("users".into()))),
             ],
             named_args: vec![],
+            implied: false,
         });
 
         desugar_expr(&mut expr, 0);
@@ -834,6 +843,7 @@ mod tests {
                         func: Box::new(sp(Expr::VarRef("f".into()))),
                         args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
                         named_args: vec![],
+                        implied: false,
                     })),
                     Rc::new(sp(Expr::Dict(vec![sp(Entry {
                         key: Some(sp(Expr::Str("x".into()))),
@@ -875,6 +885,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
             named_args: vec![],
+            implied: false,
         });
         desugar_expr(&mut desugared_expr, 0);
         match &desugared_expr.node {
@@ -926,6 +937,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
                 args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
                 named_args: vec![],
+                implied: false,
             })),
             desugared: false,
         });
@@ -971,6 +983,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("_".into()))),
             args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
             named_args: vec![],
+            implied: false,
         });
 
         desugar_expr(&mut expr, 0);
@@ -1013,6 +1026,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
                 args: vec![Rc::new(sp(Expr::VarRef("_".into())))], // $_ in arg position
                 named_args: vec![],
+                implied: false,
             })),
             desugared: false,
         });
@@ -1085,6 +1099,7 @@ mod tests {
                     func: Box::new(sp(Expr::VarRef("f".into()))),
                     args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
                     named_args: vec![],
+                    implied: false,
                 })),
             }),
         ]));

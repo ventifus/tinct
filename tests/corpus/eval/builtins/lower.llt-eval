@@ -1,4 +1,4 @@
 # lower : convert string to lowercase
-[call $lower "HELLO"]
+[lower "HELLO"]
 ===
 String("hello")

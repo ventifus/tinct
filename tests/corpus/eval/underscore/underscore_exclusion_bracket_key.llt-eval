@@ -3,6 +3,6 @@
 # Wrap in explicit function to provide $_ as bound variable
 [data: [name: "Alice" age: 30]]
 
-[call [fn [_] $data[$_]] "name"]
+[call [fn [_] data[_]] "name"]
 ===
 String("Alice")

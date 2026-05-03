@@ -1,5 +1,5 @@
 # Lazy evaluation: $or short-circuits when first argument is true
 # If $or were eager, the $error would fire. Since it's lazy, true is returned.
-[call $or true [call $error "should not evaluate"]]
+[or true [error "should not evaluate"]]
 ===
 Bool(true)

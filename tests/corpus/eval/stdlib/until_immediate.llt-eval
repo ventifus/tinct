@@ -1,4 +1,4 @@
 # until immediate (predicate already true)
-[call $until [fn [x] [call $>= $x 5]] [fn [x] [call $* $x 2]] 10]
+[until [fn [x] [>= x 5]] [fn [x] [* x 2]] 10]
 ===
 Int(10)

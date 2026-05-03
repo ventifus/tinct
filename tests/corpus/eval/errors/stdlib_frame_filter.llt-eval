@@ -1,4 +1,4 @@
-[result: [call $map [fn [x] [call $error "inner error"]] [a: 1]]]
-$result.a
+[result: [map [fn [x] [error "inner error"]] [a: 1]]]
+result.a
 ===
 [E080] inner error

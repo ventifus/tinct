@@ -1,4 +1,4 @@
 # join on empty dict returns empty string
-[call $join ", " []]
+[join ", " []]
 ===
 String("")

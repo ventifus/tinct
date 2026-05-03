@@ -1,4 +1,4 @@
 # tail: error on non-Seq
-[call $tail 42]
+[tail 42]
 ===
 [E010] tail: expected Seq, got Int

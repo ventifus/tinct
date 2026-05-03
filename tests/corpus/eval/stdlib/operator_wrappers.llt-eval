@@ -3,27 +3,27 @@
 # Test that each wrapper produces the correct result when called directly.
 [
   # Comparison operators
-  lt-result: [call $< 1 2]
-  lt-false: [call $< 5 3]
-  eq-result: [call $= hello hello]
-  eq-false: [call $= foo bar]
+  lt-result: [< 1 2]
+  lt-false: [< 5 3]
+  eq-result: [= "hello" "hello"]
+  eq-false: [= "foo" "bar"]
 
   # Arithmetic operators
-  add-result: [call $+ 2 3]
-  sub-result: [call $- 10 3]
-  mul-result: [call $* 3 4]
-  div-result: [call $/ 15 3]
+  add-result: [+ 2 3]
+  sub-result: [- 10 3]
+  mul-result: [* 3 4]
+  div-result: [/ 15 3]
 
   # Control flow
-  if-true: [call $if true yes no]
-  if-false: [call $if false yes no]
+  if-true: [if true "yes" "no"]
+  if-false: [if false "yes" "no"]
 
   # Higher-order collection functions
-  filter-result: [call $collect [call $filter [fn [x] [call $< $x 3]] [call $seq 1 [call $seq 2 [call $seq 3 [call $seq 4 []]]]]]]
-  map-result: [call $collect [call $map [fn [x] [call $* $x 2]] [call $seq 1 [call $seq 2 [call $seq 3 []]]]]]
-  reduce-result: [call $reduce [fn [acc x] [call $+ $acc $x]] 0 [call $seq 1 [call $seq 2 [call $seq 3 []]]]]
-  take-result: [call $collect [call $take 2 [call $seq 10 [call $seq 20 [call $seq 30 []]]]]]
-  drop-result: [call $collect [call $drop 1 [call $seq 10 [call $seq 20 [call $seq 30 []]]]]]
+  filter-result: [collect [filter [fn [x] [< x 3]] [seq 1 [seq 2 [seq 3 [seq 4 []]]]]]]
+  map-result: [collect [map [fn [x] [* x 2]] [seq 1 [seq 2 [seq 3 []]]]]]
+  reduce-result: [reduce [fn [acc x] [+ acc x]] 0 [seq 1 [seq 2 [seq 3 []]]]]
+  take-result: [collect [take 2 [seq 10 [seq 20 [seq 30 []]]]]]
+  drop-result: [collect [drop 1 [seq 10 [seq 20 [seq 30 []]]]]]
 ]
 ===
 Dict({"lt-result": Bool(true), "lt-false": Bool(false), "eq-result": Bool(true), "eq-false": Bool(false), "add-result": Int(5), "sub-result": Int(7), "mul-result": Int(12), "div-result": Float(5), "if-true": String("yes"), "if-false": String("no"), "filter-result": Dict({0: Int(1), 1: Int(2)}), "map-result": Dict({0: Int(2), 1: Int(4), 2: Int(6)}), "reduce-result": Int(6), "take-result": Dict({0: Int(10), 1: Int(20)}), "drop-result": Dict({0: Int(20), 1: Int(30)})})

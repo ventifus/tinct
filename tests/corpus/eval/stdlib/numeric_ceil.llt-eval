@@ -1,4 +1,4 @@
 # ceil: round up to nearest integer
-[call $ceil 2.3]
+[ceil 2.3]
 ===
 Int(3)

@@ -1,4 +1,4 @@
 # flatten on empty dict returns empty dict
-[call $flatten []]
+[flatten []]
 ===
 Dict({})

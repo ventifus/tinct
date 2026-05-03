@@ -28,7 +28,7 @@ impl Span {
     /// A synthetic span representing the origin of the source text (offset 0, line 1, column 1).
     ///
     /// Used for errors generated outside of any particular source location, such as
-    /// display depth limits and initial `$$` values.
+    /// display depth limits and initial `%` values.
     pub fn origin() -> Self {
         let pos = Position {
             offset: 0,
@@ -79,10 +79,11 @@ pub enum Expr {
     Float(f64),
     /// Boolean literal: `true` or `false`
     Bool(bool),
-    /// String literal (bare word or quoted), e.g. `hello` or `"hello"`
+    /// Quoted string literal, e.g. `"hello"`. Bare words are `VarRef` in new syntax.
     Str(String),
 
-    /// Variable reference, e.g. `$x` or `$$`
+    /// Variable reference. In new syntax, bare identifiers (`x`) and escaped refs (`$x`)
+    /// both produce `VarRef`. The `%` pipeline variable is stored as `VarRef("%")`.
     VarRef(String),
     /// Dot access on an expression, e.g. `$a.b`
     DotAccess {
@@ -104,11 +105,16 @@ pub enum Expr {
     /// Dict/list literal with keyed and/or auto-indexed entries
     Dict(Vec<Spanned<Entry>>),
 
-    /// Function application via `[call $f ...]`
+    /// Function application via `[call $f ...]` or `[f ...]`
+    ///
+    /// The `implied` flag preserves the author's choice for the formatter:
+    /// - `implied: true` → `[f x y]` (implied call)
+    /// - `implied: false` → `[call f x y]` (explicit call)
     Call {
         func: Box<Spanned<Expr>>,
         args: Vec<Rc<Spanned<Expr>>>,
         named_args: Vec<Spanned<NamedArg>>,
+        implied: bool,
     },
     /// Function definition via `[fn [params] body]`
     ///
@@ -236,7 +242,10 @@ impl fmt::Display for Expr {
             Expr::Float(n) => write!(f, "{n}"),
             Expr::Bool(b) => write!(f, "{b}"),
             Expr::Str(s) => write!(f, "{s:?}"),
-            Expr::VarRef(name) => write!(f, "${name}"),
+            // Emit name as-is. `%`-prefixed refs already include `%` in the name.
+            // Plain identifiers and (indistinguishable) EscapedRefs both display without `$` —
+            // Display is used for error messages, not source roundtripping.
+            Expr::VarRef(name) => write!(f, "{name}"),
             Expr::DotAccess { expr, field } => write!(f, "{}.{field}", expr.node),
             Expr::BracketAccess { expr, key } => write!(f, "{}[{}]", expr.node, key.node),
             Expr::RangeAccess { expr, start, end } => {
@@ -268,8 +277,13 @@ impl fmt::Display for Expr {
                 func,
                 args,
                 named_args,
+                implied,
             } => {
-                write!(f, "[call {}", func.node)?;
+                if *implied {
+                    write!(f, "[{}", func.node)?;
+                } else {
+                    write!(f, "[call {}", func.node)?;
+                }
                 for arg in args {
                     write!(f, " {}", arg.node)?;
                 }
@@ -363,7 +377,7 @@ mod tests {
             start: Some(Box::new(sp(Expr::Int(1)))),
             end: Some(Box::new(sp(Expr::Int(5)))),
         };
-        assert_eq!(format!("{expr}"), "$list[1..5]");
+        assert_eq!(format!("{expr}"), "list[1..5]");
     }
 
     #[test]
@@ -373,7 +387,7 @@ mod tests {
             start: Some(Box::new(sp(Expr::Int(2)))),
             end: None,
         };
-        assert_eq!(format!("{expr}"), "$list[2..]");
+        assert_eq!(format!("{expr}"), "list[2..]");
     }
 
     #[test]
@@ -383,7 +397,7 @@ mod tests {
             start: None,
             end: Some(Box::new(sp(Expr::Int(10)))),
         };
-        assert_eq!(format!("{expr}"), "$list[..10]");
+        assert_eq!(format!("{expr}"), "list[..10]");
     }
 
     #[test]
@@ -393,7 +407,7 @@ mod tests {
             start: None,
             end: None,
         };
-        assert_eq!(format!("{expr}"), "$list[..]");
+        assert_eq!(format!("{expr}"), "list[..]");
     }
 
     #[test]
@@ -425,10 +439,7 @@ mod tests {
             expr: Box::new(sp(Expr::VarRef("x".into()))),
             resolved_type: RefCell::new(None),
         };
-        assert_eq!(
-            format!("{expr}"),
-            "[@[\"type\": \"Number\"  \"min\": 0] $x]"
-        );
+        assert_eq!(format!("{expr}"), "[@[\"type\": \"Number\"  \"min\": 0] x]");
     }
 
     #[test]
@@ -450,7 +461,7 @@ mod tests {
             name: "port".into(),
             annotation: sp(Annotation::PropertyDict(entries)),
         };
-        assert_eq!(format!("{expr}"), "port@[$required: true]");
+        assert_eq!(format!("{expr}"), "port@[required: true]");
     }
 
     #[test]
@@ -459,8 +470,9 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![],
             named_args: vec![],
+            implied: false,
         };
-        assert_eq!(format!("{expr}"), "[call $f]");
+        assert_eq!(format!("{expr}"), "[call f]");
     }
 
     #[test]
@@ -469,8 +481,9 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("add".into()))),
             args: vec![Rc::new(sp(Expr::Int(1))), Rc::new(sp(Expr::Int(2)))],
             named_args: vec![],
+            implied: false,
         };
-        assert_eq!(format!("{expr}"), "[call $add 1 2]");
+        assert_eq!(format!("{expr}"), "[call add 1 2]");
     }
 
     #[test]
@@ -482,8 +495,9 @@ mod tests {
                 name: "port".into(),
                 value: Rc::new(sp(Expr::Int(8080))),
             })],
+            implied: false,
         };
-        assert_eq!(format!("{expr}"), "[call $config port: 8080]");
+        assert_eq!(format!("{expr}"), "[call config port: 8080]");
     }
 
     #[test]
@@ -495,8 +509,9 @@ mod tests {
                 name: "replicas".into(),
                 value: Rc::new(sp(Expr::Int(3))),
             })],
+            implied: false,
         };
-        assert_eq!(format!("{expr}"), "[call $deploy \"prod\" replicas: 3]");
+        assert_eq!(format!("{expr}"), "[call deploy \"prod\" replicas: 3]");
     }
 
     #[test]
@@ -529,7 +544,7 @@ mod tests {
             body: Rc::new(sp(Expr::VarRef("x".into()))),
             desugared: false,
         };
-        assert_eq!(format!("{expr}"), "[fn [x y] $x]");
+        assert_eq!(format!("{expr}"), "[fn [x y] x]");
     }
 
     #[test]
@@ -555,7 +570,7 @@ mod tests {
             body: Rc::new(sp(Expr::VarRef("x".into()))),
             desugared: false,
         };
-        assert_eq!(format!("{expr}"), "[fn [x@Int] $x]");
+        assert_eq!(format!("{expr}"), "[fn [x@Int] x]");
     }
 
     #[test]
@@ -570,7 +585,7 @@ mod tests {
             body: Rc::new(sp(Expr::VarRef("args".into()))),
             desugared: false,
         };
-        assert_eq!(format!("{expr}"), "[fn [...args] $args]");
+        assert_eq!(format!("{expr}"), "[fn [...args] args]");
     }
 
     #[test]
@@ -591,7 +606,7 @@ mod tests {
                 value: Rc::new(sp(Expr::Int(2))),
             }),
         ]);
-        assert_eq!(format!("{expr}"), "[$a: 1  $b: 2]");
+        assert_eq!(format!("{expr}"), "[a: 1  b: 2]");
     }
 
     #[test]
@@ -661,7 +676,7 @@ mod tests {
             output_type: None,
             expects: None,
         };
-        assert_eq!(format!("{doc}"), "$x\n10\ntrue");
+        assert_eq!(format!("{doc}"), "x\n10\ntrue");
     }
 
     #[test]

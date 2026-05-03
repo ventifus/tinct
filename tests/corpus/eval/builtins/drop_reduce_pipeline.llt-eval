@@ -1,4 +1,4 @@
 # pipeline: drop first 2, then reduce remaining
-[call $reduce [fn [acc x] [call $+ $acc $x]] 0 [call $collect [call $drop 2 [call $range 0 5]]]]
+[reduce [fn [acc x] [+ acc x]] 0 [collect [drop 2 [range 0 5]]]]
 ===
 Int(9)

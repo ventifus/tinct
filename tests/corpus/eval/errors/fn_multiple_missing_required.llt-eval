@@ -1,5 +1,5 @@
 # E024: calling a 3-param function with 0 args produces MissingRequiredParam.
 # Error is reported for the first uncovered required parameter (a).
-[call [fn [a b c] $a]]
+[[fn [a b c] a]]
 ===
 [E024] missing argument for required parameter 'a'

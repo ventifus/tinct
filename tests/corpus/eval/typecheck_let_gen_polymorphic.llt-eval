@@ -3,8 +3,8 @@
 # It is used at Int (42) and String ("hello")
 # Without let-generalization, this would fail type checking (but eval still succeeds since types are advisory)
 # With let-generalization, this type-checks cleanly
-[id: [fn [x@a] $x]
- int_result: [call $id 42]
- str_result: [call $id hello]]
+[id: [fn [x@a] x]
+ int_result: [id 42]
+ str_result: [id "hello"]]
 ===
 Dict({"id": Function(x), "int_result": Int(42), "str_result": String("hello")})

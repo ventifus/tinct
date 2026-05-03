@@ -1,4 +1,4 @@
 # from-entries: accepts Seq input via $reduce dual-dispatch
-[call $from-entries [call $map [fn [x] [key: $x value: [call $builtin-mul $x $x]]] [call $range 0 3]]]
+[from-entries [map [fn [x] [key: x value: [builtin-mul x x]]] [range 0 3]]]
 ===
 Dict({0: Int(0), 1: Int(1), 2: Int(4)})

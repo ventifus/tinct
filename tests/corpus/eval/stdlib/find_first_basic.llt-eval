@@ -1,4 +1,4 @@
 # find-first: return first element matching pred
-[call $find-first [fn [x] [call $> $x 3]] [1 2 3 4 5]]
+[find-first [fn [x] [> x 3]] [1 2 3 4 5]]
 ===
 Int(4)

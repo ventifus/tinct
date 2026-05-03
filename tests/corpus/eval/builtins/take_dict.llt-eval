@@ -1,4 +1,4 @@
 # take on Dict: returns first n entries preserving original keys
-[call $take 2 [a: 10 b: 20 c: 30]]
+[take 2 [a: 10 b: 20 c: 30]]
 ===
 Dict({"a": Int(10), "b": Int(20)})

@@ -1,4 +1,4 @@
 # type-of : returns the type name of a value
-[call $type-of 42]
+[type-of 42]
 ===
 String("Int")

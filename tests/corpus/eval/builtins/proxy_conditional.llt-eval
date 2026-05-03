@@ -1,9 +1,9 @@
 # proxy : handler returns different values based on field name
 [
-  handler: [fn [name] [call $if [call $= $name "x"] 10 20]]
-  p: [call $proxy $handler]
-  a: $p.x
-  b: $p.y
+  handler: [fn [name] [if [= name "x"] 10 20]]
+  p: [proxy handler]
+  a: p.x
+  b: p.y
 ]
 ===
 Dict({"handler": Function(name), "p": Proxy, "a": Int(10), "b": Int(20)})

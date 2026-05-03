@@ -1,4 +1,4 @@
 # get-in-or: returns value when path exists
-[call $get-in-or [a: [b: [c: 42]]] [a b c] 0]
+[get-in-or [a: [b: [c: 42]]] ["a" "b" "c"] 0]
 ===
 Int(42)

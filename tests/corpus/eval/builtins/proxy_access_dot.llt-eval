@@ -1,9 +1,9 @@
 # proxy : dot access passes String key to handler
 # Verifies that $p.fieldname calls handler with Value::String("fieldname")
 [
-  handler: [fn [key] [call $type-of $key]]
-  p: [call $proxy $handler]
-  result: $p.myfield
+  handler: [fn [key] [type-of key]]
+  p: [proxy handler]
+  result: p.myfield
 ]
 ===
 Dict({"handler": Function(key), "p": Proxy, "result": String("String")})
