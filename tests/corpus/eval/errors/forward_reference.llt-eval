@@ -1,0 +1,6 @@
+# Test that referencing an undefined %name produces an error.
+# %undefined_section is not declared anywhere; accessing it in the
+# last (only) document forces materialisation → E002.
+%undefined_section.x
+===
+[E002] undefined variable: %undefined_section

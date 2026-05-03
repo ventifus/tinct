@@ -1,4 +1,4 @@
 # "fn:" is a dict key, not a function definition
 [fn: hello]
 ===
-Dict({"fn": Str("hello")})
+Dict({"fn": String("hello")})

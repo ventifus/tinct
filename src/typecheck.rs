@@ -34,10 +34,32 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     let mut errors = Vec::new();
     let mut env = Rc::new(TypeEnv::with_builtins());
     let mut state = InferState::new();
+    let mut named_types: HashMap<String, Type> = HashMap::new();
+    let mut pipeline_type = Type::Record(Row {
+        fields: HashMap::new(),
+        tail: RowTail::Empty,
+    });
 
     for doc in &file.documents {
-        match typecheck_document(doc, &env, &mut state, &mut None) {
-            Ok(new_env) => env = new_env,
+        match typecheck_document(
+            doc,
+            &env,
+            &mut state,
+            &mut None,
+            &pipeline_type,
+            &named_types,
+        ) {
+            Ok((new_env, doc_output_type, mut advisory)) => {
+                env = new_env;
+                // Report advisory errors (expects:/output_type) without blocking propagation.
+                errors.append(&mut advisory);
+                // Store named section type if this document has a name
+                if let Some(ref name) = doc.node.name {
+                    named_types.insert(name.clone(), doc_output_type.clone());
+                }
+                // Update pipeline type for next document
+                pipeline_type = doc_output_type;
+            }
             Err(mut doc_errors) => errors.append(&mut doc_errors),
         }
     }
@@ -178,10 +200,32 @@ pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
     let mut env = Rc::new(TypeEnv::with_builtins());
     let mut state = InferState::new();
     let mut type_map = TypeMap::new();
+    let mut named_types: HashMap<String, Type> = HashMap::new();
+    let mut pipeline_type = Type::Record(Row {
+        fields: HashMap::new(),
+        tail: RowTail::Empty,
+    });
 
     for doc in &file.documents {
-        match typecheck_document(doc, &env, &mut state, &mut Some(&mut type_map)) {
-            Ok(new_env) => env = new_env,
+        match typecheck_document(
+            doc,
+            &env,
+            &mut state,
+            &mut Some(&mut type_map),
+            &pipeline_type,
+            &named_types,
+        ) {
+            Ok((new_env, doc_output_type, mut advisory)) => {
+                env = new_env;
+                // Report advisory errors (expects:/output_type) without blocking propagation.
+                errors.append(&mut advisory);
+                // Store named section type if this document has a name
+                if let Some(ref name) = doc.node.name {
+                    named_types.insert(name.clone(), doc_output_type.clone());
+                }
+                // Update pipeline type for next document
+                pipeline_type = doc_output_type;
+            }
             Err(mut doc_errors) => errors.append(&mut doc_errors),
         }
     }
@@ -189,14 +233,97 @@ pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
     (errors, type_map)
 }
 
-fn typecheck_document(
+/// Helper for tests that don't need pipeline/named types.
+/// Advisory errors (expects:/output_type) are promoted to fatal in this helper so that
+/// test assertions written as `.expect("typecheck should succeed")` still catch them.
+#[cfg(test)]
+fn typecheck_document_simple(
     doc: &Spanned<Document>,
     parent_env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Rc<TypeEnv>, Vec<TypeError>> {
+    let empty_record = Type::Record(Row {
+        fields: HashMap::new(),
+        tail: RowTail::Empty,
+    });
+    let named_types = HashMap::new();
+    typecheck_document(
+        doc,
+        parent_env,
+        state,
+        type_map,
+        &empty_record,
+        &named_types,
+    )
+    .and_then(|(env, _ty, advisory)| {
+        if advisory.is_empty() {
+            Ok(env)
+        } else {
+            Err(advisory)
+        }
+    })
+}
+
+/// `expects:` and `output_type` annotation errors are advisory — they are returned inside the
+/// `Ok` tuple so callers can propagate pipeline types even when an annotation check fails.
+/// Fatal body errors (inference failures, undefined variables, etc.) are returned as `Err`.
+fn typecheck_document(
+    doc: &Spanned<Document>,
+    parent_env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+    pipeline_type: &Type,
+    named_types: &HashMap<String, Type>,
+) -> Result<(Rc<TypeEnv>, Type, Vec<TypeError>), Vec<TypeError>> {
     let mut errors = Vec::new();
-    let mut env = Rc::new(TypeEnv::with_parent(parent_env));
+    // Advisory errors from `expects:` and `output_type` annotations. These do not block
+    // pipeline-type propagation — they are returned in the Ok tuple so callers can continue
+    // threading types across --- boundaries even when an annotation contract is violated.
+    let mut advisory_errors: Vec<TypeError> = Vec::new();
+
+    // Create environment with % and %name bindings
+    let mut env = TypeEnv::with_parent(parent_env);
+
+    // Bind % (pipeline variable) with the incoming type
+    env.insert("%".to_string(), pipeline_type.clone());
+    // Also bind $ for backward compatibility
+    env.insert("$".to_string(), pipeline_type.clone());
+
+    // Bind all named sections as %name
+    for (name, ty) in named_types {
+        env.insert(format!("%{}", name), ty.clone());
+    }
+
+    let mut env = Rc::new(env);
+
+    // Validate expects annotation if present.
+    // `expects:` is advisory: errors go into advisory_errors, not errors, so a contract
+    // violation does not block pipeline-type propagation for subsequent documents.
+    if let Some(ref expects_ann) = doc.node.expects {
+        match resolve_annotation(
+            &expects_ann.node,
+            &env,
+            expects_ann.span,
+            state,
+            &mut None,
+            &mut None,
+        ) {
+            Ok(expected_type) => {
+                if !Type::is_subtype(pipeline_type, &expected_type) {
+                    advisory_errors.push(TypeError::new(
+                        format!(
+                            "Pipeline input type {} does not satisfy expects contract {}",
+                            pipeline_type, expected_type
+                        ),
+                        expects_ann.span,
+                    ));
+                }
+            }
+            Err(e) => advisory_errors.push(e),
+        }
+    }
+
     let mut result_type = Type::Record(Row {
         fields: HashMap::new(),
         tail: RowTail::Empty,
@@ -204,15 +331,43 @@ fn typecheck_document(
 
     let exprs = &doc.node.expressions;
     if exprs.is_empty() {
+        // Validate output annotation even for empty document.
+        // output_type annotation mismatches are advisory; they do not block Ok.
+        if let Some(ref output_ann) = doc.node.output_type {
+            match resolve_annotation(
+                &output_ann.node,
+                &env,
+                output_ann.span,
+                state,
+                &mut None,
+                &mut None,
+            ) {
+                Ok(expected_output) => {
+                    if !Type::is_subtype(&result_type, &expected_output) {
+                        advisory_errors.push(TypeError::new(
+                            format!(
+                                "Document output type {} does not match annotation {}",
+                                result_type, expected_output
+                            ),
+                            output_ann.span,
+                        ));
+                    }
+                }
+                Err(e) => advisory_errors.push(e),
+            }
+        }
+
         let mut result_env = TypeEnv::with_parent(&env);
-        result_env.insert(
-            "$".to_string(),
-            Type::Record(Row {
-                fields: HashMap::new(),
-                tail: RowTail::Empty,
-            }),
-        );
-        return Ok(Rc::new(result_env));
+        result_env.insert("$".to_string(), result_type.clone());
+        result_env.insert("%".to_string(), result_type.clone());
+
+        // Body is empty (no fatal errors possible), always return Ok.
+        // advisory_errors (expects:/output_type) are included in Ok for the caller to report.
+        if errors.is_empty() {
+            return Ok((Rc::new(result_env), result_type, advisory_errors));
+        } else {
+            return Err(errors);
+        }
     }
 
     let mut last_dict_schemes: Option<HashMap<String, TypeScheme>> = None;
@@ -366,11 +521,42 @@ fn typecheck_document(
         let _ = register_type_aliases(expr, &mut result_env, &env, state);
     }
 
-    result_env.insert("$".to_string(), result_type);
+    // Validate output annotation if present.
+    // output_type annotation mismatches are advisory; they do not block Ok.
+    if let Some(ref output_ann) = doc.node.output_type {
+        match resolve_annotation(
+            &output_ann.node,
+            &env,
+            output_ann.span,
+            state,
+            &mut None,
+            &mut None,
+        ) {
+            Ok(expected_output) => {
+                if !Type::is_subtype(&result_type, &expected_output) {
+                    advisory_errors.push(TypeError::new(
+                        format!(
+                            "Document output type {} does not match annotation {}",
+                            result_type, expected_output
+                        ),
+                        output_ann.span,
+                    ));
+                }
+            }
+            Err(e) => advisory_errors.push(e),
+        }
+    }
+
+    result_env.insert("$".to_string(), result_type.clone());
+    result_env.insert("%".to_string(), result_type.clone());
 
     if errors.is_empty() {
-        Ok(Rc::new(result_env))
+        // No fatal body errors: return Ok with advisory_errors so caller can report them
+        // without blocking pipeline-type propagation.
+        Ok((Rc::new(result_env), result_type, advisory_errors))
     } else {
+        // Fatal body errors: still append advisory errors so all errors are reported together.
+        errors.append(&mut advisory_errors);
         Err(errors)
     }
 }
@@ -2525,7 +2711,7 @@ mod tests {
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
-        typecheck_document(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
+        typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
     }
 
     fn result_type(input: &str) -> Type {
@@ -2545,8 +2731,32 @@ mod tests {
         crate::desugar::desugar_file(&mut file.node);
         let mut env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
+        let mut named_types: HashMap<String, Type> = HashMap::new();
+        let mut pipeline_type = Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::Empty,
+        });
         for doc in &file.node.documents {
-            env = typecheck_document(doc, &env, &mut state, &mut None).unwrap();
+            match typecheck_document(
+                doc,
+                &env,
+                &mut state,
+                &mut None,
+                &pipeline_type,
+                &named_types,
+            ) {
+                Ok((new_env, doc_output_type, advisory)) => {
+                    if !advisory.is_empty() {
+                        panic!("file_env: advisory typecheck error: {:?}", advisory);
+                    }
+                    if let Some(ref name) = doc.node.name {
+                        named_types.insert(name.clone(), doc_output_type.clone());
+                    }
+                    pipeline_type = doc_output_type;
+                    env = new_env;
+                }
+                Err(errs) => panic!("file_env: typecheck error: {:?}", errs),
+            }
         }
         env
     }
@@ -2827,7 +3037,8 @@ mod tests {
 
         // Typecheck the document
         let doc_env =
-            typecheck_document(&file.node.documents[0], &env, &mut state, &mut None).unwrap();
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
+                .unwrap();
 
         // Get the type of 'result' — β, resolved by Pass 3b to StringLiteral("hello")
         let result_ty = match doc_env.get("result") {
@@ -3121,7 +3332,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, vec![Type::Any]);
                 assert_eq!(*ret, Type::IntLiteral(42));
@@ -3137,7 +3348,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, vec![Type::Number]);
                 assert_eq!(*ret, Type::Number);
@@ -3241,8 +3452,9 @@ mod tests {
 
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
-        let new_env = typecheck_document(&file.node.documents[0], &env, &mut state, &mut None)
-            .expect("typecheck should succeed");
+        let new_env =
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
+                .expect("typecheck should succeed");
 
         let result_ty = new_env
             .get("result")
@@ -3270,7 +3482,7 @@ mod tests {
 
         // Process both documents
         for doc in &file.node.documents {
-            env = typecheck_document(doc, &env, &mut state, &mut None)
+            env = typecheck_document_simple(doc, &env, &mut state, &mut None)
                 .expect("typecheck should succeed");
         }
 
@@ -3297,8 +3509,9 @@ mod tests {
 
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
-        let new_env = typecheck_document(&file.node.documents[0], &env, &mut state, &mut None)
-            .expect("typecheck should succeed");
+        let new_env =
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
+                .expect("typecheck should succeed");
 
         let result_ty = new_env
             .get("result")
@@ -3332,7 +3545,7 @@ mod tests {
 
         // Process both documents
         for doc in &file.node.documents {
-            env = typecheck_document(doc, &env, &mut state, &mut None)
+            env = typecheck_document_simple(doc, &env, &mut state, &mut None)
                 .expect("typecheck should succeed");
         }
 
@@ -3880,7 +4093,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 1);
                 match &params[0] {
@@ -3909,7 +4122,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 1);
                 match &params[0] {
@@ -3937,7 +4150,7 @@ mod tests {
             Some(Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             }) => {
                 assert_eq!(params, vec![Type::Int]);
                 assert_eq!(*ret, Type::Number);
@@ -3961,7 +4174,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 1);
                 // param type: Fn(Int -> Fn(Int -> Int))
@@ -4040,7 +4253,7 @@ mod tests {
             let mut env = Rc::new(TypeEnv::new());
             let mut state = InferState::new();
             for doc in &file.node.documents {
-                env = typecheck_document(doc, &env, &mut state, &mut None).unwrap();
+                env = typecheck_document_simple(doc, &env, &mut state, &mut None).unwrap();
             }
             env
         };
@@ -4083,7 +4296,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 1, "expected 1 param");
                 assert!(
@@ -4117,7 +4330,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 2, "expected 2 params");
                 assert!(
@@ -4153,7 +4366,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, vec![Type::Number, Type::Number]);
                 assert_eq!(*ret, Type::Number);
@@ -4174,7 +4387,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 1, "expected 1 param");
                 assert!(
@@ -4201,7 +4414,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 1, "outer should have 1 param");
                 assert!(
@@ -4267,7 +4480,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert!(params.is_empty());
                 assert_eq!(*ret, Type::Number);
@@ -4286,7 +4499,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, vec![Type::Number]);
                 assert_eq!(*ret, Type::Number);
@@ -4489,7 +4702,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 1, "Identity should have 1 param");
                 // The param and return must be the SAME TypeVar (both reference annotation `a`)
@@ -4518,7 +4731,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 2, "Mapper should have 2 params");
                 assert!(
@@ -4552,7 +4765,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, &vec![Type::Number, Type::Number]);
                 assert_eq!(**ret, Type::Number);
@@ -4571,7 +4784,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params.len(), 1, "Pred should have 1 param");
                 assert!(
@@ -4913,7 +5126,8 @@ mod tests {
         let mut state = InferState::new();
 
         let doc_env =
-            typecheck_document(&file.node.documents[0], &env, &mut state, &mut None).unwrap();
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
+                .unwrap();
 
         // Find the row variable ρ from the Open type alias
         let open_ty = match doc_env.get_type_alias("Open") {
@@ -5140,7 +5354,7 @@ mod tests {
                     Type::Function {
                         params,
                         ret,
-                        variadic,
+                        variadic: _,
                     } => {
                         // Params and return should involve type variables (from annotation @a)
                         assert!(
@@ -5350,7 +5564,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, &vec![Type::Int]);
                 assert_eq!(**ret, Type::Int);
@@ -5376,7 +5590,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 // When checking mode is skipped (has_inference_vars), params and ret stay as TypeVars.
                 // We can't check specific names (they're fresh), just that they're TypeVars.
@@ -5549,7 +5763,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 // Lambda checking mode propagates expected param type Int
                 assert_eq!(
@@ -5628,7 +5842,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, vec![Type::Int], "param from expected type");
                 assert_eq!(*ret, Type::Int, "return from expected type");
@@ -5677,7 +5891,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, vec![Type::Int], "param from expected type");
                 assert_eq!(*ret, Type::Int, "return from expected type");
@@ -5722,7 +5936,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, vec![Type::Int], "concrete param propagated");
                 assert_eq!(*ret, Type::Int, "concrete ret propagated");
@@ -5740,7 +5954,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert_eq!(params, vec![Type::Int], "param from expected type");
                 assert_eq!(*ret, Type::Int, "ret from expected type");
@@ -5815,7 +6029,7 @@ mod tests {
             Type::Function {
                 params,
                 ret,
-                variadic,
+                variadic: _,
             } => {
                 assert!(params.is_empty(), "zero-param fn should have no params");
                 assert_eq!(
@@ -6040,7 +6254,7 @@ mod tests {
                     Some(Type::Function {
                         params,
                         ret,
-                        variadic,
+                        variadic: _,
                     }) => {
                         // Param and return should unify to the same type variable
                         assert_eq!(
@@ -6795,14 +7009,14 @@ mod tests {
 
         // Process first document (should succeed)
         let doc1 = &file.node.documents[0];
-        env = typecheck_document(doc1, &env, &mut state, &mut None)
+        env = typecheck_document_simple(doc1, &env, &mut state, &mut None)
             .expect("first document should type-check");
 
         let level_after_doc1 = state.level;
 
         // Process second document (should fail with undefined variable)
         let doc2 = &file.node.documents[1];
-        let result = typecheck_document(doc2, &env, &mut state, &mut None);
+        let result = typecheck_document_simple(doc2, &env, &mut state, &mut None);
         assert!(result.is_err(), "second document should fail");
         assert!(
             result.unwrap_err()[0]
@@ -6819,7 +7033,7 @@ mod tests {
 
         // Process third document (should succeed, proving level was restored)
         let doc3 = &file.node.documents[2];
-        env = typecheck_document(doc3, &env, &mut state, &mut None)
+        env = typecheck_document_simple(doc3, &env, &mut state, &mut None)
             .expect("third document should type-check correctly after level restoration");
 
         // Verify the result has the correct type
@@ -7228,7 +7442,7 @@ mod tests {
         let mut type_map = TypeMap::new();
 
         // Process document 1 (defines `id`)
-        env = typecheck_document(
+        env = typecheck_document_simple(
             &file.node.documents[0],
             &env,
             &mut state,
@@ -7237,7 +7451,7 @@ mod tests {
         .expect("document 1 should type-check");
 
         // Process document 2 (calls `$id`)
-        env = typecheck_document(
+        env = typecheck_document_simple(
             &file.node.documents[1],
             &env,
             &mut state,
@@ -7547,8 +7761,9 @@ mod tests {
 
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
-        let new_env = typecheck_document(&file.node.documents[0], &env, &mut state, &mut None)
-            .expect("typecheck should succeed");
+        let new_env =
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
+                .expect("typecheck should succeed");
 
         // $seq should return Seq(Int) — all args are IntLiterals
         let seq_ty = new_env.get("seq_result").unwrap().body.clone();
@@ -7617,6 +7832,72 @@ mod tests {
         assert!(
             result.is_ok(),
             "append with simple records should type-check, got error: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    // -- % pipeline variable binding --
+
+    #[test]
+    fn test_pipeline_percent_binding() {
+        // Test that % is bound to the pipeline type in each document
+        let input = r#"
+[x: 1  y: 2]
+
+---
+
+[z: [+ %.x %.y]]
+        "#;
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let result = typecheck_file(&file.node);
+        assert!(
+            result.is_ok(),
+            "% pipeline binding should work, got error: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_pipeline_dollar_backward_compat() {
+        // Test that $$ still works for backward compatibility (pipeline variable)
+        let input = r#"
+[x: 1  y: 2]
+
+---
+
+[z: [+ $$.x $$.y]]
+        "#;
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let result = typecheck_file(&file.node);
+        assert!(
+            result.is_ok(),
+            "$$ pipeline binding should still work, got error: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_named_section_binding() {
+        // Test that named sections bind as %name
+        let input = r#"
+--- %data
+[x: 1  y: 2]
+
+---
+
+[z: [+ %data.x %data.y]]
+        "#;
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let result = typecheck_file(&file.node);
+        assert!(
+            result.is_ok(),
+            "named section binding should work, got error: {:?}",
             result.unwrap_err()
         );
     }

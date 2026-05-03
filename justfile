@@ -47,6 +47,12 @@ test:
     {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test cli_tests
 
+# Run all tests as root (use when target/ is owned by root, e.g. after just fmt)
+test-root:
+    {{container}} run {{run_flags}} {{rust_image}} cargo test --lib -- --test-threads=1
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
+    {{container}} run {{run_flags}} {{rust_image}} cargo test --test cli_tests
+
 # Run tests with output
 test-verbose:
     {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test -- --nocapture
@@ -61,11 +67,35 @@ test-lib:
 
 # Run only lib unit tests as root (use when target/ is owned by root)
 test-lib-root:
-    {{container}} run {{run_flags}} {{rust_image}} cargo test --lib
+    {{container}} run {{run_flags}} {{rust_image}} cargo test --lib -- --test-threads=1
 
 # Run only corpus tests
 test-corpus:
     {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests
+
+# Run only corpus tests as root (use when target/ is owned by root)
+test-corpus-root:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
+
+# Run only the eval_corpus test as root (for debugging)
+test-eval-corpus-root:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests test_eval_corpus -- --nocapture --test-threads=1
+
+# Run corpus tests excluding eval_error (which causes stack overflow) as root
+test-corpus-no-error-root:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1 --skip test_eval_error_corpus
+
+# Run only the valid_corpus test as root
+test-valid-corpus-root:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests test_valid_corpus -- --nocapture --test-threads=1
+
+# Run only the eval_error corpus test as root
+test-eval-error-corpus-root:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests test_eval_error_corpus -- --nocapture --test-threads=1
+
+# Run cli tests as root
+test-cli-root:
+    {{container}} run {{run_flags}} {{rust_image}} cargo test --test cli_tests
 
 # Run clippy (linter)
 lint:

@@ -417,17 +417,18 @@ file          = SOI ~ document ~ (section_header ~ document)* ~ EOI
 document      = expression*
 expression    = !section_header ~ value
 section_header = "---" ~ header_components? ~ NEWLINE
-header_components = section_name? ~ output_annotation? ~ expects_pragma?
-section_name  = "%" ~ ident_char+         // e.g., %config — bare % alone is a parse error
+header_components = header_component+
+header_component  = section_name | output_annotation | expects_pragma
+section_name      = "%" ~ ident_char+     // e.g., %config — bare % alone is a parse error
 output_annotation = "@" ~ annotation_value
-expects_pragma = "expects" ~ ":" ~ annotation_value
+expects_pragma    = "expects" ~ ":" ~ annotation_value
 ```
 
 **File:** The outermost unit. Contains documents separated by `---` section headers.
 
 **Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — data flows through pipeline bindings (`%` and `%name`), not the scope chain.
 
-**Section header:** The `---` line, optionally carrying a name (`--- %config`), output type annotation (`--- %config@Config`), and/or input contract (`--- expects: InputType`). All components are optional; a bare `---` is valid. A bare `%` with no identifier after it on the header line is a parse error.
+**Section header:** The `---` line, optionally carrying a name (`--- %config`), output type annotation (`--- %config@Config`), and/or input contract (`--- expects: InputType`). All components are optional; a bare `---` is valid. A bare `%` with no identifier after it on the header line is a parse error. The components may appear in any order — the parser does not enforce a fixed sequence. The conventional order is `%name@OutputType expects: InputType`, but `--- expects: T %name` is equally valid.
 
 **`doc_separator`:** Three hyphens `---` not followed by an `ident_char`. This prevents `----` or `---foo` from matching as a separator.
 

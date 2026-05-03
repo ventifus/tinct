@@ -87,7 +87,14 @@ fn key_to_string(expr: &Expr) -> Option<String> {
         Expr::Int(n) => Some(n.to_string()),
         Expr::Float(n) => Some(n.to_string()),
         Expr::Bool(b) => Some(b.to_string()),
-        Expr::VarRef(name) => Some(format!("${name}")),
+        Expr::VarRef(name) => {
+            if name.starts_with('%') {
+                // %foo-style VarRef keys keep the literal name (no $ prefix).
+                Some(name.clone())
+            } else {
+                Some(format!("${name}"))
+            }
+        }
         _ => None,
     }
 }
@@ -1083,6 +1090,14 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     // Track the span of the last significant token for trailing comment detection
     let mut last_significant_span: Option<Span> = None;
 
+    // Phase 1: Track next document's header components (parsed from --- line)
+    let mut next_doc_name: Option<String> = None;
+    // Span of the %name token that set next_doc_name; used to point errors at the name,
+    // not at the --- separator whose span is in the outer-loop `span` variable.
+    let mut next_doc_name_span: Option<Span> = None;
+    let mut next_doc_output_type: Option<Spanned<Annotation>> = None;
+    let mut next_doc_expects: Option<Spanned<Annotation>> = None;
+
     // Convert to index-based iteration for peeking
     let token_vec = tokens;
     let mut i = 0;
@@ -1861,6 +1876,23 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             };
                             let expr =
                                 Spanned::new(Expr::Annotated { name, annotation }, full_span);
+                            // If the annotated expression is immediately followed by ':', treat
+                            // it as a dict key candidate (e.g. [x@Number: 42]).
+                            // After parse_annotation, `i` points to the token right after the
+                            // annotation type, so check token_vec[i] directly (not +1).
+                            let next_is_colon =
+                                i < token_vec.len() && matches!(&token_vec[i].node, Token::Colon);
+                            if next_is_colon {
+                                if let Some(StackFrame::Dict {
+                                    ref mut pending_key,
+                                    ..
+                                }) = stack.last_mut()
+                                {
+                                    *pending_key = Some(expr);
+                                    last_significant_span = Some(full_span);
+                                    continue;
+                                }
+                            }
                             if let Err(push_err) =
                                 push_value(&mut stack, &mut current_document_expressions, expr)
                             {
@@ -1899,7 +1931,20 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     }
                 }
 
-                let expr = Spanned::new(Expr::Str(s.clone()), span);
+                // Phase 1: If bare word starts with %, produce VarRef instead of Str,
+                // UNLESS this bare word is in dict-key position (next token is ':' and
+                // stack top is a Dict frame).  In that case it must stay Expr::Str so
+                // the key evaluates to the literal string "%foo", not a variable lookup.
+                let is_dict_key_position =
+                    matches!(
+                        peek_next_significant(&token_vec, i),
+                        Some((Token::Colon, _))
+                    ) && matches!(stack.last(), Some(StackFrame::Dict { .. }));
+                let expr = if s.starts_with('%') && !is_dict_key_position {
+                    Spanned::new(Expr::VarRef(s.clone()), span)
+                } else {
+                    Spanned::new(Expr::Str(s.clone()), span)
+                };
                 // Check if this is a potential key (next token is colon)
                 if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
                     // This bare word is a key candidate
@@ -2060,7 +2105,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     });
                 }
 
-                // Finalize current document (even if empty)
+                // Finalize current document (even if empty) with previously parsed header
                 let exprs = std::mem::take(&mut current_document_expressions);
                 let doc_span = if exprs.is_empty() {
                     // Empty document: use separator position
@@ -2071,9 +2116,163 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         end: exprs.last().unwrap().span.end,
                     }
                 };
-                documents.push(Spanned::new(Document { expressions: exprs }, doc_span));
+                documents.push(Spanned::new(
+                    Document {
+                        expressions: exprs,
+                        name: next_doc_name.take(),
+                        output_type: next_doc_output_type.take(),
+                        expects: next_doc_expects.take(),
+                    },
+                    doc_span,
+                ));
 
+                // Parse section header (Phase 1): consume tokens until Newline
+                // Format: --- %name@Type expects: Type
+                // This header applies to the NEXT document
                 i += 1;
+
+                while i < token_vec.len() {
+                    match &token_vec[i].node {
+                        Token::Newline => {
+                            // End of header
+                            i += 1;
+                            break;
+                        }
+                        Token::BareWord(s) if s.starts_with('%') => {
+                            // Section name: %name
+                            let name_after_percent = &s[1..];
+                            if name_after_percent.is_empty() {
+                                return Err(ParseError {
+                                    message: "bare % with no identifier is not allowed in section headers".to_string(),
+                                    span: Some(token_vec[i].span),
+                                });
+                            }
+                            if next_doc_name.is_some() {
+                                return Err(ParseError {
+                                    message: "duplicate section name in header".to_string(),
+                                    span: Some(token_vec[i].span),
+                                });
+                            }
+                            next_doc_name_span = Some(token_vec[i].span);
+                            next_doc_name = Some(name_after_percent.to_string());
+
+                            // Check for @Type annotation on the name
+                            if i + 1 < token_vec.len()
+                                && matches!(&token_vec[i + 1].node, Token::ImmediateAt | Token::At)
+                            {
+                                i += 1; // Move to @ token
+                                match parse_annotation(
+                                    &token_vec,
+                                    i,
+                                    &mut leading_comments,
+                                    input,
+                                    Some(&mut recovered_errors),
+                                ) {
+                                    Ok((annotation, next_i)) => {
+                                        next_doc_output_type = Some(annotation);
+                                        i = next_i;
+                                        continue;
+                                    }
+                                    Err(ann_err) => {
+                                        return Err(ann_err);
+                                    }
+                                }
+                            }
+
+                            i += 1;
+                        }
+                        Token::BareWord(s) if s == "expects" => {
+                            // expects: pragma
+                            if next_doc_expects.is_some() {
+                                return Err(ParseError {
+                                    message: "duplicate expects: pragma in header".to_string(),
+                                    span: Some(token_vec[i].span),
+                                });
+                            }
+                            i += 1;
+                            // Expect colon
+                            if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
+                                return Err(ParseError {
+                                    message: "expected ':' after 'expects' pragma".to_string(),
+                                    span: Some(if i < token_vec.len() {
+                                        token_vec[i].span
+                                    } else {
+                                        token_vec[i - 1].span
+                                    }),
+                                });
+                            }
+                            i += 1;
+                            // Parse annotation
+                            match parse_annotation(
+                                &token_vec,
+                                i,
+                                &mut leading_comments,
+                                input,
+                                Some(&mut recovered_errors),
+                            ) {
+                                Ok((annotation, next_i)) => {
+                                    next_doc_expects = Some(annotation);
+                                    i = next_i;
+                                }
+                                Err(ann_err) => {
+                                    return Err(ann_err);
+                                }
+                            }
+                        }
+                        Token::At | Token::ImmediateAt => {
+                            // Standalone @Type annotation (no name)
+                            if next_doc_output_type.is_some() {
+                                return Err(ParseError {
+                                    message: "duplicate output type annotation in header"
+                                        .to_string(),
+                                    span: Some(token_vec[i].span),
+                                });
+                            }
+                            match parse_annotation(
+                                &token_vec,
+                                i,
+                                &mut leading_comments,
+                                input,
+                                Some(&mut recovered_errors),
+                            ) {
+                                Ok((annotation, next_i)) => {
+                                    next_doc_output_type = Some(annotation);
+                                    i = next_i;
+                                }
+                                Err(ann_err) => {
+                                    return Err(ann_err);
+                                }
+                            }
+                        }
+                        _ => {
+                            // Unexpected token in header
+                            return Err(ParseError {
+                                message: format!(
+                                    "unexpected token in section header: {:?}",
+                                    token_vec[i].node
+                                ),
+                                span: Some(token_vec[i].span),
+                            });
+                        }
+                    }
+                }
+
+                // Check for duplicate section names across the file.
+                // Use next_doc_name_span (the %name token's span) rather than span
+                // (the --- separator's span) so the error underlines the duplicate name.
+                if let Some(ref name) = next_doc_name {
+                    for doc in &documents {
+                        if let Some(ref existing_name) = doc.node.name {
+                            if existing_name == name {
+                                return Err(ParseError {
+                                    message: format!("duplicate section name '%{}' in file", name),
+                                    span: next_doc_name_span,
+                                });
+                            }
+                        }
+                    }
+                }
+
                 continue;
             }
 
@@ -2404,6 +2603,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     if current_document_expressions.is_empty() && documents.is_empty() {
         let doc = Document {
             expressions: vec![],
+            name: next_doc_name.take(),
+            output_type: next_doc_output_type.take(),
+            expects: next_doc_expects.take(),
         };
         let doc_span = Span {
             start: Position {
@@ -2422,6 +2624,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
         // Finalize current document
         let doc = Document {
             expressions: current_document_expressions,
+            name: next_doc_name.take(),
+            output_type: next_doc_output_type.take(),
+            expects: next_doc_expects.take(),
         };
         let doc_span = Span {
             start: Position {

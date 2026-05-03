@@ -1,0 +1,7 @@
+# Test that duplicate section names are a parse error
+--- %foo
+[x: 1]
+--- %foo
+[y: 2]
+===
+duplicate section name '%foo' in file

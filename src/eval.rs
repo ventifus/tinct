@@ -825,15 +825,37 @@ pub fn eval_file_with_input(
 ) -> EvalResult<Rc<Thunk>> {
     // $$ starts as the provided input, or empty dict if none given
     let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Rc::clone(t)));
+    // Named section accumulator: maps section name → result thunk
+    let mut named: IndexMap<String, Rc<Thunk>> = IndexMap::new();
 
     for doc in &file.documents {
-        // Each document gets a fresh scope with only $$ bound
+        // Each document gets a fresh scope with % and %name bindings
         let doc_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
+
+        // Bind % (pipeline variable) — backward compat alias for $$
+        doc_env
+            .borrow_mut()
+            .insert("%".to_string(), Rc::clone(&prev_output));
+
+        // Bind $ (legacy pipeline variable) — Phase 2 will remove this
         doc_env
             .borrow_mut()
             .insert("$".to_string(), Rc::clone(&prev_output));
 
+        // Bind all previously named sections as %name
+        for (section_name, section_thunk) in &named {
+            doc_env
+                .borrow_mut()
+                .insert(format!("%{}", section_name), Rc::clone(section_thunk));
+        }
+
         let result = eval_document(doc, doc_env, ctx, depth)?;
+
+        // If this document is named, accumulate it in the named map
+        if let Some(ref name) = doc.node.name {
+            named.insert(name.clone(), Rc::clone(&result));
+        }
+
         prev_output = result; // lazy: no materialization at boundary
     }
 
@@ -3833,6 +3855,9 @@ mod tests {
         ];
         let doc = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(entries)))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -3879,6 +3904,9 @@ mod tests {
         })]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -3915,6 +3943,9 @@ mod tests {
         ]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -3940,6 +3971,9 @@ mod tests {
         })]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let err = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
@@ -3959,6 +3993,9 @@ mod tests {
         // A document with zero expressions returns an empty dict
         let doc = sp(Document {
             expressions: vec![],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -3997,6 +4034,9 @@ mod tests {
         ]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr1), Rc::new(expr2), Rc::new(expr3)],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -4037,6 +4077,9 @@ mod tests {
         })]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr)],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, parent_env, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -4058,6 +4101,9 @@ mod tests {
         // The last expression can be any type.
         let doc = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Int(42)))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -4089,6 +4135,9 @@ mod tests {
         })]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -4126,6 +4175,9 @@ mod tests {
         ]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -4201,6 +4253,9 @@ mod tests {
 
         let doc = sp(Document {
             expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            name: None,
+            output_type: None,
+            expects: None,
         });
 
         // Call eval_document at depth=MAX_EVAL_DEPTH-1
@@ -4224,6 +4279,9 @@ mod tests {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::Int(1)),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let file = File {
             documents: vec![doc],
@@ -4257,6 +4315,9 @@ mod tests {
                 key: Some(sp(Expr::Str("prev".into()))),
                 value: rsp(Expr::VarRef("$".into())),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let file = File {
             documents: vec![doc],
@@ -4286,6 +4347,9 @@ mod tests {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::Int(10)),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4295,6 +4359,9 @@ mod tests {
                     field: "x".into(),
                 }),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let file = File {
             documents: vec![doc1, doc2],
@@ -4320,12 +4387,18 @@ mod tests {
         // Verify that prev resolves to Int(42).
         let doc1 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Int(42)))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("prev".into()))),
                 value: rsp(Expr::VarRef("$".into())),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let file = File {
             documents: vec![doc1, doc2],
@@ -4363,6 +4436,9 @@ mod tests {
                     value: rsp(Expr::VarRef("missing".into())),
                 }),
             ])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4372,6 +4448,9 @@ mod tests {
                     field: "good".into(),
                 }),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let file = File {
             documents: vec![doc1, doc2],
@@ -4402,6 +4481,9 @@ mod tests {
                 key: Some(sp(Expr::Str("a".into()))),
                 value: rsp(Expr::Int(1)),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![
@@ -4417,6 +4499,9 @@ mod tests {
                     value: rsp(Expr::Int(2)),
                 }),
             ])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let doc3 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4426,6 +4511,9 @@ mod tests {
                     field: "b".into(),
                 }),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let file = File {
             documents: vec![doc1, doc2, doc3],
@@ -4454,12 +4542,18 @@ mod tests {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::Int(42)),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
                 value: rsp(Expr::VarRef("x".into())),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let file = File {
             documents: vec![doc1, doc2],
@@ -4511,6 +4605,9 @@ mod tests {
                 key: Some(sp(Expr::Str("val".into()))),
                 value: rsp(Expr::VarRef("external".into())),
             })])))],
+            name: None,
+            output_type: None,
+            expects: None,
         });
         let file = File {
             documents: vec![doc],
@@ -4527,6 +4624,190 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_eval_file_percent_pipeline() {
+        // Test % as alias for $$
+        // Doc 1: [x: 10]
+        // Doc 2: [y: %.x]  (access previous doc's x via %)
+        // Verify y=10.
+        let doc1 = sp(Document {
+            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: rsp(Expr::Int(10)),
+            })])))],
+            name: None,
+            output_type: None,
+            expects: None,
+        });
+        let doc2 = sp(Document {
+            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("y".into()))),
+                value: rsp(Expr::DotAccess {
+                    expr: Box::new(sp(Expr::VarRef("%".into()))),
+                    field: "x".into(),
+                }),
+            })])))],
+            name: None,
+            output_type: None,
+            expects: None,
+        });
+        let file = File {
+            documents: vec![doc1, doc2],
+        };
+        let thunk = eval_file(&file, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let y_thunk = map.get(&Key::String("y".into())).unwrap();
+                assert_eq!(
+                    materialize(y_thunk, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(10)
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_named_sections() {
+        // Test named sections with %name binding
+        // Doc 1 (named "defaults"): [port: 8080]
+        // Doc 2 (named "overrides"): [host: "prod"]
+        // Doc 3 (anonymous): [port: %defaults.port  host: %overrides.host]
+        let doc1 = sp(Document {
+            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("port".into()))),
+                value: rsp(Expr::Int(8080)),
+            })])))],
+            name: Some("defaults".to_string()),
+            output_type: None,
+            expects: None,
+        });
+        let doc2 = sp(Document {
+            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("host".into()))),
+                value: rsp(Expr::Str("prod".into())),
+            })])))],
+            name: Some("overrides".to_string()),
+            output_type: None,
+            expects: None,
+        });
+        let doc3 = sp(Document {
+            expressions: vec![Rc::new(sp(Expr::Dict(vec![
+                sp(Entry {
+                    key: Some(sp(Expr::Str("port".into()))),
+                    value: rsp(Expr::DotAccess {
+                        expr: Box::new(sp(Expr::VarRef("%defaults".into()))),
+                        field: "port".into(),
+                    }),
+                }),
+                sp(Entry {
+                    key: Some(sp(Expr::Str("host".into()))),
+                    value: rsp(Expr::DotAccess {
+                        expr: Box::new(sp(Expr::VarRef("%overrides".into()))),
+                        field: "host".into(),
+                    }),
+                }),
+            ])))],
+            name: None,
+            output_type: None,
+            expects: None,
+        });
+        let file = File {
+            documents: vec![doc1, doc2, doc3],
+        };
+        let thunk = eval_file(&file, empty_env(), &test_ctx(), 0).unwrap();
+        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
+        match val {
+            Value::Dict(map) => {
+                let port_thunk = map.get(&Key::String("port".into())).unwrap();
+                assert_eq!(
+                    materialize(port_thunk, None, &test_ctx(), 0).unwrap(),
+                    Value::Int(8080)
+                );
+                let host_thunk = map.get(&Key::String("host".into())).unwrap();
+                assert_eq!(
+                    materialize(host_thunk, None, &test_ctx(), 0).unwrap(),
+                    Value::String("prod".into())
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_eval_file_named_sections_no_forward_refs() {
+        // Test that named sections cannot reference later sections (no forward references).
+        //
+        // File layout:
+        //   Doc 1 (named "early"):  [x: %late.value]   — references %late which is NOT yet defined
+        //   Doc 2 (named "late"):   [value: 42]
+        //   Doc 3 (unnamed):        [result: %early.x]  — forces materialization of doc1's x field
+        //
+        // The forward reference %late inside doc1 should produce UndefinedVariable when doc3
+        // forces doc1 to materialize. This proves the no-forward-refs invariant.
+        let doc1 = sp(Document {
+            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("x".into()))),
+                value: rsp(Expr::DotAccess {
+                    expr: Box::new(sp(Expr::VarRef("%late".into()))),
+                    field: "value".into(),
+                }),
+            })])))],
+            name: Some("early".to_string()),
+            output_type: None,
+            expects: None,
+        });
+        let doc2 = sp(Document {
+            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("value".into()))),
+                value: rsp(Expr::Int(42)),
+            })])))],
+            name: Some("late".to_string()),
+            output_type: None,
+            expects: None,
+        });
+        // Doc 3: references %early.x, which forces doc1's x thunk to materialise.
+        // x = %late.value, but %late is not bound in doc1's scope, so this must fail.
+        let doc3 = sp(Document {
+            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+                key: Some(sp(Expr::Str("result".into()))),
+                value: rsp(Expr::DotAccess {
+                    expr: Box::new(sp(Expr::VarRef("%early".into()))),
+                    field: "x".into(),
+                }),
+            })])))],
+            name: None,
+            output_type: None,
+            expects: None,
+        });
+        let file = File {
+            documents: vec![doc1, doc2, doc3],
+        };
+        // eval_file builds lazy thunks — no materialisation yet, so it must succeed.
+        let doc3_thunk = eval_file(&file, empty_env(), &test_ctx(), 0).unwrap();
+
+        // Materialise doc3's outer dict — this succeeds (lazy dict construction).
+        // The `result` field holds an unevaluated DotAccess thunk for `%early.x`.
+        let doc3_val = materialize(&doc3_thunk, None, &test_ctx(), 0)
+            .expect("doc3 outer dict should materialise (lazily)");
+        let result_thunk = match doc3_val {
+            Value::Dict(ref map) => map.get(&Key::String("result".into())).unwrap().clone(),
+            other => panic!("expected Dict for doc3, got {other:?}"),
+        };
+
+        // Forcing `result` (= %early.x) forces doc1's x thunk, which evaluates `%late.value`.
+        // `%late` was NOT bound in doc1's scope (named sections are only bound forward).
+        // This must produce UndefinedVariable("%late").
+        let err = materialize(&result_thunk, None, &test_ctx(), 0)
+            .expect_err("forcing %early.x should fail: %late was not in scope when doc1 was built");
+        assert!(
+            matches!(err.kind, ErrorKind::UndefinedVariable { ref name } if name == "%late"),
+            "expected UndefinedVariable(\"%late\"), got: {:?}",
+            err.kind
+        );
     }
 
     #[test]

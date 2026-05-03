@@ -840,6 +840,9 @@ mod tests {
                         value: Rc::new(sp(Expr::VarRef("_".into()))),
                     })]))),
                 ],
+                name: None,
+                output_type: None,
+                expects: None,
             })],
         };
 

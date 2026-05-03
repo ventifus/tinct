@@ -1,0 +1,7 @@
+# Regression: a file ending with --- %name and no body silently drops the empty
+# trailing document.  The file's output is the last document that *has* expressions
+# (doc 1 here).  %name is never bound because the empty document is never created.
+[x: 1  y: 2]
+--- %unused
+===
+Dict({"x": Int(1), "y": Int(2)})
