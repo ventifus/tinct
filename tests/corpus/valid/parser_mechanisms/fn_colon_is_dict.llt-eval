@@ -1,5 +1,5 @@
 # "fn" followed by ":" is a dict key, not the fn special form.
 # The parser only treats "fn" as a keyword when it is NOT followed by ":".
-[fn: identity]
+[fn: "identity"]
 ===
 ["fn": "identity"]

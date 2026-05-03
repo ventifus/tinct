@@ -1,4 +1,4 @@
 # concat: empty dict with non-empty dict
-[call $concat [] [a: 1 b: 2]]
+[concat [] [a: 1 b: 2]]
 ===
 Dict({"a": Int(1), "b": Int(2)})

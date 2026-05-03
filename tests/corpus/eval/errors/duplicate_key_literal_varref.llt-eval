@@ -2,6 +2,6 @@
 # The parser allows this because $k and "x" look syntactically distinct;
 # the duplicate is only detected when $k is evaluated to "x" at runtime.
 [k: x
- result: [$k: 1  "x": 2]]
+ result: [k: 1  "x": 2]]
 ===
 [E030] duplicate key: x

@@ -1,4 +1,4 @@
 # fold: alias for reduce (left fold with accumulator)
-[call $fold [fn [acc x] [call $+ $acc $x]] 0 [1 2 3]]
+[fold [fn [acc x] [+ acc x]] 0 [1 2 3]]
 ===
 Int(6)

@@ -2482,7 +2482,8 @@ impl TypeError {
     }
 
     pub fn undefined_variable(name: &str, span: Span) -> Self {
-        Self::new(format!("undefined variable: ${name}"), span)
+        // Emit name as-is — `%`-prefixed refs include `%`; plain identifiers display without sigil.
+        Self::new(format!("undefined variable: {name}"), span)
     }
 
     pub fn undefined_type(name: &str, span: Span) -> Self {
@@ -3369,7 +3370,7 @@ mod tests {
     fn test_type_error_undefined_variable() {
         let span = test_span(1, 1, 1, 5);
         let err = TypeError::undefined_variable("x", span);
-        assert_eq!(err.message, "undefined variable: $x");
+        assert_eq!(err.message, "undefined variable: x");
     }
 
     #[test]

@@ -1,4 +1,6 @@
-[$a
+# Newline between identifier and bracket prevents bracket-access in new syntax.
+# a[0] (no gap) = bracket access; a\n[0] (newline) = call a with arg [0]
+[a
 [0]]
 ===
-[$a  [0]]
+[a [0]]

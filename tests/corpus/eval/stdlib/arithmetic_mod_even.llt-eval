@@ -1,4 +1,4 @@
 # mod: evenly divisible
-[call $mod 12 4]
+[mod 12 4]
 ===
 Int(0)

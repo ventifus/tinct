@@ -6,6 +6,6 @@
 [x: 10]
 
 ---
-[call $merge %defaults %overrides]
+[merge %defaults %overrides]
 ===
 Dict({"x": Int(10), "y": Int(2)})

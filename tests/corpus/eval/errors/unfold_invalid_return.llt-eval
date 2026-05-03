@@ -1,4 +1,4 @@
 # unfold: error when step function returns a non-Dict value
-[call $head [call $unfold [fn [x] "not a dict"] 0]]
+[head [unfold [fn [x] "not a dict"] 0]]
 ===
 ERROR: [E010]

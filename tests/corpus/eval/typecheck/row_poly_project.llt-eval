@@ -1,8 +1,8 @@
 # Row polymorphism: function that projects a field
 # get-name accepts any record with at least `name: String`.
 # Called with two different records with different extra fields.
-[get-name: [fn [r@[name: String ...]] [call $get $r name]]
- r1: [call $get-name [name: alice  age: 30]]
- r2: [call $get-name [name: bob  city: NYC]]]
+[get-name: [fn [r@[name: String ...]] [get r "name"]]
+ r1: [get-name [name: "alice"  age: 30]]
+ r2: [get-name [name: "bob"  city: "NYC"]]]
 ===
 Dict({"get-name": Function(r), "r1": String("alice"), "r2": String("bob")})

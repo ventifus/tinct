@@ -1,4 +1,4 @@
 # * : integer multiplication
-[call $* 6 7]
+[* 6 7]
 ===
 Int(42)

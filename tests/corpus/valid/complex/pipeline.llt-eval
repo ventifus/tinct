@@ -1,6 +1,6 @@
 [
-    transform: [fn [x] [call $uppercase $x]]
-    filter: [fn [item] $item.active?]
+    transform: [fn [x] [uppercase x]]
+    filter: [fn [item] item.active?]
 ]
 ===
-["transform": [fn [x] [call $uppercase $x]]  "filter": [fn [item] $item.active?]]
+["transform": [fn [x] [uppercase x]]  "filter": [fn [item] item.active?]]

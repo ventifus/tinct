@@ -95,8 +95,13 @@ enum Expr {
     // Special forms
     Call {
         func: Box<Spanned<Expr>>,
-        args: Vec<Spanned<Expr>>,
+        args: Vec<Rc<Spanned<Expr>>>,
         named_args: Vec<Spanned<NamedArg>>,
+        // True if the call was written in implied form `[f x]` (no `call` keyword);
+        // false if written in explicit form `[call f x]`.
+        // Used by the formatter for roundtrip fidelity: implied calls are printed without
+        // `call`, explicit calls are printed with `call`.
+        implied: bool,
     },
     Fn {
         return_ann: Option<Spanned<Annotation>>,

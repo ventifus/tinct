@@ -1,4 +1,4 @@
 # partition: empty collection
-[call $partition [fn [x] [call $> $x 0]] []]
+[partition [fn [x] [> x 0]] []]
 ===
 Dict({"pass": Dict({}), "fail": Dict({})})

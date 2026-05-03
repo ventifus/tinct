@@ -7,10 +7,10 @@
 # These functions depend on the following Rust-native builtins being available
 # in the parent environment:
 #
-#   Primary-name operators defined as shadowable wrappers (lines 527-544):
+#   Primary-name operators defined as shadowable wrappers (lines 894-932):
 #     <  =  +  -  *  /  if  filter  map  reduce  take  drop
 #   These delegate to stable builtin-* aliases, allowing domain modules
-#   to shadow the primary names via $include while the prelude continues
+#   to shadow the primary names via include while the prelude continues
 #   to work correctly via builtin-lt, builtin-eq, etc.
 #
 #   Stable builtin-* aliases used internally (cannot be shadowed):
@@ -35,13 +35,13 @@
 #           Usually paired with an -impl or -step function.
 #
 # Design patterns:
-#   Shadowable wrappers — functions like $<, $=, $+, $if, $filter, $map etc.
+#   Shadowable wrappers — functions like <, =, +, if, filter, map etc.
 #     wrap the corresponding builtin-* alias so domain stdlib modules can shadow
-#     the primary name via $include without breaking the prelude's own code.
+#     the primary name via include without breaking the prelude's own code.
 #     See doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary.
 #
 #   O(n²) accumulator limitation — LLT-implemented accumulators (e.g. concat via
-#     $merge inside a fold) are O(n²) because each merge copies the growing
+#     merge inside a fold) are O(n²) because each merge copies the growing
 #     accumulator dict. Functions that must be O(n) are implemented as Rust
 #     builtins (e.g. builtin_concat, reverse, sort). Prefer the Rust builtins
 #     for large collections; the LLT wrappers are for composability and shadowing.
@@ -57,9 +57,9 @@
 
 # Internal helper — not part of the public API.
 # Construct a single-entry dict from a computed key and value.
-# Access expressions like $ks[$i] can't appear in key position syntactically;
-# passing through function params makes the key a plain $k var_ref.
-make-entry: [fn [k v] [$k: $v]]
+# Access expressions like ks[i] can't appear in key position syntactically;
+# passing through function params makes the key a plain k var_ref.
+make-entry: [fn [k v] [$k: v]]
 
 # `append` is a Rust-native builtin (O(1) amortized insert vs O(n) merge).
 
@@ -69,14 +69,14 @@ make-entry: [fn [k v] [$k: $v]]
 
 # Returns its argument unchanged.
 # Type: (a -> a)
-# Example: [call $identity 42] => 42
-identity: [fn [x] $x]
+# Example: [identity 42] => 42
+identity: [fn [x] x]
 
 # Returns first argument, ignores second. Classic K combinator (K in SKI combinatorics).
 # Type: (a -> b -> a)
-# Example: [call $const "hello" "ignored"] => "hello"
-# Example: [call $map [call $const 0] [1 2 3]] => [0 0 0]
-const: [fn [x] [fn [y] $x]]
+# Example: [const "hello" "ignored"] => "hello"
+# Example: [map [const 0] [1 2 3]] => [0 0 0]
+const: [fn [x] [fn [y] x]]
 
 # ============================================================================
 # Logic
@@ -84,74 +84,74 @@ const: [fn [x] [fn [y] $x]]
 
 # Boolean negation. Materializes x; returns false if truthy, true if falsy.
 # Type: (Any -> Bool)
-# Example: [call $not true] => false
-# Example: [call $not 0] => true
-not: [fn [x] [call $builtin-if $x false true]]
+# Example: [not true] => false
+# Example: [not 0] => true
+not: [fn [x] [builtin-if x false true]]
 
 # Short-circuit AND: if a is false, b is never evaluated.
 # Type: (Any -> Any -> Any)
-# Example: [call $and true "yes"] => "yes"
-# Example: [call $and false [call $expensive]] => false   (expensive never called)
-and: [fn [a b] [call $builtin-if $a $b false]]
+# Example: [and true "yes"] => "yes"
+# Example: [and false [expensive]] => false   (expensive never called)
+and: [fn [a b] [builtin-if a b false]]
 
 # Short-circuit OR: if a is truthy, returns a; otherwise returns b.
 # Type: (Any -> Any -> Any)
-# Example: [call $or 42 0] => 42
-# Example: [call $or false "default"] => "default"
-# NOTE: Both references to `$a` in `[call $builtin-if $a $a $b]` are bound to
+# Example: [or 42 0] => 42
+# Example: [or false "default"] => "default"
+# NOTE: Both references to `a` in `[builtin-if a a b]` are bound to
 # the same parameter — the parameter binding is shared, so the thunk is forced
 # at most once (Launchbury 1993). The second reference is a cache hit.
-or: [fn [a b] [call $builtin-if $a $a $b]]
+or: [fn [a b] [builtin-if a a b]]
 
 # Short-circuit predicate test: returns true if any element satisfies pred.
 # Type: ((a -> Bool) -> Dict a -> Bool)
 # Errors if xs is a Seq (collect first).
-# Example: [call $any? [fn [x] [call $> $x 0]] [1 -2 3]] => true
+# Example: [any? [fn [x] [> x 0]] [1 -2 3]] => true
 # Inherently materializing: short-circuits but materializes elements until condition met.
 any?: [fn [pred xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $error "any?: expected Dict, got Seq -- collect the Seq first"]
-        [call $any?-impl $pred $xs [call $keys $xs] 0 [call $length $xs]]]]
+    [builtin-if [seq? xs]
+        [error "any?: expected Dict, got Seq -- collect the Seq first"]
+        [any?-impl pred xs [keys xs] 0 [length xs]]]]
 
 any?-impl: [fn [pred xs ks i len]
-    [call $builtin-if [call $>= $i $len]
+    [builtin-if [>= i len]
         false
-        [call $builtin-if [call $pred $xs[$ks[$i]]]
+        [builtin-if [pred xs[ks[i]]]
             true
-            [call $any?-impl $pred $xs $ks [call $builtin-add $i 1] $len]]]]
+            [any?-impl pred xs ks [builtin-add i 1] len]]]]
 
 # Short-circuit predicate test: returns true if all elements satisfy pred.
 # Type: ((a -> Bool) -> Dict a -> Bool)
 # Errors if xs is a Seq (collect first).
-# Example: [call $all? [fn [x] [call $> $x 0]] [1 2 3]] => true
+# Example: [all? [fn [x] [> x 0]] [1 2 3]] => true
 # Inherently materializing: short-circuits but materializes elements until condition failed.
 all?: [fn [pred xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $error "all?: expected Dict, got Seq -- collect the Seq first"]
-        [call $all?-impl $pred $xs [call $keys $xs] 0 [call $length $xs]]]]
+    [builtin-if [seq? xs]
+        [error "all?: expected Dict, got Seq -- collect the Seq first"]
+        [all?-impl pred xs [keys xs] 0 [length xs]]]]
 
 all?-impl: [fn [pred xs ks i len]
-    [call $builtin-if [call $>= $i $len]
+    [builtin-if [>= i len]
         true
-        [call $builtin-if [call $pred $xs[$ks[$i]]]
-            [call $all?-impl $pred $xs $ks [call $builtin-add $i 1] $len]
+        [builtin-if [pred xs[ks[i]]]
+            [all?-impl pred xs ks [builtin-add i 1] len]
             false]]]
 
 # ============================================================================
 # Comparison (derived from < and =)
 # ============================================================================
 
-# Greater than. Derived by swapping arguments of $builtin-lt.
+# Greater than. Derived by swapping arguments of builtin-lt.
 # Type: (Comparable -> Comparable -> Bool)
->: [fn [a b] [call $builtin-lt $b $a]]
+>: [fn [a b] [builtin-lt b a]]
 
 # Less than or equal. Derived as negation of >.
 # Type: (Comparable -> Comparable -> Bool)
-<=: [fn [a b] [call $not [call $builtin-lt $b $a]]]
+<=: [fn [a b] [not [builtin-lt b a]]]
 
 # Greater than or equal. Derived as negation of <.
 # Type: (Comparable -> Comparable -> Bool)
->=: [fn [a b] [call $not [call $builtin-lt $a $b]]]
+>=: [fn [a b] [not [builtin-lt a b]]]
 
 # ============================================================================
 # Arithmetic (derived from builtin-add, builtin-sub, builtin-mul, builtin-div)
@@ -159,22 +159,22 @@ all?-impl: [fn [pred xs ks i len]
 
 # Integer quotient: truncates toward zero (like Clojure's quot).
 # Type: (Number -> Number -> Int)
-# Uses $builtin-div (float division) then $trunc (toward-zero truncation to Int).
-# Example: [call $quot 7 2] => 3
-# Example: [call $quot -7 2] => -3
+# Uses builtin-div (float division) then trunc (toward-zero truncation to Int).
+# Example: [quot 7 2] => 3
+# Example: [quot -7 2] => -3
 # Contrast with floor-div (truncates toward negative infinity) which does not exist in LLT.
 # Inherently materializing: derived from arithmetic operations.
-quot: [fn [a b] [call $trunc [call $builtin-div $a $b]]]
+quot: [fn [a b] [trunc [builtin-div a b]]]
 
 # Integer remainder with the same sign as the dividend (a), NOT the divisor.
 # Type: (Number -> Number -> Number)
 # Uses the algebraic identity: mod(a, b) = a - (quot(a, b) * b).
 # Clojure/Haskell-rem semantics. Contrast with Python `%` / Haskell `mod` (sign of divisor).
-# Example: [call $mod 7 3] => 1
-# Example: [call $mod -7 3] => -1
-# Example: [call $mod 7 -3] => 1
+# Example: [mod 7 3] => 1
+# Example: [mod -7 3] => -1
+# Example: [mod 7 -3] => 1
 # Inherently materializing: derived from arithmetic operations.
-mod: [fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]
+mod: [fn [a b] [builtin-sub a [builtin-mul [quot a b] b]]]
 
 # ============================================================================
 # Numeric Conversion (derived from floor, round, builtin-add, builtin-sub)
@@ -182,51 +182,51 @@ mod: [fn [a b] [call $builtin-sub $a [call $builtin-mul [call $quot $a $b] $b]]]
 
 # Ceiling: smallest integer >= x. Derived as -floor(-x).
 # Type: (Number -> Int)
-# Example: [call $ceil 3.2] => 4
-# Example: [call $ceil -3.2] => -3
+# Example: [ceil 3.2] => 4
+# Example: [ceil -3.2] => -3
 # Inherently materializing: derived from arithmetic operations.
-ceil: [fn [x] [call $builtin-sub 0 [call $floor [call $builtin-sub 0 $x]]]]
+ceil: [fn [x] [builtin-sub 0 [floor [builtin-sub 0 x]]]]
 
 # Truncate toward zero: floor for non-negative, ceil for negative.
 # Type: (Number -> Int)
-# Example: [call $trunc 3.7] => 3
-# Example: [call $trunc -3.7] => -3
+# Example: [trunc 3.7] => 3
+# Example: [trunc -3.7] => -3
 # Inherently materializing: derived from arithmetic operations.
-trunc: [fn [x] [call $builtin-if [call $>= $x 0] [call $floor $x] [call $ceil $x]]]
+trunc: [fn [x] [builtin-if [>= x 0] [floor x] [ceil x]]]
 
 # Absolute value: non-negative magnitude. Returns -x for negative, x otherwise.
 # Type: (Number -> Number)
-# Example: [call $abs -5] => 5
-# Example: [call $abs 3.14] => 3.14
+# Example: [abs -5] => 5
+# Example: [abs 3.14] => 3.14
 # Inherently materializing: derived from comparison and arithmetic.
-abs: [fn [x] [call $builtin-if [call $builtin-lt $x 0] [call $builtin-sub 0 $x] $x]]
+abs: [fn [x] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]
 
 # Sign of a number: -1 for negative, 0 for zero, 1 for positive.
 # Type: (Number -> Int)
-# Example: [call $sign -42] => -1
-# Example: [call $sign 0] => 0
-# Example: [call $sign 3.14] => 1
+# Example: [sign -42] => -1
+# Example: [sign 0] => 0
+# Example: [sign 3.14] => 1
 # Inherently materializing: derived from comparison and arithmetic.
 sign: [fn [x]
-    [call $builtin-if [call $builtin-lt $x 0]
-        [call $builtin-sub 0 1]
-        [call $builtin-if [call $builtin-eq $x 0]
+    [builtin-if [builtin-lt x 0]
+        [builtin-sub 0 1]
+        [builtin-if [builtin-eq x 0]
             0
             1]]]
 
 # Clamp a value between lo and hi bounds (inclusive).
 # Returns lo if x < lo, hi if x > hi, otherwise x.
 # Type: (Number -> Number -> Number -> Number)
-# Example: [call $clamp 0 10 -5] => 0
-# Example: [call $clamp 0 10 15] => 10
-# Example: [call $clamp 0 10 7] => 7
+# Example: [clamp 0 10 -5] => 0
+# Example: [clamp 0 10 15] => 10
+# Example: [clamp 0 10 7] => 7
 # Inherently materializing: derived from comparison operations.
 clamp: [fn [lo hi x]
-    [call $builtin-if [call $builtin-lt $x $lo]
-        $lo
-        [call $builtin-if [call $builtin-lt $hi $x]
-            $hi
-            $x]]]
+    [builtin-if [builtin-lt x lo]
+        lo
+        [builtin-if [builtin-lt hi x]
+            hi
+            x]]]
 
 # ============================================================================
 # String (derived from str, split, builtin-filter, builtin-eq)
@@ -234,194 +234,194 @@ clamp: [fn [lo hi x]
 
 # join is a Rust-native builtin (O(n) performance, dual-dispatch on Dict/Seq).
 # DEFERRED (Phase 10): implementable as one-line reduce in LLT once dual-dispatch reduce is stable.
-# LLT equivalent: [fn [sep xs] [call $builtin-reduce [fn [acc x] [call $str $acc $sep $x]] [call $first $xs] [call $rest $xs]]]
+# LLT equivalent: [fn [sep xs] [builtin-reduce [fn [acc x] [str acc sep x]] [first xs] [rest xs]]]
 # See src/builtins.rs for implementation.
 
 # Split a string on spaces, filtering empty strings. Returns a Seq of words.
 # Type: (String -> Seq String)
-# Example: [call $collect [call $words "hello world"]] => ["hello" "world"]
-# Example: [call $collect [call $words "  spaces  "]] => ["spaces"]
-# Inherently materializing: splits string content, derived from $split.
+# Example: [collect [words "hello world"]] => ["hello" "world"]
+# Example: [collect [words "  spaces  "]] => ["spaces"]
+# Inherently materializing: splits string content, derived from split.
 words: [fn [s]
-    [call $builtin-filter [fn [w] [call $not [call $builtin-eq $w ""]]] [call $split " " $s]]]
+    [builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]]
 
 # ============================================================================
 # Control Flow
 # ============================================================================
 
 # Evaluates body if pred is true, otherwise returns [].
-# assert: [call $when true result] => result
-# assert: [call $when false result] => []
-when: [fn [pred body] [call $builtin-if $pred $body []]]
+# assert: [when true result] => result
+# assert: [when false result] => []
+when: [fn [pred body] [builtin-if pred body []]]
 
 # Evaluates body if pred is false, otherwise returns [].
-# assert: [call $unless false result] => result
-# assert: [call $unless true result] => []
-unless: [fn [pred body] [call $builtin-if $pred [] $body]]
+# assert: [unless false result] => result
+# assert: [unless true result] => []
+unless: [fn [pred body] [builtin-if pred [] body]]
 
 # Multi-branch conditional. Takes a list of [condition result] pairs.
 # Returns [] (empty dict) when no branch matches.
-# Usage: [call $cond [
-#   [[call $> $x 10] big]
-#   [[call $> $x 0]  positive]
-#   [true            other]
+# Usage: [cond [
+#   [[> x 10] "big"]
+#   [[> x 0]  "positive"]
+#   [true     "other"]
 # ]]
-cond: [fn [pairs] [call $cond-impl $pairs 0]]
+cond: [fn [pairs] [cond-impl pairs 0]]
 
 cond-impl: [fn [pairs i]
-    [call $builtin-if [call $>= $i [call $length $pairs]]
+    [builtin-if [>= i [length pairs]]
         []
-        [call $cond-check $pairs $i $pairs[$i][0] $pairs[$i][1]]]]
+        [cond-check pairs i pairs[i][0] pairs[i][1]]]]
 
 cond-check: [fn [pairs i condition result]
-    [call $builtin-if $condition
-        $result
-        [call $cond-impl $pairs [call $builtin-add $i 1]]]]
+    [builtin-if condition
+        result
+        [cond-impl pairs [builtin-add i 1]]]]
 
 # until: Moved to Rust builtin to avoid recursion depth limit.
 # The LLT recursive version hit MAX_EVAL_DEPTH at ~230 iterations.
-# Now implemented as $until in src/builtins.rs with unlimited iterations.
+# Now implemented as until in src/builtins.rs with unlimited iterations.
 
 # ============================================================================
 # Dict Utilities
 # ============================================================================
 
 # Get value by key from a dict.
-# assert: [call $get [a: 1  b: 2] b] => 2
-get: [fn [xs k] $xs[$k]]
+# assert: [get [a: 1  b: 2] "b"] => 2
+get: [fn [xs k] xs[k]]
 
-# Check if a key exists in a dict. Uses $try around bracket access.
-# assert: [call $has? [x: 1] x] => true
-# assert: [call $has? [x: 1] y] => false
+# Check if a key exists in a dict. Uses try around bracket access.
+# assert: [has? [x: 1] "x"] => true
+# assert: [has? [x: 1] "y"] => false
 has?: [fn [xs k]
-    [call $has?-impl [call $try [fn [] $xs[$k]]]]]
+    [has?-impl [try [fn [] xs[k]]]]]
 
 has?-impl: [fn [try-result]
-    [call $builtin-eq [call $first [call $keys $try-result]] ok]]
+    [builtin-eq [first [keys try-result]] "ok"]]
 
 # Get value by key with a default if key is missing.
-# assert: [call $get-or [x: 1] x 99] => 1
-# assert: [call $get-or [x: 1] y 99] => 99
+# assert: [get-or [x: 1] "x" 99] => 1
+# assert: [get-or [x: 1] "y" 99] => 99
 get-or: [fn [xs k default]
-    [call $builtin-if [call $has? $xs $k] $xs[$k] $default]]
+    [builtin-if [has? xs k] xs[k] default]]
 
 # Traverse nested dicts by a list of keys.
 # Returns error when any intermediate key is missing.
 # Use get-in-or for a default fallback on missing keys.
-# Usage: [call $get-in $data [key1 key2 key3]]
+# Usage: [get-in data [key1 key2 key3]]
 # Inherently materializing: must traverse nested dict path, accessing each level.
 get-in: [fn [xs path]
-    [call $builtin-if [call $builtin-eq [call $length $path] 0]
-        $xs
-        [call $builtin-if [call $has? $xs $path[0]]
-            [call $get-in $xs[$path[0]] [call $rest $path]]
-            [call $error [call $str "key not found: " $path[0]]]]]]
+    [builtin-if [builtin-eq [length path] 0]
+        xs
+        [builtin-if [has? xs path[0]]
+            [get-in xs[path[0]] [rest path]]
+            [error [str "key not found: " path[0]]]]]]
 
 # Traverse nested dicts by a list of keys with a default fallback.
 # Returns default when any intermediate key is missing.
-# Usage: [call $get-in-or $data [key1 key2 key3] fallback]
+# Usage: [get-in-or data [key1 key2 key3] fallback]
 # Inherently materializing: must traverse nested dict path, accessing each level.
 get-in-or: [fn [xs path default]
-    [call $builtin-if [call $builtin-eq [call $length $path] 0]
-        $xs
-        [call $builtin-if [call $has? $xs $path[0]]
-            [call $get-in-or $xs[$path[0]] [call $rest $path] $default]
-            $default]]]
+    [builtin-if [builtin-eq [length path] 0]
+        xs
+        [builtin-if [has? xs path[0]]
+            [get-in-or xs[path[0]] [rest path] default]
+            default]]]
 
 # Check if a collection is empty.
 # Seq values are never empty (always have a head), so return false immediately.
-# Inherently materializing: depends on $length which counts all entries.
-# assert: [call $empty? []] => true
-# assert: [call $empty? [1 2 3]] => false
-empty?: [fn [xs] [call $builtin-if [call $seq? $xs] false [call $builtin-eq [call $length $xs] 0]]]
+# Inherently materializing: depends on length which counts all entries.
+# assert: [empty? []] => true
+# assert: [empty? [1 2 3]] => false
+empty?: [fn [xs] [builtin-if [seq? xs] false [builtin-eq [length xs] 0]]]
 
 # Set a key in a dict (returns new dict with key added/updated).
-# assert: [call $set [a: 1] b 2] => [a: 1  b: 2]
-set: [fn [xs k v] [call $merge $xs [call $make-entry $k $v]]]
+# assert: [set [a: 1] "b" 2] => [a: 1  b: 2]
+set: [fn [xs k v] [merge xs [make-entry k v]]]
 
 # Remove a key from a dict (preserves remaining keys).
-# assert: [call $remove [a: 1  b: 2  c: 3] b] => [a: 1  c: 3]
-remove: [fn [xs k] [call $remove-impl $xs [call $keys $xs] $k 0 []]]
+# assert: [remove [a: 1  b: 2  c: 3] "b"] => [a: 1  c: 3]
+remove: [fn [xs k] [remove-impl xs [keys xs] k 0 []]]
 
 remove-impl: [fn [xs ks exclude i acc]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $remove-step $xs $ks $exclude $i $acc $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [remove-step xs ks exclude i acc ks[i]]]]
 
 remove-step: [fn [xs ks exclude i acc current-key]
-    [call $builtin-if [call $builtin-eq $current-key $exclude]
-        [call $remove-impl $xs $ks $exclude [call $builtin-add $i 1] $acc]
-        [call $remove-impl $xs $ks $exclude [call $builtin-add $i 1]
-            [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]]
+    [builtin-if [builtin-eq current-key exclude]
+        [remove-impl xs ks exclude [builtin-add i 1] acc]
+        [remove-impl xs ks exclude [builtin-add i 1]
+            [merge acc [make-entry current-key xs[current-key]]]]]]
 
 # Update a key by applying a function to its current value.
-# assert: [call $update [x: 5] x [fn [v] [call $+ $v 1]]] => [x: 6]
+# assert: [update [x: 5] "x" [fn [v] [+ v 1]]] => [x: 6]
 update: [fn [xs k f]
-    [call $set $xs $k [call $f $xs[$k]]]]
+    [set xs k [f xs[k]]]]
 
 # Get all values from a dict as an integer-indexed list.
 # Preserves dict insertion order: values are returned in the same order as keys.
-# assert: [call $values [a: 10  b: 20]] => [10 20]
-values: [fn [xs] [call $values-impl $xs [call $keys $xs] 0 []]]
+# assert: [values [a: 10  b: 20]] => [10 20]
+values: [fn [xs] [values-impl xs [keys xs] 0 []]]
 
 values-impl: [fn [xs ks i acc]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $values-step $xs $ks $i $acc $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [values-step xs ks i acc ks[i]]]]
 
 values-step: [fn [xs ks i acc current-key]
-    [call $values-impl $xs $ks [call $builtin-add $i 1]
-        [call $append $acc $xs[$current-key]]]]
+    [values-impl xs ks [builtin-add i 1]
+        [append acc xs[current-key]]]]
 
 # Get all entries as a list of [key: k  value: v] dicts.
 # Preserves dict insertion order: entries appear in the same order as the source dict.
-entries: [fn [xs] [call $entries-impl $xs [call $keys $xs] 0 []]]
+entries: [fn [xs] [entries-impl xs [keys xs] 0 []]]
 
 entries-impl: [fn [xs ks i acc]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $entries-step $xs $ks $i $acc $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [entries-step xs ks i acc ks[i]]]]
 
 entries-step: [fn [xs ks i acc current-key]
-    [call $entries-impl $xs $ks [call $builtin-add $i 1]
-        [call $append $acc [key: $current-key value: $xs[$current-key]]]]]
+    [entries-impl xs ks [builtin-add i 1]
+        [append acc [key: current-key value: xs[current-key]]]]]
 
 # Reconstruct a dict from a list of [key: k value: v] pairs. Inverse of entries.
-from-entries: [fn [pairs] [call $builtin-reduce [fn [acc pair] [call $merge $acc [call $make-entry $pair.key $pair.value]]] [] $pairs]]
+from-entries: [fn [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
 
 # ============================================================================
 # List Operations (integer keys, dense 0..n output)
 # ============================================================================
 
 # Get the first element of a list.
-# assert: [call $first [10 20 30]] => 10
-first: [fn [xs] $xs[0]]
+# assert: [first [10 20 30]] => 10
+first: [fn [xs] xs[0]]
 
 # Get the nth element by insertion-order position.
 # Supports negative indices: -1 is last, -2 is second-to-last, etc.
-# assert: [call $nth [10 20 30] 1] => 20
-# assert: [call $nth [10 20 30] -1] => 30
+# assert: [nth [10 20 30] 1] => 20
+# assert: [nth [10 20 30] -1] => 30
 nth: [fn [xs n]
-    [call $nth-impl $xs [call $keys $xs] $n [call $length $xs]]]
+    [nth-impl xs [keys xs] n [length xs]]]
 
 nth-impl: [fn [xs ks n len]
-    [call $get $xs [call $get $ks [call $builtin-if [call $builtin-lt $n 0] [call $builtin-add $len $n] $n]]]]
+    [get xs [get ks [builtin-if [builtin-lt n 0] [builtin-add len n] n]]]]
 
 # Get the last element by insertion-order position.
-# assert: [call $last [10 20 30]] => 30
+# assert: [last [10 20 30]] => 30
 last: [fn [xs]
-    [call $get $xs [call $get [call $keys $xs] [call $builtin-sub [call $length $xs] 1]]]]
+    [get xs [get [keys xs] [builtin-sub [length xs] 1]]]]
 
-# rest: Rust-native builtin. Dict: O(n) drop-first-and-reindex. Seq: O(1) tail (delegates to $tail).
+# rest: Rust-native builtin. Dict: O(n) drop-first-and-reindex. Seq: O(1) tail (delegates to tail).
 # See src/builtins.rs for implementation.
 
-# cons: Rust-native builtin. Dict: O(n) prepend-and-reindex. Seq: O(1) prepend (delegates to $seq).
+# cons: Rust-native builtin. Dict: O(n) prepend-and-reindex. Seq: O(1) prepend (delegates to seq).
 # See src/builtins.rs for implementation.
 
-# Append an element to the end of a list. Delegates to $append.
+# Append an element to the end of a list. Delegates to append.
 # Type: (Dict a -> a -> Dict a)
-# Example: [call $conj [1 2 3] 4] => [1 2 3 4]
-conj: [fn [xs x] [call $append $xs $x]]
+# Example: [conj [1 2 3] 4] => [1 2 3 4]
+conj: [fn [xs x] [append xs x]]
 
 # concat is a Rust-native builtin (dual-dispatch on Dict/Seq).
 
@@ -429,20 +429,20 @@ conj: [fn [xs x] [call $append $xs $x]]
 # See src/builtins.rs for implementation.
 
 # Rebuild a collection with dense 0..n integer keys, preserving values and insertion order.
-# Useful after $drop or sparse slicing to normalize key numbering.
+# Useful after drop or sparse slicing to normalize key numbering.
 # Type: (Dict a -> Dict a)
-# Example: [call $reindex [a: 1 b: 2 c: 3]] => [0: 1 1: 2 2: 3]
+# Example: [reindex [a: 1 b: 2 c: 3]] => [0: 1 1: 2 2: 3]
 # Inherently materializing: must traverse all entries.
-reindex: [fn [xs] [call $reindex-impl $xs [call $keys $xs] 0 []]]
+reindex: [fn [xs] [reindex-impl xs [keys xs] 0 []]]
 
 reindex-impl: [fn [xs ks i acc]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $reindex-step $xs $ks $i $acc $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [reindex-step xs ks i acc ks[i]]]]
 
 reindex-step: [fn [xs ks i acc current-key]
-    [call $reindex-impl $xs $ks [call $builtin-add $i 1]
-        [call $append $acc $xs[$current-key]]]]
+    [reindex-impl xs ks [builtin-add i 1]
+        [append acc xs[current-key]]]]
 
 # ============================================================================
 # Sorting (Mergesort)
@@ -450,34 +450,34 @@ reindex-step: [fn [xs ks i acc current-key]
 
 # sort: Rust-native builtin. O(n log n) natural ordering mergesort.
 # Type: (Dict Comparable -> Dict Comparable)
-# Sorts using the same total order as $<: Int/Float numerically, String lexicographically, Bool by false < true.
-# Errors on Seq input (callers must $collect first), and on mixed incompatible types.
-# Example: [call $sort [3 1 2]] => [1 2 3]
-# Example: [call $sort ["c" "a" "b"]] => ["a" "b" "c"]
+# Sorts using the same total order as <: Int/Float numerically, String lexicographically, Bool by false < true.
+# Errors on Seq input (callers must collect first), and on mixed incompatible types.
+# Example: [sort [3 1 2]] => [1 2 3]
+# Example: [sort ["c" "a" "b"]] => ["a" "b" "c"]
 # See src/builtins.rs for implementation.
 
 # Sort a list using a custom comparator (mergesort, stable).
 # Type: ((a -> a -> Bool) -> Dict a -> Dict a)
-# cmp is a less-than function: [call $cmp a b] returns true if a should come before b.
-# Example: [call $sort-by [fn [a b] [call $> $a $b]] [3 1 2]] => [3 2 1]  (descending)
+# cmp is a less-than function: [cmp a b] returns true if a should come before b.
+# Example: [sort-by [fn [a b] [> a b]] [3 1 2]] => [3 2 1]  (descending)
 # Inherently materializing: must compare values to determine order.
 sort-by: [fn [cmp xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $error "sort-by: expected Dict, got Seq -- collect the Seq first"]
-        [call $builtin-if [call $<= [call $length $xs] 1]
-            $xs
-            [call $sort-merge $cmp
-                [call $sort-by $cmp [call $builtin-take [call $quot [call $length $xs] 2] $xs]]
-                [call $sort-by $cmp [call $reindex [call $builtin-drop [call $quot [call $length $xs] 2] $xs]]]]]]]
+    [builtin-if [seq? xs]
+        [error "sort-by: expected Dict, got Seq -- collect the Seq first"]
+        [builtin-if [<= [length xs] 1]
+            xs
+            [sort-merge cmp
+                [sort-by cmp [builtin-take [quot [length xs] 2] xs]]
+                [sort-by cmp [reindex [builtin-drop [quot [length xs] 2] xs]]]]]]]
 
 sort-merge: [fn [cmp left right]
-    [call $builtin-if [call $empty? $left]
-        $right
-        [call $builtin-if [call $empty? $right]
-            $left
-            [call $builtin-if [call $cmp $left[0] $right[0]]
-                [call $cons $left[0] [call $sort-merge $cmp [call $rest $left] $right]]
-                [call $cons $right[0] [call $sort-merge $cmp $left [call $rest $right]]]]]]]
+    [builtin-if [empty? left]
+        right
+        [builtin-if [empty? right]
+            left
+            [builtin-if [cmp left[0] right[0]]
+                [cons left[0] [sort-merge cmp [rest left] right]]
+                [cons right[0] [sort-merge cmp left [rest right]]]]]]]
 
 # ============================================================================
 # Universal Collection Operations (preserve keys)
@@ -489,168 +489,168 @@ sort-merge: [fn [cmp left right]
 # Take elements from the beginning while predicate holds; stop at first failure.
 # Type: ((a -> Bool) -> Dict a -> Dict a)
 # Returns the longest prefix of xs where all elements satisfy pred.
-# Example: [call $take-while [fn [x] [call $< $x 3]] [1 2 3 4]] => [0: 1  1: 2]
+# Example: [take-while [fn [x] [< x 3]] [1 2 3 4]] => [0: 1  1: 2]
 # Inherently materializing: must check elements until predicate fails.
 take-while: [fn [pred xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $error "take-while: expected Dict, got Seq -- collect the Seq first"]
-        [call $take-while-impl $pred $xs [call $keys $xs] 0 []]]]
+    [builtin-if [seq? xs]
+        [error "take-while: expected Dict, got Seq -- collect the Seq first"]
+        [take-while-impl pred xs [keys xs] 0 []]]]
 
 take-while-impl: [fn [pred xs ks i acc]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $take-while-check $pred $xs $ks $i $acc $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [take-while-check pred xs ks i acc ks[i]]]]
 
 take-while-check: [fn [pred xs ks i acc current-key]
-    [call $builtin-if [call $pred $xs[$current-key]]
-        [call $take-while-impl $pred $xs $ks [call $builtin-add $i 1]
-            [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]
-        $acc]]
+    [builtin-if [pred xs[current-key]]
+        [take-while-impl pred xs ks [builtin-add i 1]
+            [merge acc [make-entry current-key xs[current-key]]]]
+        acc]]
 
 # Drop elements from the beginning while predicate holds.
 # Type: ((a -> Bool) -> Dict a -> Dict a)
 # Returns the remaining suffix starting from the first element that fails pred.
-# Example: [call $drop-while [fn [x] [call $< $x 3]] [1 2 3 4]] => [2: 3  3: 4]
+# Example: [drop-while [fn [x] [< x 3]] [1 2 3 4]] => [2: 3  3: 4]
 # Inherently materializing: must check elements until predicate fails.
 drop-while: [fn [pred xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $error "drop-while: expected Dict, got Seq -- collect the Seq first"]
-        [call $drop-while-impl $pred $xs [call $keys $xs] 0 [] true]]]
+    [builtin-if [seq? xs]
+        [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
+        [drop-while-impl pred xs [keys xs] 0 [] true]]]
 
 drop-while-impl: [fn [pred xs ks i acc dropping]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $drop-while-check $pred $xs $ks $i $acc $dropping $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [drop-while-check pred xs ks i acc dropping ks[i]]]]
 
 drop-while-check: [fn [pred xs ks i acc dropping current-key]
-    [call $builtin-if $dropping
-        [call $builtin-if [call $pred $xs[$current-key]]
-            [call $drop-while-impl $pred $xs $ks [call $builtin-add $i 1] $acc true]
-            [call $drop-while-impl $pred $xs $ks [call $builtin-add $i 1]
-                [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]
+    [builtin-if dropping
+        [builtin-if [pred xs[current-key]]
+            [drop-while-impl pred xs ks [builtin-add i 1] acc true]
+            [drop-while-impl pred xs ks [builtin-add i 1]
+                [merge acc [make-entry current-key xs[current-key]]]
                 false]]
-        [call $drop-while-impl $pred $xs $ks [call $builtin-add $i 1]
-            [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]
+        [drop-while-impl pred xs ks [builtin-add i 1]
+            [merge acc [make-entry current-key xs[current-key]]]
             false]]]
 
 # Apply a function to every [key: k value: v] entry dict, returning new values under same keys.
 # Type: (([key: k value: a] -> b) -> Dict a -> Dict b)
 # The function f receives the entry dict and must return the NEW VALUE (not a new entry dict).
 # Keys are preserved unchanged.
-# Example: [call $map-entries [fn [e] [call $* $e.value 2]] [a: 1 b: 2]] => [a: 2 b: 4]
-# Example: [call $map-entries [fn [e] $e.key] [x: 10 y: 20]] => [x: "x" y: "y"]
-map-entries: [fn [f xs] [call $map-entries-impl $f $xs [call $keys $xs] 0 []]]
+# Example: [map-entries [fn [e] [* e.value 2]] [a: 1 b: 2]] => [a: 2 b: 4]
+# Example: [map-entries [fn [e] e.key] [x: 10 y: 20]] => [x: "x" y: "y"]
+map-entries: [fn [f xs] [map-entries-impl f xs [keys xs] 0 []]]
 
 map-entries-impl: [fn [f xs ks i acc]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $map-entries-step $f $xs $ks $i $acc $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [map-entries-step f xs ks i acc ks[i]]]]
 
 map-entries-step: [fn [f xs ks i acc current-key]
-    [call $map-entries-impl $f $xs $ks [call $builtin-add $i 1]
-        [call $merge $acc
-            [call $make-entry $current-key
-                [call $f [key: $current-key value: $xs[$current-key]]]]]]]
+    [map-entries-impl f xs ks [builtin-add i 1]
+        [merge acc
+            [make-entry current-key
+                [f [key: current-key value: xs[current-key]]]]]]]
 
 # Left fold: alias for reduce (Rust-native builtin, dual-dispatch on Dict/Seq).
 # Type: ((b -> a -> b) -> b -> Dict a -> b)
 # fold and reduce are identical — use whichever name fits your context.
 # Both are left folds: f receives (accumulator, element) and the result becomes
 # the new accumulator. Starting accumulator is init.
-# Example: [call $fold [fn [acc x] [call $+ $acc $x]] 0 [1 2 3 4]] => 10
-fold: [fn [f init xs] [call $builtin-reduce $f $init $xs]]
+# Example: [fold [fn [acc x] [+ acc x]] 0 [1 2 3 4]] => 10
+fold: [fn [f init xs] [builtin-reduce f init xs]]
 
 # Take a slice by position (start inclusive, end exclusive). Preserves original keys.
 # Type: (Dict a -> Int -> Int -> Dict a)
-# Example: [call $slice [a: 1 b: 2 c: 3 d: 4] 1 3] => [b: 2 c: 3]
-slice: [fn [xs start end] [call $slice-impl $xs [call $keys $xs] $start $end 0 []]]
+# Example: [slice [a: 1 b: 2 c: 3 d: 4] 1 3] => [b: 2 c: 3]
+slice: [fn [xs start end] [slice-impl xs [keys xs] start end 0 []]]
 
 slice-impl: [fn [xs ks start end i acc]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $builtin-if [call $and [call $>= $i $start] [call $builtin-lt $i $end]]
-            [call $slice-step $xs $ks $start $end $i $acc $ks[$i]]
-            [call $slice-impl $xs $ks $start $end [call $builtin-add $i 1] $acc]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [builtin-if [and [>= i start] [builtin-lt i end]]
+            [slice-step xs ks start end i acc ks[i]]
+            [slice-impl xs ks start end [builtin-add i 1] acc]]]]
 
 slice-step: [fn [xs ks start end i acc current-key]
-    [call $slice-impl $xs $ks $start $end [call $builtin-add $i 1]
-        [call $merge $acc [call $make-entry $current-key $xs[$current-key]]]]]
+    [slice-impl xs ks start end [builtin-add i 1]
+        [merge acc [make-entry current-key xs[current-key]]]]]
 
 # Pair entries from two collections by position. Returns a list of pairs.
 # If both xs and ys are Seq: lazy Seq of pairs.
 # Otherwise: collect Seqs to Dicts, then use eager zip-dict-impl.
 zip: [fn [xs ys]
-    [call $builtin-if [call $and [call $seq? $xs] [call $seq? $ys]]
-        [call $zip-seq-impl $xs $ys]
-        [call $zip-dict-impl
-            [call $builtin-if [call $seq? $xs] [call $collect $xs] $xs]
-            [call $builtin-if [call $seq? $ys] [call $collect $ys] $ys]]]]
+    [builtin-if [and [seq? xs] [seq? ys]]
+        [zip-seq-impl xs ys]
+        [zip-dict-impl
+            [builtin-if [seq? xs] [collect xs] xs]
+            [builtin-if [seq? ys] [collect ys] ys]]]]
 
 # Lazy zip for two Seqs: produces a Seq of pairs until either input terminates.
 zip-seq-impl: [fn [xs ys]
-    [call $builtin-if [call $and [call $seq? $xs] [call $seq? $ys]]
-        [call $seq [[call $head $xs] [call $head $ys]]
-            [call $zip-seq-impl [call $tail $xs] [call $tail $ys]]]
+    [builtin-if [and [seq? xs] [seq? ys]]
+        [seq [[head xs] [head ys]]
+            [zip-seq-impl [tail xs] [tail ys]]]
         []]]
 
 # Eager zip for Dicts: iterates over keys and builds pairs.
 zip-dict-impl: [fn [xs ys]
-    [call $zip-impl $xs $ys [call $keys $xs] [call $keys $ys] 0 []]]
+    [zip-impl xs ys [keys xs] [keys ys] 0 []]]
 
 zip-impl: [fn [xs ys xks yks i acc]
-    [call $builtin-if [call $or [call $>= $i [call $length $xks]] [call $>= $i [call $length $yks]]]
-        $acc
-        [call $zip-step $xs $ys $xks $yks $i $acc $xks[$i] $yks[$i]]]]
+    [builtin-if [or [>= i [length xks]] [>= i [length yks]]]
+        acc
+        [zip-step xs ys xks yks i acc xks[i] yks[i]]]]
 
 zip-step: [fn [xs ys xks yks i acc xk yk]
-    [call $zip-impl $xs $ys $xks $yks [call $builtin-add $i 1]
-        [call $append $acc [$xs[$xk] $ys[$yk]]]]]
+    [zip-impl xs ys xks yks [builtin-add i 1]
+        [append acc [xs[xk] ys[yk]]]]]
 
 # Flatten nested lists one level deep.
 # Inherently materializing: must inspect each value to check if it is a list.
 flatten: [fn [xs]
-    [call $builtin-if [call $seq? $xs]
-        [call $error "flatten: expected Dict, got Seq -- collect the Seq first"]
-        [call $flatten-impl $xs [call $keys $xs] 0 []]]]
+    [builtin-if [seq? xs]
+        [error "flatten: expected Dict, got Seq -- collect the Seq first"]
+        [flatten-impl xs [keys xs] 0 []]]]
 
 flatten-impl: [fn [xs ks i acc]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $flatten-step $xs $ks $i $acc $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [flatten-step xs ks i acc ks[i]]]]
 
 flatten-step: [fn [xs ks i acc current-key]
-    [call $builtin-if [call $builtin-eq [call $type-of $xs[$current-key]] Dict]
-        [call $flatten-impl $xs $ks [call $builtin-add $i 1]
-            [call $concat $acc [call $reindex $xs[$current-key]]]]
-        [call $flatten-impl $xs $ks [call $builtin-add $i 1]
-            [call $append $acc $xs[$current-key]]]]]
+    [builtin-if [builtin-eq [type-of xs[current-key]] "Dict"]
+        [flatten-impl xs ks [builtin-add i 1]
+            [concat acc [reindex xs[current-key]]]]
+        [flatten-impl xs ks [builtin-add i 1]
+            [append acc xs[current-key]]]]]
 
 # Recursively search for a key in nested dicts.
 # Inherently materializing: must traverse nested structure recursively to search.
 find-deep: [fn [xs target]
-    [call $find-deep-impl $xs $target [call $keys $xs] 0]]
+    [find-deep-impl xs target [keys xs] 0]]
 
 find-deep-impl: [fn [xs target ks i]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        [call $error [call $str "key not found: " $target]]
-        [call $find-deep-check $xs $target $ks $i $ks[$i]]]]
+    [builtin-if [>= i [length ks]]
+        [error [str "key not found: " target]]
+        [find-deep-check xs target ks i ks[i]]]]
 
 find-deep-check: [fn [xs target ks i current-key]
-    [call $builtin-if [call $builtin-eq $current-key $target]
-        $xs[$current-key]
-        [call $builtin-if [call $builtin-eq [call $type-of $xs[$current-key]] Dict]
-            [call $find-deep-try $xs[$current-key] $target $xs $ks $i]
-            [call $find-deep-impl $xs $target $ks [call $builtin-add $i 1]]]]]
+    [builtin-if [builtin-eq current-key target]
+        xs[current-key]
+        [builtin-if [builtin-eq [type-of xs[current-key]] "Dict"]
+            [find-deep-try xs[current-key] target xs ks i]
+            [find-deep-impl xs target ks [builtin-add i 1]]]]]
 
 find-deep-try: [fn [subtree target parent ks i]
-    [call $find-deep-try-check
-        [call $try [fn [] [call $find-deep $subtree $target]]]
-        $parent $target $ks $i]]
+    [find-deep-try-check
+        [try [fn [] [find-deep subtree target]]]
+        parent target ks i]]
 
 find-deep-try-check: [fn [result parent target ks i]
-    [call $builtin-if [call $builtin-eq [call $first [call $keys $result]] ok]
-        $result.ok
-        [call $find-deep-impl $parent $target $ks [call $builtin-add $i 1]]]]
+    [builtin-if [builtin-eq [first [keys result]] "ok"]
+        result.ok
+        [find-deep-impl parent target ks [builtin-add i 1]]]]
 
 # ============================================================================
 # Higher-Order Dict/List Utilities
@@ -658,121 +658,121 @@ find-deep-try-check: [fn [result parent target ks i]
 
 # Transform a dict via entries: entries → map(f) → from-entries.
 # Each entry passed to f has the shape [key: k value: v].
-with-entries: [fn [xs f] [call $from-entries [call $builtin-map $f [call $entries $xs]]]]
+with-entries: [fn [xs f] [from-entries [builtin-map f [entries xs]]]]
 
 # Split a collection into two groups: elements satisfying pred and those that do not.
 # Type: ((a -> Bool) -> Dict a -> [pass: Dict a  fail: Dict a])
 # Returns a dict with keys `pass` (matching) and `fail` (non-matching).
 # Both groups are integer-keyed dicts (eager, not Seqs) for predictable downstream use.
-# Example: [call $partition [fn [x] [call $> $x 0]] [1 -2 3 -4]] => [pass: [1 3]  fail: [-2 -4]]
+# Example: [partition [fn [x] [> x 0]] [1 -2 3 -4]] => [pass: [1 3]  fail: [-2 -4]]
 partition: [fn [pred xs]
-    [call $builtin-reduce
+    [builtin-reduce
         [fn [acc e]
-            [call $partition-step $acc $e [call $pred $e]]]
+            [partition-step acc e [pred e]]]
         [pass: []  fail: []]
-        $xs]]
+        xs]]
 
 partition-step: [fn [acc e passes]
-    [call $builtin-if $passes
-        [pass: [call $append $acc.pass $e]
-         fail: $acc.fail]
-        [pass: $acc.pass
-         fail: [call $append $acc.fail $e]]]]
+    [builtin-if passes
+        [pass: [append acc.pass e]
+         fail: acc.fail]
+        [pass: acc.pass
+         fail: [append acc.fail e]]]]
 
 # Map a function over a collection and flatten (concatenate) the results.
 # Type: ((a -> Dict b) -> Dict a -> Dict b)
 # f must return a collection for each element; results are concatenated.
-# Example: [call $flat-map [fn [x] [$x [call $* $x 2]]] [1 2 3]] => [1 2 2 4 3 6]
+# Example: [flat-map [fn [x] [$x [* x 2]]] [1 2 3]] => [1 2 2 4 3 6]
 # Uses concat to accumulate the results of f, avoiding Seq/Dict flush issues.
 # Inherently materializing: f must return collections that can be concatenated.
 flat-map: [fn [f xs]
-    [call $builtin-reduce [fn [acc x] [call $concat $acc [call $f $x]]] [] $xs]]
+    [builtin-reduce [fn [acc x] [concat acc [f x]]] [] xs]]
 
 # Return the first element satisfying pred, or error if none found.
-# filter on Dict returns a Seq; $head gets the first element (errors if Seq is empty).
-find-first: [fn [pred xs] [call $head [call $builtin-filter $pred $xs]]]
+# filter on Dict returns a Seq; head gets the first element (errors if Seq is empty).
+find-first: [fn [pred xs] [head [builtin-filter pred xs]]]
 
 # Return the first element satisfying pred, or default if none found.
 find-first-or: [fn [pred default xs]
-    [call $try-or [fn [] [call $find-first $pred $xs]] $default]]
+    [try-or [fn [] [find-first pred xs]] default]]
 
 # Group elements of xs into a dict of lists, keyed by the result of applying f.
 # Elements with the same key are collected together (insertion order preserved).
 # Inherently materializing: must inspect all elements.
 group-by: [fn [f xs]
-    [call $builtin-reduce
+    [builtin-reduce
         [fn [acc x]
-            [call $group-by-step $acc $x [call $f $x]]]
+            [group-by-step acc x [f x]]]
         []
-        $xs]]
+        xs]]
 
 group-by-step: [fn [acc x k]
-    [call $merge $acc
-        [call $make-entry $k
-            [call $append [call $get-or $acc $k []] $x]]]]
+    [merge acc
+        [make-entry k
+            [append [get-or acc k []] x]]]]
 
 # Merge two dicts recursively. Sub-dicts are merged depth-first;
 # all other values from b override a (right-biased at each level).
 # Inherently materializing: must inspect values to determine if they are dicts.
 deep-merge: [fn [a b]
-    [call $builtin-reduce
+    [builtin-reduce
         [fn [acc k]
-            [call $deep-merge-step $acc $a $b $k]]
-        $a
-        [call $keys $b]]]
+            [deep-merge-step acc a b k]]
+        a
+        [keys b]]]
 
 deep-merge-step: [fn [acc a b k]
-    [call $merge $acc
-        [call $make-entry $k
-            [call $builtin-if
-                [call $and
-                    [call $has? $a $k]
-                    [call $and
-                        [call $builtin-eq [call $type-of $a[$k]] Dict]
-                        [call $builtin-eq [call $type-of $b[$k]] Dict]]]
-                [call $deep-merge $a[$k] $b[$k]]
-                $b[$k]]]]]
+    [merge acc
+        [make-entry k
+            [builtin-if
+                [and
+                    [has? a k]
+                    [and
+                        [builtin-eq [type-of a[k]] "Dict"]
+                        [builtin-eq [type-of b[k]] "Dict"]]]
+                [deep-merge a[k] b[k]]
+                b[k]]]]]
 
 # Apply a function bottom-up to every node in a nested dict structure.
 # For dicts: recursively transform all values first, then apply f to the resulting dict.
 # For non-dicts: apply f directly to the value.
 # Inherently materializing: must traverse entire structure.
 walk: [fn [f xs]
-    [call $builtin-if [call $builtin-eq [call $type-of $xs] Dict]
-        [call $f [call $walk-dict $f $xs]]
-        [call $f $xs]]]
+    [builtin-if [builtin-eq [type-of xs] "Dict"]
+        [f [walk-dict f xs]]
+        [f xs]]]
 
 walk-dict: [fn [f xs]
-    [call $builtin-reduce
+    [builtin-reduce
         [fn [acc k]
-            [call $merge $acc [call $make-entry $k [call $walk $f $xs[$k]]]]]
+            [merge acc [make-entry k [walk f xs[k]]]]]
         []
-        [call $keys $xs]]]
+        [keys xs]]]
 
 # Unzip a list of pairs into a pair of lists.
 # Takes a list of 2-element dicts [0: a 1: b] and returns [a: [0: a0 1: a1 ...] b: [0: b0 1: b1 ...]].
 # Inherently materializing: must map over the entire collection.
 unzip: [fn [pairs]
-    [a: [call $builtin-map [fn [p] $p[0]] $pairs]
-     b: [call $builtin-map [fn [p] $p[1]] $pairs]]]
+    [a: [builtin-map [fn [p] p[0]] pairs]
+     b: [builtin-map [fn [p] p[1]] pairs]]]
 
 # Transpose a 2D dict structure (flip rows and columns).
 # Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]].
 # All inner dicts must have the same keys.
 # Inherently materializing: must iterate over all rows and columns.
 transpose: [fn [rows]
-    [call $builtin-if [call $empty? $rows]
+    [builtin-if [empty? rows]
         []
-        [call $transpose-impl $rows [call $keys [call $first [call $values $rows]]]]]]
+        [transpose-impl rows [keys [first [values rows]]]]]]
 
 transpose-impl: [fn [rows col-keys]
-    [call $builtin-reduce
+    [builtin-reduce
         [fn [acc col-key]
-            [call $merge $acc
-                [call $make-entry $col-key
-                    [call $builtin-map [fn [row] $row[$col-key]] $rows]]]]
+            [merge acc
+                [make-entry col-key
+                    [builtin-map [fn [row] row[col-key]] rows]]]]
         []
-        $col-keys]]
+        col-keys]]
 
 # ============================================================================
 # Aggregates
@@ -780,87 +780,87 @@ transpose-impl: [fn [rows col-keys]
 
 # Sum all elements of a numeric collection.
 # Inherently materializing: must reduce all elements.
-sum: [fn [xs] [call $builtin-reduce [fn [a b] [call $builtin-add $a $b]] 0 $xs]]
+sum: [fn [xs] [builtin-reduce [fn [a b] [builtin-add a b]] 0 xs]]
 
 # Product of all elements in a numeric collection.
 # Inherently materializing: must reduce all elements.
-product: [fn [xs] [call $builtin-reduce [fn [a b] [call $builtin-mul $a $b]] 1 $xs]]
+product: [fn [xs] [builtin-reduce [fn [a b] [builtin-mul a b]] 1 xs]]
 
 # Return the minimum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic min).
 min: [fn [xs]
-    [call $builtin-reduce
-        [fn [a b] [call $builtin-if [call $builtin-lt $a $b] $a $b]]
-        [call $first $xs]
-        [call $rest $xs]]]
+    [builtin-reduce
+        [fn [a b] [builtin-if [builtin-lt a b] a b]]
+        [first xs]
+        [rest xs]]]
 
 # Return the maximum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic max).
 max: [fn [xs]
-    [call $builtin-reduce
-        [fn [a b] [call $builtin-if [call $builtin-lt $a $b] $b $a]]
-        [call $first $xs]
-        [call $rest $xs]]]
+    [builtin-reduce
+        [fn [a b] [builtin-if [builtin-lt a b] b a]]
+        [first xs]
+        [rest xs]]]
 
 # Count elements satisfying pred.
 # Uses reduce to count, avoiding the Seq→length issue (filter on Dict returns Seq).
 count: [fn [pred xs]
-    [call $builtin-reduce
-        [fn [acc x] [call $builtin-if [call $pred $x] [call $builtin-add $acc 1] $acc]]
+    [builtin-reduce
+        [fn [acc x] [builtin-if [pred x] [builtin-add acc 1] acc]]
         0
-        $xs]]
+        xs]]
 
 # Check if a collection contains val (using structural equality).
 # Handles both Dict input (uses any?) and Seq input (uses filter then seq? to check non-empty).
 contains?: [fn [xs val]
-    [call $builtin-if [call $seq? $xs]
-        [call $seq? [call $builtin-filter [fn [e] [call $builtin-eq $e $val]] $xs]]
-        [call $any? [fn [e] [call $builtin-eq $e $val]] $xs]]]
+    [builtin-if [seq? xs]
+        [seq? [builtin-filter [fn [e] [builtin-eq e val]] xs]]
+        [any? [fn [e] [builtin-eq e val]] xs]]]
 
 # Remove duplicate elements, keeping the first occurrence of each.
 # Inherently materializing: O(n²) due to sequential contains? checks.
 uniq: [fn [xs]
-    [call $uniq-impl [call $keys $xs] $xs [] [] 0]]
+    [uniq-impl [keys xs] xs [] [] 0]]
 
 uniq-impl: [fn [ks xs acc seen i]
-    [call $builtin-if [call $>= $i [call $length $ks]]
-        $acc
-        [call $uniq-step $ks $xs $acc $seen $i $xs[$ks[$i]]]]]
+    [builtin-if [>= i [length ks]]
+        acc
+        [uniq-step ks xs acc seen i xs[ks[i]]]]]
 
 uniq-step: [fn [ks xs acc seen i v]
-    [call $builtin-if [call $contains? $seen $v]
-        [call $uniq-impl $ks $xs $acc $seen [call $builtin-add $i 1]]
-        [call $uniq-impl $ks $xs [call $append $acc $v] [call $append $seen $v] [call $builtin-add $i 1]]]]
+    [builtin-if [contains? seen v]
+        [uniq-impl ks xs acc seen [builtin-add i 1]]
+        [uniq-impl ks xs [append acc v] [append seen v] [builtin-add i 1]]]]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
-foldr: [fn [f acc xs] [call $builtin-reduce $f $acc [call $reverse $xs]]]
+foldr: [fn [f acc xs] [builtin-reduce f acc [reverse xs]]]
 
 # ============================================================================
 # Composition
 # ============================================================================
 
 # Compose two functions: (compose f g)(x) = f(g(x)).
-compose: [fn [f g] [fn [x] [call $f [call $g $x]]]]
+compose: [fn [f g] [fn [x] [f [g x]]]]
 
 # Thread a value through a series of functions.
-# Usage: [call $-> $data $step1 $step2 $step3]
-->: [fn [x ...stages] [call $builtin-reduce [fn [acc f] [call $f $acc]] $x $stages]]
+# Usage: [-> data step1 step2 step3]
+->: [fn [x ...stages] [builtin-reduce [fn [acc f] [f acc]] x stages]]
 
 # ============================================================================
 # Type Predicates
 # ============================================================================
 
 # Type predicates check the runtime type of a value.
-# Each uses $type-of to inspect the type string.
-# Inherently materializing: $type-of must inspect the value.
+# Each uses type-of to inspect the type string.
+# Inherently materializing: type-of must inspect the value.
 
-int?: [fn [x] [call $builtin-eq [call $type-of $x] Int]]
-str?: [fn [x] [call $builtin-eq [call $type-of $x] String]]
-float?: [fn [x] [call $builtin-eq [call $type-of $x] Float]]
-bool?: [fn [x] [call $builtin-eq [call $type-of $x] Bool]]
-dict?: [fn [x] [call $builtin-eq [call $type-of $x] Dict]]
-fn?: [fn [x] [call $builtin-eq [call $type-of $x] Function]]
+int?: [fn [x] [builtin-eq [type-of x] "Int"]]
+str?: [fn [x] [builtin-eq [type-of x] "String"]]
+float?: [fn [x] [builtin-eq [type-of x] "Float"]]
+bool?: [fn [x] [builtin-eq [type-of x] "Bool"]]
+dict?: [fn [x] [builtin-eq [type-of x] "Dict"]]
+fn?: [fn [x] [builtin-eq [type-of x] "Function"]]
 
 # ============================================================================
 # Error Handling
@@ -869,12 +869,12 @@ fn?: [fn [x] [call $builtin-eq [call $type-of $x] Function]]
 # Call a function; if it errors, return the default value.
 # Inherently materializing: must materialize body to catch errors.
 try-or: [fn [f default]
-    [call $try-or-impl [call $try $f] $default]]
+    [try-or-impl [try f] default]]
 
 try-or-impl: [fn [try-result default]
-    [call $builtin-if [call $builtin-eq [call $first [call $keys $try-result]] ok]
-        $try-result.ok
-        $default]]
+    [builtin-if [builtin-eq [first [keys try-result]] "ok"]
+        try-result.ok
+        default]]
 
 # ============================================================================
 # Sequences
@@ -889,14 +889,14 @@ try-or-impl: [fn [try-result default]
 
 # Assert a condition; if false, raise an error with the given message.
 # Inherently materializing: must materialize condition to check.
-assert: [fn [cond msg] [call $builtin-if $cond true [call $error $msg]]]
+assert: [fn [cond msg] [builtin-if cond true [error msg]]]
 
 # ============================================================================
 # Shadowable Operator Wrappers
 # ============================================================================
 #
 # These wrappers shadow Rust-native builtins to make them overridable by
-# user code via $include. Each wrapper delegates to a stable builtin-* alias
+# user code via include. Each wrapper delegates to a stable builtin-* alias
 # that cannot be shadowed.
 #
 # This enables embedded DSLs (like stdlib/sql.llt) to redefine operators
@@ -906,29 +906,29 @@ assert: [fn [cond msg] [call $builtin-if $cond true [call $error $msg]]]
 # Note: overrides apply to the initial dispatch only. Seq corecursion steps
 # (map/filter/reduce/take/drop on Seq tails) always call the underlying Rust
 # implementation directly via hardcoded function pointers in PendingBuiltin
-# continuations, bypassing any $include override.
+# continuations, bypassing any include override.
 #
 # NOTE: Arity errors refer to these wrapper functions, not the underlying
 # builtins. This is an accepted trade-off of the overridable-ops design.
 
 # Comparison operators
-<: [fn [a b] [call $builtin-lt $a $b]]
-=: [fn [a b] [call $builtin-eq $a $b]]
+<: [fn [a b] [builtin-lt a b]]
+=: [fn [a b] [builtin-eq a b]]
 
 # Arithmetic operators
-+: [fn [a b] [call $builtin-add $a $b]]
--: [fn [a b] [call $builtin-sub $a $b]]
-*: [fn [a b] [call $builtin-mul $a $b]]
-/: [fn [a b] [call $builtin-div $a $b]]
++: [fn [a b] [builtin-add a b]]
+-: [fn [a b] [builtin-sub a b]]
+*: [fn [a b] [builtin-mul a b]]
+/: [fn [a b] [builtin-div a b]]
 
 # Control flow
-if: [fn [c t e] [call $builtin-if $c $t $e]]
+if: [fn [c t e] [builtin-if c t e]]
 
 # Higher-order collection functions
-filter: [fn [pred xs] [call $builtin-filter $pred $xs]]
-map: [fn [f xs] [call $builtin-map $f $xs]]
-reduce: [fn [f init xs] [call $builtin-reduce $f $init $xs]]
-take: [fn [n xs] [call $builtin-take $n $xs]]
-drop: [fn [n xs] [call $builtin-drop $n $xs]]
+filter: [fn [pred xs] [builtin-filter pred xs]]
+map: [fn [f xs] [builtin-map f xs]]
+reduce: [fn [f init xs] [builtin-reduce f init xs]]
+take: [fn [n xs] [builtin-take n xs]]
+drop: [fn [n xs] [builtin-drop n xs]]
 
 ]

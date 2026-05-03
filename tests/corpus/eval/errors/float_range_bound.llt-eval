@@ -1,6 +1,6 @@
 # range access: float as range start bound produces type error (was parse error in pest parser)
 [data: [0: a 1: b 2: c]]
 
-$data[1.0..2]
+data[1.0..2]
 ===
 [E010] type mismatch: expected String or Int, got Float

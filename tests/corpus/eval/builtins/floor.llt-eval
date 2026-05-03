@@ -1,4 +1,4 @@
 # floor : floor a float to integer
-[call $floor 3.7]
+[floor 3.7]
 ===
 Int(3)

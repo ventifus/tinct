@@ -1,4 +1,4 @@
 # drop: error when n is not an Int
-[call $drop "not-a-number" [call $range 0 10]]
+[drop "not-a-number" [range 0 10]]
 ===
 [E010] type mismatch: expected Int, got String

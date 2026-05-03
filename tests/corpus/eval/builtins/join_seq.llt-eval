@@ -1,4 +1,4 @@
 # join on seq of strings
-[call $join "-" [call $take 3 [call $map [fn [x] [call $str $x]] [call $range 1]]]]
+[join "-" [take 3 [map [fn [x] [str x]] [range 1]]]]
 ===
 String("1-2-3")

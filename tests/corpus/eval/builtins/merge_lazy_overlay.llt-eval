@@ -2,10 +2,10 @@
 # Verifies that $merge returns an overlay that is correctly flattened
 # when accessed via dot notation
 [
-  merged: [call $merge [x: 10  y: 20] [y: 99  z: 30]]
-  x-val: $merged.x
-  y-val: $merged.y
-  z-val: $merged.z
+  merged: [merge [x: 10  y: 20] [y: 99  z: 30]]
+  x-val: merged.x
+  y-val: merged.y
+  z-val: merged.z
 ]
 ===
 Dict({"merged": Dict({"x": Int(10), "y": Int(99), "z": Int(30)}), "x-val": Int(10), "y-val": Int(99), "z-val": Int(30)})

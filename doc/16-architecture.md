@@ -25,7 +25,7 @@
        │
        ▼
 ┌─────────────┐
-│  Evaluator  │  Per-document: scope chains, $$ pipeline, lazy
+│  Evaluator  │  Per-document: scope chains, % pipeline, lazy
 └──────┬──────┘
        │
        ▼
@@ -101,7 +101,7 @@ enum Cont {
         env: Rc<RefCell<Environment>>,
     },
 
-    // document pipeline: bind result as $$ in child env, continue with next document
+    // document pipeline: bind result as % in child env, continue with next document
     DocumentPipeline {
         remaining: Box<Vec<Spanned<Expr>>>,
         env: Rc<RefCell<Environment>>,

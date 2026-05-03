@@ -5,7 +5,7 @@
 # when Any flows through -- it accepts everything, losing the Damas-Milner
 # principal type guarantee (doc/06 Limitation #2).
 # At eval time, $f is the identity function, so the result is "hello" (a string).
-[f: [fn [x] $x]
- result: [call $f hello]]
+[f: [fn [x] x]
+ result: [f "hello"]]
 ===
 Dict({"f": Function(x), "result": String("hello")})

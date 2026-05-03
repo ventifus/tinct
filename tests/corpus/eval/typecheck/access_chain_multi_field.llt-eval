@@ -1,9 +1,9 @@
 # Access chain constraint generation: multi-field accumulation
 # Multiple dot-accesses on the same forward-referenced dict should accumulate constraints.
 # Tests that constraint generation handles multiple fields correctly.
-[first_name: $data.first
- last_name: $data.last
- age_plus_one: [call $+ $data.age 1]
- data: [first: Alice  last: Smith  age: 30]]
+[first_name: data.first
+ last_name: data.last
+ age_plus_one: [+ data.age 1]
+ data: [first: "Alice"  last: "Smith"  age: 30]]
 ===
 Dict({"first_name": String("Alice"), "last_name": String("Smith"), "age_plus_one": Int(31), "data": Dict({"first": String("Alice"), "last": String("Smith"), "age": Int(30)})})

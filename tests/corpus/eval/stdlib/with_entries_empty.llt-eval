@@ -1,4 +1,4 @@
 # with-entries: empty dict returns empty dict
-[call $with-entries [] [fn [e] [key: $e.key  value: $e.value]]]
+[with-entries [] [fn [e] [key: e.key  value: e.value]]]
 ===
 Dict({})

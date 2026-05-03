@@ -1,4 +1,4 @@
 # concat: error when first argument is not a sequence
-[call $concat 42 [1 2 3]]
+[concat 42 [1 2 3]]
 ===
 [E010] type mismatch: expected Seq or Dict, got Int

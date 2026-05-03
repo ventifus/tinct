@@ -1,4 +1,4 @@
 # mod: negative dividend
-[call $mod -7 3]
+[mod -7 3]
 ===
 Int(-1)

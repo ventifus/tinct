@@ -1,4 +1,4 @@
 # < : less-than comparison on Bool (false < true)
-[call $< false true]
+[< false true]
 ===
 Bool(true)

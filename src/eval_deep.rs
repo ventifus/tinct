@@ -598,6 +598,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("g".into()))),
                 args: vec![Rc::new(sp(Expr::VarRef("x".into())))],
                 named_args: vec![],
+                implied: false,
             })),
             env: Rc::clone(&env),
         };
@@ -609,6 +610,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("g".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
         // eval() returns a PendingCall thunk (lazy call not yet materialized)
         let error_thunk = eval(Rc::new(call_expr.clone()), Rc::clone(&env), &ctx, 0).unwrap();

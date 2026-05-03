@@ -1,4 +1,4 @@
 # merge with two distinct open records; type-checks correctly with distinct RowVars (Wand 1987 Case 4).
-[call $merge [a: 1] [b: 2]]
+[merge [a: 1] [b: 2]]
 ===
 Dict({"a": Int(1), "b": Int(2)})

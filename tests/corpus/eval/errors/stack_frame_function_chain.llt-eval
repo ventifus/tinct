@@ -1,7 +1,7 @@
 [
-  f1: [fn [x] [call $head $x]]
-  f2: [fn [y] [call $f1 $y]]
+  f1: [fn [x] [head x]]
+  f2: [fn [y] [f1 y]]
 ]
-[call $f2 []]
+[f2 []]
 ===
 [E034] head on empty collection

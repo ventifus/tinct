@@ -1,6 +1,6 @@
 # CALL-ANY: calling a 1-param function with 2 args produces an arity mismatch error (E020)
-[f: [fn [x] $x]]
+[f: [fn [x] x]]
 
-[call $f 42 99]
+[f 42 99]
 ===
 [E020] arity mismatch

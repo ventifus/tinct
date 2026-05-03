@@ -1,4 +1,4 @@
 # sum: empty collection returns 0
-[call $sum []]
+[sum []]
 ===
 Int(0)

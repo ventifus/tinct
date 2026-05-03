@@ -1,4 +1,4 @@
 # words: leading and trailing spaces are stripped (shows first element only)
-[call $words "  hello world  "]
+[words "  hello world  "]
 ===
 Seq(String("hello"), ...)

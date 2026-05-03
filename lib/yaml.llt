@@ -115,7 +115,7 @@ yaml-value: [fn [val depth]
 ]
 
 # Public API — the only dict returned by $include.
-# Uses $$.yaml-value to reference the helper from document 1's scope via $$.
+# Uses %.yaml-value to reference the helper from document 1's scope via %.
 [
-  to-yaml: [fn [val] [call $$.yaml-value $val 0]]
+  to-yaml: [fn [val] [call %.yaml-value $val 0]]
 ]

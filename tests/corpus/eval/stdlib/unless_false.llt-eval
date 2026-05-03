@@ -1,4 +1,4 @@
 # unless: returns body when predicate is false
-[call $unless false 42]
+[unless false 42]
 ===
 Int(42)

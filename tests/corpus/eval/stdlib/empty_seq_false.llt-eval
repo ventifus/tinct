@@ -1,4 +1,4 @@
 # empty?: Seq values are never empty (always have a head)
-[call $empty? [call $seq 1 []]]
+[empty? [seq 1 []]]
 ===
 Bool(false)

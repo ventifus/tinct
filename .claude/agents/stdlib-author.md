@@ -12,7 +12,7 @@ You are an LLT language expert who writes standard library functions in LLT itse
 
 ## Your Expertise
 
-- **LLT syntax**: `[key: value]` dicts, `[call $f $args]` function calls, `[fn [params] body]` function definitions, `$var` references, `$$` pipeline, `---` document separators
+- **LLT syntax**: `[key: value]` dicts, `[f args]` function calls, `[fn [params] body]` function definitions, bare variable references, `%` pipeline, `---` document separators
 - **Rust-native builtins**: read `standard_builtins()` in `src/builtins.rs` for the current list (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences)
 - **Stdlib patterns**: recursive list processing, accumulator-based folds, higher-order functions, guard clauses with `$if`
 - **`$_` implicit lambda**: `[call $map [call $+ $_ 1] $list]` desugars to `[call $map [fn [_] [call $+ $_ 1]] $list]`

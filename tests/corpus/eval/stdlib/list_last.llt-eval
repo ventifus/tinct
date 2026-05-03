@@ -1,4 +1,4 @@
 # last: get last element
-[call $last [10 20 30]]
+[last [10 20 30]]
 ===
 Int(30)

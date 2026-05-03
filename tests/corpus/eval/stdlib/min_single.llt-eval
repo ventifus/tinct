@@ -1,4 +1,4 @@
 # min: single element returns itself
-[call $min [42]]
+[min [42]]
 ===
 Int(42)

@@ -1,4 +1,4 @@
 # find-deep: recursively search for a key in nested dicts
-[call $find-deep [a: [b: [target: 42]]] target]
+[find-deep [a: [b: [target: 42]]] "target"]
 ===
 Int(42)

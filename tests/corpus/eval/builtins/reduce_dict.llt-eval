@@ -1,4 +1,4 @@
 # reduce on dict: sum all values
-[call $reduce [fn [acc x] [call $+ $acc $x]] 0 [10 20 30]]
+[reduce [fn [acc x] [+ acc x]] 0 [10 20 30]]
 ===
 Int(60)

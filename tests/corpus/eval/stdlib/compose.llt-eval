@@ -1,8 +1,8 @@
 # compose: f(g(x)) = add1(double(5)) = 11
-[add1: [fn [x] [call $+ $x 1]]
- double: [fn [x] [call $* $x 2]]
- f: [call $compose $add1 $double]]
+[add1: [fn [x] [+ x 1]]
+ double: [fn [x] [* x 2]]
+ f: [compose add1 double]]
 
-[call $f 5]
+[f 5]
 ===
 Int(11)

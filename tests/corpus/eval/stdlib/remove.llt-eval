@@ -1,4 +1,4 @@
 # remove: remove a key from a dict
-[call $remove [a: 1 b: 2 c: 3] b]
+[remove [a: 1 b: 2 c: 3] "b"]
 ===
 Dict({"a": Int(1), "c": Int(3)})

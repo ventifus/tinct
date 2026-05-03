@@ -88,12 +88,9 @@ fn key_to_string(expr: &Expr) -> Option<String> {
         Expr::Float(n) => Some(n.to_string()),
         Expr::Bool(b) => Some(b.to_string()),
         Expr::VarRef(name) => {
-            if name.starts_with('%') {
-                // %foo-style VarRef keys keep the literal name (no $ prefix).
-                Some(name.clone())
-            } else {
-                Some(format!("${name}"))
-            }
+            // In new syntax, variable references display as the bare name (no $ prefix).
+            // Both bare-word identifiers and $escaped-refs store the name without sigil.
+            Some(name.clone())
         }
         _ => None,
     }
@@ -207,6 +204,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             func,
             args,
             named_args,
+            implied,
         } => Expr::Call {
             func: Box::new(adjust_spanned_expr(*func, base)),
             args: args
@@ -228,6 +226,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
                     },
                 })
                 .collect(),
+            implied,
         },
         Expr::Fn {
             return_ann,
@@ -329,7 +328,7 @@ fn parse_annotation(
         }
         _ => {
             return Err(ParseError {
-                message: "expected @ or @@ to start annotation".to_string(),
+                message: "expected @ to start annotation".to_string(),
                 span: Some(tokens[i].span),
             });
         }
@@ -358,7 +357,7 @@ fn parse_annotation(
     let ann_token = &tokens[i];
 
     match &ann_token.node {
-        Token::BareWord(name) => {
+        Token::Identifier(name) => {
             // Simple annotation: @Number, @a, etc.
             let annotation = Annotation::Simple(name.clone());
             Ok((Spanned::new(annotation, ann_token.span), i + 1))
@@ -582,7 +581,7 @@ fn parse_param_list(
                 }
 
                 match &tokens[*i].node {
-                    Token::BareWord(name) => {
+                    Token::Identifier(name) => {
                         let param_span = Span {
                             start: ellipsis_span.start,
                             end: tokens[*i].span.end,
@@ -626,7 +625,7 @@ fn parse_param_list(
                     }
                 }
             }
-            Token::BareWord(name) => {
+            Token::Identifier(name) => {
                 if saw_variadic {
                     let err = ParseError {
                         message: "parameter after variadic parameter".to_string(),
@@ -719,16 +718,21 @@ enum StackFrame {
     /// Dictionary literal: `[key: value ...]`
     Dict {
         entries: Vec<Entry>,
-        /// Pending key from a BareWord/QuotedString/VarRef before a colon
+        /// Pending key from an Identifier/QuotedString/EscapedRef before a colon
         pending_key: Option<Spanned<Expr>>,
         /// Track seen keys for duplicate detection (literal keys only)
         seen_keys: std::collections::HashSet<String>,
         span_start: Position,
     },
-    /// Function call: `[call $func arg1 arg2 name: val]`
+    /// Function call: `[call func arg1 arg2 name: val]` or `[func arg1 arg2 name: val]`
     Call {
+        /// For implied calls (`[f x]`), the function is extracted from the head Identifier at frame-push time.
+        /// For explicit calls (`[call f x]`), this is None and func is extracted from args[0].
+        func: Option<Spanned<Expr>>,
+        /// Whether this is an implied call ([f x]) or explicit call ([call f x])
+        implied: bool,
         args: Vec<CallArg>,
-        /// Pending key for named args (BareWord before colon)
+        /// Pending key for named args (Identifier before colon)
         pending_key: Option<(String, Span)>,
         span_start: Position,
     },
@@ -905,69 +909,82 @@ fn recover_from_bracket_error(
                 }
             }
             StackFrame::Call {
-                args, span_start, ..
+                func: frame_func,
+                implied,
+                args,
+                span_start,
+                ..
             } => {
                 // Build a partial call with valid args plus an error arg.
-                // If there's no function (empty args), or first arg is named, use plain error.
-                if args.is_empty() {
+                let func = if let Some(ref f) = frame_func {
+                    // Implied call: func already captured
+                    Some(f.clone())
+                } else if !args.is_empty() {
+                    // Explicit call: try to extract func from args[0]
+                    match &args[0] {
+                        CallArg::Positional(f) => {
+                            Some(Rc::try_unwrap(Rc::clone(f)).unwrap_or_else(|rc| (*rc).clone()))
+                        }
+                        CallArg::Named(_, _) => None, // Invalid
+                    }
+                } else {
+                    None
+                };
+
+                if func.is_none() {
                     // No function — can't build a call, use plain error
                     Spanned::new(Expr::Error(error_span), error_span)
                 } else {
-                    match &args[0] {
-                        CallArg::Positional(func) => {
-                            let func = Rc::clone(func);
-                            let mut positional_args = Vec::new();
-                            let mut named_args = Vec::new();
+                    let func = func.unwrap();
+                    let mut positional_args = Vec::new();
+                    let mut named_args = Vec::new();
 
-                            // Check original args length before consuming it
-                            let has_args_beyond_func = args.len() > 1;
+                    // For implied calls, args starts at 0. For explicit calls, skip args[0] (the func).
+                    let args_iter = if frame_func.is_some() {
+                        args.into_iter()
+                    } else {
+                        args.into_iter().skip(1).collect::<Vec<_>>().into_iter()
+                    };
 
-                            for arg in args.into_iter().skip(1) {
-                                match arg {
-                                    CallArg::Positional(expr) => positional_args.push(expr),
-                                    CallArg::Named(name, expr) => {
-                                        named_args.push(Spanned::new(
-                                            NamedArg {
-                                                name,
-                                                value: Rc::clone(&expr),
-                                            },
-                                            expr.span,
-                                        ));
-                                    }
-                                }
-                            }
-
-                            // Only build a partial call if there were actual args beyond the function.
-                            // If args.len() == 1, it's just [call $f] with an error — emit plain Error.
-                            if !has_args_beyond_func {
-                                Spanned::new(Expr::Error(error_span), error_span)
-                            } else {
-                                // Add the error as a positional argument
-                                positional_args.push(Rc::new(Spanned::new(
-                                    Expr::Error(error_span),
-                                    error_span,
-                                )));
-
-                                let call_span = Span {
-                                    start: span_start,
-                                    end: error_span.end,
-                                };
-                                Spanned::new(
-                                    Expr::Call {
-                                        func: Box::new(
-                                            Rc::try_unwrap(func).unwrap_or_else(|rc| (*rc).clone()),
-                                        ),
-                                        args: positional_args,
-                                        named_args,
+                    for arg in args_iter {
+                        match arg {
+                            CallArg::Positional(expr) => positional_args.push(expr),
+                            CallArg::Named(name, expr) => {
+                                named_args.push(Spanned::new(
+                                    NamedArg {
+                                        name,
+                                        value: Rc::clone(&expr),
                                     },
-                                    call_span,
-                                )
+                                    expr.span,
+                                ));
                             }
                         }
-                        CallArg::Named(_, _) => {
-                            // Invalid: first arg is named. Use plain error.
-                            Spanned::new(Expr::Error(error_span), error_span)
-                        }
+                    }
+
+                    let has_args_now = !positional_args.is_empty() || !named_args.is_empty();
+
+                    // Only build a partial call if there were actual args.
+                    // If it's just [f] or [call f] with an error, emit plain Error.
+                    if !has_args_now {
+                        Spanned::new(Expr::Error(error_span), error_span)
+                    } else {
+                        // Add the error as a positional argument
+                        positional_args
+                            .push(Rc::new(Spanned::new(Expr::Error(error_span), error_span)));
+
+                        let call_span = Span {
+                            start: span_start,
+                            end: error_span.end,
+                        };
+                        Spanned::new(
+                            Expr::Call {
+                                func: Box::new(func),
+                                args: positional_args,
+                                named_args,
+                                implied,
+                            },
+                            call_span,
+                        )
                     }
                 }
             }
@@ -1048,7 +1065,7 @@ fn recover_from_failed_open(
 /// Parse tinct source text using the iterative parser.
 ///
 /// This is the main entry point for Phase 2c-1 (complete feature set). The parser handles:
-/// - Basic literals: `Int`, `Float`, `BoolLit`, `QuotedString`, `BareWord`, `VarRef`
+/// - Basic literals: `Int`, `Float`, `BoolLit`, `QuotedString`, `Identifier`, `EscapedRef`
 /// - Dicts: `[]`, `[42]`, `[a: 1 b: 2]`, keyed and auto-indexed entries
 /// - Call forms: `[call $f arg1 arg2 name: val]`
 /// - Fn forms: `[fn [x y@Int ...rest] body]`, `[fn@Type [params] body]` with full param parsing
@@ -1138,17 +1155,19 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 let next_token = peek_next_significant(&token_vec, i);
 
                 match next_token {
-                    Some((Token::BareWord(s), keyword_idx))
+                    Some((Token::Identifier(s), keyword_idx))
                         if s == "call"
                             && !matches!(
                                 peek_next_horizontal(&token_vec, keyword_idx),
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // Call form: [call $func args...]
+                        // Explicit call form: [call func args...]
                         // (Not a call form if the keyword is followed by colon: [call: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::Call {
+                            func: None, // func extracted from args[0]
+                            implied: false,
                             args: Vec::new(),
                             pending_key: None,
                             span_start: span.start,
@@ -1159,7 +1178,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1;
                         continue;
                     }
-                    Some((Token::BareWord(s), keyword_idx))
+                    Some((Token::Identifier(s), keyword_idx))
                         if s == "fn"
                             && !matches!(
                                 peek_next_horizontal(&token_vec, keyword_idx),
@@ -1261,7 +1280,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         });
                         continue;
                     }
-                    Some((Token::BareWord(s), keyword_idx))
+                    Some((Token::Identifier(s), keyword_idx))
                         if s == "type"
                             && !matches!(
                                 peek_next_horizontal(&token_vec, keyword_idx),
@@ -1292,8 +1311,75 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1; // Consume the OpenBracket
                         continue;
                     }
+                    Some((Token::Identifier(_name), identifier_idx))
+                        if matches!(
+                            peek_next_horizontal(&token_vec, identifier_idx),
+                            Some((Token::Colon, _))
+                        ) =>
+                    {
+                        // Priority 2: Identifier followed by horizontal colon → Dict
+                        // [name: val] is a dict entry, not a call
+                        // (depth already checked above)
+                        stack.push(StackFrame::Dict {
+                            entries: Vec::new(),
+                            pending_key: None,
+                            seen_keys: std::collections::HashSet::new(),
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                        continue;
+                    }
+                    Some((Token::Identifier(_name), identifier_idx))
+                        if matches!(
+                            peek_next_horizontal(&token_vec, identifier_idx),
+                            Some((Token::ImmediateAt, _))
+                        ) =>
+                    {
+                        // Priority 2b: Identifier followed by ImmediateAt → Dict (data)
+                        // [Foo@String] and [x@Number: 42] are data forms, not implied calls.
+                        // Annotations attach to bare words in data position; call heads are never annotated.
+                        // (depth already checked above)
+                        stack.push(StackFrame::Dict {
+                            entries: Vec::new(),
+                            pending_key: None,
+                            seen_keys: std::collections::HashSet::new(),
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                        continue;
+                    }
+                    Some((Token::Identifier(name), _identifier_idx)) => {
+                        // Priority 3: Identifier in head (not keyword, no horizontal colon, no ImmediateAt) → Implied call
+                        // [f x y] calls f
+                        // (depth already checked above)
+
+                        // Consume the OpenBracket
+                        i += 1;
+                        // Skip whitespace to the identifier
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+
+                        // Capture the identifier span and value
+                        let func_span = token_vec[i].span;
+                        let func_name = name.clone();
+
+                        // Consume the identifier token
+                        i += 1;
+
+                        // Create VarRef expr for the function
+                        let func_expr = Spanned::new(Expr::VarRef(func_name), func_span);
+
+                        stack.push(StackFrame::Call {
+                            func: Some(func_expr),
+                            implied: true,
+                            args: Vec::new(),
+                            pending_key: None,
+                            span_start: span.start,
+                        });
+                        continue;
+                    }
                     _ => {
-                        // Default: dict literal
+                        // Priority 4 & 5: EscapedRef, literals, or anything else in head → Dict (data)
+                        // [$f x y] is data, [1 2 3] is data, ["a" "b"] is data
                         // (depth already checked above)
                         stack.push(StackFrame::Dict {
                             entries: Vec::new(),
@@ -1456,6 +1542,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     }
 
                     StackFrame::Call {
+                        func: frame_func,
+                        implied,
                         args,
                         pending_key,
                         span_start,
@@ -1466,21 +1554,30 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 message: format!("named argument `{}` without value", key),
                                 span: Some(key_span),
                             });
-                        } else if args.is_empty() {
-                            close_bracket_recover!(ParseError {
-                                message: "call form requires at least a function expression"
-                                    .to_string(),
-                                span: Some(span),
-                            });
                         } else {
-                            let func = match &args[0] {
-                                CallArg::Positional(expr) => Ok(Rc::clone(expr)),
-                                CallArg::Named(name, _) => Err(ParseError {
-                                    message: format!(
-                                        "call function cannot be a named argument (got `{name}:`)",
-                                    ),
+                            // Determine the function expression
+                            let func = if let Some(ref f) = frame_func {
+                                // Implied call: func was captured from head Identifier at frame-push time
+                                Ok(f.clone())
+                            } else if args.is_empty() {
+                                // Explicit call with no args: [call] is an error
+                                Err(ParseError {
+                                    message: "call form requires at least a function expression"
+                                        .to_string(),
                                     span: Some(span),
-                                }),
+                                })
+                            } else {
+                                // Explicit call: func is args[0]
+                                match &args[0] {
+                                    CallArg::Positional(expr) => Ok(Rc::try_unwrap(Rc::clone(expr))
+                                        .unwrap_or_else(|rc| (*rc).clone())),
+                                    CallArg::Named(name, _) => Err(ParseError {
+                                        message: format!(
+                                            "call function cannot be a named argument (got `{name}:`)",
+                                        ),
+                                        span: Some(span),
+                                    }),
+                                }
                             };
 
                             match func {
@@ -1491,7 +1588,14 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                     let mut positional_args = Vec::new();
                                     let mut named_args = Vec::new();
 
-                                    for arg in args.into_iter().skip(1) {
+                                    // For implied calls, args starts at 0. For explicit calls, skip args[0] (the func).
+                                    let args_iter = if frame_func.is_some() {
+                                        args.into_iter()
+                                    } else {
+                                        args.into_iter().skip(1).collect::<Vec<_>>().into_iter()
+                                    };
+
+                                    for arg in args_iter {
                                         match arg {
                                             CallArg::Positional(expr) => positional_args.push(expr),
                                             CallArg::Named(name, expr) => {
@@ -1507,11 +1611,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                     }
 
                                     let call_expr = Expr::Call {
-                                        func: Box::new(
-                                            Rc::try_unwrap(func).unwrap_or_else(|rc| (*rc).clone()),
-                                        ),
+                                        func: Box::new(func),
                                         args: positional_args,
                                         named_args,
+                                        implied,
                                     };
 
                                     let spanned_call =
@@ -1734,8 +1837,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             // Literals: collect as values, but detect colon-ahead for dict key position.
             Token::Int(n) => {
                 let expr = Spanned::new(Expr::Int(*n), span);
-                // Check if this integer is a potential dict key (e.g. [0: $x])
-                if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
+                // Check if this integer is a potential dict key (e.g. [0: $x]).
+                // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
+                if let Some((Token::Colon, _)) = peek_next_horizontal(&token_vec, i) {
                     if let Some(StackFrame::Dict {
                         ref mut pending_key,
                         ..
@@ -1819,8 +1923,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
             Token::QuotedString(s) => {
                 let expr = Spanned::new(Expr::Str(s.clone()), span);
-                // Check if this quoted string is a potential dict key (e.g. ["key": value])
-                if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
+                // Check if this quoted string is a potential dict key (e.g. ["key": value]).
+                // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
+                if let Some((Token::Colon, _)) = peek_next_horizontal(&token_vec, i) {
                     if let Some(StackFrame::Dict {
                         ref mut pending_key,
                         ..
@@ -1854,7 +1959,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 continue;
             }
 
-            Token::BareWord(s) => {
+            Token::Identifier(s) => {
                 // Check for annotation: word@Type
                 if i + 1 < token_vec.len() && matches!(&token_vec[i + 1].node, Token::ImmediateAt) {
                     // Annotated bare word
@@ -1931,36 +2036,25 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     }
                 }
 
-                // Phase 1: If bare word starts with %, produce VarRef instead of Str,
-                // UNLESS this bare word is in dict-key position (next token is ':' and
-                // stack top is a Dict frame).  In that case it must stay Expr::Str so
-                // the key evaluates to the literal string "%foo", not a variable lookup.
-                let is_dict_key_position =
-                    matches!(
-                        peek_next_significant(&token_vec, i),
-                        Some((Token::Colon, _))
-                    ) && matches!(stack.last(), Some(StackFrame::Dict { .. }));
-                let expr = if s.starts_with('%') && !is_dict_key_position {
-                    Spanned::new(Expr::VarRef(s.clone()), span)
-                } else {
-                    Spanned::new(Expr::Str(s.clone()), span)
-                };
-                // Check if this is a potential key (next token is colon)
-                if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
-                    // This bare word is a key candidate
+                // Identifiers are variable references in value position, string keys in key position.
+                // Check if this is a potential key (next token is colon).
+                // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
+                if let Some((Token::Colon, _)) = peek_next_horizontal(&token_vec, i) {
+                    // This identifier is a key candidate
                     match stack.last_mut() {
                         Some(StackFrame::Dict {
                             ref mut pending_key,
                             ..
                         }) => {
-                            *pending_key = Some(expr.clone());
+                            // Dict key: Expr::Str
+                            let key_expr = Spanned::new(Expr::Str(s.clone()), span);
+                            *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
                             i += 1;
                             continue;
                         }
                         Some(StackFrame::Call {
                             ref mut pending_key,
-                            args: _,
                             ..
                         }) => {
                             // Named arg key — store the string name
@@ -1970,7 +2064,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             continue;
                         }
                         _ => {
-                            // Not in dict/call context; treat as normal value
+                            // Not in dict/call context; treat as normal value (VarRef)
+                            let expr = Spanned::new(Expr::VarRef(s.clone()), span);
                             if let Err(push_err) =
                                 push_value(&mut stack, &mut current_document_expressions, expr)
                             {
@@ -1994,7 +2089,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                     }
                 } else {
-                    // Not followed by colon; regular value
+                    // Not followed by colon; regular value (VarRef)
+                    let expr = Spanned::new(Expr::VarRef(s.clone()), span);
                     if let Err(push_err) =
                         push_value(&mut stack, &mut current_document_expressions, expr)
                     {
@@ -2018,10 +2114,11 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 }
             }
 
-            Token::VarRef(name) => {
+            Token::EscapedRef(name) => {
                 let expr = Spanned::new(Expr::VarRef(name.clone()), span);
-                // Check if this VarRef is a potential dict key (followed by colon)
-                if let Some((Token::Colon, _)) = peek_next_significant(&token_vec, i) {
+                // Check if this VarRef is a potential dict key (followed by colon).
+                // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
+                if let Some((Token::Colon, _)) = peek_next_horizontal(&token_vec, i) {
                     if let Some(StackFrame::Dict {
                         ref mut pending_key,
                         ..
@@ -2138,7 +2235,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             i += 1;
                             break;
                         }
-                        Token::BareWord(s) if s.starts_with('%') => {
+                        Token::Identifier(s) if s.starts_with('%') => {
                             // Section name: %name
                             let name_after_percent = &s[1..];
                             if name_after_percent.is_empty() {
@@ -2181,7 +2278,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                             i += 1;
                         }
-                        Token::BareWord(s) if s == "expects" => {
+                        Token::Identifier(s) if s == "expects" => {
                             // expects: pragma
                             if next_doc_expects.is_some() {
                                 return Err(ParseError {
@@ -2333,9 +2430,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     return Err(err);
                 }
 
-                // Next token must be a BareWord for the field name
+                // Next token must be an Identifier for the field name
                 match &token_vec[i].node {
-                    Token::BareWord(field) => {
+                    Token::Identifier(field) => {
                         let field_name = field.clone();
                         let dot_access_span = Span {
                             start: target.span.start,
@@ -2374,7 +2471,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     _ => {
                         let err = ParseError {
                             message: format!(
-                                "expected field name (bare word) after '.', found {:?}",
+                                "expected field name (identifier) after '.', found {:?}",
                                 token_vec[i].node
                             ),
                             span: Some(token_vec[i].span),
@@ -2504,7 +2601,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     // Check for optional name after ...
                     let (rest_name, rest_end) = if i < token_vec.len() {
                         match &token_vec[i].node {
-                            Token::BareWord(name) => {
+                            Token::Identifier(name) => {
                                 let n = name.clone();
                                 let end_span = token_vec[i].span;
                                 (
@@ -3107,6 +3204,7 @@ mod tests {
                 func,
                 args,
                 named_args,
+                ..
             } => {
                 match &func.node {
                     Expr::VarRef(name) => assert_eq!(name, "f"),
@@ -3130,6 +3228,7 @@ mod tests {
                 func,
                 args,
                 named_args,
+                ..
             } => {
                 match &func.node {
                     Expr::VarRef(name) => assert_eq!(name, "f"),
@@ -3618,6 +3717,7 @@ mod tests {
                 func,
                 args,
                 named_args,
+                ..
             } => {
                 match &func.node {
                     Expr::VarRef(name) => assert_eq!(name, "f"),
@@ -3666,6 +3766,7 @@ mod tests {
                 func,
                 args,
                 named_args,
+                ..
             } => {
                 match &func.node {
                     Expr::VarRef(name) => assert_eq!(name, "f"),
@@ -3696,6 +3797,7 @@ mod tests {
                 func,
                 args,
                 named_args,
+                ..
             } => {
                 match &func.node {
                     Expr::VarRef(name) => assert_eq!(name, "f"),
@@ -3734,7 +3836,7 @@ mod tests {
 
     #[test]
     fn test_call_colon_without_key() {
-        // [call $f :] — colon inside Call frame with pending_key=None (no preceding bare word)
+        // [call $f :] — colon inside Call frame with pending_key=None (no preceding identifier)
         let output = parse2("[call $f :]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
@@ -3776,7 +3878,7 @@ mod tests {
 
     #[test]
     fn test_annotation_invalid_token() {
-        // [@123] — parse_annotation receives Int(123) after @, not BareWord or OpenBracket
+        // [@123] — parse_annotation receives Int(123) after @, not Identifier or OpenBracket
         let output = parse2("[@123]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
@@ -4012,6 +4114,7 @@ mod tests {
                 func,
                 args,
                 named_args,
+                ..
             } => {
                 match &func.node {
                     Expr::VarRef(name) => assert_eq!(name, "fn"),
@@ -4227,10 +4330,12 @@ mod tests {
 
     #[test]
     fn test_range_outside_bracket_access() {
-        // .. outside brackets is a bare word per lexer rules (Range only emitted inside brackets)
-        let output = parse2("1..5").expect("should parse (.. is bare word outside brackets)");
+        // .. outside brackets emits two consecutive Dot tokens (Range is only emitted inside brackets).
+        // `1..5` lexes as Int(1), Dot, Dot, Int(5). The first Dot triggers dot-access on Int(1)
+        // but the next token is another Dot (not an identifier) → parse error/recovery.
+        let output = parse2("1..5").expect("should parse with recovery");
         let doc = &output.file.node.documents[0].node;
-        assert_eq!(doc.expressions.len(), 2); // Int(1) and BareWord("..5")
+        assert_eq!(doc.expressions.len(), 2); // Int(1) and recovered expression from ..5
     }
 
     #[test]
@@ -4248,25 +4353,27 @@ mod tests {
     // --- Tests added for review findings (parser-core-c1) ---
 
     #[test]
-    fn test_whitespace_prevents_dot_access() {
-        // "$a .b" has whitespace before dot; lexer emits Dot as non-access-context bare word ".b"
+    fn test_whitespace_allows_dot_access() {
+        // "$a .b" has whitespace before dot; dot access is not whitespace-sensitive (unlike '['),
+        // so this parses as a single DotAccess expression (same as "$a.b").
         let output = parse2("$a .b").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(
             doc.expressions.len(),
-            2,
-            "expected 2 expressions (VarRef 'a' + BareWord '.b'), got {}",
+            1,
+            "expected 1 expression (DotAccess), got {}",
             doc.expressions.len()
         );
         match &doc.expressions[0].node {
-            Expr::VarRef(name) => assert_eq!(name, "a"),
-            other => panic!("expected VarRef('a') as first expr, got {other:?}"),
+            Expr::DotAccess { expr: inner, field } => {
+                assert_eq!(field, "b");
+                match &inner.node {
+                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    other => panic!("expected VarRef('a') inside DotAccess, got {other:?}"),
+                }
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
         }
-        // Second expression: the ".b" bare word (not a DotAccess)
-        assert!(
-            !matches!(&doc.expressions[1].node, Expr::DotAccess { .. }),
-            "second expression should not be DotAccess — whitespace prevents dot access"
-        );
     }
 
     #[test]
@@ -4361,7 +4468,7 @@ mod tests {
     #[test]
     fn test_dot_access_on_dict_literal() {
         // "[x: 1].x" — dot access immediately after closing bracket (no whitespace)
-        // The lexer emits Dot (not BareWord) after ']' since CloseBracket is in is_access_context.
+        // The lexer emits Dot (access operator) after ']' since CloseBracket is in access context.
         let output = parse2("[x: 1].x").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(
@@ -5025,8 +5132,8 @@ mod tests {
         // Tokenize "[a [b c] d]" and verify skip_to_closing_bracket from index 1
         // (just past the opening '[') finds the matching ']' at the end.
         let tokens = crate::lexer::tokenize("[a [b c] d]").expect("tokenize failed");
-        // tokens: [ BareWord("a") OpenBracket BareWord("b") BareWord("c") CloseBracket BareWord("d") CloseBracket
-        // from_idx=1 (BareWord("a")), depth starts at 1
+        // tokens: [ Identifier("a") OpenBracket Identifier("b") Identifier("c") CloseBracket Identifier("d") CloseBracket
+        // from_idx=1 (Identifier("a")), depth starts at 1
         let close = skip_to_closing_bracket(&tokens, 1);
         assert!(
             close < tokens.len(),

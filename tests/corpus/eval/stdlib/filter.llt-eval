@@ -1,4 +1,4 @@
 # filter: keep elements where predicate is true (returns Seq for Dict input)
-[call $filter [fn [x] [call $> $x 2]] [1 2 3 4 5]]
+[filter [fn [x] [> x 2]] [1 2 3 4 5]]
 ===
 Seq(Int(3), ...)

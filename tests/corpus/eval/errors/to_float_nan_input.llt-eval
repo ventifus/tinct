@@ -1,4 +1,4 @@
 # to-float: "NaN" parses to a non-finite value and is rejected (E099)
-[call $to-float "NaN"]
+[to-float "NaN"]
 ===
 [E099] to-float: "NaN" parses to a non-finite value (NaN/Infinity not allowed)

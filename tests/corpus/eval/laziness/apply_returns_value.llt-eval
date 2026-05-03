@@ -1,4 +1,4 @@
 # Lazy evaluation: $apply returns function result thunk
-[call $apply [fn [x] $x] [42]]
+[apply [fn [x] x] [42]]
 ===
 Int(42)

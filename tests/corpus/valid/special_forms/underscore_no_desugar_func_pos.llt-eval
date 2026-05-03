@@ -2,6 +2,6 @@
 # Desugaring excludes func position from WRAP-CALL, so the Call
 # is NOT wrapped in a lambda. This test verifies the parse-level AST
 # (before desugaring) when $_ appears only in func position.
-[call $_ $x]
+[_ x]
 ===
-[call $_ $x]
+[_ x]

@@ -1,4 +1,4 @@
 # try : successful evaluation returns [ok: value]
-[call $try [fn [] 42]]
+[try [fn [] 42]]
 ===
 Dict({"ok": Int(42)})

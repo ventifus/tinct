@@ -1,3 +1,3 @@
-[fn [f ...args] [call $map $f $args]]
+[fn [f ...args] [map f args]]
 ===
-[fn [f ...args] [call $map $f $args]]
+[fn [f ...args] [map f args]]

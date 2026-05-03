@@ -1,6 +1,6 @@
 # Named arg with @[default: ...] annotation syntax
 # Positional arg x, named arg using @[default: N] annotation
-[f: [fn [x default@[default: 10]] [call $+ $x $default]]
- result: [call $f 5 default: 100]]
+[f: [fn [x default@[default: 10]] [+ x default]]
+ result: [f 5 default: 100]]
 ===
 Dict({"f": Function(x, default), "result": Int(105)})

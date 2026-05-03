@@ -1,8 +1,8 @@
 # $apply positional-only: dict with int keys only (regression test)
 [
-  f: [fn [x y] [call $+ $x $y]]
+  f: [fn [x y] [+ x y]]
   args: [0: 10 1: 20]
-  result: [call $apply $f $args]
+  result: [apply f args]
 ]
 ===
 Dict({"f": Function(x, y), "args": Dict({0: Int(10), 1: Int(20)}), "result": Int(30)})

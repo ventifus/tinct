@@ -1,4 +1,4 @@
 # zip on two Seqs produces lazy pairs
-[call $collect [call $take 3 [call $zip [call $iterate [fn [x] [call $+ $x 1]] 1] [call $iterate [fn [x] [call $+ $x 10]] 10]]]]
+[collect [take 3 [zip [iterate [fn [x] [+ x 1]] 1] [iterate [fn [x] [+ x 10]] 10]]]]
 ===
 Dict({0: Dict({0: Int(1), 1: Int(10)}), 1: Dict({0: Int(2), 1: Int(20)}), 2: Dict({0: Int(3), 1: Int(30)})})

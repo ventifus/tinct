@@ -1,4 +1,4 @@
 # cycle: error when called with empty collection
-[call $cycle []]
+[cycle []]
 ===
 [E034] cycle on empty collection

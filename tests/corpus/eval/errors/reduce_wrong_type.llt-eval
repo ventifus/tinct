@@ -1,4 +1,4 @@
 # reduce: error when f is not a function
-[call $reduce "not-a-function" 0 [1 2 3]]
+[reduce "not-a-function" 0 [1 2 3]]
 ===
 [E010] type mismatch: expected Function or Builtin, got String

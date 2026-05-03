@@ -45,8 +45,9 @@ pub enum ErrorKind {
         key: String,
         available_keys: Vec<String>,
     },
-    /// `name` stores the identifier without `$` prefix (e.g., `"x"` not `"$x"`).
-    /// Display adds the `$` back: `"undefined variable: $x"`.
+    /// `name` stores the identifier (bare name, no sigil prefix).
+    /// Display shows the name as-is: `"undefined variable: x"`.
+    /// For `%` pipeline refs, the name includes the `%`: `"undefined variable: %foo"`.
     UndefinedVariable {
         name: String,
     },
@@ -248,6 +249,64 @@ impl ErrorKind {
         }
     }
 
+    /// Check if a name is a known builtin (for "did you mean string?" heuristic).
+    /// This is a curated subset — not an exhaustive mirror of standard_builtins().
+    fn is_known_builtin(name: &str) -> bool {
+        matches!(
+            name,
+            "+" | "-"
+                | "*"
+                | "/"
+                | "="
+                | "<"
+                | "if"
+                | "keys"
+                | "length"
+                | "merge"
+                | "append"
+                | "str"
+                | "split"
+                | "replace"
+                | "upper"
+                | "lower"
+                | "trim"
+                | "floor"
+                | "round"
+                | "to-int"
+                | "to-float"
+                | "eval"
+                | "error"
+                | "try"
+                | "apply"
+                | "until"
+                | "type-of"
+                | "from-json"
+                | "include"
+                | "seq"
+                | "head"
+                | "tail"
+                | "collect"
+                | "seq?"
+                | "range"
+                | "repeat"
+                | "cycle"
+                | "iterate"
+                | "unfold"
+                | "map"
+                | "filter"
+                | "take"
+                | "drop"
+                | "reduce"
+                | "join"
+                | "concat"
+                | "rest"
+                | "cons"
+                | "reverse"
+                | "sort"
+                | "proxy"
+        )
+    }
+
     /// Returns `false` for errors that must not be cached in Failed thunk state.
     /// Currently only `DepthExceeded` — a thunk that fails at one depth may
     /// succeed at a shallower depth (PROP-DEPTH in §Error Semantics).
@@ -348,11 +407,19 @@ impl fmt::Display for ErrorKind {
                 }
             }
             Self::UndefinedVariable { name } => {
-                // % and $ names already carry their sigil; only add $ for plain names.
-                if name.starts_with('%') || name.starts_with('$') {
-                    write!(f, "undefined variable: {name}")
+                // Phase 2: bare identifiers are references, no $ prefix in display.
+                // Check if this looks like an intended string literal (heuristic).
+                let looks_like_string = !name.starts_with('%')
+                    && !name.starts_with('$')
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                    && !Self::is_known_builtin(name);
+
+                if looks_like_string {
+                    write!(f, "undefined variable: {name} (did you mean the string \"{name}\"? Use quotes.)")
                 } else {
-                    write!(f, "undefined variable: ${name}")
+                    write!(f, "undefined variable: {name}")
                 }
             }
             Self::TypeMismatch {
@@ -1131,10 +1198,23 @@ impl EvalError {
 }
 
 /// Suffixes that identify stdlib internal helper frames to hide from user-facing stack traces.
-/// User-facing stdlib functions like `$map` and `$filter` do not use these suffixes and remain
+/// User-facing stdlib functions like `map` and `filter` do not use these suffixes and remain
 /// visible. Filtering is suffix-based (ends_with), not substring-based (contains), so a label
 /// like "multi-step-validator" is preserved correctly.
+///
+/// Phase 2 frame format: `"[name ...]"`. We extract `name` from the label and check its suffix.
 const HIDDEN_SUFFIXES: &[&str] = &["-impl", "-step", "-check"];
+
+/// Extract the function name from a Phase 2 frame label of the form `"[name ...]"`.
+/// Returns the name portion, or the full label if it doesn't match the bracket format.
+fn frame_name(label: &str) -> &str {
+    if let Some(rest) = label.strip_prefix('[') {
+        if let Some(name) = rest.split_whitespace().next() {
+            return name;
+        }
+    }
+    label
+}
 
 /// Returns `true` if the stack frame should appear in user-facing error output:
 /// not a synthetic origin span and not a stdlib internal helper.
@@ -1143,27 +1223,32 @@ const HIDDEN_SUFFIXES: &[&str] = &["-impl", "-step", "-check"];
 ///   from stdlib/builtin calls
 /// - Stdlib internal helper functions (suffixes: -impl, -step, -check)
 fn should_display_frame(frame: &StackFrame) -> bool {
-    frame.span != Span::origin() && !HIDDEN_SUFFIXES.iter().any(|s| frame.label.ends_with(s))
+    if frame.span == Span::origin() {
+        return false;
+    }
+    let name = frame_name(&frame.label);
+    !HIDDEN_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
 /// Infer a context-appropriate verb for the materialization span label.
 /// Checks the first visible stack frame label to determine whether the thunk
 /// was forced by a function call or a field/bracket access.
+///
+/// Phase 2 frame formats:
+/// - `"[name ...]"` → function call → "called at"
+/// - `"accessing .field"` / `"accessing [..]"` / `"accessing [..:..]"` → "accessed at"
 fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
     for frame in stack {
         if !should_display_frame(frame) {
             continue;
         }
-        let label = frame.label.to_ascii_lowercase();
-        if label.contains("call") {
+        let label = &frame.label;
+        // Phase 2: implied-call frames are "[name ...]" — always a call
+        if label.starts_with('[') {
             return "called at";
         }
-        if label.contains('.')
-            || label.contains("dot")
-            || label.contains("access")
-            || label.contains('[')
-            || label.contains("bracket")
-        {
+        // Access frames: "accessing .field", "accessing [..]", "accessing [..:..]"
+        if label.contains("access") || label.contains('.') || label.contains("bracket") {
             return "accessed at";
         }
     }
@@ -1420,10 +1505,10 @@ mod tests {
     #[test]
     fn test_eval_error_circular_dependency() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::circular_dependency("$x", span, Vec::new());
+        let err = EvalError::circular_dependency("x", span, Vec::new());
         assert_eq!(
             err.message(),
-            "circular dependency detected while evaluating $x"
+            "circular dependency detected while evaluating x"
         );
     }
 
@@ -1608,7 +1693,7 @@ mod tests {
         .is_catchable());
         assert!(ErrorKind::JsonRange.is_catchable());
         assert!(ErrorKind::CircularDependency {
-            name: "$x".to_string(),
+            name: "x".to_string(),
             cycle_path: Vec::new(),
         }
         .is_catchable());
@@ -1758,7 +1843,7 @@ mod tests {
             },
             ErrorKind::JsonRange,
             ErrorKind::CircularDependency {
-                name: "$x".to_string(),
+                name: "x".to_string(),
                 cycle_path: Vec::new(),
             },
             ErrorKind::UserError {
@@ -1937,7 +2022,7 @@ mod tests {
         .is_cacheable());
         assert!(ErrorKind::JsonRange.is_cacheable());
         assert!(ErrorKind::CircularDependency {
-            name: "$x".to_string(),
+            name: "x".to_string(),
             cycle_path: Vec::new(),
         }
         .is_cacheable());
@@ -1967,6 +2052,7 @@ mod tests {
             ),
             "key not found: name"
         );
+        // UndefinedVariable with likely string literal triggers hint
         assert_eq!(
             format!(
                 "{}",
@@ -1974,7 +2060,27 @@ mod tests {
                     name: "x".to_string()
                 }
             ),
-            "undefined variable: $x"
+            "undefined variable: x (did you mean the string \"x\"? Use quotes.)"
+        );
+        // UndefinedVariable with % prefix does not trigger hint
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::UndefinedVariable {
+                    name: "%foo".to_string()
+                }
+            ),
+            "undefined variable: %foo"
+        );
+        // UndefinedVariable with known builtin does not trigger hint
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::UndefinedVariable {
+                    name: "map".to_string()
+                }
+            ),
+            "undefined variable: map"
         );
 
         // Type errors (E010-E019)
@@ -2305,11 +2411,11 @@ mod tests {
             format!(
                 "{}",
                 ErrorKind::CircularDependency {
-                    name: "$x".to_string(),
+                    name: "x".to_string(),
                     cycle_path: Vec::new(),
                 }
             ),
-            "circular dependency detected while evaluating $x"
+            "circular dependency detected while evaluating x"
         );
 
         // User-generated (E080-E089)
@@ -2594,7 +2700,7 @@ mod tests {
                 "[E020]",
             ),
             (
-                EvalError::circular_dependency("$x", test_span(1, 1, 1, 5), Vec::new()),
+                EvalError::circular_dependency("x", test_span(1, 1, 1, 5), Vec::new()),
                 "[E070]",
             ),
             (
@@ -2689,21 +2795,21 @@ mod tests {
             .with_materialization_span(mat_span);
 
         // Add user-facing stdlib function (should be visible)
-        err.push_frame("call $map".to_string(), test_span(8, 1, 8, 10));
+        err.push_frame("[map ...]".to_string(), test_span(8, 1, 8, 10));
 
         // Add internal helper frames (should be filtered out)
-        err.push_frame("call $map-impl".to_string(), test_span(100, 1, 100, 10));
-        err.push_frame("call $remove-step".to_string(), test_span(200, 1, 200, 10));
-        err.push_frame("call $cond-check".to_string(), test_span(300, 1, 300, 10));
+        err.push_frame("[map-impl ...]".to_string(), test_span(100, 1, 100, 10));
+        err.push_frame("[remove-step ...]".to_string(), test_span(200, 1, 200, 10));
+        err.push_frame("[cond-check ...]".to_string(), test_span(300, 1, 300, 10));
 
         // Add another user-facing function
-        err.push_frame("call $filter".to_string(), test_span(12, 1, 12, 15));
+        err.push_frame("[filter ...]".to_string(), test_span(12, 1, 12, 15));
 
         let display = format!("{err}");
 
         // Should contain user-facing stdlib functions
-        assert!(display.contains("in call $map at 8:1-8:10"));
-        assert!(display.contains("in call $filter at 12:1-12:15"));
+        assert!(display.contains("in [map ...] at 8:1-8:10"));
+        assert!(display.contains("in [filter ...] at 12:1-12:15"));
 
         // Should NOT contain internal helper frames
         assert!(!display.contains("map-impl"));
@@ -2720,7 +2826,7 @@ mod tests {
         // so it should NOT be filtered — only suffix-based filtering is correct.
         let def_span = test_span(1, 1, 1, 5);
         let err = EvalError::internal("test".to_string(), def_span).with_frame(
-            "call $multi-step-validator".to_string(),
+            "[multi-step-validator ...]".to_string(),
             test_span(10, 1, 10, 5),
         );
         let display = format!("{err}");
@@ -2737,7 +2843,7 @@ mod tests {
         // must not be displayed.
         let real_span = test_span(5, 1, 5, 10);
         let impl_frame = StackFrame {
-            label: "call $map-impl".to_string(),
+            label: "[map-impl ...]".to_string(),
             span: real_span,
         };
         assert!(
@@ -2745,7 +2851,7 @@ mod tests {
             "frame with -impl suffix must return false"
         );
         let step_frame = StackFrame {
-            label: "call $remove-step".to_string(),
+            label: "[remove-step ...]".to_string(),
             span: real_span,
         };
         assert!(
@@ -2753,7 +2859,7 @@ mod tests {
             "frame with -step suffix must return false"
         );
         let check_frame = StackFrame {
-            label: "call $validate-check".to_string(),
+            label: "[validate-check ...]".to_string(),
             span: real_span,
         };
         assert!(
@@ -2762,7 +2868,7 @@ mod tests {
         );
         // A user-facing frame with the same real span must be displayed.
         let user_frame = StackFrame {
-            label: "call $map".to_string(),
+            label: "[map ...]".to_string(),
             span: real_span,
         };
         assert!(
@@ -2776,7 +2882,7 @@ mod tests {
         // A frame whose span is Span::origin() (synthetic stdlib/builtin location)
         // must not be displayed regardless of its label.
         let origin_frame = StackFrame {
-            label: "call $builtin-fn".to_string(),
+            label: "[builtin-fn ...]".to_string(),
             span: Span::origin(),
         };
         assert!(
@@ -2785,7 +2891,7 @@ mod tests {
         );
         // A frame with a real span and a non-hidden label must be displayed.
         let real_frame = StackFrame {
-            label: "call $user-fn".to_string(),
+            label: "[user-fn ...]".to_string(),
             span: test_span(3, 1, 3, 10),
         };
         assert!(
@@ -2797,21 +2903,21 @@ mod tests {
     #[test]
     fn test_infer_materialization_verb_skips_origin_span() {
         // Stack where the first frame has Span::origin() (skipped) and the second
-        // has a real "call X" label — verb must be "called at", not "materialized at".
+        // has a real "[X ...]" label — verb must be "called at", not "materialized at".
         let frames = vec![
             StackFrame {
                 label: "stdlib-internal".to_string(),
                 span: Span::origin(),
             },
             StackFrame {
-                label: "call $user-fn".to_string(),
+                label: "[user-fn ...]".to_string(),
                 span: test_span(7, 1, 7, 20),
             },
         ];
         assert_eq!(
             infer_materialization_verb(&frames),
             "called at",
-            "origin-span frame must be skipped; second frame's 'call' label must drive the verb"
+            "origin-span frame must be skipped; second frame's '[...]' label must drive the verb"
         );
     }
 
@@ -2824,7 +2930,7 @@ mod tests {
 
         // Add the same frame 256 times (simulating deep self-recursion)
         for _ in 0..256 {
-            err.push_frame("call $f".to_string(), frame_span);
+            err.push_frame("[f ...]".to_string(), frame_span);
         }
 
         let display = format!("{err}");
@@ -2834,13 +2940,13 @@ mod tests {
         assert!(display.contains("maximum evaluation depth exceeded (256)"));
 
         // Should show one frame copy
-        assert!(display.contains("in call $f at 10:5-10:15"));
+        assert!(display.contains("in [f ...] at 10:5-10:15"));
 
         // Should show elision summary (255 more repetitions of 1 frame)
         assert!(display.contains("[... 255 more repetitions of the above 1 frame ...]"));
 
         // Should NOT repeat the same frame 256 times
-        let frame_count = display.matches("in call $f at").count();
+        let frame_count = display.matches("in [f ...] at").count();
         assert_eq!(
             frame_count, 1,
             "should show frame exactly once, not {frame_count} times"
@@ -2857,8 +2963,8 @@ mod tests {
 
         // Add alternating A/B frames 128 times each (256 total)
         for _ in 0..128 {
-            err.push_frame("call $a".to_string(), frame_a_span);
-            err.push_frame("call $b".to_string(), frame_b_span);
+            err.push_frame("[a ...]".to_string(), frame_a_span);
+            err.push_frame("[b ...]".to_string(), frame_b_span);
         }
 
         let display = format!("{err}");
@@ -2867,15 +2973,15 @@ mod tests {
         assert!(display.contains("[E040]"));
 
         // Should show both frames once each (the period)
-        assert!(display.contains("in call $a at 10:1-10:10"));
-        assert!(display.contains("in call $b at 20:1-20:10"));
+        assert!(display.contains("in [a ...] at 10:1-10:10"));
+        assert!(display.contains("in [b ...] at 20:1-20:10"));
 
         // Should show elision summary (127 more repetitions of 2 frames)
         assert!(display.contains("[... 127 more repetitions of the above 2 frames ...]"));
 
         // Should show each frame exactly once in the visible output
-        let a_count = display.matches("in call $a at").count();
-        let b_count = display.matches("in call $b at").count();
+        let a_count = display.matches("in [a ...] at").count();
+        let b_count = display.matches("in [b ...] at").count();
         assert_eq!(a_count, 1, "should show frame A exactly once");
         assert_eq!(b_count, 1, "should show frame B exactly once");
     }
@@ -2887,10 +2993,10 @@ mod tests {
         let mut err = EvalError::depth_exceeded(256, def_span);
 
         // Add different frames (not repeating)
-        err.push_frame("call $a".to_string(), test_span(10, 1, 10, 5));
-        err.push_frame("call $b".to_string(), test_span(20, 1, 20, 5));
-        err.push_frame("call $c".to_string(), test_span(30, 1, 30, 5));
-        err.push_frame("call $d".to_string(), test_span(40, 1, 40, 5));
+        err.push_frame("[a ...]".to_string(), test_span(10, 1, 10, 5));
+        err.push_frame("[b ...]".to_string(), test_span(20, 1, 20, 5));
+        err.push_frame("[c ...]".to_string(), test_span(30, 1, 30, 5));
+        err.push_frame("[d ...]".to_string(), test_span(40, 1, 40, 5));
 
         let display = format!("{err}");
 
@@ -2898,10 +3004,10 @@ mod tests {
         assert!(display.contains("[E040]"));
 
         // Should show all frames (no elision)
-        assert!(display.contains("in call $a at 10:1-10:5"));
-        assert!(display.contains("in call $b at 20:1-20:5"));
-        assert!(display.contains("in call $c at 30:1-30:5"));
-        assert!(display.contains("in call $d at 40:1-40:5"));
+        assert!(display.contains("in [a ...] at 10:1-10:5"));
+        assert!(display.contains("in [b ...] at 20:1-20:5"));
+        assert!(display.contains("in [c ...] at 30:1-30:5"));
+        assert!(display.contains("in [d ...] at 40:1-40:5"));
 
         // Should NOT show elision summary
         assert!(!display.contains("more repetitions"));
@@ -2917,24 +3023,24 @@ mod tests {
 
         // Add 9 identical frames (3 full repetitions of period 3)
         for _ in 0..3 {
-            err.push_frame("call $f".to_string(), frame_span);
-            err.push_frame("call $f".to_string(), frame_span);
-            err.push_frame("call $f".to_string(), frame_span);
+            err.push_frame("[f ...]".to_string(), frame_span);
+            err.push_frame("[f ...]".to_string(), frame_span);
+            err.push_frame("[f ...]".to_string(), frame_span);
         }
 
         // Add a tail frame
-        err.push_frame("call $final".to_string(), tail_span);
+        err.push_frame("[final ...]".to_string(), tail_span);
 
         let display = format!("{err}");
 
         // Should show one period copy
-        assert!(display.contains("in call $f at 10:1-10:5"));
+        assert!(display.contains("in [f ...] at 10:1-10:5"));
 
         // Should show elision summary (2 more repetitions of 3 frames)
         assert!(display.contains("[... 2 more repetitions of the above 3 frames ...]"));
 
         // Should show the tail frame
-        assert!(display.contains("in call $final at 50:1-50:5"));
+        assert!(display.contains("in [final ...] at 50:1-50:5"));
     }
 
     #[test]
@@ -2946,15 +3052,15 @@ mod tests {
 
         // Add mix of visible and hidden frames
         for _ in 0..100 {
-            err.push_frame("call $f".to_string(), visible_span);
-            err.push_frame("call $hidden-impl".to_string(), visible_span); // hidden suffix
-            err.push_frame("call $origin".to_string(), Span::origin()); // origin span
+            err.push_frame("[f ...]".to_string(), visible_span);
+            err.push_frame("[hidden-impl ...]".to_string(), visible_span); // hidden suffix
+            err.push_frame("[origin ...]".to_string(), Span::origin()); // origin span
         }
 
         let display = format!("{err}");
 
-        // Should only count visible frames for elision (100 repetitions of "call $f")
-        assert!(display.contains("in call $f at 10:1-10:5"));
+        // Should only count visible frames for elision (100 repetitions of "[f ...]")
+        assert!(display.contains("in [f ...] at 10:1-10:5"));
         assert!(display.contains("[... 99 more repetitions of the above 1 frame ...]"));
 
         // Should NOT show hidden frames
@@ -2971,7 +3077,7 @@ mod tests {
 
         // Add many identical frames
         for _ in 0..256 {
-            err.push_frame("call $f".to_string(), frame_span);
+            err.push_frame("[f ...]".to_string(), frame_span);
         }
 
         let display = format!("{err}");
@@ -2980,7 +3086,7 @@ mod tests {
         assert!(!display.contains("more repetitions"));
 
         // Should show all frames normally (TypeMismatch errors show all frames)
-        let frame_count = display.matches("in call $f at").count();
+        let frame_count = display.matches("in [f ...] at").count();
         assert_eq!(
             frame_count, 256,
             "non-DepthExceeded errors should show all frames"
@@ -2992,7 +3098,7 @@ mod tests {
         // Period 1: same frame repeated
         let span = test_span(10, 1, 10, 5);
         let frame = StackFrame {
-            label: "call $f".to_string(),
+            label: "[f ...]".to_string(),
             span,
         };
         let frames: Vec<&StackFrame> = vec![&frame, &frame, &frame, &frame, &frame];
@@ -3011,11 +3117,11 @@ mod tests {
         let span_a = test_span(10, 1, 10, 5);
         let span_b = test_span(20, 1, 20, 5);
         let frame_a = StackFrame {
-            label: "call $a".to_string(),
+            label: "[a ...]".to_string(),
             span: span_a,
         };
         let frame_b = StackFrame {
-            label: "call $b".to_string(),
+            label: "[b ...]".to_string(),
             span: span_b,
         };
         let frames: Vec<&StackFrame> =
@@ -3034,7 +3140,7 @@ mod tests {
         // Less than 3 frames: no pattern
         let span = test_span(10, 1, 10, 5);
         let frame = StackFrame {
-            label: "call $f".to_string(),
+            label: "[f ...]".to_string(),
             span,
         };
         let frames: Vec<&StackFrame> = vec![&frame, &frame];
@@ -3047,15 +3153,15 @@ mod tests {
     fn test_detect_repeating_period_none_non_repeating() {
         // Different frames: no pattern
         let frame_a = StackFrame {
-            label: "call $a".to_string(),
+            label: "[a ...]".to_string(),
             span: test_span(10, 1, 10, 5),
         };
         let frame_b = StackFrame {
-            label: "call $b".to_string(),
+            label: "[b ...]".to_string(),
             span: test_span(20, 1, 20, 5),
         };
         let frame_c = StackFrame {
-            label: "call $c".to_string(),
+            label: "[c ...]".to_string(),
             span: test_span(30, 1, 30, 5),
         };
         let frames: Vec<&StackFrame> = vec![&frame_a, &frame_b, &frame_c];
@@ -3070,7 +3176,7 @@ mod tests {
         // Should return minimal period (1)
         let span = test_span(10, 1, 10, 5);
         let frame = StackFrame {
-            label: "call $f".to_string(),
+            label: "[f ...]".to_string(),
             span,
         };
         let frames: Vec<&StackFrame> = vec![&frame, &frame, &frame, &frame, &frame, &frame];
@@ -3220,7 +3326,11 @@ mod tests {
         let err = EvalError::undefined_variable("myvar".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::UndefinedVariable { .. }));
         assert_eq!(err.kind.code(), "E002");
-        assert_eq!(err.message(), "undefined variable: $myvar");
+        // "myvar" is all lowercase/alphanumeric and not a builtin, so triggers hint
+        assert_eq!(
+            err.message(),
+            "undefined variable: myvar (did you mean the string \"myvar\"? Use quotes.)"
+        );
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }

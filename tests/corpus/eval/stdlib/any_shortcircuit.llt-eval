@@ -1,4 +1,4 @@
 # any? - short-circuit test (should stop at first match)
-[call $any? [fn [x] [call $= $x 3]] [1 2 3 4 5]]
+[any? [fn [x] [= x 3]] [1 2 3 4 5]]
 ===
 Bool(true)

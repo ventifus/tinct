@@ -1,4 +1,4 @@
 # drop on Seq is lazy — dropping from infinite sequence returns immediately
-[call $collect [call $take 3 [call $drop 5 [call $iterate [fn [x] [call $+ $x 1]] 0]]]]
+[collect [take 3 [drop 5 [iterate [fn [x] [+ x 1]] 0]]]]
 ===
 Dict({0: Int(5), 1: Int(6), 2: Int(7)})

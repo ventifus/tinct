@@ -1,4 +1,4 @@
 # when: returns body when predicate is true
-[call $when true 42]
+[when true 42]
 ===
 Int(42)

@@ -1,4 +1,4 @@
 # merge : right-biased merge of two dicts
-[call $merge [a: 1  b: 2] [b: 3  c: 4]]
+[merge [a: 1  b: 2] [b: 3  c: 4]]
 ===
 Dict({"a": Int(1), "b": Int(3), "c": Int(4)})

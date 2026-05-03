@@ -305,8 +305,8 @@ fn eval_flag_with_llt_format() {
 
 #[test]
 fn eval_multi_document_pipeline() {
-    // doc1 produces {x: 10}, doc2 receives it as $$ and wraps it
-    let source = "[x: 10]\n---\n[result: $$.x]";
+    // doc1 produces {x: 10}, doc2 receives it as % and wraps it
+    let source = "[x: 10]\n---\n[result: %.x]";
     let (path, _dir) = write_temp_llt("eval_multi_doc", source);
     let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
@@ -555,8 +555,8 @@ fn eval_json_output_is_pretty_printed() {
 
 #[test]
 fn eval_stdin_json_injection() {
-    // When stdin is piped with JSON, it should be available as $$ in the first doc
-    let (path, _dir) = write_temp_llt("eval_stdin_json", "[name: $$.name]");
+    // When stdin is piped with JSON, it should be available as % in the first doc
+    let (path, _dir) = write_temp_llt("eval_stdin_json", "[name: %.name]");
     let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .stdin(std::process::Stdio::piped())

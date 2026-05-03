@@ -1,5 +1,5 @@
-[outer: 10  f: [fn [] $outer]]
+[outer: 10  f: [fn [] outer]]
 
-[call $f]
+[f]
 ===
 Int(10)

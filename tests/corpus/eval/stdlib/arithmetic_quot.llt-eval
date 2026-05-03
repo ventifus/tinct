@@ -1,4 +1,4 @@
 # quot: integer quotient (truncates toward zero)
-[call $quot 10 3]
+[quot 10 3]
 ===
 Int(3)

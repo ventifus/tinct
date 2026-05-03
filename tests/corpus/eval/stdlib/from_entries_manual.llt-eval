@@ -1,4 +1,4 @@
 # from-entries with manually constructed pairs
-[call $from-entries [[key: x value: 10] [key: y value: 20]]]
+[from-entries [[key: "x" value: 10] [key: "y" value: 20]]]
 ===
 Dict({"x": Int(10), "y": Int(20)})

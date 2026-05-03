@@ -1860,6 +1860,7 @@ pub(crate) fn eval_step(
             func,
             args,
             named_args,
+            implied: _,
         } => wrap_thunk(eval_call(
             func, args, named_args, &env, ctx, &expr.span, depth,
         )),

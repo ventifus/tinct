@@ -1,4 +1,4 @@
 # any?: Seq input produces clear error message
-[call $any? [fn [x] true] [call $range 0 3]]
+[any? [fn [x] true] [range 0 3]]
 ===
 [E080] any?: expected Dict, got Seq -- collect the Seq first

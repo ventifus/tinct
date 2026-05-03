@@ -1,8 +1,8 @@
 [
   outer: [
-    inner: [call $+ 1 "not a number"]
+    inner: [+ 1 "not a number"]
   ]
-  result: $outer.inner
+  result: outer.inner
 ]
 ===
 [E010] +/-/*//: expected Int or Float, got Int and String

@@ -3,7 +3,7 @@
 # "proxy field access" — this frame appears in the error stack trace.
 # Note: "accessing .field" push_frame only applies to synchronous errors during
 # handler invocation (e.g., handler not callable), not to errors raised inside the body.
-[p: [call $proxy [fn [key] [call $error "proxy-error"]]]
- result: $p.test]
+[p: [proxy [fn [key] [error "proxy-error"]]]
+ result: p.test]
 ===
 ERROR: proxy field access

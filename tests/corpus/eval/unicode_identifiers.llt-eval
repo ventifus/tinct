@@ -1,4 +1,4 @@
 # Unicode identifiers in bare words
-[café: espresso  年: 2026]
+[café: "espresso"  年: 2026]
 ===
 Dict({"café": String("espresso"), "年": Int(2026)})

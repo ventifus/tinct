@@ -1,4 +1,4 @@
 # proxy handler with default param referencing closure variable
-[default_val: 42  handler: [fn [field  val@[default: $default_val]] $val]  p: [call $proxy $handler]  result: $p.test_field]
+[default_val: 42  handler: [fn [field  val@[default: default_val]] val]  p: [proxy handler]  result: p.test_field]
 ===
 Dict({"default_val": Int(42), "handler": Function(field, val), "p": Proxy, "result": Int(42)})

@@ -136,6 +136,7 @@ fn reset_expr(expr: &Spanned<Expr>) {
             func,
             args,
             named_args,
+            implied: _,
         } => {
             reset_expr(func);
             for arg in args {
@@ -287,8 +288,6 @@ fn typecheck_document(
 
     // Bind % (pipeline variable) with the incoming type
     env.insert("%".to_string(), pipeline_type.clone());
-    // Also bind $ for backward compatibility
-    env.insert("$".to_string(), pipeline_type.clone());
 
     // Bind all named sections as %name
     for (name, ty) in named_types {
@@ -358,7 +357,6 @@ fn typecheck_document(
         }
 
         let mut result_env = TypeEnv::with_parent(&env);
-        result_env.insert("$".to_string(), result_type.clone());
         result_env.insert("%".to_string(), result_type.clone());
 
         // Body is empty (no fatal errors possible), always return Ok.
@@ -547,7 +545,6 @@ fn typecheck_document(
         }
     }
 
-    result_env.insert("$".to_string(), result_type.clone());
     result_env.insert("%".to_string(), result_type.clone());
 
     if errors.is_empty() {
@@ -639,6 +636,7 @@ fn infer_expr(
             func,
             args,
             named_args,
+            implied: _,
         } => {
             // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
             // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
@@ -2494,6 +2492,99 @@ fn resolve_type_expr(
                 )
             }
         }
+        // New-syntax support: [Fn@RetType [$Param1 $Param2 ...]] parses as an implied Call
+        // because the head `Fn@RetType` (Annotated) in a bracket is classified as implied Call
+        // (not Dict) by the parser's head-position priority. Detect and handle this pattern.
+        Expr::Call {
+            implied: true,
+            func,
+            args,
+            ..
+        } => {
+            if let Expr::Annotated { name, annotation } = &func.node {
+                if name == "Fn" {
+                    // Fn@RetType [Params] in new syntax: resolve return type from annotation,
+                    // then resolve each arg as a parameter type. For zero params, args is empty.
+                    let ret = resolve_annotation_as_type(
+                        &annotation.node,
+                        env,
+                        annotation.span,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    )?;
+                    // args[0] should be the parameter list (a Dict or another implied Call)
+                    let mut params = Vec::new();
+                    if let Some(param_list) = args.first() {
+                        match &param_list.node {
+                            Expr::Dict(param_entries) => {
+                                for entry in param_entries {
+                                    params.push(resolve_type_expr(
+                                        &entry.node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?);
+                                }
+                            }
+                            Expr::Call {
+                                implied: true,
+                                func: inner_func,
+                                args: inner_args,
+                                ..
+                            } => {
+                                // Param list itself is an implied call: [a b c] → VarRef("a") + args
+                                params.push(resolve_type_expr(
+                                    inner_func,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?);
+                                for a in inner_args.iter() {
+                                    params.push(resolve_type_expr(
+                                        a,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?);
+                                }
+                            }
+                            _ => {
+                                // Single param that's not a Dict
+                                params.push(resolve_type_expr(
+                                    param_list,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?);
+                            }
+                        }
+                    }
+                    if args.len() > 1 {
+                        return Err(TypeError::new(
+                            format!(
+                                "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
+                                1 + args.len()
+                            ),
+                            expr.span,
+                        ));
+                    }
+                    return Ok(Type::Function {
+                        params,
+                        ret: Box::new(ret),
+                        variadic: false,
+                    });
+                }
+            }
+            Err(TypeError::new(
+                format!("invalid type expression in annotation: {}", expr.node),
+                expr.span,
+            ))
+        }
         _ => Err(TypeError::new(
             format!("invalid type expression in annotation: {}", expr.node),
             expr.span,
@@ -2642,38 +2733,67 @@ fn try_resolve_fn_type_expr(
     let ret =
         resolve_annotation_as_type(ann_node, env, ann_span, state, ann_mapping, row_ann_mapping)?;
 
-    let param_entries = match &second.node.value.node {
-        Expr::Dict(entries) => entries,
+    // The parameter list can be:
+    // - Expr::Dict(entries) — old/standard syntax: `[$a $b]` or `[$Number]`
+    // - Expr::Call { implied: true, func, args } — new syntax: bare identifiers like `[a b]`
+    //   parse as implied calls. Extract func + args as the parameter type expressions.
+    let mut params = Vec::new();
+    match &second.node.value.node {
+        Expr::Dict(param_entries) => {
+            for (pos, entry) in param_entries.iter().enumerate() {
+                if let Some(ref key) = entry.node.key {
+                    let key_name = match &key.node {
+                        Expr::Str(s) => format!("'{s}'"),
+                        _ => "unknown".to_string(),
+                    };
+                    return Err(TypeError::new(
+                        format!(
+                            "function type parameter at position {}: expected a type name, got key {key_name}",
+                            pos + 1
+                        ),
+                        entry.span,
+                    ));
+                }
+                params.push(resolve_type_expr(
+                    &entry.node.value,
+                    env,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )?);
+            }
+        }
+        Expr::Call {
+            implied: true,
+            func,
+            args,
+            ..
+        } => {
+            // New syntax: [TypeA TypeB] parses as an implied call.
+            // Treat func as the first param, args as remaining params.
+            params.push(resolve_type_expr(
+                func,
+                env,
+                state,
+                ann_mapping,
+                row_ann_mapping,
+            )?);
+            for arg in args.iter() {
+                params.push(resolve_type_expr(
+                    arg,
+                    env,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )?);
+            }
+        }
         _ => {
             return Err(TypeError::new(
                 "function type parameter list must be a bracket expression",
                 second.node.value.span,
             ))
         }
-    };
-
-    let mut params = Vec::new();
-    for (pos, entry) in param_entries.iter().enumerate() {
-        if let Some(ref key) = entry.node.key {
-            let key_name = match &key.node {
-                Expr::Str(s) => format!("'{s}'"),
-                _ => "unknown".to_string(),
-            };
-            return Err(TypeError::new(
-                format!(
-                    "function type parameter at position {}: expected a type name, got key {key_name}",
-                    pos + 1
-                ),
-                entry.span,
-            ));
-        }
-        params.push(resolve_type_expr(
-            &entry.node.value,
-            env,
-            state,
-            ann_mapping,
-            row_ann_mapping,
-        )?);
     }
 
     Ok(Some(Type::Function {
@@ -2716,13 +2836,13 @@ mod tests {
 
     fn result_type(input: &str) -> Type {
         let env = doc_env(input);
-        env.get("$").unwrap().body.clone()
+        env.get("%").unwrap().body.clone()
     }
 
     fn result_field(input: &str, field: &str) -> Type {
         match result_type(input) {
             Type::Record(Row { fields, .. }) => fields.get(field).cloned().unwrap(),
-            other => panic!("expected Record for $$, got {other}"),
+            other => panic!("expected Record for %, got {other}"),
         }
     }
 
@@ -2780,7 +2900,9 @@ mod tests {
 
     #[test]
     fn test_literal_string() {
-        assert_eq!(infer("hello"), Type::StringLiteral("hello".into()));
+        // In new syntax, bare words are references (VarRef), not string literals.
+        // String literals require quotes.
+        assert_eq!(infer("\"hello\""), Type::StringLiteral("hello".into()));
     }
 
     // -- VarRef --
@@ -2794,14 +2916,15 @@ mod tests {
     fn test_varref_undefined() {
         let errors = check_err("$x");
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].message.contains("undefined variable: $x"));
+        assert!(errors[0].message.contains("undefined variable: x"));
     }
 
     // -- Record construction --
 
     #[test]
     fn test_dict_simple() {
-        let ty = infer("[a: 1  b: hello  c: true]");
+        // In new syntax, string values must be quoted.
+        let ty = infer("[a: 1  b: \"hello\"  c: true]");
         match ty {
             Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(1)));
@@ -2814,7 +2937,10 @@ mod tests {
 
     #[test]
     fn test_dict_auto_indexed() {
-        let ty = infer("[foo bar baz]");
+        // In new syntax, bare words are references. For a data sequence of quoted strings,
+        // use string literals. A quoted string in head position → Dict, so
+        // ["foo" "bar" "baz"] is a Dict with auto-indexed entries.
+        let ty = infer("[\"foo\" \"bar\" \"baz\"]");
         match ty {
             Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("0"), Some(&Type::StringLiteral("foo".into())));
@@ -2866,13 +2992,13 @@ mod tests {
         let errors = check_err("[a: $undefined1  b: 42  c: $undefined2]");
         assert_eq!(errors.len(), 2, "should return all errors, got: {errors:?}");
         assert!(
-            errors[0].message.contains("$undefined1"),
-            "first error should be about $undefined1, got: {}",
+            errors[0].message.contains("undefined1"),
+            "first error should be about undefined1, got: {}",
             errors[0].message
         );
         assert!(
-            errors[1].message.contains("$undefined2"),
-            "second error should be about $undefined2, got: {}",
+            errors[1].message.contains("undefined2"),
+            "second error should be about undefined2, got: {}",
             errors[1].message
         );
 
@@ -2884,17 +3010,18 @@ mod tests {
         let expr = &file.node.documents[0].node.expressions[0];
         let errs = infer_expr(expr, &env, &mut state, &mut None).unwrap_err();
         assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
-        assert!(errs[0].message.contains("$undefined1"));
-        assert!(errs[1].message.contains("$undefined2"));
+        assert!(errs[0].message.contains("undefined1"));
+        assert!(errs[1].message.contains("undefined2"));
     }
 
     // -- Dot access --
 
     #[test]
     fn test_dot_access_found() {
+        // In new syntax, string literals require quotes.
         assert_eq!(
             result_field(
-                "[person: [name: Andrew  age: 30]]\n[result: $person.name]",
+                "[person: [name: \"Andrew\"  age: 30]]\n[result: $person.name]",
                 "result"
             ),
             Type::StringLiteral("Andrew".into()),
@@ -2903,7 +3030,8 @@ mod tests {
 
     #[test]
     fn test_dot_access_missing_field() {
-        let errors = check_err("[person: [name: Andrew]]\n[result: $person.age]");
+        // In new syntax, string literals require quotes.
+        let errors = check_err("[person: [name: \"Andrew\"]]\n[result: $person.age]");
         assert!(errors
             .iter()
             .any(|e| e.message.contains("field 'age' not found")));
@@ -2929,7 +3057,8 @@ mod tests {
         // Two accesses on the same open record accumulate constraints:
         // first access binds ρ → Row({f1: β₁}, RowVar(ρ₁))
         // second access sees ρ already bound, extracts from ρ₁ → Row({f2: β₂}, RowVar(ρ₂))
-        let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
+        // In new syntax, string literals require quotes.
+        let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
         // r1 and r2 should both be TypeVars (fresh inferred types, not Any)
         match env.get("r1").map(|s| &s.body) {
             Some(Type::TypeVar(_, _)) => {}
@@ -3030,7 +3159,8 @@ mod tests {
         //   by Pass 3b unification. Any would mean check_dot_access returned Any instead of
         //   generating the constraint.
 
-        let mut file = crate::parse("[result: $data.name  data: [name: hello]]").unwrap();
+        // In new syntax, string literals require quotes.
+        let mut file = crate::parse("[result: $data.name  data: [name: \"hello\"]]").unwrap();
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -3064,7 +3194,8 @@ mod tests {
         // Original test at line 1684 verifies r1 and r2 are TypeVars but not that they're DISTINCT.
         // This test adds the distinctness assertion.
 
-        let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
+        // In new syntax, string literals require quotes.
+        let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
 
         // Get r1 and r2 types (should both be TypeVars)
         let r1_var_name = match env.get("r1").map(|s| &s.body) {
@@ -3114,32 +3245,42 @@ mod tests {
 
     #[test]
     fn test_bracket_access_string_key() {
+        // In new syntax, the bracket key must be a quoted string literal (not bare word).
         assert_eq!(
-            result_field("[data: [name: hello]]\n[result: $data[name]]", "result"),
+            result_field(
+                "[data: [name: \"hello\"]]\n[result: $data[\"name\"]]",
+                "result"
+            ),
             Type::StringLiteral("hello".into()),
         );
     }
 
     #[test]
     fn test_bracket_access_int_key() {
+        // In new syntax, data sequences of strings require quoted literals.
         assert_eq!(
-            result_field("[list: [a b c]]\n[result: $list[0]]", "result"),
+            result_field("[list: [\"a\" \"b\" \"c\"]]\n[result: $list[0]]", "result"),
             Type::StringLiteral("a".into()),
         );
     }
 
     #[test]
     fn test_bracket_access_dynamic_key_literal() {
+        // In new syntax, string literals require quotes.
         assert_eq!(
-            result_field("[data: [x: 1]  key: x]\n[result: $data[$key]]", "result"),
+            result_field(
+                "[data: [x: 1]  key: \"x\"]\n[result: $data[$key]]",
+                "result"
+            ),
             Type::IntLiteral(1),
         );
     }
 
     #[test]
     fn test_bracket_access_dynamic_key_non_literal() {
+        // In new syntax, string literals require quotes.
         assert_eq!(
-            result_field("[result: $data[$key]  data: [x: 1]  key: x]", "result"),
+            result_field("[result: $data[$key]  data: [x: 1]  key: \"x\"]", "result"),
             Type::Any,
         );
     }
@@ -3173,7 +3314,8 @@ mod tests {
 
     #[test]
     fn test_type_assert_fail() {
-        let errors = check_err("[@Number hello]");
+        // In new syntax, bare words are references. Use a quoted string to test type mismatch.
+        let errors = check_err("[@Number \"hello\"]");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("cannot unify"));
     }
@@ -3197,7 +3339,8 @@ mod tests {
 
     #[test]
     fn test_type_assert_no_default_still_errors() {
-        let errors = check_err("[@[type: Number] hello]");
+        // In new syntax, string literals require quotes. "hello" infers as Str, not Number.
+        let errors = check_err("[@[type: Number] \"hello\"]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "TypeAssert without default: should still report type error, got: {:?}",
@@ -3209,7 +3352,8 @@ mod tests {
     fn test_typeassert_default_wrong_type_emits_error() {
         // [@Number default: "hello" expr] — default is Str, asserted type is Number
         // Should emit a default value type mismatch error
-        let errors = check_err("[@[type: Number  default: hello] 42]");
+        // In new syntax, string literals require quotes.
+        let errors = check_err("[@[type: Number  default: \"hello\"] 42]");
         assert!(
             errors
                 .iter()
@@ -3235,7 +3379,8 @@ mod tests {
     fn test_typeassert_default_wrong_type_main_check_fails() {
         // [@Number default: "hello" wrong_expr] — both main and default are wrong
         // Should emit a default value type mismatch error
-        let errors = check_err("[@[type: Number  default: hello] world]");
+        // In new syntax, string literals require quotes.
+        let errors = check_err("[@[type: Number  default: \"hello\"] \"world\"]");
         assert!(
             errors
                 .iter()
@@ -3259,7 +3404,8 @@ mod tests {
     #[test]
     fn test_typeassert_default_string_literal_subtype_of_str() {
         // [@String default: "ok" expr] — StringLiteral("ok") <: Str — no error
-        let result = check("[@[type: String  default: ok] 42]");
+        // In new syntax, string literals require quotes.
+        let result = check("[@[type: String  default: \"ok\"] 42]");
         assert!(
             result.is_ok(),
             "TypeAssert with Str default for String assertion should not emit error, got: {:?}",
@@ -3291,8 +3437,9 @@ mod tests {
 
     #[test]
     fn test_type_alias_record() {
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[Person: [type [name: String  age: Number]]]\n[p: [@Person [name: Alice  age: 30]]]",
+            "[Person: [type [name: String  age: Number]]]\n[p: [@Person [name: \"Alice\"  age: 30]]]",
             "p",
         );
         match ty {
@@ -3582,18 +3729,18 @@ mod tests {
         assert!(errors[0].message.contains("expected record type"));
     }
 
-    // -- $$ pipeline --
+    // -- % pipeline --
 
     #[test]
-    fn test_pipeline_dollar_dollar() {
-        let env = file_env("[x: 42]\n---\n[y: $$]");
-        let result = env.get("$").unwrap().body.clone();
+    fn test_pipeline_percent() {
+        let env = file_env("[x: 42]\n---\n[y: %]");
+        let result = env.get("%").unwrap().body.clone();
         match result {
             Type::Record(Row { fields, .. }) => {
                 let y = fields.get("y").expect("field 'y' should exist");
                 assert!(
                     matches!(y, Type::Record(..)),
-                    "expected $$ to be Record, got {y}"
+                    "expected % to be Record, got {y}"
                 );
             }
             other => panic!("expected Record result, got {other}"),
@@ -3601,16 +3748,16 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_dollar_dollar_type() {
-        let env = file_env("[x: 1]\n---\n[y: $$.x]");
-        let result = env.get("$").unwrap().body.clone();
+    fn test_pipeline_percent_type() {
+        let env = file_env("[x: 1]\n---\n[y: %.x]");
+        let result = env.get("%").unwrap().body.clone();
         match result {
             Type::Record(Row { fields, .. }) => {
                 let y = fields.get("y").expect("field 'y' should exist");
                 assert_eq!(
                     *y,
                     Type::IntLiteral(1),
-                    "expected $$.x to propagate IntLiteral(1), got {y}"
+                    "expected %.x to propagate IntLiteral(1), got {y}"
                 );
             }
             other => panic!("expected Record result, got {other}"),
@@ -3792,7 +3939,8 @@ mod tests {
         // concrete type names (Number, Int, String) are resolved as concrete types, not
         // fresh TypeVars. Only lowercase annotation names get fresh vars.
         // Verify that concrete-type annotations still work correctly at the top level.
-        let result = check("[x: [@Number 42]  y: [@String hello]]");
+        // In new syntax, string literals require quotes.
+        let result = check("[x: [@Number 42]  y: [@String \"hello\"]]");
         assert!(
             result.is_ok(),
             "concrete-type annotations at top level should work (not affected by Fix 1): {:?}",
@@ -3839,7 +3987,8 @@ mod tests {
     fn test_fix3_default_wrong_type_emits_error() {
         // The main expression (42) satisfies the assertion (Number), but the default
         // value ("hello") does NOT — it's a String. This should be a type error.
-        let errors = check_err("[@[type: Number  default: hello] 42]");
+        // In new syntax, string literals require quotes.
+        let errors = check_err("[@[type: Number  default: \"hello\"] 42]");
         assert!(
             errors
                 .iter()
@@ -3851,9 +4000,9 @@ mod tests {
 
     #[test]
     fn test_fix3_default_correct_type_no_error() {
-        // Main expression (hello) does NOT satisfy Number, but default (0) DOES.
+        // Main expression (hello as VarRef → undefined) does NOT satisfy Number, but default (0) DOES.
         // The type error for the main expression is suppressed, and the default is valid.
-        // No error should be emitted.
+        // No error should be emitted (TypeAssert default suppression applies to undefined vars too).
         let result = check("[@[type: Number  default: 0] hello]");
         assert!(
             result.is_ok(),
@@ -3867,7 +4016,8 @@ mod tests {
         // Both the main expression (world) and the default (hello) fail the Number assertion.
         // The type error for the main expression would be suppressed (default present),
         // but the default itself is wrong — must emit a 'default value type mismatch' error.
-        let errors = check_err("[@[type: Number  default: hello] world]");
+        // In new syntax, string literals require quotes.
+        let errors = check_err("[@[type: Number  default: \"hello\"] \"world\"]");
         assert!(
             errors
                 .iter()
@@ -4071,7 +4221,11 @@ mod tests {
 
     #[test]
     fn test_type_expr_auto_indexed_entries() {
-        let errors = check_err("[type [Int String]]");
+        // In new syntax, [Int String] is an implied call (Identifier head), not a data
+        // sequence. The type resolver sees an invalid type expression (not a dict).
+        // In old syntax this was a Dict with auto-indexed Str entries → different error.
+        // For testing the auto-indexed rejection, use quoted strings: ["Int" "String"].
+        let errors = check_err("[type [\"Int\" \"String\"]]");
         assert!(errors
             .iter()
             .any(|e| e.message.contains("auto-indexed entries not supported")));
@@ -4530,17 +4684,22 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_identity_string() {
+        // In new syntax, string literals require quotes.
         assert_eq!(
-            result_field("[id: [fn [x@a] $x]]\n[result: [call $id hello]]", "result"),
+            result_field(
+                "[id: [fn [x@a] $x]]\n[result: [call $id \"hello\"]]",
+                "result"
+            ),
             Type::StringLiteral("hello".into()),
         );
     }
 
     #[test]
     fn test_call_polymorphic_two_type_vars() {
+        // In new syntax, string literals require quotes.
         assert_eq!(
             result_field(
-                "[f: [fn [x@a y@b] $y]]\n[result: [call $f 42 hello]]",
+                "[f: [fn [x@a y@b] $y]]\n[result: [call $f 42 \"hello\"]]",
                 "result"
             ),
             Type::StringLiteral("hello".into()),
@@ -4549,9 +4708,10 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_type_var_in_return_only() {
+        // In new syntax, string literals require quotes (hello is unused in result).
         assert_eq!(
             result_field(
-                "[first: [fn [x@a y@b] $x]]\n[result: [call $first 42 hello]]",
+                "[first: [fn [x@a y@b] $x]]\n[result: [call $first 42 \"hello\"]]",
                 "result"
             ),
             Type::IntLiteral(42),
@@ -4560,7 +4720,8 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_multiple_calls_different_types() {
-        let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id hello]]");
+        // In new syntax, string literals require quotes.
+        let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("r1"), Some(&Type::IntLiteral(42)));
@@ -4603,7 +4764,8 @@ mod tests {
 
     #[test]
     fn test_call_unification_error() {
-        let errors = check_err("[f: [fn [x@a y@a] $x]]\n[result: [call $f 42 hello]]");
+        // In new syntax, string literals require quotes. Both args must unify to same type.
+        let errors = check_err("[f: [fn [x@a y@a] $x]]\n[result: [call $f 42 \"hello\"]]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "expected unification error, got: {:?}",
@@ -4802,8 +4964,9 @@ mod tests {
 
     #[test]
     fn test_type_expr_open_record() {
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice  age: 30]]]",
+            "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  age: 30]]]",
             "p",
         );
         match ty {
@@ -4823,8 +4986,9 @@ mod tests {
         // After Fix 1: row variable names in type aliases become fresh internal vars (e.g., _t1)
         // rather than keeping the user-visible name "rest". The structural shape must still be
         // correct: a Record with a RowVar tail.
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[WithName: [type [name: String ...rest]]]\n[p: [@WithName [name: Alice]]]",
+            "[WithName: [type [name: String ...rest]]]\n[p: [@WithName [name: \"Alice\"]]]",
             "p",
         );
         match ty {
@@ -4845,8 +5009,9 @@ mod tests {
 
     #[test]
     fn test_type_expr_closed_record() {
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[Closed: [type [name: String]]]\n[p: [@Closed [name: Alice]]]",
+            "[Closed: [type [name: String]]]\n[p: [@Closed [name: \"Alice\"]]]",
             "p",
         );
         match ty {
@@ -5077,9 +5242,10 @@ mod tests {
         //   The assertions `beta_level <= rho_level` and `rho_fresh_level <= rho_level` are
         //   non-trivial: they pass only because lowering reduced the levels from 2 to 0.
         //   Deleting the lower_row_var_levels_pub call would leave them at 2, failing 2 ≤ 0.
+        // In new syntax, string literals require quotes.
         let code = r#"
             [Open: [type [name: String ...]]]
-            [p: [@Open [name: Alice]]]
+            [p: [@Open [name: "Alice"]]]
             [result: [inner: $p.unknown]]
         "#;
 
@@ -5222,12 +5388,14 @@ mod tests {
 
     #[test]
     fn test_type_assert_open_record_accepts_extra_fields() {
-        check("[@[name: String ...] [name: Alice  age: 30]]").unwrap();
+        // In new syntax, string literals require quotes.
+        check("[@[name: String ...] [name: \"Alice\"  age: 30]]").unwrap();
     }
 
     #[test]
     fn test_type_assert_closed_record_rejects_extra_fields() {
-        let errors = check_err("[@[name: String] [name: Alice  age: 30]]");
+        // In new syntax, string literals require quotes.
+        let errors = check_err("[@[name: String] [name: \"Alice\"  age: 30]]");
         assert!(!errors.is_empty());
         assert!(errors[0].message.contains("cannot unify"));
     }
@@ -5241,9 +5409,10 @@ mod tests {
 
     #[test]
     fn test_dot_access_on_open_record_known_field() {
+        // In new syntax, string literals require quotes.
         assert_eq!(
             result_field(
-                "[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice  age: 30]]]\n[result: $p.name]",
+                "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  age: 30]]]\n[result: $p.name]",
                 "result",
             ),
             Type::Str,
@@ -5256,8 +5425,9 @@ mod tests {
         // constraint binding ρ → Row({unknown: β}, RowVar(ρ_fresh)) and returns β.
         // The result is a TypeVar (the fresh field type), not Any.
         // See doc/07-type-extensions.md Part 5 (RowVar case).
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice]]]\n[result: $p.unknown]",
+            "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"]]]\n[result: $p.unknown]",
             "result",
         );
         assert!(
@@ -5298,8 +5468,9 @@ mod tests {
     #[test]
     fn test_let_gen_varref_instantiation() {
         // Each reference to $id should get a fresh instantiation
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[result: [a: [call $id 42]  b: [call $id hello]]]",
+            "[id: [fn [x@a] $x]]\n[result: [a: [call $id 42]  b: [call $id \"hello\"]]]",
             "result",
         );
         match ty {
@@ -5439,9 +5610,13 @@ mod tests {
 
     #[test]
     fn test_let_gen_typevar_in_bracket_access() {
-        // TypeVars should be handled gracefully in bracket access
+        // TypeVars should be handled gracefully in bracket access.
+        // In new syntax, string literals require quotes.
+        // key: "x" → StringLiteral("x"), same as old bare-word x but now quoted.
+        // During letrec forward-ref phase, $key has TypeVar type → check_bracket_access
+        // returns Any (TypeVar target + TypeVar-or-Any key → Any).
         assert_eq!(
-            result_field("[result: $data[$key]  data: [x: 1]  key: x]", "result"),
+            result_field("[result: $data[$key]  data: [x: 1]  key: \"x\"]", "result"),
             Type::Any,
         );
     }
@@ -5533,8 +5708,8 @@ mod tests {
         let ty = result_field("[x: [@Number 42]]", "x");
         assert_eq!(ty, Type::Number, "IntLiteral should subsume to Number");
 
-        // StringLiteral should subsume to String
-        let ty = result_field("[x: [@String hello]]", "x");
+        // StringLiteral should subsume to String (use quoted string in new syntax)
+        let ty = result_field("[x: [@String \"hello\"]]", "x");
         assert_eq!(ty, Type::Str, "StringLiteral should subsume to String");
     }
 
@@ -5545,8 +5720,8 @@ mod tests {
         let ty = result_field("[f: [fn [x@Int] $x]]\n[result: [call $f 42]]", "result");
         assert_eq!(ty, Type::Int, "CALL-MONO should accept IntLiteral arg");
 
-        // This should fail: String is not subtype of Int
-        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f hello]]");
+        // This should fail: String is not subtype of Int (use quoted string in new syntax)
+        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f \"hello\"]]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "CALL-MONO should reject String arg for Int param, got: {:?}",
@@ -5630,8 +5805,8 @@ mod tests {
         let ty = result_field("[f: [fn [x@a] $x]]\n[result: [call $f 42]]", "result");
         assert_eq!(ty, Type::IntLiteral(42), "CALL-POLY should unify");
 
-        // Multiple calls should get independent instantiations
-        let env = doc_env("[f: [fn [x@a] $x]]\n[r1: [call $f 42]]\n[r2: [call $f hello]]");
+        // Multiple calls should get independent instantiations (use quoted string in new syntax)
+        let env = doc_env("[f: [fn [x@a] $x]]\n[r1: [call $f 42]]\n[r2: [call $f \"hello\"]]");
         let r1 = env.get("r1").unwrap();
         let r2 = env.get("r2").unwrap();
         assert_eq!(r1.body, Type::IntLiteral(42));
@@ -5659,8 +5834,8 @@ mod tests {
             other => panic!("expected Function, got {other}"),
         }
 
-        // Type mismatch should fail
-        let errors = check_err("[f: [fn@Int [] hello]]");
+        // Type mismatch should fail (use quoted string in new syntax)
+        let errors = check_err("[f: [fn@Int [] \"hello\"]]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "Function body type mismatch should error, got: {:?}",
@@ -6285,7 +6460,8 @@ mod tests {
         // The optimization special-cases VarRef in Call expressions for polymorphic schemes.
 
         // Test with multiple calls to the same polymorphic function across documents
-        let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id hello]]");
+        // In new syntax, string literals require quotes.
+        let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
 
         match ty {
             Type::Record(Row { fields, .. }) => {
@@ -6315,7 +6491,11 @@ mod tests {
         // Exercises the TypeVar constraint generation in check_bracket_access:
         // γ_data is a TypeVar (forward ref), bracket access with string-literal key
         // generates α = Record({name: β}, RowVar(ρ)), Pass 3b resolves β.
-        let ty = result_field("[result: $data[name]  data: [name: hello]]", "result");
+        // In new syntax, string literals require quotes (both value and key).
+        let ty = result_field(
+            "[result: $data[\"name\"]  data: [name: \"hello\"]]",
+            "result",
+        );
         assert_eq!(ty, Type::StringLiteral("hello".to_string()));
     }
 
@@ -6377,8 +6557,9 @@ mod tests {
         // (where ONLY removing state.subst.apply() from the CALL-POLY site causes failure)
         // requires cross-field constraint propagation within a letrec pass, tracked as
         // future work (row-unification-h).
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[data: [name: hello]]\n[result: [call $id $data.name]]",
+            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data.name]]",
             "result",
         );
         // result should be StringLiteral("hello") via CALL-POLY: id returns same type as arg
@@ -6452,7 +6633,8 @@ mod tests {
         // file_env processes all documents and returns the env of the last document.
         // The last document has one dict [result: ...], so result is in the final env.
         let env = file_env(
-            "[id: [fn [x@a] $x]]\n[data: [name: hello]]\n---\n[result: [call $id $data.name]]",
+            // In new syntax, string literals require quotes.
+            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n---\n[result: [call $id $data.name]]",
         );
         let result_ty = env
             .get("result")
@@ -6509,7 +6691,9 @@ mod tests {
 
         // Extract the span of the `42` argument from the parsed AST to look it up in type_map.
         let arg_span = match &expr.node {
-            Expr::Call { args, .. } => {
+            Expr::Call {
+                args, implied: _, ..
+            } => {
                 assert_eq!(args.len(), 1, "expected exactly one positional arg");
                 let arg = &args[0];
                 (arg.span.start.offset, arg.span.end.offset)
@@ -6783,8 +6967,9 @@ mod tests {
         //   constraint propagation (no infer_dict local subst sharing across entries).
         //   The merge ensures that CALL-POLY's local subst bindings (e.g., _tN -> Record(...))
         //   flow into state.subst for downstream resolution.
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[data: [name: hello]]\n[result: [call $id $data]]\n[n: $result.name]",
+            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]\n[n: $result.name]",
             "n",
         );
         assert_eq!(
@@ -6796,7 +6981,7 @@ mod tests {
         // Also verify that `result` has the full record type.
         // Use a different input where `result` is in the last expression.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[data: [name: hello]]\n[result: [call $id $data]]",
+            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]",
             "result",
         );
         match ty {
@@ -6860,8 +7045,9 @@ mod tests {
         // Without seeding, the fresh local subst would not see state.subst's binding
         // for $name's type. With seeding, unify() resolves both sides through the
         // seeded subst, producing the correct binding.
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[data: [name: hello]]\n[name: $data.name]\n[result: [call $id $name]]",
+            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call $id $name]]",
             "result",
         );
         assert_eq!(
@@ -6889,8 +7075,9 @@ mod tests {
         //   Entry 2: calls [call [fn [x@a] $x] $data] — CALL-POLY unification binds fresh
         //     TypeVar _tN to Record({name: "hello"}). Without merge, this binding is lost.
         //   Entry 3: accesses $result.name — requires the binding from Entry 2 in state.subst.
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[data: [name: hello]]\n[result: [call [fn [x@a] $x] $data]]\n[n: $result.name]",
+            "[data: [name: \"hello\"]]\n[result: [call [fn [x@a] $x] $data]]\n[n: $result.name]",
             "n",
         );
         assert_eq!(
@@ -6901,7 +7088,7 @@ mod tests {
 
         // Verify that `result` itself resolves to a record with the right field type.
         let ty = result_field(
-            "[data: [name: hello]]\n[result: [call [fn [x@a] $x] $data]]",
+            "[data: [name: \"hello\"]]\n[result: [call [fn [x@a] $x] $data]]",
             "result",
         );
         match ty {
@@ -6932,8 +7119,9 @@ mod tests {
         //
         // With seeding, the seeded subst resolves $name's TypeVar to StringLiteral("hello")
         // during unification, producing the correct return type.
+        // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[data: [name: hello]]\n[name: $data.name]\n[result: [call [fn [x@a] $x] $name]]",
+            "[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call [fn [x@a] $x] $name]]",
             "result",
         );
         assert_eq!(
@@ -7226,7 +7414,8 @@ mod tests {
         //
         // result must come FIRST to create a forward reference — if data comes first,
         // $data is already concrete when result is processed and no collision occurs.
-        let ty = result_field("[result: $data.name  data: [name: hello]]", "result");
+        // In new syntax, string literals require quotes.
+        let ty = result_field("[result: $data.name  data: [name: \"hello\"]]", "result");
         assert_eq!(
             ty,
             Type::StringLiteral("hello".to_string()),
@@ -7246,8 +7435,9 @@ mod tests {
         //          [p: [@Open [name: Alice  score: 42]]]
         //          [r: $p["score2"]]
         // r should be a TypeVar (fresh β from the constraint), not Any.
+        // In new syntax, string literals require quotes (both value and bracket key).
         let env = doc_env(
-            "[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice  score: 42]]]\n[r: $p[score2]]",
+            "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r: $p[\"score2\"]]",
         );
         match env.get("r").map(|s| &s.body) {
             Some(Type::TypeVar(_, _)) => {}
@@ -7262,8 +7452,10 @@ mod tests {
     fn test_bracket_access_open_record_known_field() {
         // Bracket access with a string-literal key that IS in known fields should return
         // the field's type directly, unchanged from previous behavior.
-        let env =
-            doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: Alice]]]\n[r: $p[name]]");
+        // In new syntax, string literals require quotes (both value and bracket key).
+        let env = doc_env(
+            "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"]]]\n[r: $p[\"name\"]]",
+        );
         match env.get("r").map(|s| &s.body) {
             Some(Type::Str) => {}
             Some(other) => panic!("expected Str for bracket access on known field, got {other}"),
@@ -7287,9 +7479,13 @@ mod tests {
         // When target is a TypeVar and key is a string literal, check_bracket_access should
         // generate α = Record({key: β}, RowVar(ρ)) (mirroring check_dot_access's TypeVar arm).
         //
-        // Pattern: [result: $data["name"]  data: [name: hello]]
+        // Pattern: [result: $data["name"]  data: [name: "hello"]]
         // Pass 3b resolves β through the γ_data collision → StringLiteral("hello").
-        let ty = result_field("[result: $data[name]  data: [name: hello]]", "result");
+        // In new syntax, string literals require quotes (both value and bracket key).
+        let ty = result_field(
+            "[result: $data[\"name\"]  data: [name: \"hello\"]]",
+            "result",
+        );
         assert_eq!(
             ty,
             Type::StringLiteral("hello".to_string()),
@@ -7485,7 +7681,9 @@ mod tests {
                     })
                     .expect("should have 'result' entry");
                 match &call_entry.node.value.node {
-                    Expr::Call { func, .. } => (func.span.start.offset, func.span.end.offset),
+                    Expr::Call {
+                        func, implied: _, ..
+                    } => (func.span.start.offset, func.span.end.offset),
                     other => {
                         panic!("expected Expr::Call as value of 'result' entry, got {other:?}")
                     }
@@ -7860,24 +8058,24 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_dollar_backward_compat() {
-        // Test that $$ still works for backward compatibility (pipeline variable)
-        let input = r#"
-[x: 1  y: 2]
-
----
-
-[z: [+ $$.x $$.y]]
-        "#;
-        let mut file = crate::parse(input).unwrap();
-        crate::desugar::desugar_file(&mut file.node);
-
-        let result = typecheck_file(&file.node);
-        assert!(
-            result.is_ok(),
-            "$$ pipeline binding should still work, got error: {:?}",
-            result.unwrap_err()
-        );
+    fn test_pipeline_percent_pipeline_multi_field() {
+        // Test that the inferred type of z ([+ %.x %.y]) is Number (the + return type).
+        let input = "[x: 1  y: 2]\n---\n[z: [+ %.x %.y]]";
+        let env = file_env(input);
+        let result_type = env.get("%").unwrap().body.clone();
+        match result_type {
+            Type::Record(Row { fields, .. }) => {
+                let z = fields
+                    .get("z")
+                    .expect("field 'z' should exist in second doc");
+                assert_eq!(
+                    *z,
+                    Type::Number,
+                    "expected [+ %.x %.y] to have type Number, got {z}"
+                );
+            }
+            other => panic!("expected Record result for second doc, got {other}"),
+        }
     }
 
     #[test]

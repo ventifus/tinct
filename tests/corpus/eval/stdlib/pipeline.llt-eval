@@ -1,4 +1,4 @@
 # pipeline: thread a value through a series of functions (5*2+1=11)
-[call $-> 5 [fn [x] [call $* $x 2]] [fn [x] [call $+ $x 1]]]
+[-> 5 [fn [x] [* x 2]] [fn [x] [+ x 1]]]
 ===
 Int(11)

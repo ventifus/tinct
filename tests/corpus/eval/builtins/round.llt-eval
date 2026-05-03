@@ -1,4 +1,4 @@
 # round : round a float to nearest integer
-[call $round 3.5]
+[round 3.5]
 ===
 Int(4)

@@ -3,7 +3,7 @@
 //! The REPL mirrors `eval_document()` scope chain semantics: each input is parsed
 //! and evaluated, and if the result is a Dict, its string-keyed entries become
 //! bindings in a child environment for subsequent inputs. The previous result is
-//! always accessible as `$$`.
+//! always accessible as `%`.
 //!
 //! ## Architecture
 //!
@@ -73,13 +73,13 @@ pub fn is_balanced(lines: &[&str]) -> bool {
 
 /// Persistent REPL session state.
 ///
-/// Holds the current environment (scope chain) and the previous result (`$$`).
+/// Holds the current environment (scope chain) and the previous result (`%`).
 /// Each successful evaluation may extend the environment (if the result is a Dict)
-/// and always updates `$$`.
+/// and always updates `%`.
 pub struct ReplSession {
     /// Current lexical environment. Grows as Dict results add bindings.
     env: Rc<RefCell<Environment>>,
-    /// The previous evaluation result, accessible as `$$`.
+    /// The previous evaluation result, accessible as `%`.
     prev_result: Rc<Thunk>,
     /// Evaluation context for session (include guard, etc.)
     ctx: Rc<crate::eval::EvalContext>,
@@ -105,7 +105,7 @@ impl ReplSession {
     /// This allows the caller to share the same `stdlib_env` with other
     /// infrastructure (e.g., `EvalContext`).
     pub fn with_env(stdlib_env: Rc<RefCell<Environment>>) -> Result<Self, String> {
-        // Create a session env as a child of stdlib, with $$ = empty dict.
+        // Create a session env as a child of stdlib, with % = empty dict.
         let session_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
             &stdlib_env,
         ))));
@@ -113,10 +113,10 @@ impl ReplSession {
             Value::Dict(IndexMap::new()),
             Span::origin(),
         ));
-        // The parser strips the leading `$` sigil, so `$$` becomes VarRef("$").
+        // Bind % as the pipeline variable (previous result), initially empty dict.
         session_env
             .borrow_mut()
-            .insert("$".to_string(), Rc::clone(&empty_dict));
+            .insert("%".to_string(), Rc::clone(&empty_dict));
 
         // Create REPL session context (REPL runs in current directory, no sandbox)
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
@@ -138,9 +138,9 @@ impl ReplSession {
     ///    results extend the environment, the last expression is the final result.
     /// 3. If the final result is a Dict, its string-keyed entries become bindings
     ///    in the session environment.
-    /// 4. `$$` is updated to the result thunk.
+    /// 4. `%` is updated to the result thunk.
     ///
-    /// On error, the session state is unchanged (the environment and `$$` are not
+    /// On error, the session state is unchanged (the environment and `%` are not
     /// modified), so the user can fix and retry.
     pub fn eval_input(&mut self, input: &str) -> StepResult {
         if input.len() as u64 > MAX_FILE_SIZE {
@@ -221,7 +221,7 @@ impl ReplSession {
             let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&self.env))));
             child_env
                 .borrow_mut()
-                .insert("$".to_string(), Rc::clone(&self.prev_result));
+                .insert("%".to_string(), Rc::clone(&self.prev_result));
             for (key, val_thunk) in map {
                 if let Key::String(name) = key {
                     child_env
@@ -233,7 +233,7 @@ impl ReplSession {
         } else {
             self.env
                 .borrow_mut()
-                .insert("$".to_string(), Rc::clone(&self.prev_result));
+                .insert("%".to_string(), Rc::clone(&self.prev_result));
         }
 
         Ok(display)
@@ -544,33 +544,33 @@ mod tests {
     }
 
     #[test]
-    fn test_session_dollar_dollar_pipeline() {
+    fn test_session_percent_pipeline() {
         let mut session = ReplSession::new().unwrap();
 
         // Evaluate a value.
         session.eval_input("42").unwrap();
 
-        // $$ should be the previous result.
-        assert_eq!(session.eval_input("$$").unwrap(), "Int(42)");
+        // % should be the previous result.
+        assert_eq!(session.eval_input("%").unwrap(), "Int(42)");
     }
 
     #[test]
-    fn test_session_dollar_dollar_dict_access() {
+    fn test_session_percent_dict_access() {
         let mut session = ReplSession::new().unwrap();
 
         // Evaluate a dict.
         session.eval_input("[name: Alice age: 30]").unwrap();
 
-        // Access a field through $$.
-        assert_eq!(session.eval_input("$$.name").unwrap(), "String(\"Alice\")");
+        // Access a field through %.
+        assert_eq!(session.eval_input("%.name").unwrap(), "String(\"Alice\")");
     }
 
     #[test]
-    fn test_session_dollar_dollar_initial_empty_dict() {
+    fn test_session_percent_initial_empty_dict() {
         let mut session = ReplSession::new().unwrap();
 
-        // $$ should initially be an empty dict.
-        assert_eq!(session.eval_input("$$").unwrap(), "Dict({})");
+        // % should initially be an empty dict.
+        assert_eq!(session.eval_input("%").unwrap(), "Dict({})");
     }
 
     #[test]
@@ -588,17 +588,17 @@ mod tests {
     }
 
     #[test]
-    fn test_session_error_does_not_update_dollar_dollar() {
+    fn test_session_error_does_not_update_percent() {
         let mut session = ReplSession::new().unwrap();
 
-        // Set $$ to 42.
+        // Set % to 42.
         session.eval_input("42").unwrap();
 
         // Cause an error.
         assert!(session.eval_input("$nonexistent").is_err());
 
-        // $$ should still be 42 (error did not update it).
-        assert_eq!(session.eval_input("$$").unwrap(), "Int(42)");
+        // % should still be 42 (error did not update it).
+        assert_eq!(session.eval_input("%").unwrap(), "Int(42)");
     }
 
     #[test]
@@ -657,7 +657,7 @@ mod tests {
         // Evaluate a scalar; it shouldn't add any bindings.
         session.eval_input("42").unwrap();
 
-        // There should be no new bindings (only $$ and builtins).
+        // There should be no new bindings (only % and builtins).
         // Trying to access a non-existent var should still fail.
         assert!(session.eval_input("$x").is_err());
     }
@@ -677,20 +677,20 @@ mod tests {
     }
 
     #[test]
-    fn test_session_dollar_dollar_updates_after_each_eval() {
+    fn test_session_percent_updates_after_each_eval() {
         let mut session = ReplSession::new().unwrap();
 
         // First eval.
         session.eval_input("1").unwrap();
 
-        assert_eq!(session.eval_input("$$").unwrap(), "Int(1)");
+        assert_eq!(session.eval_input("%").unwrap(), "Int(1)");
 
-        // $$ itself becomes the new $$, so $$ should still be 1 (now it was
-        // just the result of evaluating $$, which was 1).
-        assert_eq!(session.eval_input("[call $+ $$ 10]").unwrap(), "Int(11)");
+        // % itself becomes the new %, so % should still be 1 (now it was
+        // just the result of evaluating %, which was 1).
+        assert_eq!(session.eval_input("[call $+ % 10]").unwrap(), "Int(11)");
 
-        // Now $$ is 11.
-        assert_eq!(session.eval_input("$$").unwrap(), "Int(11)");
+        // Now % is 11.
+        assert_eq!(session.eval_input("%").unwrap(), "Int(11)");
     }
 
     #[test]
@@ -772,9 +772,9 @@ mod tests {
     fn test_session_multi_document_pipeline() {
         let mut session = ReplSession::new().unwrap();
 
-        // Multi-document input: first document produces [x: 1], second accesses $$.x.
+        // Multi-document input: first document produces [x: 1], second accesses %.x.
         // Documents are separated by `---`.
-        let display = session.eval_input("[x: 1]\n---\n$$.x").unwrap();
+        let display = session.eval_input("[x: 1]\n---\n%.x").unwrap();
         assert_eq!(display, "Int(1)");
     }
 

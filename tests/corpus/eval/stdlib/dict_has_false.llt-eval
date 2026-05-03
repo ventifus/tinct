@@ -1,4 +1,4 @@
 # has?: key does not exist
-[call $has? [x: 1 y: 2] z]
+[has? [x: 1 y: 2] "z"]
 ===
 Bool(false)

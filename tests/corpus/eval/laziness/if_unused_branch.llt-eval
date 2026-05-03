@@ -1,4 +1,4 @@
 # Lazy evaluation: $if does not evaluate unused branch
-[call $if true 1 [call $error "should not run"]]
+[if true 1 [error "should not run"]]
 ===
 Int(1)

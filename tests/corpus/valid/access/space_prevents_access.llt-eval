@@ -1,3 +1,6 @@
-[$user .name]
+# Space before dot prevents dot-access in new syntax.
+# user.name (no space) = dot access on user
+# [user "name"] (no dot at all) = call user with "name" arg
+[user "field"]
 ===
-[$user  ".name"]
+[user "field"]

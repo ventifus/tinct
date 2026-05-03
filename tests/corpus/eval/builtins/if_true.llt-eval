@@ -1,4 +1,4 @@
 # if : selects true branch
-[call $if true 1 2]
+[if true 1 2]
 ===
 Int(1)

@@ -2,6 +2,6 @@
 # The parser cannot catch this because $k1 and $k2 have different names.
 # Keys in the inner dict are evaluated in the outer dict's scope (parent_env rule),
 # so $k1 and $k2 both resolve to "x", triggering a runtime duplicate-key error.
-[k1: "x"  k2: "x"  result: [$k1: 1  $k2: 2]]
+[k1: "x"  k2: "x"  result: [k1: 1  k2: 2]]
 ===
 [E030] duplicate key: x

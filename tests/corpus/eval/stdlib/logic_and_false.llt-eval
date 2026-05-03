@@ -1,4 +1,4 @@
 # and: first false short-circuits
-[call $and false true]
+[and false true]
 ===
 Bool(false)

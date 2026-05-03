@@ -1,8 +1,8 @@
 # $apply with mixed int and string keys: int-keyed → positional, string-keyed → named
 [
-  f: [fn [a b@[default: 99] c] [call $str $a [call $str $b $c]]]
-  args: [0: x c: z]
-  result: [call $apply $f $args]
+  f: [fn [a b@[default: 99] c] [str a [str b c]]]
+  args: [0: "x" c: "z"]
+  result: [apply f args]
 ]
 ===
 Dict({"f": Function(a, b, c), "args": Dict({0: String("x"), "c": String("z")}), "result": String("x99z")})

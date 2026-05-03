@@ -1,4 +1,4 @@
 # trunc: truncate negative float toward zero
-[call $trunc -2.9]
+[trunc -2.9]
 ===
 Int(-2)

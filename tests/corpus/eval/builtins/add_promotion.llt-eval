@@ -1,4 +1,4 @@
 # + : auto-promotes Int + Float to Float
-[call $+ 3 1.5]
+[ + 3 1.5]
 ===
 Float(4.5)

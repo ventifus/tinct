@@ -1,5 +1,5 @@
-[f: [fn [x ...rest] $rest]]
+[f: [fn [x ...rest] rest]]
 
-[call $f 1 2 3]
+[f 1 2 3]
 ===
 Dict({0: Int(2), 1: Int(3)})

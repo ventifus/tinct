@@ -1,8 +1,8 @@
 # Lazy evaluation: TypeAssert record guard fires only when field is accessed
 # Field `unaccessed` has a type guard but is never accessed, so $error doesn't fire.
 # This proves that type guards are lazy (proxy contract semantics).
-[@[accessed: Int  unaccessed: Int] [accessed: 42  unaccessed: [call $error "should not fire"]]]
+[@[accessed: Int  unaccessed: Int] [accessed: 42  unaccessed: [error "should not fire"]]]
 ---
-$$.accessed
+%.accessed
 ===
 Int(42)

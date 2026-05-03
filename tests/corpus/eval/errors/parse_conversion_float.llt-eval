@@ -3,6 +3,6 @@
 # Note: E033 (FloatNotFinite) cannot be triggered via corpus tests — LLT has no float
 # literals for NaN/infinity and no scientific notation. E033 is tested via unit tests
 # in src/builtins.rs (floor_positive_infinity_errors, div_float_nan_result_is_error, etc.).
-[call $to-float "not-a-float"]
+[to-float "not-a-float"]
 ===
 [E060] to-float: cannot parse "not-a-float" as Float

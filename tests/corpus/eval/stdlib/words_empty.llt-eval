@@ -1,4 +1,4 @@
 # words: empty string returns empty Dict (filter on empty returns Dict)
-[call $words ""]
+[words ""]
 ===
 Dict({})

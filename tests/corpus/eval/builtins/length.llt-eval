@@ -1,4 +1,4 @@
 # length : number of entries in a dict
-[call $length [a: 1  b: 2  c: 3]]
+[length [a: 1  b: 2  c: 3]]
 ===
 Int(3)

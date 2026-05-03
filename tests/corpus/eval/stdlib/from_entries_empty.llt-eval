@@ -1,4 +1,4 @@
 # from-entries with empty list
-[call $from-entries []]
+[from-entries []]
 ===
 Dict({})

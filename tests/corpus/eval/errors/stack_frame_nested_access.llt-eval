@@ -1,10 +1,10 @@
 [
   a: [
     b: [
-      c: $undefined
+      c: undefined
     ]
   ]
 ]
-$a.b.c
+a.b.c
 ===
-[E002] undefined variable: $undefined
+[E002] undefined variable: undefined (did you mean the string "undefined"? Use quotes.)

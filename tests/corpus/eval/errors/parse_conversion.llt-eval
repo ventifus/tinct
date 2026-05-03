@@ -1,4 +1,4 @@
 # E060: ParseConversion — to-int rejects a non-numeric string.
-[call $to-int "not-a-number"]
+[to-int "not-a-number"]
 ===
 [E060] to-int: cannot parse "not-a-number" as Int

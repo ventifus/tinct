@@ -1,4 +1,4 @@
 # seq?: returns false for int
-[call $seq? 42]
+[seq? 42]
 ===
 Bool(false)

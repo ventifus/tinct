@@ -125,7 +125,7 @@ CLI Output (main.rs)
 ### CLI → Everything
 - `eval_file()` / `eval_file_with_input()` orchestrate the full pipeline
 - `--eval` flag triggers `deep_materialize()` before serialization
-- Stdin JSON injection: `json_to_value()` → inject as `$$` → eval
+- Stdin JSON injection: `json_to_value()` → inject as `%` → eval
 
 ## What You Check
 

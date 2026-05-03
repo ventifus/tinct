@@ -95,14 +95,16 @@ COMMENT    = "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI)
 
 The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the line (or end of input if the comment is on the last line). `NEWLINE` matches line endings (`\n`, `\r\n`, `\r`).
 
-**Whitespace significance:** Although whitespace is skipped between tokens in most contexts, it is *significant* for distinguishing access chains from separate expressions:
+**Whitespace significance:** Whitespace is significant for bracket access but not for dot access:
 
-- `$a.b` — dot access (no whitespace before `.`)
-- `$a .b` — VarRef `$a` followed by bare word `.b`
-- `$a[0]` — bracket access (no whitespace before `[`)
-- `$a [0]` — VarRef `$a` followed by nested expression `[0]`
+- `a.b` — dot access
+- `a .b` — also dot access (whitespace before `.` is allowed, same behavior as Nix/Jsonnet)
+- `a[0]` — bracket access (no whitespace before `[`)
+- `a [0]` — bare identifier `a` followed by nested expression `[0]`
+- `$a[0]` — bracket access using escaped-ref form (no whitespace before `[`)
+- `$a [0]` — EscapedRef `$a` followed by nested expression `[0]`
 
-This is handled by the hand-written lexer at `src/lexer.rs:120-129` using `last_significant_token` tracking for O(1) whitespace-sensitive access detection.
+Bracket access (`[`) is whitespace-sensitive: a space before `[` switches from bracket-access to a new nested expression. Dot access (`.`) is not whitespace-sensitive: `.` always acts as a field-access operator regardless of preceding whitespace. This is handled by the hand-written lexer at `src/lexer.rs:120-129` using `last_significant_token` tracking for O(1) whitespace-sensitive access detection.
 
 ### 2.2 Brackets and Punctuation
 
@@ -180,12 +182,12 @@ escaped_ref = @{ "$" ~ ident_char+ }
 
 `$` itself is a valid identifier character: `$+`, `$>=`, `$->`, `$0` are all valid escaped references. A bare `$` not followed by any identifier character is a parse error.
 
-**Access chains** attach to identifiers the same way they attach to escaped references — the dot or bracket must immediately follow with no whitespace:
+**Access chains** attach to identifiers the same way they attach to escaped references. Whitespace before `.` is allowed (the dot is always a `Dot` token); whitespace before `[` still prevents bracket access:
 
 ```tinct
 name.field           # Tokens: Identifier("name"), Dot, Identifier("field")
 name[0]              # Tokens: Identifier("name"), BracketAccess, Int(0), CloseBracket
-name .field          # Tokens: Identifier("name"), Identifier(".field") — NOT access
+name .field          # Tokens: Identifier("name"), Dot, Identifier("field") — also dot access (whitespace ignored)
 ```
 
 **Unicode homograph risk:** Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions; tinct accepts all Unicode identifier characters without NFC normalization.
@@ -292,9 +294,9 @@ my-key                   # Identifier: ref "my-key"
 "path/to/file"           # Quoted string
 ```
 
-**Note on dot in identifiers:** The tinct parser allows `.` in `ident_char`, so `file.txt` is technically a valid identifier token. However, an identifier immediately followed by `.` with no whitespace triggers dot access — `config.host` is `config` then `.host`, not the identifier `config.host`. Values containing dots that are not intended as access chains must be quoted. The tree-sitter grammar excludes `.` from identifier characters entirely for simplicity.
+**Note on dot in identifiers:** The tinct lexer excludes `.` from identifier characters (`is_var_ident_char`), so `file.txt` tokenizes as `Identifier("file"), Dot, Identifier("txt")` — three separate tokens, not a single identifier. Whitespace before `.` is allowed and does not change this: `file .txt` tokenizes identically. Values containing dots that are not intended as access chains must be quoted: `"file.txt"`.
 
-**Tree-sitter divergence:** The tinct parser's whitespace-sensitive access detection (`had_whitespace_before` + `last_significant_token`) handles `a.b` (access) vs `a .b` (two tokens). The tree-sitter grammar (`tree-sitter-llt/grammar.js`) excludes `.` from identifier characters, requiring values like `"file.txt"` to be quoted. This divergence is intentional — tree-sitter prioritizes incremental parsing performance over dot-in-identifier ergonomics.
+**Tree-sitter divergence:** The tinct lexer excludes `.` from identifier characters entirely, and whitespace before `.` is permitted (dot access is whitespace-insensitive). The tree-sitter grammar (`tree-sitter-llt/grammar.js`) follows the same rule: `.` is never part of an identifier. This is consistent between the two implementations.
 
 ### 2.4 Token Precedence
 
@@ -315,11 +317,9 @@ These characters have context-dependent meaning and require careful disambiguati
 
 #### `.` Dot Access
 
-`.` immediately after a `$ref` token or after a `]` closing a bracket access (no whitespace) triggers dot-access parsing. The parser reads the next bare word as the key name.
+`.` always emits a `Dot` token regardless of preceding whitespace. Dot access is **whitespace-insensitive**: `$a.b` and `$a .b` tokenize identically. The parser reads the next identifier as the field name.
 
-`.` with whitespace before it is part of a bare word string — it has no special meaning.
-
-Whitespace (including newlines) after `.` is permitted — the field name may appear on the next line for readability.
+Whitespace (including newlines) after `.` is also permitted — the field name may appear on the next line for readability.
 
 ```tinct
 $person.name             # Dot access: get key "name" from $person
@@ -327,19 +327,21 @@ $config.database.host    # Chained dot access: $config -> "database" -> "host"
 $data[0].name            # Dot access after bracket access
 
 $config
-  .database              # Line-continuation: same as $config.database
+  .database              # Line-continuation: same as $config.database (whitespace before . is OK)
   .host                  # Chained: $config.database.host
 
-some.file.txt            # Bare word string: "some.file.txt" (no $ prefix)
-$x . y                   # $x is a VarRef, ". y" is not dot access (whitespace before .)
+some.file.txt            # Dot access chain: identifier "some", then "file", then "txt"
+$x . y                   # $x is an EscapedRef; . y is also dot access (whitespace before . is allowed)
 ```
 
 | Input | Tokens | Interpretation |
 |-------|--------|----------------|
-| `$a.b` | `VarRef("a")`, `Dot`, `BareWord("b")` | Dot access |
-| `a.b` | `BareWord("a.b")` | String containing a dot |
-| `$a .b` | `VarRef("a")`, `BareWord(".b")` | VarRef then separate string |
-| `$a[0].b` | `VarRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket`, `Dot`, `BareWord("b")` | Bracket then dot |
+| `$a.b` | `EscapedRef("a")`, `Dot`, `Identifier("b")` | Dot access |
+| `a.b` | `Identifier("a")`, `Dot`, `Identifier("b")` | Dot access chain |
+| `$a .b` | `EscapedRef("a")`, `Dot`, `Identifier("b")` | Dot access (whitespace before `.` ignored) |
+| `$a[0].b` | `EscapedRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket`, `Dot`, `Identifier("b")` | Bracket then dot |
+
+Note: whitespace before `[` is **not** ignored — `$a [0]` is a separate expression, not bracket access.
 
 #### `[` Bracket Access
 
@@ -353,35 +355,35 @@ $data[$key]              # Bracket access: computed key
 $data[2..5]              # Bracket access with range
 $config.services[0].host # Bracket access in a chain
 
-$data [5]                # Two separate things: VarRef("data"), then list [0: 5]
+$data [5]                # Two separate things: EscapedRef("data"), then list [0: 5]
 ```
 
 | Input | Tokens | Interpretation |
 |-------|--------|----------------|
-| `$a[0]` | `VarRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket` | Bracket access |
-| `$a [0]` | `VarRef("a")`, `OpenBracket`, `Int(0)`, `CloseBracket` | VarRef then new list |
-| `$a[0][1]` | `VarRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket`, `BracketAccess`, `Int(1)`, `CloseBracket` | Chained bracket access |
-| `$a.b[0]` | `VarRef("a")`, `Dot`, `BareWord("b")`, `BracketAccess`, `Int(0)`, `CloseBracket` | Dot then bracket |
+| `$a[0]` | `EscapedRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket` | Bracket access |
+| `$a [0]` | `EscapedRef("a")`, `OpenBracket`, `Int(0)`, `CloseBracket` | EscapedRef then new list |
+| `$a[0][1]` | `EscapedRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket`, `BracketAccess`, `Int(1)`, `CloseBracket` | Chained bracket access |
+| `$a.b[0]` | `EscapedRef("a")`, `Dot`, `Identifier("b")`, `BracketAccess`, `Int(0)`, `CloseBracket` | Dot then bracket |
 
 #### `..` Range Operator
 
-Inside bracket access (`$data[2..5]`), two consecutive dots form the range operator. The tokenizer recognizes `..` only in the bracket-access context. Outside bracket access, `..` is literal — it is part of a bare word string.
+Inside bracket access (`$data[2..5]`), two consecutive dots form the range operator. The tokenizer recognizes `..` only in the bracket-access context. Outside bracket access, dots are always access operators — there is no bare-word-with-dots under the new syntax (`.` is excluded from identifier characters).
 
 ```tinct
 $data[2..5]              # Range: keys in [2, 5)
 $data[2..]               # Range: keys >= 2
 $data[..3]               # Range: keys < 3
 
-config..bak              # Bare word string: "config..bak"
-path/to/../file          # Bare word string: "path/to/../file"
+config..bak              # Identifier("config"), Dot, Dot, Identifier("bak") — NOT a single string
+"config..bak"            # Quoted string: "config..bak" — use quotes for literal dots
 ```
 
 | Input | Context | Interpretation |
 |-------|---------|----------------|
 | `$data[2..5]` | Inside bracket access | Range operator: keys 2 to 5 |
 | `$data[..]` | Inside bracket access | Range operator: all keys |
-| `file..bak` | Bare word | String: "file..bak" |
-| `a..b` | Bare word | String: "a..b" |
+| `file..bak` | Outside bracket access | `Identifier("file")`, `Dot`, `Dot`, `Identifier("bak")` — two dots = two access ops |
+| `a..b` | Outside bracket access | `Identifier("a")`, `Dot`, `Dot`, `Identifier("b")` — not a bare-word string |
 
 #### `@` Annotation
 
@@ -587,7 +589,7 @@ Range values are limited to integer literals and variable references.
 
 The lexer handles whitespace-sensitivity so that `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word. Note that `.` is excluded from `var_ident_char`, which is what allows `$a.b` to parse as access rather than as a single identifier ending in `.b`.
 
-Similarly, `$a[0]` is bracket access, but `$a [0]` is a VarRef followed by a nested bracket expression.
+Similarly, `$a[0]` is bracket access, but `$a [0]` is an EscapedRef followed by a nested bracket expression.
 
 **Chaining examples:**
 
@@ -943,7 +945,7 @@ bare_word_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") 
 | `call@Type` (first in `[]`) | Annotated (NOT keyword) | `@` after identifier converts keyword candidate |
 | `call:` | Dict key | Colon makes it a key |
 | `%config` | Reference to pipeline section `config` | Identifier with `%` prefix (convention) |
-| `a..b` | Identifier `a..b` | `..` outside bracket access |
+| `a..b` | `Identifier("a")`, `Dot`, `Dot`, `Identifier("b")` | `.` excluded from identifier chars; both dots are access operators |
 | `a[2..5]` | Range access | `..` inside bracket access |
 | `---` (between exprs) | Document separator | `doc_separator` rule |
 | `----` | Identifier | `!ident_char` prevents separator match |

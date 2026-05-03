@@ -1,5 +1,5 @@
-[call $include "lib/utils.llt"]
+[include "lib/utils.llt"]
 
-[result: [call $double 21]]
+[result: [double 21]]
 ===
-[call $include "lib/utils.llt"]
+[include "lib/utils.llt"]

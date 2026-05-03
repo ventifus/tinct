@@ -21,13 +21,13 @@ You are a lazy evaluation expert and laziness auditor for the LLT language runti
 - **Environment chains** (`src/value.rs`): `Environment` has `Option<Rc<Environment>>` parent chain. Iterative lookup walks chain (lines 437-452). Child envs created for dict/document scopes and function calls.
 - **Cycle detection**: `take_*` methods atomically transition to InProgress via `mem::replace` before extracting data. Re-encountering InProgress triggers circular dependency error (eval.rs:1154-1167) cached in Failed state.
 - **Depth limiting**: `MAX_EVAL_DEPTH` (256) is practical, not semantic. DepthExceeded is non-cacheable — thunks restore state for retry. Checked at eval:270, materialize:1115, deep_materialize:1535.
-- **Document pipeline**: sequential expressions form scope chains, `---` resets scope with `$$` carrying output (lazy, no materialization at boundary).
+- **Document pipeline**: sequential expressions form scope chains, `---` resets scope with `%` carrying output (lazy, no materialization at boundary).
 - **Function evaluation**: `invoke_function` is eager-binding + lazy-body. Args bound immediately, body wrapped as Unevaluated thunk. `eval_call` eagerly materializes function to dispatch (lines 705-706), NOT fully lazy.
 - **PendingBuiltin/PendingCall**: Deferred computation as defunctionalized continuations. Args stay as thunks. Builtin decides which to materialize (e.g., `$if` forces condition only, returns chosen branch thunk).
 - **Error caching**: Failed state memoizes cacheable errors. Non-cacheable (DepthExceeded) restore original state. Failed→Failed self-transition enriches spans/stack without changing error identity.
 - **Span propagation**: `attach_materialization_context` (eval.rs:1052-1080) adds materialization_span on first access, subsequent accesses become stack frames.
 - **When materialization is required**: accessing a dict key, branching on `$if`, comparing values, arithmetic, string operations, type-of, printing output
-- **When materialization must NOT happen**: passing values between functions, constructing dicts, binding function arguments, `$$` pipeline across documents, returning values from functions
+- **When materialization must NOT happen**: passing values between functions, constructing dicts, binding function arguments, `%` pipeline across documents, returning values from functions
 
 ## Key Files
 
@@ -46,7 +46,7 @@ You are a lazy evaluation expert and laziness auditor for the LLT language runti
 4. **InProgress is the cycle breaker**: `take_*` methods atomically transition to InProgress via `mem::replace` BEFORE extracting data. Re-encountering InProgress is a cycle (eval.rs:1154).
 5. **Non-cacheable errors restore state**: Only DepthExceeded is non-cacheable. All error recovery paths must check `is_cacheable()` and restore original state when false. **CRITICAL BUG**: Guarded error recovery at eval.rs:1482-1489 fails to restore state on non-cacheable errors, leaving thunk stuck in InProgress.
 6. **Span attachment at materialization**: `attach_materialization_context` adds mat_span on first access, subsequent accesses add stack frames.
-7. **`$$` passes lazily**: document output becomes `$$` for the next document without materialization at the `---` boundary (eval.rs:301).
+7. **`%` passes lazily**: document output becomes `%` for the next document without materialization at the `---` boundary (eval.rs:301).
 8. **deep_materialize cache cleanup**: `deep_materialize_thunk` inserts None sentinel before materializing (line 1581). **CRITICAL BUG**: materialize failure at line 1582 propagates via `?` without cleaning up sentinel.
 
 ## Laziness Red Flags
@@ -56,7 +56,7 @@ Report each materialization as **Necessary** (must force here) or **Premature** 
 ### In eval.rs
 1. Calling `materialize()` on function arguments — args should stay as thunks
 2. Calling `materialize()` on dict values during construction — dict values should be `Unevaluated` thunks
-3. Calling `materialize()` on `$$` at document boundaries
+3. Calling `materialize()` on `%` at document boundaries
 4. Calling `materialize()` before creating a thunk — if wrapping the result anyway, don't force first
 5. Looping over dict values and materializing when just restructuring — values should stay as thunks
 6. **TypeAssert is a strictness point**: `[@Type expr]` forces materialization at annotation site — necessary, but document in §Strictness exceptions
@@ -98,7 +98,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 
 1. Does the code implement the evaluation model described in `doc/08-evaluation.md`?
 2. Are laziness decisions well-justified? Should any be revisited?
-3. Are document pipeline semantics (`$$`, scope chains, `---` boundaries) fully specified?
+3. Are document pipeline semantics (`%`, scope chains, `---` boundaries) fully specified?
 4. Is the materialization model clearly specified?
 5. Are there evaluation design choices that conflict with maintainability or future phases?
 6. Should the letrec scoping model or cycle detection strategy be reconsidered?
@@ -116,7 +116,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 5. **Cycle detection**: `InProgress` sentinel set by `take_*` before data extraction. Check eval.rs:1154-1167 fires on re-entry. Verify cache_failure called after cycle error.
 6. **Environment chain**: iterative parent walk (value.rs:437-452), no recursive lookup. Child envs for dict/document/function scopes have correct parent.
 7. **PendingBuiltin/PendingCall deferral**: eval_call wraps args as Unevaluated (eval.rs:713-735), creates PendingBuiltin/PendingCall, returns thunk. Builtin returns thunk (not value), materialize handler forces it.
-8. **Document pipeline**: `$$` passes as thunk across `---` (eval.rs:301), no materialize at boundary. Scope chains via child env (eval.rs:511-522).
+8. **Document pipeline**: `%` passes as thunk across `---` (eval.rs:301), no materialize at boundary. Scope chains via child env (eval.rs:511-522).
 9. **Depth limiting**: all three entry points (eval:270, materialize:1115, deep_materialize:1535) check depth > MAX_EVAL_DEPTH, return error without state mutation.
 10. **Span propagation**: `attach_materialization_context` (eval.rs:1052-1080) called via `map_err(&decorate)` on all error paths.
 11. **deep_materialize cache**: dual-purpose HashMap (None=blackhole, Some=sharing). Verify cleanup on error, sharing preservation on success, cycle return path correctness.

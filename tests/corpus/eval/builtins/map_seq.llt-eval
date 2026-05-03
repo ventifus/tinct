@@ -1,4 +1,4 @@
 # map on seq: returns lazy seq
-[call $head [call $map [fn [x] [call $+ $x 10]] [call $seq 1 [call $seq 2 []]]]]
+[head [map [fn [x] [+ x 10]] [seq 1 [seq 2 []]]]]
 ===
 Int(11)

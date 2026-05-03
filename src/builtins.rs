@@ -1047,7 +1047,7 @@ fn blake3_hex(bytes: &[u8]) -> String {
 ///
 /// Path resolution: relative paths are resolved against the including file's
 /// directory. Absolute paths are used as-is. Cycle detection prevents A→B→A
-/// circular includes. The included file gets an empty `$$` and sees the stdlib
+/// circular includes. The included file gets an empty `%` and sees the stdlib
 /// environment but NOT the caller's scope.
 ///
 /// ## Argument strictness
@@ -1277,7 +1277,7 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         state.include_chain.push((file_path_str.clone(), call_span));
     }
 
-    // Evaluate the included file with empty $$ and the stdlib env.
+    // Evaluate the included file with empty % and the stdlib env.
     let eval_result = crate::eval::eval_file(&file.node, stdlib_env, &included_ctx, depth + 1);
 
     // Remove from include guard and include chain regardless of success/failure.
@@ -7995,7 +7995,7 @@ mod tests {
     fn include_simple_dict() {
         let dir = std::env::temp_dir().join("llt_test_include_simple");
         std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "lib.llt", "[x: 42 y: hello]");
+        write_temp_file(&dir, "lib.llt", "[x: 42 y: \"hello\"]");
         let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("lib.llt".into()))];
@@ -8280,8 +8280,8 @@ mod tests {
     fn include_multi_document() {
         let dir = std::env::temp_dir().join("llt_test_include_multidoc");
         std::fs::create_dir_all(&dir).ok();
-        // Two documents: first produces [x: 10], $$ pipeline passes to second
-        write_temp_file(&dir, "multi.llt", "[x: 10]\n---\n[y: $$.x]");
+        // Two documents: first produces [x: 10], % pipeline passes to second
+        write_temp_file(&dir, "multi.llt", "[x: 10]\n---\n[y: %.x]");
         let ctx = include_ctx(&dir);
 
         let args = vec![thunk(Value::String("multi.llt".into()))];
@@ -11098,6 +11098,7 @@ mod tests {
                             Rc::new(Spanned::new(Expr::Int(10), test_span(1, 1, 1, 2))),
                         ],
                         named_args: vec![],
+                        implied: false,
                     },
                 );
                 let f = n_arg_fn_with_builtins(
@@ -11115,6 +11116,7 @@ mod tests {
                             Rc::new(Spanned::new(Expr::Int(1), test_span(1, 1, 1, 2))),
                         ],
                         named_args: vec![],
+                        implied: false,
                     },
                 );
 
@@ -11155,6 +11157,7 @@ mod tests {
                             test_span(1, 1, 1, 20),
                         ))],
                         named_args: vec![],
+                        implied: false,
                     },
                 );
 
@@ -11195,6 +11198,7 @@ mod tests {
                             Rc::new(Spanned::new(Expr::Int(300), test_span(1, 1, 1, 3))),
                         ],
                         named_args: vec![],
+                        implied: false,
                     },
                 );
                 let f = n_arg_fn_with_builtins(
@@ -11212,6 +11216,7 @@ mod tests {
                             Rc::new(Spanned::new(Expr::Int(1), test_span(1, 1, 1, 2))),
                         ],
                         named_args: vec![],
+                        implied: false,
                     },
                 );
 

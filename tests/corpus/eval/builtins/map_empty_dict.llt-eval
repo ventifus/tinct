@@ -1,4 +1,4 @@
 # map on empty dict returns empty dict
-[call $map [fn [x] [call $* $x 2]] []]
+[map [fn [x] [* x 2]] []]
 ===
 Dict({})

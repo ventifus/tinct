@@ -2,6 +2,6 @@
 # When the called function is a Rust-native builtin (e.g. $builtin-add), it
 # calls reject_named and produces E023 (NamedArgRejected).
 # Note: $+ is a Tinct wrapper function, not the raw builtin.
-[call $apply $builtin-add [named: 1]]
+[apply builtin-add [named: 1]]
 ===
 [E023]

@@ -1,5 +1,6 @@
-# "mycall" is not a recognized keyword — only "call", "fn", "type" are special.
-# This is a Dict with positional entry "mycall" followed by $f and $x.
-[mycall $f $x]
+# "mycall" is an identifier in head position — triggers implied call.
+# In new syntax, bare identifiers in head position are call targets.
+# [mycall f x] is a call to mycall(f, x).
+[mycall f x]
 ===
-["mycall"  $f  $x]
+[mycall f x]

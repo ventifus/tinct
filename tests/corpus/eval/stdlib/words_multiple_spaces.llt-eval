@@ -1,4 +1,4 @@
 # words: multiple spaces between words are collapsed (shows first element only)
-[call $words "hello    world"]
+[words "hello    world"]
 ===
 Seq(String("hello"), ...)

@@ -19,7 +19,7 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, Document, Entry, Expr, File, Param, Span, Spanned};
 
 thread_local! {
-    /// Cached empty dict thunk used as the default `$$` when no stdin is provided.
+    /// Cached empty dict thunk used as the default `%` when no stdin is provided.
     /// Avoids allocating a fresh `Rc<Thunk>` on every `eval_file_with_input` call.
     static EMPTY_DICT_THUNK: Rc<Thunk> = Rc::new(Thunk::new_materialized(
         Value::Dict(IndexMap::new()),
@@ -658,6 +658,7 @@ pub(crate) fn eval_recursive(
             func,
             args,
             named_args,
+            implied: _,
         } => eval_call(func, args, named_args, &env, ctx, &expr.span, depth),
         // Type alias entries are compile-time-only constructs consumed by the type checker.
         // At runtime, they evaluate to an empty dict to maintain dict structure without
@@ -775,11 +776,11 @@ pub fn eval_document(
 /// Evaluate a file: one or more documents separated by `---`.
 ///
 /// Documents are totally isolated -- they share no scope. Data flows between
-/// documents via `$$` (the variable `$`), which is injected into each
-/// document's root scope containing the previous document's output.
+/// documents via `%` (and named sections `%name`), which are injected into each
+/// document's root scope from the previous document's output.
 ///
-/// - For the first document, `$$` is an empty dict.
-/// - For subsequent documents, `$$` is the previous document's result thunk
+/// - For the first document, `%` is an empty dict.
+/// - For subsequent documents, `%` is the previous document's result thunk
 ///   (lazy -- no materialization at the `---` boundary).
 /// - The last document's result is the file's output.
 /// - An empty file (zero documents) returns an empty dict.
@@ -803,9 +804,9 @@ pub fn eval_file(
     eval_file_with_input(file, env, ctx, None, depth)
 }
 
-/// Evaluate a parsed [`File`], optionally injecting an initial `$$` value for the first document.
+/// Evaluate a parsed [`File`], optionally injecting an initial `%` value for the first document.
 ///
-/// When `initial_input` is `Some(thunk)`, that thunk becomes `$$` for the first
+/// When `initial_input` is `Some(thunk)`, that thunk becomes `%` for the first
 /// document instead of the default empty dict. This supports the CLI's stdin
 /// JSON injection: `cat data.json | llt eval file.llt`.
 ///
@@ -823,7 +824,7 @@ pub fn eval_file_with_input(
     initial_input: Option<Rc<Thunk>>,
     depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
-    // $$ starts as the provided input, or empty dict if none given
+    // % starts as the provided input, or empty dict if none given
     let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Rc::clone(t)));
     // Named section accumulator: maps section name → result thunk
     let mut named: IndexMap<String, Rc<Thunk>> = IndexMap::new();
@@ -832,15 +833,10 @@ pub fn eval_file_with_input(
         // Each document gets a fresh scope with % and %name bindings
         let doc_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
 
-        // Bind % (pipeline variable) — backward compat alias for $$
+        // Bind % (pipeline variable)
         doc_env
             .borrow_mut()
             .insert("%".to_string(), Rc::clone(&prev_output));
-
-        // Bind $ (legacy pipeline variable) — Phase 2 will remove this
-        doc_env
-            .borrow_mut()
-            .insert("$".to_string(), Rc::clone(&prev_output));
 
         // Bind all previously named sections as %name
         for (section_name, section_thunk) in &named {
@@ -1649,7 +1645,7 @@ mod tests {
         let expr = sp(Expr::VarRef("missing".into()));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
-            err.message().contains("undefined variable: $missing"),
+            err.message().contains("undefined variable: missing"),
             "got: {}",
             err.message()
         );
@@ -1944,7 +1940,7 @@ mod tests {
         // First attempt: should fail with "undefined variable"
         let err1 = materialize(&x_thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
-            err1.message().contains("undefined variable: $missing"),
+            err1.message().contains("undefined variable: missing"),
             "first attempt: got: {}",
             err1.message()
         );
@@ -1952,7 +1948,7 @@ mod tests {
         // Second attempt: should produce the SAME error, not "circular dependency"
         let err2 = materialize(&x_thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
-            err2.message().contains("undefined variable: $missing"),
+            err2.message().contains("undefined variable: missing"),
             "second attempt should not be poisoned, got: {}",
             err2.message()
         );
@@ -2076,6 +2072,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![],
             named_args: vec![],
+            implied: false,
         });
         let result_thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let result = materialize(&result_thunk, None, &test_ctx(), 0).unwrap();
@@ -2105,6 +2102,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(42)))],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2140,6 +2138,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(10))), Rc::new(sp(Expr::Int(20)))],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2160,6 +2159,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("x".into()))),
             args: vec![],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0)
             .expect("eval should return PendingCall thunk");
@@ -2201,6 +2201,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0)
             .expect("eval should return PendingCall thunk");
@@ -2235,6 +2236,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![rsp(Expr::Int(1)), rsp(Expr::Int(2))],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0)
             .expect("eval should return PendingCall thunk");
@@ -2280,6 +2282,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), Rc::clone(&env), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2322,6 +2325,7 @@ mod tests {
                 name: "y".into(),
                 value: rsp(Expr::Int(42)),
             })],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2353,6 +2357,7 @@ mod tests {
                 name: "z".into(),
                 value: rsp(Expr::Int(2)),
             })],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0)
             .expect("eval should return PendingCall thunk");
@@ -2400,6 +2405,7 @@ mod tests {
                 name: "y".into(),
                 value: rsp(Expr::Int(42)),
             })],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0)
             .expect("eval should return PendingCall thunk");
@@ -2445,6 +2451,7 @@ mod tests {
                 Rc::new(sp(Expr::Int(3))),
             ],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2493,6 +2500,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2532,6 +2540,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("add".into()))),
             args: vec![Rc::new(sp(Expr::Int(3))), Rc::new(sp(Expr::Int(4)))],
             named_args: vec![],
+            implied: false,
         });
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -2580,7 +2589,7 @@ mod tests {
         let expr = sp(Expr::VarRef("_".into()));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
-            err.message().contains("undefined variable: $_"),
+            err.message().contains("undefined variable: _"),
             "got: {}",
             err.message()
         );
@@ -2637,6 +2646,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
             named_args: vec![],
+            implied: false,
         });
 
         // Desugar before eval
@@ -2688,6 +2698,7 @@ mod tests {
                 value: rsp(Expr::Str("alice".into())),
             })]))],
             named_args: vec![],
+            implied: false,
         });
         let result_thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let result = materialize(&result_thunk, None, &test_ctx(), 0).unwrap();
@@ -2746,6 +2757,7 @@ mod tests {
                 name: "x".into(),
                 value: rsp(Expr::VarRef("_".into())),
             })],
+            implied: false,
         });
 
         // Desugar before eval
@@ -3560,7 +3572,7 @@ mod tests {
         let mat_span = test_span(5, 1, 5, 5);
         let err = materialize(&x_thunk, Some(&mat_span), &test_ctx(), 0).unwrap_err();
         assert!(
-            err.message().contains("undefined variable: $missing"),
+            err.message().contains("undefined variable: missing"),
             "got: {}",
             err.message()
         );
@@ -4243,6 +4255,7 @@ mod tests {
                 value: rsp(Expr::Int(1)),
             })]))],
             named_args: vec![],
+            implied: false,
         });
 
         // Expr 2: [y: 1]
@@ -4307,13 +4320,13 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_file_dollar_dollar_is_empty_for_first_doc() {
-        // A file with one document containing [prev: $$].
-        // $$ is VarRef("$"), should resolve to empty dict for first doc.
+    fn test_eval_file_percent_is_empty_for_first_doc() {
+        // A file with one document containing [prev: %].
+        // % is VarRef("%"), should resolve to empty dict for first doc.
         let doc = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("prev".into()))),
-                value: rsp(Expr::VarRef("$".into())),
+                value: rsp(Expr::VarRef("%".into())),
             })])))],
             name: None,
             output_type: None,
@@ -4330,7 +4343,7 @@ mod tests {
                 let prev_val = materialize(prev_thunk, None, &test_ctx(), 0).unwrap();
                 match prev_val {
                     Value::Dict(inner) => assert_eq!(inner.len(), 0),
-                    other => panic!("expected empty Dict for $$, got {other:?}"),
+                    other => panic!("expected empty Dict for %, got {other:?}"),
                 }
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -4338,9 +4351,9 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_file_dollar_dollar_pipeline() {
+    fn test_eval_file_percent_pipeline() {
         // Doc 1: [x: 10]
-        // Doc 2: [y: $$.x]  (access previous doc's x via $$)
+        // Doc 2: [y: %.x]  (access previous doc's x via %)
         // Verify y=10.
         let doc1 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4355,7 +4368,7 @@ mod tests {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
                 value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("$".into()))),
+                    expr: Box::new(sp(Expr::VarRef("%".into()))),
                     field: "x".into(),
                 }),
             })])))],
@@ -4381,9 +4394,9 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_file_non_dict_dollar_dollar() {
+    fn test_eval_file_non_dict_percent() {
         // Doc 1: 42 (a bare Int, not a dict)
-        // Doc 2: [prev: $$]
+        // Doc 2: [prev: %]
         // Verify that prev resolves to Int(42).
         let doc1 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Int(42)))],
@@ -4394,7 +4407,7 @@ mod tests {
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("prev".into()))),
-                value: rsp(Expr::VarRef("$".into())),
+                value: rsp(Expr::VarRef("%".into())),
             })])))],
             name: None,
             output_type: None,
@@ -4418,12 +4431,12 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_file_dollar_dollar_lazy() {
-        // Verify that $$ is lazy: Doc 1 contains a value that would error if
-        // materialized. Doc 2 accesses a DIFFERENT key from $$, so the error
+    fn test_eval_file_percent_lazy() {
+        // Verify that % is lazy: Doc 1 contains a value that would error if
+        // materialized. Doc 2 accesses a DIFFERENT key from %, so the error
         // value is never forced.
-        // Doc 1: [good: 1  bad: $missing]
-        // Doc 2: [result: $$.good]
+        // Doc 1: [good: 1  bad: missing]
+        // Doc 2: [result: %.good]
         // Verify result=1.
         let doc1 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![
@@ -4444,7 +4457,7 @@ mod tests {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("result".into()))),
                 value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("$".into()))),
+                    expr: Box::new(sp(Expr::VarRef("%".into()))),
                     field: "good".into(),
                 }),
             })])))],
@@ -4473,8 +4486,8 @@ mod tests {
     fn test_eval_file_three_documents() {
         // Three documents piped:
         // Doc 1: [a: 1]
-        // Doc 2: [b: $$.a  c: 2]
-        // Doc 3: [result: $$.b]
+        // Doc 2: [b: %.a  c: 2]
+        // Doc 3: [result: %.b]
         // Verify result=1 (piped through two boundaries).
         let doc1 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4490,7 +4503,7 @@ mod tests {
                 sp(Entry {
                     key: Some(sp(Expr::Str("b".into()))),
                     value: rsp(Expr::DotAccess {
-                        expr: Box::new(sp(Expr::VarRef("$".into()))),
+                        expr: Box::new(sp(Expr::VarRef("%".into()))),
                         field: "a".into(),
                     }),
                 }),
@@ -4507,7 +4520,7 @@ mod tests {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("result".into()))),
                 value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("$".into()))),
+                    expr: Box::new(sp(Expr::VarRef("%".into()))),
                     field: "b".into(),
                 }),
             })])))],
@@ -4536,7 +4549,7 @@ mod tests {
     fn test_eval_file_documents_isolated() {
         // Verify documents don't share scope:
         // Doc 1: [x: 42]
-        // Doc 2: [y: $x]  (NOT $$.x, just $x -- should fail)
+        // Doc 2: [y: x]  (NOT %.x, just x -- should fail)
         let doc1 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("x".into()))),
@@ -4566,7 +4579,7 @@ mod tests {
                 let y_thunk = map.get(&Key::String("y".into())).unwrap();
                 let err = materialize(y_thunk, None, &test_ctx(), 0).unwrap_err();
                 assert!(
-                    err.message().contains("undefined variable: $x"),
+                    err.message().contains("undefined variable: x"),
                     "got: {}",
                     err.message()
                 );
@@ -4620,50 +4633,6 @@ mod tests {
                 assert_eq!(
                     materialize(val_thunk, None, &test_ctx(), 0).unwrap(),
                     Value::Int(777)
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_eval_file_percent_pipeline() {
-        // Test % as alias for $$
-        // Doc 1: [x: 10]
-        // Doc 2: [y: %.x]  (access previous doc's x via %)
-        // Verify y=10.
-        let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("x".into()))),
-                value: rsp(Expr::Int(10)),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-        });
-        let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("%".into()))),
-                    field: "x".into(),
-                }),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-        });
-        let file = File {
-            documents: vec![doc1, doc2],
-        };
-        let thunk = eval_file(&file, empty_env(), &test_ctx(), 0).unwrap();
-        let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let y_thunk = map.get(&Key::String("y".into())).unwrap();
-                assert_eq!(
-                    materialize(y_thunk, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(10)
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5408,9 +5377,9 @@ mod tests {
 
     #[test]
     fn test_call_error_has_stack_frame_with_function_name() {
-        // [f: [fn [x] $missing]; result: [call $f 1]]
-        // Calling $f with body that references $missing should produce a
-        // stack frame with "call $f".
+        // [f: [fn [x] missing]; result: [f 1]]
+        // Calling f with body that references missing should produce a
+        // stack frame with "[f ...]".
         let env = empty_env();
         let fn_span = test_span(1, 1, 1, 20);
         let fn_val = Value::Function {
@@ -5439,6 +5408,7 @@ mod tests {
                 )),
                 args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11)))],
                 named_args: vec![],
+                implied: false,
             },
             call_span,
         );
@@ -5446,14 +5416,14 @@ mod tests {
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
-            err.message().contains("undefined variable: $missing"),
+            err.message().contains("undefined variable: missing"),
             "got: {}",
             err.message()
         );
-        // The stack should contain a frame for "call $f"
+        // The stack should contain a frame for "[f ...]"
         assert!(
-            err.stack.iter().any(|f| f.label == "call $f"),
-            "expected 'call $f' frame, got: {:?}",
+            err.stack.iter().any(|f| f.label == "[f ...]"),
+            "expected '[f ...]' frame, got: {:?}",
             err.stack
         );
     }
@@ -5504,6 +5474,7 @@ mod tests {
                         test_span(2, 28, 2, 29),
                     ))],
                     named_args: vec![],
+                    implied: false,
                 },
                 inner_call_span,
             )),
@@ -5524,27 +5495,28 @@ mod tests {
                 )),
                 args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(3, 14, 3, 15)))],
                 named_args: vec![],
+                implied: false,
             },
             outer_call_span,
         );
 
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("undefined variable: $missing"));
+        assert!(err.message().contains("undefined variable: missing"));
 
         // Should have frames for both call sites
         let labels: Vec<&str> = err.stack.iter().map(|f| f.label.as_str()).collect();
         assert!(
-            labels.contains(&"call $inner"),
-            "expected 'call $inner' in stack, got: {labels:?}"
+            labels.contains(&"[inner ...]"),
+            "expected '[inner ...]' in stack, got: {labels:?}"
         );
         assert!(
-            labels.contains(&"call $outer"),
-            "expected 'call $outer' in stack, got: {labels:?}"
+            labels.contains(&"[outer ...]"),
+            "expected '[outer ...]' in stack, got: {labels:?}"
         );
         // Inner call should appear before outer call (innermost first)
-        let inner_pos = labels.iter().position(|l| *l == "call $inner").unwrap();
-        let outer_pos = labels.iter().position(|l| *l == "call $outer").unwrap();
+        let inner_pos = labels.iter().position(|l| *l == "[inner ...]").unwrap();
+        let outer_pos = labels.iter().position(|l| *l == "[outer ...]").unwrap();
         assert!(
             inner_pos < outer_pos,
             "inner call frame should come before outer: {labels:?}"
@@ -5596,7 +5568,7 @@ mod tests {
         let thunk = eval(Rc::new(access_expr.clone()), env, &test_ctx(), 0).unwrap();
         let mat_span = test_span(3, 1, 3, 10);
         let err = materialize(&thunk, Some(&mat_span), &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("undefined variable: $missing"));
+        assert!(err.message().contains("undefined variable: missing"));
         // The materialization span should be set
         assert!(err.materialization_span.is_some());
     }
@@ -5620,7 +5592,7 @@ mod tests {
 
         let thunk = eval(Rc::new(access_expr.clone()), env, &test_ctx(), 0).unwrap();
         let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("undefined variable: $nonexistent"));
+        assert!(err.message().contains("undefined variable: nonexistent"));
         // Should have an "accessing .field" frame
         assert!(
             err.stack.iter().any(|f| f.label == "accessing .field"),
@@ -5647,7 +5619,7 @@ mod tests {
 
         let thunk = eval(Rc::new(access_expr.clone()), env, &test_ctx(), 0).unwrap();
         let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("undefined variable: $nonexistent"));
+        assert!(err.message().contains("undefined variable: nonexistent"));
         assert!(
             err.stack.iter().any(|f| f.label == "accessing [..]"),
             "expected 'accessing [..]' frame, got: {:?}",
@@ -5679,7 +5651,7 @@ mod tests {
         );
 
         let err = eval(Rc::new(access_expr.clone()), env, &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("undefined variable: $nonexistent"));
+        assert!(err.message().contains("undefined variable: nonexistent"));
         assert!(
             err.stack.iter().any(|f| f.label == "accessing [..:..]"),
             "expected 'accessing [..:..]' frame, got: {:?}",
@@ -5739,7 +5711,7 @@ mod tests {
         // Materialize with a different span (simulating a reference from $b)
         let b_span = test_span(3, 1, 3, 5);
         let err = materialize(&thunk, Some(&b_span), &test_ctx(), 0).unwrap_err();
-        assert!(err.message().contains("undefined variable: $missing"));
+        assert!(err.message().contains("undefined variable: missing"));
         // Note: Currently uses access_span (from DotAccess inline handler in force_step)
         // rather than b_span. This is a known limitation — nested materializations during
         // access chain processing use the access expr span, not the outer mat_span.
@@ -5754,7 +5726,7 @@ mod tests {
     #[test]
     fn test_func_label_varref() {
         let label = func_label(&Expr::VarRef("f".into()));
-        assert_eq!(label.as_deref(), Some("call $f"));
+        assert_eq!(label.as_deref(), Some("[f ...]"));
     }
 
     #[test]
@@ -5764,7 +5736,7 @@ mod tests {
             field: "run".into(),
         };
         let label = func_label(&expr);
-        assert_eq!(label.as_deref(), Some("call <dot-access>"));
+        assert_eq!(label.as_deref(), Some("[<dot-access> ...]"));
     }
 
     #[test]
@@ -5777,7 +5749,7 @@ mod tests {
             field: "c".into(),
         };
         let label = func_label(&expr);
-        assert_eq!(label.as_deref(), Some("call <dot-access>"));
+        assert_eq!(label.as_deref(), Some("[<dot-access> ...]"));
     }
 
     #[test]
@@ -5849,6 +5821,7 @@ mod tests {
                 )),
                 args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11)))],
                 named_args: vec![],
+                implied: false,
             },
             call_span,
         );
@@ -5860,8 +5833,8 @@ mod tests {
             .message()
             .contains("missing argument for required parameter"));
         assert!(
-            err.stack.iter().any(|f| f.label == "call $f"),
-            "expected 'call $f' frame, got: {:?}",
+            err.stack.iter().any(|f| f.label == "[f ...]"),
+            "expected '[f ...]' frame, got: {:?}",
             err.stack
         );
     }
@@ -5895,15 +5868,16 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("fail".into()))),
             args: vec![],
             named_args: vec![],
+            implied: false,
         });
 
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let err = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(err.message().contains("test builtin failure"));
-        // The stack should contain "call $fail"
+        // The stack should contain "[fail ...]"
         assert!(
-            err.stack.iter().any(|f| f.label == "call $fail"),
-            "expected 'call $fail' frame, got: {:?}",
+            err.stack.iter().any(|f| f.label == "[fail ...]"),
+            "expected '[fail ...]' frame, got: {:?}",
             err.stack
         );
     }
@@ -5913,15 +5887,15 @@ mod tests {
         // Integration test: verify the Display output includes all stack frames
         let err = EvalError::internal("something broke".to_string(), test_span(1, 5, 1, 12))
             .with_materialization_span(test_span(10, 1, 10, 5))
-            .with_frame("call $inner".to_string(), test_span(5, 1, 5, 20))
-            .with_frame("call $outer".to_string(), test_span(8, 1, 8, 25));
+            .with_frame("[inner ...]".to_string(), test_span(5, 1, 5, 20))
+            .with_frame("[outer ...]".to_string(), test_span(8, 1, 8, 25));
         let display = format!("{err}");
         assert!(display.contains("something broke"));
         assert!(display.contains("defined at 1:5-1:12"));
-        // infer_materialization_verb returns "called at" when any frame label contains "call"
+        // infer_materialization_verb returns "called at" when first visible frame starts with '['
         assert!(display.contains("called at 10:1-10:5"));
-        assert!(display.contains("in call $inner at 5:1-5:20"));
-        assert!(display.contains("in call $outer at 8:1-8:25"));
+        assert!(display.contains("in [inner ...] at 5:1-5:20"));
+        assert!(display.contains("in [outer ...] at 8:1-8:25"));
     }
 
     // ── PendingCall thunk state tests ──────────────────────────────────
@@ -5950,6 +5924,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("+".into()))),
                 args: vec![rsp(Expr::VarRef("x".into())), rsp(Expr::VarRef("y".into()))],
                 named_args: vec![],
+                implied: false,
             })),
             env: Rc::clone(&env),
         };
@@ -6231,6 +6206,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("+".into()))),
                 args: vec![rsp(Expr::VarRef("a".into())), rsp(Expr::VarRef("b".into()))],
                 named_args: vec![],
+                implied: false,
             })),
             env: Rc::clone(&env),
         };
@@ -6323,6 +6299,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("+".into()))),
                 args: vec![rsp(Expr::VarRef("x".into())), rsp(Expr::VarRef("y".into()))],
                 named_args: vec![],
+                implied: false,
             })),
             env: Rc::clone(&env),
         };
@@ -6379,7 +6356,7 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
-            err1.message().contains("undefined variable: $undefined"),
+            err1.message().contains("undefined variable: undefined"),
             "first error: got: {}",
             err1.message()
         );
@@ -6389,7 +6366,7 @@ mod tests {
             ThunkState::Failed(cached_err) => {
                 assert!(cached_err
                     .message()
-                    .contains("undefined variable: $undefined"));
+                    .contains("undefined variable: undefined"));
             }
             other => panic!("expected Failed state, got {other:?}"),
         }
@@ -6397,7 +6374,7 @@ mod tests {
         // Second materialization: should return the cached error
         let err2 = materialize(&x_thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
-            err2.message().contains("undefined variable: $undefined"),
+            err2.message().contains("undefined variable: undefined"),
             "second error: got: {}",
             err2.message()
         );
@@ -6470,13 +6447,14 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("bad_fn".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
 
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
 
         // First materialization: error should have stack frames
         let err1 = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
-        assert!(err1.message().contains("undefined variable: $nonexistent"));
+        assert!(err1.message().contains("undefined variable: nonexistent"));
         let frame_count1 = err1.stack.len();
         assert!(frame_count1 > 0, "should have at least one stack frame");
 
@@ -6514,6 +6492,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("fail".into()))),
             args: vec![],
             named_args: vec![],
+            implied: false,
         });
 
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -6562,7 +6541,7 @@ mod tests {
         let err1 = materialize(&pending, None, &test_ctx(), 0).unwrap_err();
         assert!(err1
             .message()
-            .contains("undefined variable: $does_not_exist"));
+            .contains("undefined variable: does_not_exist"));
 
         // Check that the thunk is now in Failed state
         match &*pending.state() {
@@ -6574,7 +6553,7 @@ mod tests {
         let err2 = materialize(&pending, None, &test_ctx(), 0).unwrap_err();
         assert!(err2
             .message()
-            .contains("undefined variable: $does_not_exist"));
+            .contains("undefined variable: does_not_exist"));
     }
 
     #[test]
@@ -6601,7 +6580,7 @@ mod tests {
         let err = materialize(&pending, None, &test_ctx(), 0).unwrap_err();
         assert!(err
             .message()
-            .contains("undefined variable: $nonexistent_func"));
+            .contains("undefined variable: nonexistent_func"));
 
         // The thunk should be in Failed state, NOT InProgress
         match &*pending.state() {
@@ -6614,7 +6593,7 @@ mod tests {
         let err2 = materialize(&pending, None, &test_ctx(), 0).unwrap_err();
         assert!(err2
             .message()
-            .contains("undefined variable: $nonexistent_func"));
+            .contains("undefined variable: nonexistent_func"));
         assert!(!err2.message().contains("circular dependency"));
     }
 
@@ -6632,9 +6611,7 @@ mod tests {
 
         // First materialization: should fail
         let err1 = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
-        assert!(err1
-            .message()
-            .contains("undefined variable: $undefined_var"));
+        assert!(err1.message().contains("undefined variable: undefined_var"));
 
         // Check that the thunk is now in Failed state
         match &*thunk.state() {
@@ -6644,9 +6621,7 @@ mod tests {
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
-        assert!(err2
-            .message()
-            .contains("undefined variable: $undefined_var"));
+        assert!(err2.message().contains("undefined variable: undefined_var"));
     }
 
     #[test]
@@ -6664,9 +6639,7 @@ mod tests {
         // First materialization: error with a specific mat_span
         let mat_span = test_span(10, 5, 10, 15);
         let err1 = materialize(&thunk, Some(&mat_span), &test_ctx(), 0).unwrap_err();
-        assert!(err1
-            .message()
-            .contains("undefined variable: $undefined_var"));
+        assert!(err1.message().contains("undefined variable: undefined_var"));
         let frame_count1 = err1.stack.len();
 
         // Second materialization: same mat_span
@@ -6692,9 +6665,7 @@ mod tests {
 
         // First access: None mat_span
         let err1 = materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
-        assert!(err1
-            .message()
-            .contains("undefined variable: $undefined_var"));
+        assert!(err1.message().contains("undefined variable: undefined_var"));
         assert!(err1.materialization_span.is_none());
 
         // Second access: Some(span1) — should update materialization_span
@@ -6739,6 +6710,7 @@ mod tests {
                         func: Box::new(sp(Expr::VarRef("f".into()))),
                         args: vec![rsp(Expr::VarRef("x".into()))],
                         named_args: vec![],
+                        implied: false,
                     })),
                     env: Rc::clone(&env),
                 };
@@ -6755,6 +6727,7 @@ mod tests {
                     func: Box::new(sp(Expr::VarRef("f".into()))),
                     args: vec![Rc::new(sp(Expr::Int(1)))],
                     named_args: vec![],
+                    implied: false,
                 });
 
                 let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -6791,6 +6764,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
                 args: vec![rsp(Expr::VarRef("x".into()))],
                 named_args: vec![],
+                implied: false,
             })),
             env: Rc::clone(&env),
         };
@@ -6807,6 +6781,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
 
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -6851,7 +6826,7 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, &test_ctx(), 0).unwrap_err();
         assert!(
-            err1.message().contains("undefined variable: $undefined"),
+            err1.message().contains("undefined variable: undefined"),
             "expected undefined variable error, got: {}",
             err1.message()
         );
@@ -6862,7 +6837,7 @@ mod tests {
                 assert!(
                     cached_err
                         .message()
-                        .contains("undefined variable: $undefined"),
+                        .contains("undefined variable: undefined"),
                     "cached error mismatch: got: {}",
                     cached_err.message()
                 );
@@ -6888,6 +6863,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
                 args: vec![rsp(Expr::VarRef("x".into()))],
                 named_args: vec![],
+                implied: false,
             })),
             env: Rc::clone(&env),
         };
@@ -6904,6 +6880,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
 
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -6954,6 +6931,7 @@ mod tests {
                 func: Box::new(sp(Expr::VarRef("f".into()))),
                 args: vec![rsp(Expr::VarRef("x".into()))],
                 named_args: vec![],
+                implied: false,
             })),
             env: Rc::clone(&env),
         };
@@ -6971,6 +6949,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
+            implied: false,
         });
         let inner_thunk = eval(Rc::new(call_expr.clone()), Rc::clone(&env), &ctx, 0).unwrap();
 
@@ -7052,6 +7031,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("include".into()))),
             args: vec![rsp(Expr::Str("test_cache.llt".into()))],
             named_args: vec![],
+            implied: false,
         });
         let result1 = eval(
             Rc::new(include_expr1.clone()),
@@ -7074,6 +7054,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("include".into()))),
             args: vec![rsp(Expr::Str("test_cache.llt".into()))],
             named_args: vec![],
+            implied: false,
         });
         let result2 = eval(
             Rc::new(include_expr2.clone()),
@@ -7142,6 +7123,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("include".into()))),
             args: vec![rsp(Expr::Str("guard_test.llt".into()))],
             named_args: vec![],
+            implied: false,
         });
         let result = eval(
             Rc::new(include_expr.clone()),
@@ -7201,6 +7183,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("include".into()))),
             args: vec![rsp(Expr::Str("test.llt".into()))],
             named_args: vec![],
+            implied: false,
         });
         let result1 = eval(
             Rc::new(include_expr1.clone()),
@@ -7216,6 +7199,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("include".into()))),
             args: vec![rsp(Expr::Str("test.llt".into()))],
             named_args: vec![],
+            implied: false,
         });
         let result2 = eval(
             Rc::new(include_expr2.clone()),
@@ -7301,6 +7285,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("include".into()))),
             args: vec![rsp(Expr::Str("shared_test.llt".into()))],
             named_args: vec![],
+            implied: false,
         });
         let result1 = eval(
             Rc::new(include_expr1.clone()),
@@ -7367,6 +7352,7 @@ mod tests {
             func: Box::new(sp(Expr::VarRef("include".into()))),
             args: vec![rsp(Expr::Str("guard_test.llt".into()))],
             named_args: vec![],
+            implied: false,
         });
         let result2 = eval(
             Rc::new(include_expr2.clone()),
@@ -8916,6 +8902,7 @@ mod tests {
                 "hypothetical.llt".into(),
             )))],
             named_args: vec![],
+            implied: false,
         });
 
         let thunk = eval(

@@ -798,7 +798,7 @@ fn read_source(file_path: &str) -> Result<String, String> {
 }
 
 /// If stdin is not a terminal (i.e., data is piped), read it as JSON and convert
-/// to an LLT Value for injection as `$$` in the first document.
+/// to an LLT Value for injection as `%` in the first document.
 fn read_stdin_json() -> Result<Option<Rc<Thunk>>, String> {
     if io::stdin().is_terminal() {
         return Ok(None);
@@ -1050,7 +1050,7 @@ A $include call was made but the --no-fs flag was passed on the command
 line, disabling all filesystem access.
 
 Fix: remove --no-fs if filesystem access is intended, or provide the
-included data through stdin JSON ($$) instead."
+included data through stdin JSON (%) instead."
         }
 
         "E043" => {

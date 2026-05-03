@@ -1,3 +1,3 @@
-[hello "hello world" "with\nnewline" "with\ttab" "with\"quotes\""]
+["hello" "hello world" "with\nnewline" "with\ttab" "with\"quotes\""]
 ===
 ["hello"  "hello world"  "with\nnewline"  "with\ttab"  "with\"quotes\""]

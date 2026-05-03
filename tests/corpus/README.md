@@ -148,9 +148,9 @@ Failed tests show the filename and error:
 - **type_errors/**: Type checker error tests
 - **typecheck/**: Type inference, polymorphism, let-generalization
 - **functions/**: Function definitions, closures, variadic, named args
-- **documents/**: Multi-document evaluation, pipelines with $$
+- **documents/**: Multi-document evaluation, pipelines with %
 - **access/**: Access chain evaluation
-- **underscore/**: $_ implicit lambda desugaring
+- **underscore/**: _ implicit lambda desugaring
 - **letrec/**: Letrec scoping and forward references
 
 ### Known Issues

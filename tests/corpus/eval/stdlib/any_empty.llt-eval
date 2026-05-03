@@ -1,4 +1,4 @@
 # any? - empty list
-[call $any? [fn [x] [call $> $x 5]] []]
+[any? [fn [x] [> x 5]] []]
 ===
 Bool(false)

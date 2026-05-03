@@ -1,4 +1,4 @@
 # not false returns true
-[call $not false]
+[not false]
 ===
 Bool(true)
