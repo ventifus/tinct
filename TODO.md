@@ -15,17 +15,6 @@ Replace `Rc<Thunk>` / `Rc<RefCell<Environment>>` with arena-allocated thunks and
 Design decision (DONE.md): ship Phase 1+2 together as a single migration — variable resolution pass + ThunkArena + EnvArena. Starting with Dict alone creates a hybrid model requiring a second migration.
 
 
-### arena-types: Arena Type Definitions
-
-Introduce `ThunkId`, `EnvId`, `ThunkArena`, `EnvArena`, `FlatEnv` types with letrec allocation pattern. See doc/whatif/arena-patterns.md §Design.
-
-**Depends on:** `arena-resolve`
-
-- [ ] Add `ThunkId(u32)` newtype (`Copy, Clone, Debug, PartialEq, Eq, Hash`) and `ThunkArena` struct (`Vec<Thunk>`, `alloc() -> ThunkId`, `get(ThunkId) -> &Thunk`) (`src/arena.rs`)
-- [ ] Add `EnvId(u32)` newtype and `EnvArena` struct (`Vec<FlatEnv>`, `alloc() -> EnvId`, `get(EnvId) -> &FlatEnv`) (`src/arena.rs`)
-- [ ] Add `FlatEnv` struct: `slots: Vec<ThunkId>` (static keys indexed by compile-time slot), `overflow: HashMap<String, ThunkId>` (computed keys), `parent: Option<EnvId>` (stdlib root chain only) (`src/arena.rs`)
-- [ ] Implement letrec allocation pattern: `ThunkArena::alloc_placeholder()` returns `ThunkId` pointing at sentinel thunk; `arena.get(id).set_state(...)` fills via existing `RefCell` interior mutability (`src/arena.rs`)
-- [ ] Unit tests: alloc/get, placeholder + fill lifecycle, letrec self-reference pattern, FlatEnv slot lookup + overflow fallback, EnvArena parent chain traversal (`src/arena.rs`)
 
 ### arena-eval: Evaluator Migration to Arena
 

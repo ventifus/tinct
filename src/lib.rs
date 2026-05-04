@@ -16,6 +16,7 @@
 //! - [`MAX_EVAL_DEPTH`] -- recursion limit for evaluation (256)
 //! - [`MAX_FILE_SIZE`] -- file size limit for `include` and stdin (10 MB)
 
+pub(crate) mod arena;
 pub mod ast;
 pub(crate) mod error;
 pub(crate) mod eval;
