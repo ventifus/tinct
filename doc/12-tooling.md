@@ -56,6 +56,57 @@ No formatting options. The formatter defines the canonical Tinct style. The only
 | Quoted strings | Preserved exactly (escapes not normalized; idempotency) |
 | Comments in access chains | Cannot occur (compound-atomic grammar); formatter does not handle |
 
+## VS Code Extension (`just ext`)
+
+A VS Code extension that provides Tinct language support: live diagnostics and hover types via the `tinct lsp` language server.
+
+### Installation
+
+Build from source and install:
+
+```bash
+just ext                                              # compile TypeScript
+just ext-package                                      # produce tinct-0.1.0.vsix
+code --install-extension tinct-0.1.0.vsix            # install in VS Code
+```
+
+After installation, VS Code activates the extension automatically when a `.llt` or `.tinct` file is opened.
+
+### How It Works
+
+The extension spawns `tinct lsp` as a child process and communicates via stdio (LSP protocol). The LSP server provides:
+
+- **Diagnostics** — parse errors and type errors appear as squiggly underlines in real time
+- **Hover** — hovering over an expression shows its inferred type
+
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `tinct.serverPath` | `"tinct"` | Path to the tinct binary. Must be on `PATH`, or set to an absolute path. |
+
+For development (running the LSP server from source without installing a binary):
+
+```json
+{
+  "tinct.serverPath": "cargo"
+}
+```
+
+Then set `args` to `["run", "--", "lsp"]` by editing the extension source directly, or set `tinct.serverPath` to a wrapper script that invokes `cargo run -- lsp`.
+
+### Extension Files
+
+The extension lives in `editors/vscode/`:
+
+| File | Purpose |
+|------|---------|
+| `package.json` | Extension manifest, language contribution, configuration |
+| `language-configuration.json` | Bracket pairs, comment prefix, word pattern |
+| `syntaxes/tinct.tmLanguage.json` | TextMate grammar for syntax highlighting |
+| `src/extension.ts` | Extension entry point — LSP client wiring |
+| `tsconfig.json` | TypeScript build configuration |
+
 ## Sandboxing & Security
 
 Tinct provides multiple unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are scoped to the subcommands that use them — for example, `--no-fs` and `--timeout` are `eval` subcommand flags.

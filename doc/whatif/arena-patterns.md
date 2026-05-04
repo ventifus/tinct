@@ -1,5 +1,7 @@
 # What If: Safe Rust Arena Patterns for Thunks and Environments
 
+**State:** Accepted — 2026-05-04
+
 What would it take to replace tinct's `Rc<Thunk>` / `Rc<RefCell<Environment>>`
 allocation model with arena-based allocation for the Phase 2 iterative evaluator?
 

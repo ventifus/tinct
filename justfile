@@ -201,6 +201,14 @@ ts-test:
 ts-parse FILE:
     {{container}} run {{ts_run_flags}} -v {{project_name}}-ts-node:/workspace/tree-sitter-llt/node_modules {{node_image}} sh -c "npm install --no-save tree-sitter-cli && npx tree-sitter parse /workspace/{{FILE}}"
 
+# Build the VS Code extension (compile TypeScript)
+ext:
+    {{container}} run --rm -v .:/workspace:z -w /workspace/editors/vscode {{node_image}} sh -c "npm install && npm run compile"
+
+# Package the VS Code extension as a .vsix file
+ext-package:
+    {{container}} run --rm -v .:/workspace:z -w /workspace/editors/vscode {{node_image}} sh -c "npm install && npm run compile && npx vsce package --no-dependencies"
+
 # Format LLT source file and print to stdout
 fmt-llt FILE:
     {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- fmt {{FILE}}
