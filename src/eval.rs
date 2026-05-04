@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::arena::{EnvArena, ThunkArena};
+use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{Annotation, Document, Entry, Expr, File, Param, Span, Spanned};
 
 thread_local! {
@@ -224,6 +224,16 @@ impl EvalContext {
             env_arena: RefCell::new(EnvArena::new()),
         })
     }
+
+    /// Allocate a thunk in the arena and return its ID.
+    pub(crate) fn alloc_thunk(&self, thunk: Rc<Thunk>) -> ThunkId {
+        self.thunk_arena.borrow_mut().alloc(thunk)
+    }
+
+    /// Get a cloned Rc<Thunk> from the arena by ID.
+    pub(crate) fn get_thunk(&self, id: ThunkId) -> Rc<Thunk> {
+        self.thunk_arena.borrow().get(id).clone()
+    }
 }
 
 /// Check if a materialized value matches a type for structural TypeAssert validation.
@@ -301,12 +311,13 @@ pub(crate) fn format_type_for_assert(ty: &Type) -> String {
 /// if this function returns an error. This keeps the helper focused on validation logic.
 /// Guards created by this function do NOT propagate default_expr to avoid infinite recursion.
 pub(crate) fn validate_and_wrap_record(
-    entries: &IndexMap<Key, Rc<Thunk>>,
+    entries: &IndexMap<Key, ThunkId>,
     row: &Row,
     field_path: &mut Vec<String>,
     guard_span: Span,
     data_span: Span,
-) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
+    ctx: &Rc<EvalContext>,
+) -> EvalResult<IndexMap<Key, ThunkId>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
     for (field_name, _field_type) in row.fields.iter() {
@@ -382,7 +393,7 @@ pub(crate) fn validate_and_wrap_record(
     // Use a for loop with push/pop on field_path to avoid cloning the full path
     // for every field — only the thunk's owned copy is allocated per field.
     let mut new_entries = IndexMap::with_capacity(entries.len());
-    for (key, thunk) in entries.iter() {
+    for (key, &thunk_id) in entries.iter() {
         // Try to find a matching field type
         let field_type = match key {
             Key::String(field_name) => row.fields.get(field_name),
@@ -401,15 +412,17 @@ pub(crate) fn validate_and_wrap_record(
             let nested_path = field_path.clone();
             field_path.pop();
 
+            let thunk_rc = ctx.get_thunk(thunk_id);
             let guarded = Rc::new(Thunk::new_guarded(
-                Rc::clone(thunk),
+                thunk_rc,
                 field_type.clone(),
                 nested_path,
                 guard_span,
             ));
-            new_entries.insert(key.clone(), guarded);
+            let guarded_id = ctx.alloc_thunk(guarded);
+            new_entries.insert(key.clone(), guarded_id);
         } else {
-            new_entries.insert(key.clone(), Rc::clone(thunk));
+            new_entries.insert(key.clone(), thunk_id);
         }
     }
 
@@ -538,6 +551,7 @@ pub(crate) fn eval_recursive(
                                 &mut vec![],
                                 expr.span,
                                 thunk.span,
+                                ctx,
                             ) {
                                 Ok(new_entries) => Ok(Rc::new(Thunk::new_materialized(
                                     Value::Dict(new_entries),
@@ -783,12 +797,13 @@ pub fn eval_document(
             let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
                 &current_env,
             ))));
-            for (key, val_thunk) in map {
+            for (key, val_thunk_id) in map {
                 // Only string keys become scope bindings; int keys are positional, not named.
                 // Owned iteration (into_iter): Key::String(name) moves the String rather than
                 // cloning it, and val_thunk is moved directly — saves one String clone + one
                 // Rc clone per string-keyed entry in each document pipeline step.
                 if let Key::String(name) = key {
+                    let val_thunk = ctx.get_thunk(val_thunk_id);
                     child_env.borrow_mut().insert(name, val_thunk);
                 }
             }
@@ -899,7 +914,7 @@ pub(crate) fn eval_dict(
     let dict_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
         parent_env,
     ))));
-    let mut dict_map: IndexMap<Key, Rc<Thunk>> = IndexMap::with_capacity(entries.len());
+    let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
     for entry in entries {
@@ -966,7 +981,7 @@ pub(crate) fn eval_dict(
                 .insert(name.clone(), Rc::clone(&thunk));
         }
 
-        dict_map.insert(key, thunk);
+        dict_map.insert(key, ctx.alloc_thunk(thunk));
     }
 
     Ok(Rc::new(Thunk::new_materialized(
@@ -1517,6 +1532,7 @@ pub fn materialize(
                             &mut field_path,
                             guard_span,
                             inner_span,
+                            _ctx,
                         ) {
                             Ok(new_entries) => {
                                 let guarded_value = Value::Dict(new_entries);

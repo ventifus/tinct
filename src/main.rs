@@ -7,8 +7,8 @@ use std::process;
 use std::rc::Rc;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_source, json_to_value,
-    materialize, parse, value_to_display_string, value_to_json, EvalContext, Span, Thunk,
-    MAX_FILE_SIZE,
+    materialize, parse, value_to_display_string, value_to_json, EvalContext, Span,
+    Thunk, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -827,7 +827,13 @@ fn read_stdin_json() -> Result<Option<Rc<Thunk>>, String> {
     let json: serde_json::Value =
         serde_json::from_str(&buf).map_err(|e| format!("error parsing stdin JSON: {e}"))?;
 
-    let val = json_to_value(&json, 0, Span::origin()).map_err(|e| format!("{e}"))?;
+    // Create a minimal evaluation context for JSON conversion
+    // (json_to_value needs ctx to allocate thunks in the arena)
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| format!("error opening base directory: {e}"))?;
+    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+    let ctx = EvalContext::new(base_dir, env, true); // no_fs=true since we're just converting JSON
+    let val = json_to_value(&json, 0, Span::origin(), &ctx).map_err(|e| format!("{e}"))?;
     Ok(Some(val))
 }
 

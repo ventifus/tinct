@@ -28,16 +28,19 @@ pub(crate) fn builtin_seq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         args,
         named,
         call_span,
+        ctx,
         ..
     } = ctx_arg;
     reject_named("seq", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
+    let head_id = ctx.alloc_thunk(Rc::clone(&args[0]));
+    let tail_id = ctx.alloc_thunk(Rc::clone(&args[1]));
     ok_val(
         Value::Seq {
-            head: Rc::clone(&args[0]),
-            tail: Rc::clone(&args[1]),
+            head: head_id,
+            tail: tail_id,
         },
         call_span,
     )
@@ -58,7 +61,7 @@ pub(crate) fn builtin_head(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = expect_one_arg("head", args, named, &ctx, depth, call_span)?;
     match val {
-        Value::Seq { head, .. } => Ok(Rc::clone(&head)),
+        Value::Seq { head, .. } => Ok(ctx.get_thunk(head)),
         Value::Dict(ref map) if map.is_empty() => {
             Err(EvalError::empty_collection("head".to_string(), call_span).into())
         }
@@ -87,7 +90,7 @@ pub(crate) fn builtin_tail(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = expect_one_arg("tail", args, named, &ctx, depth, call_span)?;
     match val {
-        Value::Seq { tail, .. } => Ok(Rc::clone(&tail)),
+        Value::Seq { tail, .. } => Ok(ctx.get_thunk(tail)),
         Value::Dict(ref map) if map.is_empty() => {
             Err(EvalError::empty_collection("tail".to_string(), call_span).into())
         }
@@ -146,7 +149,7 @@ pub(crate) fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         match current {
             Value::Seq { head, tail } => {
                 // Insert head thunk (not materialized -- stay lazy)
-                map.insert(Key::Int(index), Rc::clone(&head));
+                map.insert(Key::Int(index), head);
                 index = index
                     .checked_add(1)
                     .ok_or_else(|| EvalError::integer_overflow("collect".to_string(), call_span))?;
@@ -164,7 +167,8 @@ pub(crate) fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
 
                 // Materialize tail to check if we should continue
-                current = materialize(&tail, None, &ctx, depth)?;
+                let tail_thunk = ctx.get_thunk(tail);
+                current = materialize(&tail_thunk, None, &ctx, depth)?;
             }
             Value::Dict(ref d) if d.is_empty() => {
                 // Terminal: empty dict

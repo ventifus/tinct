@@ -14,7 +14,7 @@ use crate::builtins::flatten_overlay;
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, EvalContext, MAX_EVAL_DEPTH};
-use crate::value::{Key, Thunk, Value};
+use crate::value::{Key, Thunk, ThunkId, Value};
 
 /// Recursively force all thunks in a value tree.
 ///
@@ -198,9 +198,9 @@ fn deep_materialize_impl(
                     "BuildDict: expected {n} values on stack, have {stack_len}"
                 );
                 let start = stack_len - n;
-                let mut result: IndexMap<Key, Rc<Thunk>> = IndexMap::with_capacity(n);
+                let mut result: IndexMap<Key, ThunkId> = IndexMap::with_capacity(n);
                 for (key, thunk) in keys.into_iter().zip(value_stack.drain(start..)) {
-                    result.insert(key, thunk);
+                    result.insert(key, ctx.alloc_thunk(thunk));
                 }
                 let assembled = Rc::new(Thunk::new_materialized(Value::Dict(result), span));
                 if let Some(ptr) = thunk_ptr {
@@ -215,7 +215,15 @@ fn deep_materialize_impl(
                 let head = value_stack
                     .pop()
                     .expect("BuildSeq: missing head on value_stack");
-                let assembled = Rc::new(Thunk::new_materialized(Value::Seq { head, tail }, span));
+                let head_id = ctx.alloc_thunk(head);
+                let tail_id = ctx.alloc_thunk(tail);
+                let assembled = Rc::new(Thunk::new_materialized(
+                    Value::Seq {
+                        head: head_id,
+                        tail: tail_id,
+                    },
+                    span,
+                ));
                 if let Some(ptr) = thunk_ptr {
                     cache.insert(ptr, Some(Rc::clone(&assembled)));
                 }
@@ -225,7 +233,13 @@ fn deep_materialize_impl(
                 let handler = value_stack
                     .pop()
                     .expect("BuildProxy: missing handler on value_stack");
-                let assembled = Rc::new(Thunk::new_materialized(Value::Proxy { handler }, span));
+                let handler_id = ctx.alloc_thunk(handler);
+                let assembled = Rc::new(Thunk::new_materialized(
+                    Value::Proxy {
+                        handler: handler_id,
+                    },
+                    span,
+                ));
                 if let Some(ptr) = thunk_ptr {
                     cache.insert(ptr, Some(Rc::clone(&assembled)));
                 }
@@ -315,7 +329,7 @@ fn push_structural(
             // Push Force items in reverse: first key ends on top → processed
             // first → result deepest on value_stack → collected in order.
             for key in keys.into_iter().rev() {
-                let entry_thunk = Rc::clone(&map[&key]);
+                let entry_thunk = ctx.get_thunk(map[&key]);
                 work_stack.push(WorkItem::Force {
                     thunk: entry_thunk,
                     seq_depth: 0, // dict entries reset seq_depth
@@ -338,16 +352,18 @@ fn push_structural(
             work_stack.push(WorkItem::BuildSeq { span, thunk_ptr });
             // Push tail SECOND on work_stack → processed second → lands on TOP
             // of value_stack → BuildSeq pops tail first.
+            let tail_thunk = ctx.get_thunk(*tail);
             work_stack.push(WorkItem::Force {
-                thunk: Rc::clone(tail),
+                thunk: tail_thunk,
                 seq_depth: seq_depth + 1,
                 depth,
                 mat_span, // propagate call-site span through nested materializations
             });
             // Push head LAST on work_stack → processed first → result BELOW
             // tail on value_stack → BuildSeq pops head after tail.
+            let head_thunk = ctx.get_thunk(*head);
             work_stack.push(WorkItem::Force {
-                thunk: Rc::clone(head),
+                thunk: head_thunk,
                 seq_depth: 0, // head resets seq_depth
                 depth,
                 mat_span, // propagate call-site span through nested materializations
@@ -355,8 +371,9 @@ fn push_structural(
         }
         Value::Proxy { handler } => {
             work_stack.push(WorkItem::BuildProxy { span, thunk_ptr });
+            let handler_thunk = ctx.get_thunk(*handler);
             work_stack.push(WorkItem::Force {
-                thunk: Rc::clone(handler),
+                thunk: handler_thunk,
                 seq_depth: 0,
                 depth,
                 mat_span, // propagate call-site span through nested materializations

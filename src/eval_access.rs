@@ -13,7 +13,7 @@ use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval, eval_key, materialize, EvalContext};
 use crate::eval_call::{invoke_function, CallContext};
-use crate::value::{Environment, Key, Thunk, Value};
+use crate::value::{Environment, Key, Thunk, ThunkId, Value};
 
 /// Check whether `k` falls in the half-open range `[start, end)`.
 /// `None` bounds are treated as unbounded (i.e. negative/positive infinity).
@@ -167,10 +167,10 @@ pub(crate) fn eval_range_access(
         return Ok(Rc::clone(&target_thunk));
     }
 
-    let mut result: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
+    let mut result: IndexMap<Key, ThunkId> = IndexMap::new();
     for (k, v) in &map {
         if key_in_range(k, start_key.as_ref(), end_key.as_ref(), *access_span)? {
-            result.insert(k.clone(), Rc::clone(v));
+            result.insert(k.clone(), *v);
         }
     }
 

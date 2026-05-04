@@ -71,7 +71,15 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Some(Rc::from("call $range")),
             Rc::clone(&ctx),
         ));
-        ok_val(Value::Seq { head, tail }, call_span)
+        let head_id = ctx.alloc_thunk(head);
+        let tail_id = ctx.alloc_thunk(tail);
+        ok_val(
+            Value::Seq {
+                head: head_id,
+                tail: tail_id,
+            },
+            call_span,
+        )
     } else {
         // Finite range: [start, start+1, ..., end-1]
         let end = materialize(&args[1], None, &ctx, depth)?;
@@ -109,7 +117,15 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Some(Rc::from("call $range")),
                 Rc::clone(&ctx),
             ));
-            ok_val(Value::Seq { head, tail }, call_span)
+            let head_id = ctx.alloc_thunk(head);
+            let tail_id = ctx.alloc_thunk(tail);
+            ok_val(
+                Value::Seq {
+                    head: head_id,
+                    tail: tail_id,
+                },
+                call_span,
+            )
         }
     }
 }
@@ -144,7 +160,13 @@ pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Some(Rc::from("call $repeat")),
         Rc::clone(&ctx),
     ));
-    ok_val(Value::Seq { head, tail }, call_span)
+    ok_val(
+        Value::Seq {
+            head: ctx.alloc_thunk(head),
+            tail: ctx.alloc_thunk(tail),
+        },
+        call_span,
+    )
 }
 
 /// Internal helper for `cycle`: produces the next element in the cycle.
@@ -201,9 +223,9 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let next_idx = (idx_int + 1) % len;
 
     // Get the value at current_idx
-    let head = map
+    let head_id = map
         .get_index(current_idx as usize)
-        .map(|(_, v)| Rc::clone(v))
+        .map(|(_, v)| *v)
         .ok_or_else(|| EvalError::internal("cycle: index out of bounds".to_string(), call_span))?;
 
     // Create tail as PendingBuiltin for next step
@@ -221,7 +243,13 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         Rc::clone(&ctx),
     ));
 
-    ok_val(Value::Seq { head, tail }, call_span)
+    ok_val(
+        Value::Seq {
+            head: head_id,
+            tail: ctx.alloc_thunk(tail),
+        },
+        call_span,
+    )
 }
 
 /// `cycle`: Infinite sequence cycling through entries of a dict.
@@ -318,7 +346,13 @@ pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Rc::clone(&ctx),
     ));
 
-    ok_val(Value::Seq { head, tail }, call_span)
+    ok_val(
+        Value::Seq {
+            head: ctx.alloc_thunk(head),
+            tail: ctx.alloc_thunk(tail),
+        },
+        call_span,
+    )
 }
 
 /// Internal helper for `unfold`: performs one unfold step.
@@ -363,14 +397,15 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
         Value::Dict(ref map) if map.len() >= 2 => {
             // Extract first two values (ignore keys)
             let mut iter = map.values();
-            let value = Rc::clone(iter.next().unwrap());
-            let next_seed = Rc::clone(iter.next().unwrap());
+            let value_id = *iter.next().unwrap();
+            let next_seed_id = *iter.next().unwrap();
+            let next_seed = ctx.get_thunk(next_seed_id);
 
             // head = value (lazy)
-            let head = value;
+            let head = value_id;
 
             // tail = unfold_step(step, next_seed)
-            let tail_args = vec![step, next_seed];
+            let tail_args = vec![step, Rc::clone(&next_seed)];
             let tail = Rc::new(Thunk::new_pending_builtin(
                 builtin!("unfold", builtin_unfold_step),
                 tail_args,
@@ -381,7 +416,13 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
                 Rc::clone(&ctx),
             ));
 
-            ok_val(Value::Seq { head, tail }, call_span)
+            ok_val(
+                Value::Seq {
+                    head,
+                    tail: ctx.alloc_thunk(tail),
+                },
+                call_span,
+            )
         }
         Value::Dict(ref map) => Err(EvalError::type_mismatch_ctx(
             "unfold".to_string(),

@@ -224,11 +224,10 @@ impl ReplSession {
             child_env
                 .borrow_mut()
                 .insert("%".to_string(), Rc::clone(&self.prev_result));
-            for (key, val_thunk) in map {
+            for (key, val_thunk_id) in map {
                 if let Key::String(name) = key {
-                    child_env
-                        .borrow_mut()
-                        .insert(name.clone(), Rc::clone(val_thunk));
+                    let val_thunk = self.ctx.get_thunk(*val_thunk_id);
+                    child_env.borrow_mut().insert(name.clone(), val_thunk);
                 }
             }
             self.env = child_env;

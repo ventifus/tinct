@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::ast::{Expr, NamedArg, Param, Span, Spanned};
 use crate::error::{ArityBound, EvalError, EvalResult};
-use crate::value::{Environment, Key, Thunk, Value};
+use crate::value::{Environment, Key, Thunk, ThunkId, Value};
 
 // Import eval function and context from eval module
 // Note: this creates a circular dependency, but it's safe because
@@ -278,11 +278,11 @@ pub(crate) fn bind_args_thunks(
     // BIND-VARIADIC: Collect excess positional args into a dict with int keys
     if let Some(var_param) = variadic_param {
         let num_variadic_args = positional.len().saturating_sub(max_positional);
-        let mut var_map: IndexMap<Key, Rc<Thunk>> = IndexMap::with_capacity(num_variadic_args);
+        let mut var_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(num_variadic_args);
         for (i, thunk) in positional.iter().enumerate().skip(max_positional) {
             var_map.insert(
                 Key::Int(i64::try_from(i - max_positional).expect("collection too large")),
-                Rc::clone(thunk),
+                ctx.alloc_thunk(Rc::clone(thunk)),
             );
         }
         let var_thunk = Rc::new(Thunk::new_materialized(Value::Dict(var_map), *call_span));

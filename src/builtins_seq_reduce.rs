@@ -60,10 +60,11 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref map) => {
             // Dict path: build a chain of PendingCall thunks
             let mut acc = init_thunk;
-            for (_key, value_thunk) in map.iter() {
+            for (_key, value_thunk_id) in map.iter() {
+                let value_thunk = ctx.get_thunk(*value_thunk_id);
                 acc = Rc::new(Thunk::new_pending_call(
                     Rc::clone(&f_thunk),
-                    vec![acc, Rc::clone(value_thunk)],
+                    vec![acc, Rc::clone(&value_thunk)],
                     IndexMap::new(),
                     call_span,
                     Rc::clone(&ctx.config.stdlib_env),
@@ -76,11 +77,13 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
         Value::Seq { head, tail } => {
             // Seq path: use recursive step function
+            let head_thunk = ctx.get_thunk(head);
+            let tail_thunk = ctx.get_thunk(tail);
             let step_args = vec![
                 Rc::clone(&f_thunk),
                 init_thunk,
-                Rc::clone(&head),
-                Rc::clone(&tail),
+                Rc::clone(&head_thunk),
+                Rc::clone(&tail_thunk),
             ];
             Ok(Rc::new(Thunk::new_pending_builtin(
                 builtin!("reduce", builtin_reduce_seq_step),
@@ -144,11 +147,13 @@ pub(crate) fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
         }
         Value::Seq { head, tail } => {
             // Continue reducing
+            let head_thunk = ctx.get_thunk(head);
+            let tail_thunk = ctx.get_thunk(tail);
             let step_args = vec![
                 Rc::clone(&f_thunk),
                 new_acc,
-                Rc::clone(&head),
-                Rc::clone(&tail),
+                Rc::clone(&head_thunk),
+                Rc::clone(&tail_thunk),
             ];
             Ok(Rc::new(Thunk::new_pending_builtin(
                 builtin!("reduce", builtin_reduce_seq_step),
@@ -205,8 +210,9 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref map) => {
             // Dict path: iterate values, materialize, stringify, join
             let mut parts = Vec::with_capacity(map.len());
-            for (_key, value_thunk) in map.iter() {
-                let val = materialize(value_thunk, None, &ctx, depth)?;
+            for (_key, value_thunk_id) in map.iter() {
+                let value_thunk = ctx.get_thunk(*value_thunk_id);
+                let val = materialize(&value_thunk, None, &ctx, depth)?;
                 parts.push(stringify(&val));
             }
 
@@ -237,8 +243,8 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Seq { head, tail } => {
             // Seq path: traverse head/tail chain, collect strings
             let mut parts = Vec::new();
-            let mut current_head = Rc::clone(&head);
-            let mut current_tail = Rc::clone(&tail);
+            let mut current_head = ctx.get_thunk(head);
+            let mut current_tail = ctx.get_thunk(tail);
 
             loop {
                 // Materialize and stringify current head
@@ -262,8 +268,8 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         break;
                     }
                     Value::Seq { head, tail } => {
-                        current_head = Rc::clone(&head);
-                        current_tail = Rc::clone(&tail);
+                        current_head = ctx.get_thunk(head);
+                        current_tail = ctx.get_thunk(tail);
                     }
                     other => {
                         return Err(EvalError::type_mismatch_ctx(
@@ -363,7 +369,8 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
             }
             // ys_thunk is now Materialized (memoized). Build the lazy step chain.
-            let step_args = vec![tail, ys_thunk];
+            let tail_thunk = ctx.get_thunk(tail);
+            let step_args = vec![Rc::clone(&tail_thunk), ys_thunk];
             let result_thunk = Rc::new(Thunk::new_pending_builtin(
                 builtin!("concat", builtin_concat_seq_step),
                 step_args,
@@ -376,7 +383,7 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(
                 Value::Seq {
                     head,
-                    tail: result_thunk,
+                    tail: ctx.alloc_thunk(result_thunk),
                 },
                 call_span,
             )
@@ -417,16 +424,16 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     let mut idx = 0i64;
 
                     // Add all values from xs
-                    for (_key, value_thunk) in xs_map {
-                        result.insert(Key::Int(idx), Rc::clone(value_thunk));
+                    for (_key, value_thunk_id) in xs_map {
+                        result.insert(Key::Int(idx), *value_thunk_id);
                         idx = idx.checked_add(1).ok_or_else(|| {
                             EvalError::integer_overflow("concat".to_string(), call_span)
                         })?;
                     }
 
                     // Add all values from ys
-                    for (_key, value_thunk) in ys_map {
-                        result.insert(Key::Int(idx), Rc::clone(value_thunk));
+                    for (_key, value_thunk_id) in ys_map {
+                        result.insert(Key::Int(idx), *value_thunk_id);
                         idx = idx.checked_add(1).ok_or_else(|| {
                             EvalError::integer_overflow("concat".to_string(), call_span)
                         })?;
@@ -479,7 +486,8 @@ pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
         }
         Value::Seq { head, tail } => {
             // Continue chaining: head from xs, tail is concat(tail, ys)
-            let step_args = vec![tail, ys_thunk];
+            let tail_thunk = ctx.get_thunk(tail);
+            let step_args = vec![Rc::clone(&tail_thunk), ys_thunk];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
                 builtin!("concat", builtin_concat_seq_step),
                 step_args,
@@ -492,7 +500,7 @@ pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
             ok_val(
                 Value::Seq {
                     head,
-                    tail: new_tail,
+                    tail: ctx.alloc_thunk(new_tail),
                 },
                 call_span,
             )

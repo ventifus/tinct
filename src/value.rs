@@ -11,6 +11,9 @@ use crate::ast::{Expr, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 use crate::types::Type;
 
+// Re-export ThunkId for use in other modules
+pub use crate::arena::ThunkId;
+
 /// Arguments passed to built-in functions.
 pub struct BuiltinArgs<'a> {
     pub args: &'a [Rc<Thunk>],
@@ -126,7 +129,7 @@ pub enum Value {
     /// Boolean (`true` or `false`)
     Bool(bool),
     /// Ordered key-value map with lazy (thunked) values
-    Dict(IndexMap<Key, Rc<Thunk>>),
+    Dict(IndexMap<Key, ThunkId>),
     /// User-defined function (closure capturing its defining environment)
     Function {
         params: Rc<Vec<Param>>,
@@ -136,12 +139,12 @@ pub enum Value {
     /// Rust-native built-in function
     Builtin(BuiltinDef),
     /// Lazy linked-list sequence (head element, tail sequence)
-    Seq { head: Rc<Thunk>, tail: Rc<Thunk> },
+    Seq { head: ThunkId, tail: ThunkId },
     /// Proxy object — field access calls the handler function with the field name
-    Proxy { handler: Rc<Thunk> },
+    Proxy { handler: ThunkId },
     /// Lazy overlay: R overrides L (right-biased merge). Flattened to Dict on demand.
     /// Construction is O(1) — neither L nor R is materialized at merge time.
-    Overlay(Rc<Thunk>, Rc<Thunk>),
+    Overlay(ThunkId, ThunkId),
 }
 
 impl Value {
