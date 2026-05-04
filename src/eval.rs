@@ -430,7 +430,14 @@ pub(crate) fn eval_recursive(
             Value::String(s.clone()),
             expr.span,
         ))),
-        Expr::VarRef(name) => {
+        Expr::VarRef { name, resolved } => {
+            // TODO(arena-phase2): Use resolved (level, slot) for O(1) lookup when FlatEnv is available.
+            // The current linked-environment model with stdlib/document scopes doesn't align with
+            // the resolver's static level system (which only sees dict/function scopes during the AST walk).
+            // Full slot-based lookup requires Phase 2's FlatEnv with proper de Bruijn indexing that accounts
+            // for all runtime environment frames.
+            let _ = resolved; // Suppress unused warning; cache is populated for future use.
+
             let found = env.borrow().get(name);
             match found {
                 Some(thunk) => Ok(thunk),
@@ -1618,7 +1625,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(Value::Int(99), span)),
         );
 
-        let expr = sp(Expr::VarRef("x".into()));
+        let expr = sp(Expr::var_ref("x".into()));
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
         assert_eq!(val, Value::Int(99));
@@ -1634,7 +1641,7 @@ mod tests {
         );
 
         let child = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&parent))));
-        let expr = sp(Expr::VarRef("y".into()));
+        let expr = sp(Expr::var_ref("y".into()));
         let thunk = eval(Rc::new(expr.clone()), child, &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
         assert_eq!(val, Value::Int(77));
@@ -1642,7 +1649,7 @@ mod tests {
 
     #[test]
     fn test_varref_not_found() {
-        let expr = sp(Expr::VarRef("missing".into()));
+        let expr = sp(Expr::var_ref("missing".into()));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("undefined variable: missing"),
@@ -1797,7 +1804,7 @@ mod tests {
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::VarRef("x".into())),
+                value: rsp(Expr::var_ref("x".into())),
             }),
         ];
         let expr = sp(Expr::Dict(entries));
@@ -1822,7 +1829,7 @@ mod tests {
         let entries = vec![
             sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::VarRef("x".into())),
+                value: rsp(Expr::var_ref("x".into())),
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("x".into()))),
@@ -1850,7 +1857,7 @@ mod tests {
         // [x: $x] -- x references itself
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::VarRef("x".into())),
+            value: rsp(Expr::var_ref("x".into())),
         })];
         let expr = sp(Expr::Dict(entries));
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
@@ -1877,7 +1884,7 @@ mod tests {
         // Subsequent materializations should return the cached error.
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::VarRef("x".into())),
+            value: rsp(Expr::var_ref("x".into())),
         })];
         let expr = sp(Expr::Dict(entries));
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
@@ -1925,7 +1932,7 @@ mod tests {
         // "undefined variable" error, NOT "circular dependency".
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::VarRef("missing".into())),
+            value: rsp(Expr::var_ref("missing".into())),
         })];
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
@@ -1963,7 +1970,7 @@ mod tests {
         // [x: 42  inner: [y: $x]]
         let inner_entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("y".into()))),
-            value: rsp(Expr::VarRef("x".into())),
+            value: rsp(Expr::var_ref("x".into())),
         })];
         let entries = vec![
             sp(Entry {
@@ -2029,7 +2036,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             })],
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             desugared: false,
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
@@ -2057,7 +2064,7 @@ mod tests {
         let fn_expr = sp(Expr::Fn {
             return_ann: None,
             params: vec![],
-            body: Rc::new(sp(Expr::VarRef("outer".into()))),
+            body: Rc::new(sp(Expr::var_ref("outer".into()))),
             desugared: false,
         });
         let fn_thunk = eval(Rc::new(fn_expr.clone()), Rc::clone(&env), &test_ctx(), 0).unwrap();
@@ -2069,7 +2076,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![],
             named_args: vec![],
             implied: false,
@@ -2091,7 +2098,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2099,7 +2106,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(42)))],
             named_args: vec![],
             implied: false,
@@ -2127,7 +2134,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::VarRef("b".into()))),
+            body: Rc::new(sp(Expr::var_ref("b".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2135,7 +2142,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(10))), Rc::new(sp(Expr::Int(20)))],
             named_args: vec![],
             implied: false,
@@ -2156,7 +2163,7 @@ mod tests {
             )),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("x".into()))),
+            func: Box::new(sp(Expr::var_ref("x".into()))),
             args: vec![],
             named_args: vec![],
             implied: false,
@@ -2190,7 +2197,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2198,7 +2205,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -2225,7 +2232,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2233,7 +2240,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![rsp(Expr::Int(1)), rsp(Expr::Int(2))],
             named_args: vec![],
             implied: false,
@@ -2270,7 +2277,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::VarRef("y".into()))),
+            body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2279,7 +2286,7 @@ mod tests {
         );
         // Call without named arg -- y should default to 99
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -2311,7 +2318,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::VarRef("y".into()))),
+            body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2319,7 +2326,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![sp(NamedArg {
                 name: "y".into(),
@@ -2343,7 +2350,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2351,7 +2358,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![sp(NamedArg {
                 name: "z".into(),
@@ -2391,7 +2398,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::VarRef("y".into()))),
+            body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2399,7 +2406,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![rsp(Expr::Int(1)), rsp(Expr::Int(2))],
             named_args: vec![sp(NamedArg {
                 name: "y".into(),
@@ -2436,7 +2443,7 @@ mod tests {
                     variadic: true,
                 },
             ]),
-            body: Rc::new(sp(Expr::VarRef("rest".into()))),
+            body: Rc::new(sp(Expr::var_ref("rest".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2444,7 +2451,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![
                 Rc::new(sp(Expr::Int(1))),
                 Rc::new(sp(Expr::Int(2))),
@@ -2489,7 +2496,7 @@ mod tests {
                     variadic: true,
                 },
             ]),
-            body: Rc::new(sp(Expr::VarRef("rest".into()))),
+            body: Rc::new(sp(Expr::var_ref("rest".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2497,7 +2504,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -2537,7 +2544,7 @@ mod tests {
             )),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("add".into()))),
+            func: Box::new(sp(Expr::var_ref("add".into()))),
             args: vec![Rc::new(sp(Expr::Int(3))), Rc::new(sp(Expr::Int(4)))],
             named_args: vec![],
             implied: false,
@@ -2549,7 +2556,9 @@ mod tests {
 
     #[test]
     fn test_type_alias_returns_empty_dict() {
-        let expr = sp(Expr::TypeAlias(Box::new(sp(Expr::VarRef("MyType".into())))));
+        let expr = sp(Expr::TypeAlias(Box::new(sp(Expr::var_ref(
+            "MyType".into(),
+        )))));
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
         match val {
@@ -2586,7 +2595,7 @@ mod tests {
     fn test_bare_underscore_is_not_lambda() {
         // $_ alone is just a VarRef, not an implicit lambda
         // It should fail with "undefined variable" if not in scope
-        let expr = sp(Expr::VarRef("_".into()));
+        let expr = sp(Expr::var_ref("_".into()));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap_err();
         assert!(
             err.message().contains("undefined variable: _"),
@@ -2605,7 +2614,7 @@ mod tests {
         // $_.name → [fn [_] $_.name] after desugaring
         // Evaluating this should produce a Function, not look up $_
         let mut expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("_".into()))),
             field: "name".into(),
         });
 
@@ -2634,7 +2643,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2643,8 +2652,8 @@ mod tests {
         );
 
         let mut call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
-            args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
+            func: Box::new(sp(Expr::var_ref("f".into()))),
+            args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
             named_args: vec![],
             implied: false,
         });
@@ -2670,7 +2679,7 @@ mod tests {
 
         // Build the $_.name expression → becomes [fn [_] $_.name] after desugaring
         let mut getter_expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("_".into()))),
             field: "name".into(),
         });
 
@@ -2692,7 +2701,7 @@ mod tests {
 
         // Call it with [name: alice]
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("getter".into()))),
+            func: Box::new(sp(Expr::var_ref("getter".into()))),
             args: vec![rsp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("name".into()))),
                 value: rsp(Expr::Str("alice".into())),
@@ -2712,7 +2721,7 @@ mod tests {
         let mut expr = sp(Expr::Dict(vec![sp(Entry {
             key: Some(sp(Expr::Str("a".into()))),
             value: rsp(Expr::DotAccess {
-                expr: Box::new(sp(Expr::VarRef("_".into()))),
+                expr: Box::new(sp(Expr::var_ref("_".into()))),
                 field: "name".into(),
             }),
         })]));
@@ -2742,7 +2751,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -2751,11 +2760,11 @@ mod tests {
         );
 
         let mut call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![],
             named_args: vec![sp(NamedArg {
                 name: "x".into(),
-                value: rsp(Expr::VarRef("_".into())),
+                value: rsp(Expr::var_ref("_".into())),
             })],
             implied: false,
         });
@@ -2809,7 +2818,7 @@ mod tests {
         );
 
         let expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             field: "name".into(),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -2829,7 +2838,7 @@ mod tests {
         );
 
         let expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             field: "missing".into(),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -2853,7 +2862,7 @@ mod tests {
         );
 
         let expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("x".into()))),
+            expr: Box::new(sp(Expr::var_ref("x".into()))),
             field: "foo".into(),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -2893,7 +2902,7 @@ mod tests {
         );
 
         let expr = sp(Expr::BracketAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             key: Box::new(sp(Expr::Int(1))),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -2913,7 +2922,7 @@ mod tests {
         );
 
         let expr = sp(Expr::BracketAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             key: Box::new(sp(Expr::Str("name".into()))),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -2933,7 +2942,7 @@ mod tests {
         );
 
         let expr = sp(Expr::BracketAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             key: Box::new(sp(Expr::Str("z".into()))),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -2966,7 +2975,7 @@ mod tests {
         );
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             start: Some(Box::new(sp(Expr::Int(2)))),
             end: Some(Box::new(sp(Expr::Int(4)))),
         });
@@ -3009,7 +3018,7 @@ mod tests {
         );
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             start: Some(Box::new(sp(Expr::Int(1)))),
             end: None,
         });
@@ -3046,7 +3055,7 @@ mod tests {
         );
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             start: None,
             end: Some(Box::new(sp(Expr::Int(2)))),
         });
@@ -3085,7 +3094,7 @@ mod tests {
         );
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             start: None,
             end: None,
         });
@@ -3120,7 +3129,7 @@ mod tests {
         );
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("d".into()))),
+            expr: Box::new(sp(Expr::var_ref("d".into()))),
             start: Some(Box::new(sp(Expr::Int(0)))),
             end: Some(Box::new(sp(Expr::Int(1)))),
         });
@@ -3406,7 +3415,7 @@ mod tests {
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("default".into()))),
-                value: rsp(Expr::VarRef("fallback".into())),
+                value: rsp(Expr::var_ref("fallback".into())),
             }),
         ];
         let expr = sp(Expr::TypeAssert {
@@ -3462,7 +3471,7 @@ mod tests {
         // $d.outer.inner
         let expr = sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::DotAccess {
-                expr: Box::new(sp(Expr::VarRef("d".into()))),
+                expr: Box::new(sp(Expr::var_ref("d".into()))),
                 field: "outer".into(),
             })),
             field: "inner".into(),
@@ -3537,7 +3546,7 @@ mod tests {
 
         // Evaluate $p.field at depth MAX_EVAL_DEPTH
         let dot_expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("p".into()))),
+            expr: Box::new(sp(Expr::var_ref("p".into()))),
             field: "field".to_string(),
         });
         let ctx = test_ctx();
@@ -3555,7 +3564,7 @@ mod tests {
         // [x: $missing] -- materializing x fails because $missing is undefined
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::VarRef("missing".into())),
+            value: rsp(Expr::var_ref("missing".into())),
         })];
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
@@ -3588,7 +3597,7 @@ mod tests {
         // [x: $x] -- force x with a known materialization site
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::VarRef("x".into())),
+            value: rsp(Expr::var_ref("x".into())),
         })];
         let expr = sp(Expr::Dict(entries));
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
@@ -3618,7 +3627,7 @@ mod tests {
         );
 
         let expr = sp(Expr::BracketAccess {
-            expr: Box::new(sp(Expr::VarRef("x".into()))),
+            expr: Box::new(sp(Expr::var_ref("x".into()))),
             key: Box::new(sp(Expr::Int(0))),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -3643,7 +3652,7 @@ mod tests {
         );
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("x".into()))),
+            expr: Box::new(sp(Expr::var_ref("x".into()))),
             start: Some(Box::new(sp(Expr::Int(0)))),
             end: Some(Box::new(sp(Expr::Int(2)))),
         });
@@ -3671,7 +3680,7 @@ mod tests {
             .insert("p".into(), Rc::new(Thunk::new_materialized(proxy, span)));
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("p".into()))),
+            expr: Box::new(sp(Expr::var_ref("p".into()))),
             start: Some(Box::new(sp(Expr::Int(0)))),
             end: Some(Box::new(sp(Expr::Int(2)))),
         });
@@ -3694,7 +3703,7 @@ mod tests {
             .insert("p".into(), Rc::new(Thunk::new_materialized(proxy, span)));
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("p".into()))),
+            expr: Box::new(sp(Expr::var_ref("p".into()))),
             start: Some(Box::new(sp(Expr::Int(0)))),
             end: Some(Box::new(sp(Expr::Int(2)))),
         });
@@ -3730,7 +3739,7 @@ mod tests {
         );
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("x".into()))),
+            expr: Box::new(sp(Expr::var_ref("x".into()))),
             start: Some(Box::new(sp(Expr::Int(0)))),
             end: Some(Box::new(sp(Expr::Int(2)))),
         });
@@ -3770,7 +3779,7 @@ mod tests {
         );
 
         let expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("dd".into()))),
+            expr: Box::new(sp(Expr::var_ref("dd".into()))),
             start: Some(Box::new(sp(Expr::Str("b".into())))),
             end: Some(Box::new(sp(Expr::Str("d".into())))),
         });
@@ -3912,7 +3921,7 @@ mod tests {
         })]));
         let expr2 = sp(Expr::Dict(vec![sp(Entry {
             key: Some(sp(Expr::Str("y".into()))),
-            value: rsp(Expr::VarRef("x".into())),
+            value: rsp(Expr::var_ref("x".into())),
         })]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr1), Rc::new(expr2)],
@@ -3950,7 +3959,7 @@ mod tests {
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::VarRef("x".into())),
+                value: rsp(Expr::var_ref("x".into())),
             }),
         ]));
         let doc = sp(Document {
@@ -4037,11 +4046,11 @@ mod tests {
         let expr3 = sp(Expr::Dict(vec![
             sp(Entry {
                 key: Some(sp(Expr::Str("ref_a".into()))),
-                value: rsp(Expr::VarRef("a".into())),
+                value: rsp(Expr::var_ref("a".into())),
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("ref_b".into()))),
-                value: rsp(Expr::VarRef("b".into())),
+                value: rsp(Expr::var_ref("b".into())),
             }),
         ]));
         let doc = sp(Document {
@@ -4085,7 +4094,7 @@ mod tests {
 
         let expr = sp(Expr::Dict(vec![sp(Entry {
             key: Some(sp(Expr::Str("local".into()))),
-            value: rsp(Expr::VarRef("external".into())),
+            value: rsp(Expr::var_ref("external".into())),
         })]));
         let doc = sp(Document {
             expressions: vec![Rc::new(expr)],
@@ -4178,11 +4187,11 @@ mod tests {
         let expr2 = sp(Expr::Dict(vec![
             sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::VarRef("x".into())),
+                value: rsp(Expr::var_ref("x".into())),
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("z".into()))),
-                value: rsp(Expr::VarRef("y".into())),
+                value: rsp(Expr::var_ref("y".into())),
             }),
         ]));
         let doc = sp(Document {
@@ -4249,7 +4258,7 @@ mod tests {
 
         // Expr 1: [call $id [x: 1]]
         let expr1 = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("id".into()))),
+            func: Box::new(sp(Expr::var_ref("id".into()))),
             args: vec![rsp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::Int(1)),
@@ -4326,7 +4335,7 @@ mod tests {
         let doc = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("prev".into()))),
-                value: rsp(Expr::VarRef("%".into())),
+                value: rsp(Expr::var_ref("%".into())),
             })])))],
             name: None,
             output_type: None,
@@ -4368,7 +4377,7 @@ mod tests {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
                 value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("%".into()))),
+                    expr: Box::new(sp(Expr::var_ref("%".into()))),
                     field: "x".into(),
                 }),
             })])))],
@@ -4407,7 +4416,7 @@ mod tests {
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("prev".into()))),
-                value: rsp(Expr::VarRef("%".into())),
+                value: rsp(Expr::var_ref("%".into())),
             })])))],
             name: None,
             output_type: None,
@@ -4446,7 +4455,7 @@ mod tests {
                 }),
                 sp(Entry {
                     key: Some(sp(Expr::Str("bad".into()))),
-                    value: rsp(Expr::VarRef("missing".into())),
+                    value: rsp(Expr::var_ref("missing".into())),
                 }),
             ])))],
             name: None,
@@ -4457,7 +4466,7 @@ mod tests {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("result".into()))),
                 value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("%".into()))),
+                    expr: Box::new(sp(Expr::var_ref("%".into()))),
                     field: "good".into(),
                 }),
             })])))],
@@ -4503,7 +4512,7 @@ mod tests {
                 sp(Entry {
                     key: Some(sp(Expr::Str("b".into()))),
                     value: rsp(Expr::DotAccess {
-                        expr: Box::new(sp(Expr::VarRef("%".into()))),
+                        expr: Box::new(sp(Expr::var_ref("%".into()))),
                         field: "a".into(),
                     }),
                 }),
@@ -4520,7 +4529,7 @@ mod tests {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("result".into()))),
                 value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("%".into()))),
+                    expr: Box::new(sp(Expr::var_ref("%".into()))),
                     field: "b".into(),
                 }),
             })])))],
@@ -4562,7 +4571,7 @@ mod tests {
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::VarRef("x".into())),
+                value: rsp(Expr::var_ref("x".into())),
             })])))],
             name: None,
             output_type: None,
@@ -4616,7 +4625,7 @@ mod tests {
         let doc = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("val".into()))),
-                value: rsp(Expr::VarRef("external".into())),
+                value: rsp(Expr::var_ref("external".into())),
             })])))],
             name: None,
             output_type: None,
@@ -4668,14 +4677,14 @@ mod tests {
                 sp(Entry {
                     key: Some(sp(Expr::Str("port".into()))),
                     value: rsp(Expr::DotAccess {
-                        expr: Box::new(sp(Expr::VarRef("%defaults".into()))),
+                        expr: Box::new(sp(Expr::var_ref("%defaults".into()))),
                         field: "port".into(),
                     }),
                 }),
                 sp(Entry {
                     key: Some(sp(Expr::Str("host".into()))),
                     value: rsp(Expr::DotAccess {
-                        expr: Box::new(sp(Expr::VarRef("%overrides".into()))),
+                        expr: Box::new(sp(Expr::var_ref("%overrides".into()))),
                         field: "host".into(),
                     }),
                 }),
@@ -4721,7 +4730,7 @@ mod tests {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("%late".into()))),
+                    expr: Box::new(sp(Expr::var_ref("%late".into()))),
                     field: "value".into(),
                 }),
             })])))],
@@ -4744,7 +4753,7 @@ mod tests {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("result".into()))),
                 value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::VarRef("%early".into()))),
+                    expr: Box::new(sp(Expr::var_ref("%early".into()))),
                     field: "x".into(),
                 }),
             })])))],
@@ -5389,7 +5398,7 @@ mod tests {
                 variadic: false,
             }]),
             body: Rc::new(Spanned::new(
-                Expr::VarRef("missing".into()),
+                Expr::var_ref("missing".into()),
                 test_span(1, 15, 1, 23),
             )),
             env: Rc::clone(&env),
@@ -5403,7 +5412,7 @@ mod tests {
         let call_expr = Spanned::new(
             Expr::Call {
                 func: Box::new(Spanned::new(
-                    Expr::VarRef("f".into()),
+                    Expr::var_ref("f".into()),
                     test_span(2, 7, 2, 8),
                 )),
                 args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11)))],
@@ -5445,7 +5454,7 @@ mod tests {
                 variadic: false,
             }]),
             body: Rc::new(Spanned::new(
-                Expr::VarRef("missing".into()),
+                Expr::var_ref("missing".into()),
                 test_span(1, 20, 1, 28),
             )),
             env: Rc::clone(&env),
@@ -5466,11 +5475,11 @@ mod tests {
             body: Rc::new(Spanned::new(
                 Expr::Call {
                     func: Box::new(Spanned::new(
-                        Expr::VarRef("inner".into()),
+                        Expr::var_ref("inner".into()),
                         test_span(2, 21, 2, 26),
                     )),
                     args: vec![Rc::new(Spanned::new(
-                        Expr::VarRef("y".into()),
+                        Expr::var_ref("y".into()),
                         test_span(2, 28, 2, 29),
                     ))],
                     named_args: vec![],
@@ -5490,7 +5499,7 @@ mod tests {
         let call_expr = Spanned::new(
             Expr::Call {
                 func: Box::new(Spanned::new(
-                    Expr::VarRef("outer".into()),
+                    Expr::var_ref("outer".into()),
                     test_span(3, 7, 3, 12),
                 )),
                 args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(3, 14, 3, 15)))],
@@ -5537,7 +5546,7 @@ mod tests {
         let mut dict_map = IndexMap::new();
         let bad_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
-                Expr::VarRef("missing".into()),
+                Expr::var_ref("missing".into()),
                 test_span(1, 8, 1, 15),
             )),
             Rc::clone(&env),
@@ -5557,7 +5566,7 @@ mod tests {
         let access_expr = Spanned::new(
             Expr::DotAccess {
                 expr: Box::new(Spanned::new(
-                    Expr::VarRef("a".into()),
+                    Expr::var_ref("a".into()),
                     test_span(2, 1, 2, 2),
                 )),
                 field: "x".into(),
@@ -5582,7 +5591,7 @@ mod tests {
         let access_expr = Spanned::new(
             Expr::DotAccess {
                 expr: Box::new(Spanned::new(
-                    Expr::VarRef("nonexistent".into()),
+                    Expr::var_ref("nonexistent".into()),
                     test_span(1, 1, 1, 12),
                 )),
                 field: "field".into(),
@@ -5609,7 +5618,7 @@ mod tests {
         let access_expr = Spanned::new(
             Expr::BracketAccess {
                 expr: Box::new(Spanned::new(
-                    Expr::VarRef("nonexistent".into()),
+                    Expr::var_ref("nonexistent".into()),
                     test_span(1, 1, 1, 12),
                 )),
                 key: Box::new(Spanned::new(Expr::Int(0), test_span(1, 13, 1, 14))),
@@ -5635,7 +5644,7 @@ mod tests {
         let access_expr = Spanned::new(
             Expr::RangeAccess {
                 expr: Box::new(Spanned::new(
-                    Expr::VarRef("nonexistent".into()),
+                    Expr::var_ref("nonexistent".into()),
                     test_span(1, 1, 1, 12),
                 )),
                 start: Some(Box::new(Spanned::new(
@@ -5670,7 +5679,7 @@ mod tests {
             Key::String("x".into()),
             Rc::new(Thunk::new_unevaluated(
                 Rc::new(Spanned::new(
-                    Expr::VarRef("missing".into()),
+                    Expr::var_ref("missing".into()),
                     test_span(1, 10, 1, 18),
                 )),
                 Rc::clone(&inner_env),
@@ -5691,7 +5700,7 @@ mod tests {
         let access_expr = Spanned::new(
             Expr::DotAccess {
                 expr: Box::new(Spanned::new(
-                    Expr::VarRef("a".into()),
+                    Expr::var_ref("a".into()),
                     test_span(2, 1, 2, 2),
                 )),
                 field: "x".into(),
@@ -5725,14 +5734,14 @@ mod tests {
 
     #[test]
     fn test_func_label_varref() {
-        let label = func_label(&Expr::VarRef("f".into()));
+        let label = func_label(&Expr::var_ref("f".into()));
         assert_eq!(label.as_deref(), Some("[f ...]"));
     }
 
     #[test]
     fn test_func_label_dot_access() {
         let expr = Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("utils".into()))),
+            expr: Box::new(sp(Expr::var_ref("utils".into()))),
             field: "run".into(),
         };
         let label = func_label(&expr);
@@ -5743,7 +5752,7 @@ mod tests {
     fn test_func_label_chained_dot_access() {
         let expr = Expr::DotAccess {
             expr: Box::new(sp(Expr::DotAccess {
-                expr: Box::new(sp(Expr::VarRef("a".into()))),
+                expr: Box::new(sp(Expr::var_ref("a".into()))),
                 field: "b".into(),
             })),
             field: "c".into(),
@@ -5765,7 +5774,7 @@ mod tests {
         let env = empty_env();
 
         // Create a thunk whose body is another unevaluated thunk that errors
-        let inner_expr = Spanned::new(Expr::VarRef("missing".into()), test_span(1, 1, 1, 8));
+        let inner_expr = Spanned::new(Expr::var_ref("missing".into()), test_span(1, 1, 1, 8));
         let inner_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(inner_expr),
             Rc::clone(&env),
@@ -5803,7 +5812,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::VarRef("a".into()))),
+            body: Rc::new(sp(Expr::var_ref("a".into()))),
             env: Rc::clone(&env),
         };
         env.borrow_mut().insert(
@@ -5816,7 +5825,7 @@ mod tests {
         let call_expr = Spanned::new(
             Expr::Call {
                 func: Box::new(Spanned::new(
-                    Expr::VarRef("f".into()),
+                    Expr::var_ref("f".into()),
                     test_span(2, 7, 2, 8),
                 )),
                 args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11)))],
@@ -5865,7 +5874,7 @@ mod tests {
         );
 
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("fail".into()))),
+            func: Box::new(sp(Expr::var_ref("fail".into()))),
             args: vec![],
             named_args: vec![],
             implied: false,
@@ -5921,8 +5930,11 @@ mod tests {
                 },
             ]),
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("+".into()))),
-                args: vec![rsp(Expr::VarRef("x".into())), rsp(Expr::VarRef("y".into()))],
+                func: Box::new(sp(Expr::var_ref("+".into()))),
+                args: vec![
+                    rsp(Expr::var_ref("x".into())),
+                    rsp(Expr::var_ref("y".into())),
+                ],
                 named_args: vec![],
                 implied: false,
             })),
@@ -6045,7 +6057,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
         };
 
@@ -6122,7 +6134,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
         };
 
@@ -6203,8 +6215,11 @@ mod tests {
                 },
             ]),
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("+".into()))),
-                args: vec![rsp(Expr::VarRef("a".into())), rsp(Expr::VarRef("b".into()))],
+                func: Box::new(sp(Expr::var_ref("+".into()))),
+                args: vec![
+                    rsp(Expr::var_ref("a".into())),
+                    rsp(Expr::var_ref("b".into())),
+                ],
                 named_args: vec![],
                 implied: false,
             })),
@@ -6296,8 +6311,11 @@ mod tests {
                 },
             ]),
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("+".into()))),
-                args: vec![rsp(Expr::VarRef("x".into())), rsp(Expr::VarRef("y".into()))],
+                func: Box::new(sp(Expr::var_ref("+".into()))),
+                args: vec![
+                    rsp(Expr::var_ref("x".into())),
+                    rsp(Expr::var_ref("y".into())),
+                ],
                 named_args: vec![],
                 implied: false,
             })),
@@ -6341,7 +6359,7 @@ mod tests {
         // and return it on subsequent materialization attempts
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::VarRef("undefined".into())),
+            value: rsp(Expr::var_ref("undefined".into())),
         })];
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
@@ -6386,7 +6404,7 @@ mod tests {
         // subsequent access sites as stack frames (dual-span model)
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("broken".into()))),
-            value: rsp(Expr::VarRef("missing".into())),
+            value: rsp(Expr::var_ref("missing".into())),
         })];
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
@@ -6433,7 +6451,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::VarRef("nonexistent".into()))),
+            body: Rc::new(sp(Expr::var_ref("nonexistent".into()))),
             env: Rc::clone(&env),
         };
 
@@ -6444,7 +6462,7 @@ mod tests {
 
         // Call the failing function
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("bad_fn".into()))),
+            func: Box::new(sp(Expr::var_ref("bad_fn".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -6489,7 +6507,7 @@ mod tests {
         );
 
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("fail".into()))),
+            func: Box::new(sp(Expr::var_ref("fail".into()))),
             args: vec![],
             named_args: vec![],
             implied: false,
@@ -6519,7 +6537,7 @@ mod tests {
 
         let failing_fn = Value::Function {
             params: Rc::new(vec![]),
-            body: Rc::new(sp(Expr::VarRef("does_not_exist".into()))),
+            body: Rc::new(sp(Expr::var_ref("does_not_exist".into()))),
             env: Rc::clone(&env),
         };
 
@@ -6559,7 +6577,7 @@ mod tests {
     #[test]
     fn test_pending_call_func_materialization_failure() {
         let bad_func = Rc::new(Thunk::new_unevaluated(
-            Rc::new(sp(Expr::VarRef("nonexistent_func".into()))),
+            Rc::new(sp(Expr::var_ref("nonexistent_func".into()))),
             empty_env(),
             Rc::clone(&test_ctx()),
             test_span(1, 1, 1, 10),
@@ -6600,7 +6618,7 @@ mod tests {
     #[test]
     fn test_unevaluated_error_becomes_failed() {
         // When an Unevaluated thunk fails during materialization, it should transition to Failed
-        let expr = sp(Expr::VarRef("undefined_var".into()));
+        let expr = sp(Expr::var_ref("undefined_var".into()));
         let env = empty_env();
         let thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(expr),
@@ -6631,7 +6649,7 @@ mod tests {
         let env = empty_env();
 
         let expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("undefined_var".into()))),
+            expr: Box::new(sp(Expr::var_ref("undefined_var".into()))),
             field: "field".into(),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -6658,7 +6676,7 @@ mod tests {
         let env = empty_env();
 
         let expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("undefined_var".into()))),
+            expr: Box::new(sp(Expr::var_ref("undefined_var".into()))),
             field: "field".into(),
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx(), 0).unwrap();
@@ -6707,8 +6725,8 @@ mod tests {
                         variadic: false,
                     }]),
                     body: Rc::new(sp(Expr::Call {
-                        func: Box::new(sp(Expr::VarRef("f".into()))),
-                        args: vec![rsp(Expr::VarRef("x".into()))],
+                        func: Box::new(sp(Expr::var_ref("f".into()))),
+                        args: vec![rsp(Expr::var_ref("x".into()))],
                         named_args: vec![],
                         implied: false,
                     })),
@@ -6724,7 +6742,7 @@ mod tests {
                 );
 
                 let call_expr = sp(Expr::Call {
-                    func: Box::new(sp(Expr::VarRef("f".into()))),
+                    func: Box::new(sp(Expr::var_ref("f".into()))),
                     args: vec![Rc::new(sp(Expr::Int(1)))],
                     named_args: vec![],
                     implied: false,
@@ -6761,8 +6779,8 @@ mod tests {
                 variadic: false,
             }]),
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![rsp(Expr::VarRef("x".into()))],
+                func: Box::new(sp(Expr::var_ref("f".into()))),
+                args: vec![rsp(Expr::var_ref("x".into()))],
                 named_args: vec![],
                 implied: false,
             })),
@@ -6778,7 +6796,7 @@ mod tests {
         );
 
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -6811,7 +6829,7 @@ mod tests {
         // Regular errors (not DepthExceeded) should transition to Failed state
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::VarRef("undefined".into())),
+            value: rsp(Expr::var_ref("undefined".into())),
         })];
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
@@ -6860,8 +6878,8 @@ mod tests {
                 variadic: false,
             }]),
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![rsp(Expr::VarRef("x".into()))],
+                func: Box::new(sp(Expr::var_ref("f".into()))),
+                args: vec![rsp(Expr::var_ref("x".into()))],
                 named_args: vec![],
                 implied: false,
             })),
@@ -6877,7 +6895,7 @@ mod tests {
         );
 
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -6928,8 +6946,8 @@ mod tests {
                 variadic: false,
             }]),
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![rsp(Expr::VarRef("x".into()))],
+                func: Box::new(sp(Expr::var_ref("f".into()))),
+                args: vec![rsp(Expr::var_ref("x".into()))],
                 named_args: vec![],
                 implied: false,
             })),
@@ -6946,7 +6964,7 @@ mod tests {
 
         // Create an inner thunk that will recurse and hit depth limit
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -7028,7 +7046,7 @@ mod tests {
 
         // First include: should evaluate and cache
         let include_expr1 = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("include".into()))),
+            func: Box::new(sp(Expr::var_ref("include".into()))),
             args: vec![rsp(Expr::Str("test_cache.llt".into()))],
             named_args: vec![],
             implied: false,
@@ -7051,7 +7069,7 @@ mod tests {
 
         // Second include of the same file: should hit cache
         let include_expr2 = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("include".into()))),
+            func: Box::new(sp(Expr::var_ref("include".into()))),
             args: vec![rsp(Expr::Str("test_cache.llt".into()))],
             named_args: vec![],
             implied: false,
@@ -7120,7 +7138,7 @@ mod tests {
 
         // Attempt to include the file: should detect cycle
         let include_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("include".into()))),
+            func: Box::new(sp(Expr::var_ref("include".into()))),
             args: vec![rsp(Expr::Str("guard_test.llt".into()))],
             named_args: vec![],
             implied: false,
@@ -7180,7 +7198,7 @@ mod tests {
 
         // Include test.llt from ctx1
         let include_expr1 = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("include".into()))),
+            func: Box::new(sp(Expr::var_ref("include".into()))),
             args: vec![rsp(Expr::Str("test.llt".into()))],
             named_args: vec![],
             implied: false,
@@ -7196,7 +7214,7 @@ mod tests {
 
         // Include test.llt from ctx2
         let include_expr2 = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("include".into()))),
+            func: Box::new(sp(Expr::var_ref("include".into()))),
             args: vec![rsp(Expr::Str("test.llt".into()))],
             named_args: vec![],
             implied: false,
@@ -7282,7 +7300,7 @@ mod tests {
 
         // Include a file using ctx1 - this populates the include_cache
         let include_expr1 = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("include".into()))),
+            func: Box::new(sp(Expr::var_ref("include".into()))),
             args: vec![rsp(Expr::Str("shared_test.llt".into()))],
             named_args: vec![],
             implied: false,
@@ -7349,7 +7367,7 @@ mod tests {
         // Attempt to include the guarded file using ctx2 - should detect cycle
         // This resolves to temp_dir2/guard_test.llt which is in the shared guard
         let include_expr2 = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("include".into()))),
+            func: Box::new(sp(Expr::var_ref("include".into()))),
             args: vec![rsp(Expr::Str("guard_test.llt".into()))],
             named_args: vec![],
             implied: false,
@@ -8528,7 +8546,7 @@ mod tests {
             };
             let curr_name = format!("var_{}", i);
 
-            let expr = sp(Expr::VarRef(prev_name.clone()));
+            let expr = sp(Expr::var_ref(prev_name.clone()));
             let thunk = Rc::new(Thunk::new_unevaluated(
                 Rc::new(expr),
                 Rc::clone(&env),
@@ -8559,7 +8577,7 @@ mod tests {
 
         // Create a cycle: x references y, y references x
         // x = $y
-        let x_expr = sp(Expr::VarRef("y".into()));
+        let x_expr = sp(Expr::var_ref("y".into()));
         let x_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(x_expr),
             Rc::clone(&env),
@@ -8568,7 +8586,7 @@ mod tests {
         ));
 
         // y = $x
-        let y_expr = sp(Expr::VarRef("x".into()));
+        let y_expr = sp(Expr::var_ref("x".into()));
         let y_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(y_expr),
             Rc::clone(&env),
@@ -8593,7 +8611,7 @@ mod tests {
         // Test 3-node cycle: a→b→c→a
         let env3 = empty_env();
 
-        let a_expr = sp(Expr::VarRef("b".into()));
+        let a_expr = sp(Expr::var_ref("b".into()));
         let a_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(a_expr),
             Rc::clone(&env3),
@@ -8601,7 +8619,7 @@ mod tests {
             test_span(1, 1, 1, 2),
         ));
 
-        let b_expr = sp(Expr::VarRef("c".into()));
+        let b_expr = sp(Expr::var_ref("c".into()));
         let b_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(b_expr),
             Rc::clone(&env3),
@@ -8609,7 +8627,7 @@ mod tests {
             test_span(1, 1, 1, 2),
         ));
 
-        let c_expr = sp(Expr::VarRef("a".into()));
+        let c_expr = sp(Expr::var_ref("a".into()));
         let c_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(c_expr),
             Rc::clone(&env3),
@@ -8633,7 +8651,7 @@ mod tests {
         // Test self-reference: x→x
         let env_self = empty_env();
 
-        let self_expr = sp(Expr::VarRef("x".into()));
+        let self_expr = sp(Expr::var_ref("x".into()));
         let self_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(self_expr),
             Rc::clone(&env_self),
@@ -8897,7 +8915,7 @@ mod tests {
         // This proves ctx2 correctly propagates no_fs to $include without needing
         // any real files on disk.
         let include_expr = sp(crate::ast::Expr::Call {
-            func: Box::new(sp(crate::ast::Expr::VarRef("include".into()))),
+            func: Box::new(sp(crate::ast::Expr::var_ref("include".into()))),
             args: vec![Rc::new(sp(crate::ast::Expr::Str(
                 "hypothetical.llt".into(),
             )))],

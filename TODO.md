@@ -14,17 +14,6 @@ Replace `Rc<Thunk>` / `Rc<RefCell<Environment>>` with arena-allocated thunks and
 
 Design decision (DONE.md): ship Phase 1+2 together as a single migration — variable resolution pass + ThunkArena + EnvArena. Starting with Dict alone creates a hybrid model requiring a second migration.
 
-### arena-resolve: Variable Resolution Pass
-
-Pre-eval analysis pass assigns `(level, slot)` pairs to `VarRef` nodes. Prerequisite for flat environments — without slot indices, `FlatEnv` can't do O(1) lookup. See doc/whatif/arena-patterns.md §Variable Resolution Pass Design.
-
-- [ ] Add resolution cache to `Expr::VarRef` — extend from `VarRef(String)` to carry an optional `(u32, u32)` level/slot pair; `None` for unresolved (computed keys, `$include`-introduced bindings) (`src/ast.rs`)
-- [ ] Implement `Resolver` struct with scope stack `Vec<HashMap<String, u32>>` — `enter_dict(static_keys)` pushes scope, `exit_dict()` pops, `resolve(name) -> Option<(u32, u32)>` searches stack in reverse (`src/resolve.rs`)
-- [ ] Walk AST to populate resolution cache on all VarRef nodes — handle dict entries (push scope with static keys), fn params (push scope), nested expressions (recurse); leave `None` for computed-key and `$include`-introduced bindings (`src/resolve.rs`)
-- [ ] Wire resolution pass into pipeline: call after parsing, before type checking and evaluation; update `eval_source()`, `eval_file()`, `eval_file_with_input()` (`src/lib.rs`)
-- [ ] Update `eval` VarRef case to use resolved `(level, slot)` when present — O(1) slot lookup via `env.get_slot(level, slot)`, falling back to name lookup for `None` (`src/eval.rs`)
-- [ ] Unit tests: static key resolution, nested scope shadowing, fn param resolution, computed key remains `None`, `%` pipeline variable resolves correctly (`src/resolve.rs`)
-- [ ] Verify full corpus test suite passes unchanged — resolution is transparent to evaluation semantics (`tests/`)
 
 ### arena-types: Arena Type Definitions
 

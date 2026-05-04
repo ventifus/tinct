@@ -544,6 +544,9 @@ fn run_eval(
     // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
     tinct::desugar::desugar_file(&mut ast.node);
 
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    tinct::resolve::resolve_file(&ast.node);
+
     // Type errors are advisory; evaluation proceeds regardless.
     let _ = tinct::typecheck::typecheck_file(&ast.node);
 

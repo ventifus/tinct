@@ -26,6 +26,7 @@ pub(crate) mod eval_materialize;
 pub mod formatter;
 pub mod lexer;
 pub mod parser;
+pub mod resolve;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod typecheck;
@@ -119,6 +120,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // See also: src/main.rs:234-240 (run_eval pipeline)
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    // Populates VarRef resolved caches with (level, slot) coordinates.
+    resolve::resolve_file(&file.node);
     // Type errors are advisory; evaluation proceeds regardless.
     let _ = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
@@ -154,6 +158,8 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     let mut file = parse(input).map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    resolve::resolve_file(&file.node);
     // Type check the file
     typecheck::typecheck_file(&file.node).map_err(|type_errors| {
         let error_msgs: Vec<String> = type_errors.iter().map(|e| format!("{}", e)).collect();

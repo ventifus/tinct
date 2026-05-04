@@ -3708,3 +3708,15 @@ Small fixes deferred from the type-predicates sprint panel.
 - [x] Add `null?`-with-Seq corpus test: `[null? [range 0 5]]` → `Bool(false)` (`tests/corpus/eval/builtins/`)
 - [x] Add `fn?`-with-Proxy corpus test: `[fn? [proxy ...]]` → `Bool(false)` (`tests/corpus/eval/builtins/`)
 - [x] Fix `doc/whatif/type-predicates.md` — `every?` → `all?`; `"Null"` removed from type-of list; `"Proxy"` added; `fn?`/type-of distinction corrected
+
+### arena-resolve: Variable Resolution Pass
+
+Pre-eval analysis pass assigns `(level, slot)` pairs to `VarRef` nodes. See doc/whatif/arena-patterns.md §Variable Resolution Pass Design.
+
+- [x] Add resolution cache to `Expr::VarRef` — three-state `RefCell<Option<Option<(u32,u32)>>>`: outer None=unprocessed, Some(None)=unresolvable, Some(Some(l,s))=resolved (`src/ast.rs`)
+- [x] Implement `Resolver` struct with scope stack `Vec<IndexMap<String, u32>>` — `enter_scope(keys)`, `exit_scope()`, `resolve(name) -> Option<(u32,u32)>` (`src/resolve.rs`)
+- [x] Walk AST to populate resolution cache — dict keys walked before scope entry, Fn params+annotations, TypeAssert/Annotated, all expression variants (`src/resolve.rs`)
+- [x] Wire resolution pass into all 7 pipeline entry points: eval_source_with_config, typecheck_source, run_eval, REPL, LSP, create_stdlib_env, builtin_include (`src/lib.rs`, `src/main.rs`, `src/repl.rs`, `src/builtins.rs`, `src/lsp/document.rs`)
+- [x] Update `eval` VarRef case — O(1) slot lookup deferred to Phase 2 (static level system doesn't align with runtime env chain until FlatEnv); cache populated but eval uses name-based lookup (`src/eval.rs`)
+- [x] Unit tests: 20+ tests covering scope shadowing, annotations, access chains, named args, multi-doc isolation, write-once invariant, empty scope (`src/resolve.rs`)
+- [x] Verify full corpus test suite passes unchanged (`tests/`)

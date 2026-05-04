@@ -1794,7 +1794,7 @@ pub(crate) fn eval_step(
         Expr::Float(f) => Action::Continue(Ok(Value::Float(*f))),
         Expr::Bool(b) => Action::Continue(Ok(Value::Bool(*b))),
         Expr::Str(s) => Action::Continue(Ok(Value::String(s.clone()))),
-        Expr::VarRef(name) => {
+        Expr::VarRef { name, .. } => {
             let found = env.borrow().get(name);
             match found {
                 // Return the thunk from the environment without forcing it.
@@ -2472,7 +2472,7 @@ mod tests {
         let env = empty_env();
 
         // Create a thunk that will fail: reference an undefined variable
-        let expr = Rc::new(sp(Expr::VarRef("undefined_var".into())));
+        let expr = Rc::new(sp(Expr::var_ref("undefined_var".into())));
         let thunk = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
 
         // Verify initial state is Unevaluated
@@ -2549,7 +2549,7 @@ mod tests {
         let env = empty_env();
 
         // Create a dict with an entry that will error when materialized
-        let error_expr = Rc::new(sp(Expr::VarRef("undefined_var".into())));
+        let error_expr = Rc::new(sp(Expr::var_ref("undefined_var".into())));
         let error_thunk = Rc::new(Thunk::new_unevaluated(
             error_expr,
             Rc::clone(&env),
@@ -2567,7 +2567,7 @@ mod tests {
 
         // Create a dot access expression: my_dict.field
         let access_expr = Rc::new(sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("my_dict".into()))),
+            expr: Box::new(sp(Expr::var_ref("my_dict".into()))),
             field: "field".to_string(),
         }));
 
