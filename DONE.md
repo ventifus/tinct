@@ -3694,3 +3694,17 @@ Add `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?` builtins.
 - [x] Update `test_all_builtins_registered` assertion count (`src/builtins.rs`)
 - [x] Add eval corpus tests: each predicate against matching and non-matching values, including edge cases — `num?` with Int and Float, `fn?` with Function and Builtin, `dict?` with list-shaped dicts (`tests/corpus/eval/`)
 - [x] Add `list?` as a stdlib function in `stdlib/prelude.llt`: `[fn [xs] [and [dict? xs] [all? [fn [k] [int? k]] [keys xs]]]]`
+
+## Type Predicates: Follow-Up Nits
+
+Minor housekeeping from the type-predicates sprint panel review.
+
+### type-predicates-nits: Post-Sprint Cleanup
+
+Small fixes deferred from the type-predicates sprint panel.
+
+- [x] Move `seq?` registration from Sequences comment block to Type Introspection comment block in `standard_builtins()` (`src/builtins.rs:1811`)
+- [x] Add `dict?`-with-Overlay corpus test: `[dict? [merge [a: 1] [b: 2]]]` → `Bool(true)` (`tests/corpus/eval/builtins/`)
+- [x] Add `null?`-with-Seq corpus test: `[null? [range 0 5]]` → `Bool(false)` (`tests/corpus/eval/builtins/`)
+- [x] Add `fn?`-with-Proxy corpus test: `[fn? [proxy ...]]` → `Bool(false)` (`tests/corpus/eval/builtins/`)
+- [x] Fix `doc/whatif/type-predicates.md` — `every?` → `all?`; `"Null"` removed from type-of list; `"Proxy"` added; `fn?`/type-of distinction corrected
