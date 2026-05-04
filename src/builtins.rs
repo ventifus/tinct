@@ -1800,6 +1800,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("null?", builtin_null_check, [Strictness::Seq]),
         builtin!("dict?", builtin_dict_check, [Strictness::Seq]),
         builtin!("fn?", builtin_fn_check, [Strictness::Seq]),
+        builtin!("seq?", builtin_seq_check, [Strictness::Seq]),
         // I/O
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
@@ -1808,7 +1809,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("head", builtin_head, [Strictness::Seq]),
         builtin!("tail", builtin_tail, [Strictness::Seq]),
         builtin!("collect", builtin_collect, [Strictness::Spine]),
-        builtin!("seq?", builtin_seq_check, [Strictness::Seq]),
         builtin!("range", builtin_range, [Strictness::Seq, Strictness::Seq]),
         builtin!("repeat", builtin_repeat),
         builtin!("cycle", builtin_cycle, [Strictness::Spine]),
@@ -6648,6 +6648,7 @@ mod tests {
         assert!(names.contains(&"null?"), "missing null?");
         assert!(names.contains(&"dict?"), "missing dict?");
         assert!(names.contains(&"fn?"), "missing fn?");
+        assert!(names.contains(&"seq?"), "missing seq?");
         // I/O
         assert!(names.contains(&"from-json"), "missing from-json");
         assert!(names.contains(&"include"), "missing include");
@@ -6656,7 +6657,6 @@ mod tests {
         assert!(names.contains(&"head"), "missing head");
         assert!(names.contains(&"tail"), "missing tail");
         assert!(names.contains(&"collect"), "missing collect");
-        assert!(names.contains(&"seq?"), "missing seq?");
         assert!(names.contains(&"range"), "missing range");
         assert!(names.contains(&"repeat"), "missing repeat");
         assert!(names.contains(&"cycle"), "missing cycle");

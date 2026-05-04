@@ -7,19 +7,6 @@ For future work beyond the active sprints below, see:
 - `doc/whatif/index.md §Wait for Trigger` — features with complete designs pending a concrete trigger
 
 
-## Type Predicates: Follow-Up Nits
-
-Minor housekeeping from the type-predicates sprint panel review.
-
-### type-predicates-nits: Post-Sprint Cleanup
-
-Small fixes deferred from the type-predicates sprint panel. Tack onto any convenient future sprint.
-
-- [ ] Move `seq?` registration from Sequences comment block to Type Introspection comment block in `standard_builtins()` (`src/builtins.rs:1811`)
-- [ ] Add `dict?`-with-Overlay corpus test: `[dict? [merge [a: 1] [b: 2]]]` → `Bool(true)` (`tests/corpus/eval/builtins/`)
-- [ ] Add `null?`-with-Seq corpus test: `[null? [range 0 5]]` → `Bool(false)` (`tests/corpus/eval/builtins/`)
-- [ ] Add `fn?`-with-Proxy corpus test: `[fn? [proxy ...]]` → `Bool(false)` (`tests/corpus/eval/builtins/`)
-- [ ] Fix `doc/whatif/type-predicates.md:168` — uses `every?` (should be `all?`); fix `doc/whatif/type-predicates.md:17` — claims `type-of` returns `"Null"` (it returns `"Dict"` for all dicts) (`doc/whatif/type-predicates.md`)
 
 ## Arena Allocation: Arena-Based Thunks and Flat Environments
 

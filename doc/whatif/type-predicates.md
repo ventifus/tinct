@@ -14,7 +14,7 @@ tinct has one type predicate builtin:
 And one type inspection builtin:
 
 - **`type-of`** — returns a string: `"Int"`, `"Float"`, `"String"`,
-  `"Bool"`, `"Null"`, `"Dict"`, `"Seq"`, `"Function"`, `"Builtin"`
+  `"Bool"`, `"Dict"`, `"Seq"`, `"Function"`, `"Proxy"`
 
 ### The Core Problem
 
@@ -88,7 +88,7 @@ fn?     : Any → Bool    # true for Function and Builtin
 2. Any definition of "list-ness" is arbitrary (dense integers? contiguous?
    starting from 0?)
 3. Users who need array-vs-record distinction can write it as a stdlib
-   function using `keys` + `every?`
+   function using `keys` + `all?` — see `list?` in the standard library
 
 ### Semantics
 
@@ -108,8 +108,9 @@ fn builtin_int_q(args: &[Thunk], env: &Env) -> Result<Value> {
 predicate that mirrors the `Number` supertype in the type system.
 
 `fn?` returns `true` for both `Value::Function` and `Value::Builtin`,
-since both are callable. Users who need to distinguish closures from
-builtins can use `type-of`, which returns `"Function"` vs `"Builtin"`.
+since both are callable. `type-of` returns `"Function"` for both — there
+is no runtime distinction between user-defined closures and builtins via
+`type-of` or `fn?`.
 
 ### Type Checker Integration
 
@@ -165,7 +166,7 @@ existing builtin call mechanism.
 that checks for dict-with-integer-keys convention:
 ```tinct
 list?: [fn [xs]
-  [and [dict? xs] [every? [fn [k] [int? k]] [keys xs]]]]
+  [and [dict? xs] [all? [fn [k] [int? k]] [keys xs]]]]
 ```
 **Impact:** Minor — optional convenience function, not a language change.
 

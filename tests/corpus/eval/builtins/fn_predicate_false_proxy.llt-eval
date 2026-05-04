@@ -1,0 +1,3 @@
+[fn? [proxy [get: [fn [k] [+ k 10]]]]]
+===
+Bool(false)
