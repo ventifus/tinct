@@ -559,7 +559,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Evaluate a dict.
-        session.eval_input("[name: Alice age: 30]").unwrap();
+        session.eval_input("[name: \"Alice\" age: 30]").unwrap();
 
         // Access a field through %.
         assert_eq!(session.eval_input("%.name").unwrap(), "String(\"Alice\")");

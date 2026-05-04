@@ -1,0 +1,4 @@
+# Nested implied calls: [+ [* 2 3] 1] evaluates inner multiplication first
+[+ [* 2 3] 1]
+===
+Int(7)

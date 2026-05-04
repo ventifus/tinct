@@ -12,7 +12,7 @@ Call form
       (bracket_expr
         (call_form
           (keyword_call)
-          func: (var_ref)
+          func: (escaped_ref)
           (call_args
             (int_lit)
             (int_lit)))))))
@@ -34,7 +34,7 @@ Fn form
           (param_list
             (param
               (param_name)))
-          body: (var_ref))))))
+          body: (escaped_ref))))))
 
 ====================================
 Fn form with return type annotation
@@ -55,7 +55,7 @@ Fn form with return type annotation
           (param_list
             (param
               (param_name)))
-          body: (var_ref))))))
+          body: (escaped_ref))))))
 
 =========
 Type form
@@ -71,7 +71,7 @@ Type form
       (bracket_expr
         (type_form
           (keyword_type)
-          expr: (var_ref))))))
+          expr: (escaped_ref))))))
 
 ====================
 Call with named args
@@ -87,15 +87,15 @@ Call with named args
       (bracket_expr
         (call_form
           (keyword_call)
-          func: (var_ref)
+          func: (escaped_ref)
           (call_args
             (named_arg
               name: (named_arg_key
-                (bare_word))
+                (identifier))
               value: (int_lit))
             (named_arg
               name: (named_arg_key
-                (bare_word))
+                (identifier))
               value: (int_lit))))))))
 
 =====================
@@ -117,4 +117,54 @@ Fn with variadic param
               (param_name))
             (variadic_param
               (param_name)))
-          body: (var_ref))))))
+          body: (escaped_ref))))))
+
+=================
+Implied call form
+=================
+
+[add 1 2]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (call_implied
+          func: (identifier)
+          (call_args
+            (int_lit)
+            (int_lit)))))))
+
+===========================
+Implied call with zero args
+===========================
+
+[f]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (call_implied
+          func: (identifier))))))
+
+================================
+Implied call with single arg
+================================
+
+[f x]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (call_implied
+          func: (identifier)
+          (call_args
+            (identifier)))))))

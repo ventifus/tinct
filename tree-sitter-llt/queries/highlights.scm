@@ -16,7 +16,7 @@
 (escape_sequence) @string.escape
 
 ; Variables
-(var_ref) @variable
+(escaped_ref) @variable
 
 ; Parameters
 (param (param_name) @variable.parameter)
@@ -41,7 +41,7 @@
 (fn_annotation (bracket_expr) @type)
 (param_annotation (annotation_word) @type)
 (param_annotation (bracket_expr) @type)
-(annotated_bare name: (bare_word) @variable)
+(annotated_bare name: (identifier) @variable)
 (annotated_bare annotation: (annotation_word) @type)
 
 ; Range operator
@@ -55,11 +55,17 @@
 ":" @punctuation.delimiter
 ";" @punctuation.delimiter
 
-; Document separator
+; Document separator and section headers
 (doc_separator) @punctuation.special
+(section_name) @namespace
+(output_annotation "@" @punctuation.special)
+(output_annotation (_) @type)
+(expects_pragma "expects" @keyword)
+(expects_pragma ":" @punctuation.delimiter)
+(expects_pragma (_) @type)
 
 ; Rest / spread
 "..." @punctuation.special
 
-; Bare words (unquoted symbols)
-(bare_word) @string.special
+; Identifiers (unquoted symbols / variable references)
+(identifier) @variable

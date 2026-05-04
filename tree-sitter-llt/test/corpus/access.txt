@@ -10,7 +10,7 @@ $x.field
   (document
     (expression
       (access_expr
-        (var_ref)
+        (escaped_ref)
         (dot_access
           (access_field))))))
 
@@ -26,7 +26,7 @@ $x[0]
   (document
     (expression
       (access_expr
-        (var_ref)
+        (escaped_ref)
         (bracket_access
           (int_lit))))))
 
@@ -42,7 +42,7 @@ $x.a.b
   (document
     (expression
       (access_expr
-        (var_ref)
+        (escaped_ref)
         (dot_access
           (access_field))
         (dot_access
@@ -60,7 +60,7 @@ $x[1..3]
   (document
     (expression
       (access_expr
-        (var_ref)
+        (escaped_ref)
         (bracket_access
           (range_expr
             start: (int_lit)
@@ -78,7 +78,7 @@ $x.a[0].b
   (document
     (expression
       (access_expr
-        (var_ref)
+        (escaped_ref)
         (dot_access
           (access_field))
         (bracket_access
@@ -100,9 +100,9 @@ Space prevents dot access
       (bracket_expr
         (dict
           (auto_entry
-            (var_ref))
+            (escaped_ref))
           (auto_entry
-            (bare_word)))))))
+            (identifier)))))))
 
 ============================
 Open-ended range: unbounded
@@ -116,7 +116,7 @@ $a[..]
   (document
     (expression
       (access_expr
-        (var_ref)
+        (escaped_ref)
         (bracket_access
           (range_expr))))))
 
@@ -132,7 +132,7 @@ $a[1..]
   (document
     (expression
       (access_expr
-        (var_ref)
+        (escaped_ref)
         (bracket_access
           (range_expr
             start: (int_lit)))))))
@@ -149,7 +149,23 @@ $a[..3]
   (document
     (expression
       (access_expr
-        (var_ref)
+        (escaped_ref)
         (bracket_access
           (range_expr
             end: (int_lit)))))))
+
+=============================================
+Identifier dot access (bare word as base)
+=============================================
+
+config.host
+
+---
+
+(file
+  (document
+    (expression
+      (access_expr
+        (identifier)
+        (dot_access
+          (access_field))))))

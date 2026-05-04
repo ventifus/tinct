@@ -26,7 +26,7 @@ Single key-value pair
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit)))))))
 
 ============
@@ -43,11 +43,11 @@ Nested dicts
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (bracket_expr
               (dict
                 (keyed_entry
-                  key: (bare_word)
+                  key: (identifier)
                   value: (int_lit))))))))))
 
 ==========
@@ -80,7 +80,7 @@ Rest entry
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit))
           (rest_entry
             (annotation_word)))))))
@@ -99,7 +99,7 @@ Keywords as auto_entry values
       (bracket_expr
         (dict
           (auto_entry
-            (bare_word)))))))
+            (identifier)))))))
 
 =======================================
 Multiple keywords as auto_entries (semicolons)
@@ -115,11 +115,11 @@ Multiple keywords as auto_entries (semicolons)
       (bracket_expr
         (dict
           (auto_entry
-            (bare_word))
+            (identifier))
           (auto_entry
-            (bare_word))
+            (identifier))
           (auto_entry
-            (bare_word)))))))
+            (identifier)))))))
 
 ==============================
 Keyword as keyed_entry value
@@ -135,8 +135,8 @@ Keyword as keyed_entry value
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
-            value: (bare_word)))))))
+            key: (identifier)
+            value: (identifier)))))))
 
 ========================
 Keywords as dict keys
@@ -152,14 +152,14 @@ Keywords as dict keys
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
-            value: (bare_word))
+            key: (identifier)
+            value: (identifier))
           (keyed_entry
-            key: (bare_word)
-            value: (bare_word))
+            key: (identifier)
+            value: (identifier))
           (keyed_entry
-            key: (bare_word)
-            value: (bare_word)))))))
+            key: (identifier)
+            value: (identifier)))))))
 
 ================================
 Multiple entries with semicolons
@@ -175,11 +175,11 @@ Multiple entries with semicolons
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit))
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit))
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit)))))))

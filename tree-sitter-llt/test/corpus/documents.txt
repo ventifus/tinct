@@ -26,14 +26,14 @@ Multiple expressions (scope chain)
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit)))))
     (expression
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
-            value: (var_ref)))))))
+            key: (identifier)
+            value: (escaped_ref)))))))
 
 ==================
 Document separator
@@ -51,26 +51,27 @@ Document separator
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit))))))
-  (doc_separator)
+  (section_header
+    (doc_separator))
   (document
     (expression
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit)))))))
 
 ====================================
-Multiple documents with pipeline
+Multiple documents with pipeline ref
 ====================================
 
 [x: 1]
 ---
-[y: $$]
+[y: %]
 ---
-[z: $$]
+[z: %]
 
 ---
 
@@ -80,21 +81,120 @@ Multiple documents with pipeline
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit))))))
-  (doc_separator)
+  (section_header
+    (doc_separator))
   (document
     (expression
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
-            value: (var_ref))))))
-  (doc_separator)
+            key: (identifier)
+            value: (identifier))))))
+  (section_header
+    (doc_separator))
   (document
     (expression
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
-            value: (var_ref)))))))
+            key: (identifier)
+            value: (identifier)))))))
+
+================================
+Named section header
+================================
+
+[x: 1]
+--- %cfg
+[y: 2]
+
+---
+
+(file
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (identifier)
+            value: (int_lit))))))
+  (section_header
+    (doc_separator)
+    (section_name))
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (identifier)
+            value: (int_lit)))))))
+
+=====================================
+Named section header with output type
+=====================================
+
+--- %cfg@Dict
+[y: 2]
+
+---
+
+(file
+  (section_header
+    (doc_separator)
+    (section_name)
+    (output_annotation
+      (annotation_word)))
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (identifier)
+            value: (int_lit)))))))
+
+==============================================
+Named section header with expects pragma
+==============================================
+
+--- %out expects: Dict
+[z: 1]
+
+---
+
+(file
+  (section_header
+    (doc_separator)
+    (section_name)
+    (expects_pragma
+      (annotation_word)))
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (identifier)
+            value: (int_lit)))))))
+
+==============================================
+Standalone output type annotation (no name)
+==============================================
+
+--- @Config
+[y: 2]
+
+---
+
+(file
+  (section_header
+    (doc_separator)
+    (output_annotation
+      (annotation_word)))
+  (document
+    (expression
+      (bracket_expr
+        (dict
+          (keyed_entry
+            key: (identifier)
+            value: (int_lit)))))))

@@ -45,9 +45,9 @@ Comments between dict entries
       (bracket_expr
         (dict
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit))
           (comment)
           (keyed_entry
-            key: (bare_word)
+            key: (identifier)
             value: (int_lit)))))))

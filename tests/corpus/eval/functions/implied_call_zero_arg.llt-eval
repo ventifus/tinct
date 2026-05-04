@@ -1,0 +1,4 @@
+# Implied call with zero-arg function: [x] calls x with no arguments
+[x: [fn [] 42]  result: [x]]
+===
+Dict({"x": Function(), "result": Int(42)})

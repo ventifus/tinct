@@ -72,7 +72,7 @@ Quoted string with escapes
         (escape_sequence)))))
 
 ==================
-Variable reference
+Escaped reference
 ==================
 
 $my-var
@@ -82,10 +82,10 @@ $my-var
 (file
   (document
     (expression
-      (var_ref))))
+      (escaped_ref))))
 
 =============================
-Variable reference: dollar-dollar
+Escaped reference: dollar-dollar
 =============================
 
 $$
@@ -95,10 +95,10 @@ $$
 (file
   (document
     (expression
-      (var_ref))))
+      (escaped_ref))))
 
 =====================
-Variable reference: $0
+Escaped reference: $0
 =====================
 
 $0
@@ -108,10 +108,10 @@ $0
 (file
   (document
     (expression
-      (var_ref))))
+      (escaped_ref))))
 
 =====================
-Variable reference: $_
+Escaped reference: $_
 =====================
 
 $_
@@ -121,7 +121,7 @@ $_
 (file
   (document
     (expression
-      (var_ref))))
+      (escaped_ref))))
 
 ====================
 Negative float literal
@@ -150,7 +150,7 @@ Empty quoted string
       (quoted_string))))
 
 =========
-Bare word
+Identifier
 =========
 
 hello
@@ -160,4 +160,17 @@ hello
 (file
   (document
     (expression
-      (bare_word))))
+      (identifier))))
+
+========================
+Percent-prefixed identifier
+========================
+
+%pipeline
+
+---
+
+(file
+  (document
+    (expression
+      (identifier))))

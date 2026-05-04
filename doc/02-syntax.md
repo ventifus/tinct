@@ -160,7 +160,7 @@ Literals are recognized in precedence order. The first matching rule wins.
 [f $x y]             # call f(x, y) — $x and x are identical in non-head position
 ```
 
-**`%` and `%name` are ordinary identifiers** used by convention for pipeline references. `%` refers to the previous document's output; `%name` refers to a named section's output. See §5.
+**`%` and `%name` are ordinary identifiers** used by convention for pipeline references. `%` refers to the previous document's output; `%name` refers to a named section's output. See §5. The lexer uses `lex_percent_word()` to handle `%name` identifiers — they are lexed identically to escaped references (stopping at `.` and enabling bracket-access detection via `LastSignificantToken::EscapedRef`) but emit `Identifier` tokens (not `EscapedRef`) because `%` is not a `$` sigil.
 
 **Identifier character rules** (denylist approach — any character valid except structural delimiters):
 
@@ -456,6 +456,7 @@ A bracket expression is the fundamental syntactic unit. The parser examines the 
 |----------|-----------|----------------|---------|
 | 1 | Empty `[]` | Empty dict | `[]` |
 | 2 | `@` first | Type assertion | `[@Type expr]` |
+| 2b | Identifier + `@` immediately (annotated identifier), not followed by `:` | Dict | `[Fn@Number [Int]]` |
 | 3 | Keyword in head (`call`, `fn`, `type`), not followed by `:` (horizontal) | Special form | `[fn [x] x]` |
 | 4 | First entry is keyed (head followed by `:` with no intervening newline) | Dict | `[name: "Alice"]` |
 | 5 | Identifier in head (not keyword) | Implied call | `[f x y]` → `f(x, y)` |
@@ -582,12 +583,12 @@ bracket_access_inner = {
 
 range_expr = { range_value? ~ ".." ~ range_value? }
 
-range_value = { int_lit | var_ref }
+range_value = { int_lit | escaped_ref }
 ```
 
 Range values are limited to integer literals and variable references.
 
-The lexer handles whitespace-sensitivity so that `$a.b` is parsed as a single access expression, but `$a .b` (with space) does not match — `$a` matches as a plain `var_ref` and `.b` is a separate bare word. Note that `.` is excluded from `var_ident_char`, which is what allows `$a.b` to parse as access rather than as a single identifier ending in `.b`.
+Dot access is whitespace-insensitive — `$a.b` and `$a .b` parse identically. The `.` always emits a `Dot` token regardless of preceding whitespace; see §2.5 for the formal tokenization rule.
 
 Similarly, `$a[0]` is bracket access, but `$a [0]` is an EscapedRef followed by a nested bracket expression.
 
@@ -595,13 +596,13 @@ Similarly, `$a[0]` is bracket access, but `$a [0]` is an EscapedRef followed by 
 
 | Input | Parse |
 |-------|-------|
-| `$a.b` | `access_expr(var_ref("a"), dot_access("b"))` |
-| `$a[0]` | `access_expr(var_ref("a"), bracket_access(int(0)))` |
-| `$a.b[0].c` | `access_expr(var_ref("a"), dot("b"), bracket(int(0)), dot("c"))` |
-| `$a[2..5]` | `access_expr(var_ref("a"), bracket(range(int(2), int(5))))` |
-| `$a[2..]` | `access_expr(var_ref("a"), bracket(range(int(2), none)))` |
-| `$a[..]` | `access_expr(var_ref("a"), bracket(range(none, none)))` |
-| `$a[$key]` | `access_expr(var_ref("a"), bracket(var_ref("key")))` |
+| `$a.b` | `access_expr(escaped_ref("a"), dot_access("b"))` |
+| `$a[0]` | `access_expr(escaped_ref("a"), bracket_access(int(0)))` |
+| `$a.b[0].c` | `access_expr(escaped_ref("a"), dot("b"), bracket(int(0)), dot("c"))` |
+| `$a[2..5]` | `access_expr(escaped_ref("a"), bracket(range(int(2), int(5))))` |
+| `$a[2..]` | `access_expr(escaped_ref("a"), bracket(range(int(2), none)))` |
+| `$a[..]` | `access_expr(escaped_ref("a"), bracket(range(none, none)))` |
+| `$a[$key]` | `access_expr(escaped_ref("a"), bracket(escaped_ref("key")))` |
 
 ### 3.5 Dict Entries
 
@@ -616,9 +617,9 @@ rest_entry = @{ "..." ~ annotation_word? }
 
 auto_entry = { value }
 
-key = { bracket_expr | var_ref | quoted_string | bare_token }
+key = { bracket_expr | escaped_ref | quoted_string | bare_token }
 
-bare_token = { float_lit | int_lit | bool_lit | bare_word }
+bare_token = { float_lit | int_lit | bool_lit | identifier }
 ```
 
 The parser treats `rest_entry` as atomic to prevent whitespace between `...` and the optional name. `...` alone produces `Expr::Rest(None)` (anonymous open record marker). `...name` produces `Expr::Rest(Some("name"))` (named row variable). Rest entries are used in type expressions to indicate open records and row polymorphism.
@@ -644,12 +645,12 @@ A value is a single expression — one atom, one access expression, or one brack
 ```ebnf
 value = { access_expr | bracket_expr | atom }
 
-atom = { float_lit | int_lit | bool_lit | quoted_string | var_ref | annotated_bare | bare_word }
+atom = { float_lit | int_lit | bool_lit | quoted_string | escaped_ref | annotated_bare | identifier }
 ```
 
-The ordering in `atom` enforces literal precedence (section 2.4). `float_lit` before `int_lit` ensures `3.14` matches as float, not int `3` followed by `.14`. `bool_lit` before `bare_word` ensures `true` matches as boolean. `annotated_bare` before `bare_word` ensures `Fn@Number` is parsed as an annotated value, not as a bare word containing `@`.
+The ordering in `atom` enforces literal precedence (section 2.4). `float_lit` before `int_lit` ensures `3.14` matches as float, not int `3` followed by `.14`. `bool_lit` before `identifier` ensures `true` matches as boolean. `annotated_bare` before `identifier` ensures `Fn@Number` is parsed as an annotated value, not as a bare identifier containing `@`.
 
-`var_ref` appears in both `value` (as a plain reference) and `access_expr` (as the start of an access chain). The parser tries `access_expr` first — if the var_ref is followed immediately by `.` or `[`, it becomes an access expression. Otherwise it falls through to `atom` where it matches as a plain var_ref.
+`escaped_ref` appears in both `value` (as a plain reference) and `access_expr` (as the start of an access chain). The parser tries `access_expr` first — if the escaped_ref is followed immediately by `.` or `[`, it becomes an access expression. Otherwise it falls through to `atom` where it matches as a plain escaped_ref.
 
 ### 3.7 Annotations
 
@@ -669,7 +670,7 @@ fn_annotation = ${ "@" ~ annotation_value }
 
 **In value position** (generalized annotation):
 ```ebnf
-annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
+annotated_bare = ${ identifier ~ "@" ~ annotation_value }
 ```
 `Fn@Number` produces an `Annotated` node with name `"Fn"` and annotation `Number`. This is used for function type constructors (`Fn@Return [Params]`) and is available for future use on any bare word.
 
@@ -781,13 +782,14 @@ COMMENT    = "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI)
 file          = SOI ~ document ~ (doc_separator ~ document)* ~ EOI
 document      = expression*
 expression    = !doc_separator ~ value
-doc_separator = "---" ~ !bare_word_char
+doc_separator = "---" ~ !ident_char_body
 
 // === Bracket Expressions ===
 
 bracket_expr = "[" ~ "]"
              | "[" ~ type_assert_body ~ "]"
              | "[" ~ special_form ~ "]"
+             | "[" ~ call_implied ~ "]"
              | "[" ~ dict_entries ~ "]"
 
 // === Special Forms ===
@@ -795,6 +797,7 @@ bracket_expr = "[" ~ "]"
 special_form = call_form | fn_form | type_form
 
 call_form    = keyword_call ~ value ~ call_args
+call_implied = identifier ~ call_args     // identifier not a keyword, not followed by ":"
 fn_form      = keyword_fn ~ fn_annotation? ~ param_list ~ value
 type_form    = keyword_type ~ value
 
@@ -812,7 +815,7 @@ ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") ~ AN
 call_args = (named_arg | value)*
 
 named_arg     = named_arg_key ~ ":" ~ value
-named_arg_key = "$" ~ var_ident | bare_word
+named_arg_key = "$" ~ esc_ident | identifier
 
 // === Type Assertions ===
 
@@ -848,23 +851,23 @@ rest_entry = "..." ~ annotation_word?
 keyed_entry = key ~ ":" ~ value
 auto_entry  = value
 
-key = bracket_expr | var_ref | quoted_string | bare_token
+key = bracket_expr | escaped_ref | quoted_string | bare_token
 
-bare_token = float_lit | int_lit | bool_lit | bare_word
+bare_token = float_lit | int_lit | bool_lit | identifier
 
 // === Values ===
 
 value = access_expr | bracket_expr | atom
 
-atom = float_lit | int_lit | bool_lit | quoted_string | var_ref | annotated_bare | bare_word
+atom = float_lit | int_lit | bool_lit | quoted_string | escaped_ref | annotated_bare | identifier
 
 // === Generalized Annotations ===
 
-annotated_bare = bare_word ~ "@" ~ annotation_value
+annotated_bare = identifier ~ "@" ~ annotation_value
 
 // === Access Chains ===
 
-access_expr = var_ref ~ access_chain+
+access_expr = (identifier | escaped_ref) ~ access_chain+
 
 access_chain = dot_access | bracket_access_chain
 
@@ -879,15 +882,15 @@ bracket_access_inner = range_expr | value
 range_expr = range_value? ~ ".." ~ range_value?
 
 // Values inside range expressions — limited to atoms (no nested brackets in ranges)
-range_value = int_lit | var_ref
+range_value = int_lit | escaped_ref
 
 // === Literals ===
 
-var_ref = "$" ~ var_ident
+escaped_ref = "$" ~ esc_ident
 
-var_ident = var_ident_char+
+esc_ident = esc_ident_char+
 
-var_ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".") ~ ANY
+esc_ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".") ~ ANY
 
 float_lit = "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+
 
@@ -899,18 +902,18 @@ quoted_string = "\"" ~ inner_string ~ "\""
 inner_string  = (escape_seq | !("\"" | "\\") ~ ANY)*
 escape_seq    = "\\" ~ ("\"" | "\\" | "n" | "t" | "r")
 
-bare_word = bare_word_start ~ bare_word_cont*
+identifier = ident_start ~ ident_cont*
 
-bare_word_start = !( "$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@"
-                   | " " | "\t" | "\r" | "\n"
-                   | "..." )
-                  ~ bare_word_char
+ident_start = !( "$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@"
+               | " " | "\t" | "\r" | "\n"
+               | "..." )
+              ~ ident_char_body
 
-bare_word_cont = !( " " | "\t" | "\r" | "\n"
-                  | "[" | "]" | ":" | ";" | "#" | "\"" | "@" )
-                 ~ bare_word_char
+ident_cont = !( " " | "\t" | "\r" | "\n"
+              | "[" | "]" | ":" | ";" | "#" | "\"" | "@" )
+             ~ ident_char_body
 
-bare_word_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") ~ ANY
+ident_char_body = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") ~ ANY
 ```
 
 ---
@@ -932,9 +935,9 @@ bare_word_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") 
 | `[f]` | Zero-arg call `f()` | Identifier in head |
 | `[$f]` | Single-element sequence `[ref(f)]` | Escaped ref in head |
 | `a.b` | Access chain | No whitespace before `.`, identifier enables access |
-| `a .b` | Ref `a` then ref `.b` | Whitespace before `.` |
+| `a .b` | Dot access (same as `a.b`) | Dot is whitespace-insensitive |
 | `a[0]` | Bracket access | No whitespace before `[`, identifier enables access |
-| `a [0]` | Call `a([0])` | Whitespace before `[` → separate expression, call |
+| `a [0]` | Implied call `a()`, then data `[0]` | Whitespace before `[` → two separate expressions |
 | `$a.b` | Access chain | No whitespace before `.` |
 | `$a [0]` | Escaped ref then nested expr | Whitespace before `[` |
 | `x@Number` | Param with annotation | `@` in param context |

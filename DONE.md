@@ -3591,3 +3591,12 @@ Single atomic change. All internal `.llt` files migrated in the same commit. See
 - [x] **Formatter** (`src/formatter.rs`): Source-sniff first byte to emit `name` vs `$name`. `implied: true` → `[f x]`, `implied: false` → `[call f x]`.
 - [x] **Error messages** (`src/error.rs`): References shown as `name` not `$name`. "Did you mean to quote?" suggestion for `UndefinedVariable` where name looks like an intended string literal.
 - [x] **File migration**: Mechanically transformed 400+ `.llt` files: `stdlib/prelude.llt`, `tests/corpus/**/*.llt-eval`. Rules: `$var` → `var`; `[call $f x y]` → `[f x y]`; unquoted bare string values → quoted; `$$` → `%`; `$$foo` → `%foo`.
+
+### new-syntax-c: Phase 2b — Polish and Completeness (completed items)
+
+- [x] **tree-sitter-llt** (`tree-sitter-llt/grammar.js`): Updated for `identifier`/`escaped_ref`/`call_implied`/`%`-pipeline/section headers. 58 corpus tests pass.
+- [x] **Corpus tests — implied call**: `implied_call_nested`, `implied_call_zero_arg`, `implied_call_single_arg`, `implied_call_not_data` (`[$x]` data vs `[x]` call), `escaped_ref_is_data`, `data_sequence_escaped_head`.
+- [x] **Corpus tests — EscapedRef data sequences**: `escaped_ref_is_data.llt-eval` and `data_sequence_escaped_head.llt-eval`.
+- [x] **Error message tests**: `string_suggestion.llt-eval` (hyphenated `my-key` exercises `-` heuristic), `no_suggestion_for_percent.llt-eval` (% suppresses hint), `pipeline_forward_ref_undefined.llt-eval`.
+- [x] **Doc updates**: `doc/02-syntax.md §6` ebnf verified with `call_implied` and Priority 2b; `doc/09-documents.md` DOC-PIPELINE table updated; `output_type` annotation uses `result_env` (`src/typecheck.rs:527`); formatter section headers roundtrip correctly.
+- [x] **`$$` removal**: `"$"` binding removed from all pipeline envs; `doc/whatif/structural-contracts.md` and `doc/whatif/index.md` cleaned up.

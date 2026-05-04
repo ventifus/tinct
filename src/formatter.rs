@@ -48,6 +48,26 @@ impl<'a> Formatter<'a> {
                     }
                 }
                 self.output.push_str("---");
+                // Emit section header fields if present on this document.
+                if let Some(ref name) = doc.node.name {
+                    self.output.push(' ');
+                    self.output.push('%');
+                    self.output.push_str(name);
+                }
+                if let Some(ref output_ann) = doc.node.output_type {
+                    // Named section: %name@Type (no space before @).
+                    // Unnamed section: --- @Type (space after --- already present from
+                    // the section_name branch not running, so we add the space here).
+                    if doc.node.name.is_none() {
+                        self.output.push(' ');
+                    }
+                    self.output.push('@');
+                    self.format_annotation(output_ann);
+                }
+                if let Some(ref expects_ann) = doc.node.expects {
+                    self.output.push_str(" expects: ");
+                    self.format_annotation(expects_ann);
+                }
                 self.output.push('\n');
                 self.output.push('\n');
             }
@@ -150,23 +170,31 @@ impl<'a> Formatter<'a> {
             Expr::Float(f) => self.output.push_str(&f.to_string()),
             Expr::Bool(b) => self.output.push_str(if *b { "true" } else { "false" }),
             Expr::Str(s) => {
-                // In new syntax, Expr::Str values originate from either:
-                //   (a) QuotedString tokens in regular source — always format with quotes.
-                //   (b) Identifier tokens used as dict keys (including annotation property
-                //       dict keys) — also format with quotes since they are string keys.
-                // The bare-word branch (emitting without quotes) is dead in new syntax.
-                self.output.push('"');
-                for ch in s.chars() {
-                    match ch {
-                        '"' => self.output.push_str("\\\""),
-                        '\\' => self.output.push_str("\\\\"),
-                        '\n' => self.output.push_str("\\n"),
-                        '\t' => self.output.push_str("\\t"),
-                        '\r' => self.output.push_str("\\r"),
-                        _ => self.output.push(ch),
+                // Source-sniff: check if the original token was a quoted string or a
+                // bare identifier (dict key). If the source character at the span start
+                // is `"`, emit with quotes; otherwise emit bare (e.g. `x` in `[x: 1]`).
+                let is_quoted = self
+                    .source
+                    .as_bytes()
+                    .get(expr.span.start.offset)
+                    .map_or(false, |&b| b == b'"');
+                if is_quoted {
+                    self.output.push('"');
+                    for ch in s.chars() {
+                        match ch {
+                            '"' => self.output.push_str("\\\""),
+                            '\\' => self.output.push_str("\\\\"),
+                            '\n' => self.output.push_str("\\n"),
+                            '\t' => self.output.push_str("\\t"),
+                            '\r' => self.output.push_str("\\r"),
+                            _ => self.output.push(ch),
+                        }
                     }
+                    self.output.push('"');
+                } else {
+                    // Bare identifier key — emit without quotes
+                    self.output.push_str(s);
                 }
-                self.output.push('"');
             }
             Expr::VarRef(name) => {
                 // Source-sniff: emit `$` only if the original token started with `$`
@@ -339,9 +367,18 @@ impl<'a> Formatter<'a> {
                 }
             }
             Expr::Str(s) => {
-                // Exact: in new syntax all Expr::Str values originate from QuotedString tokens.
-                // Width is content length + 2 for the surrounding double-quote characters.
-                s.len() + 2
+                // Source-sniff: if originally a quoted string, add 2 for the quote characters.
+                // If originally a bare identifier key, width is just the content length.
+                let is_quoted = self
+                    .source
+                    .as_bytes()
+                    .get(expr.span.start.offset)
+                    .map_or(false, |&b| b == b'"');
+                if is_quoted {
+                    s.len() + 2
+                } else {
+                    s.len()
+                }
             }
             Expr::VarRef(name) => {
                 // Source-sniff: add 1 for `$` only if the original token was an EscapedRef.
@@ -1014,5 +1051,82 @@ mod tests {
             formatted_once, formatted_twice,
             "$_ formatting should be idempotent"
         );
+    }
+
+    // --- Named section header round-trip tests ---
+
+    #[test]
+    fn test_named_section_header_roundtrips() {
+        // Basic named section: separator + name should be emitted
+        let input = "[x: 1]\n--- %defaults\n[y: 2]";
+        let formatted = format_source(input).unwrap();
+        assert!(
+            formatted.contains("--- %defaults"),
+            "formatted output must include section header '--- %defaults', got: {formatted:?}"
+        );
+        // Idempotency: formatting a second time should produce the same result
+        let reformatted = format_source(&formatted).unwrap();
+        assert_eq!(
+            formatted, reformatted,
+            "named section formatting must be idempotent"
+        );
+    }
+
+    #[test]
+    fn test_named_section_with_output_type_roundtrips() {
+        let input = "[x: 1]\n--- %cfg@Dict\n[y: 2]";
+        let formatted = format_source(input).unwrap();
+        assert!(
+            formatted.contains("--- %cfg@Dict"),
+            "formatted output must include '--- %cfg@Dict' (no space before @), got: {formatted:?}"
+        );
+        let reformatted = format_source(&formatted).unwrap();
+        assert_eq!(
+            formatted, reformatted,
+            "named section with @Type must be idempotent"
+        );
+    }
+
+    #[test]
+    fn test_standalone_output_type_has_space() {
+        let input = "[x: 1]\n--- @Config\n[y: 2]";
+        let formatted = format_source(input).unwrap();
+        assert!(
+            formatted.contains("--- @Config"),
+            "formatted output must include '--- @Config' (space before @), got: {formatted:?}"
+        );
+        // Verify idempotency
+        let reformatted = format_source(&formatted).unwrap();
+        assert_eq!(
+            formatted, reformatted,
+            "standalone @Type section must be idempotent"
+        );
+    }
+
+    #[test]
+    fn test_named_section_with_expects_roundtrips() {
+        let input = "[x: 1]\n--- %out expects: Dict\n[y: 2]";
+        let formatted = format_source(input).unwrap();
+        assert!(
+            formatted.contains("--- %out"),
+            "formatted output must include section name, got: {formatted:?}"
+        );
+        assert!(
+            formatted.contains("expects: Dict"),
+            "formatted output must include expects pragma, got: {formatted:?}"
+        );
+        let reformatted = format_source(&formatted).unwrap();
+        assert_eq!(
+            formatted, reformatted,
+            "named section with expects: must be idempotent"
+        );
+    }
+
+    #[test]
+    fn test_unnamed_section_separator_unchanged() {
+        // Unnamed documents should still emit bare ---
+        let input = "[x: 1]\n---\n[y: 2]";
+        let formatted = format_source(input).unwrap();
+        assert_eq!(formatted, "[x: 1]\n\n---\n\n[y: 2]\n");
     }
 }

@@ -1,0 +1,4 @@
+# % prefix should suppress string suggestion
+[result: %undefined]
+===
+[E002] undefined variable: %undefined
