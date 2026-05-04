@@ -12,7 +12,7 @@ lookup (doc/09-documents.md §Scope Chains):
    environment. Entries can reference each other regardless of order,
    including mutual recursion.
 
-   ```lisp
+   ```tinct
    [
      x: 10
      y: [+ x 1]    # sees x (same dict, letrec)
@@ -24,7 +24,7 @@ lookup (doc/09-documents.md §Scope Chains):
    becomes the parent scope for the next expression. Names from earlier
    expressions are visible but can be shadowed.
 
-   ```lisp
+   ```tinct
    [x: 10]
    [y: [+ x 1]]    # sees x from parent scope
    ```
@@ -65,7 +65,7 @@ nested `[call [fn [name] ...] value]` layer.
 
 1. **Intermediate bindings in functions.** Multi-step function bodies
    without wrapper dicts:
-   ```lisp
+   ```tinct
    process: [fn [data]
        [cleaned: [clean data]]
        [transform cleaned]]
@@ -89,7 +89,7 @@ document level, applied to function body position.
 
 ### Syntax
 
-```lisp
+```tinct
 # Single-expression body (unchanged)
 [fn [x] [* x 2]]
 
@@ -180,7 +180,7 @@ matching the existing sequential inference in `infer_sequential`.
 4. **Pattern matching readiness.** When `[match]`
    (`doc/whatif/pattern-matching.md`) is adopted, match arm bodies will
    need intermediate bindings. Sequential function bodies enable this:
-   ```lisp
+   ```tinct
    [match val
      [ok: v]
        [cleaned: [clean v]]

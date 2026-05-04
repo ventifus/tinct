@@ -13,9 +13,9 @@
 //! **Numeric:** `floor`, `round`
 //! **Parsing:** `to-int`, `to-float`
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
-//! **Type introspection:** `type-of`
+//! **Type introspection:** `type-of`, `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`
 //! **I/O:** `from-json`, `include`
-//! **Sequences:** `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`, `concat`
+//! **Sequences:** `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`, `concat`
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -899,6 +899,127 @@ fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(Value::String(name.to_string()), call_span)
 }
 
+/// `int?`: Return true if the argument is an Int.
+fn builtin_int_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("int?", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Bool(matches!(val, Value::Int(_))), call_span)
+}
+
+/// `float?`: Return true if the argument is a Float.
+fn builtin_float_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("float?", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Bool(matches!(val, Value::Float(_))), call_span)
+}
+
+/// `num?`: Return true if the argument is an Int or Float.
+fn builtin_num_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("num?", args, named, &ctx, depth, call_span)?;
+    ok_val(
+        Value::Bool(matches!(val, Value::Int(_) | Value::Float(_))),
+        call_span,
+    )
+}
+
+/// `str?`: Return true if the argument is a String.
+fn builtin_str_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("str?", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Bool(matches!(val, Value::String(_))), call_span)
+}
+
+/// `bool?`: Return true if the argument is a Bool.
+fn builtin_bool_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("bool?", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Bool(matches!(val, Value::Bool(_))), call_span)
+}
+
+/// `null?`: Return true if the argument is Null (represented as an empty Dict).
+fn builtin_null_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("null?", args, named, &ctx, depth, call_span)?;
+    let is_null = match val {
+        Value::Dict(map) => map.is_empty(),
+        Value::Overlay(l, r) => {
+            let map = flatten_overlay(&l, &r, "null?", &ctx, depth, call_span)?;
+            map.is_empty()
+        }
+        _ => false,
+    };
+    ok_val(Value::Bool(is_null), call_span)
+}
+
+/// `dict?`: Return true if the argument is a Dict (including lists and null).
+fn builtin_dict_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("dict?", args, named, &ctx, depth, call_span)?;
+    ok_val(
+        Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
+        call_span,
+    )
+}
+
+/// `fn?`: Return true if the argument is callable (Function or Builtin).
+fn builtin_fn_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("fn?", args, named, &ctx, depth, call_span)?;
+    ok_val(
+        Value::Bool(matches!(val, Value::Function { .. } | Value::Builtin(_))),
+        call_span,
+    )
+}
+
 /// Convert a `serde_json::Value` into an LLT `Value`.
 ///
 /// JSON null maps to an empty dict, arrays map to integer-keyed dicts,
@@ -1671,6 +1792,14 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("until", builtin_until),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
+        builtin!("int?", builtin_int_check, [Strictness::Seq]),
+        builtin!("float?", builtin_float_check, [Strictness::Seq]),
+        builtin!("num?", builtin_num_check, [Strictness::Seq]),
+        builtin!("str?", builtin_str_check, [Strictness::Seq]),
+        builtin!("bool?", builtin_bool_check, [Strictness::Seq]),
+        builtin!("null?", builtin_null_check, [Strictness::Seq]),
+        builtin!("dict?", builtin_dict_check, [Strictness::Seq]),
+        builtin!("fn?", builtin_fn_check, [Strictness::Seq]),
         // I/O
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
@@ -6511,6 +6640,14 @@ mod tests {
         assert!(names.contains(&"apply"), "missing apply");
         // Type introspection
         assert!(names.contains(&"type-of"), "missing type-of");
+        assert!(names.contains(&"int?"), "missing int?");
+        assert!(names.contains(&"float?"), "missing float?");
+        assert!(names.contains(&"num?"), "missing num?");
+        assert!(names.contains(&"str?"), "missing str?");
+        assert!(names.contains(&"bool?"), "missing bool?");
+        assert!(names.contains(&"null?"), "missing null?");
+        assert!(names.contains(&"dict?"), "missing dict?");
+        assert!(names.contains(&"fn?"), "missing fn?");
         // I/O
         assert!(names.contains(&"from-json"), "missing from-json");
         assert!(names.contains(&"include"), "missing include");
@@ -6539,8 +6676,8 @@ mod tests {
         assert!(names.contains(&"sort"), "missing sort");
         // Also assert proxy is present
         assert!(names.contains(&"proxy"), "missing proxy");
-        // Total count: 47 original (incl. proxy) + 4 new list ops = 51
-        assert_eq!(names.len(), 51, "expected 51 builtins, got {}", names.len());
+        // Total count: 47 original (incl. proxy) + 4 new list ops + 8 type predicates = 59
+        assert_eq!(names.len(), 59, "expected 59 builtins, got {}", names.len());
     }
 
     #[test]

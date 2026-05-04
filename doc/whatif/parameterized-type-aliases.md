@@ -7,7 +7,7 @@ type system?
 
 tinct has simple type aliases via `[type ...]`:
 
-```lisp
+```tinct
 [
   Person: [type [name: String  age: Number]]
   Mapper: [type [Fn@b [a]]]
@@ -26,7 +26,7 @@ through the parent chain. No parameter tracking, no instantiation.
 
 Free-variable-based aliases handle many cases:
 
-```lisp
+```tinct
 [
   Mapper: [type [Fn@b [a]]]
   map: [fn@[b] [f@Mapper  xs@[a]] ...]
@@ -41,7 +41,7 @@ signature because they share names. This is simple and works.
 **Name collision.** If two aliases use the same variable name for
 different purposes, they silently unify:
 
-```lisp
+```tinct
 [
   Pair: [type [first: a  second: a]]    # both fields same type
   Box:  [type [value: a  label: String]]
@@ -55,7 +55,7 @@ different purposes, they silently unify:
 
 With parameterized aliases, each use would instantiate fresh variables:
 
-```lisp
+```tinct
 [
   Pair: [type [a] [first: a  second: a]]
   Box:  [type [a] [value: a  label: String]]
@@ -70,7 +70,7 @@ With parameterized aliases, each use would instantiate fresh variables:
 **Multi-instance ambiguity.** Using the same alias twice with different
 intended type arguments:
 
-```lisp
+```tinct
 [
   Mapper: [type [Fn@b [a]]]
 
@@ -81,7 +81,7 @@ intended type arguments:
 ```
 
 With parameters:
-```lisp
+```tinct
 [
   Mapper: [type [a b] [Fn@b [a]]]
   compose: [fn [f@[Mapper b c]  g@[Mapper a b]] [Mapper a c]]
@@ -116,7 +116,7 @@ continue to work identically.
 
 ### Syntax
 
-```lisp
+```tinct
 # No parameters — current behavior (shared variables)
 Mapper: [type [Fn@b [a]]]
 
@@ -158,7 +158,7 @@ before unification — no alias names appear in inferred types.
 
 Parameterized aliases can produce record types with row variables:
 
-```lisp
+```tinct
 Extensible: [type [a] [name: String  ..a]]
 ```
 
@@ -278,7 +278,7 @@ Support `[AliasName Arg1 Arg2]` in type annotation positions. The type
 checker resolves the alias, checks arity, builds the substitution, and
 returns the instantiated type.
 
-```lisp
+```tinct
 [
   Pair: [type [a] [first: a  second: a]]
   pair-of-ints: [fn@[Pair Int] [] [first: 1  second: 2]]

@@ -1,6 +1,6 @@
 # Builtin Reference
 
-This chapter provides a complete reference for all 51 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
+This chapter provides a complete reference for all 59 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
 
 ## Notation
 
@@ -136,7 +136,17 @@ Control over evaluation order and error handling.
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
 | `type-of` | 1 | `S → V` | String | Return type name: "Int", "Float", "String", "Bool", "Dict", "Seq", "Function", "Proxy" |
-| `seq?` | 1 | `S → V` | Bool | Return true if arg is a Seq, false otherwise |
+| `int?` | 1 | `S → V` | Bool | Return true if arg is an Int |
+| `float?` | 1 | `S → V` | Bool | Return true if arg is a Float |
+| `num?` | 1 | `S → V` | Bool | Return true if arg is an Int or Float |
+| `str?` | 1 | `S → V` | Bool | Return true if arg is a String |
+| `bool?` | 1 | `S → V` | Bool | Return true if arg is a Bool |
+| `null?` | 1 | `S → V` | Bool | Return true if arg is Null (empty dict `[]` — tinct's null representation) |
+| `dict?` | 1 | `S → V` | Bool | Return true if arg is a Dict (includes lists, which are dicts with integer keys) |
+| `fn?` | 1 | `S → V` | Bool | Return true if arg is callable (Function or Builtin) |
+| `seq?` | 1 | `S → V` | Bool | Return true if arg is a Seq |
+
+Each predicate materializes its argument (forcing the thunk) and checks the `Value` variant. `num?` checks both `Int` and `Float`, mirroring the `Number` supertype. `fn?` checks both `Function` and `Builtin`, since both are callable. No `list?` **builtin** exists because lists are dicts (Principle 1: Dicts Are Fundamental) — "list-ness" is a convention, not a type distinction — `list?` is available as a standard library function (see [Standard Library](11-stdlib.md) §Type Predicates).
 
 **Error cases:** None.
 
@@ -243,7 +253,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 
 ## Summary
 
-**Total:** 51 Rust-native builtins + 12 stable aliases = 63 registered names.
+**Total:** 59 Rust-native builtins + 12 stable aliases = 71 registered names.
 
 **By category:**
 - Arithmetic: 4
@@ -254,9 +264,9 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 - Numeric: 4 (floor, round, to-int, to-float)
 - Evaluation: 4 (eval, error, try, apply)
 - General: 1 (until)
-- Type introspection: 1 (type-of)
+- Type introspection: 10 (type-of, int?, float?, num?, str?, bool?, null?, dict?, fn?, seq?)
 - I/O: 2
-- Sequences: 17 (6 constructors, 3 destructors, 7 higher-order ops, 1 predicate)
+- Sequences: 16 (6 constructors, 3 destructors, 7 higher-order ops)
 - List operations: 4 (rest, cons, reverse, sort)
 - Proxy: 1
 

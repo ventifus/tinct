@@ -1,0 +1,3 @@
+[fn? [fn [x] $x]]
+===
+Bool(true)

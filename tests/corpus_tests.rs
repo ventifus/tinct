@@ -367,9 +367,10 @@ fn test_eval_corpus() {
     // Spawn thread with large stack to prevent overflow in deeply-nested test cases.
     // Same rationale as test_eval_error_corpus: the stdlib Rc<Environment> recursive
     // drop at thread exit requires significant stack space (100+ MB in debug mode).
+    // 512MB chosen to give comfortable headroom as the stdlib prelude grows over time.
     let test_files_clone = test_files.clone();
     let result = std::thread::Builder::new()
-        .stack_size(128 * 1024 * 1024) // 128MB — debug-mode stdlib cleanup needs ~100MB
+        .stack_size(512 * 1024 * 1024) // 512MB — debug-mode stdlib cleanup needs ~100MB; extra headroom for prelude growth
         .spawn(move || {
             let mut failed = Vec::new();
 
@@ -478,11 +479,11 @@ fn test_eval_error_corpus() {
         //    one Rust frame per environment level. The stdlib prelude is large
         //    enough that this recursive drop exceeds 64 MB.
         //
-        // 128 MB gives comfortable headroom above both limits.
+        // 512 MB gives comfortable headroom above both limits.
         let input = test.input.to_string();
         let no_fs = test.no_fs;
         let eval_result = std::thread::Builder::new()
-            .stack_size(128 * 1024 * 1024) // 128MB — debug-mode materialize() needs ~100MB at 256 levels
+            .stack_size(512 * 1024 * 1024) // 512MB — debug-mode materialize() needs ~100MB at 256 levels; extra headroom for stdlib growth
             .spawn(move || eval_source_with_config(&input, no_fs))
             .unwrap()
             .join()
@@ -595,13 +596,13 @@ fn test_eval_error_corpus_has_error_codes() {
 
         let test = split_test_file(&content);
 
-        // Same 128 MB rationale as test_eval_error_corpus above:
+        // Same 512 MB rationale as test_eval_error_corpus above:
         // handles both MAX_EVAL_DEPTH recursive frames and the stdlib
         // Rc<Environment> recursive drop at thread exit.
         let input = test.input.to_string();
         let no_fs = test.no_fs;
         let eval_result = std::thread::Builder::new()
-            .stack_size(128 * 1024 * 1024) // 128MB — debug-mode materialize() needs ~100MB at 256 levels
+            .stack_size(512 * 1024 * 1024) // 512MB — debug-mode materialize() needs ~100MB at 256 levels; extra headroom for stdlib growth
             .spawn(move || eval_source_with_config(&input, no_fs))
             .unwrap()
             .join()

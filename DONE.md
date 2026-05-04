@@ -3677,3 +3677,20 @@ Implement a VS Code extension that wires `tinct lsp` to `.llt` files, providing 
 - [x] Add `ext` target to `justfile`: `cd editors/vscode && npm install && npm run compile` to build the extension from the repo root; add `ext-package` target that additionally runs `npx vsce package` to produce a `.vsix` (`justfile`)
 - [x] Add `§VS Code Extension` section to `doc/12-tooling.md` covering: building from source (`just ext`), packaging to `.vsix` (`just ext-package`), installing (`code --install-extension tinct-*.vsix`), the `tinct.serverPath` setting for pointing at a `cargo run`-based server during development, and what LSP features are active (diagnostics, hover)
 - [x] Verify end-to-end: build `tinct` binary (`cargo build`), run `just ext`, install the `.vsix`, open a `.llt` file in VS Code, confirm parse-error diagnostics appear and hover shows inferred types over variable references
+
+## Type Predicates: Runtime Type Testing Builtins
+
+One predicate per `Value` variant for direct type dispatch. See doc/11a-builtins.md §Type Introspection and doc/whatif/type-predicates.md.
+
+- [x] Accept type-predicates — see doc/whatif/type-predicates.md (State: Accepted — 2026-05-04)
+
+### type-predicates: Core Type Predicate Builtins
+
+Add `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?` builtins. See doc/11a-builtins.md §Type Introspection.
+
+- [x] Implement 8 predicate builtins: `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?` — each materializes arg and checks `Value` variant (`src/builtins.rs`)
+- [x] Register all 8 in `standard_builtins()` with `[Strictness::Seq]` annotation (`src/builtins.rs`)
+- [x] Add type signatures for all 8 predicates: `Any → Bool` (`src/builtins.rs`)
+- [x] Update `test_all_builtins_registered` assertion count (`src/builtins.rs`)
+- [x] Add eval corpus tests: each predicate against matching and non-matching values, including edge cases — `num?` with Int and Float, `fn?` with Function and Builtin, `dict?` with list-shaped dicts (`tests/corpus/eval/`)
+- [x] Add `list?` as a stdlib function in `stdlib/prelude.llt`: `[fn [xs] [and [dict? xs] [all? [fn [k] [int? k]] [keys xs]]]]`

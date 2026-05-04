@@ -36,7 +36,7 @@ The `yaml-quote-string` helper must decide whether a string requires
 quoting. Without string predicates, it must test every special character
 by splitting:
 
-```lisp
+```tinct
 # Current: repeated split checks for each special character
 yaml-needs-quoting?: [fn [s]
   [or
@@ -125,7 +125,7 @@ existing `split` builtin: `split haystack needle` returns an array
 with one more element than there are occurrences, so length > 1
 indicates containment.
 
-```lisp
+```tinct
 # stdlib/strings.llt
 
 # str-contains? — true if needle appears anywhere in haystack
@@ -215,7 +215,7 @@ wrappers around Rust's `f64` methods — no new crate needed.
 
 Pure-tinct additions to `stdlib/math.llt`:
 
-```lisp
+```tinct
 # stdlib/math.llt
 pi:        3.141592653589793
 e:         2.718281828459045
@@ -269,7 +269,7 @@ invalid UTF-8.
 
 **Derived operations in `stdlib/encoding.llt` (pure-tinct):**
 
-```lisp
+```tinct
 # stdlib/encoding.llt
 
 b64-alpha: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -312,7 +312,7 @@ Path manipulation is entirely implementable in pure-tinct using `split`
 and `join`. Deferred because it is not blocking any known use case and
 the semantics (POSIX vs Windows paths) need a decision.
 
-```lisp
+```tinct
 # Future stdlib/path.llt — all pure-tinct
 path-parts:   [fn [p] [split p "/"]]
 basename:     [fn [p] [last [path-parts p]]]

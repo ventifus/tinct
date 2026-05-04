@@ -22,8 +22,9 @@
 #     String:      str  split
 #     Numeric:     floor
 #     Runtime:     error  try  type-of
-#     Sequences:   seq?  seq  head  tail  collect  concat
+#     Sequences:   seq  head  tail  collect  concat
 #     List ops:    rest  cons  reverse  sort
+#     Predicates:  int?  float?  num?  str?  bool?  null?  dict?  fn?  seq?
 #
 # Naming conventions:
 #   -impl   Internal recursive helper, not part of the public API. Takes extra
@@ -851,16 +852,18 @@ compose: [fn [f g] [fn [x] [f [g x]]]]
 # Type Predicates
 # ============================================================================
 
-# Type predicates check the runtime type of a value.
-# Each uses type-of to inspect the type string.
-# Inherently materializing: type-of must inspect the value.
+# int?, float?, num?, str?, bool?, null?, dict?, fn?, seq? are Rust-native builtins.
+# They are NOT defined here — the native builtins take effect directly.
+# See src/builtins.rs for implementations. Each materializes its argument and
+# checks the Value variant. fn? returns true for both Function and Builtin.
 
-int?: [fn [x] [builtin-eq [type-of x] "Int"]]
-str?: [fn [x] [builtin-eq [type-of x] "String"]]
-float?: [fn [x] [builtin-eq [type-of x] "Float"]]
-bool?: [fn [x] [builtin-eq [type-of x] "Bool"]]
-dict?: [fn [x] [builtin-eq [type-of x] "Dict"]]
-fn?: [fn [x] [builtin-eq [type-of x] "Function"]]
+# Check if a value is a "list-shaped dict" — i.e., a dict whose keys are all integers.
+# Returns true for [] (empty dict — vacuously true).
+# Example: [list? [1 2 3]] => true (keys 0, 1, 2 are all ints)
+# Example: [list? [a: 1 b: 2]] => false (string keys)
+# Inherently materializing: must check all keys via all?.
+list?: [fn [xs]
+    [and [dict? xs] [all? [fn [k] [int? k]] [keys xs]]]]
 
 # ============================================================================
 # Error Handling

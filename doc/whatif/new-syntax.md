@@ -22,7 +22,7 @@ tinct's syntax rests on three pillars:
    data through `$$` (doc/09-documents.md §Document Structure, DOC-PIPELINE).
    Sections cannot be named or referenced individually.
 
-```lisp
+```tinct
 # Current tinct
 [call $collect
   [call $take 10
@@ -113,7 +113,7 @@ Revised literal recognition precedence:
 > undefined-variable error at runtime unless `null` is explicitly bound in scope. Use `[]`
 > (the empty dict) as the idiomatic tinct no-value placeholder.
 
-```lisp
+```tinct
 [
   name: "Alice"              # key "name", value string "Alice"
   greeting: [str "Hello " name]  # refs to str and name
@@ -140,7 +140,7 @@ the function; remaining entries are arguments.
 | 5 | `$`-prefixed head | Data (not a call) | `[$f x y]` |
 | 6 | Literal in head | Data | `[1 2 3]`, `["a" "b"]` |
 
-```lisp
+```tinct
 # Rule 2: keywords (unchanged — call remains valid)
 [call f x]             # explicit call, still works
 [fn [x] [* x 2]]      # function definition
@@ -167,7 +167,7 @@ the function; remaining entries are arguments.
 
 `call` remains a valid keyword. Both forms produce identical AST:
 
-```lisp
+```tinct
 [call map double data]     # explicit
 [map double data]          # implied
 ```
@@ -176,7 +176,7 @@ The `call` keyword is required when the function is a computed
 expression rather than a bare identifier — the bracket
 interpretation rules only recognize bare words in head position:
 
-```lisp
+```tinct
 [call [get-handler request] data]       # function from another call
 [call handlers[request.type] request]   # function from bracket access
 [call % data]                           # pipeline value is a function
@@ -228,7 +228,7 @@ small fraction of current usage.
 
 **Key position** — unchanged from current tinct:
 
-```lisp
+```tinct
 key: "host"
 [$key: "localhost"]     # computed key: resolves key → "host"
 [host: "localhost"]     # string key: literal "host"
@@ -237,7 +237,7 @@ key: "host"
 **Head position** — new. `$` on the first element prevents call
 interpretation. The bracket is treated as data:
 
-```lisp
+```tinct
 [f x y]              # call: f(x, y)
 [$f x y]             # data: sequence [ref(f), ref(x), ref(y)]
 ```
@@ -245,7 +245,7 @@ interpretation. The bracket is treated as data:
 Only the head element needs `$`. Subsequent elements are
 interpreted normally (bare words = references):
 
-```lisp
+```tinct
 stages: [$parse transform format]
 # data: [ref(parse), ref(transform), ref(format)]
 # only $parse carries the disambiguator
@@ -266,7 +266,7 @@ whitespace or another token) = data head.
 When constructing a dict with references as positional entries,
 `$` on the head element prevents call interpretation:
 
-```lisp
+```tinct
 stages: [$parse transform format]
 # data: [ref(parse), ref(transform), ref(format)]
 ```
@@ -292,7 +292,7 @@ convention exists to make pipeline data visually distinct.
 **Anonymous pipeline** — `%` refers to the previous section's
 output, like `$$` today:
 
-```lisp
+```tinct
 [host: "localhost"  port: 8080]
 ---
 [merge % [tls: true]]
@@ -303,7 +303,7 @@ output, like `$$` today:
 **Named sections** — `---` lines can include a `%name` to bind
 the section's output:
 
-```lisp
+```tinct
 --- %defaults
 [host: "localhost"  port: 8080]
 
@@ -327,7 +327,7 @@ anonymous pipeline variable.
 The first section may omit its `---` header (no name, no
 pragmas), or include one:
 
-```lisp
+```tinct
 --- %config
 [host: "localhost"]
 
@@ -378,7 +378,7 @@ contract pragma.
 | Output type | Type annotation on output | `@Type` on name | `%validated@ValidatedConfig` |
 | Input contract | What `%` must conform to | `expects: Type` | `expects: NginxConfig` |
 
-```lisp
+```tinct
 --- %validated@ValidatedConfig expects: RawData
 --- expects: NginxConfig
 --- %config@[host: String  port: Int]
@@ -431,7 +431,7 @@ the producing file's internal naming.
 declares what it expects via `expects:` on its first `---`
 header:
 
-```lisp
+```tinct
 # stdlib/fmt/yaml.llt
 --- expects: [server: [host: String  port: Int]  workers: Int]
 [emit [to-yaml %]]
@@ -458,7 +458,7 @@ that crosses file boundaries is the anonymous output thunk `θ`.
 
 ### Combined Example
 
-```lisp
+```tinct
 # Current tinct
 [
   double: [fn [n] [call $* $n 2]]
@@ -482,7 +482,7 @@ that crosses file boundaries is the anonymous output thunk `θ`.
 
 Multi-section pipeline with naming and contracts:
 
-```lisp
+```tinct
 --- %raw
 [parse-csv input-file]
 
@@ -509,12 +509,12 @@ Multi-file pipeline chaining:
 tinct eval config.llt stdlib/fmt/yaml.llt
 ```
 
-```lisp
+```tinct
 # config.llt
 [server: [host: "localhost"  port: 8080]  workers: 4]
 ```
 
-```lisp
+```tinct
 # stdlib/fmt/yaml.llt
 --- expects: [server: [host: String  port: Int]  workers: Int]
 [emit [to-yaml %]]
@@ -579,7 +579,7 @@ String interpolation (doc/whatif/string-interpolation.md) proposes
 expressions, `$` inside interpolated strings becomes a string-
 internal syntax — not part of the expression grammar:
 
-```lisp
+```tinct
 name: "Alice"
 greeting: i"Hello $name, welcome"  # $ is interpolation marker
 ```
@@ -638,7 +638,7 @@ constraints at runtime via `$validate`. With the unified syntax,
 contracts split into two mechanisms: `expects:` for input
 contracts and `@Type` for output types. Calls use bare words:
 
-```lisp
+```tinct
 # Current structural contract (structural-contracts.md syntax)
 $$@NginxConfig
 
@@ -656,7 +656,7 @@ nginx-schema: [
 [call $emit [call $to-nginx $$]]
 ```
 
-```lisp
+```tinct
 # With unified syntax — split contract mechanisms
 --- expects: NginxConfig
 
@@ -682,7 +682,7 @@ input, `@Type` is always output.
 
 Named sections combine naturally with both contract forms:
 
-```lisp
+```tinct
 --- %raw
 [parse-csv input-file]
 
@@ -710,12 +710,12 @@ boundary: "contract violation at `%raw` → `%validated`."
 consuming file's first `---` header validates the producer's
 output:
 
-```lisp
+```tinct
 # config.llt
 [server: [host: "localhost"  port: 8080]  workers: 4]
 ```
 
-```lisp
+```tinct
 # stdlib/fmt/yaml.llt
 --- expects: [server: [host: String  port: Int]  workers: Int]
 [emit [to-yaml %]]
@@ -733,7 +733,7 @@ The type checker validates `config.llt`'s output against
 The primary cost: string-heavy configuration data requires quotes
 on every string value:
 
-```lisp
+```tinct
 # Current — compact config
 [server: [host: localhost  env: production  log-level: info]]
 
@@ -750,7 +750,7 @@ data gets slightly more verbose.
 
 Functional code becomes significantly cleaner:
 
-```lisp
+```tinct
 # Current
 [call $collect
   [call $take 10
@@ -901,7 +901,7 @@ Add `%` as a valid identifier character and section naming to
 `---` lines. This phase is independent of bare-word references
 and implied call — it works with current `$`-sigil syntax.
 
-```lisp
+```tinct
 --- %defaults
 [host: localhost  port: 8080]
 

@@ -14,7 +14,7 @@ when it has the right shape.
 
 Three things structural ADTs cannot provide:
 
-```lisp
+```tinct
 # Problem 1: Two constructors with the same field structure are indistinguishable
 Left:  [union [value: a]]    # Left has one field "value"
 Right: [union [value: a]]    # Right also has one field "value"
@@ -126,7 +126,7 @@ literals evaluate in value position (`ok` → `"ok"`) but for nominal unit varia
 
 `[match]` patterns use the same case rule to distinguish structural from nominal:
 
-```lisp
+```tinct
 [match x
     [ok: v]   ...    # structural dict pattern: dict with key "ok", bind value to v
     [Ok v]    ...    # nominal constructor pattern: Ok wrapping payload, bind to v
@@ -242,7 +242,7 @@ Nominal variant construction via `[Some thunk]` wraps the payload as a thunk
 — the payload is not forced at construction time. Pattern matching forces the
 *discriminant* (the constructor tag) but not the payload until the body uses it:
 
-```lisp
+```tinct
 [match [Some [/ 1 0]]   # division-by-zero in payload — not forced here
     [Some v]  0         # body ignores v — division never executed
     None      1]
@@ -384,7 +384,7 @@ the type environment.
 
 Exhaustiveness checking in `[match]` for unions containing nominal constructors:
 
-```lisp
+```tinct
 [match maybe         # Option a
     [Some v]  v]    # Error: non-exhaustive — missing arm for None
 ```

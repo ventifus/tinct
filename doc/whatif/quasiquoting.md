@@ -24,7 +24,7 @@ transforming structured data (dicts, lists) into other structured data.
 Quasiquoting extends this to the language's own syntax --- tinct code
 *is* structured data, and quasiquoting makes it accessible as such.
 
-```lisp
+```tinct
 # Without quasiquoting --- manual AST construction
 ast-node: [type: "call"  fn: [type: "var"  name: "if"]
            args: [[type: "var"  name: "pred"]
@@ -66,7 +66,7 @@ ast-node: [quote [if pred body []]]
 `[quote expr]` captures `expr` as a data structure (dict) representing
 its AST, without evaluating it:
 
-```lisp
+```tinct
 [quote [+ 1 2]]
 # -> [type: "call"
 #    fn: [type: "var"  name: "+"]
@@ -79,7 +79,7 @@ its AST, without evaluating it:
 `[unquote expr]` inside a `[quote ...]` evaluates `expr` and splices
 the result into the quoted template:
 
-```lisp
+```tinct
 x: 42
 [quote [+ [unquote x] 1]]
 # -> [type: "call"
@@ -93,7 +93,7 @@ x: 42
 `[unquote-splice expr]` splices a list of AST nodes into a quoted
 list position:
 
-```lisp
+```tinct
 extra-args: [[type: "literal"  value: 3] [type: "literal"  value: 4]]
 [quote [+ 1 2 [unquote-splice extra-args]]]
 # -> [type: "call"
@@ -110,7 +110,7 @@ Add `quote`, `unquote`, and `unquote-splice` as keywords in the grammar.
 These are special forms --- `quote` fundamentally prevents evaluation of
 its argument, which no regular function or builtin can do.
 
-```lisp
+```tinct
 [quote [if pred body []]]
 [quote [+ [unquote computed-value] 1]]
 ```

@@ -1,5 +1,7 @@
 # What If: Type Predicates for tinct
 
+**State:** Accepted — 2026-05-04
+
 What would it take to add type predicate builtins that distinguish
 values by their runtime type?
 
@@ -18,7 +20,7 @@ And one type inspection builtin:
 
 In tinct, lists ARE dicts (Principle 1: Dicts Are Fundamental):
 
-```lisp
+```tinct
 [a b c]  ≡  [0: a  1: b  2: c]
 ```
 
@@ -37,7 +39,7 @@ builtin — "list-ness" is a convention, not a type distinction.
 - **`seq?` distinguishes lazy sequences** — `Seq` is a separate
   `Value` variant, not a dict
 - **Key inspection at runtime** — users can check keys manually:
-  ```lisp
+  ```tinct
   list?: [fn [xs]
     [and [= [type-of xs] "Dict"] [= [first [keys xs]] 0]]]
   ```

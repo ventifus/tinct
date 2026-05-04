@@ -66,7 +66,7 @@ In strict languages, macros are essential for:
 - **Deferred computation**: Avoiding work that might not be needed.
 
 tinct is lazy. All of these work as ordinary functions:
-```lisp
+```tinct
 # These are functions in stdlib/prelude.llt, not macros
 when:   [fn [pred body] [if pred body []]]
 unless: [fn [pred body] [if pred [] body]]
@@ -104,7 +104,7 @@ The `_` transformation requires (per doc/04-functions.md `_` Desugaring):
 
 As a procedural macro operating on AST-dicts:
 
-```lisp
+```tinct
 # DIRECT predicate: is this node _ or an access chain rooted at _?
 direct?: [fn [node]
   [or
@@ -145,7 +145,7 @@ transformation --- the same thing tinct already does.
 
 ### Syntax
 
-```lisp
+```tinct
 # AST is represented as tinct dicts
 # [f x y] is the dict:
 #   [type: "call"  fn: [type: "var"  name: "f"]  args: [[type: "var"  name: "x"] [type: "var"  name: "y"]]]

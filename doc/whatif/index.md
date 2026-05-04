@@ -105,12 +105,11 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 | [Circular Dependency Error Paths](circular-dep-error-paths.md) | `eval_stack` in EvalState for full A→B→A cycle chain in error display | 2026-05-04 | Phase 1 complete — `error-context` sprint |
 | [Source Text Availability](source-text-availability.md) | `render_span_snippet` helper; caller-pairs-with-source; REPL + CLI wiring | 2026-05-04 | Phase 1 partial — REPL/CLI done; LSP snippet display is Phase 3 |
 | [Arena Patterns + Flat Environments](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; `FlatEnv` with de Bruijn slot indices; variable resolution pass | 2026-05-04 | Not started — 5 sprints created: `arena-resolve` through `arena-migrate` |
+| [Type Predicates](type-predicates.md) | `int?`, `str?`, `dict?`, `fn?` — one predicate per Value variant | 2026-05-04 | Complete — `type-predicates` sprint |
 
 ### Adopt Now
 
 These proposals have no gating conditions and deliver standalone value at low cost.
-
-**[Type Predicates](type-predicates.md)** — `### stdlib-type-predicates` in TODO is exactly this proposal: `int?`, `str?`, `float?`, `bool?`, `dict?`, `fn?` as one-liners plus runtime assertion guards. No dependencies, no gating.
 
 **[String Interpolation](string-interpolation.md) Phase 1** — High ergonomic ROI. Phase 1 (`i"..."` → desugar to `str`) is a standalone parser + desugar change. No dependencies.
 

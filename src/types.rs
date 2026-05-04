@@ -2188,6 +2188,70 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        env.insert(
+            "int?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "float?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "num?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "str?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "bool?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "null?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "dict?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "fn?".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
 
         // I/O
         env.insert(

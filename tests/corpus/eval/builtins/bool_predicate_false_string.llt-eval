@@ -1,0 +1,3 @@
+[bool? "not a bool"]
+===
+Bool(false)

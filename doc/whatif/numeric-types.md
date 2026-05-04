@@ -83,7 +83,7 @@ remain the user-facing types. Range annotations refine them.
 the runtime checks that a value falls within the declared range.
 Out-of-range values produce a type error:
 
-```lisp
+```tinct
 port: [@Port 70000]  # Error: 70000 exceeds max 65535 for Port
 ```
 
@@ -326,7 +326,7 @@ annotation system.
 
 Add `Decimal` as a new `Value` variant with explicit conversion:
 
-```lisp
+```tinct
 price: [decimal 9.99]
 total: [+ price [decimal 1.00]]  # exact: 10.99
 ```

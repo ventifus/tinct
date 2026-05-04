@@ -3,33 +3,23 @@
 See DONE.md for the full history of completed sprints.
 
 For future work beyond the active sprints below, see:
-- `doc/whatif/index.md §Adopt Now` — features ready to implement (Type Predicates, String Interpolation Phase 1, Let Binding, Structural Contracts Phase 1, ADTs Phase 1, Source Snippets, Circular Dep Error Paths, Eval Semantics Verification Phase 1)
+- `doc/whatif/index.md §Adopt Now` — features ready to implement (String Interpolation Phase 1, Let Binding, Structural Contracts Phase 1, ADTs Phase 1, Source Snippets, Circular Dep Error Paths, Eval Semantics Verification Phase 1)
 - `doc/whatif/index.md §Wait for Trigger` — features with complete designs pending a concrete trigger
 
-## access-pipeline: Access Syntax and Generator Pipeline
 
-Tinct's evolution toward a general-purpose data-first language motivates a unified redesign of its access and pipeline model. The exploration below is context for the Research item; `/rnd` will drive the whatif doc from here.
+## Type Predicates: Follow-Up Nits
 
-**Direction established in prior exploration:**
+Minor housekeeping from the type-predicates sprint panel review.
 
-- **Remove bracket access** — `$a["key"]`, `$a[0]`, `$a[$key]` are removed. Also removes the `..` range token and `$a[0..2]` syntax. Eliminates the whitespace-sensitive `[` detection in the lexer (`BracketAccess` token, `BracketAccessKey` parser frame, `Expr::BracketAccess`, `Expr::RangeAccess`, `Cont::BracketForceTarget` all go away).
-- **Keep and extend dot access** — `$a.field` stays as the static access operator. Extend to integer keys: `$a.0` for sequence access (currently `DotAccess` only does string-key lookup via `StrKey`; `Key::Int` lookup must be added).
-- **Add `|` as reverse-apply infix** — `x | f` = `[f x]`. Type dispatch on RHS: String/Int → key lookup, Fn → apply. Replaces all bracket-access use cases. Example: `$dict | $key` instead of `$dict[$key]`.
-- **Generator semantics for `|`** — `Value::Seq` (already exists as a lazy cons-list) is the natural generator carrier. `x | f` where `x` is a `Seq` flatMaps `f` over each element. Single values are implicit 1-element generators. Generator behavior is opt-in via explicit `each`/`each-key`/`each-kv` primitives — not implicit everywhere.
+### type-predicates-nits: Post-Sprint Cleanup
 
-**Open questions the whatif doc must resolve:**
+Small fixes deferred from the type-predicates sprint panel. Tack onto any convenient future sprint.
 
-- Explode primitives: `each` (dict → Seq of values), `each-key`, `each-kv` (Seq of `[k v]` pairs), `empty` (zero-value filter). What else? Is `empty` right given tinct's "missing keys are always errors" model?
-- Numeric `[range 0 5]` (Seq generator emitting integers 0–4) vs `[slice 0 5]` (Dict→Dict first 5 entries) — confirm split and names.
-- `collect`: how does a Seq gather back into a Dict? Auto-indexed? Key-preserved? Type signature?
-- Generators in the type system: how does HM inference handle `$data | [each] | [fn [u] u.name]`? Does `|` need a new function type form?
-- Program output: if the top-level expression is a `Seq`, does the CLI emit multiple JSON lines (jq-style), error, or auto-collect?
-- `|` inside dict entries: `[key: $a | f  other: x]` — parsing ambiguity or handled by iterative parser?
-- Generators in the `%` pipeline: can a stage produce a `Seq` the next stage iterates?
-- `$_` desugaring: with bracket access gone, does `$_ | selector` trigger lambda wrapping?
-- Broader generator usage: constraints on generators in dict values, function arguments, type annotations?
-
-- [ ] Research access-pipeline — write proposal to `doc/whatif/access-pipeline.md`
+- [ ] Move `seq?` registration from Sequences comment block to Type Introspection comment block in `standard_builtins()` (`src/builtins.rs:1811`)
+- [ ] Add `dict?`-with-Overlay corpus test: `[dict? [merge [a: 1] [b: 2]]]` → `Bool(true)` (`tests/corpus/eval/builtins/`)
+- [ ] Add `null?`-with-Seq corpus test: `[null? [range 0 5]]` → `Bool(false)` (`tests/corpus/eval/builtins/`)
+- [ ] Add `fn?`-with-Proxy corpus test: `[fn? [proxy ...]]` → `Bool(false)` (`tests/corpus/eval/builtins/`)
+- [ ] Fix `doc/whatif/type-predicates.md:168` — uses `every?` (should be `all?`); fix `doc/whatif/type-predicates.md:17` — claims `type-of` returns `"Null"` (it returns `"Dict"` for all dicts) (`doc/whatif/type-predicates.md`)
 
 ## Arena Allocation: Arena-Based Thunks and Flat Environments
 
