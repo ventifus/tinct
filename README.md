@@ -1,10 +1,10 @@
 # tinct
 
-A **unified data representation and transformation language** that combines JSON-like simplicity with lazy functional programming power.
+A **general-purpose programming language that puts structured data first** — making it natural to define, compose, query, and transform data without reaching for a separate tool.
 
 Also: a testbed for fully automated *agentic virtuous-loop* software development.
 
-**Vision:** One language for both defining data structures (like JSON/YAML) and transforming them (like JSONnet/jq), with lazy evaluation for efficiency and infinite structures.
+**Vision:** One language where structured data is the native citizen. No impedance mismatch between your data model and your transformation logic — no shell pipelines to glue things together, no separate query language, no JSON-in-strings. Lazy evaluation keeps large structures efficient, Hindley-Milner types catch shape errors before they reach production, and generator-native pipelines (think jq, but typed and composable) make data flow a first-class concern.
 
 **Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter, LSP server with diagnostics and hover, comprehensive test suite.
 
@@ -112,7 +112,7 @@ data.missing                           # error: key not found
 Multi-document files pass the output of one document to the next as `%`. Transform data across stages without intermediate variables or a shell pipeline.
 
 ```lisp
-[users: [$[...]]]
+[users: [...]]
 ---
 [active: [filter [fn [u] u.active] %.users]]
 ---
@@ -165,11 +165,11 @@ A standard library written in Tinct itself (`stdlib/prelude.llt`), covering coll
     production: [merge base [timeout: 60  env: "production"]]
 
     # Inline data
-    users: [$[
+    users: [
         [name: "Alice"  role: "admin"  active: true]
         [name: "Bob"    role: "user"   active: false]
         [name: "Carol"  role: "admin"  active: true]
-    ]]
+    ]
 
     # Transform data -- lazy, only computed when accessed
     active-admins: [sort

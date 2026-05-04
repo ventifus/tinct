@@ -1,6 +1,6 @@
 # What If: Source Text Availability at EvalError Display Time
 
-**State:** Proposal
+**State:** Accepted — 2026-05-04
 
 What would it take to include source snippets with caret annotations in tinct error output?
 

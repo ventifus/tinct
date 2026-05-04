@@ -1,6 +1,6 @@
 # What If: Circular Dependency Error Path Reconstruction
 
-**State:** Proposal
+**State:** Accepted — 2026-05-04
 
 What would it take to show the full A→B→A cycle chain when `ThunkState::InProgress` is detected, instead of reporting only the blackholed thunk's span?
 

@@ -1,0 +1,44 @@
+{
+  "name": "tinct",
+  "displayName": "Tinct",
+  "description": "Tinct language support — diagnostics and hover types",
+  "version": "0.1.0",
+  "publisher": "tinct",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:llt"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "llt",
+        "aliases": ["Tinct", "llt"],
+        "extensions": [".llt", ".tinct"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "tinct",
+      "properties": {
+        "tinct.serverPath": {
+          "type": "string",
+          "default": "tinct",
+          "description": "Path to the tinct binary. Defaults to 'tinct' (must be on PATH). Set to an absolute path or 'cargo run --' for development."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "vsce package"
+  }
+}

@@ -98,10 +98,13 @@ Cross-reference of each proposal against open TODO items and gating conditions.
 
 These proposals have been formally accepted: `State: Accepted` marked, spec integrated, implementation sprints created in TODO.md.
 
-| Proposal | Summary | Accepted |
-|----------|---------|---------|
-| [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; AST-based formatter rewrite | 2026-04-28 |
-| [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections; three-sprint implementation plan | 2026-05-01 |
+| Proposal | Summary | Accepted | Implemented |
+|----------|---------|---------|-------------|
+| [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; AST-based formatter rewrite | 2026-04-28 | Complete — `parser-lexer`, `parser-core`, `formatter-ast` |
+| [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections; three-sprint implementation plan | 2026-05-01 | Complete — `new-syntax-docs` through `new-syntax-migrate` |
+| [Circular Dependency Error Paths](circular-dep-error-paths.md) | `eval_stack` in EvalState for full A→B→A cycle chain in error display | 2026-05-04 | Phase 1 complete — `error-context` sprint |
+| [Source Text Availability](source-text-availability.md) | `render_span_snippet` helper; caller-pairs-with-source; REPL + CLI wiring | 2026-05-04 | Phase 1 partial — REPL/CLI done; LSP snippet display is Phase 3 |
+| [Arena Patterns + Flat Environments](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; `FlatEnv` with de Bruijn slot indices; variable resolution pass | 2026-05-04 | Not started — 5 sprints created: `arena-resolve` through `arena-migrate` |
 
 ### Adopt Now
 
@@ -117,19 +120,11 @@ These proposals have no gating conditions and deliver standalone value at low co
 
 **[Pure-Tinct Regex Engine](lib-regex.md) Phase 1** — Thompson NFA in `stdlib/regex.llt`. No Rust builtins, no crates. Requires lib-supplemental Phases 1 + 3.
 
-**[Structural Contracts](structural-contracts.md) Phase 1** — `%@Type` pipeline boundary annotation. Standalone, no gating.
+**[Structural Contracts](structural-contracts.md) Phase 1** — `%@Type` pipeline boundary annotation. Note: `%` is now the pipeline variable in new-syntax (replacing `$$`); Phase 1 syntax needs reconciliation before implementation — likely `%name@Type` or an `@Type` output annotation on named sections.
 
 **[Algebraic Data Types](algebraic-data-types.md) Phase 1** — Convention documentation only. Zero-cost, immediate value.
 
-**[Source Text Availability](source-text-availability.md) Phase 1** — `render_span_snippet` + REPL wiring. Source text is already available at the call site; no EvalError changes. Low cost, high diagnostic value.
-
-**[Circular Dependency Error Paths](circular-dep-error-paths.md) Phase 1** — `eval_stack: Vec<(String, Span)>` in EvalState + chain in error Display. Small change, mirrors existing `include_guard` pattern.
-
-**[Evaluation Semantics Verification](eval-semantics-verification.md) Phase 1** — Confluence proof sketch to `doc/08-evaluation.md` (documentation) + core proptest suite (200 lines + `proptest` dev-dep). Low cost, validates key semantic claims.
-
-### Already the Plan
-
-**[Arena Patterns + Flat Environments](arena-patterns.md)** — The variable resolution pass (Phase 1) is a prerequisite for the arena/flat-env migration (Phase 2), which depends on the `strictness-dispatch-w1` sprint completing first (confirms evaluation semantics before changing the allocation model). Execute in order: `strictness-types` → `strictness-value-migration` → `strictness-dispatch-w1` → arena Phase 1 → arena Phase 2.
+**[Evaluation Semantics Verification](eval-semantics-verification.md) Phase 1** — Confluence proof sketch to `doc/08-evaluation.md` is done (research + doc complete); core proptest suite (200 lines + `proptest` dev-dep) still pending implementation.
 
 ### Wait for Trigger
 
