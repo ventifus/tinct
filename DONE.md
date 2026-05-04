@@ -3635,3 +3635,4 @@ Single atomic change. All internal `.llt` files migrated in the same commit. See
 - [x] 5 laziness tests, 2 type assertion tests, 2 separator tests added
 - [x] doc/11a-builtins.md header: "46" → "51"
 - [x] special_form_arity.llt-eval corpus test created
+- [x] resource_limit_exceeded.llt-eval: moved from errors/ to regressions/ (placeholder, E043 not triggerable via corpus)
