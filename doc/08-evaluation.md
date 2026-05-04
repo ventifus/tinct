@@ -210,27 +210,30 @@ Each dual-dispatch builtin (`map`, `filter`, `take`, `drop`, `reduce`, `join`) r
 
 ## Thunk Lifecycle — Formal Specification
 
-Extends Launchbury (1993) natural semantics for call-by-need with four additional thunk states (PendingBuiltin, PendingCall, Guarded, Failed) for deferred computation, contract validation, and error memoization. PendingBuiltin and PendingCall are defunctionalized continuations (Reynolds 1972; Danvy & Nielsen 2003) — they represent deferred computation as data rather than closures. Guarded implements proxy contracts (Findler & Felleisen 2002) for lazy TypeAssert field validation.
+Extends Launchbury (1993) natural semantics for call-by-need with five additional thunk states (Placeholder, PendingBuiltin, PendingCall, Guarded, Failed) for pre-allocation sentinels, deferred computation, contract validation, and error memoization. PendingBuiltin and PendingCall are defunctionalized continuations (Reynolds 1972; Danvy & Nielsen 2003) — they represent deferred computation as data rather than closures. Guarded implements proxy contracts (Findler & Felleisen 2002) for lazy TypeAssert field validation.
 
-**State set:** `S = { Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed }`
+**State set:** `S = { Placeholder, Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed }`
 
 ### Part 1: State Transition Graph
 
 The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with one backward edge exception: non-cacheable errors (DepthExceeded) restore `InProgress → Guarded` to allow retry at a shallower depth (see Exception below).
 
 ```
+Placeholder ───────────────────────────────→ {any non-InProgress state}
+
 Unevaluated ──────────┐
 PendingBuiltin ────────┤
 PendingCall ───────────┼──→ InProgress ──┬──→ Materialized
 Guarded ──────────────┘                 └──→ Failed ⟲
 ```
 
-The transition graph governs state *transitions*, not construction. Thunks may be constructed directly in Unevaluated, PendingBuiltin, PendingCall, Guarded, or Materialized state (via `Thunk::new_materialized`). The transition graph applies only to subsequent state changes.
+The transition graph governs state *transitions*, not construction. Thunks may be constructed directly in Placeholder state (via `Thunk::new_placeholder()`), Unevaluated, PendingBuiltin, PendingCall, Guarded, or Materialized state (via `Thunk::new_materialized`). The transition graph applies only to subsequent state changes.
 
 Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs`):
 
 | Transition | Trigger | Atomicity |
 |-----------|---------|-----------|
+| Placeholder → {any non-InProgress state} | `set_state(...)` at arena-eval allocation time | Direct write — pre-construction sentinel only; forcing a `Placeholder` thunk panics |
 | Unevaluated → InProgress | `take_unevaluated()` | Atomic (`mem::replace`) |
 | PendingBuiltin → InProgress | `take_pending_builtin()` | Atomic (`mem::replace`) |
 | PendingCall → InProgress | `take_pending_call()` | Atomic (`mem::replace`) |
@@ -242,7 +245,9 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 | InProgress → PendingCall | `set_state(PendingCall(...))` | Direct write — **backward edge**, non-cacheable DepthExceeded only; restores original state for retry at lower depth |
 | Failed → Failed | `set_state(Failed(e'))` | Direct write (diagnostic refinement only) |
 
-**Monotonicity proof sketch:** The graph has no cycles (the single backward edge is acyclic: InProgress cannot return to itself through Guarded). Each source state (Unevaluated, PendingBuiltin, PendingCall, Guarded) transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the backward `InProgress → Guarded` edge for non-cacheable DepthExceeded errors (see Exception below); this preserves semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
+**Monotonicity proof sketch:** `Placeholder` is a pre-construction sentinel — it sits below all other states in the construction-time ordering. It is not part of the forcing path: forcing a `Placeholder` thunk panics rather than transitioning through InProgress. `Placeholder` transitions directly to any non-InProgress state at allocation time, establishing the thunk's initial forcing state before any evaluation begins. This is a pure construction-time concept and does not interact with the Launchbury monotonicity argument below.
+
+The forcing graph (excluding `Placeholder`) has no cycles (the single backward edge is acyclic: InProgress cannot return to itself through Guarded). Each source state (Unevaluated, PendingBuiltin, PendingCall, Guarded) transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the backward `InProgress → Guarded` edge for non-cacheable DepthExceeded errors (see Exception below); this preserves semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
 
 **Exception — retryable non-cacheable errors:** The `InProgress → Guarded` backward edge occurs under two conditions documented by `[FORCE-GUARD-OUTER-DEPTH]` (depth already at limit before inner thunk is forced) and `[FORCE-GUARD-DEPTH]` (inner thunk materialization fails with a non-cacheable error). Because `DepthExceeded` is a transient resource-bound error (not a semantic error), it is non-cacheable — `cache_failure` is skipped and the thunk is restored to `Guarded` state so the computation can be retried at a shallower call depth. This `InProgress → Guarded` backward restoration means strict state-order monotonicity does not hold for the `DepthExceeded` path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval.rs`, in the `ThunkState::Guarded` arm of `materialize()`)
 

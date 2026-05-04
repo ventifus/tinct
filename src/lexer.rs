@@ -721,8 +721,9 @@ impl<'a> Lexer<'a> {
     }
 
     fn is_access_field_char(&self, c: char, is_first: bool) -> bool {
-        // Access field names (after dot in access chain) use allowlist from grammar
-        // Based on grammar: access_field = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
+        // Access field names (after dot in access chain) use allowlist from grammar.
+        // `?` is allowed anywhere in continuation to support predicate naming (`int?`, `dict?`).
+        // Grammar: access_field = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "?")* }
         if is_first {
             c.is_ascii_alphabetic() || c == '_'
         } else {

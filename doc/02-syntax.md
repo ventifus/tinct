@@ -482,6 +482,8 @@ bracket_expr = {
 
 Special forms are recognized when the first token in a `[]` is a bare keyword (not followed by `:`). The parser tries each form before falling back to `dict_entries`.
 
+**Horizontal-only lookahead:** The `colon_ahead` rule uses horizontal lookahead via `peek_next_horizontal`, which operates on the token stream and skips `Token::Semicolon` and `Token::Comment(_)` tokens, but stops immediately at `Token::Newline`. This means `[call\n: x]` is a malformed implied call (the newline token halts the scan before the colon is found), not a dict entry. Note: `ws_chars = " " | "\t"` is the grammar-level character-class definition in this document's EBNF appendix — it describes the same horizontal-only intent at the PEG level, but `peek_next_horizontal` implements this intent at the token-stream level, where raw whitespace characters no longer exist.
+
 ```ebnf
 special_form = {
     call_form
@@ -573,7 +575,7 @@ access_chain = ${ dot_access | bracket_access_chain }
 
 dot_access = ${ "." ~ access_field }
 
-access_field = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
+access_field = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "?")* }
 
 bracket_access_chain = ${ "[" ~ bracket_access_inner ~ "]" }
 
@@ -588,6 +590,8 @@ range_value = { int_lit | escaped_ref }
 ```
 
 Range values are limited to integer literals and variable references.
+
+**Field name characters:** The `access_field` rule allows `?` anywhere in continuation characters (not just at the end). This supports the predicate naming convention (`int?`, `dict?`, `list?`) where the `?` suffix indicates a boolean-returning function. Field names can contain multiple `?` characters if needed (e.g., `foo?bar?` is valid).
 
 Dot access is whitespace-insensitive — `$a.b` and `$a .b` parse identically. The `.` always emits a `Dot` token regardless of preceding whitespace; see §2.5 for the formal tokenization rule.
 
@@ -885,7 +889,7 @@ access_chain = dot_access | bracket_access_chain
 
 dot_access = "." ~ access_field
 
-access_field = (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"?
+access_field = (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "?")*
 
 bracket_access_chain = "[" ~ bracket_access_inner ~ "]"
 

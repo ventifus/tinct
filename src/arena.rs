@@ -59,26 +59,19 @@ impl ThunkArena {
         &self.thunks[id.0 as usize]
     }
 
-    /// Allocate a placeholder thunk for letrec. The placeholder is a materialized
-    /// `Bool(false)` value that will be replaced via `RefCell` interior mutability
-    /// before use.
+    /// Allocate a placeholder thunk for letrec. The placeholder is a sentinel
+    /// `ThunkState::Placeholder` that must be filled via `set_state()` before use.
     ///
     /// The letrec pattern (internal evaluator use):
     /// 1. Pre-allocate placeholder slots for all dict entries.
     /// 2. Create the shared `FlatEnv` with those `ThunkId`s.
     /// 3. Fill each placeholder via `arena.get(id).set_state(...)` (requires pub(crate) access).
     ///
-    /// The placeholder is an observable materialized `Bool(false)` value but must be filled
-    /// via `arena.get(id).set_state(...)` before use in evaluation. Accessing the placeholder
-    /// state before filling is a logic error (letrec construction bug).
+    /// Forcing a placeholder before filling is a logic error (letrec construction bug)
+    /// and will panic at materialization time. This maintains Launchbury's monotonicity
+    /// invariant: Placeholder → Unevaluated is a forward state transition.
     pub fn alloc_placeholder(&mut self) -> ThunkId {
-        // Create a Bool(false) placeholder. The caller will replace this via set_state
-        // after creating the real environment. The placeholder's initial value is observable
-        // until set_state() is called.
-        let thunk = Rc::new(Thunk::new_materialized(
-            crate::value::Value::Bool(false),
-            Span::origin(),
-        ));
+        let thunk = Rc::new(Thunk::new_placeholder(Span::origin()));
         self.alloc(thunk)
     }
 }
@@ -259,11 +252,14 @@ mod tests {
         let mut arena = ThunkArena::new();
         let id = arena.alloc_placeholder();
 
-        // Placeholder should be in Materialized state with Bool(false)
+        // Placeholder should be in Placeholder state (not Materialized)
         let thunk = arena.get(id);
-        assert_eq!(thunk.try_get_materialized(), Some(Value::Bool(false)));
+        assert!(
+            matches!(&*thunk.state(), ThunkState::Placeholder),
+            "expected Placeholder state"
+        );
 
-        // Now fill it via RefCell
+        // Fill it via set_state (forward transition: Placeholder → Materialized)
         thunk.set_state(ThunkState::Materialized(Value::Int(99)));
 
         // Verify the fill worked
@@ -274,11 +270,16 @@ mod tests {
     fn test_thunk_arena_letrec_pattern() {
         // Simulate letrec: pre-allocate two placeholders, then fill the placeholders.
         // This test focuses on ThunkArena placeholder lifecycle only.
+        // Monotonicity: Placeholder → Unevaluated/Materialized (forward transitions).
         let mut arena = ThunkArena::new();
 
         // Step 1: allocate placeholders
         let id_x = arena.alloc_placeholder();
         let id_y = arena.alloc_placeholder();
+
+        // Verify both start as Placeholder
+        assert!(matches!(&*arena.get(id_x).state(), ThunkState::Placeholder));
+        assert!(matches!(&*arena.get(id_y).state(), ThunkState::Placeholder));
 
         // Step 2: fill placeholders (in real eval, these would be Unevaluated with a shared env)
         arena

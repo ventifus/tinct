@@ -2,6 +2,10 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## cycle-findings-c141: C141 Codebase Health (Partial)
+
+- [x] **[Minor]** Fix `test_ctx()` in `src/lib.rs:486` to use `create_stdlib_env()` instead of `create_root_env()` — stdlib functions unreachable from test helper (integration-verifier) (`src/lib.rs:486`)
+
 ## Parser — Complete
 
 - [x] pest PEG grammar (`src/grammar.pest`)
@@ -3732,3 +3736,21 @@ Introduce `ThunkId`, `EnvId`, `ThunkArena`, `EnvArena`, `FlatEnv` types with let
 - [x] Add `FlatEnv` struct: `slots: Vec<Option<ThunkId>>`, `overflow: HashMap<String, ThunkId>`, `parent: Option<EnvId>` — all pub(crate) (`src/arena.rs`)
 - [x] Implement letrec allocation pattern: `alloc_placeholder()` returns `ThunkId` pointing at `Bool(false)` sentinel; fill via `Rc<Thunk>::set_state()` interior mutability (`src/arena.rs`)
 - [x] Unit tests: 18 tests — alloc/get, placeholder+fill lifecycle, FlatEnv slot/overflow/parent, overflow checks, Copy semantics (`src/arena.rs`)
+
+## C141 Codebase Health
+
+Findings from full 9-agent review (2026-05-04). All Critical/Major/Minor only.
+
+### cycle-findings-c141: C141 Codebase Health
+
+Fixes from the C141 health review.
+
+- [x] **[Major]** Add corpus test for computed-key duplicate detection — `duplicate_computed_key.llt-eval` already existed; verified runtime behavior; 2 new variable-scoping tests added (`tests/corpus/eval/`)
+- [x] **[Major]** Add resolver corpus tests — `variable_shadowing.llt-eval` and `fn_param_shadows_outer.llt-eval` added (`tests/corpus/eval/`)
+- [x] **[Major]** Add resolver synthetic scope for `%` and `%name` pipeline variables — injected before each document walk; stdlib builtin names NOT injected (`src/resolve.rs`)
+- [x] **[Major]** Fix `colon_ahead` spec: added `peek_next_horizontal` token-stream explanation in `doc/02-syntax.md §3.3`
+- [x] **[Minor]** Fix `value_matches_type` `Type::Error` branch — returns `false` with `debug_assert!` (`src/eval.rs:233`)
+- [x] **[Minor]** Fix `test_ctx()` in `src/lib.rs:486` to use `create_stdlib_env()`
+- [x] **[Minor]** Update `doc/10-errors.md` ErrorKind variant count from 31 to 34
+- [x] **[Minor]** Fix `access_field` grammar — `?` now allowed anywhere in continuation (`doc/02-syntax.md`)
+- [x] **[Minor]** FlatEnv placeholder monotonicity — `ThunkState::Placeholder` added (`src/value.rs`, `src/arena.rs`, `src/eval.rs`, `src/eval_materialize.rs`)

@@ -270,10 +270,42 @@ impl Resolver {
 ///
 /// The pass runs after parsing and before evaluation. It enables future optimization
 /// to flat environments with O(1) slot-based lookup instead of O(depth) name-based lookup.
+///
+/// A synthetic outermost scope is pushed for each document containing the `%` pipeline
+/// variable and any `%name` named-section bindings from preceding documents. This mirrors
+/// the runtime injection performed by `eval_file_with_input` (src/eval.rs), ensuring
+/// `$%` references resolve to a known coordinate rather than `Some(None)` (unresolvable).
+///
+/// Builtins are NOT injected into this scope — they are resolved via the stdlib
+/// environment at runtime and intentionally remain unresolvable (`Some(None)`) during
+/// the AST walk. The resolver's coordinates are only meaningful for lexical bindings
+/// (dict entries, function parameters, pipeline variables).
 pub fn resolve_file(file: &File) {
     let mut resolver = Resolver::new();
+
+    // Collect named section names as we go (mirrors eval_file_with_input's named accumulator).
+    let mut named_sections: Vec<String> = Vec::new();
+
     for document in &file.documents {
+        // Build the synthetic scope: always includes `%`, plus `%name` for each
+        // previously named section.
+        let mut runtime_names: Vec<String> = vec!["%".to_string()];
+        for name in &named_sections {
+            runtime_names.push(format!("%{}", name));
+        }
+
+        // Push synthetic outermost scope with runtime-injected bindings.
+        resolver.enter_scope(&runtime_names);
+
         resolver.walk_document(&document.node);
+
+        // Pop the synthetic scope so the next document gets a fresh one.
+        resolver.exit_scope();
+
+        // If this document is named, accumulate it for subsequent documents.
+        if let Some(ref name) = document.node.name {
+            named_sections.push(name.clone());
+        }
     }
 }
 
@@ -346,8 +378,8 @@ mod tests {
                 match y_value {
                     Expr::VarRef { name, resolved } => {
                         assert_eq!(name, "x");
-                        // Should be resolved to (level=0, slot=0) because x is the first entry
-                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                        // Level 1 (level 0 is the synthetic % scope), slot 0
+                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                     }
                     other => panic!("expected VarRef for y value, got {:?}", other),
                 }
@@ -379,8 +411,8 @@ mod tests {
                         match y_value {
                             Expr::VarRef { name, resolved } => {
                                 assert_eq!(name, "x");
-                                // x is in the outer scope (level 0), slot 0
-                                assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                                // x is in the outer dict scope (level 1; level 0 is synthetic %), slot 0
+                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                             }
                             other => panic!("expected VarRef for y value, got {:?}", other),
                         }
@@ -409,8 +441,8 @@ mod tests {
                 match &body.node {
                     Expr::VarRef { name, resolved } => {
                         assert_eq!(name, "x");
-                        // x is the first parameter (level=0, slot=0)
-                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                        // x is the first parameter (level 1; level 0 is synthetic % scope), slot 0
+                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                     }
                     other => panic!("expected VarRef for body, got {:?}", other),
                 }
@@ -529,8 +561,8 @@ mod tests {
                                 match default_value {
                                     Expr::VarRef { name, resolved } => {
                                         assert_eq!(name, "fallback");
-                                        // Should resolve to (level=0, slot=0)
-                                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                                        // Level 1 (level 0 is synthetic % scope), slot 0
+                                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                                     }
                                     other => panic!("expected VarRef, got {:?}", other),
                                 }
@@ -569,8 +601,8 @@ mod tests {
                                 match default_value {
                                     Expr::VarRef { name, resolved } => {
                                         assert_eq!(name, "default_val");
-                                        // Should resolve to outer scope (level=0, slot=0)
-                                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                                        // Level 1 (level 0 is synthetic % scope), slot 0
+                                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                                     }
                                     other => panic!("expected VarRef, got {:?}", other),
                                 }
@@ -668,8 +700,8 @@ mod tests {
                         match &expr.node {
                             Expr::VarRef { name, resolved } => {
                                 assert_eq!(name, "x");
-                                // $x resolves to (level=0, slot=0)
-                                assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                                // Level 1 (level 0 is synthetic % scope), slot 0
+                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                             }
                             other => panic!("expected VarRef inside DotAccess, got {:?}", other),
                         }
@@ -701,8 +733,8 @@ mod tests {
                         match &expr.node {
                             Expr::VarRef { name, resolved } => {
                                 assert_eq!(name, "x");
-                                // x is slot 0
-                                assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                                // Level 1 (level 0 is synthetic % scope), slot 0
+                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                             }
                             other => {
                                 panic!("expected VarRef as BracketAccess target, got {:?}", other)
@@ -711,8 +743,8 @@ mod tests {
                         match &key.node {
                             Expr::VarRef { name, resolved } => {
                                 assert_eq!(name, "k");
-                                // k is slot 1
-                                assert_eq!(resolved.borrow().flatten(), Some((0, 1)));
+                                // Level 1 (level 0 is synthetic % scope), slot 1
+                                assert_eq!(resolved.borrow().flatten(), Some((1, 1)));
                             }
                             other => {
                                 panic!("expected VarRef as BracketAccess key, got {:?}", other)
@@ -746,8 +778,8 @@ mod tests {
                         match &expr.node {
                             Expr::VarRef { name, resolved } => {
                                 assert_eq!(name, "x");
-                                // x resolves to (level=0, slot=0)
-                                assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                                // Level 1 (level 0 is synthetic % scope), slot 0
+                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                             }
                             other => {
                                 panic!("expected VarRef as RangeAccess target, got {:?}", other)
@@ -784,8 +816,8 @@ mod tests {
                         match named_arg_value {
                             Expr::VarRef { name, resolved } => {
                                 assert_eq!(name, "x");
-                                // $x in named arg value resolves to (level=0, slot=0)
-                                assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                                // Level 1 (level 0 is synthetic % scope), slot 0
+                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                             }
                             other => panic!("expected VarRef in named arg value, got {:?}", other),
                         }
@@ -819,6 +851,89 @@ mod tests {
                 assert!(matches!(body.node, Expr::Int(42)));
             }
             other => panic!("expected Fn, got {:?}", other),
+        }
+    }
+
+    /// Pipeline variable % resolves to the synthetic outermost scope.
+    #[test]
+    fn test_resolve_pipeline_variable() {
+        use crate::parser::parse;
+
+        let source = "%";
+        let file = parse(source).expect("parse failed");
+        resolve_file(&file.node);
+
+        let doc = &file.node.documents[0].node;
+        let varref_expr = &doc.expressions[0].node;
+        match varref_expr {
+            Expr::VarRef { name, resolved } => {
+                assert_eq!(name, "%");
+                // % is in the synthetic scope at level 0, slot 0
+                assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+            }
+            other => panic!("expected VarRef for %, got {:?}", other),
+        }
+    }
+
+    /// Pipeline variable % resolves inside a dict (through parent scope lookup).
+    #[test]
+    fn test_resolve_pipeline_variable_in_dict() {
+        use crate::parser::parse;
+
+        let source = "[x: %]";
+        let file = parse(source).expect("parse failed");
+        resolve_file(&file.node);
+
+        let doc = &file.node.documents[0].node;
+        let dict_expr = &doc.expressions[0].node;
+        match dict_expr {
+            Expr::Dict(entries) => {
+                let x_value = &entries[0].node.value.node;
+                match x_value {
+                    Expr::VarRef { name, resolved } => {
+                        assert_eq!(name, "%");
+                        // % is in synthetic scope (level 0), dict scope is level 1
+                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                    }
+                    other => panic!("expected VarRef for %, got {:?}", other),
+                }
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    /// Named section %name resolves in subsequent documents.
+    /// Format: `--- %name` names the NEXT document. The named document's result
+    /// becomes available as `%name` in all subsequent documents.
+    #[test]
+    fn test_resolve_named_section_in_subsequent_doc() {
+        use crate::parser::parse;
+
+        // Doc 1 (unnamed): 42
+        // --- %first names doc 2
+        // Doc 2 (named "first"): [x: 1]
+        // --- separates doc 3
+        // Doc 3 (unnamed): %first (references doc 2)
+        let source = "42\n--- %first\n[x: 1]\n---\n%first";
+        let file = parse(source).expect("parse failed");
+        resolve_file(&file.node);
+
+        assert_eq!(file.node.documents.len(), 3);
+
+        // Doc 2 is named "first"
+        assert_eq!(file.node.documents[1].node.name, Some("first".to_string()));
+
+        // In doc 3, %first should resolve to (level 0, slot 1)
+        // because the synthetic scope has ["%", "%first"]
+        let doc3 = &file.node.documents[2].node;
+        let varref_expr = &doc3.expressions[0].node;
+        match varref_expr {
+            Expr::VarRef { name, resolved } => {
+                assert_eq!(name, "%first");
+                // slot 0 = %, slot 1 = %first
+                assert_eq!(resolved.borrow().flatten(), Some((0, 1)));
+            }
+            other => panic!("expected VarRef for %first, got {:?}", other),
         }
     }
 }

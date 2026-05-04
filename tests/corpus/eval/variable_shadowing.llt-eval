@@ -1,0 +1,10 @@
+# Variable shadowing: inner dict binding of $x shadows outer dict binding
+# In the outer dict (letrec), x=10 and outer_x=$x resolves to 10.
+# In the inner dict (letrec), x=20 and result=$x resolves to 20.
+[
+  x: 10
+  inner: [x: 20  result: $x]
+  outer_x: $x
+]
+===
+Dict({"x": Int(10), "inner": Dict({"x": Int(20), "result": Int(20)}), "outer_x": Int(10)})

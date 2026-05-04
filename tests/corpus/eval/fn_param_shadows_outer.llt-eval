@@ -1,0 +1,10 @@
+# Function parameter shadows outer dict binding
+# x=42 in the outer dict, but the fn parameter named x shadows it.
+# [call [fn [x] [* $x 2]] 10] calls the function with x=10,
+# so $x inside the function body is 10, not 42.
+[
+  x: 42
+  result: [call [fn [x] [* $x 2]] 10]
+]
+===
+Dict({"x": Int(42), "result": Int(20)})

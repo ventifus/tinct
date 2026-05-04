@@ -280,6 +280,15 @@ const _: () = {
 
 #[derive(Debug, Clone)]
 pub enum ThunkState {
+    /// Pre-allocation sentinel for letrec placeholder slots. Must be filled via
+    /// `set_state()` with a real state (Unevaluated, Materialized, etc.) before
+    /// any attempt to force/materialize. Forcing a Placeholder is a logic error
+    /// indicating the letrec construction failed to fill all slots.
+    ///
+    /// Monotonicity: Placeholder → {Unevaluated, Materialized, PendingBuiltin, ...}
+    /// is a forward state transition, unlike the previous Materialized(Bool(false)) →
+    /// Unevaluated hack which violated Launchbury's monotonicity invariant.
+    Placeholder,
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
@@ -332,6 +341,16 @@ pub struct Thunk {
 }
 
 impl Thunk {
+    /// Create a placeholder thunk for letrec pre-allocation. Must be filled via
+    /// `set_state()` before use. Panics at materialization if still in Placeholder state.
+    pub fn new_placeholder(span: Span) -> Self {
+        Self {
+            state: RefCell::new(ThunkState::Placeholder),
+            span,
+            origin: None,
+        }
+    }
+
     pub fn new_unevaluated(
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
