@@ -1,0 +1,7 @@
+# Out-of-bounds range produces empty dict (no error)
+# Dict has keys 0, 1, 2; range [5..10] selects nothing
+[data: [0: "a"  1: "b"  2: "c"]]
+
+[result: data[5..10]]
+===
+Dict({"result": Dict({})})

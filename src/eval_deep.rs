@@ -710,4 +710,60 @@ mod tests {
             err.message()
         );
     }
+
+    #[test]
+    fn test_deep_materialize_cache_cleanup_on_materialize_error() {
+        // Test that cacheable errors (undefined variable) leave the thunk in ThunkState::Failed
+        // and are memoized for retry — a second deep_materialize call returns the same cached error
+        // rather than re-evaluating. This complements test_deep_materialize_cache_cleanup_on_error
+        // which tests DepthExceeded (non-cacheable, sentinel removed on error).
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 5);
+
+        // Create a thunk that will fail with a cacheable error (undefined variable)
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let error_expr = Rc::new(Spanned::new(Expr::VarRef("undefined".into()), span));
+        let error_thunk = Rc::new(Thunk::new_unevaluated(
+            error_expr,
+            env,
+            Rc::clone(&ctx),
+            span,
+        ));
+
+        // Place the error thunk in a dict
+        let mut map = IndexMap::new();
+        map.insert(Key::String("x".into()), Rc::clone(&error_thunk));
+        let dict_val = Value::Dict(map);
+
+        // Attempt to deep materialize — should fail
+        let err = deep_materialize(&dict_val, &ctx, 0, None).unwrap_err();
+        assert!(
+            err.message().contains("undefined"),
+            "Expected undefined variable error, got: {}",
+            err.message()
+        );
+
+        // Verify the error_thunk is in Failed state (cacheable error was cached)
+        {
+            let state = error_thunk.state();
+            match &*state {
+                ThunkState::Failed(cached_err) => {
+                    assert!(
+                        cached_err.message().contains("undefined"),
+                        "Expected cached error, got: {}",
+                        cached_err.message()
+                    );
+                }
+                other => panic!("Expected Failed state for cacheable error, got {:?}", other),
+            }
+        }
+
+        // A second deep_materialize should also fail (error is cached in thunk)
+        let err2 = deep_materialize(&dict_val, &ctx, 0, None).unwrap_err();
+        assert!(
+            err2.message().contains("undefined"),
+            "Expected cached error on retry, got: {}",
+            err2.message()
+        );
+    }
 }

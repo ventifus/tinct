@@ -1,0 +1,8 @@
+# Range access with negative bounds: bounds are literal keys, not Python-style offsets.
+# data[-2..-1] uses Key::Int(-2) as start and Key::Int(-1) as end.
+# Dict keys are 0,1,2,3 — none fall in [-2, -1), so result is empty.
+[data: [10 20 30 40]]
+
+data[-2..-1]
+===
+Dict({})

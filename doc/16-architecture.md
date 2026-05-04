@@ -492,9 +492,9 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 
 | Resource | Limit | Enforcement Point | Rationale |
 |----------|-------|------------------|-----------|
-| **Parse depth** | `MAX_PARSE_DEPTH = 256` | `src/parser.rs:41` | Prevents stack exhaustion from deeply nested syntax (iterative parser with explicit depth counter) |
+| **Parse depth** | `MAX_PARSE_DEPTH = 256` | `src/parser.rs:42` | Prevents stack exhaustion from deeply nested syntax (iterative parser with explicit depth counter) |
 | **Lexer depth** | `MAX_LEX_DEPTH = 256` | `src/lexer.rs:106` | Prevents stack overflow from deeply nested bracket expressions |
-| **Eval depth** | `MAX_EVAL_DEPTH = 256` | `src/eval.rs:30` | Prevents infinite recursion and stack overflow during evaluation |
+| **Eval depth** | `MAX_EVAL_DEPTH = 256` | `src/eval.rs:37` | Prevents infinite recursion and stack overflow during evaluation |
 | **Type inference** | `MAX_SUBST_SIZE = 50,000` | `src/types.rs:386` | Prevents O(N²) type inference DoS from deeply chained dot-accesses |
 | **Type unification** | `MAX_APPLY_DEPTH = 256` | `src/types.rs:382` | Caps substitution application depth to prevent exponential blowup |
 | **File size** | `MAX_FILE_SIZE = 10 MB` | `src/builtins.rs:47` | Caps `$include` file reads and LSP document size |

@@ -1,0 +1,6 @@
+# TypeAssert with default that itself errors
+# The default is evaluated when type mismatch occurs, and if the default
+# errors, that error propagates (not masked by type assertion failure)
+[@[type: Int  default: [quot 1 0]] "hello"]
+===
+[E031] /: division by zero

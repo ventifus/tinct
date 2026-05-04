@@ -3654,3 +3654,12 @@ Single atomic change. All internal `.llt` files migrated in the same commit. See
 - [x] Corpus tests: dot access whitespace, malformed_section_header, bracket access rename
 - [x] SKIPPED_TESTS.md: E033 (float overflow), E052 (include cycle) documented
 - [x] doc/11-stdlib.md: stale counts removed
+
+### cycle-findings-c136: C136 Codebase Health
+
+- [x] eval_materialize.rs: 3 CEK machine unit tests (Memoize caching, error caching, continuation error propagation)
+- [x] eval_deep.rs: 1 cache unit test (cacheable error → Failed state memoization)
+- [x] 4 corpus tests: typeassert_default_error, range_empty, range_out_of_bounds, range_negative_indices
+- [x] doc/02-syntax.md: stale line numbers fixed; ident_char 3-site fix; ident_cont + terminator table updated
+- [x] doc/16-architecture.md + doc/whatif/parser-rewrite.md: stale line numbers fixed
+- [x] src/value.rs: BuiltinDef derives PartialEq + Eq
