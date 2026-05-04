@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
+use crate::arena::{EnvArena, ThunkArena};
 use crate::ast::{Annotation, Document, Entry, Expr, File, Param, Span, Spanned};
 
 thread_local! {
@@ -136,10 +137,23 @@ pub struct EvalState {
 ///
 /// Config is immutable (Rc without RefCell); state is mutable (Rc<RefCell>).
 /// Thread as `&Rc<EvalContext>` through eval/materialize; thunks capture `Rc::clone(ctx)`.
+///
+/// **Phase 2 Arena Migration (Registry Approach):** Arenas act as a GC root / bulk-deallocation
+/// boundary. Thunks are allocated in the arena AND stored as Rc<Thunk> in Value variants.
+/// This establishes the arena pattern without the massive ThunkId-in-Value refactor.
+/// Full ThunkId migration is deferred to Phase 3.
 #[derive(Debug)]
 pub struct EvalContext {
     pub config: Rc<EvalConfig>,
     pub state: Rc<RefCell<EvalState>>,
+    /// Thunk arena registry. Phase 2: stores Vec<Rc<Thunk>> and provides bulk deallocation.
+    /// Thunks are allocated here but Value variants still use Rc<Thunk> directly.
+    #[allow(dead_code)]
+    pub(crate) thunk_arena: RefCell<ThunkArena>,
+    /// Environment arena registry. Phase 2: not actively used (chain-based environments remain).
+    /// Reserved for Phase 3 flat environment migration.
+    #[allow(dead_code)]
+    pub(crate) env_arena: RefCell<EnvArena>,
 }
 
 impl EvalContext {
@@ -181,6 +195,8 @@ impl EvalContext {
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
             })),
+            thunk_arena: RefCell::new(ThunkArena::new()),
+            env_arena: RefCell::new(EnvArena::new()),
         })
     }
 
@@ -191,6 +207,9 @@ impl EvalContext {
     ///
     /// Inherits `no_fs`, `require_integrity`, and `allowed_paths` from the parent
     /// config so that sandbox restrictions are preserved across directory changes.
+    ///
+    /// **Phase 2 Arena Migration (Registry):** Creates NEW arenas for the child context.
+    /// Each included file gets its own arena for potential bulk deallocation.
     pub fn with_base_dir(&self, base_dir: cap_std::fs::Dir) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
@@ -201,6 +220,8 @@ impl EvalContext {
                 allowed_paths: self.config.allowed_paths.clone(),
             }),
             state: Rc::clone(&self.state),
+            thunk_arena: RefCell::new(ThunkArena::new()),
+            env_arena: RefCell::new(EnvArena::new()),
         })
     }
 }
