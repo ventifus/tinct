@@ -1,0 +1,6 @@
+# Space before bracket prevents bracket-access in new syntax.
+# user["name"] (no space) = bracket access on user
+# [user "name"] (space before bracket) = call user with "name" arg
+[user "field"]
+===
+[user "field"]

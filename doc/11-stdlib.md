@@ -252,9 +252,9 @@ Rust primitives (builtin-lt, builtin-eq, builtin-add, builtin-if, builtin-filter
               └── User predicates and programs
 ```
 
-## Stdlib Function Reference (~132 total user-facing: 93 LLT functions + 39 unwrapped Rust builtins (51 total - 12 with stdlib wrappers))
+## Stdlib Function Reference
 
-**Architecture:** 51 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + 93 LLT-implemented functions in `stdlib/prelude.llt` (81 public API + 12 shadowable wrappers). Of the 51 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). Total user-facing functions: 93 LLT + 39 unwrapped Rust = 132.
+**Architecture:** 51 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including 12 shadowable wrappers). Of the 51 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`).
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 

@@ -72,13 +72,16 @@ impl DocumentState {
             type_map = map;
 
             // Attempt evaluation to catch runtime errors early (child scope of cached stdlib env).
-            // Materialize the result to force lazy thunks — errors like IncludeForbidden only
-            // surface when the thunk is forced, not during the initial (lazy) eval_file call.
+            // When no_fs=true (LSP default), skip deep materialization — all $include thunks
+            // return IncludeForbidden and forcing them is wasteful (no useful diagnostics gained).
+            // Type errors from typecheck are still available for hover/completion.
             match eval_file(&file.node, Rc::clone(stdlib_env), eval_ctx, 0) {
                 Err(err) => eval_errors.push(*err),
                 Ok(thunk) => {
-                    if let Err(err) = materialize(&thunk, None, eval_ctx, 0) {
-                        eval_errors.push(*err);
+                    if !eval_ctx.config.no_fs {
+                        if let Err(err) = materialize(&thunk, None, eval_ctx, 0) {
+                            eval_errors.push(*err);
+                        }
                     }
                 }
             }
