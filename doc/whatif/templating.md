@@ -11,16 +11,16 @@ for producing text output (YAML, TOML, plain text) from structured
 data, embedding tinct code blocks in prose documents, or rendering
 templates where tinct computes dynamic values.
 
-The pipeline model (`---` separators, `$$` threading) processes tinct
+The pipeline model (`---` separators, `%` threading) processes tinct
 files end-to-end. The output is always a single materialized value
 serialized as JSON.
 
 ### Related Capabilities
 
-- **`$str`** concatenates values into strings — text generation within
+- **`str`** concatenates values into strings — text generation within
   tinct
-- **`$include`** loads other `.llt` files — composition of tinct code
-- **`$from-json`** parses JSON strings — input parsing, not output
+- **`include`** loads other `.llt` files — composition of tinct code
+- **`from-json`** parses JSON strings — input parsing, not output
 - **String interpolation** (`doc/whatif/string-interpolation.md`) —
   proposed `i"Hello $name"` syntax for ergonomic string building
 
@@ -99,18 +99,18 @@ Generating a YAML config file from data illustrates the trade-offs.
 # config.llt — pure data, separate formatter
 [
   server: [
-    port: $base.port
-    host: $base.host
-    workers: [call $* $base.cores 2]
+    port: base.port
+    host: base.host
+    workers: [* base.cores 2]
   ]
   logging: [
-    level: [call $if $base.debug debug info]
+    level: [if base.debug "debug" "info"]
   ]
 ]
 
 ---
 
-[call $emit [call $to-yaml $$]]
+[emit [to-yaml %]]
 ```
 
 **Template-polarity (Jinja-style, hypothetical):**
@@ -118,11 +118,11 @@ Generating a YAML config file from data illustrates the trade-offs.
 ```yaml
 # config.yaml.tinct — target format with embedded expressions
 server:
-  port: {{ $base.port }}
-  host: {{ $base.host }}
-  workers: {{ [call $* $base.cores 2] }}
+  port: {{ base.port }}
+  host: {{ base.host }}
+  workers: {{ [* base.cores 2] }}
 logging:
-  level: {{ [call $if $base.debug debug info] }}
+  level: {{ [if base.debug "debug" "info"] }}
 ```
 
 **Literate (Markdown with tinct blocks):**
@@ -134,9 +134,9 @@ Port and host from base config. Workers scaled to 2x cores.
 
 ```tinct
 [server: [
-  port: $base.port
-  host: $base.host
-  workers: [call $* $base.cores 2]
+  port: base.port
+  host: base.host
+  workers: [* base.cores 2]
 ]]
 ```
 
@@ -145,14 +145,14 @@ Port and host from base config. Workers scaled to 2x cores.
 Debug mode enables verbose logging.
 
 ```tinct
-[logging: [level: [call $if $base.debug debug info]]]
+[logging: [level: [if base.debug "debug" "info"]]]
 ---
-[call $emit [call $to-yaml $$]]
+[emit [to-yaml %]]
 ```
 ````
 
 The template-polarity version is shorter for this example, but note
-the friction: `[call $* $base.cores 2]` inside `{{ }}` inside YAML is
+the friction: `[* base.cores 2]` inside `{{ }}` inside YAML is
 three levels of syntax interacting. The data-first version keeps each
 concern in its own layer.
 
@@ -161,19 +161,19 @@ concern in its own layer.
 ## Part 1: Formatters as Pipeline Programs
 
 Formatters are ordinary tinct programs. A formatter receives structured
-data via `$$`, produces a string, and calls `$emit` to send it to
+data via `%`, produces a string, and calls `emit` to send it to
 stdout. The CLI accepts multiple files and pipelines them — each file's
-output becomes `$$` for the next.
+output becomes `%` for the next.
 
 ```bash
 # Pipeline: data program -> formatter program
 tinct eval config.llt stdlib/fmt/yaml.llt
 
 # Inline
-tinct eval -e '[call $emit [call $to-yaml [port: 8080  host: "localhost"]]]'
+tinct eval -e '[emit [to-yaml [port: 8080  host: "localhost"]]]'
 ```
 
-### `$emit` Builtin
+### `emit` Builtin
 
 A Rust builtin that writes a value directly to stdout, bypassing JSON
 serialization.
@@ -181,28 +181,28 @@ serialization.
 **Syntax:**
 
 ```lisp
-[call $emit $value]         # write string to stdout
-[call $emit $value1]        # multiple calls append
-[call $emit $value2]
+[emit value]         # write string to stdout
+[emit value1]        # multiple calls append
+[emit value2]
 ```
 
 **Semantics:**
 
-- `$emit` on `String` writes UTF-8 text to stdout
-- `$emit` on `Bytes` (future) writes raw binary to stdout
+- `emit` on `String` writes UTF-8 text to stdout
+- `emit` on `Bytes` (future) writes raw binary to stdout
 - Returns `Null`
-- Multiple `$emit` calls append to stdout sequentially
-- If `$emit` is never called during evaluation, the final pipeline
+- Multiple `emit` calls append to stdout sequentially
+- If `emit` is never called during evaluation, the final pipeline
   value is JSON-serialized to stdout as today (backwards compatible)
 
-**Interaction with lazy evaluation.** `$emit` is a side-effecting
+**Interaction with lazy evaluation.** `emit` is a side-effecting
 operation — it writes to stdout. In tinct's call-by-need model
 (Launchbury, 1993), side effects are observable only when a thunk is
-forced. `$emit` must be called at the top level of a pipeline stage
+forced. `emit` must be called at the top level of a pipeline stage
 (not inside a lazy binding) to ensure deterministic output ordering.
-If `$emit` appears in a lazy binding, the output timing depends on
+If `emit` appears in a lazy binding, the output timing depends on
 when that binding is forced — which may be never. The evaluator should
-force `$emit` calls eagerly within the document's top-level
+force `emit` calls eagerly within the document's top-level
 expression, treating them as strict positions.
 
 **Internal representation:**
@@ -223,7 +223,7 @@ fn builtin_emit(args: &[Value], ctx: &mut EvalContext) -> Result<Value> {
 ### Multi-File Pipeline
 
 `tinct eval` accepts a list of `.llt` files. Each file is a pipeline
-stage: file_1 evaluates, its output becomes `$$` for file_2, and so
+stage: file_1 evaluates, its output becomes `%` for file_2, and so
 on.
 
 ```bash
@@ -242,7 +242,7 @@ allows separate files to be composed at the CLI level. No new
 `--format` flags — output format is determined by which formatter
 program is in the pipeline.
 
-**Interaction with `$include` caching.** Multi-file pipeline stages
+**Interaction with `include` caching.** Multi-file pipeline stages
 share the include cache (doc/09-documents.md §Document Pipeline). If
 `config.llt` includes `stdlib/lib.llt`, and `fmt/yaml.llt` also
 includes `stdlib/lib.llt`, the second include hits the cache. This is
@@ -261,44 +261,44 @@ Ship in `stdlib/fmt/` as tinct programs:
 - `csv.llt` — CSV from list-of-dicts
 
 Each formatter is both a standalone pipeline stage and a function
-importable via `$include`:
+importable via `include`:
 
 ```lisp
 # stdlib/fmt/yaml.llt — YAML formatter (simplified)
 
 to-yaml-value: [fn [val indent]
-  [call $cond
-    [call $null? $val] "null"
-    [call $bool? $val] [call $str $val]
-    [call $int? $val]  [call $str $val]
-    [call $float? $val] [call $str $val]
-    [call $str? $val]  [call $yaml-quote-string $val]
-    [call $dict? $val] [call $yaml-dict $val $indent]
+  [cond
+    [null? val] "null"
+    [bool? val] [str val]
+    [int? val]  [str val]
+    [float? val] [str val]
+    [str? val]  [yaml-quote-string val]
+    [dict? val] [yaml-dict val indent]
     "null"]]
 
 to-yaml-dict: [fn [d indent]
-  [call $join "\n" [call $map [fn [entry]
-    [call $str
-      [call $repeat $indent " "]
-      $entry.key ": "
-      [call $to-yaml-value $entry.value [call $+ $indent 2]]]]
-    [call $entries $d]]]]
+  [join "\n" [map [fn [entry]
+    [str
+      [repeat indent " "]
+      entry.key ": "
+      [to-yaml-value entry.value [+ indent 2]]]]
+    [entries d]]]]
 
-to-yaml: [fn [val] [call $to-yaml-value $val 0]]
+to-yaml: [fn [val] [to-yaml-value val 0]]
 
 ---
 
-[call $emit [call $to-yaml $$]]
+[emit [to-yaml %]]
 ```
 
 Formatters compose with tinct's existing mechanisms:
 
 ```lisp
 # Format a subset
-[call $emit [call $to-yaml [call $select $$ "server" "logging"]]]
+[emit [to-yaml [select % "server" "logging"]]]
 
 # Custom wrapper
-[call $emit [call $str "---\n" [call $to-yaml $$] "\n---\n"]]
+[emit [str "---\n" [to-yaml %] "\n---\n"]]
 ```
 
 ### Why Formatters in tinct
@@ -312,9 +312,9 @@ Formatters compose with tinct's existing mechanisms:
    `fmt/mylog.llt` — no Rust code, no recompilation.
 
 3. **Pipeline-native.** Formatters are pipeline stages, not CLI flags.
-   Data flows in via `$$`, text flows out via `$emit`.
+   Data flows in via `%`, text flows out via `emit`.
 
-4. **`$emit` unifies text and binary.** Output encoding is a
+4. **`emit` unifies text and binary.** Output encoding is a
    tinct-level concern, not a CLI flag. No `--format text/yaml/toml`
    flags needed.
 
@@ -349,7 +349,7 @@ The server listens on the configured port.
 Worker pool size is twice the worker count:
 
 ```tinct
-pool-size: [call $* $$.workers 2]
+pool-size: [* %.workers 2]
 ```
 ````
 
@@ -384,14 +384,14 @@ pool-size: [call $* $$.workers 2]
 **Block extraction.** The `tangle` and `eval` modes extract code
 blocks tagged with `tinct` (or `llt`) from the Markdown source.
 Each block becomes a pipeline document, separated by implicit `---`
-boundaries. `$$` threads between blocks in document order.
+boundaries. `%` threads between blocks in document order.
 
 **Weave rendering.** The `weave` mode requires a convention for
 marking result positions. Two options:
 
 ```markdown
-The port is: <!-- tinct: $$.port -->
-The port is: `{= $$.port}`
+The port is: <!-- tinct: %.port -->
+The port is: `{= %.port}`
 ```
 
 The weave processor evaluates the expression and replaces the marker
@@ -399,12 +399,12 @@ with the rendered result.
 
 **Scope.** All code blocks within a single Markdown file share a
 pipeline scope — earlier blocks' bindings are visible to later blocks
-(via `$$` threading). This matches tinct's `---` pipeline semantics.
+(via `%` threading). This matches tinct's `---` pipeline semantics.
 
 ### Pipeline Mapping
 
 tinct's `---` pipeline model maps directly to multiple code blocks.
-Each code block is a pipeline stage — its output becomes `$$` for the
+Each code block is a pipeline stage — its output becomes `%` for the
 next block. Prose between blocks serves as documentation for the
 transformation steps.
 
@@ -416,19 +416,19 @@ order IS the execution order (pipeline stages run sequentially), so
 ### Formatter Integration
 
 Literate mode composes with Part 1 formatters. The last code block
-can call `$emit`:
+can call `emit`:
 
 ````markdown
 # Generate YAML Config
 
 ```tinct
-[port: 8080  hostname: api.example.com]
+[port: 8080  hostname: "api.example.com"]
 ```
 
 ## Output
 
 ```tinct
-[call $emit [call $to-yaml $$]]
+[emit [to-yaml %]]
 ```
 ````
 
@@ -470,15 +470,15 @@ delimited by markers. Two delimiter styles are natural:
 
 ```yaml
 # {{ expr }} style (Jinja-like)
-port: {{ $config.port }}
-workers: {{ [call $* $config.cores 2] }}
+port: {{ config.port }}
+workers: {{ [* config.cores 2] }}
 ```
 
 **Block delimiters** — control flow:
 
 ```yaml
 # {% block %} style (Jinja-like)
-{% [call $if $config.debug] %}
+{% [if config.debug] %}
 logging:
   level: debug
   verbose: true
@@ -498,7 +498,7 @@ The template processor would:
 
 1. Parse the host document as raw text
 2. Extract tinct expressions from delimiters
-3. Evaluate expressions against data from `--data` or `$$`
+3. Evaluate expressions against data from `--data` or `%`
 4. Convert results to strings and interpolate into the text
 5. Emit the resulting text to stdout
 
@@ -509,13 +509,13 @@ languages like Python (Jinja) or Ruby (ERB) do not face:
 
 | Operation | Jinja2 (Python) | ERB (Ruby) | tinct |
 |-----------|-----------------|------------|-------|
-| Multiply | `{{ cores * 2 }}` | `<%= cores * 2 %>` | `{{ [call $* $cores 2] }}` |
-| Conditional | `{{ "debug" if debug else "info" }}` | `<%= debug ? "debug" : "info" %>` | `{{ [call $if $debug debug info] }}` |
-| String concat | `{{ name + ".log" }}` | `<%= name + ".log" %>` | `{{ [call $str $name .log] }}` |
-| Field access | `{{ config.port }}` | `<%= config.port %>` | `{{ $config.port }}` |
+| Multiply | `{{ cores * 2 }}` | `<%= cores * 2 %>` | `{{ [* cores 2] }}` |
+| Conditional | `{{ "debug" if debug else "info" }}` | `<%= debug ? "debug" : "info" %>` | `{{ [if debug "debug" "info"] }}` |
+| String concat | `{{ name + ".log" }}` | `<%= name + ".log" %>` | `{{ [str name ".log"] }}` |
+| Field access | `{{ config.port }}` | `<%= config.port %>` | `{{ config.port }}` |
 
-Field access is clean (`$config.port`), but computation is verbose.
-The `[call $fn $args]` syntax — explicit and unambiguous for a
+Field access is clean (`config.port`), but computation is verbose.
+The `[fn args]` syntax — explicit and unambiguous for a
 standalone language — becomes noisy when embedded in another format.
 Every template expression beyond simple variable interpolation pays
 a syntax tax.
@@ -580,8 +580,8 @@ files.
 
 | Level | Mechanism | Scope | Type safety |
 |-------|-----------|-------|-------------|
-| Micro | `i"port: $config.port"` | One string | Desugars to `$str` (typed) |
-| Macro | `port: {{ $config.port }}` | Entire file | String concat (untyped) |
+| Micro | `i"port: $config.port"` | One string | Desugars to `str` (typed) |
+| Macro | `port: {{ config.port }}` | Entire file | String concat (untyped) |
 
 If `i"..."` plus data-first formatters cover the use cases,
 document-level template embedding adds complexity without
@@ -613,12 +613,12 @@ host document IS and what the code snippets DO.
 | Primary audience | Machine/consumer of the target format | Human reader |
 | Code density | Sparse (mostly static text) | Dense (mostly code) |
 | Code ordering | Dictated by target format structure | Dictated by explanation |
-| Pipeline model | No natural expression | Maps directly to `---`/`$$` |
+| Pipeline model | No natural expression | Maps directly to `---`/`%` |
 
 ### In tinct
 
 tinct's literate mode (Part 2) maps naturally to the pipeline model.
-Each Markdown code block is a pipeline stage. `$$` threads between
+Each Markdown code block is a pipeline stage. `%` threads between
 blocks. Prose documents the transformation steps. The explanation
 order IS the pipeline order, which satisfies Knuth's (1984) insight
 that code should follow the order of human understanding.
@@ -638,7 +638,7 @@ appear in a host document. The difference is that weave produces
 documentation (Markdown with results), not deployment artifacts
 (YAML config files).
 
-A literate tinct document that produces YAML via `$emit` in its last
+A literate tinct document that produces YAML via `emit` in its last
 code block combines both paradigms: prose documents the configuration
 decisions (literate), and the pipeline produces formatted output
 (data-first). Template embedding is not needed — the same result is
@@ -667,10 +667,10 @@ The same task — a documented, parameterized config — in both styles:
 
 ```yaml
 # config.yaml.tinct
-# Server configuration for {{ $env }} environment
+# Server configuration for {{ env }} environment
 server:
-  port: {{ $base.port }}
-  workers: {{ [call $* $base.cores 2] }}
+  port: {{ base.port }}
+  workers: {{ [* base.cores 2] }}
 ```
 
 Produces YAML. The documentation ("Server configuration for...") is
@@ -690,16 +690,16 @@ planning guidelines in RFC-0042.
 ```tinct
 [
   server: [
-    port: $base.port
-    workers: [call $* $base.cores 2]
+    port: base.port
+    workers: [* base.cores 2]
   ]
 ]
 ---
-[call $emit [call $to-yaml $$]]
+[emit [to-yaml %]]
 ```
 ````
 
-Produces YAML (via `$emit`) AND is readable documentation. The prose
+Produces YAML (via `emit`) AND is readable documentation. The prose
 explains *why* workers are 2x cores — context that a YAML comment
 cannot capture. The literate document serves dual duty: executable
 config generator and design rationale.
@@ -713,11 +713,11 @@ JSON to stdout. No `tinct literate` subcommand exists.
 
 **Proposed:** (1) `tinct eval` accepts multiple `.llt` files as
 pipeline stages. (2) New `tinct literate` subcommand with `tangle`,
-`weave`, and `eval` modes for Markdown files. (3) When `$emit` is
+`weave`, and `eval` modes for Markdown files. (3) When `emit` is
 called, suppress default JSON output.
 
 **Impact:** Moderate. Multi-file pipeline extends the existing
-argument parser. The `$emit`-suppresses-JSON behavior requires a
+argument parser. The `emit`-suppresses-JSON behavior requires a
 flag in the evaluation context.
 
 ### Evaluator
@@ -726,12 +726,12 @@ flag in the evaluation context.
 document. Output serialization is handled by the CLI layer after
 evaluation completes.
 
-**Proposed:** (1) Add `$emit` as a Rust builtin with access to a
-write sink on `EvalContext`. (2) Thread `$$` across file boundaries
+**Proposed:** (1) Add `emit` as a Rust builtin with access to a
+write sink on `EvalContext`. (2) Thread `%` across file boundaries
 (currently only within `---` boundaries in a single file). (3) Track
-whether `$emit` was called to determine output mode.
+whether `emit` was called to determine output mode.
 
-**Impact:** Moderate. `$emit` introduces a side-effecting builtin
+**Impact:** Moderate. `emit` introduces a side-effecting builtin
 into an otherwise pure evaluator. The `EvalContext` needs a write
 sink (e.g., `Box<dyn Write>`) and an `emitted: bool` flag.
 
@@ -753,7 +753,7 @@ with `---` separators, which the existing parser already handles.
 
 **Proposed:** Extend cross-document type checking to multi-file
 pipelines. Document N's inferred output type must be compatible with
-document N+1's expected `$$` type (or `$$@Type` annotation from
+document N+1's expected `%` type (or `%@Type` annotation from
 `doc/whatif/structural-contracts.md`).
 
 **Impact:** Minor to Moderate. Within a single file, cross-document
@@ -772,19 +772,19 @@ toml.llt, json-pretty.llt, env.llt, ini.llt, csv.llt).
 
 ## Phased Adoption
 
-### Phase 1: `$emit`, Multi-File Pipeline, and Type Predicates
+### Phase 1: `emit`, Multi-File Pipeline, and Type Predicates
 
 Three prerequisites that enable Part 1:
 
-- **`$emit` builtin** — Rust builtin that writes to stdout. Takes a
-  `String`, writes UTF-8. Returns `Null`. When `$emit` is called,
+- **`emit` builtin** — Rust builtin that writes to stdout. Takes a
+  `String`, writes UTF-8. Returns `Null`. When `emit` is called,
   the CLI suppresses default JSON output.
 
 - **Multi-file pipeline** — `tinct eval` accepts multiple `.llt` files.
-  Each file's output becomes `$$` for the next.
+  Each file's output becomes `%` for the next.
 
-- **Type predicates** — `$int?`, `$float?`, `$str?`, `$bool?`,
-  `$null?`, `$dict?`, `$fn?`. See `doc/whatif/type-predicates.md`.
+- **Type predicates** — `int?`, `float?`, `str?`, `bool?`,
+  `null?`, `dict?`, `fn?`. See `doc/whatif/type-predicates.md`.
 
 ### Phase 2: Standard Formatters
 
@@ -798,13 +798,13 @@ Add `i"..."` string interpolation to make formatters more ergonomic:
 
 ```lisp
 # Before
-[call $str $indent $key ": " [call $quote-yaml $val] "\n"]
+[str indent key ": " [quote-yaml val] "\n"]
 
 # After
-i"$indent$key: ${[call $quote-yaml $val]}\n"
+i"$indent$key: ${[quote-yaml val]}\n"
 ```
 
-Not required for correctness — `$str` is sufficient.
+Not required for correctness — `str` is sufficient.
 
 ### Phase 4: Literate Mode
 
@@ -823,7 +823,7 @@ Implementation would require:
   expressions from arbitrary text
 - An evaluation mode that converts expression results to strings
   and interpolates them into the surrounding text
-- A `--data` flag or `$$` mechanism for providing data context
+- A `--data` flag or `%` mechanism for providing data context
 
 ### Prerequisites
 
@@ -831,7 +831,7 @@ Implementation would require:
 - **Phase 2:** Phase 1 complete.
 - **Phase 3:** Independent of Phase 2 (can run in parallel).
 - **Phase 4:** Independent of all other phases.
-- **Phase 5:** Phases 1 and 3 complete (evaluate whether `$emit` +
+- **Phase 5:** Phases 1 and 3 complete (evaluate whether `emit` +
   `i"..."` + formatters cover the use cases before committing).
 
 ### Trigger
@@ -841,7 +841,7 @@ pattern matching work begins (type predicates are shared).
 
 Phase 2: users need YAML/TOML output from tinct data.
 
-Phase 3: formatter code becomes verbose with nested `$str` calls.
+Phase 3: formatter code becomes verbose with nested `str` calls.
 
 Phase 4: documentation-driven development becomes a tinct workflow,
 or users want executable examples in docs.
@@ -911,7 +911,7 @@ and structure of an existing target-format file.
 
 **Evaluation semantics:**
 - Launchbury, J. (1993). "A natural semantics for lazy evaluation."
-  *POPL*, pp. 144-154. — Call-by-need semantics. Relevant to `$emit`'s
+  *POPL*, pp. 144-154. — Call-by-need semantics. Relevant to `emit`'s
   interaction with lazy evaluation: side effects are only observable
   when thunks are forced.
 

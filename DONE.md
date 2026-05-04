@@ -3600,3 +3600,10 @@ Single atomic change. All internal `.llt` files migrated in the same commit. See
 - [x] **Error message tests**: `string_suggestion.llt-eval` (hyphenated `my-key` exercises `-` heuristic), `no_suggestion_for_percent.llt-eval` (% suppresses hint), `pipeline_forward_ref_undefined.llt-eval`.
 - [x] **Doc updates**: `doc/02-syntax.md §6` ebnf verified with `call_implied` and Priority 2b; `doc/09-documents.md` DOC-PIPELINE table updated; `output_type` annotation uses `result_env` (`src/typecheck.rs:527`); formatter section headers roundtrip correctly.
 - [x] **`$$` removal**: `"$"` binding removed from all pipeline envs; `doc/whatif/structural-contracts.md` and `doc/whatif/index.md` cleaned up.
+
+### new-syntax-migrate: Final Syntax Migration and Cleanup
+
+- [x] **Corpus tests** (remaining): `type_annotated_output.llt-eval`, `section_with_expects.llt-eval` (expects: @Dict).
+- [x] **README.md** and **lib/yaml.llt**: Migrated to new syntax.
+- [x] **26/28 doc/whatif/*.md files**: Migrated to new syntax (algebraic-data-types, arena-patterns, call-aliases, circular-dep-error-paths, eval-builtins-boundary, eval-semantics-verification, float-dict-keys, gradual-typing, index, io, let-binding, lib-regex, lib-sql, lib-supplemental, lib-tls, macros, narrowing, nominal-variants, numeric-types, parameterized-type-aliases, parser-rewrite, pattern-matching, quasiquoting, string-interpolation, structural-contracts, TEMPLATE, templating, type-predicates, typeclasses, union-types).
+- [x] **Code files**: builtins.rs "call $apply"→"apply", formatter.rs $_ tests, repl.rs tests, typecheck.rs tests, error.rs $try refs, lib.rs doc comment.

@@ -23,7 +23,7 @@ prelude covers:
 - **Aggregates**: `sum`, `product`, `min`, `max`, `count`, `any?`,
   `all?`, `contains?`
 - **Math**: `abs`, `sign`, `clamp`, `quot`, `mod`, `ceil`, `trunc`
-  (all pure-tinct on top of `$floor` and `$round` builtins)
+  (all pure-tinct on top of `floor` and `round` builtins)
 - **String builtins** (Rust): `split`, `replace`, `upper`, `lower`,
   `trim`, `str`, `join`
 - **Type predicates**: `int?`, `str?`, `float?`, `bool?`, `dict?`,
@@ -39,14 +39,14 @@ by splitting:
 ```lisp
 # Current: repeated split checks for each special character
 yaml-needs-quoting?: [fn [s]
-  [call $or
-    [call $or [call $= "" $s]
-              [call $or
-                [call $> 1 [call $length [call $split $s ":"]]]
-                [call $> 1 [call $length [call $split $s "#"]]]]]
-    [call $or
-      [call $> 1 [call $length [call $split $s "{"]]]
-      [call $> 1 [call $length [call $split $s "}"]]]
+  [or
+    [or [= "" s]
+              [or
+                [> 1 [length [split s ":"]]]
+                [> 1 [length [split s "#"]]]]]
+    [or
+      [> 1 [length [split s "{"]]]
+      [> 1 [length [split s "}"]]]
     ]]]
 # ... continues for 15+ special characters
 ```
@@ -74,7 +74,7 @@ Pattern matching and regex are addressed separately in
 **Serialization helpers become writable.** YAML, TOML, and Nginx
 config generation require knowing whether strings need quoting.
 Without string predicates, every serialization helper is a pile of
-`$split` checks.
+`split` checks.
 
 **Mathematical configuration.** Network configs involve subnets and
 masks (bitwise math). Audio/video configs involve sample rates and
@@ -121,7 +121,7 @@ standard libraries:
 ### Phase 1: Extended String Utilities (stdlib/strings.llt)
 
 String search predicates are implementable in pure-tinct using the
-existing `$split` builtin: `$split haystack needle` returns an array
+existing `split` builtin: `split haystack needle` returns an array
 with one more element than there are occurrences, so length > 1
 indicates containment.
 
@@ -130,46 +130,46 @@ indicates containment.
 
 # str-contains? — true if needle appears anywhere in haystack
 str-contains?: [fn [needle haystack]
-  [call $> [call $length [call $split $haystack $needle]] 1]]
+  [> [length [split haystack needle]] 1]]
 
 # str-starts-with? — true if haystack begins with prefix
 str-starts-with?: [fn [prefix haystack]
-  [call $= "" [call $get 0 [call $split $haystack $prefix]]]]
+  [= "" [get 0 [split haystack prefix]]]]
 
 # str-ends-with? — true if haystack ends with suffix
 str-ends-with?: [fn [suffix haystack]
-  [call $= "" [call $last [call $split $haystack $suffix]]]]
+  [= "" [last [split haystack suffix]]]]
 
 # str-chars — split string into individual characters
-str-chars: [fn [s] [call $split $s ""]]
+str-chars: [fn [s] [split s ""]]
 
 # str-pad-left — left-pad s to width using fill character
 str-pad-left: [fn [fill width s]
-  [call $str
-    [call $join "" [call $take
-      [call $max 0 [call $- $width [call $length $s]]]
-      [call $repeat $fill]]]
-    $s]]
+  [str
+    [join "" [take
+      [max 0 [- width [length s]]]
+      [repeat fill]]]
+    s]]
 
 # str-pad-right — right-pad s to width using fill character
 str-pad-right: [fn [fill width s]
-  [call $str $s
-    [call $join "" [call $take
-      [call $max 0 [call $- $width [call $length $s]]]
-      [call $repeat $fill]]]]]
+  [str s
+    [join "" [take
+      [max 0 [- width [length s]]]
+      [repeat fill]]]]]
 
 # str-repeat — repeat s n times
-str-repeat: [fn [n s] [call $join "" [call $take $n [call $repeat $s]]]]
+str-repeat: [fn [n s] [join "" [take n [repeat s]]]]
 
 # str-find — character index of first occurrence of needle, or -1
 str-find: [fn [needle haystack]
-  [call $if [call $str-contains? $needle $haystack]
-    [call $length [call $get 0 [call $split $haystack $needle]]]
+  [if [str-contains? needle haystack]
+    [length [get 0 [split haystack needle]]]
     -1]]
 
 # str-slice — substring by character index (half-open range)
 str-slice: [fn [from to s]
-  [call $join "" [call $drop $from [call $take $to [call $str-chars $s]]]]]
+  [join "" [drop from [take to [str-chars s]]]]]
 ```
 
 Edge cases: `str-contains?` returns false when needle is empty
@@ -179,19 +179,19 @@ split). `str-starts-with?` and `str-ends-with?` behave analogously.
 multi-byte Unicode it returns the character count of the part before
 the split, not the byte offset.
 
-**One potential Rust builtin: `$str-chars`**
+**One potential Rust builtin: `str-chars`**
 
-`str-chars`, `str-slice`, and `str-find` depend on `$split s ""`
+`str-chars`, `str-slice`, and `str-find` depend on `split s ""`
 producing clean individual characters. Rust's `str::split("")` yields
 `["", c₁, c₂, …, cₙ, ""]` with boundary empty strings. If tinct
-passes through that raw output, a single `$str-chars` Rust builtin
+passes through that raw output, a single `str-chars` Rust builtin
 (`s.chars().map(|c| c.to_string()).collect()`) gives a clean
 0-indexed character list. Phase 1 requires at most one new Rust
 builtin.
 
 ### Phase 2: Extended Math Builtins (src/builtins.rs)
 
-tinct's current math coverage ends at `$floor`, `$round`, and the
+tinct's current math coverage ends at `floor`, `round`, and the
 pure-tinct derivatives in prelude. Missing functions are all trivial
 wrappers around Rust's `f64` methods — no new crate needed.
 
@@ -199,19 +199,19 @@ wrappers around Rust's `f64` methods — no new crate needed.
 
 | Function | Rust equivalent | Notes |
 |----------|----------------|-------|
-| `$pow base exp` | `f64::powf` | Both args coerced to float |
-| `$sqrt x` | `f64::sqrt` | Returns `Float` |
-| `$log x` | `f64::ln` | Natural log |
-| `$log2 x` | `f64::log2` | |
-| `$log10 x` | `f64::log10` | |
-| `$exp x` | `f64::exp` | `e^x` |
-| `$sin x` | `f64::sin` | Radians |
-| `$cos x` | `f64::cos` | Radians |
-| `$tan x` | `f64::tan` | Radians |
-| `$asin x` | `f64::asin` | Returns radians |
-| `$acos x` | `f64::acos` | Returns radians |
-| `$atan x` | `f64::atan` | Returns radians |
-| `$atan2 y x` | `f64::atan2` | Two-argument form |
+| `pow base exp` | `f64::powf` | Both args coerced to float |
+| `sqrt x` | `f64::sqrt` | Returns `Float` |
+| `log x` | `f64::ln` | Natural log |
+| `log2 x` | `f64::log2` | |
+| `log10 x` | `f64::log10` | |
+| `exp x` | `f64::exp` | `e^x` |
+| `sin x` | `f64::sin` | Radians |
+| `cos x` | `f64::cos` | Radians |
+| `tan x` | `f64::tan` | Radians |
+| `asin x` | `f64::asin` | Returns radians |
+| `acos x` | `f64::acos` | Returns radians |
+| `atan x` | `f64::atan` | Returns radians |
+| `atan2 y x` | `f64::atan2` | Two-argument form |
 
 Pure-tinct additions to `stdlib/math.llt`:
 
@@ -219,10 +219,10 @@ Pure-tinct additions to `stdlib/math.llt`:
 # stdlib/math.llt
 pi:        3.141592653589793
 e:         2.718281828459045
-hypot:     [fn [x y] [call $sqrt [call $+ [call $pow $x 2] [call $pow $y 2]]]]
-deg->rad:  [fn [d] [call $* $d [call $/ pi 180.0]]]
-rad->deg:  [fn [r] [call $* $r [call $/ 180.0 pi]]]
-log-base:  [fn [b x] [call $/ [call $log $x] [call $log $b]]]
+hypot:     [fn [x y] [sqrt [+ [pow x 2] [pow y 2]]]]
+deg->rad:  [fn [d] [* d [/ pi 180.0]]]
+rad->deg:  [fn [r] [* r [/ 180.0 pi]]]
+log-base:  [fn [b x] [/ [log x] [log b]]]
 ```
 
 `pi` and `e` are Float literals — no Rust builtin needed. All trig
@@ -236,35 +236,35 @@ primitive bitwise operations from which users can implement base64, hex,
 subnet masks, permission flags, or any other bit-level algorithm in
 pure-tinct. The Rust builtins are the smallest useful layer; derived
 operations live in `stdlib/encoding.llt`. Phase 3 is also a prerequisite
-for `doc/whatif/lib-regex.md`, which needs `$char-code` for character
+for `doc/whatif/lib-regex.md`, which needs `char-code` for character
 class range comparisons.
 
 **New Rust builtins:**
 
-**`$band a b`** — bitwise AND of two integers.
+**`band a b`** — bitwise AND of two integers.
 
-**`$bor a b`** — bitwise OR of two integers.
+**`bor a b`** — bitwise OR of two integers.
 
-**`$bxor a b`** — bitwise XOR of two integers.
+**`bxor a b`** — bitwise XOR of two integers.
 
-**`$shl a n`** — left-shift `a` by `n` bits.
+**`shl a n`** — left-shift `a` by `n` bits.
 
-**`$shr a n`** — logical right-shift `a` by `n` bits (zero-fills high
+**`shr a n`** — logical right-shift `a` by `n` bits (zero-fills high
 bits, treating the value as unsigned 64-bit).
 
-**`$char-code s`** — Unicode codepoint of the first character of string
+**`char-code s`** — Unicode codepoint of the first character of string
 `s` as an `Int`. For ASCII characters this equals the byte value.
 
-**`$chr n`** — single-character string whose Unicode codepoint is `n`.
-Inverse of `$char-code`.
+**`chr n`** — single-character string whose Unicode codepoint is `n`.
+Inverse of `char-code`.
 
-**`$str-bytes s`** — UTF-8 byte sequence of `s` as a 0-indexed `Dict`
+**`str-bytes s`** — UTF-8 byte sequence of `s` as a 0-indexed `Dict`
 of integers (0–255). Each entry is one byte of the UTF-8 encoding, not
-one Unicode character. For ASCII strings, `$char-code` and `$str-bytes`
+one Unicode character. For ASCII strings, `char-code` and `str-bytes`
 agree; for multi-byte Unicode they differ.
 
-**`$bytes-str bytes`** — string whose UTF-8 encoding is the given
-0-indexed `Dict` of byte integers. Inverse of `$str-bytes`. Errors on
+**`bytes-str bytes`** — string whose UTF-8 encoding is the given
+0-indexed `Dict` of byte integers. Inverse of `str-bytes`. Errors on
 invalid UTF-8.
 
 **Derived operations in `stdlib/encoding.llt` (pure-tinct):**
@@ -272,32 +272,32 @@ invalid UTF-8.
 ```lisp
 # stdlib/encoding.llt
 
-b64-alpha: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
+b64-alpha: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 # encode one 6-bit index to a base64 character
-b64-char: [fn [n] [call $get $n [call $split b64-alpha ""]]]
+b64-char: [fn [n] [get n [split b64-alpha ""]]]
 
 # encode three bytes to four base64 characters
 b64-triple: [fn [b0 b1 b2]
-  [call $str
-    [call $b64-char [call $shr $b0 2]]
-    [call $b64-char [call $band [call $bor [call $shl $b0 4] [call $shr $b1 4]] 63]]
-    [call $b64-char [call $band [call $bor [call $shl $b1 2] [call $shr $b2 6]] 63]]
-    [call $b64-char [call $band $b2 63]]]]
+  [str
+    [b64-char [shr b0 2]]
+    [b64-char [band [bor [shl b0 4] [shr b1 4]] 63]]
+    [b64-char [band [bor [shl b1 2] [shr b2 6]] 63]]
+    [b64-char [band b2 63]]]]
 
 # base64-encode — full implementation (handles padding)
 base64-encode: [fn [s]
-  # ... fold over $str-bytes in groups of 3, handle 1-2 byte remainders
+  # ... fold over str-bytes in groups of 3, handle 1-2 byte remainders
   ]
 
 # hex-encode — one byte per two hex chars
-hex-digit: [fn [n] [call $get $n [call $split "0123456789abcdef" ""]]]
-hex-byte:  [fn [b] [call $str [call $hex-digit [call $shr $b 4]]
-                               [call $hex-digit [call $band $b 15]]]]
-hex-encode: [fn [s] [call $join "" [call $map hex-byte [call $str-bytes $s]]]]
+hex-digit: [fn [n] [get n [split "0123456789abcdef" ""]]]
+hex-byte:  [fn [b] [str [hex-digit [shr b 4]]
+                        [hex-digit [band b 15]]]]
+hex-encode: [fn [s] [join "" [map hex-byte [str-bytes s]]]]
 
 # subnet mask application (common config use case)
-mask-apply: [fn [ip mask] [call $band $ip $mask]]
+mask-apply: [fn [ip mask] [band ip mask]]
 ```
 
 The nine Rust builtins — five bitwise ops, two char↔code conversions,
@@ -308,17 +308,17 @@ No new crate dependency is introduced in Phase 3.
 
 ### Deferred: Path Utilities (stdlib/path.llt)
 
-Path manipulation is entirely implementable in pure-tinct using `$split`
-and `$join`. Deferred because it is not blocking any known use case and
+Path manipulation is entirely implementable in pure-tinct using `split`
+and `join`. Deferred because it is not blocking any known use case and
 the semantics (POSIX vs Windows paths) need a decision.
 
 ```lisp
 # Future stdlib/path.llt — all pure-tinct
-path-parts:   [fn [p] [call $split $p "/"]]
-basename:     [fn [p] [call $last [call $path-parts $p]]]
-dirname:      [fn [p] [call $join "/" [call $rest [call $reverse [call $path-parts $p]]]]]
-extension:    [fn [p] [call $last [call $split [call $basename $p] "."]]]
-path-join:    [fn [...parts] [call $join "/" $parts]]
+path-parts:   [fn [p] [split p "/"]]
+basename:     [fn [p] [last [path-parts p]]]
+dirname:      [fn [p] [join "/" [rest [reverse [path-parts p]]]]]
+extension:    [fn [p] [last [split [basename p] "."]]]
+path-join:    [fn [...parts] [join "/" parts]]
 ```
 
 ### Deferred: Date/Time
@@ -343,8 +343,8 @@ pure-tinct.
 
 **Current:** 46 Rust builtins registered in `standard_builtins()`.
 
-**Proposed:** Phase 1 adds at most 1 Rust builtin (`$str-chars`, only
-if `$split s ""` edge case requires it — otherwise 0). Phase 2 adds
+**Proposed:** Phase 1 adds at most 1 Rust builtin (`str-chars`, only
+if `split s ""` edge case requires it — otherwise 0). Phase 2 adds
 13 math builtins (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`,
 `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`; `pi` and `e` are Float
 literals). Phase 3 adds 9 bitwise primitive builtins (`band`, `bor`,
@@ -388,26 +388,26 @@ multiple files.
 precise signatures:
 
 ```
-# Phase 1 (optional — only if $split s "" is unreliable)
-$str-chars : String → Dict   -- 0-indexed list of single-char strings
+# Phase 1 (optional — only if split s "" is unreliable)
+str-chars : String → Dict   -- 0-indexed list of single-char strings
 
 # Phase 2
-$pow : Float → Float → Float
-$sqrt : Float → Float
-$sin : Float → Float   (and cos, tan, asin, acos, atan)
-$atan2 : Float → Float → Float
+pow : Float → Float → Float
+sqrt : Float → Float
+sin : Float → Float   (and cos, tan, asin, acos, atan)
+atan2 : Float → Float → Float
 # pi and e are Float literals in stdlib/math.llt, not registered builtins
 
 # Phase 3 — bitwise primitives
-$band : Int → Int → Int
-$bor : Int → Int → Int
-$bxor : Int → Int → Int
-$shl : Int → Int → Int
-$shr : Int → Int → Int
-$char-code : String → Int
-$chr : Int → String
-$str-bytes : String → Dict   -- 0-indexed list of Int (0-255)
-$bytes-str : Dict → String   -- inverse of $str-bytes
+band : Int → Int → Int
+bor : Int → Int → Int
+bxor : Int → Int → Int
+shl : Int → Int → Int
+shr : Int → Int → Int
+char-code : String → Int
+chr : Int → String
+str-bytes : String → Dict   -- 0-indexed list of Int (0-255)
+bytes-str : Dict → String   -- inverse of str-bytes
 ```
 
 **Impact:** Minor — follows the `TypeEnv::with_builtins()` pattern
@@ -420,7 +420,7 @@ established in the `type-extensions` sprint.
 **What:** `stdlib/strings.llt` with all string utilities as pure-tinct:
 `str-contains?`, `str-starts-with?`, `str-ends-with?`, `str-chars`,
 `str-pad-left`, `str-pad-right`, `str-repeat`, `str-find`, `str-slice`.
-At most one Rust builtin (`$str-chars`) if `$split s ""` edge-case
+At most one Rust builtin (`str-chars`) if `split s ""` edge-case
 behavior is unreliable; otherwise zero.
 
 **What it enables:** String predicates for conditional config generation,
@@ -443,15 +443,15 @@ frequency ratios, calibration curves).
 
 ### Phase 3: Bitwise Primitives
 
-**What:** 9 new Rust builtins — five bitwise integer operations (`$band`,
-`$bor`, `$bxor`, `$shl`, `$shr`) and four string↔bytes conversions
-(`$char-code`, `$chr`, `$str-bytes`, `$bytes-str`). Derived operations
+**What:** 9 new Rust builtins — five bitwise integer operations (`band`,
+`bor`, `bxor`, `shl`, `shr`) and four string↔bytes conversions
+(`char-code`, `chr`, `str-bytes`, `bytes-str`). Derived operations
 (`base64-encode`, `hex-encode`, `hex-decode`, subnet masking, permission
 flags) in pure-tinct `stdlib/encoding.llt`.
 
 **What it enables:** Any bit-level algorithm — base64, hex, subnet mask
 application, Unix permission flags, user-defined bit-packed formats.
-Also prerequisite for `doc/whatif/lib-regex.md` (needs `$char-code`).
+Also prerequisite for `doc/whatif/lib-regex.md` (needs `char-code`).
 
 **No new crates.**
 
@@ -471,7 +471,7 @@ Also prerequisite for `doc/whatif/lib-regex.md` (needs `$char-code`).
   attempted (subnetting, audio config, scientific instrumentation).
 - **Phase 3:** When any bit-level configuration task arises — subnet
   mask calculation, Unix permission flags, base64 or hex encoding, or
-  when `lib-regex.md` adoption is planned (it depends on `$char-code`).
+  when `lib-regex.md` adoption is planned (it depends on `char-code`).
 
 ## References
 
@@ -492,4 +492,4 @@ Also prerequisite for `doc/whatif/lib-regex.md` (needs `$char-code`).
   Encodings." RFC 4648. — Normative reference for the base64 alphabet
   and padding behavior used in `stdlib/encoding.llt`.
 - doc/whatif/lib-regex.md — regex engine that depends on Phase 1
-  (`str-chars`) and Phase 3 (`$char-code`) of this doc.
+  (`str-chars`) and Phase 3 (`char-code`) of this doc.

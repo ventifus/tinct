@@ -5,31 +5,31 @@ What would it take to let users define aliases or alternatives for the
 
 ## Current State
 
-tinct uses explicit `[call $f $x]` for all function application. The
-`call` keyword is mandatory — there is no implicit head evaluation.
+tinct now uses implied call syntax `[f x]` for function application.
+The `call` keyword is no longer needed in most cases.
 This is a core design principle (doc/01-introduction.md §Principle 3: Explicit
 Function Application):
 
 ```lisp
-[call $map [fn [x] [call $* $x 2]] $data]
+[map [fn [x] [* x 2]] data]
 ```
 
-Users sometimes want shorter syntax for frequent function calls, e.g.,
-`[apply $f $x]` or `[$f $x]` (implicit call).
+With the new implied call syntax, `[f x]` is now the standard form.
+Users may still want custom application forms with additional semantics.
 
 Current workarounds include function wrappers and existing ergonomic
 forms:
 
 ```lisp
-# Function wrappers — note: spread-in-call ([call $f ...args]) is not valid
-# tinct syntax; $apply is a builtin for this purpose
-pipe:  [fn [x f] [call $f $x]]
+# Function wrappers — note: spread-in-call ([f ...args]) is not valid
+# tinct syntax; apply is a builtin for this purpose
+pipe:  [fn [x f] [f x]]
 
-# $_ implicit lambda
-[call $map [call $double $_] $data]
+# _ implicit lambda
+[map [double _] data]
 
-# $-> threading eliminates nested calls
-[call $-> $input $parse $transform $format]
+# -> threading eliminates nested calls
+[-> input parse transform format]
 ```
 
 ### What's Missing
@@ -39,7 +39,7 @@ pipe:  [fn [x f] [call $f $x]]
 2. Domain-specific application vocabulary — a DSL author cannot make
    `[invoke ...]` or `[run ...]` mean "call with custom behavior."
 3. Syntactic extensibility at the bracket level — wrappers like
-   `apply` above still require `[call $apply ...]`, adding a layer
+   `apply` above still require `[apply ...]`, adding a layer
    rather than replacing one.
 
 ## What Call Aliases Would Provide
@@ -71,14 +71,14 @@ define custom call forms as macros:
 # Define a macro that adds timing to function calls
 [defmacro timed [f ...args]
   [quote
-    [let [start: [call $now]]
-      result: [call [unquote $f] [unquote-splice $args]]
-      elapsed: [call $- [call $now] $start]
-      [call $log [call $str "Elapsed: " $elapsed "ms"]]
-      $result]]]
+    [let [start: [now]]
+      result: [[unquote f] [unquote-splice args]]
+      elapsed: [- [now] start]
+      [log [str "Elapsed: " elapsed "ms"]]
+      result]]]
 
 # Usage
-[timed $process $data]  # expands to call + timing wrapper
+[timed process data]  # expands to call + timing wrapper
 ```
 
 ### Why Macros, Not Parser Aliases
@@ -93,9 +93,9 @@ PEG parsers (Ford, 2004) cannot express (PEGs are context-free over
 the input string).
 
 Macros preserve the invariant differently: macro expansion happens
-after parsing, on the AST. The parser sees `[timed $process $data]`
+after parsing, on the AST. The parser sees `[timed process data]`
 as a bracket expression (data). The macro expander recognizes `timed`
-as a macro name and rewrites the AST to `[call ...]` form before
+as a macro name and rewrites the AST to implied call form before
 type checking and evaluation. This is exactly how Lisp macros work —
 the reader produces S-expressions, the macro expander rewrites them,
 and the evaluator sees only core forms.
@@ -116,7 +116,7 @@ with the same names.
 ### Interaction with Type Inference
 
 Macro expansion happens before type inference. The type checker sees
-only the expanded `[call ...]` forms, so no changes to Algorithm W
+only the expanded call forms, so no changes to Algorithm W
 or the unification engine are needed. This is the standard approach:
 macros are syntactic sugar, not type-level constructs. Typed macros
 (as in Typed Racket) are a different design point that tinct does not
@@ -124,10 +124,10 @@ need for this use case.
 
 ### Interaction with Lazy Evaluation
 
-Because macros expand to standard `call` expressions, they inherit
+Because macros expand to standard call expressions, they inherit
 tinct's lazy evaluation semantics. Each macro-expanded argument is a
 thunk, forced on demand. The `timed` example above relies on this:
-`$now` calls must be forced eagerly (the timing wrapper explicitly
+`now` calls must be forced eagerly (the timing wrapper explicitly
 forces them via `let` bindings), but the user's function arguments
 follow normal lazy semantics.
 
@@ -181,7 +181,7 @@ expressions before evaluation begins.
 
 **Current:** Formats `[call ...]` expressions.
 **Proposed:** Preserve macro invocation syntax in formatted output.
-`[timed $f $x]` should not be expanded to `[call ...]` by the
+`[timed f x]` should not be expanded to call form by the
 formatter. This requires the formatter to operate on pre-expansion
 AST (which it already does, since it operates on the token stream).
 **Impact:** Minor — no change needed if the formatter continues to
@@ -201,9 +201,9 @@ aliases are a use case, not a separate feature.
 Ship example macros in `stdlib/macros/` that demonstrate custom call
 patterns:
 
-- `[timed $f $args...]` — call with timing
-- `[traced $f $args...]` — call with argument/result logging
-- `[retry $n $f $args...]` — call with retry on failure
+- `[timed f args...]` — call with timing
+- `[traced f args...]` — call with argument/result logging
+- `[retry n f args...]` — call with retry on failure
 
 These serve as documentation and templates for users writing their
 own call forms.

@@ -16,16 +16,16 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
     base: [timeout: 30  retries: 3]
 
     # Composition -- merge, override, no repetition
-    dev:  [call $merge $base [env: dev]]
-    prod: [call $merge $base [env: prod  timeout: 60]]
+    dev:  [merge base [env: "dev"]]
+    prod: [merge base [env: "prod"  timeout: 60]]
 
     # Functions -- first-class, lazy
-    double: [fn@Number [x@Number] [call $* $x 2]]
+    double: [fn@Number [x@Number] [* x 2]]
 
     # Pipelines -- chain transformations
-    active-names: [call $sort
-        [call $map [fn [u] $u.name]
-            [call $filter [fn [u] $u.active] $users]]]
+    active-names: [sort
+        [map [fn [u] u.name]
+            [filter [fn [u] u.active] users]]]
 ]
 ```
 
@@ -36,8 +36,8 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 `[]` for everything: dicts, function calls, type annotations, and document separators. One rule, no special forms to memorize.
 
 ```lisp
-[name: alice  active: true]           # dict
-[call $map [fn [u] $u.name] $users]   # function call
+[name: "alice"  active: true]         # dict
+[map [fn [u] u.name] users]           # function call
 [x@Int: 42]                           # annotated entry
 ```
 
@@ -50,22 +50,22 @@ Dicts are the fundamental data structure. Lists are dicts with consecutive integ
 [10  20  30]   # list — integer keys 0, 1, 2
 ```
 
-### `$` sigils
+### Bare references
 
-Bare words are string literals; `$word` is a variable reference. Most config values need no quoting.
+Quoted strings are literals; bare identifiers are variable references. The `$` prefix disambiguates data from calls.
 
 ```lisp
-[env: production  tier: api]   # bare words are strings
-[base: [env: $environment]]    # $environment is a variable
+[env: "production"  tier: "api"]   # quoted strings are literals
+[base: [env: environment]]         # environment is a variable
 ```
 
-### Explicit `call`
+### Implied call
 
-Function application uses `[call $f args...]`, making call sites unambiguous and greppable.
+Function application uses `[f args...]` where `f` is a bare identifier, making calls concise. The `$` prefix forces data interpretation.
 
 ```lisp
-[call $+ $x 1]
-[call $map [fn [u] $u.name] $users]
+[+ x 1]
+[map [fn [u] u.name] users]
 ```
 
 ### Lazy evaluation
@@ -74,8 +74,8 @@ Everything is a thunk — computed only when forced. Unused branches cost nothin
 
 ```lisp
 [
-    all-records: [call $load large-dataset.json]
-    first-name:  $all-records.0.name   # forces only what's needed
+    all-records: [load "large-dataset.json"]
+    first-name:  all-records.0.name   # forces only what's needed
 ]
 ```
 
@@ -85,8 +85,8 @@ Hindley-Milner inference with row polymorphism. Annotate where you want precisio
 
 ```lisp
 [
-    double: [fn@Number [x@Number] [call $* $x 2]]
-    result: [call $double 21]   # inferred: Int
+    double: [fn@Number [x@Number] [* x 2]]
+    result: [double 21]   # inferred: Int
 ]
 ```
 
@@ -95,16 +95,16 @@ Hindley-Milner inference with row polymorphism. Annotate where you want precisio
 Call sites pass named arguments after positional ones. Functions declare named parameters with optional defaults.
 
 ```lisp
-[call $fetch $url timeout: 60  retries: 3]
+[fetch url timeout: 60  retries: 3]
 ```
 
 ### No null
 
-Missing keys are always errors. Use `$get-or` for optional access, keeping the absence of a value explicit.
+Missing keys are always errors. Use `get-or` for optional access, keeping the absence of a value explicit.
 
 ```lisp
-$data.missing                              # error: key not found
-[call $get-or $data missing fallback]      # explicit optional access
+data.missing                           # error: key not found
+[get-or data "missing" "fallback"]     # explicit optional access
 ```
 
 ### `%` pipeline
@@ -112,7 +112,7 @@ $data.missing                              # error: key not found
 Multi-document files pass the output of one document to the next as `%`. Transform data across stages without intermediate variables or a shell pipeline.
 
 ```lisp
-[users: [...]]
+[users: [$[...]]]
 ---
 [active: [filter [fn [u] u.active] %.users]]
 ---
@@ -162,19 +162,19 @@ A standard library written in Tinct itself (`stdlib/prelude.llt`), covering coll
     base: [timeout: 30  retries: 3]
 
     # Compose environments via merge
-    production: [call $merge $base [timeout: 60  env: production]]
+    production: [merge base [timeout: 60  env: "production"]]
 
     # Inline data
-    users: [
-        [name: Alice  role: admin  active: true]
-        [name: Bob    role: user   active: false]
-        [name: Carol  role: admin  active: true]
-    ]
+    users: [$[
+        [name: "Alice"  role: "admin"  active: true]
+        [name: "Bob"    role: "user"   active: false]
+        [name: "Carol"  role: "admin"  active: true]
+    ]]
 
     # Transform data -- lazy, only computed when accessed
-    active-admins: [call $sort
-        [call $map [fn [u] $u.name]
-            [call $filter [fn [u] [call $and $u.active [call $= $u.role admin]]] $users]]]
+    active-admins: [sort
+        [map [fn [u] u.name]
+            [filter [fn [u] [and u.active [= u.role "admin"]]] users]]]
 ]
 ```
 
@@ -222,7 +222,7 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
 | `src/eval.rs` | Evaluator: `eval()`, `materialize()` (call-site span attachment, stack frame propagation), dict construction with letrec semantics, document evaluation with scope chains and `%` pipeline, function evaluation (`fn`/`call`), named args, variadics, arity checking, TypeAssert `default:` fallback, depth limit (256) |
 | `src/desugar.rs` | Desugarer: `$_` implicit lambda desugaring — pre-typecheck, pre-eval AST transformation (source-to-source pass between parsing and type checking) |
-| `src/builtins.rs` | Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy), `$include` resolved via `EvalContext`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
+| `src/builtins.rs` | Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy), `include` resolved via `EvalContext`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
 | `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces |
 | `src/types.rs` | Type system: `Type` enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any, IntLiteral, StringLiteral, Seq, Proxy), `Row` struct with `RowTail` (Empty, RowVar), `Substitution` (kinded unification with `type_map` and `row_map`), `TypeEnv` (Rc-based scope chain), `TypeError`, `InferState` (levels-based let-generalization) |
@@ -260,7 +260,7 @@ Tests across multiple modules covering:
 File-based test suite with auto-discovery. Each `.llt-eval` file is parsed; valid inputs must succeed, invalid inputs must fail. Tests can include expected output after a `===` delimiter:
 
 ```
-[key: value]
+[key: "value"]
 ===
 Dict({"key": String("value")})
 ```

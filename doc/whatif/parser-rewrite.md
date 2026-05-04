@@ -17,8 +17,8 @@ not the AST — to avoid comment loss and a dependency on the parser.
 The pest grammar handles four concerns simultaneously: bracket-form
 disambiguation (dict vs. call vs. fn vs. type-alias vs. type-assert), literal
 precedence (float > int > bool > quoted > annotated bare > bare word),
-whitespace-sensitive access chains (`$a.b` vs. `$a .b`, `$a[0]` vs.
-`$a [0]`), and static constraints (duplicate key detection, variadic param
+whitespace-sensitive access chains (`a.b` vs. `a .b`, `a[0]` vs.
+`a [0]`), and static constraints (duplicate key detection, variadic param
 rules). These are checked by the builders after pest succeeds; the grammar
 itself is permissive.
 
@@ -103,8 +103,8 @@ of `Token::OpenBracket` when `[` follows a value-producing token with no
 intervening whitespace:
 
 ```
-$a[0]   → EscapedRef("a"), BracketAccess, Int(0), CloseBracket
-$a [0]  → EscapedRef("a"), OpenBracket, Int(0), CloseBracket
+a[0]   → EscapedRef("a"), BracketAccess, Int(0), CloseBracket
+a [0]  → EscapedRef("a"), OpenBracket, Int(0), CloseBracket
 ```
 
 Detection uses the existing `last_significant_token` tracking already in
@@ -143,7 +143,7 @@ enum StackFrame {
 ```
 
 `BracketAccessKey` handles bracket access keys that contain nested bracket
-expressions — e.g. `$a[some_expr]` where `some_expr` itself contains `[]`.
+expressions — e.g. `a[some_expr]` where `some_expr` itself contains `[]`.
 When `Token::BracketAccess` is encountered during atom parsing, a
 `BracketAccessKey` frame is pushed; `Token::CloseBracket` pops it and
 produces the key expression for the enclosing access chain.
@@ -181,7 +181,7 @@ Error messages carry bracket context:
 error: unclosed bracket
   --> input.llt:5:3
    |
- 5 | [x: [y: $z]
+ 5 | [x: [y: z]
    |      ^ this bracket is not closed
 ```
 
@@ -264,7 +264,7 @@ which uses only whitespace and newlines, never semicolons.
 
 ### Lexer (`src/lexer.rs`)
 
-**Current:** emits `Token::OpenBracket` for both `$a[0]` and `$a [0]`.
+**Current:** emits `Token::OpenBracket` for both `a[0]` and `a [0]`.
 No `ImmediateAt` token exists.
 
 **Proposed:** emits `Token::BracketAccess` for no-whitespace `[` after a

@@ -15,8 +15,8 @@ lookup (doc/09-documents.md §Scope Chains):
    ```lisp
    [
      x: 10
-     y: [call $+ $x 1]    # sees x (same dict, letrec)
-     z: [call $+ $y 1]    # sees y and x
+     y: [+ x 1]    # sees x (same dict, letrec)
+     z: [+ y 1]    # sees y and x
    ]
    ```
 
@@ -26,7 +26,7 @@ lookup (doc/09-documents.md §Scope Chains):
 
    ```lisp
    [x: 10]
-   [y: [call $+ $x 1]]    # sees x from parent scope
+   [y: [+ x 1]]    # sees x from parent scope
    ```
 
 Sequential expressions already provide `let*` semantics at the
@@ -35,15 +35,15 @@ is allowed:
 
 ```tinct
 # One expression — no intermediate bindings
-double: [fn [x] [call $* $x 2]]
+double: [fn [x] [* x 2]]
 
 # Workaround for intermediate bindings: nested call fn
 # Note: dot access on a bracket expr ([{...}].result) is not valid tinct.
 # Access chains must start from a var_ref. The only single-expression
 # workaround is a nested function application that names each intermediate:
 process: [fn [data]
-    [call [fn [cleaned] [call $transform $cleaned]]
-          [call $clean $data]]]
+    [call [fn [cleaned] [transform cleaned]]
+          [clean data]]]
 ```
 
 The nested-fn workaround works but is verbose and unintuitive for
@@ -67,8 +67,8 @@ nested `[call [fn [name] ...] value]` layer.
    without wrapper dicts:
    ```lisp
    process: [fn [data]
-       [cleaned: [call $clean $data]]
-       [call $transform $cleaned]]
+       [cleaned: [clean data]]
+       [transform cleaned]]
    ```
 
 2. **Consistency.** Sequential expressions work at document level —
@@ -91,13 +91,13 @@ document level, applied to function body position.
 
 ```lisp
 # Single-expression body (unchanged)
-[fn [x] [call $* $x 2]]
+[fn [x] [* x 2]]
 
 # Multi-expression body
 [fn [data]
-    [cleaned: [call $clean $data]]     # first expression
-    [validated: [call $validate $cleaned]]  # second expression
-    [call $transform $validated]]      # final expression (return value)
+    [cleaned: [clean data]]     # first expression
+    [validated: [validate cleaned]]  # second expression
+    [transform validated]]      # final expression (return value)
 ```
 
 Each expression in the body is a sequential scope step. The last
@@ -132,9 +132,8 @@ in the extended environment. This corresponds to the existing
 
 ### Interaction with Lazy Evaluation
 
-Each intermediate binding expression is a thunk: `[cleaned: [call
-$clean $data]]` creates a thunk for `cleaned` that is forced only
-when `$cleaned` is referenced in a subsequent expression. This
+Each intermediate binding expression is a thunk: `[cleaned: [clean data]]` creates a thunk for `cleaned` that is forced only
+when `cleaned` is referenced in a subsequent expression. This
 preserves tinct's call-by-need semantics — intermediate bindings
 that are never used are never evaluated.
 
@@ -182,13 +181,13 @@ matching the existing sequential inference in `infer_sequential`.
    (`doc/whatif/pattern-matching.md`) is adopted, match arm bodies will
    need intermediate bindings. Sequential function bodies enable this:
    ```lisp
-   [match $val
-     [ok: $v]
-       [cleaned: [call $clean $v]]
-       $cleaned
-     [err: $msg]
-       [call $log $msg]
-       [call $error $msg]]
+   [match val
+     [ok: v]
+       [cleaned: [clean v]]
+       cleaned
+     [err: msg]
+       [log msg]
+       [error msg]]
    ```
 
 5. **Nix parallel.** Nix's `let ... in` provides sequential bindings

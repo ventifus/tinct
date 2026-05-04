@@ -8031,14 +8031,14 @@ mod tests {
         }
     }
 
-    // -- $merge/$append RowVar regression --
+    // -- merge/append RowVar regression --
 
     #[test]
     fn test_merge_no_rowvar_sharing_error() {
-        // Regression test: $merge [a: 1] [b: 2] should type-check without error.
+        // Regression test: merge [a: 1] [b: 2] should type-check without error.
         // Previous RowVar sharing bug would fail because the same row var appeared
         // in both params and return type of the builtin signature.
-        let result = check("[result: [call $merge [a: 1] [b: 2]]]");
+        let result = check("[result: [merge [a: 1] [b: 2]]]");
         assert!(
             result.is_ok(),
             "merge with simple records should type-check, got error: {:?}",
@@ -8048,10 +8048,10 @@ mod tests {
 
     #[test]
     fn test_append_no_rowvar_sharing_error() {
-        // Regression test: $append [a: 1] [b: 2] should type-check without error.
+        // Regression test: append [a: 1] [b: 2] should type-check without error.
         // Previous RowVar sharing bug would fail because the same row var appeared
         // in both param and return type of the builtin signature.
-        let result = check("[result: [call $append [a: 1] [b: 2]]]");
+        let result = check("[result: [append [a: 1] [b: 2]]]");
         assert!(
             result.is_ok(),
             "append with simple records should type-check, got error: {:?}",

@@ -1,58 +1,58 @@
 # What If: String Interpolation for tinct
 
-What would it take to add string interpolation (`i"Hello $name"`) to
+What would it take to add string interpolation (`i"Hello name"`) to
 tinct?
 
 ## Current State
 
-tinct uses `$str` for string concatenation:
+tinct uses `str` for string concatenation:
 
 ```lisp
-greeting: [call $str "Hello " $name ", you are " $age " years old"]
+greeting: [str "Hello " name ", you are " age " years old"]
 ```
 
 This works but is verbose for multi-part strings. The `$` sigil for
-variable references makes interpolation syntactically natural — `$name`
+variable references makes interpolation syntactically natural — `name`
 inside a string could reference the variable.
 
 doc/02-syntax.md §Variable References notes: "Synergy with string
-interpolation (if added): `"Hello $name"`"
+interpolation (if added): `"Hello name"`"
 
 Existing alternatives:
 
 ```lisp
-# $str concatenation (current)
-msg: [call $str "Hello " $name]
+# str concatenation (current)
+msg: [str "Hello " name]
 
-# $words for space-separated (current)
-[call $words "Hello" $name "welcome"]  # → "Hello Alice welcome"
+# words for space-separated (current)
+[words "Hello" name "welcome"]  # → "Hello Alice welcome"
 ```
 
 ### What's Missing
 
-1. Inline string construction without explicit `$str` calls.
+1. Inline string construction without explicit `str` calls.
 2. Readable multi-part string assembly — current approach requires
    counting arguments and interleaving literals with references.
 3. Expression embedding inside strings — no way to inline a computed
-   value without breaking out to a `$str` call.
+   value without breaking out to a `str` call.
 
 ## What String Interpolation Would Provide
 
-1. **Reduced verbosity.** `i"Hello $name"` vs
-   `[call $str "Hello " $name]` — fewer tokens, more readable.
+1. **Reduced verbosity.** `i"Hello name"` vs
+   `[str "Hello " name]` — fewer tokens, more readable.
 
 2. **Formatter ergonomics.** `doc/whatif/templating.md` formatters
    build strings heavily. Interpolation makes formatter code
    significantly more readable:
    ```lisp
    # Before
-   [call $str $indent $key ": " [call $quote-yaml $val] "\n"]
+   [str indent key ": " [quote-yaml val] "\n"]
 
    # After
-   i"$indent$key: ${[call $quote-yaml $val]}\n"
+   i"$indent$key: ${[quote-yaml val]}\n"
    ```
 
-3. **LLM token efficiency.** `$str` calls produce high token counts.
+3. **LLM token efficiency.** `str` calls produce high token counts.
    Interpolation reduces token count for string-heavy code, improving
    LLM generation quality.
 
@@ -63,16 +63,16 @@ regular `"..."` strings unchanged:
 
 ```lisp
 # Regular string (no interpolation, current behavior)
-"Hello $name"           # literal string containing "$name"
+"Hello name"           # literal string containing "name"
 
 # Interpolated string (new syntax)
-i"Hello $name"          # → "Hello Alice"
+i"Hello name"          # → "Hello Alice"
 ```
 
 ### Syntax
 
 **Simple interpolation:** `$identifier` and `$expr.field` expand to
-variable values, converted to strings via `$str` semantics.
+variable values, converted to strings via `str` semantics.
 
 ```lisp
 i"Host: $config.host"       # dot access
@@ -83,8 +83,8 @@ i"Count: $n"                # simple variable
 expression inside the string.
 
 ```lisp
-i"Total: ${[call $+ $x $y]}"
-i"Name: ${$record.name}"
+i"Total: ${[+ x y]}"
+i"Name: ${record.name}"
 ```
 
 **Escaping:** `$$` produces a literal `$` inside an interpolated string.
@@ -93,40 +93,39 @@ i"Name: ${$record.name}"
 i"Price: $$$amount"     # → "Price: $42"
 ```
 
-### Semantics — Desugaring to $str
+### Semantics — Desugaring to `str`
 
-An interpolated string desugars to a `$str` call at parse time. This
+An interpolated string desugars to a `str` call at parse time. This
 is a pure syntactic transformation — no new evaluation semantics:
 
 ```lisp
 # Source
-i"Hello $name, you are $age years old"
+i"Hello name, you are $age years old"
 
 # Desugars to
-[call $str "Hello " $name ", you are " $age " years old"]
+[str "Hello " name ", you are " age " years old"]
 ```
 
 This desugaring preserves laziness: each interpolated segment is a
-normal expression, evaluated on demand like any `$str` argument.
+normal expression, evaluated on demand like any `str` argument.
 
 ### Internal Representation
 
 The lexer recognizes the `i"` prefix and tokenizes the interpolated
 string into a sequence of literal segments and expression references.
-The parser assembles these into a `$str` call node in the AST — no
+The parser assembles these into a `str` call node in the AST — no
 new AST variant is needed.
 
 ```rust
-// Lexer output for i"Hello $name, age ${[call $+ $x 1]}"
+// Lexer output for i"Hello name, age ${[+ x 1]}"
 Token::IStringStart
 Token::StringLiteral("Hello ")
 Token::VarRef("name")
 Token::StringLiteral(", age ")
 Token::ExprStart          // ${
 Token::BracketOpen        // [
-Token::Keyword("call")
-Token::VarRef("+")
-Token::VarRef("x")
+Token::Identifier("+")
+Token::Identifier("x")
 Token::Int(1)
 Token::BracketClose       // ]
 Token::ExprEnd            // }
@@ -134,11 +133,11 @@ Token::IStringEnd
 ```
 
 The parser transforms this token sequence into the equivalent of
-`[call $str "Hello " $name ", age " [call $+ $x 1]]`.
+`[str "Hello " name ", age " [+ x 1]]`.
 
 ### Interaction with Lazy Evaluation
 
-Because interpolated strings desugar to `$str` calls, they inherit
+Because interpolated strings desugar to `str` calls, they inherit
 tinct's lazy evaluation semantics. Each interpolated segment becomes
 a thunk that is forced only when the resulting string value is
 demanded. This is consistent with Launchbury (1993) — the desugaring
@@ -146,23 +145,23 @@ introduces no new evaluation forms.
 
 ### Interaction with Type Inference
 
-`$str` already accepts arguments of any type and coerces them to
+`str` already accepts arguments of any type and coerces them to
 strings. Interpolated strings inherit this behavior through
 desugaring. No changes to the type checker are needed — the
-desugared form is a standard `$str` call, which the type checker
+desugared form is a standard `str` call, which the type checker
 already handles.
 
 ### Design Rationale
 
 1. **No breaking change.** Double-quoted strings keep their current
-   semantics. `"$name"` remains a literal string. Interpolation is
+   semantics. `"name"` remains a literal string. Interpolation is
    opt-in via the `i` prefix.
 
 2. **Natural syntax.** tinct's `$` sigil for variables makes
-   `i"Hello $name"` read naturally — `$name` already means "the value
+   `i"Hello name"` read naturally — `name` already means "the value
    of name" everywhere else.
 
-3. **Precedent.** Kotlin uses `"Hello $name"` and `"${expr}"` with
+3. **Precedent.** Kotlin uses `"Hello name"` and `"${expr}"` with
    the same `$`-sigil convention. Python f-strings (`f"Hello {name}"`)
    establish the prefix-based opt-in pattern. The `i` prefix is
    compact and unambiguous.
@@ -188,7 +187,7 @@ entry point but existing string tokenization is unchanged.
 
 **Current:** String literals parse to `Expr::String`.
 **Proposed:** Interpolated string token sequences parse to
-`Expr::Call` nodes equivalent to `[call $str seg1 seg2 ...]`. This
+`Expr::Call` nodes equivalent to `[str seg1 seg2 ...]`. This
 is a desugaring step in the parser — no new AST node type.
 **Impact:** Minor — new parse rule that assembles existing AST nodes.
 
@@ -200,15 +199,15 @@ is a desugaring step in the parser — no new AST node type.
 
 ### Type Checker (src/typecheck.rs)
 
-**Current:** `$str` calls type-check normally.
-**Proposed:** No change — desugared form is a standard `$str` call.
+**Current:** `str` calls type-check normally.
+**Proposed:** No change — desugared form is a standard `str` call.
 **Impact:** None.
 
 ### Evaluator (src/eval.rs)
 
-**Current:** `$str` evaluation handles variable-arity string
+**Current:** `str` evaluation handles variable-arity string
 concatenation.
-**Proposed:** No change — desugared form evaluates as a normal `$str`
+**Proposed:** No change — desugared form evaluates as a normal `str`
 call.
 **Impact:** None.
 
@@ -224,13 +223,13 @@ strings.
 
 ### Phase 1: Simple Variable Interpolation
 
-`i"Hello $name"` where `$identifier` expands to the variable's
-string representation (via `$str` semantics).
+`i"Hello name"` where `$identifier` expands to the variable's
+string representation (via `str` semantics).
 
 Implementation:
 - Lexer recognizes `i"` as an interpolated string token
 - Parser splits into literal segments and variable references
-- Desugars to `[call $str "Hello " $name]` (AST rewrite)
+- Desugars to `[str "Hello " name]` (AST rewrite)
 
 ### Phase 2: Dot Access in Interpolation
 
@@ -240,7 +239,7 @@ as regular access expressions (doc/02-syntax.md §Tokenization Rules).
 
 ### Phase 3: Expression Interpolation
 
-`i"Total: ${[call $+ $x $y]}"` — arbitrary tinct expressions inside
+`i"Total: ${[+ x y]}"` — arbitrary tinct expressions inside
 `${ }` delimiters. Requires tracking brace nesting depth in the
 lexer.
 
@@ -259,23 +258,23 @@ Phases 1–2 via `[defmacro tmpl ...]` rather than as a parser
 feature. The Rust change shrinks to two steps: the lexer recognizes
 the `i"` prefix and emits the raw string content as an opaque
 `IString` token (no scanning of `$` patterns); the parser wraps it
-as `[call $tmpl "raw content"]`. All `$identifier` and
+as `[tmpl "raw content"]`. All `$identifier` and
 `$identifier.field.path` parsing then happens in a tinct stdlib
 macro:
 
 ```tinct
 [defmacro tmpl [template-ast]
-  # template-ast is {type: "str" value: "Hello $name, count: $count"}
-  segments: [call $parse-template $template-ast.value]
+  # template-ast is {type: "str" value: "Hello name, count: $count"}
+  segments: [parse-template template-ast.value]
   # → [{type: "str" value: "Hello "} {type: "var" name: "name"} ...]
-  [call $build-str-call $segments]]
+  [build-str-call segments]]
 ```
 
 `$parse-template` is an ordinary tinct stdlib function that walks
 the string character by character, collecting literal text until `$`
 and then identifier characters, emitting a sequence of `{type: "str"
 ...}` and `{type: "var" ...}` AST dicts. `$build-str-call`
-assembles these into the `[call $str ...]` AST dict. Both are
+assembles these into the `[str ...]` AST dict. Both are
 inspectable tinct code, testable via corpus tests, and modifiable
 without touching the Rust compiler.
 
@@ -296,7 +295,7 @@ This requires the dual-span infrastructure from `macros.md` Phase 3.
 
 ### Trigger
 
-- When formatter work (templating.md Phase 2) begins and `$str`
+- When formatter work (templating.md Phase 2) begins and `str`
   verbosity becomes a concrete pain point.
 - When token count for LLM-generated tinct becomes a measurable
   concern.
@@ -306,8 +305,8 @@ This requires the dual-span infrastructure from `macros.md` Phase 3.
 ## References
 
 - doc/02-syntax.md §Variable References — "Synergy with string interpolation
-  (if added): `"Hello $name"`"
-- Kotlin string templates: `"Hello $name"` and `"Hello ${expr}"` —
+  (if added): `"Hello name"`"
+- Kotlin string templates: `"Hello name"` and `"Hello ${expr}"` —
   closest precedent for `$`-based interpolation with expression
   embedding.
 - Python f-strings (PEP 498, 2015): `f"Hello {name}"` — prefix-based
@@ -320,7 +319,7 @@ This requires the dual-span infrastructure from `macros.md` Phase 3.
   quoted strings (no prefix). tinct's `i` prefix avoids the breaking
   change Nix's approach would require.
 - Launchbury, J. (1993). "A natural semantics for lazy evaluation."
-  *POPL '93*, pp. 144–154. — Desugaring to `$str` preserves
+  *POPL '93*, pp. 144–154. — Desugaring to `str` preserves
   Launchbury's sharing semantics: each interpolated segment is a
   thunk, forced at most once.
 - doc/whatif/macros.md — If the macro system ships first, Phases 1–2

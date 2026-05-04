@@ -6,37 +6,37 @@ functional language?
 ## Current State
 
 tinct has no pattern matching construct. Type-based dispatch requires
-verbose `$type-of` + string comparison chains:
+verbose `type-of` + string comparison chains:
 
 ```lisp
-[call $if [call $= [call $type-of $x] Dict]
-    [call $handle-dict $x]
-    [call $if [call $= [call $type-of $x] Seq]
-        [call $handle-seq $x]
-        [call $error "unexpected type"]]]
+[if [= [type-of x] "Dict"]
+    [handle-dict x]
+    [if [= [type-of x] "Seq"]
+        [handle-seq x]
+        [error "unexpected type"]]]
 ```
 
 The available dispatch mechanisms are:
 
-- **`$type-of`** returns a string (`"Int"`, `"Float"`, `"Dict"`, `"Seq"`, etc.)
-- **`$seq?`** is the only type predicate builtin (returns Bool)
-- **`$if` + `$=` chains** are the only dispatch mechanism
+- **`type-of`** returns a string (`"Int"`, `"Float"`, `"Dict"`, `"Seq"`, etc.)
+- **`seq?`** is the only type predicate builtin (returns Bool)
+- **`if` + `=` chains** are the only dispatch mechanism
 
 ### What's Missing
 
 1. **Destructuring bind** --- no way to extract dict fields or seq
    head/tail in a binding position
 2. **Multi-branch dispatch** --- type dispatch requires nested
-   `$if`/`$cond` chains, not flat arm lists
+   `if`/`cond` chains, not flat arm lists
 3. **Exhaustiveness checking** --- no static or runtime guarantee that
    all cases are covered
-4. **Type predicates** --- only `$seq?` exists; no `$dict?`, `$int?`,
-   `$str?`, etc.
+4. **Type predicates** --- only `seq?` exists; no `dict?`, `int?`,
+   `str?`, etc.
 
 This matters for three reasons:
 
-1. **Self-hosting builtins.** Dual-dispatch builtins (`$map`, `$filter`,
-   `$reduce`, `$join`, `$take`, `$drop`) are in Rust primarily because they
+1. **Self-hosting builtins.** Dual-dispatch builtins (`map`, `filter`,
+   `reduce`, `join`, `take`, `drop`) are in Rust primarily because they
    need to branch on `Value::Dict` vs `Value::Seq`. With pattern matching +
    more granular primitives, tinct could define the dispatch wrapper in tinct
    and keep only the type-specific implementations in Rust. The macros whatif
@@ -44,24 +44,24 @@ This matters for three reasons:
    enabler for self-hosting more Rust builtins."
 
 2. **User code.** Any polymorphic data processing — handling different
-   shapes, optional fields, tagged unions, `$try` results — is awkward
+   shapes, optional fields, tagged unions, `try` results — is awkward
    without matching.
 
-3. **Error handling.** `$try` returns `[ok: value]` or `[err: message]`.
+3. **Error handling.** `try` returns `[ok: value]` or `[err: message]`.
    Dispatching on the result key without destructuring is clunky:
    ```lisp
-   result: [call $try $risky]
-   [call $if [call $has? $result ok]
-       [call $handle-ok $result.ok]
-       [call $handle-err $result.err]]
+   result: [try risky]
+   [if [has? result "ok"]
+       [handle-ok result.ok]
+       [handle-err result.err]]
    ```
 
 ## What Pattern Matching Would Provide
 
-- **Type dispatch** without `$type-of` + string comparison chains
+- **Type dispatch** without `type-of` + string comparison chains
 - **Destructuring bind** — extract dict fields, seq head/tail, tagged
   union payloads in one expression
-- **Multi-branch dispatch** — replace nested `$if`/`$cond` chains with a
+- **Multi-branch dispatch** — replace nested `if`/`cond` chains with a
   flat list of pattern → expression arms
 - **Self-hosting path** — tinct-level wrappers around Rust primitives,
   reducing the Rust builtin surface
@@ -102,7 +102,7 @@ This matters for three reasons:
 
 5. **jq demonstrates that compositional alternatives work.** `select()`,
    `//` (alternative), and `try-catch` compose to handle most dispatch cases
-   without pattern matching syntax. tinct's `$cond` + `$try-or` offer a
+   without pattern matching syntax. tinct's `cond` + `try-or` offer a
    similar, if less ergonomic, composition.
 
 ## Design
@@ -110,10 +110,10 @@ This matters for three reasons:
 A new keyword `match` parsed as a special form, like `call` and `fn`:
 
 ```lisp
-[match $expr
-    [pattern1] $body1
-    [pattern2] $body2
-    _          $default]
+[match expr
+    [pattern1] body1
+    [pattern2] body2
+    _          default]
 ```
 
 Each arm is a pattern followed by a body expression. Patterns are parsed
@@ -124,68 +124,66 @@ evaluates to the body of the first matching arm.
 
 ```lisp
 # Type patterns — bare words match type-of result
-[match $x
-    Int    [call $+ $x 1]            # matches if $type-of is "Int"
-    Str    [call $str "got: " $x]    # matches if $type-of is "Str"
-    _      $x]                       # wildcard — always matches
+[match x
+    Int    [+ x 1]            # matches if type-of is "Int"
+    Str    [str "got: " x]    # matches if type-of is "Str"
+    _      x]                 # wildcard — always matches
 
 # Literal patterns — literals match by equality
-[match $x
+[match x
     42     the-answer
     true   yes
-    hello  greeting
+    "hello" greeting
     _      other]
 
 # Dict patterns — destructure by key
-[match $result
-    [ok: $v]    $v                   # binds $v to the value at key "ok"
-    [err: $msg] [call $error $msg]   # binds $msg to the value at key "err"
-    _           [call $error "unexpected"]]
+[match result
+    [ok: v]    v                   # binds v to the value at key "ok"
+    [err: msg] [error msg]         # binds msg to the value at key "err"
+    _          [error "unexpected"]]
 
 # Seq patterns — head/tail destructure
-[match $xs
-    [seq $h $t] [call $process $h $t]  # binds head and tail
-    []          empty                   # empty collection
-    _           [call $error "expected seq"]]
+[match xs
+    [seq h t] [process h t]  # binds head and tail
+    []        "empty"              # empty collection
+    _         [error "expected seq"]]
 
 # Nested patterns
-[match $event
-    [type: click  target: [id: $id]]  [call $handle-click $id]
-    [type: hover  target: [id: $id]]  [call $handle-hover $id]
-    _                                  ignored]
+[match event
+    [type: "click"  target: [id: id]]  [handle-click id]
+    [type: "hover"  target: [id: id]]  [handle-hover id]
+    _                                   "ignored"]
 
 # Guards
-[match $x
-    $n when [call $> $n 0]  positive
-    $n when [call $< $n 0]  negative
-    _                       zero]
+[match x
+    n when [> n 0]  "positive"
+    n when [< n 0]  "negative"
+    _               "zero"]
 ```
 
-This design reuses tinct's `[]` brackets and `$` sigils naturally for
-patterns, making destructuring bindings obvious (`$v` in a pattern binds).
-Guards use existing tinct expressions. The pattern language is amenable to
-exhaustiveness analysis as the type system matures. The trade-off is a new
-keyword in the grammar (`match` added to the denylist), a new AST variant
-(`Expr::Match`), and implementation work spanning parser, evaluator, and
-type checker.
+This design reuses tinct's `[]` brackets naturally for patterns, making
+destructuring bindings obvious (`v` in a pattern binds). Guards use existing
+tinct expressions. The pattern language is amenable to exhaustiveness analysis
+as the type system matures. The trade-off is a new keyword in the grammar
+(`match` added to the denylist), a new AST variant (`Expr::Match`), and
+implementation work spanning parser, evaluator, and type checker.
 
 ### Keyword Choice: `match` vs `case`
 
 Both are common. `match` is used by Rust, Nickel, Scala, F#, OCaml.
 `case` is used by Haskell, Elixir, Erlang. `match` reads more naturally
-in tinct's bracket syntax: `[match $x ...]` vs `[case $x ...]`.
+in tinct's bracket syntax: `[match x ...]` vs `[case x ...]`.
 
 ### Pattern Variable Syntax
 
-In tinct, `$x` is a variable reference (lookup). In patterns, `$x` means
+In tinct, `x` is a variable reference (lookup). In patterns, `x` means
 "bind the matched value to `x`." This dual meaning follows Elixir's
 precedent (variables in patterns bind, not match). The alternative --- a new
-sigil like `?x` for pattern bindings --- adds complexity without
-proportional benefit.
+sigil for pattern bindings --- adds complexity without proportional benefit.
 
 **Pin operator:** Elixir's `^` pin operator (match against existing
 variable's value instead of rebinding) would be useful:
-`[match $x  ^$expected result  _ other]`. Defer to Phase 4+.
+`[match x  ^expected result  _ other]`. Defer to Phase 4+.
 
 ### Open vs Closed Dict Matching
 
@@ -194,17 +192,17 @@ consistent with row polymorphism's open records and is more useful for
 configuration data where extra fields are common. Closed matching (reject
 extra keys) uses explicit syntax (e.g., trailing `|` or `!`).
 
-### Interaction with `$_` Desugaring
+### Interaction with `_` Desugaring
 
-`[match]` bodies can use `$_` normally --- the `$_` desugaring pass runs
+`[match]` bodies can use `_` normally --- the `_` desugaring pass runs
 before evaluation, and `match` bodies are ordinary expressions. No special
-interaction. The match scrutinee can also be `$_`, creating a function:
-`[fn [_] [match $_ ...]]` via the WRAP-CALL rule.
+interaction. The match scrutinee can also be `_`, creating a function:
+`[fn [_] [match _ ...]]` via the WRAP-CALL rule.
 
 ### Materialization Semantics
 
 Pattern matching on the scrutinee is inherently materializing (like
-`$type-of`). This means `[match $thunk ...]` forces `$thunk`. Within
+`type-of`). This means `[match thunk ...]` forces `thunk`. Within
 dict patterns, only matched keys are forced. This is documented in
 doc/08-evaluation.md Builtin Materialization Behavior as the standard pattern for
 builtins that need to inspect value structure.
@@ -215,7 +213,7 @@ A special form is chosen over alternatives for three reasons:
 
 1. **Self-hosting requires destructuring.** The primary motivation is
    replacing Rust-side `match` on `Value::Dict` vs `Value::Seq` with
-   tinct-level dispatch. A builtin function or `$cond` enhancement cannot
+   tinct-level dispatch. A builtin function or `cond` enhancement cannot
    support structural destructuring --- extracting dict fields and seq
    structure in the tinct-level wrapper requires pattern syntax.
 
@@ -223,11 +221,11 @@ A special form is chosen over alternatives for three reasons:
    s-expression languages where `match` is just another list form, tinct's
    keywords (`call`, `fn`, `type`) are parsed specially. `match` fits the
    same pattern. Patterns inside `[]` reuse existing syntax: bare words are
-   type tags, `$name` is a binding, literals match by value.
+   type tags, a bare name is a binding, literals match by value.
 
 3. **Not match-as-function.** Nickel's match-as-function interacts poorly
-   with tinct's `$_` desugaring --- both introduce implicit parameters.
-   A `[match $scrutinee ...]` form with an explicit scrutinee avoids this
+   with tinct's `_` desugaring --- both introduce implicit parameters.
+   A `[match scrutinee ...]` form with an explicit scrutinee avoids this
    conflict and is clearer to read.
 
 ## What Would Change
@@ -240,13 +238,13 @@ No pattern parsing mode exists.
 **Proposed:** Add `match` to the keyword denylist and special form
 recognition. The parser recognizes `[match ...]` and produces
 `Expr::Match` nodes. Pattern parsing reuses existing expression parsing
-with a "pattern mode" that interprets `$name` as a binding (not a lookup)
-and bare words as type tags.
+with a "pattern mode" that interprets bare names as bindings (not lookups)
+and capitalized words as type tags.
 
 **Impact:** Moderate. One new keyword, one new parsing mode (pattern vs
 expression). Pattern mode is structurally similar to existing expression
-parsing but with different semantic interpretation of `$name` and bare
-words.
+parsing but with different semantic interpretation of bare names and
+capitalized words.
 
 ### AST
 
@@ -264,7 +262,7 @@ the new variant.
 pub enum Expr {
     // ... existing variants ...
 
-    /// Pattern match expression: [match $expr arm1 arm2 ...]
+    /// Pattern match expression: [match expr arm1 arm2 ...]
     Match {
         scrutinee: Box<Spanned<Expr>>,
         arms: Vec<MatchArm>,
@@ -280,18 +278,18 @@ pub struct MatchArm {
 pub enum Pattern {
     /// Wildcard: _
     Wildcard,
-    /// Variable binding: $x (binds the matched value to x)
+    /// Variable binding: x (binds the matched value to x)
     Var(String),
-    /// Literal: 42, true, hello
+    /// Literal: 42, true, "hello"
     Literal(LiteralPattern),
     /// Type tag: Int, Str, Dict, Seq, etc.
     Type(String),
-    /// Dict destructure: [key1: $v1  key2: $v2]
+    /// Dict destructure: [key1: v1  key2: v2]
     Dict {
         fields: Vec<(String, Spanned<Pattern>)>,
         rest: bool,  // true if ... present (open match)
     },
-    /// Seq destructure: [seq $head $tail]
+    /// Seq destructure: [seq head tail]
     Seq {
         head: Box<Spanned<Pattern>>,
         tail: Box<Spanned<Pattern>>,
@@ -311,7 +309,7 @@ pub enum LiteralPattern {
 ### Evaluator
 
 **Current:** No pattern matching logic. Type dispatch requires
-`$type-of` + `$=` comparisons via builtins.
+`type-of` + `=` comparisons via builtins.
 
 **Proposed:** Implement pattern matching as a new evaluation rule with
 the following semantics.
@@ -323,13 +321,13 @@ thunk forcing (scrutinee materialization) and lazy dict/seq access.
 Pattern matching in the evaluator:
 
 1. **Evaluate the scrutinee** — fully materialize to determine type and
-   structure. This is inherently materializing (like `$type-of`).
+   structure. This is inherently materializing (like `type-of`).
 
 2. **Try each arm top-to-bottom** — for each arm, attempt to match the
    pattern against the materialized value:
    - `Wildcard` / `Var` — always match. `Var` binds the value.
    - `Literal` — compare by equality.
-   - `Type` — compare `$type-of` result.
+   - `Type` — compare `type-of` result.
    - `Dict` — check that all specified keys exist, recursively match
      sub-patterns on their values. If `rest: false`, no extra keys allowed.
    - `Seq` — match head and tail.
@@ -346,14 +344,14 @@ Pattern matching in the evaluator:
 ### Lazy Evaluation
 
 **Current:** Thunks are forced by builtins that inspect values (e.g.,
-`$type-of`). No lazy pattern-driven forcing exists.
+`type-of`). No lazy pattern-driven forcing exists.
 
 **Proposed:** Pattern matching on the scrutinee is inherently materializing
-(same semantics as `$type-of`). Dict pattern matching forces matched keys
-only --- when matching `[ok: $v]` against a dict, only the key `"ok"` is
+(same semantics as `type-of`). Dict pattern matching forces matched keys
+only --- when matching `[ok: v]` against a dict, only the key `"ok"` is
 accessed; other keys remain as thunks. Seq pattern matching forces the head
-and binds the tail thunk without forcing it, consistent with `$head` and
-`$tail` builtin behavior. Only the matching arm's body is evaluated ---
+and binds the tail thunk without forcing it, consistent with `head` and
+`tail` builtin behavior. Only the matching arm's body is evaluated ---
 other arms' bodies are never entered.
 
 **Impact:** Minor. Follows existing materialization conventions from
@@ -363,12 +361,12 @@ patterns to a new construct.
 ### Type Checker
 
 **Current:** No pattern-related inference. Type dispatch is invisible to
-the type system (it occurs via string-valued `$type-of` comparisons).
+the type system (it occurs via string-valued `type-of` comparisons).
 
 **Proposed:** Initially, `match` expressions are typed as `Any` (gradual
 typing). As the type system matures: (1) scrutinee type constrains which
 patterns are valid --- if the scrutinee is typed `Int`, dict patterns are
-statically rejected; (2) pattern bindings get types --- in `[ok: $v]`, `$v`
+statically rejected; (2) pattern bindings get types --- in `[ok: v]`, `v`
 gets the type of the `ok` field from the scrutinee's record type;
 (3) result type is the join of all arm body types --- if all arms return
 `Int`, the match returns `Int`, otherwise `Any` (or a union type if
@@ -384,20 +382,20 @@ design.
 
 ### Phase 1: Type Predicates (No Grammar Change)
 
-Add type predicate builtins alongside existing `$seq?`:
+Add type predicate builtins alongside existing `seq?`:
 
 ```
-$int?   $float?   $num?   $str?   $bool?   $null?   $dict?   $fn?
+int?   float?   num?   str?   bool?   null?   dict?   fn?
 ```
 
-Each returns `Bool`. Typed as `Any → Bool`. These are useful with `$cond`
-and `$if` for simple type dispatch without pattern matching:
+Each returns `Bool`. Typed as `Any → Bool`. These are useful with `cond`
+and `if` for simple type dispatch without pattern matching:
 
 ```lisp
-[call $cond [
-    [[call $dict? $x]  [call $map-dict $f $x]]
-    [[call $seq? $x]   [call $map-seq $f $x]]
-    [true              [call $error "expected Dict or Seq"]]
+[cond [
+    [[dict? x]  [map-dict f x]]
+    [[seq? x]   [map-seq f x]]
+    [true       [error "expected Dict or Seq"]]
 ]]
 ```
 
@@ -410,25 +408,25 @@ changes. It also establishes the runtime type-checking primitives that
 Add the `match` keyword to the grammar. Support:
 
 - **Type patterns:** `Int`, `Str`, `Dict`, `Seq`, `Bool`, `Float`, `Null`, `Fn`
-- **Literal patterns:** `42`, `true`, `hello`, `"quoted string"`
+- **Literal patterns:** `42`, `true`, `"hello"`, `"quoted string"`
 - **Wildcard:** `_`
-- **Variable binding:** `$x` (binds the scrutinee to `x`)
+- **Variable binding:** `x` (binds the scrutinee to `x`)
 
 ```lisp
-[match $x
-    Int   [call $+ $x 1]
-    Str   [call $str "got: " $x]
-    _     $x]
+[match x
+    Int   [+ x 1]
+    Str   [str "got: " x]
+    _     x]
 
-[match $code
-    200  ok
-    404  not-found
-    500  server-error
-    _    unknown]
+[match code
+    200  "ok"
+    404  "not-found"
+    500  "server-error"
+    _    "unknown"]
 ```
 
 No destructuring yet — patterns are flat. This is the minimal useful
-`match` that replaces `$type-of` + `$=` chains.
+`match` that replaces `type-of` + `=` chains.
 
 **Implementation:**
 - Parser: `match` keyword, `Expr::Match` AST node, flat `Pattern` enum
@@ -440,61 +438,61 @@ No destructuring yet — patterns are flat. This is the minimal useful
 
 Add structural patterns:
 
-- **Dict patterns:** `[key1: $v1  key2: $v2]` — match keys, bind values
-- **Open dict patterns:** `[key: $v ...]` — match at least these keys
-- **Seq patterns:** `[seq $head $tail]` — destructure cons cell
+- **Dict patterns:** `[key1: v1  key2: v2]` — match keys, bind values
+- **Open dict patterns:** `[key: v ...]` — match at least these keys
+- **Seq patterns:** `[seq head tail]` — destructure cons cell
 - **Nested patterns:** patterns inside patterns
 
 ```lisp
 # Destructure try result
-[match [call $try $risky]
-    [ok: $v]    $v
-    [err: $msg] [call $error $msg]]
+[match [try risky]
+    [ok: v]    v
+    [err: msg] [error msg]]
 
 # Nested destructure
-[match $event
-    [type: click   target: [id: $id]]  [call $handle-click $id]
-    [type: hover   target: [id: $id]]  [call $handle-hover $id]
-    _                                   ignored]
+[match event
+    [type: "click"  target: [id: id]]  [handle-click id]
+    [type: "hover"  target: [id: id]]  [handle-hover id]
+    _                                   "ignored"]
 
 # Seq head/tail
-[match $xs
-    [seq $h $t]  [call $process $h $t]
-    _            empty]
+[match xs
+    [seq h t]  [process h t]
+    _          "empty"]
 ```
 
 This is the phase that enables self-hosting: tinct-level dispatch wrappers
 can destructure dicts and seqs, delegating to Rust-native type-specific
 implementations.
 
-**Dict pattern semantics:** A dict pattern `[k1: $v1  k2: $v2]` matches a
+**Dict pattern semantics:** A dict pattern `[k1: v1  k2: v2]` matches a
 materialized dict if keys `k1` and `k2` exist. By default, extra keys are
 allowed (open matching) — this is consistent with row polymorphism's open
-records. Closed matching `[k1: $v1  k2: $v2 |]` (or similar syntax) rejects
+records. Closed matching `[k1: v1  k2: v2 |]` (or similar syntax) rejects
 extra keys.
 
 **Lazy dict matching:** Only the keys named in the pattern are accessed.
-Other keys remain as unevaluated thunks. The bound variables (`$v1`, `$v2`)
+Other keys remain as unevaluated thunks. The bound variables (`v1`, `v2`)
 are thunks — they are not forced until the body references them.
 
 ### Phase 4: Guards and Or-Patterns
 
 Add:
 
-- **Guards:** `$pat when $condition` — match if pattern matches AND
+- **Guards:** `pat when condition` — match if pattern matches AND
   condition is true
-- **Or-patterns:** `$pat1 | $pat2` — match if either pattern matches
+- **Or-patterns:** `pat1 | pat2` — match if either pattern matches
   (both must bind the same set of variables)
 
 ```lisp
-[match $x
-    $n when [call $> $n 0]   positive
-    $n when [call $< $n 0]   negative
-    0                         zero]
+[match x
+    n when [> n 0]   "positive"
+    n when [< n 0]   "negative"
+    0                "zero"]
 
-[match $result
-    [ok: $v] | [success: $v]   $v       # accept either key
-    [err: $msg]                [call $error $msg]]
+[match result
+    [ok: v] | [success: v]   v       # accept either key
+    [err: msg]               [error msg]]
 ```
 
 ### Phase 5: Exhaustiveness Checking
@@ -529,13 +527,13 @@ useful, trivial to implement, and have no grammar impact.
 
 Phase 2 (basic match): adopt when:
 - A second dual-dispatch builtin needs a tinct-level wrapper
-- User code patterns show repeated `$type-of` + `$=` chains
-- The `$_` desugaring is complete and stable (confirming the
+- User code patterns show repeated `type-of` + `=` chains
+- The `_` desugaring is complete and stable (confirming the
   special-form pattern)
 
 Phase 3 (destructuring): adopt when:
 - Self-hosting of dual-dispatch builtins begins
-- `$try` result handling becomes a common pattern in user code
+- `try` result handling becomes a common pattern in user code
 - Record/dict destructuring is the #1 user ergonomics request
 
 ## References

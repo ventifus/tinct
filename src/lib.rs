@@ -144,7 +144,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
 /// and the source span where it occurred.
 ///
 /// The type environment is pre-populated with builtin type signatures via
-/// `TypeEnv::with_builtins()`, so stdlib builtins (`$+`, `$merge`, etc.) are
+/// `TypeEnv::with_builtins()`, so stdlib builtins (`+`, `merge`, etc.) are
 /// in scope for type checking.
 ///
 /// This function is primarily used for testing and corpus validation to ensure

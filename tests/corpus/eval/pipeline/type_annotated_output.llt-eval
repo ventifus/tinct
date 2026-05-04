@@ -1,0 +1,5 @@
+# Test section with type-annotated output name
+--- %config@Dict
+[x: 1  y: 2]
+===
+Dict({"x": Int(1), "y": Int(2)})

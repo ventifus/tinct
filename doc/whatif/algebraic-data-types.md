@@ -4,19 +4,19 @@ What would it take to add algebraic data types to tinct's structural, dict-first
 
 ## Current State
 
-tinct has no formal facility for declaring sum types. The `$try` builtin already
+tinct has no formal facility for declaring sum types. The `try` builtin already
 produces a structural ADT in practice — it returns either `[ok: value]` or
 `[err: message]` — but there is no type to declare, no way to constrain a parameter
 to "one of these shapes," and no exhaustiveness checking at the match site.
 
 ```lisp
-# $try already produces an ADT, but the type is Any
-res: [call $try $risky]
+# try already produces an ADT, but the type is Any
+res: [try risky]
 
 # Discrimination is ad-hoc today
-[call $if [call $has? $res ok]
-    $res.ok
-    [call $error $res.err]]
+[if [has? res "ok"]
+    res.ok
+    [error res.err]]
 ```
 
 Declarations like `Result`, `Event`, `Color` cannot be expressed. There is no static
@@ -27,7 +27,7 @@ the variant set.
 ### What's Missing
 
 1. **No way to declare a sum type.** `type Result a = [ok: a] | [err: Str]` is
-   inexpressible; the type of `$try` is `Any`.
+   inexpressible; the type of `try` is `Any`.
 2. **No static discrimination.** The type checker cannot narrow a value of "one of
    these shapes" — all branching on dict shape is untyped.
 3. **No exhaustiveness checking.** A `[match]` on a union-typed scrutinee cannot
@@ -40,8 +40,8 @@ the variant set.
 
 ## Why Algebraic Data Types Matter for tinct
 
-**Formalise an existing pattern.** `$try`'s `[ok: v]` / `[err: msg]` convention is
-already an ADT in practice. Every tinct program that uses `$try` is already working
+**Formalise an existing pattern.** `try`'s `[ok: v]` / `[err: msg]` convention is
+already an ADT in practice. Every tinct program that uses `try` is already working
 with structural sum types — they just have no static type. Declaring `Result` makes
 this intention visible to the type checker, the LSP, and readers.
 
@@ -54,8 +54,8 @@ statically verify that all variants are handled — the same guarantee Haskell, 
 and Rust offer for pattern matching on sum types (see `doc/whatif/pattern-matching.md`
 §Phase 5 and §Exhaustiveness Checking).
 
-**Self-hosting more stdlib.** Functions like `$try`, `$parse-int`, and potential
-future `$decode` operations return sum-typed results. Precise return types make
+**Self-hosting more stdlib.** Functions like `try`, `to-int`, and potential
+future `decode` operations return sum-typed results. Precise return types make
 these functions composable with the type checker rather than opaque.
 
 **Foundation for the type system's next level.** Named union types are the prerequisite
@@ -70,7 +70,7 @@ checker to narrow a value's type inside each `[match]` arm without explicit cast
 key set. This follows directly from Principle 1 (Dicts Are Fundamental,
 `doc/03-data-model.md`): a sum type is not a new kind of value — it is a
 type-system name for a set of dict shapes. No new `Value` variant is needed. The
-`$try` convention (`[ok: v]` and `[err: msg]`) is already this pattern.
+`try` convention (`[ok: v]` and `[err: msg]`) is already this pattern.
 
 The discrimination model parallels TypeScript's discriminated unions and OCaml's
 polymorphic variants (Garrigue 1998): two variants are distinguishable when their
@@ -109,12 +109,12 @@ Tree: [union Leaf [node: a  left: [Tree a]  right: [Tree a]]]
   Result: [union [ok: a] [err: Str]]
 
   parse: [fn@Result [input@Str]
-    [call $try [call $parse-int $input]]]
+    [try [parse-int input]]]
 
   handle: [fn [res@Result]
-    [match $res
-      [ok:  $v]   $v
-      [err: $msg] [call $error $msg]]]
+    [match res
+      [ok:  v]   v
+      [err: msg] [error msg]]]
 ]
 ```
 
@@ -124,7 +124,7 @@ A bare word entry like `ok`, `err`, or `red` in `[union ...]` becomes a
 `StringLiteral("ok")` type. The runtime value is simply the string `"ok"`. This
 requires no new value representation — bare-word literals already have type
 `StringLiteral(s)` in the type checker. Construction is trivial: `status: ok`.
-Pattern matching uses existing literal patterns: `[match $status  ok ...  err ...]`.
+Pattern matching uses existing literal patterns: `[match status  ok ...  err ...]`.
 
 This choice — string literals as tag-only variants — follows tinct's dicts-are-fundamental
 principle. An enum like `Status: [union ok err pending]` is a union of three string
@@ -142,7 +142,7 @@ declaration `Result: [union [ok: a] [err: Str]]` means:
 This closure is what enables exhaustiveness checking: the type checker knows the
 complete set of shapes a `Result` value can take.
 
-Pattern matching **remains open by default** (`[ok: $v]` matches any dict with an
+Pattern matching **remains open by default** (`[ok: v]` matches any dict with an
 `ok` key, whether or not it has extra fields). This is consistent with the
 pattern-matching design (see `doc/whatif/pattern-matching.md` §Open vs Closed Dict
 Matching) and with row polymorphism's open-record default. The closed constraint
@@ -179,8 +179,8 @@ Named constructor functions can be defined by the user when desired:
 ```tinct
 [
   Result: [union [ok: a] [err: Str]]
-  Ok:     [fn [v] [ok: $v]]
-  Err:    [fn [msg] [err: $msg]]
+  Ok:     [fn [v] [ok: v]]
+  Err:    [fn [msg] [err: msg]]
 ]
 ```
 
@@ -201,9 +201,9 @@ Variants in a union are checked via `is_subtype`: `is_subtype(Record({ok: Int, t
 typing (Tobin-Hochstadt & Felleisen 2010). When matching:
 
 ```lisp
-[match $res
-    [ok:  $v]   ...   # $res narrowed to [ok: a], $v has type a
-    [err: $msg] ...]  # $res narrowed to [err: Str], $msg has type Str
+[match res
+    [ok:  v]   ...   # res narrowed to [ok: a], v has type a
+    [err: msg] ...]  # res narrowed to [err: Str], msg has type Str
 ```
 
 The type checker: (1) synthesises the scrutinee's type (`Result a`), (2) expands
@@ -219,14 +219,14 @@ patterns) but requires an extra access step for payloads:
 
 ```lisp
 # Phase 2 — type patterns work but must access payload separately
-[match $res
-    Dict   [call $if [call $has? $res ok] $res.ok [call $error $res.err]]
-    Str    [call $error $res]]
+[match res
+    Dict   [if [has? res "ok"] res.ok [error res.err]]
+    Str    [error res]]
 
 # Phase 3 — dict destructuring is the right form
-[match $res
-    [ok: $v]    $v
-    [err: $msg] [call $error $msg]]
+[match res
+    [ok: v]    v
+    [err: msg] [error msg]]
 ```
 
 ### Interaction with Row Polymorphism
@@ -245,8 +245,8 @@ surface syntax does not. Approach A does not close off this future.
 ### Interaction with Algebraic Subtyping
 
 Under Simple-sub (Parreaux 2020, see `doc/whatif/algebraic-subtypes.md`), structural
-union types become *inferred*, not just annotated. With algebraic subtyping, `$if
-cond [ok: $v] [err: $msg]` would automatically produce type `[ok: T] | [err: Str]`
+union types become *inferred*, not just annotated. With algebraic subtyping, `[if
+cond [ok: v] [err: msg]]` would automatically produce type `[ok: T] | [err: Str]`
 without a `Result` declaration. The `[union ...]` declaration then becomes a
 *name* for a set of shapes the type system already understands — an alias,
 not a foundation. This means Phase 3 of `doc/whatif/algebraic-subtypes.md` makes
@@ -260,7 +260,7 @@ over data shape (parallel to TypeScript's discriminated unions and OCaml's
 polymorphic variants). This brings two properties:
 
 **Gained:** External data (JSON, config files) automatically satisfies variant
-types when it has the right shape. `$from-json` output that happens to have an
+types when it has the right shape. `from-json` output that happens to have an
 `ok` key is immediately a valid `Ok T` without conversion. Interop is free.
 
 **Foregone:** Opaque constructors with enforced invariants. There is no way to
@@ -346,11 +346,11 @@ concrete dict values regardless of their static union type.
 
 ### Builtins (`src/builtins.rs`)
 
-**Current:** `$try` return type is `Any`.
+**Current:** `try` return type is `Any`.
 
-**Proposed:** Once `Type::Union` exists, `$try` can be typed as
+**Proposed:** Once `Type::Union` exists, `try` can be typed as
 `(→ a) → Union([ok: a], [err: Str])` in the builtin type environment. This is the
-most visible immediate benefit of Phase 2: `$try` results become statically typed.
+most visible immediate benefit of Phase 2: `try` results become statically typed.
 
 **Impact:** Minor — a signature update to one builtin.
 
@@ -365,7 +365,7 @@ See Grammar above.
 Document the structural ADT pattern in `doc/03-data-model.md` and `doc/11-stdlib.md`.
 Establish naming conventions:
 
-- `$try` result shape is `[ok: v]` / `[err: msg]` — the canonical ADT.
+- `try` result shape is `[ok: v]` / `[err: msg]` — the canonical ADT.
 - Payload variants use a single descriptive key: `[circle: ...]`, `[click: ...]`.
 - Tag-only variants are lowercase bare words: `ok`, `err`, `pending`.
 
@@ -380,7 +380,7 @@ Add `union` keyword, parse `[union ...]` in type expression position, expand to
 - `Result: [union [ok: a] [err: Str]]` becomes a registered type alias.
 - `res@Result` instantiates the alias at usage sites.
 - `[@Result expr]` enforces union membership via TypeAssert.
-- `$try` receives its precise return type: `Union([ok: a], [err: Str])`.
+- `try` receives its precise return type: `Union([ok: a], [err: Str])`.
 - Type errors on incorrect variant shape: passing `[ok: 42  extra: true]` where a
   closed `[ok: Int]` variant is expected raises a type error.
 
@@ -393,15 +393,15 @@ When the scrutinee of `[match]` has a declared union type, check that the arm se
 covers all variants:
 
 ```lisp
-res: [@Result [call $try $risky]]
+res: [@Result [try risky]]
 
-[match $res
-    [ok: $v]  $v]
+[match res
+    [ok: v]  v]
 # Error: non-exhaustive match on Result — missing variant [err: Str]
 ```
 
 Coverage is computed by comparing the arm patterns against the union's variant
-list. A wildcard `_` or variable binding `$x` covers all remaining variants. An
+list. A wildcard `_` or variable binding `x` covers all remaining variants. An
 `or`-pattern (see `doc/whatif/pattern-matching.md` §Phase 4) can cover multiple
 variants in one arm.
 
@@ -450,7 +450,7 @@ unfolding research (a future `doc/whatif/` item).
 ### Trigger
 
 **Phase 2** (named union types): adopt when:
-- `$try` result types cause real type errors that `Any` masks (e.g., accessing
+- `try` result types cause real type errors that `Any` masks (e.g., accessing
   `.ok` on an `[err: msg]` result at a statically known failure path)
 - Users define recurring `[ok: T] / [err: Str]` patterns in their own types
 - `union-types.md` Phase 2 lands (the shared prerequisite with Phase 2)

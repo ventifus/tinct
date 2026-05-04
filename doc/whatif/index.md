@@ -9,13 +9,13 @@ makes the best case for its feature: "What would it take to do this well?"
 
 | Proposal | Summary |
 |----------|---------|
-| [Type Predicates](type-predicates.md) | `$int?`, `$str?`, `$dict?` — one predicate per Value variant |
-| [Path-Sensitive Narrowing](narrowing.md) | Refine variable types inside `$if` branches from equality/type guards |
+| [Type Predicates](type-predicates.md) | `int?`, `str?`, `dict?` — one predicate per Value variant |
+| [Path-Sensitive Narrowing](narrowing.md) | Refine variable types inside `if` branches from equality/type guards |
 | [Parameterized Type Aliases](parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site, fixing name-collision bugs |
 | [Union Types and Algebraic Subtyping](union-types.md) | `Int \| Str` annotations (Phase 2) → Simple-sub inferred unions/intersections (Phase 3) |
-| [Type Classes](typeclasses.md) | `Eq a => a → a → Bool` — constrained polymorphism for `$=`, `$+`, `$map` |
+| [Type Classes](typeclasses.md) | `Eq a => a → a → Bool` — constrained polymorphism for `=`, `+`, `map` |
 | [Formal Gradual Typing](gradual-typing.md) | Formalize `Any` semantics; split into `Unknown` / `Top`; add consistency relation |
-| [Structural Contracts](structural-contracts.md) | `%@Type` pipeline boundary checking + `$validate` schema-as-dict runtime constraints |
+| [Structural Contracts](structural-contracts.md) | `%@Type` pipeline boundary checking + `validate` schema-as-dict runtime constraints |
 
 ## Data Types
 
@@ -28,12 +28,12 @@ makes the best case for its feature: "What would it take to do this well?"
 
 | Proposal | Summary |
 |----------|---------|
-| [String Interpolation](string-interpolation.md) | `i"Hello $name"` — desugars to `[call $str ...]`; formatter ergonomics |
+| [String Interpolation](string-interpolation.md) | `i"Hello $name"` — desugars to `[str ...]`; formatter ergonomics |
 | [`let` Binding Form](let-binding.md) | Sequential expressions inside `[fn ...]` bodies — no new keywords |
-| [Pattern Matching](pattern-matching.md) | `[match $x ...]` — type dispatch + structural destructuring; 5-phase adoption |
+| [Pattern Matching](pattern-matching.md) | `[match x ...]` — type dispatch + structural destructuring; 5-phase adoption |
 | [Quasiquoting](quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros |
 | [Desugaring as Macros](macros.md) | Procedural AST macros for user-defined syntactic transformations |
-| [Custom Call Aliases](call-aliases.md) | `[timed $f ...]` — macro-defined call forms; gated on macros |
+| [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 | [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with iterative parser; `ParseOutput` comment map; AST-based formatter (**Accepted**) |
 | [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections |
 
@@ -71,9 +71,9 @@ makes the best case for its feature: "What would it take to do this well?"
 
 | Proposal | Summary |
 |----------|---------|
-| [General I/O](io.md) | Capability-based I/O: `DirCap`, `NetCap`, `Handle`; `$open`, `$slurp`, `$write`, `$lines` |
-| [TLS, PKI, and HTTP](lib-tls.md) | mTLS, custom CA bundles, certificate pinning, ALPN, HTTP/2 via `$fetch` |
-| [SQL Data Sources](lib-sql.md) | `$sql-open` returns lazy SQL source; `$filter`/`$map` push predicates to the DB |
+| [General I/O](io.md) | Capability-based I/O: `DirCap`, `NetCap`, `Handle`; `open`, `slurp`, `write`, `lines` |
+| [TLS, PKI, and HTTP](lib-tls.md) | mTLS, custom CA bundles, certificate pinning, ALPN, HTTP/2 via `fetch` |
+| [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
 ## Standard Library
 
@@ -86,7 +86,7 @@ makes the best case for its feature: "What would it take to do this well?"
 
 | Proposal | Summary |
 |----------|---------|
-| [tinct as a Templating Language](templating.md) | `$emit`, multi-file pipelines, literate tinct, template-polarity embedding |
+| [tinct as a Templating Language](templating.md) | `emit`, multi-file pipelines, literate tinct, template-polarity embedding |
 
 ---
 
@@ -107,9 +107,9 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 
 These proposals have no gating conditions and deliver standalone value at low cost.
 
-**[Type Predicates](type-predicates.md)** — `### stdlib-type-predicates` in TODO is exactly this proposal: `$int?`, `$str?`, `$float?`, `$bool?`, `$dict?`, `$fn?` as one-liners plus runtime assertion guards. No dependencies, no gating.
+**[Type Predicates](type-predicates.md)** — `### stdlib-type-predicates` in TODO is exactly this proposal: `int?`, `str?`, `float?`, `bool?`, `dict?`, `fn?` as one-liners plus runtime assertion guards. No dependencies, no gating.
 
-**[String Interpolation](string-interpolation.md) Phase 1** — High ergonomic ROI. Phase 1 (`i"..."` → desugar to `$str`) is a standalone parser + desugar change. No dependencies.
+**[String Interpolation](string-interpolation.md) Phase 1** — High ergonomic ROI. Phase 1 (`i"..."` → desugar to `str`) is a standalone parser + desugar change. No dependencies.
 
 **[`let` Binding Form](let-binding.md)** — Removes structural friction in every multi-step function. No new keywords; extends existing sequential scoping model to `[fn ...]` bodies. No dependencies.
 
@@ -138,13 +138,13 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | Proposal | Gating Condition |
 |----------|-----------------|
 | [Gradual Typing](gradual-typing.md) | whatif not yet accepted; `Any`-as-top-and-bottom causing a real false positive, or union types forcing the split. Note: `Type::Any` split (`Unknown`+`Top`) is a standalone sprint independent of this whatif. |
-| [Type Classes](typeclasses.md) | Phase 1 (`$deep-eq`/`$shallow-eq` builtins) ships now; Phase 2 (constrained type vars) after `Type::Any` split |
+| [Type Classes](typeclasses.md) | Phase 1 (`deep-eq`/`shallow-eq` builtins) ships now; Phase 2 (constrained type vars) after `Type::Any` split |
 | [Union Types and Algebraic Subtyping](union-types.md) Phase 2 | Nullable types or tagged union patterns becoming common in user code |
-| [Union Types and Algebraic Subtyping](union-types.md) Phase 3 | Annotation-only unions proving insufficient; `$if` return types need inferred unions |
+| [Union Types and Algebraic Subtyping](union-types.md) Phase 3 | Annotation-only unions proving insufficient; `if` return types need inferred unions |
 | [Algebraic Data Types](algebraic-data-types.md) Phase 2 | `union-types.md` Phase 2 implemented (`Type::Union` exists) |
 | [Nominal Variants](nominal-variants.md) | Structural ADTs Phase 2 complete; two constructors with identical payload shapes needed |
 | [Narrowing](narrowing.md) | `typeassert-structural-b` + let-generalization + bidirectional typing all complete |
-| [Macros](macros.md) | A second syntactic desugaring beyond `$_`, or user-requested domain-specific syntax |
+| [Macros](macros.md) | A second syntactic desugaring beyond `_`, or user-requested domain-specific syntax |
 | [Quasiquoting](quasiquoting.md) | Macro system adoption |
 | [Custom Call Aliases](call-aliases.md) | Macro system adoption |
 | [Parameterized Type Aliases](parameterized-type-aliases.md) | Name collision becomes a real type error, or recursive ADTs needed (Phase 4) |
@@ -161,14 +161,14 @@ These proposals open new ground rather than closing existing work. All have acce
 
 | Proposal | Key Unlock |
 |----------|-----------|
-| [General I/O](io.md) Phase 1 | `$emit` — required for all formatter/templating work |
+| [General I/O](io.md) Phase 1 | `emit` — required for all formatter/templating work |
 | [TLS, PKI, and HTTP](lib-tls.md) | mTLS and custom CA for internal-service tinct programs |
-| [SQL Data Sources](lib-sql.md) | Lazy DB reads via `$filter`/`$map` predicate pushdown |
+| [SQL Data Sources](lib-sql.md) | Lazy DB reads via `filter`/`map` predicate pushdown |
 | [Numeric Types](numeric-types.md) | Range annotations + Decimal type |
 | [Float Dict Keys](float-dict-keys.md) | Decimal keys; gated on Decimal type adoption |
 | [Pattern Matching](pattern-matching.md) | Full match expression; Phase 1 = type predicates (adopt that first) |
-| [tinct as a Templating Language](templating.md) | `$emit` + formatters + literate mode; Phase 5 (template-polarity) deferred |
-| [Nominal Variants](nominal-variants.md) Phase 1 | `$tag-of` + unit constructors; independently useful as enum-like values |
+| [tinct as a Templating Language](templating.md) | `emit` + formatters + literate mode; Phase 5 (template-polarity) deferred |
+| [Nominal Variants](nominal-variants.md) Phase 1 | `tag-of` + unit constructors; independently useful as enum-like values |
 
 ---
 
@@ -187,7 +187,7 @@ union-types (Ph 2) ──── algebraic-data-types (Ph 2) ──────�
        │                                                              │
        └──── union-types (Ph 3) ─── gradual-typing ─── algebraic-data-types (Ph 3)
 
-type-classes (Ph 1: $deep-eq/$shallow-eq) ── type-classes (Ph 2: constrained vars)
+type-classes (Ph 1: deep-eq/shallow-eq) ── type-classes (Ph 2: constrained vars)
                                                     │
                                            Any-split (Unknown + Top) ── gradual-typing
 
@@ -219,10 +219,10 @@ No two proposals are fully mutually exclusive — adopting one never prevents th
 
 **Dual-dispatch typing: [Type Classes](typeclasses.md) vs [Union Types](union-types.md)**
 
-Both solve the problem of typing `$map`, `$filter`, and other dual-dispatch builtins. Type classes solve it with `Functor f => (a → b) → f a → f b`; union types solve it with `(a → b) → (Dict a | Seq a) → (Dict b | Seq b)`.
+Both solve the problem of typing `map`, `filter`, and other dual-dispatch builtins. Type classes solve it with `Functor f => (a → b) → f a → f b`; union types solve it with `(a → b) → (Dict a | Seq a) → (Dict b | Seq b)`.
 
 - Adopt **type classes** first if the goal is polymorphic protocols for user-defined types.
-- Adopt **union types** first if the goal is nullable types and ADTs (`Int | Null`, `$try` result types).
+- Adopt **union types** first if the goal is nullable types and ADTs (`Int | Null`, `try` result types).
 
 Either path is valid. Both can coexist; for the dual-dispatch problem specifically, one solution is sufficient.
 
@@ -230,13 +230,13 @@ Either path is valid. Both can coexist; for the dual-dispatch problem specifical
 
 **[Nominal Variants](nominal-variants.md) making [Algebraic Data Types](algebraic-data-types.md) conventions redundant for some use cases**
 
-For use cases where opaque construction matters, nominal variants are strictly more expressive. Structural ADTs remain correct for JSON interop (structural variants round-trip; nominal variants don't reconstruct from `$from-json`). These coexist — but for any specific type declaration, the user must choose.
+For use cases where opaque construction matters, nominal variants are strictly more expressive. Structural ADTs remain correct for JSON interop (structural variants round-trip; nominal variants don't reconstruct from `from-json`). These coexist — but for any specific type declaration, the user must choose.
 
 ### Runtime Representation Tension
 
 **[Nominal Variants](nominal-variants.md) + JSON serialization**
 
-Nominal `[call Ok 42]` → `{"Ok": 42}`. `$from-json` always produces structural dicts, losing nominal identity. Do not use nominal variants for data that must survive JSON round-trips; use structural ADTs instead.
+Nominal `[Ok 42]` → `{"Ok": 42}`. `from-json` always produces structural dicts, losing nominal identity. Do not use nominal variants for data that must survive JSON round-trips; use structural ADTs instead.
 
 ### The One-Way Migration Door
 

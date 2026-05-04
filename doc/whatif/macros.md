@@ -7,12 +7,12 @@ system?
 
 tinct has multiple syntactic sugar mechanisms implemented as separate, disconnected systems:
 
-1. **`$_` implicit lambda** --- hardcoded in `eval.rs:66-71` (being moved to `src/desugar.rs` as a pre-typecheck AST pass)
+1. **`_` implicit lambda** --- hardcoded in `eval.rs:66-71` (being moved to `src/desugar.rs` as a pre-typecheck AST pass)
 2. **Stdlib sugar** --- `->`, `when`, `unless`, `cond`, `>=`, `<=`, `>`, `compose` --- ordinary lazy functions in `stdlib/prelude.llt`
-3. **Parser-level sugar** --- access chains (`$data.name` -> `DotAccess`), keyword forms (`call`, `fn`, `type`)
-4. **Runtime scoping** --- document pipeline (`---`/`$$`), dict letrec
+3. **Parser-level sugar** --- access chains (`data.name` -> `DotAccess`), keyword forms (`call`, `fn`, `type`)
+4. **Runtime scoping** --- document pipeline (`---`/`%`), dict letrec
 
-Each new piece of sugar requires a different implementation strategy: Rust AST rewrite for `$_`, stdlib function for `when`, grammar rule for access chains. There is no unified mechanism for defining syntactic transformations, and users cannot define their own.
+Each new piece of sugar requires a different implementation strategy: Rust AST rewrite for `_`, stdlib function for `when`, grammar rule for access chains. There is no unified mechanism for defining syntactic transformations, and users cannot define their own.
 
 ### What Is Actually Desugaring?
 
@@ -20,14 +20,14 @@ Not everything called "sugar" is the same kind of transformation. A useful taxon
 
 | Category | Examples | Level | User-extensible? |
 |----------|----------|-------|-------------------|
-| **Syntactic desugaring** | `$_` -> `[fn [_] ...]` | AST -> AST | No (Rust code) |
+| **Syntactic desugaring** | `_` -> `[fn [_] ...]` | AST -> AST | No (Rust code) |
 | **Functional sugar** | `->`, `when`, `>=` | Function composition | Yes (stdlib) |
-| **Lexical sugar** | `$data.name` -> `DotAccess(...)` | Tokenizer/parser | No (grammar rule) |
-| **Semantic scoping** | `---`/`$$`, dict letrec | Evaluator | No (core semantics) |
+| **Lexical sugar** | `data.name` -> `DotAccess(...)` | Tokenizer/parser | No (grammar rule) |
+| **Semantic scoping** | `---`/`%`, dict letrec | Evaluator | No (core semantics) |
 
 Only the first category --- syntactic desugaring --- is a candidate for macros. Functional sugar already works fine as lazy functions. Lexical sugar and semantic scoping are below the level macros operate.
 
-Today, `$_` is the only syntactic desugaring. String interpolation (doc/02-syntax.md, "if added") would be the second. The question is whether a general macro system is worth building for these, or whether hardcoded AST passes are sufficient.
+Today, `_` is the only syntactic desugaring. String interpolation (doc/02-syntax.md, "if added") would be the second. The question is whether a general macro system is worth building for these, or whether hardcoded AST passes are sufficient.
 
 ### What's Missing
 
@@ -45,10 +45,10 @@ Today, `$_` is the only syntactic desugaring. String interpolation (doc/02-synta
 
 - **User-extensible syntax** --- domain-specific binding forms, control flow,
   and structural transformations defined in tinct, not Rust
-- **Unified desugaring** --- all syntactic sugar (`$_`, string interpolation,
+- **Unified desugaring** --- all syntactic sugar (`_`, string interpolation,
   future constructs) expressed as macro rules rather than hardcoded passes
 - **"One language" philosophy** --- sugar is defined in tinct using the same
-  data transformation tools (`$map`, `$filter`, `$get`) users already know
+  data transformation tools (`map`, `filter`, `get`) users already know
 - **Zero-cost abstraction** --- macros that expand to inline code avoid
   thunk creation, eliminating per-call overhead for strict operations
 - **Self-hosting path** --- reduces the Rust surface area by expressing
@@ -68,13 +68,13 @@ In strict languages, macros are essential for:
 tinct is lazy. All of these work as ordinary functions:
 ```lisp
 # These are functions in stdlib/prelude.llt, not macros
-when:   [fn [pred body] [call $if $pred $body []]]
-unless: [fn [pred body] [call $if $pred [] $body]]
-and:    [fn [a b] [call $if $a $b false]]
-or:     [fn [a b] [call $if $a true $b]]
+when:   [fn [pred body] [if pred body []]]
+unless: [fn [pred body] [if pred [] body]]
+and:    [fn [a b] [if a b false]]
+or:     [fn [a b] [if a true b]]
 ```
 
-Because tinct uses call-by-need evaluation, `[call $when false [call $expensive]]` never forces `$expensive`. Laziness gives you the main benefit of macros --- deferred evaluation --- for free.
+Because tinct uses call-by-need evaluation, `[when false [expensive]]` never forces `expensive`. Laziness gives you the main benefit of macros --- deferred evaluation --- for free.
 
 Nix and Jsonnet demonstrate this at scale: neither has macros, and laziness covers most use cases. Nix's module system (`lib.mkIf`, `lib.mkOverride`) is built entirely from lazy functions returning tagged attribute sets.
 
@@ -82,7 +82,7 @@ Nix and Jsonnet demonstrate this at scale: neither has macros, and laziness cove
 
 Macros provide things lazy functions cannot:
 
-1. **New syntax** --- Functions cannot change how code is parsed. `$_` creates a syntax that doesn't look like a function call.
+1. **New syntax** --- Functions cannot change how code is parsed. `_` creates a syntax that doesn't look like a function call.
 2. **Compile-time computation** --- Functions defer to runtime. Macros can compute at expansion time, eliminating overhead.
 3. **Structural transformation** --- Functions receive values. Macros receive AST and can restructure it (reorder, duplicate, elide subexpressions based on syntactic shape).
 4. **Binding introduction** --- Functions cannot introduce new variable bindings in the caller's scope. Macros can expand to forms that bind names.
@@ -90,51 +90,51 @@ Macros provide things lazy functions cannot:
 
 The overlap means many stdlib functions (`when`, `>=`, `compose`) would NOT benefit from becoming macros --- they work fine as lazy functions. Macros are for the cases laziness can't cover: binding, structural transformation, and new syntax.
 
-## `$_` as the Acid Test
+## `_` as the Acid Test
 
-The acid test for the macro system: can `$_` desugaring be expressed as a user-definable macro rather than a hardcoded Rust pass?
+The acid test for the macro system: can `_` desugaring be expressed as a user-definable macro rather than a hardcoded Rust pass?
 
-The `$_` transformation requires (per doc/04-functions.md $_  Desugaring):
+The `_` transformation requires (per doc/04-functions.md `_` Desugaring):
 
-1. **DIRECT predicate** --- identify `VarRef("_")` or access chains rooted at `$_` (e.g., `$_.name`, `$_[0]`)
+1. **DIRECT predicate** --- identify `VarRef("_")` or access chains rooted at `_` (e.g., `_.name`, `_[0]`)
 2. **Top-down WRAP check** --- examine raw children of Call, Dict, DotAccess, BracketAccess, RangeAccess before recursing
-3. **Func-position exclusion** --- `$_` in function position of a Call does NOT trigger wrapping
-4. **Depth-based shadowing** --- inside `[fn [_] ...]`, the `_` parameter shadows `$_` desugaring
+3. **Func-position exclusion** --- `_` in function position of a Call does NOT trigger wrapping
+4. **Depth-based shadowing** --- inside `[fn [_] ...]`, the `_` parameter shadows `_` desugaring
 5. **Lambda wrapping** --- wrap the containing expression in `[fn [_] expr]` with span preservation
 
 As a procedural macro operating on AST-dicts:
 
 ```lisp
-# DIRECT predicate: is this node $_ or an access chain rooted at $_?
+# DIRECT predicate: is this node _ or an access chain rooted at _?
 direct?: [fn [node]
-  [call $or
-    [call $and [call $= $node.type var] [call $= $node.name _]]
-    [call $and [call $= $node.type dot-access]
-               [call $direct? $node.target]]
-    [call $and [call $= $node.type bracket-access]
-               [call $direct? $node.target]]]]
+  [or
+    [and [= node.type "var"] [= node.name "_"]]
+    [and [= node.type "dot-access"]
+               [direct? node.target]]
+    [and [= node.type "bracket-access"]
+               [direct? node.target]]]]
 
 # Check if any child of a node is DIRECT
 has-direct-child?: [fn [node]
-  [call $cond [
-    [[call $= $node.type call]
-      [call $any? $direct? $node.args]]
-    [[call $= $node.type dict]
-      [call $any? [fn [entry] [call $direct? $entry.value]] $node.entries]]
+  [cond [
+    [[= node.type "call"]
+      [any? direct? node.args]]
+    [[= node.type "dict"]
+      [any? [fn [entry] [direct? entry.value]] node.entries]]
     [true
-      [call $direct? $node]]
+      [direct? node]]
   ]]]
 
 # The macro: wrap expression in [fn [_] expr] if it has a DIRECT child
 [defmacro desugar-underscore [expr]
-  [call $if [call $has-direct-child? $expr]
-    [quote [fn [_] [unquote $expr]]]
-    $expr]]
+  [if [has-direct-child? expr]
+    [quote [fn [_] [unquote expr]]]
+    expr]]
 ```
 
-This demonstrates that a procedural macro system with AST-as-dict is powerful enough to express `$_`. The DIRECT predicate, child inspection, and conditional wrapping all use ordinary tinct functions (`$any?`, `$=`, `$cond`) applied to AST structure.
+This demonstrates that a procedural macro system with AST-as-dict is powerful enough to express `_`. The DIRECT predicate, child inspection, and conditional wrapping all use ordinary tinct functions (`any?`, `=`, `cond`) applied to AST structure.
 
-Depth-based shadowing would be handled by the macro expander itself: when expanding inside a `[fn [_] ...]` body, `$_` is bound and the macro does not fire --- the same scoping rules that apply to any hygienic macro.
+Depth-based shadowing would be handled by the macro expander itself: when expanding inside a `[fn [_] ...]` body, `_` is bound and the macro does not fire --- the same scoping rules that apply to any hygienic macro.
 
 ## Design
 
@@ -147,18 +147,18 @@ transformation --- the same thing tinct already does.
 
 ```lisp
 # AST is represented as tinct dicts
-# [call $f $x $y] is the dict:
-#   [type: call  fn: [type: var  name: f]  args: [[type: var  name: x] [type: var  name: y]]]
+# [f x y] is the dict:
+#   [type: "call"  fn: [type: "var"  name: "f"]  args: [[type: "var"  name: "x"] [type: "var"  name: "y"]]]
 
 # A macro is a function from AST-dict to AST-dict
 [defmacro when [pred-ast body-ast]
-  [type: call
-   fn: [type: var  name: if]
-   args: [$pred-ast  $body-ast  [type: literal  value: []]]]]
+  [type: "call"
+   fn: [type: "var"  name: "if"]
+   args: [pred-ast  body-ast  [type: "literal"  value: []]]]]
 
 # Or with quote/unquote syntax sugar:
 [defmacro when [pred body]
-  [quote [call $if [unquote $pred] [unquote $body] []]]]
+  [quote [if [unquote pred] [unquote body] []]]]
 ```
 
 ### Expansion Pipeline
@@ -177,7 +177,7 @@ source -> parse -> quote_macros -> expand (call macro fns on quoted AST) -> type
 
 - **Not automatic** --- macro authors must manage variable names
 - `[gensym]` builtin provides fresh unique names for introduced bindings
-- Convention over enforcement: macros should use `$gensym` for internal bindings
+- Convention over enforcement: macros should use `gensym` for internal bindings
 - This matches Template Haskell and early Common Lisp --- hygiene is opt-in
 
 Default hygiene via scope sets (Flatt 2016) or context-annotated variables
@@ -195,7 +195,7 @@ dict with a `type` key discriminator. This representation should:
 
 - **Use string `type` discriminator** --- `[type: call ...]`,
   `[type: var ...]`, etc. This is the tagged-union convention already
-  used by `$try` results (`[ok: ...]` / `[err: ...]`).
+  used by `try` results (`[ok: ...]` / `[err: ...]`).
 - **Mirror the `Expr` enum** --- one dict shape per `Expr` variant, with
   fields matching the Rust struct fields.
 - **Include spans** --- macro-generated nodes carry the expansion site's
@@ -216,8 +216,8 @@ the same evaluator with a separate entry point --- not a distinct
 compilation phase.
 
 **Lazy evaluation tension:** macros need their arguments as *unevaluated
-AST*, not as lazy thunks. A macro call site `[when $pred $body]` must pass
-the *syntax* `$pred` and `$body`, not their *values*. This requires
+AST*, not as lazy thunks. A macro call site `[when pred body]` must pass
+the *syntax* `pred` and `body`, not their *values*. This requires
 special handling --- macro arguments bypass the normal evaluation model.
 
 **Termination:** recursive macro expansion could loop. A depth limit plus
@@ -232,10 +232,10 @@ maps errors in expanded code back to the surface syntax the user wrote.
 Without this, errors in macro-generated code point to generated AST, not
 original source --- a significant usability degradation.
 
-### Interaction with `$include`
+### Interaction with `include`
 
 Macros defined in an included file should be available to the includer.
-This works naturally if `$include` evaluates the file (making macro
+This works naturally if `include` evaluates the file (making macro
 definitions available) before the includer's expansion phase. This is the
 same ordering Racket uses: `require` runs the required module's
 compile-time code before expanding the requiring module.
@@ -324,7 +324,7 @@ multi-location spans.
 
 Implement `ast_to_dict(expr: &Expr) -> Value` and
 `dict_to_ast(value: &Value) -> Result<Expr, Error>` in Rust. Define the
-dict schema for every `Expr` variant. Add `$quote` as a builtin that
+dict schema for every `Expr` variant. Add `quote` as a builtin that
 converts an expression to its dict representation. No grammar changes.
 
 This phase is shared with `doc/whatif/quasiquoting.md` Phase 1.
@@ -344,8 +344,8 @@ dual-span tracking for macro-generated AST. Resugaring for error messages.
 ### Phase 4: Integration
 
 Connect with quasiquoting (`doc/whatif/quasiquoting.md`) for ergonomic
-macro bodies. Connect with `$include` for cross-file macro definitions.
-Port `$_` desugaring from hardcoded Rust to a tinct-defined macro.
+macro bodies. Connect with `include` for cross-file macro definitions.
+Port `_` desugaring from hardcoded Rust to a tinct-defined macro.
 
 ### Prerequisites
 
@@ -363,7 +363,7 @@ Port `$_` desugaring from hardcoded Rust to a tinct-defined macro.
 
 ### Trigger
 
-- **`$_` desugaring sprint completes** --- the hardcoded pass provides
+- **`_` desugaring sprint completes** --- the hardcoded pass provides
   the baseline semantics; the macro system generalizes it
 - **A second syntactic desugaring is needed** (e.g., string interpolation,
   `let` bindings, pattern matching) --- confirms the pattern

@@ -45,7 +45,7 @@ fn arb_strict_builtin_call(ctx: &Rc<EvalContext>)
     -> impl Strategy<Value = (Rc<Thunk>, Rc<Thunk>)>
 {
     // Path A: PendingBuiltin { func: builtin_add, args: [thunk(n1), thunk(n2)] }
-    // Path B: Unevaluated { expr: [call $+ n1 n2] }
+    // Path B: Unevaluated { expr: [+ n1 n2] }
     // Assert: materialize(A) == materialize(B)
 }
 ```

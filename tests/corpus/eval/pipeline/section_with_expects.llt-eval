@@ -1,0 +1,6 @@
+# Test section with expects: contract (advisory, doesn't block evaluation)
+[a: 1]
+--- %out expects: @Dict
+%.a
+===
+Int(1)
