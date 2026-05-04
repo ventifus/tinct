@@ -1,0 +1,5 @@
+# Four hyphens is a valid bare word identifier (not a doc separator)
+# Doc separator is exactly "---" not followed by a bare_word_char
+[x: ----]
+===
+["x": ----]

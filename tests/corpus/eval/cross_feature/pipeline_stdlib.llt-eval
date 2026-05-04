@@ -1,0 +1,6 @@
+# Cross-feature: Two-document pipeline using % and stdlib reduce function
+[items: [1 2 3]]
+---
+[total: [reduce + 0 %.items]]
+===
+Dict({"total": Int(6)})

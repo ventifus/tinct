@@ -1,0 +1,5 @@
+# "---foo" (followed by newline) is an identifier, not a doc separator
+# Doc separator is "---" NOT followed by a bare_word_char
+[x: ---foo]
+===
+["x": ---foo]

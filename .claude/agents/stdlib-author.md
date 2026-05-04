@@ -43,7 +43,7 @@ Read `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key 
 **I/O**: `$from-json`, `$include`
 **Sequences**: `$seq`, `$head`, `$tail`, `$collect`, `$seq?`, `$range`, `$repeat`, `$cycle`, `$iterate`, `$unfold`, `$take`, `$drop`, `$map`, `$filter`, `$reduce`, `$join`, `$concat`
 
-Note: `$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`, `$concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). Total: 45 Rust-native builtins (not 44 — count was updated when concat migrated).
+Note: `$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`, `$concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). Total: 51 Rust-native builtins (not 45 — count was updated when rest, cons, reverse, and sort migrated from LLT to Rust).
 
 ## Stdlib Function Categories
 
@@ -205,7 +205,7 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - **`$deep-eq` does NOT exist** — doc/11-stdlib.md:106 falsely claims it does. Use `$=` (shallow) or implement deep comparison manually.
 - **`sort`/`sort-by` crash on Seq input** — missing Seq guard (tracked TODO.md:576). Always collect Seqs before sorting.
 - **`zip-seq`/`zip-dict` are internal** — don't call them directly; use `zip`. They should be renamed to `zip-seq-impl`/`zip-dict-impl` but haven't been yet (TODO.md:562).
-- **Corpus test count**: 123 tests for ~96 total functions (45 Rust + 51 LLT) as of 2026-04-24.
+- **Corpus test count**: ~136 tests for ~102 total functions (51 Rust + 51 LLT) as of 2026-05-02.
 
 ## Mempalace
 
