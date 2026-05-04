@@ -3623,3 +3623,15 @@ Single atomic change. All internal `.llt` files migrated in the same commit. See
 - [x] **Corpus README**: Comprehensive rewrite.
 - [x] **Sequence constructor tests**: repeat_depth_limit, unfold_depth_limit added.
 - [x] **doc/12 ASPIRATIONAL**: Removed; implemented features enumerated.
+
+### cycle-findings-c121: C121 Codebase Health (completed items)
+
+- [x] doc/11a-builtins.md verified already correct (51 builtins, not 46)
+- [x] Type variable collection: Vec with contains_key dedup in instantiate_at_level
+- [x] cross_feature/: 4 tests added
+- [x] Type::Function PartialEq + is_subtype + unify: variadic flag included; 3 unit tests
+- [x] name_counter: saturating_add at 8 sites
+- [x] doc/02-syntax.md: 6-constraint testing requirements table added
+- [x] 5 laziness tests, 2 type assertion tests, 2 separator tests added
+- [x] doc/11a-builtins.md header: "46" → "51"
+- [x] special_form_arity.llt-eval corpus test created

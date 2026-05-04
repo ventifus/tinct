@@ -1,0 +1,8 @@
+# Laziness proof: filter + head never evaluates the error element.
+# Element 1 (value 1) passes the predicate and satisfies head.
+# Element 3 ([/ 1 0]) is the laziness sentinel — it would error if forced, but head returns
+# before the filter machinery reaches it. Elements beyond the first match are never evaluated.
+[filtered: [filter [fn [x] [> x 0]] [1 2 [/ 1 0]]]]
+[result: [head filtered]]
+===
+Dict({"result": Int(1)})

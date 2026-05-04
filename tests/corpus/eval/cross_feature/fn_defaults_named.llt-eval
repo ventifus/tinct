@@ -1,0 +1,5 @@
+# Cross-feature: Function with default parameter and named argument call
+[f: [fn [x  default@[default: 10]] [+ x default]]]
+[result: [f 5  default: 20]]
+===
+Dict({"result": Int(25)})

@@ -748,7 +748,18 @@ The parser treats `[key: value1 value2 value3]` such that `key` has value `value
 
 ### Testing Requirements
 
-Each static constraint should have at least one test in `tests/corpus/invalid/syntax_errors/` demonstrating parser rejection. The six constraints are: Mixed Positional/Named Ordering (allowed, no constraint), Special Form Arity (function position required), Duplicate Key Detection (runtime), Fn Parameter List Structure (no positional after variadic), Bracket Nesting Depth Limit (MAX_PARSE_DEPTH), and Annotation Bracket Restriction (no nested brackets in annotations).
+Each static constraint enforced by the parser must have corpus tests demonstrating correct behavior and rejection of invalid inputs. The six documented constraints map to these test patterns:
+
+| Static Constraint | Test Files |
+|------------------|------------|
+| **Mixed Positional/Named Ordering** (allowed) | `tests/corpus/valid/simple/mixed_positional_named.llt-eval` |
+| **Special Form Arity** | `tests/corpus/invalid/syntax_errors/special_form_arity.llt-eval` (`[call]` with no function argument) |
+| **Duplicate Key Detection** | `tests/corpus/invalid/syntax_errors/duplicate_key.llt-eval`, `tests/corpus/invalid/syntax_errors/duplicate_varref_key.llt-eval` |
+| **Fn Parameter List Structure** | `tests/corpus/invalid/syntax_errors/multiple_variadics.llt-eval`, `tests/corpus/invalid/syntax_errors/param_after_variadic.llt-eval` |
+| **Bracket Nesting Depth Limit** | `tests/corpus/invalid/syntax_errors/parser_depth_exceeded.llt-eval` |
+| **Annotation Bracket Restriction** | `tests/corpus/invalid/syntax_errors/special_form_in_annotation.llt-eval` |
+
+See doc/15-ast.md §Static Constraints for detailed constraint specifications.
 
 ## 5. Document Separator Grammar
 

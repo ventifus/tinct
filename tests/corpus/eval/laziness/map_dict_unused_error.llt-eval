@@ -1,0 +1,6 @@
+# Laziness proof: map over dict does not materialize error in mapped value for unused key
+[mapped: [map [fn [x] [* x 2]] [a: 1  b: [/ 1 0]]]]
+---
+%.mapped.a
+===
+Int(2)

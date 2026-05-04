@@ -1,0 +1,4 @@
+# Multiple TypeAssert entries in a dict with defaults
+[x: [@[type: Int  default: 0] "not an int"]  y: [@[type: String  default: "default"] 123]]
+===
+Dict({"x": Int(0), "y": String("default")})

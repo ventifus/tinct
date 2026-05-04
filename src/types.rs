@@ -88,14 +88,14 @@ impl PartialEq for Type {
                 Type::Function {
                     params: p1,
                     ret: r1,
-                    variadic: _,
+                    variadic: v1,
                 },
                 Type::Function {
                     params: p2,
                     ret: r2,
-                    variadic: _,
+                    variadic: v2,
                 },
-            ) => p1 == p2 && r1 == r2,
+            ) => v1 == v2 && p1 == p2 && r1 == r2,
             (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
@@ -178,15 +178,16 @@ impl Type {
                 Type::Function {
                     params: sub_p,
                     ret: sub_r,
-                    variadic: _,
+                    variadic: sv,
                 },
                 Type::Function {
                     params: sup_p,
                     ret: sup_r,
-                    variadic: _,
+                    variadic: pv,
                 },
             ) => {
-                sub_p.len() == sup_p.len()
+                sv == pv
+                    && sub_p.len() == sup_p.len()
                     && sub_p
                         .iter()
                         .zip(sup_p.iter())
@@ -348,8 +349,10 @@ impl Type {
         }
     }
 
-    /// Collect variables into Vecs (allows duplicates). Used in test-only instantiate().
-    /// Cheaper than HashSet allocation when deduplication isn't needed.
+    /// Collect type and row variables into Vecs, allowing duplicates. Cheaper than HashSet
+    /// allocation; callers that need deduplication handle it via seen-set or contains_key guards.
+    /// Production callers: `instantiate_at_level` and `generalize`. (The test-only `instantiate()`
+    /// uses the HashSet variant `collect_all_vars` instead.)
     pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>, row_vars: &mut Vec<String>) {
         match self {
             Type::TypeVar(name, _) => {
@@ -446,7 +449,7 @@ impl InferState {
     /// Create a fresh type variable at the current level and register it in `state.levels`.
     pub fn fresh_type_var(&mut self) -> Type {
         let name = format!("_t{}", self.name_counter);
-        self.name_counter += 1;
+        self.name_counter = self.name_counter.saturating_add(1);
         self.levels.insert(name.clone(), self.level);
         Type::TypeVar(name, self.level)
     }
@@ -454,7 +457,7 @@ impl InferState {
     /// Create a fresh row variable name at the current level and register it in `state.levels`.
     pub fn fresh_row_var_name(&mut self) -> (String, u32) {
         let name = format!("_t{}", self.name_counter);
-        self.name_counter += 1;
+        self.name_counter = self.name_counter.saturating_add(1);
         self.levels.insert(name.clone(), self.level);
         (name, self.level)
     }
@@ -955,7 +958,7 @@ fn partition_fields_and_bind(
 ) -> Result<(), TypeError> {
     // Allocate a fresh row variable ρ_fresh to act as the shared unknown tail
     let rho_fresh_name = format!("_t{}", state.name_counter);
-    state.name_counter += 1;
+    state.name_counter = state.name_counter.saturating_add(1);
     let rho_fresh_level = state.level;
     state.levels.insert(rho_fresh_name.clone(), rho_fresh_level);
 
@@ -1465,12 +1468,12 @@ pub fn unify(
             Type::Function {
                 params: p1,
                 ret: r1,
-                variadic: _,
+                variadic: v1,
             },
             Type::Function {
                 params: p2,
                 ret: r2,
-                variadic: _,
+                variadic: v2,
             },
         ) => {
             if p1.len() != p2.len() {
@@ -1479,6 +1482,16 @@ pub fn unify(
                         "arity mismatch: expected {} arguments, got {}",
                         p1.len(),
                         p2.len()
+                    ),
+                    span,
+                ));
+            }
+            if v1 != v2 {
+                return Err(TypeError::new(
+                    format!(
+                        "variadic mismatch: {} vs {}",
+                        if *v1 { "variadic" } else { "non-variadic" },
+                        if *v2 { "variadic" } else { "non-variadic" }
                     ),
                     span,
                 ));
@@ -1566,36 +1579,46 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
 /// so they participate in level-based generalization. Without this, fresh variables
 /// default to level 0 and are permanently excluded from generalization by [U-VAR-LEVEL].
 pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
-    let mut type_vars = HashSet::new();
-    let mut row_vars = HashSet::new();
-    ty.collect_all_vars(&mut type_vars, &mut row_vars);
+    // Use Vec instead of HashSet to avoid hash computation overhead for small types.
+    // Deduplication is handled by the contains_key guard below: only the first occurrence
+    // of each type/row var generates a fresh variable. Subsequent occurrences are skipped.
+    let mut type_vars = Vec::new();
+    let mut row_vars = Vec::new();
+    ty.collect_all_vars_vec(&mut type_vars, &mut row_vars);
 
     // Use with_capacity so the HashMap internal arrays are allocated exactly once,
     // avoiding a resize when the type/row var counts are known upfront (CALL-POLY hot path).
+    // Note: capacity hint may be larger than actual unique count if there are duplicates,
+    // but this wastes at most a few slots and is cheaper than deduplicating first.
     let mut renaming = Substitution {
         type_map: HashMap::with_capacity(type_vars.len()),
         row_map: HashMap::with_capacity(row_vars.len()),
     };
     for var in type_vars {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter += 1;
-        state.levels.insert(fresh_name.clone(), state.level);
-        renaming
-            .type_map
-            .insert(var, Type::TypeVar(fresh_name, state.level));
+        // First-write-wins: skip if this var was already mapped (handles duplicates from the Vec).
+        if !renaming.type_map.contains_key(&var) {
+            let fresh_name = format!("_t{}", state.name_counter);
+            state.name_counter = state.name_counter.saturating_add(1);
+            state.levels.insert(fresh_name.clone(), state.level);
+            renaming
+                .type_map
+                .insert(var, Type::TypeVar(fresh_name, state.level));
+        }
     }
 
     for var in row_vars {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter += 1;
-        state.levels.insert(fresh_name.clone(), state.level);
-        renaming.row_map.insert(
-            var,
-            Row {
-                fields: HashMap::new(),
-                tail: RowTail::RowVar(fresh_name, state.level),
-            },
-        );
+        if !renaming.row_map.contains_key(&var) {
+            let fresh_name = format!("_t{}", state.name_counter);
+            state.name_counter = state.name_counter.saturating_add(1);
+            state.levels.insert(fresh_name.clone(), state.level);
+            renaming.row_map.insert(
+                var,
+                Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar(fresh_name, state.level),
+                },
+            );
+        }
     }
 
     renaming.apply(ty)
@@ -1664,7 +1687,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     // aside from the string format for the fresh name.
     if scheme.type_vars.len() == 1 && scheme.row_vars.is_empty() {
         let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter += 1;
+        state.name_counter = state.name_counter.saturating_add(1);
         state.levels.insert(fresh_name.clone(), level);
         return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
     }
@@ -1677,7 +1700,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     };
     for var in &scheme.type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter += 1;
+        state.name_counter = state.name_counter.saturating_add(1);
         state.levels.insert(fresh_name.clone(), level);
         renaming
             .type_map
@@ -1688,7 +1711,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     // Row variables and type variables share the same naming counter (`_t{n}`)
     for var in &scheme.row_vars {
         let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter += 1;
+        state.name_counter = state.name_counter.saturating_add(1);
         state.levels.insert(fresh_name.clone(), level);
         renaming.row_map.insert(
             var.clone(),
@@ -1911,7 +1934,7 @@ impl TypeEnv {
     /// - `Any → T`: unary operator returning type `T`
     /// - `Fn@Any [Any]`: higher-order function (e.g. map, filter) with `Any` for callbacks
     ///
-    /// **Coverage:** All 44 builtins from `standard_builtins()` (src/builtins.rs:1020-1081)
+    /// **Coverage:** All 51 builtins from `standard_builtins()` (src/builtins.rs)
     pub fn with_builtins() -> Self {
         let mut env = Self::new();
 
@@ -6957,6 +6980,88 @@ mod tests {
         assert!(
             subst.row_map.get("rho1").is_some() || subst.row_map.get("_hidden2").is_some(),
             "at least one row var should be bound after tail unification"
+        );
+    }
+
+    // --- variadic flag in PartialEq and unify ---
+
+    #[test]
+    fn test_function_partial_eq_includes_variadic() {
+        // variadic=true and variadic=false must not be equal even with identical params/ret.
+        let f_variadic = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+            variadic: true,
+        };
+        let f_non_variadic = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        };
+        assert_ne!(
+            f_variadic, f_non_variadic,
+            "Fn(Int→Bool, variadic=true) must not equal Fn(Int→Bool, variadic=false)"
+        );
+        // Same variadic flag must still be equal.
+        let f_variadic2 = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+            variadic: true,
+        };
+        assert_eq!(
+            f_variadic, f_variadic2,
+            "Fn(Int→Bool, variadic=true) must equal itself"
+        );
+    }
+
+    #[test]
+    fn test_unify_variadic_mismatch_error() {
+        // unify(Fn(variadic=true), Fn(variadic=false)) must return a TypeError
+        // containing "variadic mismatch".
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        let f_variadic = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+            variadic: true,
+        };
+        let f_non_variadic = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        };
+        let result = unify(&f_variadic, &f_non_variadic, &mut subst, &mut state, span);
+        assert!(
+            result.is_err(),
+            "unify(variadic=true, variadic=false) must return Err"
+        );
+        assert!(
+            result.unwrap_err().message.contains("variadic mismatch"),
+            "error message must contain 'variadic mismatch'"
+        );
+    }
+
+    #[test]
+    fn test_is_subtype_variadic_mismatch() {
+        // is_subtype must return false when variadic flags differ.
+        let f_v = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+            variadic: true,
+        };
+        let f_nv = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        };
+        assert!(
+            !Type::is_subtype(&f_v, &f_nv),
+            "variadic must not be subtype of non-variadic"
+        );
+        assert!(
+            !Type::is_subtype(&f_nv, &f_v),
+            "non-variadic must not be subtype of variadic"
         );
     }
 }
