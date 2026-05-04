@@ -357,6 +357,14 @@ pub(crate) fn force_step(
                 thunk.cache_failure(&err_boxed);
                 return Action::Continue(Err(err_boxed));
             }
+            ThunkState::Placeholder => {
+                panic!(
+                    "attempted to force a Placeholder thunk (span {:?}). \
+                     This indicates a letrec construction bug: all placeholder \
+                     slots must be filled via set_state() before evaluation begins.",
+                    thunk.span
+                );
+            }
             ThunkState::Unevaluated { .. }
             | ThunkState::PendingBuiltin { .. }
             | ThunkState::PendingCall { .. }
@@ -378,7 +386,7 @@ pub(crate) fn force_step(
     //    Failed → Failed self-transition (lines 1006-1024) refines diagnostic metadata
     //    (materialization spans, stack frames) without changing the error's identity.
     //
-    // 3. CYCLE DETECTION: InProgress blackholing works across all 7 states. Each take_*
+    // 3. CYCLE DETECTION: InProgress blackholing works across all 8 states. Each take_*
     //    method (take_unevaluated, take_pending_builtin, take_pending_call, take_guarded
     //    in value.rs) atomically transitions to InProgress via mem::replace BEFORE
     //    extracting data. Re-encountering InProgress during materialization (line 1026)

@@ -8,6 +8,16 @@ For future work beyond the active sprints below, see:
 
 
 
+
+## C141 Follow-Up
+
+Minor items deferred from cycle-findings-c141.
+
+### cycle-findings-c141-b: C141 Follow-Up
+
+- [ ] Fix `test_ctx()` in `src/eval_deep.rs` — also uses `create_root_env()` instead of `create_stdlib_env()` (integration-verifier) (`src/eval_deep.rs`)
+- [ ] Add `#[should_panic]` test for `ThunkState::Placeholder` forcing panic path (`src/eval_materialize.rs` or `src/arena.rs`)
+
 ## Arena Allocation: Arena-Based Thunks and Flat Environments
 
 Replace `Rc<Thunk>` / `Rc<RefCell<Environment>>` with arena-allocated thunks and flat environments for O(1) variable lookup, zero Rc overhead, and section-scoped bulk deallocation. See doc/08-evaluation.md §Allocation Strategy and doc/whatif/arena-patterns.md.

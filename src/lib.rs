@@ -483,7 +483,11 @@ mod tests {
     fn test_ctx() -> Rc<eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        eval::EvalContext::new(base_dir, builtins::create_root_env(), false)
+        eval::EvalContext::new(
+            base_dir,
+            builtins::create_stdlib_env().expect("stdlib failed"),
+            false,
+        )
     }
 
     #[test]

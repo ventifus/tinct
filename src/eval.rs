@@ -229,9 +229,12 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::TypeVar(_, _) => true,
         Type::Record(_) => true, // Records handled separately via proxy wrapping
         Type::Proxy => matches!(value, Value::Proxy { .. }),
-        // Error is a type-inference sentinel — at runtime, treat it like Any (all values pass).
-        // Type errors are advisory; the evaluator proceeds regardless of type-checking failures.
-        Type::Error => true,
+        // Error is a type-inference sentinel that should never reach runtime validation.
+        // Type::Error indicates type inference failed; treating it as a match would mask bugs.
+        Type::Error => {
+            debug_assert!(false, "Error sentinel should not reach runtime validation");
+            false
+        }
     }
 }
 
@@ -1077,6 +1080,14 @@ pub fn materialize(
                 drop(state);
                 thunk.cache_failure(&err_boxed);
                 return Err(err_boxed);
+            }
+            ThunkState::Placeholder => {
+                panic!(
+                    "attempted to force a Placeholder thunk (span {:?}). \
+                     This indicates a letrec construction bug: all placeholder \
+                     slots must be filled via set_state() before evaluation begins.",
+                    thunk.span
+                );
             }
             ThunkState::Unevaluated { .. }
             | ThunkState::PendingBuiltin { .. }

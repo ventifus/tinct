@@ -886,7 +886,7 @@ Builtin error messages are prefixed with the builtin name when the error origina
 
 ## Error Categories — Complete Reference
 
-All 31 `ErrorKind` variants map to stable error codes and human-readable messages. Each error code requires at least one corpus test in `tests/corpus/eval/errors/` demonstrating the error is raised correctly with the expected error code prefix.
+All 34 `ErrorKind` variants map to stable error codes and human-readable messages. Each error code requires at least one corpus test in `tests/corpus/eval/errors/` demonstrating the error is raised correctly with the expected error code prefix.
 
 | ErrorKind Variant | Error Code | Message Pattern | Definition Site |
 |-------------------|------------|----------------|-----------------|
