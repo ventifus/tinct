@@ -7,7 +7,7 @@ tinct?
 
 tinct uses `str` for string concatenation:
 
-```lisp
+```tinct
 greeting: [str "Hello " name ", you are " age " years old"]
 ```
 
@@ -20,7 +20,7 @@ interpolation (if added): `"Hello name"`"
 
 Existing alternatives:
 
-```lisp
+```tinct
 # str concatenation (current)
 msg: [str "Hello " name]
 
@@ -44,7 +44,7 @@ msg: [str "Hello " name]
 2. **Formatter ergonomics.** `doc/whatif/templating.md` formatters
    build strings heavily. Interpolation makes formatter code
    significantly more readable:
-   ```lisp
+   ```tinct
    # Before
    [str indent key ": " [quote-yaml val] "\n"]
 
@@ -61,7 +61,7 @@ msg: [str "Hello " name]
 Use a distinct `i"..."` prefix for interpolated strings, keeping
 regular `"..."` strings unchanged:
 
-```lisp
+```tinct
 # Regular string (no interpolation, current behavior)
 "Hello name"           # literal string containing "name"
 
@@ -74,7 +74,7 @@ i"Hello name"          # → "Hello Alice"
 **Simple interpolation:** `$identifier` and `$expr.field` expand to
 variable values, converted to strings via `str` semantics.
 
-```lisp
+```tinct
 i"Host: $config.host"       # dot access
 i"Count: $n"                # simple variable
 ```
@@ -82,14 +82,14 @@ i"Count: $n"                # simple variable
 **Expression interpolation:** `${expr}` evaluates an arbitrary tinct
 expression inside the string.
 
-```lisp
+```tinct
 i"Total: ${[+ x y]}"
 i"Name: ${record.name}"
 ```
 
 **Escaping:** `$$` produces a literal `$` inside an interpolated string.
 
-```lisp
+```tinct
 i"Price: $$$amount"     # → "Price: $42"
 ```
 
@@ -98,7 +98,7 @@ i"Price: $$$amount"     # → "Price: $42"
 An interpolated string desugars to a `str` call at parse time. This
 is a pure syntactic transformation — no new evaluation semantics:
 
-```lisp
+```tinct
 # Source
 i"Hello name, you are $age years old"
 

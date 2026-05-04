@@ -87,7 +87,7 @@ exact base-10 arithmetic:
 
 ### User-Facing Syntax
 
-```lisp
+```tinct
 # Decimal keys in dict literals
 prices: [
   [decimal 3.99]: "budget"
@@ -102,7 +102,7 @@ prices: [
 If decimal literals are added to the language
 (`doc/whatif/numeric-types.md`), the syntax becomes more natural:
 
-```lisp
+```tinct
 # With decimal literal syntax (future)
 prices: [3.99d: "budget"  9.99d: "standard"  29.99d: "premium"]
 ```
@@ -113,7 +113,7 @@ prices: [3.99d: "budget"  9.99d: "standard"  29.99d: "premium"]
 Hash` by defining a total order over `f64` (NaN == NaN, -0 < +0).
 This solves the Rust trait problem but not the semantic problem:
 
-```lisp
+```tinct
 # With OrderedFloat keys (unsound)
 table: [0.3: "found"]
 [get table [+ 0.1 0.2]]  # → null (0.30000000000000004 != 0.3)
@@ -169,7 +169,7 @@ value was constructed.
 
 Until `Decimal` is available, string keys provide a sound alternative:
 
-```lisp
+```tinct
 prices: ["3.99": "budget"  "9.99": "standard"  "29.99": "premium"]
 [get prices "9.99"]  # → "standard"
 ```

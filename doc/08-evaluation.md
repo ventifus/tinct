@@ -489,7 +489,7 @@ Error semantics are specified in [Error Handling](10-errors.md). This section su
 
 ## Selective Materialization — Formal Specification
 
-Specifies which arguments each Rust-native builtin forces (materializes) before execution and how the result is constructed. This is a two-tier specification: a **strictness signature table** covering all 51 builtins (auditable summary), plus **delta rules** for builtins whose forcing behavior cannot be captured by a flat per-argument annotation.
+Specifies which arguments each Rust-native builtin forces (materializes) before execution and how the result is constructed. This is a two-tier specification: a **strictness signature table** covering all 59 builtins (auditable summary), plus **delta rules** for builtins whose forcing behavior cannot be captured by a flat per-argument annotation.
 
 The signature notation draws on Mycroft's (1981) abstract interpretation framework for strictness analysis. The delta rules follow Plotkin's (1981) structural operational semantics, using the same judgment style as §Thunk Lifecycle — Formal Specification.
 
@@ -527,7 +527,7 @@ For dual-dispatch builtins, the result classification refers to the more interes
 
 ### Part 2: Strictness Signature Table
 
-All 51 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Seq (delta rule required). Builtins marked `‡` have non-trivial forcing patterns (delta rule required).
+All 59 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Seq (delta rule required). Builtins marked `‡` have non-trivial forcing patterns (delta rule required).
 
 **Arithmetic** (all materializing):
 
@@ -594,6 +594,15 @@ All 51 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 | Builtin | Signature | Category |
 |---------|-----------|----------|
 | `type-of` | `S → V` | Materializing |
+| `int?` | `S → V` | Materializing |
+| `float?` | `S → V` | Materializing |
+| `num?` | `S → V` | Materializing |
+| `str?` | `S → V` | Materializing |
+| `bool?` | `S → V` | Materializing |
+| `null?` | `S → V` | Materializing |
+| `dict?` | `S → V` | Materializing |
+| `fn?` | `S → V` | Materializing |
+| `seq?` | `S → V` | Materializing |
 
 **I/O:**
 
@@ -620,7 +629,6 @@ All 51 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 | `head` ‡ | `S → Θ` | Structural | Materializes arg to verify Seq; returns head thunk (not forced) |
 | `tail` ‡ | `S → Θ` | Structural | Materializes arg to verify Seq; returns tail thunk (not forced) |
 | `collect` ‡ | `S → D` | Structural | Materializes Seq spine (all tails); head thunks pass through into Dict |
-| `seq?` | `S → V` | Materializing | Materializes arg; returns Bool |
 
 **Higher-order collection operations:**
 
@@ -924,6 +932,15 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$collect` | Materializes Seq spine; head thunks pass through into dict | Seq → Dict boundary |
 | `$head` | Materializes container to verify Seq; returns head thunk (not forced) | Structural Seq operation |
 | `$tail` | Materializes container to verify Seq; returns tail thunk (not forced) | Structural Seq operation |
+| **Type Predicates** | | |
+| `$int?` | Materializes argument; returns Bool | Type introspection |
+| `$float?` | Materializes argument; returns Bool | Type introspection |
+| `$num?` | Materializes argument; returns Bool | Type introspection |
+| `$str?` | Materializes argument; returns Bool | Type introspection |
+| `$bool?` | Materializes argument; returns Bool | Type introspection |
+| `$null?` | Materializes argument; returns Bool | Type introspection |
+| `$dict?` | Materializes argument; returns Bool | Type introspection |
+| `$fn?` | Materializes argument; returns Bool | Type introspection |
 | `$seq?` | Materializes argument; returns Bool | Type introspection |
 | **Arithmetic & Comparison** | | |
 | `$+`, `$-`, `$*`, `$/` | Materializes both operands | Must inspect numeric values |

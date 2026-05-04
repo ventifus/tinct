@@ -95,7 +95,7 @@ Generating a YAML config file from data illustrates the trade-offs.
 
 **Data-first (tinct's recommended approach):**
 
-```lisp
+```tinct
 # config.llt — pure data, separate formatter
 [
   server: [
@@ -180,7 +180,7 @@ serialization.
 
 **Syntax:**
 
-```lisp
+```tinct
 [emit value]         # write string to stdout
 [emit value1]        # multiple calls append
 [emit value2]
@@ -263,7 +263,7 @@ Ship in `stdlib/fmt/` as tinct programs:
 Each formatter is both a standalone pipeline stage and a function
 importable via `include`:
 
-```lisp
+```tinct
 # stdlib/fmt/yaml.llt — YAML formatter (simplified)
 
 to-yaml-value: [fn [val indent]
@@ -293,7 +293,7 @@ to-yaml: [fn [val] [to-yaml-value val 0]]
 
 Formatters compose with tinct's existing mechanisms:
 
-```lisp
+```tinct
 # Format a subset
 [emit [to-yaml [select % "server" "logging"]]]
 
@@ -796,7 +796,7 @@ predicates, and composition patterns.
 
 Add `i"..."` string interpolation to make formatters more ergonomic:
 
-```lisp
+```tinct
 # Before
 [str indent key ": " [quote-yaml val] "\n"]
 

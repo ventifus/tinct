@@ -8,7 +8,7 @@ functional language?
 tinct has no pattern matching construct. Type-based dispatch requires
 verbose `type-of` + string comparison chains:
 
-```lisp
+```tinct
 [if [= [type-of x] "Dict"]
     [handle-dict x]
     [if [= [type-of x] "Seq"]
@@ -49,7 +49,7 @@ This matters for three reasons:
 
 3. **Error handling.** `try` returns `[ok: value]` or `[err: message]`.
    Dispatching on the result key without destructuring is clunky:
-   ```lisp
+   ```tinct
    result: [try risky]
    [if [has? result "ok"]
        [handle-ok result.ok]
@@ -109,7 +109,7 @@ This matters for three reasons:
 
 A new keyword `match` parsed as a special form, like `call` and `fn`:
 
-```lisp
+```tinct
 [match expr
     [pattern1] body1
     [pattern2] body2
@@ -122,7 +122,7 @@ evaluates to the body of the first matching arm.
 
 **Pattern syntax** (using existing tinct constructs where possible):
 
-```lisp
+```tinct
 # Type patterns — bare words match type-of result
 [match x
     Int    [+ x 1]            # matches if type-of is "Int"
@@ -391,7 +391,7 @@ int?   float?   num?   str?   bool?   null?   dict?   fn?
 Each returns `Bool`. Typed as `Any → Bool`. These are useful with `cond`
 and `if` for simple type dispatch without pattern matching:
 
-```lisp
+```tinct
 [cond [
     [[dict? x]  [map-dict f x]]
     [[seq? x]   [map-seq f x]]
@@ -412,7 +412,7 @@ Add the `match` keyword to the grammar. Support:
 - **Wildcard:** `_`
 - **Variable binding:** `x` (binds the scrutinee to `x`)
 
-```lisp
+```tinct
 [match x
     Int   [+ x 1]
     Str   [str "got: " x]
@@ -443,7 +443,7 @@ Add structural patterns:
 - **Seq patterns:** `[seq head tail]` — destructure cons cell
 - **Nested patterns:** patterns inside patterns
 
-```lisp
+```tinct
 # Destructure try result
 [match [try risky]
     [ok: v]    v
@@ -484,7 +484,7 @@ Add:
 - **Or-patterns:** `pat1 | pat2` — match if either pattern matches
   (both must bind the same set of variables)
 
-```lisp
+```tinct
 [match x
     n when [> n 0]   "positive"
     n when [< n 0]   "negative"

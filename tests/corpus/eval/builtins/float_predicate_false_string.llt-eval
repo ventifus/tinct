@@ -1,0 +1,3 @@
+[float? "not a float"]
+===
+Bool(false)

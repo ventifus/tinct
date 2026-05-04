@@ -76,7 +76,7 @@ explicit type annotations and builtin signatures, but `unify` never produces the
 
 #### Syntax
 
-```lisp
+```tinct
 # In type annotations
 [fn [x : Int | Str] ...]
 

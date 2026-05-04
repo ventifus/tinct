@@ -18,7 +18,7 @@ needle and checking part counts — correct for containment but unable to
 handle patterns like character classes, quantifiers, alternation, or
 anchors:
 
-```lisp
+```tinct
 # Current: test if string needs YAML quoting
 # Must enumerate every special character individually
 yaml-needs-quoting?: [fn [s]
@@ -97,7 +97,7 @@ operates on tinct dicts.
 The parser produces a recursive dict structure where every node has a
 `type` key:
 
-```lisp
+```tinct
 [type: "concat"   left: ...  right: ...]         # ab
 [type: "alt"      left: ...  right: ...]         # a|b
 [type: "star"     child: ...]                    # a*
@@ -121,7 +121,7 @@ so `[a-z]` becomes `[lo: 97  hi: 122]`.
 Each NFA state is a tinct dict. The full NFA is a 0-indexed dict of
 states:
 
-```lisp
+```tinct
 # A single state
 [
   transitions: [        # char-code → [state-id ...]
@@ -149,7 +149,7 @@ states:
 
 ### Thompson's Construction (Key Cases)
 
-```lisp
+```tinct
 # stdlib/regex.llt — NFA compiler (excerpt)
 
 # Fresh state id = current state count
@@ -201,7 +201,7 @@ The simulator maintains a dict mapping `state-id → capture-snapshot`.
 At each character, all active states advance on that character and
 the ε-closure of the resulting states is computed:
 
-```lisp
+```tinct
 # captures: Dict[group-id → [start: Int  end: Int]]
 # active:   Dict[state-id → captures]
 
@@ -231,7 +231,7 @@ nfa-accepts: [fn [nfa s]
 Returns the NFA as an inspectable tinct dict. Lazy evaluation
 memoizes the result automatically when bound at file level:
 
-```lisp
+```tinct
 # Compiled once, reused on every call — lazy eval handles caching
 ip-pattern: [re-compile "([0-9]{1,3}\\.){3}[0-9]{1,3}"]
 ip?: [fn [s] [re-match-compiled ip-pattern s]]
@@ -242,7 +242,7 @@ ip?: [fn [s] [re-match-compiled ip-pattern s]]
 **`re-find pattern s`** → `[match: String  start: Int  end: Int  ...]`
 or `[]` — first match with named capture groups as additional keys:
 
-```lisp
+```tinct
 [re-find "(?P<host>[a-z0-9.-]+):(?P<port>[0-9]+)" "db.prod:5432"]
 # → [match: "db.prod:5432"  host: "db.prod"  port: "5432"  start: 0  end: 12]
 ```

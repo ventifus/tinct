@@ -9,7 +9,7 @@ produces a structural ADT in practice — it returns either `[ok: value]` or
 `[err: message]` — but there is no type to declare, no way to constrain a parameter
 to "one of these shapes," and no exhaustiveness checking at the match site.
 
-```lisp
+```tinct
 # try already produces an ADT, but the type is Any
 res: [try risky]
 
@@ -200,7 +200,7 @@ Variants in a union are checked via `is_subtype`: `is_subtype(Record({ok: Int, t
 `[match]` on a union-typed scrutinee narrows the type in each arm — occurrence
 typing (Tobin-Hochstadt & Felleisen 2010). When matching:
 
-```lisp
+```tinct
 [match res
     [ok:  v]   ...   # res narrowed to [ok: a], v has type a
     [err: msg] ...]  # res narrowed to [err: Str], msg has type Str
@@ -217,7 +217,7 @@ motivation for the `doc/whatif/pattern-matching.md` Phase 3 (structural patterns
 ADT discrimination without destructuring is expressible in Phase 2 (type + literal
 patterns) but requires an extra access step for payloads:
 
-```lisp
+```tinct
 # Phase 2 — type patterns work but must access payload separately
 [match res
     Dict   [if [has? res "ok"] res.ok [error res.err]]
@@ -392,7 +392,7 @@ Add `union` keyword, parse `[union ...]` in type expression position, expand to
 When the scrutinee of `[match]` has a declared union type, check that the arm set
 covers all variants:
 
-```lisp
+```tinct
 res: [@Result [try risky]]
 
 [match res

@@ -12,7 +12,7 @@ builtins/stdlib functions.
 
 Include code examples showing the current behavior or workaround:
 
-```lisp
+```tinct
 # Current approach (verbose, limited, etc.)
 ```
 
@@ -34,7 +34,7 @@ write it as the design, not as one option among many.
 
 Include code examples showing how the feature works:
 
-```lisp
+```tinct
 # User-facing syntax
 ```
 

@@ -1,0 +1,3 @@
+[fn? "not a function"]
+===
+Bool(false)

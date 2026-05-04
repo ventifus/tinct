@@ -10,7 +10,7 @@ The `call` keyword is no longer needed in most cases.
 This is a core design principle (doc/01-introduction.md §Principle 3: Explicit
 Function Application):
 
-```lisp
+```tinct
 [map [fn [x] [* x 2]] data]
 ```
 
@@ -20,7 +20,7 @@ Users may still want custom application forms with additional semantics.
 Current workarounds include function wrappers and existing ergonomic
 forms:
 
-```lisp
+```tinct
 # Function wrappers — note: spread-in-call ([f ...args]) is not valid
 # tinct syntax; apply is a builtin for this purpose
 pipe:  [fn [x f] [f x]]
@@ -67,7 +67,7 @@ application form; macros expand to `call` at compile time.
 When the macro system is adopted (`doc/whatif/macros.md`), users
 define custom call forms as macros:
 
-```lisp
+```tinct
 # Define a macro that adds timing to function calls
 [defmacro timed [f ...args]
   [quote

@@ -199,7 +199,7 @@ first-ten: [collect [take 10 squares]]
 | Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
 | Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-forces; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). |
-| Type introspection | — | `type-of` | Inspects the Value enum variant. |
+| Type introspection | — | `type-of`, `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` | Inspect the Value enum variant. |
 | Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `concat` (no stable aliases needed). |
 | I/O | — | `from-json`, `include` | serde_json, filesystem access. |
 
@@ -254,16 +254,16 @@ Rust primitives (builtin-lt, builtin-eq, builtin-add, builtin-if, builtin-filter
 
 ## Stdlib Function Reference
 
-**Architecture:** 51 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including 12 shadowable wrappers). Of the 51 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`).
+**Architecture:** 59 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including 12 shadowable wrappers). Of the 59 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`).
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
 **New stdlib categories (added in recent cycles):**
 - **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
 - **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
-- **Type predicates** (`int?`, `str?`, `float?`, `bool?`, `dict?`, `fn?`) — runtime type inspection for dynamic dispatch and validation
+- **Type predicates** (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` as Rust builtins; `list?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
 
-These additions bring Tinct's stdlib coverage closer to mature configuration languages while maintaining the LLT-first principle — all implemented in LLT itself, building on Rust primitives.
+These additions bring Tinct's stdlib coverage closer to mature configuration languages while maintaining the LLT-first principle; predicate builtins are Rust-native, `list?` is LLT-implemented on top of them.
 
 > **Note:** Overrides apply to the initial dispatch only; Seq corecursion steps always call the underlying Rust implementation directly.
 
@@ -432,14 +432,18 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 **Type Predicates:**
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `int?` | `[fn [x] ...]` | Check if value is an Int |
-| `str?` | `[fn [x] ...]` | Check if value is a String |
-| `float?` | `[fn [x] ...]` | Check if value is a Float |
-| `bool?` | `[fn [x] ...]` | Check if value is a Bool |
-| `dict?` | `[fn [x] ...]` | Check if value is a Dict |
-| `fn?` | `[fn [x] ...]` | Check if value is a Function |
+| Function | Implementation | Description |
+|----------|---------------|-------------|
+| `int?` | Rust builtin | Return true if value is an Int |
+| `float?` | Rust builtin | Return true if value is a Float |
+| `num?` | Rust builtin | Return true if value is an Int or Float |
+| `str?` | Rust builtin | Return true if value is a String |
+| `bool?` | Rust builtin | Return true if value is a Bool |
+| `null?` | Rust builtin | Return true if value is Null (empty dict `[]`) |
+| `dict?` | Rust builtin | Return true if value is a Dict (includes lists, which are dicts with integer keys) |
+| `fn?` | Rust builtin | Return true if value is callable (Function or Builtin) |
+| `seq?` | Rust builtin | Return true if value is a Seq |
+| `list?` | LLT stdlib | Return true if value is a Dict whose keys are all integers (i.e., a list-shaped dict) |
 
 **Error Handling:**
 
@@ -461,7 +465,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `collect` | `[fn [s] ...]` | Materialize seq into dict with integer keys 0..n |
 | `head` | `[fn [s] ...]` | First element of seq |
 | `tail` | `[fn [s] ...]` | Rest of seq (seq, not materialized) |
-| `seq?` | `[fn [x] ...]` | True if x is a Seq |
+| `seq?` | Rust native builtin — no LLT wrapper | True if x is a Seq |
 
 **Assertions:**
 

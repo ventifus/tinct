@@ -82,7 +82,7 @@ Runtime schemas check constraints — "is this Int between 1 and 65535?"
 — during evaluation, catching domain errors with full expressiveness.
 Neither subsumes the other.
 
-```lisp
+```tinct
 # fmt/nginx.llt — typed interface + runtime schema
 %@NginxConfig
 
@@ -105,7 +105,7 @@ nginx-schema: [
 **Pipeline input types** use the existing `@` annotation syntax on
 `%`:
 
-```lisp
+```tinct
 %@[port: Int  hostname: String]       # inline record type
 %@NginxConfig                          # named type alias
 ```
@@ -116,7 +116,7 @@ forms are needed for the type layer.
 
 **Runtime schemas** are ordinary tinct dicts with recognized keys:
 
-```lisp
+```tinct
 nginx-schema: [
   port: [min: 1  max: 65535]
   hostname: [pattern: "^[a-z0-9.-]+$"]
@@ -140,7 +140,7 @@ value in parallel, collecting ALL violations (not fail-fast). It
 returns the data value on success (pass-through for pipeline use) or
 throws a structured error listing violations with field paths:
 
-```lisp
+```tinct
 [validate nginx-schema %]
 # On success: returns % unchanged
 # On failure: error with [violations: [{field: "port"  message: "must be >= 1"} ...]]
@@ -149,7 +149,7 @@ throws a structured error listing violations with field paths:
 **Schema composition.** Schemas are dicts, so they compose via
 `merge`:
 
-```lisp
+```tinct
 base-schema: [hostname: [pattern: "^[a-z0-9.-]+$"]]
 nginx-schema: [merge base-schema [port: [min: 1  max: 65535]]]
 ```
@@ -306,7 +306,7 @@ metadata and threading that metadata through error construction.
 
 Declare the expected type of `%` at the document level:
 
-```lisp
+```tinct
 # fmt/nginx.llt
 %@[port: Int  hostname: String]
 
@@ -330,7 +330,7 @@ expected input, and the type checker validates it.
 
 Add schema-as-dict validation for constraints beyond types:
 
-```lisp
+```tinct
 nginx-schema: [
   port: [min: 1  max: 65535]
   hostname: [pattern: "^[a-z0-9.-]+$"]
