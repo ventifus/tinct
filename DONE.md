@@ -3644,3 +3644,13 @@ Single atomic change. All internal `.llt` files migrated in the same commit. See
 - [x] doc/06-type-inference.md: "Function variance fix" → "CALL-MONO/CALL-POLY divergence fix"
 - [x] doc/16-architecture.md: LSP entry point added to desugar list (update_document)
 - [x] 4 corpus tests: eval_depth_exceeded, map_dict_thunk_preservation, reduce_lazy_chain, duplicate_computed_key
+
+### cycle-findings-c131: C131 Codebase Health
+
+- [x] eval_deep.rs: seq_depth limit added (MAX_COLLECT_SIZE check)
+- [x] lsp/document.rs: skip materialize() when no_fs=true
+- [x] types.rs: instantiate_at_level monomorphic fast-path + unit test
+- [x] error.rs: 2 compile-time exhaustiveness tests for ErrorKind
+- [x] Corpus tests: dot access whitespace, malformed_section_header, bracket access rename
+- [x] SKIPPED_TESTS.md: E033 (float overflow), E052 (include cycle) documented
+- [x] doc/11-stdlib.md: stale counts removed

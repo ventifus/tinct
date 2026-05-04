@@ -11,6 +11,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::flatten_overlay;
+use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, EvalContext, MAX_EVAL_DEPTH};
 use crate::value::{Key, Thunk, Value};
@@ -324,8 +325,8 @@ fn push_structural(
             }
         }
         Value::Seq { head, tail } => {
-            // Seq spine guard (same semantics as the old recursive version).
-            if seq_depth >= MAX_EVAL_DEPTH {
+            // Seq spine guard: prevents unbounded traversal of infinite sequences.
+            if seq_depth >= MAX_COLLECT_SIZE {
                 return Err(EvalError::resource_limit_exceeded(
                     "cannot deep-materialize an infinite Seq: use $collect with $take first"
                         .to_string(),

@@ -1586,6 +1586,11 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     let mut row_vars = Vec::new();
     ty.collect_all_vars_vec(&mut type_vars, &mut row_vars);
 
+    // Monomorphic fast-path: if no type/row vars, return ty directly (saves 2 HashMap allocations)
+    if type_vars.is_empty() && row_vars.is_empty() {
+        return ty.clone();
+    }
+
     // Use with_capacity so the HashMap internal arrays are allocated exactly once,
     // avoiding a resize when the type/row var counts are known upfront (CALL-POLY hot path).
     // Note: capacity hint may be larger than actual unique count if there are duplicates,
@@ -4760,6 +4765,20 @@ mod tests {
             }
             other => panic!("expected TypeVar, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_instantiate_at_level_monomorphic_fast_path() {
+        let mut state = InferState::new();
+        let before_counter = state.name_counter;
+
+        let result = instantiate_at_level(&Type::Int, &mut state);
+
+        assert_eq!(result, Type::Int);
+        assert_eq!(
+            state.name_counter, before_counter,
+            "monomorphic fast-path must not increment name_counter"
+        );
     }
 
     // --- generalize ---
