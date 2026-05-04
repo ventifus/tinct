@@ -123,7 +123,7 @@ Role reclassification:
 - Unannotated params: `Unknown` (was `Any`) — "I don't know the type yet"
 - Builtin returns that can't be typed: `Unknown` (was `Any`) — "could be
   anything"
-- TypeAssert upper bound `[@Any $expr]`: `Top` — "accept any type" (this is
+- TypeAssert upper bound `[@Any expr]`: `Top` — "accept any type" (this is
   a true supertype, not gradual unknown)
 - Forward references before let-generalization: fresh type variables (already
   planned, not `Any`)
@@ -167,7 +167,7 @@ needs a runtime check:
 ```
 Γ ⊢ f : Fn(Int → Int),  Γ ⊢ x : Unknown
 ──────────────────────────────────────────
-Γ ⊢ [call f x] ⇒ Int
+Γ ⊢ [f x] ⇒ Int
   with runtime check: materialize(x) must be Int
 ```
 
@@ -203,9 +203,9 @@ Each blame boundary records:
 
 | Boundary | Positive blame | Negative blame |
 |----------|---------------|----------------|
-| `[@Int $x]` TypeAssert | The TypeAssert annotation | Provider of `$x` |
-| `[call $f x]`, `$f: Int→Int`, `x: Unknown` | The argument position | Provider of `x` |
-| `[call $f x]`, `$f: Unknown` | The call site (expected callable) | Provider of `$f` |
+| `[@Int x]` TypeAssert | The TypeAssert annotation | Provider of `x` |
+| `[f x]`, `f: Int→Int`, `x: Unknown` | The argument position | Provider of `x` |
+| `[f x]`, `f: Unknown` | The call site (expected callable) | Provider of `f` |
 | Builtin return typed `Unknown` consumed as typed | The consuming expression | The builtin |
 | `---` pipeline boundary crossing | The consuming section | The producing section |
 
@@ -230,14 +230,14 @@ point and the `Unknown` origin:
 ```
 type assertion failed at line 5: expected Int, got String
   asserted by: [@Int ...] at line 5
-  value originated from: unannotated parameter $x at line 3
+  value originated from: unannotated parameter x at line 3
 ```
 
 For automatic insertion at implicit boundaries:
 
 ```
-type mismatch at line 12: $add expected Int for first argument
-  blame: value from line 7 ($from-json result, Unknown type)
+type mismatch at line 12: add expected Int for first argument
+  blame: value from line 7 (from-json result, Unknown type)
   untyped boundary at line 7 is responsible
 ```
 
@@ -318,7 +318,7 @@ arises: is `Eq Unknown` satisfied? Two options:
 The AGT approach resolves this: `Unknown` satisfies a constraint if *some*
 concretization of `Unknown` satisfies it. Since `Unknown` represents all
 types and some types have `Eq`, `Eq Unknown` is satisfied — but a runtime
-check is inserted at the point where `$=` is called on the `Unknown` value.
+check is inserted at the point where `=` is called on the `Unknown` value.
 
 ## What Would Change
 
@@ -407,7 +407,7 @@ boundary in tinct. The change is mostly renaming.
 
 **Current:** "expected Int, got String" at point of materialization.
 
-**Proposed:** Blame-aware errors: "type mismatch at line 5: argument to $add
+**Proposed:** Blame-aware errors: "type mismatch at line 5: argument to add
 expected Int, but value from line 3 (untyped) was String. The untyped
 boundary at line 3 is responsible." Requires blame provenance propagation
 through the evaluation.
@@ -463,7 +463,7 @@ Update error reporting to emit the blame provenance chain. Error format:
 ```
 type assertion failed at line 5: expected Int, got String
   asserted by: [@Int ...] at line 5
-  value originated from: unannotated parameter $x at line 3
+  value originated from: unannotated parameter x at line 3
 ```
 
 Deliverables: `BlameLabel` struct in `src/eval.rs`, guard construction updated
@@ -473,10 +473,10 @@ in TypeAssert elaboration, error formatting updated in `src/error.rs`.
 elaborates every `Unknown -> Concrete` boundary — not just TypeAssert — into
 a `ThunkState::Guarded`. Boundaries:
 
-- Function argument: `[call $f x]` where `x: Unknown` and `$f` has typed params
-- Builtin argument: `[call $add $x $y]` where `$x: Unknown` and `$add: Int→Int→Int`
-- Field access on Unknown: `$x.name` where `$x: Unknown` (when row constraint
-  is generated, a guard wraps $x's resolution)
+- Function argument: `[f x]` where `x: Unknown` and `f` has typed params
+- Builtin argument: `[add x y]` where `x: Unknown` and `add: Int→Int→Int`
+- Field access on Unknown: `x.name` where `x: Unknown` (when row constraint
+  is generated, a guard wraps x's resolution)
 - `---` pipeline crossing: typed expressions consuming values from prior sections
 
 Guard insertion follows the blame calculus rules (Wadler & Findler 2009):
@@ -498,8 +498,8 @@ TypeAssert over the document section interface. A type failure deep in section
 3 can report:
 
 ```
-type mismatch: $transform expected [name: Str  age: Int], got Unknown
-  blame: value produced in section 1 (line 12, untyped $from-json result)
+type mismatch: transform expected [name: Str  age: Int], got Unknown
+  blame: value produced in section 1 (line 12, untyped from-json result)
   untyped boundary: --- at line 30
 ```
 

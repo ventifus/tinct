@@ -822,7 +822,7 @@ fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ctx: &ctx,
             call_span,
             depth,
-            origin: Some(Rc::from("call $apply")),
+            origin: Some(Rc::from("apply")),
         }),
         Value::Builtin(def) => {
             let builtin_args = BuiltinArgs {
@@ -873,7 +873,7 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         named_opt,
         depth,
         call_span,
-        Some(Rc::from("call $apply")),
+        Some(Rc::from("apply")),
         ctx,
     )))
 }

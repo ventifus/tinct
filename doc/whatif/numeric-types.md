@@ -88,7 +88,7 @@ port: [@Port 70000]  # Error: 70000 exceeds max 65535 for Port
 ```
 
 **Arithmetic semantics.** Range annotations do not change arithmetic
-behavior. `$+ $port 1` works regardless of internal representation.
+behavior. `[+ port 1]` works regardless of internal representation.
 The result of arithmetic on range-constrained values is an
 unconstrained `Int` (or `Float`) — the range applies to the
 annotated binding, not to derived values:
@@ -96,7 +96,7 @@ annotated binding, not to derived values:
 ```tinct
 Port: [type Int@[min: 0  max: 65535]]
 port: [@Port 8080]
-next: [call $+ $port 1]  # next is Int, not Port — no range constraint
+next: [+ port 1]  # next is Int, not Port — no range constraint
 ```
 
 This avoids the complexity of range arithmetic (computing the output
@@ -232,12 +232,12 @@ On serialization:
    constrains range AND uses exact decimal representation.
 
 4. **Transparent arithmetic.** Users never interact with `NumericRepr`
-   directly. `$+ $port 1` works whether `$port` is internally `u16`
+   directly. `[+ port 1]` works whether `port` is internally `u16`
    or `i64`. Promotion handles cross-size arithmetic.
 
 5. **Aligns with structural contracts.** Range annotations use the
    same `@` system as structural contracts
-   (`doc/whatif/structural-contracts.md`). The `$validate` builtin
+   (`doc/whatif/structural-contracts.md`). The `validate` builtin
    can check range constraints alongside structural shape.
 
 ## What Would Change
@@ -258,7 +258,7 @@ affects every builtin that handles numbers.
 
 ### Builtins (`src/builtins.rs`)
 
-**Current:** Arithmetic builtins (`$+`, `$-`, `$*`, `$/`) match on
+**Current:** Arithmetic builtins (`+`, `-`, `*`, `/`) match on
 `Value::Int(i64)` and `Value::Float(f64)` directly.
 
 **Proposed:** Arithmetic dispatch through `NumericRepr`, handling
@@ -289,7 +289,7 @@ unification or generalization.
 decimal point presence.
 
 **Proposed:** (1) Parse `Decimal` literals (syntax TBD — possibly
-`9.99d` suffix or explicit `[call $decimal 9.99]`). (2) Parse
+`9.99d` suffix or explicit `[decimal 9.99]`). (2) Parse
 `@[min: N  max: M]` annotations on type definitions.
 
 **Impact:** Minor. Range annotations already use existing `@` syntax.
@@ -315,7 +315,7 @@ Add `@[min: N  max: M]` as a contract on `Int` and `Float`:
 
 ```tinct
 Port: [type Int@[min: 0  max: 65535]]
-port: [@Port $config.port]  # validates at runtime
+port: [@Port config.port]  # validates at runtime
 ```
 
 No internal representation change — still `i64`/`f64` under the hood.
@@ -327,12 +327,12 @@ annotation system.
 Add `Decimal` as a new `Value` variant with explicit conversion:
 
 ```lisp
-price: [call $decimal 9.99]
-total: [call $+ $price [call $decimal 1.00]]  # exact: 10.99
+price: [decimal 9.99]
+total: [+ price [decimal 1.00]]  # exact: 10.99
 ```
 
-- `$decimal` builtin: converts Int or Float to Decimal
-- `$to-decimal` / `$from-decimal` for explicit conversion
+- `decimal` builtin: converts Int or Float to Decimal
+- `to-decimal` / `from-decimal` for explicit conversion
 - Decimal + Decimal → Decimal (no cross-type promotion with Float)
 - Decimal + Int → Decimal (Int promotes to Decimal)
 
@@ -356,9 +356,9 @@ automatically uses `BigInt`:
 ```tinct
 BigId: [type Int@[min: 0]]  # no upper bound -> BigInt
 factorial: [fn [n]
-    [call $if [call $= $n 0]
+    [if [= n 0]
         1
-        [call $* $n [call $factorial [call $- $n 1]]]]]
+        [* n [factorial [- n 1]]]]]
 ```
 
 BigInt arithmetic is exact — no overflow, no precision loss.
@@ -439,7 +439,7 @@ Phase 4 (BigInt): adopt when:
 **Language-specific:**
 - doc/03-data-model.md §Numeric Types. — Current Int (i64), Float (f64), Number
   supertype, promotion table.
-- `doc/whatif/structural-contracts.md` — `$validate` schema validation,
+- `doc/whatif/structural-contracts.md` — `validate` schema validation,
   `@` annotation system.
 - `doc/whatif/float-dict-keys.md` — Decimal type enables sound
   fractional dict keys.

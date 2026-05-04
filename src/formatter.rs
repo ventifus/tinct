@@ -65,7 +65,7 @@ impl<'a> Formatter<'a> {
                     self.format_annotation(output_ann);
                 }
                 if let Some(ref expects_ann) = doc.node.expects {
-                    self.output.push_str(" expects: ");
+                    self.output.push_str(" expects: @");
                     self.format_annotation(expects_ann);
                 }
                 self.output.push('\n');
@@ -971,18 +971,18 @@ mod tests {
         );
     }
 
-    // --- $_ implicit lambda round-trip tests ---
+    // --- _ implicit lambda round-trip tests ---
 
-    /// Format `[call $map $_.age $users]`, re-parse, check AST equality.
+    /// Format `[map _.age users]`, re-parse, check AST equality.
     ///
-    /// The formatter must preserve `$_` verbatim. After formatting and re-parsing
+    /// The formatter must preserve `_` verbatim. After formatting and re-parsing
     /// the AST should be structurally identical to parsing the original source.
     #[test]
     fn test_underscore_roundtrip_call_dot_access() {
-        let input = "[call $map $_.age $users]";
+        let input = "[map _.age users]";
         let formatted = format_source(input).unwrap();
         // Formatter should output the same structure (single-line, within width limit)
-        assert_eq!(formatted.trim(), "[call $map $_.age $users]");
+        assert_eq!(formatted.trim(), "[map _.age users]");
 
         // Parse original and re-parsed AST should be equal
         let ast_original = crate::parse_expression(input).unwrap();
@@ -993,63 +993,63 @@ mod tests {
         );
     }
 
-    /// Format `[call $filter $_.active $users]` and verify round-trip.
+    /// Format `[filter _.active users]` and verify round-trip.
     #[test]
     fn test_underscore_roundtrip_call_field_filter() {
-        let input = "[call $filter $_.active $users]";
+        let input = "[filter _.active users]";
         let formatted = format_source(input).unwrap();
-        assert_eq!(formatted.trim(), "[call $filter $_.active $users]");
+        assert_eq!(formatted.trim(), "[filter _.active users]");
 
         let ast_original = crate::parse_expression(input).unwrap();
         let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
         assert_eq!(ast_original.node, ast_reparsed.node);
     }
 
-    /// Format `[call $+ $_ 1]` (bare $_ in arg position) and verify round-trip.
+    /// Format `[+ _ 1]` (bare _ in arg position) and verify round-trip.
     #[test]
     fn test_underscore_roundtrip_bare_arg() {
-        let input = "[call $+ $_ 1]";
+        let input = "[+ _ 1]";
         let formatted = format_source(input).unwrap();
-        assert_eq!(formatted.trim(), "[call $+ $_ 1]");
+        assert_eq!(formatted.trim(), "[+ _ 1]");
 
         let ast_original = crate::parse_expression(input).unwrap();
         let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
         assert_eq!(ast_original.node, ast_reparsed.node);
     }
 
-    /// Format `$_.name.first` (chained dot access on $_) and verify round-trip.
+    /// Format `_.name.first` (chained dot access on _) and verify round-trip.
     #[test]
     fn test_underscore_roundtrip_chained_dot_access() {
-        let input = "$_.name.first";
+        let input = "_.name.first";
         let formatted = format_source(input).unwrap();
-        assert_eq!(formatted.trim(), "$_.name.first");
+        assert_eq!(formatted.trim(), "_.name.first");
 
         let ast_original = crate::parse_expression(input).unwrap();
         let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
         assert_eq!(ast_original.node, ast_reparsed.node);
     }
 
-    /// Format `$_[0]` (bracket access on $_) and verify round-trip.
+    /// Format `_[0]` (bracket access on _) and verify round-trip.
     #[test]
     fn test_underscore_roundtrip_bracket_access() {
-        let input = "$_[0]";
+        let input = "_[0]";
         let formatted = format_source(input).unwrap();
-        assert_eq!(formatted.trim(), "$_[0]");
+        assert_eq!(formatted.trim(), "_[0]");
 
         let ast_original = crate::parse_expression(input).unwrap();
         let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
         assert_eq!(ast_original.node, ast_reparsed.node);
     }
 
-    /// Formatter idempotency with $_ — format twice produces same output.
+    /// Formatter idempotency with _ — format twice produces same output.
     #[test]
     fn test_underscore_format_idempotency() {
-        let input = "[call $map $_.age $users]";
+        let input = "[map _.age users]";
         let formatted_once = format_source(input).unwrap();
         let formatted_twice = format_source(&formatted_once).unwrap();
         assert_eq!(
             formatted_once, formatted_twice,
-            "$_ formatting should be idempotent"
+            "_ formatting should be idempotent"
         );
     }
 
@@ -1105,14 +1105,14 @@ mod tests {
 
     #[test]
     fn test_named_section_with_expects_roundtrips() {
-        let input = "[x: 1]\n--- %out expects: Dict\n[y: 2]";
+        let input = "[x: 1]\n--- %out expects: @Dict\n[y: 2]";
         let formatted = format_source(input).unwrap();
         assert!(
             formatted.contains("--- %out"),
             "formatted output must include section name, got: {formatted:?}"
         );
         assert!(
-            formatted.contains("expects: Dict"),
+            formatted.contains("expects: @Dict"),
             "formatted output must include expects pragma, got: {formatted:?}"
         );
         let reformatted = format_source(&formatted).unwrap();

@@ -93,11 +93,11 @@ nginx-schema: [
   hostname: [pattern: "^[a-z0-9.-]+$"]
 ]
 
-[call $validate $nginx-schema %]
+[validate nginx-schema %]
 
 ---
 
-[call $emit [call $to-nginx %]]
+[emit [to-nginx %]]
 ```
 
 ### Syntax
@@ -135,23 +135,23 @@ document's scope. Within a single file, cross-document checking
 ensures document N's output type unifies with document N+1's `%@T`.
 In multi-file pipelines, the same checking applies across files.
 
-**`$validate` evaluation.** `$validate` walks a schema dict and a data
+**`validate` evaluation.** `validate` walks a schema dict and a data
 value in parallel, collecting ALL violations (not fail-fast). It
 returns the data value on success (pass-through for pipeline use) or
 throws a structured error listing violations with field paths:
 
 ```lisp
-[call $validate $nginx-schema %]
+[validate nginx-schema %]
 # On success: returns % unchanged
 # On failure: error with [violations: [{field: "port"  message: "must be >= 1"} ...]]
 ```
 
 **Schema composition.** Schemas are dicts, so they compose via
-`$merge`:
+`merge`:
 
 ```lisp
 base-schema: [hostname: [pattern: "^[a-z0-9.-]+$"]]
-nginx-schema: [call $merge $base-schema [port: [min: 1  max: 65535]]]
+nginx-schema: [merge base-schema [port: [min: 1  max: 65535]]]
 ```
 
 ### Interaction with Type Inference
@@ -173,14 +173,14 @@ pipeline-level inference pass.
 TypeAssert already validates records lazily (proxy contracts check
 fields when accessed, not upfront). `%@Type` follows the same
 semantics — type checking is static, but any runtime enforcement
-uses proxy contracts. `$validate` is eager: it forces all fields
+uses proxy contracts. `validate` is eager: it forces all fields
 named in the schema and reports all violations at once.
 
 This creates a design tension: lazy proxy contracts are efficient
 (only check what's used) but can miss errors silently; eager
-`$validate` catches everything but forces evaluation. The two-layer
+`validate` catches everything but forces evaluation. The two-layer
 design lets users choose: `%@Type` for lightweight structural
-checking, `$validate` for exhaustive domain validation.
+checking, `validate` for exhaustive domain validation.
 
 ### Blame Assignment
 
@@ -212,8 +212,8 @@ contract boundary.
    natural generalization, not a new concept.
 
 2. **Schema-as-dict is tinct-native.** Schemas are dicts — they can
-   be composed via `$merge`, passed as arguments, stored in variables,
-   loaded via `$include`. No new data model needed.
+   be composed via `merge`, passed as arguments, stored in variables,
+   loaded via `include`. No new data model needed.
 
 3. **Pipeline blame comes naturally.** The pipeline runner already
    knows which stage produced each `%` value. Enriching contract
@@ -221,7 +221,7 @@ contract boundary.
    not an architectural change.
 
 4. **Tooling synergy.** `%@Type` enables LSP auto-complete for
-   pipeline inputs. `$validate` schemas enable `tinct describe` for
+   pipeline inputs. `validate` schemas enable `tinct describe` for
    human documentation.
 
 5. **Precedent.** This mirrors the approach of languages that have
@@ -268,12 +268,12 @@ capability for the type checker.
 **Current:** No schema validation builtins. TypeAssert handles
 type-level checks via proxy contracts.
 
-**Proposed:** Add `$validate` builtin that walks schema dicts and data
-in parallel, collecting violations. Add `$describe` builtin that
+**Proposed:** Add `validate` builtin that walks schema dicts and data
+in parallel, collecting violations. Add `describe` builtin that
 introspects `%@Type` annotations and schema dicts.
 
-**Impact:** Minor. `$validate` is a pure function over dicts — it
-uses existing dict traversal and type-checking primitives. `$describe`
+**Impact:** Minor. `validate` is a pure function over dicts — it
+uses existing dict traversal and type-checking primitives. `describe`
 requires reading type annotations from parsed AST, which is a new
 access pattern.
 
@@ -310,7 +310,7 @@ Declare the expected type of `%` at the document level:
 # fmt/nginx.llt
 %@[port: Int  hostname: String]
 
-[call $emit [call $to-nginx %]]
+[emit [to-nginx %]]
 ```
 
 Implementation:
@@ -326,7 +326,7 @@ Implementation:
 This phase enables the core use case: formatters declare their
 expected input, and the type checker validates it.
 
-### Phase 2: `$validate` — Runtime Schema Validation
+### Phase 2: `validate` — Runtime Schema Validation
 
 Add schema-as-dict validation for constraints beyond types:
 
@@ -337,11 +337,11 @@ nginx-schema: [
   locations: [min-length: 1]
 ]
 
-[call $validate $nginx-schema %]
+[validate nginx-schema %]
 ```
 
 Implementation:
-- `$validate` builtin: walks schema dict and data in parallel
+- `validate` builtin: walks schema dict and data in parallel
 - Collects ALL violations (not fail-fast)
 - Returns data on success (pass-through for pipeline use)
 - Throws structured error listing violations with field paths
@@ -387,8 +387,8 @@ Implementation:
 
 - **Phase 1:** Row polymorphism in the type system (for open vs closed
   record matching). Cross-document type checking infrastructure.
-- **Phase 2:** Type predicates (`$int?`, `$str?`, etc.) for the
-  `$validate` builtin's type-checking dispatch.
+- **Phase 2:** Type predicates (`int?`, `str?`, etc.) for the
+  `validate` builtin's type-checking dispatch.
 - **Phase 3:** Phase 1 + Phase 2 (needs both to describe full
   contracts).
 - **Phase 4:** Multi-file pipeline (from `doc/whatif/templating.md`
@@ -402,10 +402,10 @@ Phase 1 (`%@Type`): adopt when:
   expected input shapes
 - LSP auto-complete for `%` becomes a requested feature
 
-Phase 2 (`$validate`): adopt when:
+Phase 2 (`validate`): adopt when:
 - Type annotations alone are insufficient — users need range checks,
   patterns, optionality
-- External data sources (`$from-json`, `$from-yaml`) make static
+- External data sources (`from-json`, `from-yaml`) make static
   typing inadequate (dynamic data is `Any`)
 
 Phase 3 (`tinct describe`): adopt when:

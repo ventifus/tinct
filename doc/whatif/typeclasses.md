@@ -15,75 +15,75 @@ Int + Float   → Float  (Int promotes to Float)
 Float + Float → Float
 
 # Comparison: hardcoded (doc/11-stdlib.md §Equality and Comparison)
-$= works on Int, Float, String, Bool
-$< works on Int, Float, String
+= works on Int, Float, String, Bool
+< works on Int, Float, String
 Cross-type Int/Float comparison allowed
-Dict, Function, Builtin return false for $=
+Dict, Function, Builtin return false for =
 ```
 
-Dual-dispatch builtins (`$map`, `$filter`, etc.) are typed as `Any` because
+Dual-dispatch builtins (`map`, `filter`, etc.) are typed as `Any` because
 the precise type `Dict | Seq` cannot be expressed (doc/07-type-extensions.md §Dual-Dispatch
 Builtins).
 
 ### What's Missing
 
-1. **Constrained polymorphism.** Overloaded builtins (`$=`, `$+`, `$map`)
+1. **Constrained polymorphism.** Overloaded builtins (`=`, `+`, `map`)
    are typed as `Any` — the type system cannot express "works on types that
    support equality" or "works on types that support mapping."
-2. **Static rejection of invalid operations.** `[call $= [fn [] 1] [fn [] 2]]`
+2. **Static rejection of invalid operations.** `[= [fn [] 1] [fn [] 2]]`
    is accepted by the type checker (both args are `Any`-compatible) but fails
    at runtime. Type classes would reject this statically.
 3. **Structured overloading.** Adding new "protocols" (e.g., Serializable,
    Comparable) requires ad-hoc runtime dispatch rather than type-level
    declaration.
-4. **Precise dual-dispatch typing.** `$map` over Dict vs Seq cannot be
+4. **Precise dual-dispatch typing.** `map` over Dict vs Seq cannot be
    expressed without either union types or a `Functor` class.
 
 ## What Type Classes Would Provide
 
 ### Constrained Polymorphism
 
-Instead of `$= : Any → Any → Bool`, type classes enable:
+Instead of `= : Any → Any → Bool`, type classes enable:
 
 ```
-$= : Eq a => a → a → Bool
-$< : Ord a => a → a → Bool
-$+ : Num a => a → a → a
-$map : Functor f => (a → b) → f a → f b
+= : Eq a => a → a → Bool
+< : Ord a => a → a → Bool
++ : Num a => a → a → a
+map : Functor f => (a → b) → f a → f b
 ```
 
-This rejects `[call $= [fn [] 1] [fn [] 2]]` at type-check time (Function
-has no Eq instance) while accepting `[call $= 1 2]` (Int has Eq).
+This rejects `[= [fn [] 1] [fn [] 2]]` at type-check time (Function
+has no Eq instance) while accepting `[= 1 2]` (Int has Eq).
 
 ### Required Classes for tinct
 
 | Class | Methods | Instances |
 |-------|---------|-----------|
-| `Eq` | `$=` | Int, Float, Str, Bool, Null |
-| `Ord` | `$<`, `$>`, `$<=`, `$>=` | Int, Float, Str |
-| `Num` | `$+`, `$-`, `$*`, `$/`, `$%`, `$neg` | Int, Float |
-| `Show` | `$str` | All types |
-| `Functor` | `$map` | Dict, Seq |
-| `Foldable` | `$reduce`, `$length` | Dict, Seq |
-| `Filterable` | `$filter` | Dict, Seq |
+| `Eq` | `=` | Int, Float, Str, Bool, Null |
+| `Ord` | `<`, `>`, `<=`, `>=` | Int, Float, Str |
+| `Num` | `+`, `-`, `*`, `/`, `%`, `neg` | Int, Float |
+| `Show` | `str` | All types |
+| `Functor` | `map` | Dict, Seq |
+| `Foldable` | `reduce`, `length` | Dict, Seq |
+| `Filterable` | `filter` | Dict, Seq |
 
 ### Instance Laws
 
 Type classes carry laws that instances must satisfy:
 
 **Eq:**
-- Reflexivity: `[call $= $x $x]` → true (except NaN)
-- Symmetry: `[call $= $x $y]` = `[call $= $y $x]`
-- Transitivity: if `$= $x $y` and `$= $y $z` then `$= $x $z`
+- Reflexivity: `[= x x]` → true (except NaN)
+- Symmetry: `[= x y]` = `[= y x]`
+- Transitivity: if `[= x y]` and `[= y z]` then `[= x z]`
 
 **Ord:**
 - Antisymmetry, transitivity, totality
-- Consistent with Eq: `$= $x $y` iff `$<= $x $y` and `$>= $x $y`
+- Consistent with Eq: `[= x y]` iff `[<= x y]` and `[>= x y]`
 
 **Num:**
-- Additive identity: `$+ $x 0` = `$x`
-- Additive inverse: `$+ $x [call $neg $x]` = 0
-- Commutativity: `$+ $x $y` = `$+ $y $x`
+- Additive identity: `[+ x 0]` = `x`
+- Additive inverse: `[+ x [neg x]]` = 0
+- Commutativity: `[+ x y]` = `[+ y x]`
 
 **NaN exception:** Float's Eq instance violates reflexivity (`NaN != NaN`).
 This is universal across languages (IEEE 754) and should be documented as
@@ -93,42 +93,42 @@ an exception to the law.
 
 ### Current Behavior
 
-`$=` returns `false` for all Dict and Seq comparisons (EQ-INCOMP rule in
+`=` returns `false` for all Dict and Seq comparisons (EQ-INCOMP rule in
 doc/11-stdlib.md §Equality and Comparison). This is intentional: structural dict
 equality would force all field thunks, violating lazy evaluation. Comparing
-`[x: [call $/ 1 0]]` with itself would trigger the division-by-zero in an
+`[x: [/ 1 0]]` with itself would trigger the division-by-zero in an
 unreferenced field.
 
-doc/11-stdlib.md §Equality P1 flags a **future breaking change**: if `$=` gained
-structural comparison, `[call $= [x: 1] [x: 1]]` would change from `false`
+doc/11-stdlib.md §Equality P1 flags a **future breaking change**: if `=` gained
+structural comparison, `[= [x: 1] [x: 1]]` would change from `false`
 to `true`, breaking code that relies on dicts always being unequal.
 
 ### Proposed Approach: Separate Functions
 
-Keep `$=` unchanged (EQ-INCOMP for dicts). Add two new builtins for
+Keep `=` unchanged (EQ-INCOMP for dicts). Add two new builtins for
 structural record comparison:
 
-**`$deep-eq : Any → Any → Bool`** — Eager structural equality with
+**`deep-eq : Any → Any → Bool`** — Eager structural equality with
 short-circuit. Compares field-by-field, forcing each pair lazily. Returns
 `false` at the first difference without forcing remaining fields. Cost:
 O(first_difference), not O(total_size). For primitive types, behaves
-identically to `$=`.
+identically to `=`.
 
-**`$shallow-eq : Any → Any → Bool`** — Structural equality for already-
+**`shallow-eq : Any → Any → Bool`** — Structural equality for already-
 materialized structure. Compares keys and materialized values; unevaluated
 thunks compare by pointer identity (`Rc::ptr_eq`). Cost: O(n) for n keys,
 no additional forcing.
 
-Note: `$deep-eq` is NOT equivalent to `[call $shallow-eq [call $eval $a]
-[call $eval $b]]` because the composed version forces *everything* in both
-values before comparing, while `$deep-eq` short-circuits at the first
+Note: `deep-eq` is NOT equivalent to `[shallow-eq [eval a] [eval b]]`
+because the composed version forces *everything* in both
+values before comparing, while `deep-eq` short-circuits at the first
 difference. For large config dicts that differ in one field, the difference
 is significant.
 
 ### Key-Set Equality (Order-Independent)
 
 Structural equality uses key-set comparison, not insertion-order comparison:
-`[a: 1, b: 2]` equals `[b: 2, a: 1]` under `$deep-eq`. This is more
+`[a: 1, b: 2]` equals `[b: 2, a: 1]` under `deep-eq`. This is more
 natural for configuration data where key order is incidental. It diverges
 from `IndexMap` iteration order, but config semantics should not depend on
 key ordering.
@@ -136,14 +136,14 @@ key ordering.
 Implementation: sort keys or use hash-set comparison before field-by-field
 value comparison.
 
-### No Breaking Change to `$=`
+### No Breaking Change to `=`
 
-This approach sidesteps the P1 breaking change entirely. `$=` remains fast,
+This approach sidesteps the P1 breaking change entirely. `=` remains fast,
 predictable, and primitive-only. Users who need structural comparison opt in
-explicitly with `$deep-eq` or `$shallow-eq`.
+explicitly with `deep-eq` or `shallow-eq`.
 
-When typeclasses are adopted, `$deep-eq` becomes the `Eq` method with
-structural derivation. `$=` stays as the primitive equality operator.
+When typeclasses are adopted, `deep-eq` becomes the `Eq` method with
+structural derivation. `=` stays as the primitive equality operator.
 
 ## Default Derivation Strategy
 
@@ -159,7 +159,7 @@ value cannot derive `Eq` (functions have no meaningful equality).
 
 For sequences: two sequences are equal iff they have the same length and
 all corresponding elements are equal (recursive `Eq` check). Infinite
-sequences are compared lazily — if they diverge at position n, `$deep-eq`
+sequences are compared lazily — if they diverge at position n, `deep-eq`
 returns `false` at position n. Two identical infinite sequences would
 diverge (non-termination), which is correct: equality on infinite
 structures is undecidable.
@@ -176,19 +176,19 @@ declarations. This follows Elm's approach — pragmatic, avoids the
 complexity of dictionary passing, and covers tinct's immediate needs:
 
 ```
-comparable : types that support $=, $<  (Int, Float, Str)
-number     : types that support $+, $- (Int, Float)
-appendable : types that support $++    (Str, Seq, Dict)
-mappable   : types that support $map   (Dict, Seq)
+comparable : types that support =, <  (Int, Float, Str)
+number     : types that support +, - (Int, Float)
+appendable : types that support ++    (Str, Seq, Dict)
+mappable   : types that support map   (Dict, Seq)
 ```
 
 This replaces `Any` typing on overloaded builtins with constrained
 signatures:
 
 ```
-$= : comparable → comparable → Bool   (was: Any → Any → Bool)
-$+ : number → number → number         (was: Any → Any → Any)
-$map : (a → b) → mappable a → mappable b  (was: Any)
+= : comparable → comparable → Bool   (was: Any → Any → Bool)
++ : number → number → number         (was: Any → Any → Any)
+map : (a → b) → mappable a → mappable b  (was: Any)
 ```
 
 #### Type Representation
@@ -211,13 +211,13 @@ struct TypeScheme {
 #### Inference Semantics
 
 Constrained type variables generate constraints during inference. When a
-variable `a` is used with `$=`, the constraint `Eq a` is recorded. During
+variable `a` is used with `=`, the constraint `Eq a` is recorded. During
 let-generalization, constraints on generalized variables become part of the
 type scheme. During instantiation, constraints are checked against the
 fixed instance sets:
 
 ```
-G |- $= => Eq a => Fn(a, a -> Bool)    [instantiate with fresh a]
+G |- = => Eq a => Fn(a, a -> Bool)    [instantiate with fresh a]
 G |- 1 => IntLiteral(1)
 unify(a, IntLiteral(1))  ->  a = IntLiteral(1)
 check: Eq IntLiteral(1)?  ->  yes (Int has Eq, IntLiteral <: Int)
@@ -288,12 +288,12 @@ Knock-on effects of constrained row variables:
    `doc/whatif/gradual-typing.md` for the broader `Any` question.
 
 5. **Error provenance.** "field `callback` of type `Function` does not
-   implement `Eq`" — errors must trace from the `$deep-eq` call through
+   implement `Eq`" — errors must trace from the `deep-eq` call through
    the record type to the specific field. Requires constraint provenance
    tracking in the solver.
 
-6. **Higher-order propagation.** Functions like `$filter` taking predicates
-   that use `$deep-eq` gain `Eq` constraints that propagate through the
+6. **Higher-order propagation.** Functions like `filter` taking predicates
+   that use `deep-eq` gain `Eq` constraints that propagate through the
    call chain. Every higher-order function touching equality becomes
    constrained.
 
@@ -344,7 +344,7 @@ constraints.
 ### Evaluator (`src/eval.rs`)
 
 **Current:** Dual-dispatch builtins use runtime type inspection to select
-behavior (e.g., `$map` checks whether its argument is a Dict or Seq).
+behavior (e.g., `map` checks whether its argument is a Dict or Seq).
 
 **Proposed (Phase 1):** Unchanged — runtime dispatch continues. Type classes
 add static checking but don't change evaluation.
@@ -380,7 +380,7 @@ locations.
 
 **Proposed:** Constraint violation errors: "type `Function` does not satisfy
 constraint `Eq`" with provenance showing how the constraint arose (e.g.,
-"required because `$deep-eq` was called on a record containing a Function
+"required because `deep-eq` was called on a record containing a Function
 field"). Requires constraint provenance tracking.
 
 **Impact:** Moderate. New error category for constraint violations. Error
@@ -390,7 +390,7 @@ quality depends on provenance tracking quality.
 
 ### Phase 1: Immediate Builtins (Pre-Typeclass)
 
-Add `$deep-eq` and `$shallow-eq` as builtins typed `Any -> Any -> Bool`.
+Add `deep-eq` and `shallow-eq` as builtins typed `Any -> Any -> Bool`.
 These solve the practical need (comparing config dicts) without any type
 system changes. Key-set equality semantics (order-independent). This phase
 is independently useful and has no prerequisites beyond implementation work.
@@ -410,7 +410,7 @@ type-level protocol validation.
 
 ### Prerequisites
 
-- Phase 1 (`$deep-eq`, `$shallow-eq`): no prerequisites
+- Phase 1 (`deep-eq`, `shallow-eq`): no prerequisites
 - Phase 2 (constrained type variables):
   - `let-generalization` complete (constraints propagate through type schemes)
   - `builtin-type-signatures` complete (constrained builtins need signatures)

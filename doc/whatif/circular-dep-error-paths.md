@@ -21,7 +21,7 @@ The user sees where `x` is defined but not the chain `a → b → x → a` that 
 
 ## Design
 
-**Carry a call stack alongside `include_guard` in `EvalState`.** The evaluation state already has `include_guard: HashSet<PathBuf>` to detect `$include` cycles. The same pattern applies to thunk evaluation cycles: maintain a `Vec<(String, Span)>` call stack that records each thunk being evaluated.
+**Carry a call stack alongside `include_guard` in `EvalState`.** The evaluation state already has `include_guard: HashSet<PathBuf>` to detect `include` cycles. The same pattern applies to thunk evaluation cycles: maintain a `Vec<(String, Span)>` call stack that records each thunk being evaluated.
 
 ```rust
 struct EvalState {

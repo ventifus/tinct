@@ -26,9 +26,9 @@ This is documented in `doc/16-architecture.md §Cross-module coupling` as "safe 
 | builtins.rs needs from eval.rs | Purpose |
 |-------------------------------|---------|
 | `materialize(thunk, span, ctx, depth)` | Builtins force their arguments |
-| `eval_call(...)` | `$try`, `$apply`, `$until` call user functions |
+| `eval_call(...)` | `try`, `apply`, `until` call user functions |
 | `invoke_function(...)` | Higher-order builtins call lambda args |
-| `EvalContext` | Builtins receive ctx for $include |
+| `EvalContext` | Builtins receive ctx for `include` |
 | `EvalResult<T>` | Return type |
 
 | eval.rs needs from builtins.rs | Purpose |

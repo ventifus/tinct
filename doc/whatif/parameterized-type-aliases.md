@@ -138,7 +138,7 @@ polymorphic type schemes. The distinction:
 
 - **Type alias:** `Pair: [type [a] [first: a  second: a]]` — textual
   expansion with substitution, no quantification
-- **Let-generalization:** `id: [fn [x] $x]` gets type `forall a. a -> a`
+- **Let-generalization:** `id: [fn [x] x]` gets type `forall a. a -> a`
   — the type scheme quantifies `a` and each use instantiates fresh
   variables via the inference algorithm
 

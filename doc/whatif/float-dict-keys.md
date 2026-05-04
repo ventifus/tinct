@@ -90,13 +90,13 @@ exact base-10 arithmetic:
 ```lisp
 # Decimal keys in dict literals
 prices: [
-  [call $decimal 3.99]: "budget"
-  [call $decimal 9.99]: "standard"
-  [call $decimal 29.99]: "premium"
+  [decimal 3.99]: "budget"
+  [decimal 9.99]: "standard"
+  [decimal 29.99]: "premium"
 ]
 
 # Decimal key lookup
-[call $get $prices [call $decimal 9.99]]  # → "standard"
+[get prices [decimal 9.99]]  # → "standard"
 ```
 
 If decimal literals are added to the language
@@ -116,7 +116,7 @@ This solves the Rust trait problem but not the semantic problem:
 ```lisp
 # With OrderedFloat keys (unsound)
 table: [0.3: "found"]
-[call $get $table [call $+ 0.1 0.2]]  # → null (0.30000000000000004 != 0.3)
+[get table [+ 0.1 0.2]]  # → null (0.30000000000000004 != 0.3)
 ```
 
 The user writes a key of `0.3` and looks it up with a computed `0.3`,
@@ -137,23 +137,23 @@ change the row typing mechanism. The type checker needs a new
 
 ### Interaction with the Evaluator
 
-Dict lookup (`$get`, field access) uses `Key` equality. With
+Dict lookup (`get`, field access) uses `Key` equality. With
 `Key::Decimal`, lookup is exact — two decimal values are equal iff
 they represent the same mathematical number. No epsilon comparison
 or approximate matching is needed. This is the key advantage over
 `f64`: decimal equality is sound for the use cases that motivate
 fractional keys (prices, measurements in base-10 units).
 
-### Interaction with $from-json and $to-json
+### Interaction with from-json and to-json
 
 JSON numbers with decimal points currently parse to `f64` values.
 With a `Decimal` type:
 
-- `$from-json` maps JSON numbers with decimal points to `Decimal`
+- `from-json` maps JSON numbers with decimal points to `Decimal`
   values when they appear in key position (dict property names in
   JSON are always strings, so this applies only to integer key
   inference for JSON arrays — a narrow interaction).
-- `$to-json` serializes `Decimal` keys as JSON strings (JSON has no
+- `to-json` serializes `Decimal` keys as JSON strings (JSON has no
   decimal type; string keys are the safe serialization).
 
 ### Normalization and Trailing Zeros
@@ -171,7 +171,7 @@ Until `Decimal` is available, string keys provide a sound alternative:
 
 ```lisp
 prices: ["3.99": "budget"  "9.99": "standard"  "29.99": "premium"]
-[call $get $prices "9.99"]  # → "standard"
+[get prices "9.99"]  # → "standard"
 ```
 
 String comparison is exact, so lookup is reliable. The cost is that
@@ -215,10 +215,10 @@ is exact (no epsilon).
 
 ### Builtins (src/builtins.rs)
 
-**Current:** `$get`, `$keys`, `$values`, `$has`, `$merge` operate
+**Current:** `get`, `keys`, `values`, `has`, `merge` operate
 on `Int` and `String` keys.
 **Proposed:** Extend all key-operating builtins to handle `Decimal`
-keys. Add `$decimal` and `$to-decimal` conversion builtins.
+keys. Add `decimal` and `to-decimal` conversion builtins.
 **Impact:** Moderate — every builtin that pattern-matches on `Key`
 needs a new arm. New builtins for decimal construction.
 
@@ -228,12 +228,12 @@ needs a new arm. New builtins for decimal construction.
 Float literals in key position are not recognized as keys.
 **Proposed:** If decimal literal syntax is added (`3.99d`), recognize
 it in key position and produce `Key::Decimal`. Otherwise, decimal
-keys are constructed via `[call $decimal ...]` expressions in key
+keys are constructed via `[decimal ...]` expressions in key
 position.
 **Impact:** Minor to Moderate — depends on whether decimal literal
 syntax is adopted.
 
-### Serialization ($from-json, $to-json)
+### Serialization (from-json, to-json)
 
 **Current:** JSON numbers map to `Int` or `Float` values.
 **Proposed:** JSON numbers in key position remain strings (JSON
@@ -247,8 +247,8 @@ serialization is affected.
 ### Phase 1: Decimal Type
 
 Add `Decimal` as a new `Value` variant with explicit conversion
-builtins (`$decimal`, `$to-decimal`). Decimal arithmetic builtins
-(`$+`, `$-`, `$*`, `$/` overloads or dedicated decimal versions).
+builtins (`decimal`, `to-decimal`). Decimal arithmetic builtins
+(`+`, `-`, `*`, `/` overloads or dedicated decimal versions).
 See `doc/whatif/numeric-types.md` for full design.
 
 ### Phase 2: Decimal Keys
@@ -256,7 +256,7 @@ See `doc/whatif/numeric-types.md` for full design.
 Extend `Key` to include `Decimal`. Implement normalized equality
 and hashing. Update all key-matching builtins. This phase is
 independently useful even without decimal literal syntax — users
-construct decimal keys via `[call $decimal ...]`.
+construct decimal keys via `[decimal ...]`.
 
 ### Phase 3: Decimal Literal Syntax (Optional)
 
@@ -270,7 +270,7 @@ without it.
 - `Decimal` type (`doc/whatif/numeric-types.md`) — the `d128`
   representation, conversion builtins, and arithmetic operations.
 - Decision on decimal literal syntax (whether to add `d` suffix or
-  require explicit `$decimal` construction).
+  require explicit `decimal` construction).
 - `rust_decimal` or `decNumber` crate evaluation for the `d128`
   implementation.
 

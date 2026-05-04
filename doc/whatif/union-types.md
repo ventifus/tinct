@@ -31,8 +31,8 @@ Any (top and bottom — gradual)
 1. **No `Type::Union` variant.** The only escape hatch for "A or B" is `Any`.
 2. **No union subtyping rules.** `is_subtype` has no injection or elimination rules.
 3. **No syntax for union annotations.** The grammar cannot parse `Int | Str` in type position.
-4. **`$if` returns `Any`.** Branch result types are joined via `unify`, which falls back to `Any`.
-5. **Dual-dispatch builtins untyped.** `$map`, `$filter`, etc. are typed `Any → Any`
+4. **`if` returns `Any`.** Branch result types are joined via `unify`, which falls back to `Any`.
+5. **Dual-dispatch builtins untyped.** `map`, `filter`, etc. are typed `Any → Any`
    because `Dict | Seq` cannot be expressed.
 6. **[U-SUBSUME] is ad hoc.** It handles ground types only; there is no uniform
    subtyping in the constraint solver for type constructors.
@@ -43,10 +43,10 @@ Any (top and bottom — gradual)
 
 ### Annotation-Only Unions (Phase 2 — conservative)
 
-- **Precise typing for dual-dispatch builtins.** `$map : (a → b) → (Dict a | Seq a) → (Dict b | Seq b)`
+- **Precise typing for dual-dispatch builtins.** `map : (a → b) → (Dict a | Seq a) → (Dict b | Seq b)`
 - **Nullable value types.** `Int | Null` instead of collapsing to `Any`
 - **Tagged union / result types.** `[ok: a] | [err: String]` with static checking
-- **More precise `$if` return types.** Annotated unions on user-defined functions
+- **More precise `if` return types.** Annotated unions on user-defined functions
 - **Foundation for `[union ...]` ADTs.** `Type::Union` is the prerequisite for
   `doc/whatif/algebraic-data-types.md` Phase 2
 
@@ -59,7 +59,7 @@ carry different constraints than those in *output* (positive) positions.
 
 This gives:
 
-1. **Inferred union types** — `$if true 1 "hello"` infers `Int | Str`, not `Any`
+1. **Inferred union types** — `[if true 1 "hello"]` infers `Int | Str`, not `Any`
 2. **Inferred intersection types** — variables with multiple upper bounds compact to `A & B`
 3. **Principal types with subtyping** — the most general type, proven (Dolan 2016, Theorem 4.1)
 4. **No [U-SUBSUME]** — subtyping built into the solver uniformly across all type constructors
@@ -81,7 +81,7 @@ explicit type annotations and builtin signatures, but `unify` never produces the
 [fn [x : Int | Str] ...]
 
 # In builtin signatures (internal)
-$map : (a → b) → (Dict a | Seq a) → (Dict b | Seq b)
+map : (a → b) → (Dict a | Seq a) → (Dict b | Seq b)
 
 # Named type aliases
 Result: [type [ok: a] | [err: String]]
@@ -215,10 +215,10 @@ Solve the dual-dispatch typing problem without union types via constrained
 polymorphism (see `doc/whatif/typeclasses.md`):
 
 ```
-$map : Functor f => (a → b) → f a → f b
+map : Functor f => (a → b) → f a → f b
 ```
 
-Covers the primary motivation (precise `$map`, `$filter`, etc. typing) without
+Covers the primary motivation (precise `map`, `filter`, etc. typing) without
 any union type machinery.
 
 ### Phase 2: Annotation-Only Unions
@@ -233,7 +233,7 @@ prerequisite for `[union ...]` ADT declarations (see `doc/whatif/algebraic-data-
 
 ### Phase 3: Full Algebraic Subtyping (Simple-sub)
 
-If annotation-only unions prove insufficient — specifically when `$if` return
+If annotation-only unions prove insufficient — specifically when `if` return
 types and other inferred positions need unions — adopt Simple-sub for full
 algebraic subtyping with inferred union and intersection types. Four sub-phases:
 
@@ -263,9 +263,9 @@ Required for lattice soundness. Coordinate with `doc/whatif/gradual-typing.md` P
 ### Trigger
 
 **Phase 2:** When nullable types (`Int | Null`) are needed, or tagged union
-patterns become common, or `$try` result types need `[ok: a] | [err: String]` precision.
+patterns become common, or `try` result types need `[ok: a] | [err: String]` precision.
 
-**Phase 3:** When `$if` return types need inferred unions (not just annotated),
+**Phase 3:** When `if` return types need inferred unions (not just annotated),
 annotation-only unions create too much annotation burden, or Rémy-style row
 unification interacts badly with [U-SUBSUME] causing false positives.
 

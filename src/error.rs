@@ -319,16 +319,16 @@ impl ErrorKind {
     /// - **Cacheability**: Enforces Launchbury (1993) thunk state machine
     ///   monotonicity. Non-cacheable errors do not transition a thunk to Failed
     ///   state; the same thunk may succeed under different evaluation conditions.
-    /// - **Catchability**: Defines user-facing `$try` semantics per Nix `tryEval`
+    /// - **Catchability**: Defines user-facing `try` semantics per Nix `tryEval`
     ///   model. Non-catchable errors propagate to the runtime regardless of
     ///   try/catch constructs.
     ///
-    /// Cross-reference: see `is_catchable()` for `$try` semantics.
+    /// Cross-reference: see `is_catchable()` for `try` semantics.
     pub fn is_cacheable(&self) -> bool {
         !matches!(self, Self::DepthExceeded { .. })
     }
 
-    /// Returns `false` for errors that must not be caught by `$try`.
+    /// Returns `false` for errors that must not be caught by `try`.
     /// Resource limit errors (`DepthExceeded`, `ResourceLimitExceeded`) should
     /// propagate to the runtime, not be suppressible by user code.
     /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
@@ -338,7 +338,7 @@ impl ErrorKind {
     /// diverge: for example, `ResourceLimitExceeded` is non-catchable (resource
     /// limits are advisory suppressible) but IS cacheable (hitting a limit will
     /// always fail again — deterministic).
-    /// - **Catchability**: Defines user-facing `$try` semantics per Nix `tryEval`
+    /// - **Catchability**: Defines user-facing `try` semantics per Nix `tryEval`
     ///   model. Non-catchable errors propagate to the runtime regardless of
     ///   try/catch constructs.
     /// - **Cacheability**: Enforces Launchbury (1993) thunk state machine
@@ -2595,7 +2595,7 @@ mod tests {
         };
         assert!(
             !err.is_catchable(),
-            "ResourceLimitExceeded must not be catchable by $try"
+            "ResourceLimitExceeded must not be catchable by try"
         );
     }
 

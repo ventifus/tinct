@@ -8,7 +8,7 @@ entirely in pure-tinct, with no Rust builtins and no crate dependency?
 ## Current State
 
 tinct has no pattern matching for strings. The only string inspection
-tools are `$split`, `$replace`, `$upper`, `$lower`, `$trim`, and the
+tools are `split`, `replace`, `upper`, `lower`, `trim`, and the
 pure-tinct predicates in `stdlib/strings.llt` (`str-contains?`,
 `str-starts-with?`, `str-ends-with?`). These cover simple cases but
 cannot express structured patterns.
@@ -22,9 +22,9 @@ anchors:
 # Current: test if string needs YAML quoting
 # Must enumerate every special character individually
 yaml-needs-quoting?: [fn [s]
-  [call $or [call $= "" $s]
-    [call $or [call $str-contains? ":" $s]
-      [call $or [call $str-contains? "#" $s]
+  [or [= "" s]
+    [or [str-contains? ":" s]
+      [or [str-contains? "#" s]
         # ... 12 more cases
         ]]]]
 ```
@@ -35,7 +35,7 @@ yaml-needs-quoting?: [fn [s]
    class, quantifier, alternation, or anchor.
 2. **Capture groups** — no way to extract structured substrings
    (hostname, port, path) from unstructured strings.
-3. **Pattern-based replace and split** — `$replace` works on literal
+3. **Pattern-based replace and split** — `replace` works on literal
    strings only.
 
 ## Why a Pure-Tinct Regex Engine Matters
@@ -56,7 +56,7 @@ approach — with no new Cargo dependency and no unsafe code.
 
 **Primitives compose.** The engine is built on the string utilities
 from `stdlib/strings.llt` (Phase 1 of `doc/whatif/lib-supplemental.md`)
-and the bitwise primitives from Phase 4 of the same doc (`$char-code`
+and the bitwise primitives from Phase 4 of the same doc (`char-code`
 for character class range comparison). Once those primitives exist,
 the regex engine is pure library code users can read and modify.
 
@@ -98,22 +98,22 @@ The parser produces a recursive dict structure where every node has a
 `type` key:
 
 ```lisp
-[type: concat   left: ...  right: ...]         # ab
-[type: alt      left: ...  right: ...]         # a|b
-[type: star     child: ...]                    # a*
-[type: plus     child: ...]                    # a+
-[type: opt      child: ...]                    # a?
-[type: repeat   min: 1  max: 3  child: ...]   # a{1,3}
-[type: char     code: 97]                      # literal 'a' ($char-code)
-[type: any]                                    # .
-[type: class    ranges: [[lo: 48  hi: 57]]  negate: false]  # [0-9]
-[type: anchor   kind: start]                   # ^
-[type: anchor   kind: end]                     # $
-[type: group    id: 1  child: ...]             # (...)
-[type: named    id: 1  name: host  child: ...] # (?P<name>...)
+[type: "concat"   left: ...  right: ...]         # ab
+[type: "alt"      left: ...  right: ...]         # a|b
+[type: "star"     child: ...]                    # a*
+[type: "plus"     child: ...]                    # a+
+[type: "opt"      child: ...]                    # a?
+[type: "repeat"   min: 1  max: 3  child: ...]   # a{1,3}
+[type: "char"     code: 97]                      # literal 'a' (char-code)
+[type: "any"]                                    # .
+[type: "class"    ranges: [[lo: 48  hi: 57]]  negate: false]  # [0-9]
+[type: "anchor"   kind: "start"]                 # ^
+[type: "anchor"   kind: "end"]                   # $
+[type: "group"    id: 1  child: ...]             # (...)
+[type: "named"    id: 1  name: "host"  child: ...] # (?P<name>...)
 ```
 
-Character class ranges are stored as integer codepoints from `$char-code`,
+Character class ranges are stored as integer codepoints from `char-code`,
 so `[a-z]` becomes `[lo: 97  hi: 122]`.
 
 ### NFA State Representation
@@ -141,8 +141,8 @@ states:
   ]
   start: 0
   groups: [             # group id → name ("" for unnamed groups)
-    1: host
-    2: port
+    1: "host"
+    2: "port"
   ]
 ]
 ```
@@ -154,45 +154,45 @@ states:
 
 # Fresh state id = current state count
 nfa-new-state: [fn [nfa]
-  [call $length $nfa.states]]
+  [length nfa.states]]
 
 # Literal character: two states, one transition
 nfa-char: [fn [code nfa0]
-  [call $let
-    [s0 [call $nfa-new-state $nfa0]
-     s1 [call $+ $s0 1]
-     nfa1 [call $nfa-add-state $s0 [$code [list $s1]] [] false nfa0]
-     nfa2 [call $nfa-add-state $s1 [] [] false nfa1]]
-    [entry: $s0  exit: $s1  nfa: $nfa2]]]
+  [let
+    [s0 [nfa-new-state nfa0]
+     s1 [+ s0 1]
+     nfa1 [nfa-add-state s0 [code [list s1]] [] false nfa0]
+     nfa2 [nfa-add-state s1 [] [] false nfa1]]
+    [entry: s0  exit: s1  nfa: nfa2]]]
 
 # Concatenation: ε from exit of left to entry of right
 nfa-concat: [fn [left right nfa0]
-  [call $let
-    [nfa1 [call $nfa-add-epsilon $left.exit $right.entry $nfa0]]
-    [entry: $left.entry  exit: $right.exit  nfa: $nfa1]]]
+  [let
+    [nfa1 [nfa-add-epsilon left.exit right.entry nfa0]]
+    [entry: left.entry  exit: right.exit  nfa: nfa1]]]
 
 # Alternation: new entry ε-forks to both; both exits ε to new accept
 nfa-alt: [fn [left right nfa0]
-  [call $let
-    [entry  [call $nfa-new-state $nfa0]
-     accept [call $+ $entry 1]
-     nfa1   [call $nfa-add-state $entry [] [list $left.entry $right.entry] false $nfa0]
-     nfa2   [call $nfa-add-epsilon $left.exit  $accept $nfa1]
-     nfa3   [call $nfa-add-epsilon $right.exit $accept $nfa2]
-     nfa4   [call $nfa-add-state $accept [] [] true $nfa3]]
-    [entry: $entry  exit: $accept  nfa: $nfa4]]]
+  [let
+    [entry  [nfa-new-state nfa0]
+     accept [+ entry 1]
+     nfa1   [nfa-add-state entry [] [list left.entry right.entry] false nfa0]
+     nfa2   [nfa-add-epsilon left.exit  accept nfa1]
+     nfa3   [nfa-add-epsilon right.exit accept nfa2]
+     nfa4   [nfa-add-state accept [] [] true nfa3]]
+    [entry: entry  exit: accept  nfa: nfa4]]]
 
 # Kleene star: new entry and accept; child loops back via ε
 nfa-star: [fn [child nfa0]
-  [call $let
-    [entry  [call $nfa-new-state $nfa0]
-     accept [call $+ $entry 1]
-     nfa1   [call $nfa-add-state $entry []
-               [list $child.entry $accept] false $nfa0]
-     nfa2   [call $nfa-add-epsilon $child.exit $child.entry $nfa1]
-     nfa3   [call $nfa-add-epsilon $child.exit $accept $nfa2]
-     nfa4   [call $nfa-add-state $accept [] [] true $nfa3]]
-    [entry: $entry  exit: $accept  nfa: $nfa4]]]
+  [let
+    [entry  [nfa-new-state nfa0]
+     accept [+ entry 1]
+     nfa1   [nfa-add-state entry []
+               [list child.entry accept] false nfa0]
+     nfa2   [nfa-add-epsilon child.exit child.entry nfa1]
+     nfa3   [nfa-add-epsilon child.exit accept nfa2]
+     nfa4   [nfa-add-state accept [] [] true nfa3]]
+    [entry: entry  exit: accept  nfa: nfa4]]]
 ```
 
 ### NFA Simulation — Thompson's VM
@@ -206,23 +206,23 @@ the ε-closure of the resulting states is computed:
 # active:   Dict[state-id → captures]
 
 nfa-step: [fn [nfa active char]
-  [call $nfa-epsilon-closure $nfa
-    [call $flat-map
+  [nfa-epsilon-closure nfa
+    [flat-map
       [fn [entry]
-        [call $let [sid $entry.key  caps $entry.value]
-          [call $nfa-char-transitions $nfa $sid $char $caps]]]
-      [call $entries $active]]]]
+        [let [sid entry.key  caps entry.value]
+          [nfa-char-transitions nfa sid char caps]]]
+      [entries active]]]]
 
 nfa-run: [fn [nfa s]
-  [call $fold
-    [fn [active char] [call $nfa-step $nfa $active $char]]
-    [call $nfa-epsilon-closure $nfa [call $make-entry $nfa.start []]]
-    [call $str-chars $s]]]
+  [fold
+    [fn [active char] [nfa-step nfa active char]]
+    [nfa-epsilon-closure nfa [make-entry nfa.start []]]
+    [str-chars s]]]
 
 nfa-accepts: [fn [nfa s]
-  [call $any?
-    [fn [e] [call $get accept [call $get $e.key $nfa.states]]]
-    [call $entries [call $nfa-run $nfa $s]]]]
+  [any?
+    [fn [e] [get "accept" [get e.key nfa.states]]]
+    [entries [nfa-run nfa s]]]]
 ```
 
 ### Public API
@@ -233,8 +233,8 @@ memoizes the result automatically when bound at file level:
 
 ```lisp
 # Compiled once, reused on every call — lazy eval handles caching
-ip-pattern: [call $re-compile "([0-9]{1,3}\\.){3}[0-9]{1,3}"]
-ip?: [fn [s] [call $re-match-compiled $ip-pattern $s]]
+ip-pattern: [re-compile "([0-9]{1,3}\\.){3}[0-9]{1,3}"]
+ip?: [fn [s] [re-match-compiled ip-pattern s]]
 ```
 
 **`re-match pattern s`** → `Bool` — tests whether `s` contains a match.
@@ -243,7 +243,7 @@ ip?: [fn [s] [call $re-match-compiled $ip-pattern $s]]
 or `[]` — first match with named capture groups as additional keys:
 
 ```lisp
-[call $re-find "(?P<host>[a-z0-9.-]+):(?P<port>[0-9]+)" "db.prod:5432"]
+[re-find "(?P<host>[a-z0-9.-]+):(?P<port>[0-9]+)" "db.prod:5432"]
 # → [match: "db.prod:5432"  host: "db.prod"  port: "5432"  start: 0  end: 12]
 ```
 
@@ -254,7 +254,7 @@ same shape as `re-find`.
 matches. Capture group references via `\1`, `\2`, or `\k<name>`.
 
 **`re-split pattern s`** → `Dict` — parts of `s` between matches,
-same shape as `$split` output.
+same shape as `split` output.
 
 ### Interaction with Lazy Evaluation
 
@@ -296,8 +296,8 @@ change to `src/builtins.rs` or `Cargo.toml`.
 locating match positions.
 
 **Phase 4 bitwise primitives** (`doc/whatif/lib-supplemental.md`):
-`$char-code` for converting characters to integer codes for transition
-table lookup and character class range comparisons. Without `$char-code`,
+`char-code` for converting characters to integer codes for transition
+table lookup and character class range comparisons. Without `char-code`,
 character classes (`[a-z]`, `\d`, `\w`) cannot be implemented.
 
 **Impact:** Phase 3 (this proposal) must be delivered after both Phase 1
@@ -327,7 +327,7 @@ for structured parsing.
 ### Phase 3: Performance Optimization
 
 Replace the pure-tinct simulation loop with a Rust builtin
-`$nfa-run nfa-dict s` that interprets the same dict representation
+`nfa-run nfa-dict s` that interprets the same dict representation
 at native speed. The public API is unchanged — the tinct wrappers
 call the Rust runner instead of the pure-tinct one. This phase is
 purely an optimization and can be deferred indefinitely.
@@ -336,9 +336,9 @@ purely an optimization and can be deferred indefinitely.
 
 - **Phase 1 of `lib-supplemental.md`** complete — `str-chars`,
   `str-find` required.
-- **Phase 4 of `lib-supplemental.md`** complete — `$char-code`
+- **Phase 4 of `lib-supplemental.md`** complete — `char-code`
   required for character classes (needed even in Phase 1 of this doc,
-  since literal matching uses `$char-code` for transition lookup).
+  since literal matching uses `char-code` for transition lookup).
   Deliver this doc after Phase 4 of `lib-supplemental.md`.
 
 ### Trigger
@@ -365,4 +365,4 @@ purely an optimization and can be deferred indefinitely.
   subset construction (§3.7.1) is not needed for NFA simulation.
 - doc/whatif/lib-supplemental.md — prerequisite stdlib modules:
   Phase 1 (string utilities) and Phase 4 (bitwise primitives including
-  `$char-code`).
+  `char-code`).

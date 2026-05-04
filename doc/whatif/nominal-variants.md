@@ -22,10 +22,10 @@ Right: [union [value: a]]    # Right also has one field "value"
 
 # Problem 2: Variant values are also plain dicts — field access always works
 res: [@Result [ok: 42]]
-$res.ok    # → 42 — nothing prevents this; the variant structure is invisible at runtime
+res.ok    # → 42 — nothing prevents this; the variant structure is invisible at runtime
 
 # Problem 3: Constructor functions cannot be passed as values
-[call $map Ok $items]   # Ok is not a first-class function in structural ADTs
+[map Ok items]   # Ok is not a first-class function in structural ADTs
 ```
 
 ### What's Missing
@@ -36,8 +36,8 @@ $res.ok    # → 42 — nothing prevents this; the variant structure is invisibl
 2. **Payload-identical constructors.** Two constructors with the same payload shape
    cannot coexist in a structural union — the key sets must differ.
 3. **First-class constructors.** Constructor names are not values; you cannot pass
-   `Ok` to `$map` or store it in a variable.
-4. **Mandatory elimination.** Nothing prevents accessing `$result.ok` on an `[err: msg]`
+   `Ok` to `map` or store it in a variable.
+4. **Mandatory elimination.** Nothing prevents accessing `result.ok` on an `[err: msg]`
    value; the variant wrapping is transparent.
 
 ## Why Nominal Variants Matter for tinct
@@ -50,12 +50,12 @@ distinct constructors (`Leaf`, `Node`) where `Leaf` is a unit with no payload an
 artificially different key names.
 
 **Constructor functions as first-class values.** `Ok`, `Err`, `Some`, `None` become
-functions that can be passed to `$map`, `$filter`, and other higher-order builtins.
-`[call $map Ok $items]` wraps each item in an `Ok` constructor — a natural pattern
+functions that can be passed to `map`, `filter`, and other higher-order builtins.
+`[map Ok items]` wraps each item in an `Ok` constructor — a natural pattern
 for monadic-style processing.
 
 **Mandatory elimination via pattern matching.** A nominal variant value is not a dict.
-`$result.ok` is a type error — the payload is only accessible through pattern matching.
+`result.ok` is a type error — the payload is only accessible through pattern matching.
 This enforces complete case analysis in a way structural ADTs cannot.
 
 **Self-hosting stdlib.** Future tinct stdlib functions that return structured results
@@ -110,12 +110,12 @@ Each constructor name (`Some`, `None`, `Ok`, `Err`, `Left`, `Right`, etc.) is
 registered as a builtin function when its `[union ...]` type is declared:
 
 ```tinct
-wrapped:  [call Some 42]       # → Variant { tag: "Some", payload: 42 }
-empty:    None                 # → Variant { tag: "None", payload: None }
-colored:  Red                  # → Variant { tag: "Red", payload: None }
+wrapped:  [Some 42]       # → Variant { tag: "Some", payload: 42 }
+empty:    None            # → Variant { tag: "None", payload: None }
+colored:  Red             # → Variant { tag: "Red", payload: None }
 
 # Constructor functions are first-class values
-wrapped-items: [call $map Some $items]   # wraps each item in Some
+wrapped-items: [map Some items]   # wraps each item in Some
 ```
 
 Unit constructors (`None`, `Red`, `Blue`) are values, not calls — the bare uppercase
@@ -127,31 +127,31 @@ literals evaluate in value position (`ok` → `"ok"`) but for nominal unit varia
 `[match]` patterns use the same case rule to distinguish structural from nominal:
 
 ```lisp
-[match $x
-    [ok: $v]   ...    # structural dict pattern: dict with key "ok", bind value to $v
-    [Ok $v]    ...    # nominal constructor pattern: Ok wrapping payload, bind to $v
+[match x
+    [ok: v]   ...    # structural dict pattern: dict with key "ok", bind value to v
+    [Ok v]    ...    # nominal constructor pattern: Ok wrapping payload, bind to v
     ok         ...    # structural unit: matches string "ok"
     None       ...]   # nominal unit: matches None constructor
 
 # Option type — full pattern coverage
-[match $maybe
-    [Some $v]  $v
+[match maybe
+    [Some v]  v
     None       default-value]
 
 # Either — payload patterns nest
-[match $either
-    [Left $a]   [call $handle-left $a]
-    [Right $b]  [call $handle-right $b]]
+[match either
+    [Left a]   [handle-left a]
+    [Right b]  [handle-right b]]
 
 # Tree — recursive nominal ADT (Phase 4 of algebraic-data-types.md)
-[match $tree
+[match tree
     Leaf            0
-    [Node $v $l $r] [call $+ 1 [call $+ [call $depth $l] [call $depth $r]]]]
+    [Node v l r] [+ 1 [+ [depth l] [depth r]]]]
 ```
 
 The structural vs nominal distinction in patterns is visually unambiguous:
-- `[lowercase: $binding]` — dict field pattern (key, colon, binding)
-- `[Uppercase $binding]` — constructor pattern (tag, space, binding, no colon)
+- `[lowercase: binding]` — dict field pattern (key, colon, binding)
+- `[Uppercase binding]` — constructor pattern (tag, space, binding, no colon)
 - `lowercase` — string literal match
 - `Uppercase` — unit constructor match
 
@@ -169,9 +169,9 @@ pub enum Value {
 }
 ```
 
-`$type-of` returns `"Variant"` for all nominal variant values, consistent with
+`type-of` returns `"Variant"` for all nominal variant values, consistent with
 returning `"Dict"`, `"Int"`, `"Str"`, etc. The constructor tag is accessible via
-a new `$tag-of` builtin that returns the tag name as a string, enabling interop
+a new `tag-of` builtin that returns the tag name as a string, enabling interop
 with code that cannot use pattern matching.
 
 ### Serialization
@@ -183,7 +183,7 @@ convention where possible:
 |---------|------------|
 | `[call Some 42]` | `{"Some": 42}` |
 | `None` | `{"None": null}` |
-| `[call Ok [call $+ 1 2]]` | `{"Ok": 3}` |
+| `[Ok [+ 1 2]]` | `{"Ok": 3}` |
 | `Red` | `{"Red": null}` |
 | `[call Left [call Some 42]]` | `{"Left": {"Some": 42}}` |
 
@@ -192,9 +192,9 @@ shape — `[call Some 42]` serializes as `{"Some": 42}`, the same as the structu
 dict `[Some: 42]`. This preserves round-trip compatibility with external JSON
 consumers that don't know about tinct's variant system.
 
-`$from-json` does **not** automatically reconstruct nominal variants from JSON.
+`from-json` does **not** automatically reconstruct nominal variants from JSON.
 External JSON `{"Some": 42}` becomes the structural dict `[Some: 42]` (a plain dict
-with key `"Some"`). TypeAssert (`[@Option $json-value]`) would fail if `Option` uses
+with key `"Some"`). TypeAssert (`[@Option json-value]`) would fail if `Option` uses
 nominal variants. This is deliberate — nominality requires explicit construction,
 not automatic inference from shape.
 
@@ -205,7 +205,7 @@ the `[union ...]` declaration form. They do not interconvert:
 
 - A structural `[ok: 42]` dict is **not** a nominal `Ok 42` variant, even if the
   tag names match (modulo case).
-- A nominal `[call Ok 42]` value is **not** a dict — `$result.ok` is a type error.
+- A nominal `[Ok 42]` value is **not** a dict — `result.ok` is a type error.
 
 This separation is what makes nominal variants worth having. If they interconverted,
 the nominality guarantee (only constructors create variant values) would be lost.
@@ -238,14 +238,14 @@ None : [Option a]           (unit — a value, not a function)
 
 ### Lazy Evaluation
 
-Nominal variant construction via `[call Some $thunk]` wraps the payload as a thunk
+Nominal variant construction via `[Some thunk]` wraps the payload as a thunk
 — the payload is not forced at construction time. Pattern matching forces the
 *discriminant* (the constructor tag) but not the payload until the body uses it:
 
 ```lisp
-[match [call Some [call $/ 1 0]]   # division-by-zero in payload — not forced here
-    [Some $v]  0                    # body ignores $v — division never executed
-    None       1]
+[match [Some [/ 1 0]]   # division-by-zero in payload — not forced here
+    [Some v]  0         # body ignores v — division never executed
+    None      1]
 ```
 
 This follows the same lazy semantics as structural dict pattern matching
@@ -261,7 +261,7 @@ strings. `[Uppercase ...]` inside `[]` would parse as a dict with positional ent
 
 **Proposed:** In `[union ...]` declaration position, the parser distinguishes
 uppercase entries as nominal constructor declarations. In `[match]` pattern position,
-`[Uppercase $binding]` is a constructor pattern and uppercase bare words are unit
+`[Uppercase binding]` is a constructor pattern and uppercase bare words are unit
 constructor patterns. In value expression position, uppercase bare words that name
 registered constructors evaluate to unit variant values (similar to how `true` and
 `false` evaluate to booleans).
@@ -288,13 +288,13 @@ to `Expr::Bool`).
 **Current:** No `Value::Variant`. Nominal variants cannot be represented.
 
 **Proposed:** Add `Value::Variant { tag: String, payload: Option<Rc<Thunk>> }`.
-Extend `$type-of` to return `"Variant"`. Add `$tag-of` builtin returning the
+Extend `type-of` to return `"Variant"`. Add `tag-of` builtin returning the
 constructor tag as a string. Extend serialization (`value_to_json`) with the
 tagged-dict encoding.
 
 **Impact:** Moderate. `Value` gains a new variant; every exhaustive `match` on
-`Value` must handle it. Serialization and display gain new cases. `$type-of`,
-`$tag-of` are new builtins.
+`Value` must handle it. Serialization and display gain new cases. `type-of`,
+`tag-of` are new builtins.
 
 ### Type Representation (`src/types.rs`)
 
@@ -314,8 +314,8 @@ registration logic.
 
 **Proposed:** At `[union ...]` declaration time with nominal entries: register
 constructor functions in the type environment (`Some : Fn@[Option a] [a]`, `None :
-[Option a]`). In `[match]` arm type-checking: for `[Some $v]` patterns, narrow
-the scrutinee to `NominalVariant("Some", _)` and bind `$v` to the payload type.
+[Option a]`). In `[match]` arm type-checking: for `[Some v]` patterns, narrow
+the scrutinee to `NominalVariant("Some", _)` and bind `v` to the payload type.
 Exhaustiveness (Phase 2) checks that nominal constructor arms cover all constructors.
 
 **Impact:** Moderate.
@@ -324,7 +324,7 @@ Exhaustiveness (Phase 2) checks that nominal constructor arms cover all construc
 
 **Current:** No constructor application or nominal variant dispatch.
 
-**Proposed:** Constructor calls `[call Some 42]` are handled as builtin-style
+**Proposed:** Constructor calls `[Some 42]` are handled as builtin-style
 calls: the evaluator looks up `Some` in the environment, finds a constructor entry,
 and creates `Value::Variant { tag: "Some", payload: Some(thunk) }`. `[match]` arm
 evaluation: for `Pattern::Constructor`, materialize the scrutinee, check if it is
@@ -336,21 +336,21 @@ pattern matching is a new case in the pattern evaluator.
 
 ## Phased Adoption
 
-### Phase 1: Unit Constructors and `$tag-of`
+### Phase 1: Unit Constructors and `tag-of`
 
-Add `Value::Variant { tag, payload: None }`, unit constructor values, and `$tag-of`.
+Add `Value::Variant { tag, payload: None }`, unit constructor values, and `tag-of`.
 No payload constructors, no pattern matching yet. Unit constructors are usable as
 enum-like values:
 
 ```tinct
 Color:    [union Red Green Blue]
-selected: Red                           # Value::Variant { tag: "Red", payload: None }
-name:     [call $tag-of $selected]      # → "Red"
-is-red:   [call $= [call $tag-of $selected] Red]  # → true
+selected: Red                       # Value::Variant { tag: "Red", payload: None }
+name:     [tag-of selected]         # → "Red"
+is-red:   [= [tag-of selected] Red] # → true
 ```
 
-This is independently useful without pattern matching: `$tag-of` enables dispatch
-via `$cond` chains. Unit constructors can replace some string enumerations where
+This is independently useful without pattern matching: `tag-of` enables dispatch
+via `cond` chains. Unit constructors can replace some string enumerations where
 the nominal guarantee (only declared values are valid) is desired.
 
 **Prerequisites:** `doc/whatif/algebraic-data-types.md` Phase 1 (convention
@@ -366,14 +366,14 @@ system:
 Option: [union [Some a] None]
 
 lookup: [fn [dict@[...] key@Str]
-    [call $if [call $has? $dict $key]
-        [call Some [call $get $dict $key]]
+    [if [has? dict key]
+        [Some [get dict key]]
         None]]
 
 # Pattern match on the result
-found: [match [call lookup $config timeout]
-    [Some $v]   $v
-    None        30]      # default
+found: [match [lookup config "timeout"]
+    [Some v]   v
+    None       30]      # default
 ```
 
 **Prerequisites:** Phase 1 complete. `doc/whatif/pattern-matching.md` Phase 2
@@ -385,8 +385,8 @@ the type environment.
 Exhaustiveness checking in `[match]` for unions containing nominal constructors:
 
 ```lisp
-[match $maybe         # Option a
-    [Some $v]  $v]   # Error: non-exhaustive — missing arm for None
+[match maybe         # Option a
+    [Some v]  v]    # Error: non-exhaustive — missing arm for None
 ```
 
 This reuses the exhaustiveness infrastructure from `doc/whatif/algebraic-data-types.md`
@@ -413,7 +413,7 @@ exhaustiveness checking straightforward.
 
 **Phase 2** (payload constructors): adopt when:
 - Two constructor shapes would be identical under structural discrimination
-- `$map Ok $items` / `$map Some $items` patterns are needed in stdlib or user code
+- `map Ok items` / `map Some items` patterns are needed in stdlib or user code
 - tinct programs use pattern matching heavily enough that mandatory elimination is valued
 
 **Phase 3** (exhaustiveness): adopt together with `algebraic-data-types.md` Phase 3 —

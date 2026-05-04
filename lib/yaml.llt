@@ -3,8 +3,8 @@
 # ============================================================================
 #
 # Usage:
-#   yaml: [call $include "lib/yaml.llt"]
-#   result: [call $yaml.to-yaml $data]
+#   yaml: [include "lib/yaml.llt"]
+#   result: [yaml.to-yaml data]
 #
 # Type mapping:
 #   Int    → bare integer (42)
@@ -17,13 +17,13 @@
 #   Seq                → collected and rendered as YAML block sequence
 #
 # Limitations (to revisit when type predicates and regex land):
-#   - Float: $str on 3.0 may omit the decimal point; YAML parsers would then
-#     read it as an integer. Add a to-yaml-float formatter when $float? exists.
+#   - Float: str on 3.0 may omit the decimal point; YAML parsers would then
+#     read it as an integer. Add a to-yaml-float formatter when float? exists.
 #   - String quoting: all strings are double-quoted regardless of content.
 #     With regex we could use bare strings for simple scalar values.
 #   - Mixed-key dicts (some int, some string keys): first-key heuristic may
 #     misclassify; in practice tinct dicts are uniformly typed.
-#   - No $emit: returns a string; caller must output or pipeline it.
+#   - No emit: returns a string; caller must output or pipeline it.
 # ============================================================================
 
 [
@@ -31,91 +31,91 @@
 # Escape special characters for YAML double-quoted strings.
 # Backslashes must be escaped first to avoid double-escaping.
 yaml-escape: [fn [s]
-    [call $replace
-        [call $replace
-            [call $replace $s "\\" "\\\\"]
+    [replace
+        [replace
+            [replace s "\\" "\\\\"]
             "\"" "\\\""]
         "\n" "\\n"]]
 
 # Build an indentation string of n spaces.
 yaml-spaces: [fn [n]
-    [call $join "" [call $collect [call $take $n [call $repeat " "]]]]]
+    [join "" [collect [take n [repeat " "]]]]]
 
 # Extract the first key of a non-empty dict.
-# $keys returns {k→k, ...}; $values on that gives [k, ...]; $first picks key 0.
+# keys returns {k→k, ...}; values on that gives [k, ...]; first picks key 0.
 yaml-first-key: [fn [d]
-    [call $first [call $values [call $keys $d]]]]
+    [first [values [keys d]]]]
 
 # True if the dict has integer keys (YAML sequence), false if string keys (YAML mapping).
 # Checks only the first key — assumes uniform key types.
 yaml-is-list: [fn [d]
-    [call $builtin-if [call $empty? $d]
+    [builtin-if [empty? d]
         false
-        [call $builtin-eq [call $type-of [call $yaml-first-key $d]] "Int"]]]
+        [builtin-eq [type-of [yaml-first-key d]] "Int"]]]
 
 # True if the value is a YAML scalar (not a Dict or Seq container).
 yaml-is-scalar: [fn [val]
-    [call $not
-        [call $or
-            [call $builtin-eq [call $type-of $val] "Dict"]
-            [call $seq? $val]]]]
+    [not
+        [or
+            [builtin-eq [type-of val] "Dict"]
+            [seq? val]]]]
 
 # Render a scalar value to its YAML string representation.
 yaml-scalar: [fn [val]
-    [call $builtin-if [call $builtin-eq [call $type-of $val] "Bool"]
-        [call $builtin-if $val "true" "false"]
-        [call $builtin-if [call $builtin-eq [call $type-of $val] "String"]
-            [call $str "\"" [call $yaml-escape $val] "\""]
-            [call $str $val]]]]
+    [builtin-if [builtin-eq [type-of val] "Bool"]
+        [builtin-if val "true" "false"]
+        [builtin-if [builtin-eq [type-of val] "String"]
+            [str "\"" [yaml-escape val] "\""]
+            [str val]]]]
 
 # Render one mapping entry. Scalar values are inline; containers go on the
 # next line with two additional spaces of indentation.
 yaml-map-entry: [fn [key val depth]
-    [call $builtin-if [call $yaml-is-scalar $val]
-        [call $str [call $yaml-spaces $depth] [call $str $key] ": " [call $yaml-scalar $val]]
-        [call $str [call $yaml-spaces $depth] [call $str $key] ":\n"
-            [call $yaml-value $val [call $builtin-add $depth 2]]]]]
+    [builtin-if [yaml-is-scalar val]
+        [str [yaml-spaces depth] [str key] ": " [yaml-scalar val]]
+        [str [yaml-spaces depth] [str key] ":\n"
+            [yaml-value val [builtin-add depth 2]]]]]
 
 # Render one sequence item. Scalar values are inline after "- "; containers
 # go on the next line under "-".
 yaml-list-item: [fn [val depth]
-    [call $builtin-if [call $yaml-is-scalar $val]
-        [call $str [call $yaml-spaces $depth] "- " [call $yaml-scalar $val]]
-        [call $str [call $yaml-spaces $depth] "-\n"
-            [call $yaml-value $val [call $builtin-add $depth 2]]]]]
+    [builtin-if [yaml-is-scalar val]
+        [str [yaml-spaces depth] "- " [yaml-scalar val]]
+        [str [yaml-spaces depth] "-\n"
+            [yaml-value val [builtin-add depth 2]]]]]
 
 # Render a string-keyed dict as a YAML block mapping.
 yaml-map: [fn [d depth]
-    [call $join "\n"
-        [call $map
-            [fn [entry] [call $yaml-map-entry $entry.key $entry.value $depth]]
-            [call $entries $d]]]]
+    [join "\n"
+        [map
+            [fn [entry] [yaml-map-entry entry.key entry.value depth]]
+            [entries d]]]]
 
 # Render an integer-keyed dict as a YAML block sequence.
 yaml-list: [fn [d depth]
-    [call $builtin-if [call $empty? $d]
+    [builtin-if [empty? d]
         "[]"
-        [call $join "\n"
-            [call $map
-                [fn [v] [call $yaml-list-item $v $depth]]
-                [call $values $d]]]]]
+        [join "\n"
+            [map
+                [fn [v] [yaml-list-item v depth]]
+                [values d]]]]]
 
 # Render any tinct value to YAML. depth = current indentation (spaces).
 yaml-value: [fn [val depth]
-    [call $builtin-if [call $seq? $val]
-        [call $yaml-list [call $collect $val] $depth]
-        [call $builtin-if [call $builtin-eq [call $type-of $val] "Dict"]
-            [call $builtin-if [call $empty? $val]
+    [builtin-if [seq? val]
+        [yaml-list [collect val] depth]
+        [builtin-if [builtin-eq [type-of val] "Dict"]
+            [builtin-if [empty? val]
                 "{}"
-                [call $builtin-if [call $yaml-is-list $val]
-                    [call $yaml-list $val $depth]
-                    [call $yaml-map $val $depth]]]
-            [call $yaml-scalar $val]]]]
+                [builtin-if [yaml-is-list val]
+                    [yaml-list val depth]
+                    [yaml-map val depth]]]
+            [yaml-scalar val]]]]
 
 ]
 
-# Public API — the only dict returned by $include.
+# Public API — the only dict returned by include.
 # Uses %.yaml-value to reference the helper from document 1's scope via %.
 [
-  to-yaml: [fn [val] [call %.yaml-value $val 0]]
+  to-yaml: [fn [val] [%.yaml-value val 0]]
 ]

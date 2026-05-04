@@ -26,13 +26,13 @@ Quasiquoting extends this to the language's own syntax --- tinct code
 
 ```lisp
 # Without quasiquoting --- manual AST construction
-ast-node: [type: call  fn: [type: var  name: if]
-           args: [[type: var  name: pred]
-                  [type: var  name: body]
-                  [type: literal  value: []]]]
+ast-node: [type: "call"  fn: [type: "var"  name: "if"]
+           args: [[type: "var"  name: "pred"]
+                  [type: "var"  name: "body"]
+                  [type: "literal"  value: []]]]
 
 # With quasiquoting --- natural syntax
-ast-node: [quote [call $if $pred $body []]]
+ast-node: [quote [if pred body []]]
 ```
 
 ### What's Missing
@@ -67,11 +67,11 @@ ast-node: [quote [call $if $pred $body []]]
 its AST, without evaluating it:
 
 ```lisp
-[quote [call $+ 1 2]]
-# -> [type: call
-#    fn: [type: var  name: +]
-#    args: [[type: literal  value: 1]
-#           [type: literal  value: 2]]]
+[quote [+ 1 2]]
+# -> [type: "call"
+#    fn: [type: "var"  name: "+"]
+#    args: [[type: "literal"  value: 1]
+#           [type: "literal"  value: 2]]]
 ```
 
 ### Unquote
@@ -81,11 +81,11 @@ the result into the quoted template:
 
 ```lisp
 x: 42
-[quote [call $+ [unquote $x] 1]]
-# -> [type: call
-#    fn: [type: var  name: +]
-#    args: [[type: literal  value: 42]   # $x was evaluated and spliced
-#           [type: literal  value: 1]]]
+[quote [+ [unquote x] 1]]
+# -> [type: "call"
+#    fn: [type: "var"  name: "+"]
+#    args: [[type: "literal"  value: 42]   # x was evaluated and spliced
+#           [type: "literal"  value: 1]]]
 ```
 
 ### Unquote-Splicing
@@ -94,14 +94,14 @@ x: 42
 list position:
 
 ```lisp
-extra-args: [[type: literal  value: 3] [type: literal  value: 4]]
-[quote [call $+ 1 2 [unquote-splice $extra-args]]]
-# -> [type: call
-#    fn: [type: var  name: +]
-#    args: [[type: literal  value: 1]
-#           [type: literal  value: 2]
-#           [type: literal  value: 3]
-#           [type: literal  value: 4]]]
+extra-args: [[type: "literal"  value: 3] [type: "literal"  value: 4]]
+[quote [+ 1 2 [unquote-splice extra-args]]]
+# -> [type: "call"
+#    fn: [type: "var"  name: "+"]
+#    args: [[type: "literal"  value: 1]
+#           [type: "literal"  value: 2]
+#           [type: "literal"  value: 3]
+#           [type: "literal"  value: 4]]]
 ```
 
 ## Design
@@ -111,8 +111,8 @@ These are special forms --- `quote` fundamentally prevents evaluation of
 its argument, which no regular function or builtin can do.
 
 ```lisp
-[quote [call $if $pred $body []]]
-[quote [call $+ [unquote $computed-value] 1]]
+[quote [if pred body []]]
+[quote [+ [unquote computed-value] 1]]
 ```
 
 ### AST Dict Schema
@@ -121,20 +121,20 @@ Each AST node type maps to a tinct dict with a `type` discriminator key:
 
 | AST Node | Dict Representation |
 |----------|-------------------|
-| `42` | `[type: literal  kind: int  value: 42]` |
-| `hello` | `[type: literal  kind: str  value: hello]` |
-| `true` | `[type: literal  kind: bool  value: true]` |
-| `$x` | `[type: var  name: x]` |
-| `$x.field` | `[type: dot-access  target: [type: var  name: x]  field: field]` |
-| `[a b c]` | `[type: dict  entries: [...]]` |
-| `[call $f $x]` | `[type: call  fn: [type: var  name: f]  args: [...]]` |
-| `[fn [x] body]` | `[type: fn  params: [...]  body: ...]` |
+| `42` | `[type: "literal"  kind: "int"  value: 42]` |
+| `"hello"` | `[type: "literal"  kind: "str"  value: "hello"]` |
+| `true` | `[type: "literal"  kind: "bool"  value: true]` |
+| `x` | `[type: "var"  name: "x"]` |
+| `x.field` | `[type: "dot-access"  target: [type: "var"  name: "x"]  field: "field"]` |
+| `[a b c]` | `[type: "dict"  entries: [...]]` |
+| `[f x]` | `[type: "call"  fn: [type: "var"  name: "f"]  args: [...]]` |
+| `[fn [x] body]` | `[type: "fn"  params: [...]  body: ...]` |
 
 The schema should:
 
 - **Use string `type` discriminator** --- `[type: call ...]`,
   `[type: var ...]`, etc. This is the tagged-union convention already
-  used by `$try` results (`[ok: ...]` / `[err: ...]`).
+  used by `try` results (`[ok: ...]` / `[err: ...]`).
 - **Mirror the `Expr` enum** --- one dict shape per `Expr` variant, with
   fields matching the Rust struct fields.
 - **Include spans** --- `[span: [start: [line: 1 col: 5] end: [line: 1 col: 12]]]`
@@ -236,13 +236,13 @@ inference --- quote is transparent to the type system.
 
 **Current:** No AST manipulation builtins.
 
-**Proposed:** Add `$eval-ast` builtin: takes a dict (AST representation),
+**Proposed:** Add `eval-ast` builtin: takes a dict (AST representation),
 converts to `Expr` via `dict_to_ast`, and evaluates. This closes the
-code-as-data loop --- `quote` converts code to data, `$eval-ast` converts
+code-as-data loop --- `quote` converts code to data, `eval-ast` converts
 data back to code and runs it.
 
-**Impact:** Moderate. `$eval-ast` is a powerful primitive that enables
-runtime code generation. Security implications: `$eval-ast` can execute
+**Impact:** Moderate. `eval-ast` is a powerful primitive that enables
+runtime code generation. Security implications: `eval-ast` can execute
 arbitrary code, which interacts with sandboxing (doc/12-tooling.md Sandboxing).
 
 ## Phased Adoption
@@ -275,7 +275,7 @@ The evaluator walks the quoted AST, evaluating `unquote` expressions
 and splicing results into the dict.
 
 This phase completes the quasiquoting system. Combined with
-`dict_to_ast` as a `$eval-ast` builtin, users can construct and
+`dict_to_ast` as a `eval-ast` builtin, users can construct and
 execute code programmatically.
 
 ### Phase 4: Macro Integration
@@ -300,7 +300,7 @@ Connect quasiquoting to the macro system (`doc/whatif/macros.md`):
 
 - The macro system (`doc/whatif/macros.md`) is approved for
   implementation --- quasiquoting is a prerequisite
-- A second syntactic desugaring is needed beyond `$_` (e.g., string
+- A second syntactic desugaring is needed beyond `_` (e.g., string
   interpolation, pattern matching desugar) --- confirms the need for
   user-extensible syntax
 - Users need runtime AST inspection or code generation
