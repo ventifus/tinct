@@ -1,7 +1,6 @@
 //! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
 
 use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -616,9 +615,9 @@ impl fmt::Debug for Thunk {
 }
 
 /// Lexical scope chain: bindings in the current scope plus an optional parent link.
-/// Uses `HashMap` (not `IndexMap`) because bindings are looked up by name only — insertion
-/// order carries no semantic meaning for lexical scoping. This is the hottest lookup path
-/// in the evaluator (every VarRef walks this chain).
+/// Uses `IndexMap` to preserve insertion order — a prerequisite for Phase 2's slot-based
+/// lookup where `(level, slot)` indices reference entries by position. Phase 1 (resolver)
+/// populates the caches; the evaluator still uses name-based lookup until FlatEnv exists.
 ///
 /// # DAG invariant
 ///
@@ -640,21 +639,24 @@ impl fmt::Debug for Thunk {
 /// traversal via iterative parent-pointer walking.
 #[derive(Debug, Clone)]
 pub struct Environment {
-    pub(crate) bindings: HashMap<String, Rc<Thunk>>,
+    /// Bindings map from name to thunk. Uses IndexMap to preserve insertion order for
+    /// future slot-based O(1) lookup (Phase 2). Phase 1 resolution pass populates VarRef
+    /// caches but evaluator still uses name-based lookup.
+    pub(crate) bindings: IndexMap<String, Rc<Thunk>>,
     pub(crate) parent: Option<Rc<RefCell<Environment>>>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
-            bindings: HashMap::new(),
+            bindings: IndexMap::new(),
             parent: None,
         }
     }
 
     pub fn with_parent(parent: Rc<RefCell<Environment>>) -> Self {
         Self {
-            bindings: HashMap::new(),
+            bindings: IndexMap::new(),
             parent: Some(parent),
         }
     }

@@ -1356,6 +1356,9 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Desugar $_ implicit lambdas (pre-typecheck and pre-eval AST transformation).
     crate::desugar::desugar_file(&mut file.node);
 
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    crate::resolve::resolve_file(&file.node);
+
     // Determine the parent directory for the included file.
     // We need to open a new Dir for relative includes within the included file.
     // This is done BEFORE inserting into the guard/chain so that if open_dir fails,
@@ -1942,6 +1945,9 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     })?;
 
     crate::desugar::desugar_file(&mut file.node);
+
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    crate::resolve::resolve_file(&file.node);
 
     // Type errors are advisory; evaluation proceeds regardless.
     let _ = crate::typecheck::typecheck_file(&file.node);
@@ -3439,7 +3445,7 @@ mod tests {
     #[test]
     fn try_failure_returns_err_dict() {
         // [fn [] $nonexistent] -- references an undefined variable
-        let func = zero_arg_fn(Expr::VarRef("nonexistent".into()));
+        let func = zero_arg_fn(Expr::var_ref("nonexistent".into()));
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
@@ -3485,7 +3491,7 @@ mod tests {
 
     #[test]
     fn try_non_zero_arg_function_error() {
-        let func = n_arg_fn(&["x"], Expr::VarRef("x".into()));
+        let func = n_arg_fn(&["x"], Expr::var_ref("x".into()));
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
@@ -3641,7 +3647,7 @@ mod tests {
     #[test]
     fn apply_single_arg() {
         // [fn [x] $x] applied to [42]
-        let func = n_arg_fn(&["x"], Expr::VarRef("x".into()));
+        let func = n_arg_fn(&["x"], Expr::var_ref("x".into()));
         let mut arg_dict = IndexMap::new();
         arg_dict.insert(Key::Int(0), thunk(Value::Int(42)));
         let args_val = Value::Dict(arg_dict);
@@ -3659,7 +3665,7 @@ mod tests {
     #[test]
     fn apply_multiple_args_returns_first() {
         // [fn [a b] $a] applied to [10, 20]
-        let func = n_arg_fn(&["a", "b"], Expr::VarRef("a".into()));
+        let func = n_arg_fn(&["a", "b"], Expr::var_ref("a".into()));
         let mut arg_dict = IndexMap::new();
         arg_dict.insert(Key::Int(0), thunk(Value::Int(10)));
         arg_dict.insert(Key::Int(1), thunk(Value::Int(20)));
@@ -3678,7 +3684,7 @@ mod tests {
     #[test]
     fn apply_multiple_args_returns_second() {
         // [fn [a b] $b] applied to [10, 20]
-        let func = n_arg_fn(&["a", "b"], Expr::VarRef("b".into()));
+        let func = n_arg_fn(&["a", "b"], Expr::var_ref("b".into()));
         let mut arg_dict = IndexMap::new();
         arg_dict.insert(Key::Int(0), thunk(Value::Int(10)));
         arg_dict.insert(Key::Int(1), thunk(Value::Int(20)));
@@ -3732,7 +3738,7 @@ mod tests {
 
     #[test]
     fn apply_arity_mismatch() {
-        let func = n_arg_fn(&["x", "y"], Expr::VarRef("x".into()));
+        let func = n_arg_fn(&["x", "y"], Expr::var_ref("x".into()));
         let mut arg_dict = IndexMap::new();
         arg_dict.insert(Key::Int(0), thunk(Value::Int(1)));
         let args_val = Value::Dict(arg_dict);
@@ -3778,7 +3784,7 @@ mod tests {
 
     #[test]
     fn apply_non_dict_args_type_error() {
-        let func = n_arg_fn(&["x"], Expr::VarRef("x".into()));
+        let func = n_arg_fn(&["x"], Expr::var_ref("x".into()));
         let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), thunk(Value::Int(42))],
             named: no_named(),
@@ -7806,7 +7812,7 @@ mod tests {
     #[test]
     fn if_does_not_materialize_unchosen_else_branch() {
         let error_expr = Rc::new(Spanned::new(
-            Expr::VarRef("nonexistent".to_string()),
+            Expr::var_ref("nonexistent".to_string()),
             test_span(1, 1, 1, 10),
         ));
         let env = Rc::new(RefCell::new(Environment::new()));
@@ -7831,7 +7837,7 @@ mod tests {
     #[test]
     fn if_does_not_materialize_unchosen_then_branch() {
         let error_expr = Rc::new(Spanned::new(
-            Expr::VarRef("nonexistent".to_string()),
+            Expr::var_ref("nonexistent".to_string()),
             test_span(1, 1, 1, 10),
         ));
         let env = Rc::new(RefCell::new(Environment::new()));
@@ -9150,7 +9156,7 @@ mod tests {
         // But seq construction should succeed because it doesn't materialize args.
         let undef_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
-                Expr::VarRef("undefined_var".to_string()),
+                Expr::var_ref("undefined_var".to_string()),
                 test_span(1, 1, 1, 5),
             )),
             Rc::new(RefCell::new(Environment::new())),
@@ -9775,7 +9781,7 @@ mod tests {
         // Repeat an unevaluated thunk (would error if materialized)
         let undef_thunk = Rc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
-                Expr::VarRef("undefined_var".to_string()),
+                Expr::var_ref("undefined_var".to_string()),
                 test_span(1, 1, 1, 5),
             )),
             Rc::new(RefCell::new(Environment::new())),
@@ -9968,7 +9974,7 @@ mod tests {
         // iterate doesn't materialize its args
         let undef_f = Rc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
-                Expr::VarRef("undefined_f".to_string()),
+                Expr::var_ref("undefined_f".to_string()),
                 test_span(1, 1, 1, 5),
             )),
             Rc::new(RefCell::new(Environment::new())),
@@ -9977,7 +9983,7 @@ mod tests {
         ));
         let undef_x = Rc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
-                Expr::VarRef("undefined_x".to_string()),
+                Expr::var_ref("undefined_x".to_string()),
                 test_span(1, 1, 1, 5),
             )),
             Rc::new(RefCell::new(Environment::new())),
@@ -11224,12 +11230,12 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::VarRef("builtin-eq".to_string()),
+                            Expr::var_ref("builtin-eq".to_string()),
                             test_span(1, 1, 1, 10),
                         )),
                         args: vec![
                             Rc::new(Spanned::new(
-                                Expr::VarRef("x".to_string()),
+                                Expr::var_ref("x".to_string()),
                                 test_span(1, 1, 1, 2),
                             )),
                             Rc::new(Spanned::new(Expr::Int(10), test_span(1, 1, 1, 2))),
@@ -11242,12 +11248,12 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::VarRef("builtin-add".to_string()),
+                            Expr::var_ref("builtin-add".to_string()),
                             test_span(1, 1, 1, 10),
                         )),
                         args: vec![
                             Rc::new(Spanned::new(
-                                Expr::VarRef("x".to_string()),
+                                Expr::var_ref("x".to_string()),
                                 test_span(1, 1, 1, 2),
                             )),
                             Rc::new(Spanned::new(Expr::Int(1), test_span(1, 1, 1, 2))),
@@ -11286,7 +11292,7 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::VarRef("error".to_string()),
+                            Expr::var_ref("error".to_string()),
                             test_span(1, 1, 1, 5),
                         )),
                         args: vec![Rc::new(Spanned::new(
@@ -11324,12 +11330,12 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::VarRef("builtin-eq".to_string()),
+                            Expr::var_ref("builtin-eq".to_string()),
                             test_span(1, 1, 1, 10),
                         )),
                         args: vec![
                             Rc::new(Spanned::new(
-                                Expr::VarRef("x".to_string()),
+                                Expr::var_ref("x".to_string()),
                                 test_span(1, 1, 1, 2),
                             )),
                             Rc::new(Spanned::new(Expr::Int(300), test_span(1, 1, 1, 3))),
@@ -11342,12 +11348,12 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::VarRef("builtin-add".to_string()),
+                            Expr::var_ref("builtin-add".to_string()),
                             test_span(1, 1, 1, 10),
                         )),
                         args: vec![
                             Rc::new(Spanned::new(
-                                Expr::VarRef("x".to_string()),
+                                Expr::var_ref("x".to_string()),
                                 test_span(1, 1, 1, 2),
                             )),
                             Rc::new(Spanned::new(Expr::Int(1), test_span(1, 1, 1, 2))),

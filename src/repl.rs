@@ -164,6 +164,8 @@ impl ReplSession {
 
         // Desugar $_ implicit lambdas before evaluation
         crate::desugar::desugar_file(&mut file.node);
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        crate::resolve::resolve_file(&file.node);
         // Type errors are advisory; evaluation proceeds regardless.
         let _ = crate::typecheck::typecheck_file(&file.node);
 

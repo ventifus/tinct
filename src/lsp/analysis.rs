@@ -55,7 +55,7 @@ fn hover_at_expr(
     }
 
     match expr {
-        Expr::VarRef(name) => {
+        Expr::VarRef { name, .. } => {
             // Source-sniff: emit `$name` for EscapedRef tokens (first byte is `$`),
             // plain name for bare identifiers and `%`-prefixed refs (% is in name).
             let is_escaped = source

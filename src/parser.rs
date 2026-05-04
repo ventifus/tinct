@@ -87,7 +87,7 @@ fn key_to_string(expr: &Expr) -> Option<String> {
         Expr::Int(n) => Some(n.to_string()),
         Expr::Float(n) => Some(n.to_string()),
         Expr::Bool(b) => Some(b.to_string()),
-        Expr::VarRef(name) => {
+        Expr::VarRef { name, .. } => {
             // In new syntax, variable references display as the bare name (no $ prefix).
             // Both bare-word identifiers and $escaped-refs store the name without sigil.
             Some(name.clone())
@@ -180,7 +180,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
         | Expr::Float(_)
         | Expr::Bool(_)
         | Expr::Str(_)
-        | Expr::VarRef(_)
+        | Expr::VarRef { .. }
         | Expr::Rest(_) => expr,
 
         // Error nodes contain a span that needs adjustment
@@ -1366,7 +1366,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1;
 
                         // Create VarRef expr for the function
-                        let func_expr = Spanned::new(Expr::VarRef(func_name), func_span);
+                        let func_expr = Spanned::new(Expr::var_ref(func_name), func_span);
 
                         stack.push(StackFrame::Call {
                             func: Some(func_expr),
@@ -2065,7 +2065,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                         _ => {
                             // Not in dict/call context; treat as normal value (VarRef)
-                            let expr = Spanned::new(Expr::VarRef(s.clone()), span);
+                            let expr = Spanned::new(Expr::var_ref(s.clone()), span);
                             if let Err(push_err) =
                                 push_value(&mut stack, &mut current_document_expressions, expr)
                             {
@@ -2090,7 +2090,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     }
                 } else {
                     // Not followed by colon; regular value (VarRef)
-                    let expr = Spanned::new(Expr::VarRef(s.clone()), span);
+                    let expr = Spanned::new(Expr::var_ref(s.clone()), span);
                     if let Err(push_err) =
                         push_value(&mut stack, &mut current_document_expressions, expr)
                     {
@@ -2115,7 +2115,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::EscapedRef(name) => {
-                let expr = Spanned::new(Expr::VarRef(name.clone()), span);
+                let expr = Spanned::new(Expr::var_ref(name.clone()), span);
                 // Check if this VarRef is a potential dict key (followed by colon).
                 // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
                 if let Some((Token::Colon, _)) = peek_next_horizontal(&token_vec, i) {
@@ -3207,7 +3207,7 @@ mod tests {
                 ..
             } => {
                 match &func.node {
-                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 2);
@@ -3231,7 +3231,7 @@ mod tests {
                 ..
             } => {
                 match &func.node {
-                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 0);
@@ -3382,7 +3382,7 @@ mod tests {
         match &doc.expressions[0].node {
             Expr::BracketAccess { expr, key } => {
                 match &expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
                 assert!(matches!(&key.node, Expr::Int(0)));
@@ -3398,11 +3398,11 @@ mod tests {
         match &doc.expressions[0].node {
             Expr::BracketAccess { expr, key } => {
                 match &expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
                 match &key.node {
-                    Expr::VarRef(name) => assert_eq!(name, "key"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "key"),
                     other => panic!("expected VarRef key, got {other:?}"),
                 }
             }
@@ -3720,7 +3720,7 @@ mod tests {
                 ..
             } => {
                 match &func.node {
-                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 0);
@@ -3769,7 +3769,7 @@ mod tests {
                 ..
             } => {
                 match &func.node {
-                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 0);
@@ -3800,7 +3800,7 @@ mod tests {
                 ..
             } => {
                 match &func.node {
-                    Expr::VarRef(name) => assert_eq!(name, "f"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 0);
@@ -3864,7 +3864,7 @@ mod tests {
                 match &entries[0].node.value.node {
                     Expr::BracketAccess { expr, key } => {
                         match &expr.node {
-                            Expr::VarRef(name) => assert_eq!(name, "x"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "x"),
                             other => panic!("expected VarRef('x'), got {other:?}"),
                         }
                         assert!(matches!(&key.node, Expr::Int(0)));
@@ -3916,7 +3916,7 @@ mod tests {
                         key: inner_key,
                     } => {
                         match &inner_expr.node {
-                            Expr::VarRef(name) => assert_eq!(name, "a"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                             other => panic!("expected VarRef('a') as inner target, got {other:?}"),
                         }
                         assert!(
@@ -3998,7 +3998,7 @@ mod tests {
                 assert_eq!(params[1].node.name, "y");
                 assert!(params[1].node.annotation.is_none());
                 assert!(!params[1].node.variadic);
-                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
+                assert!(matches!(&body.node, Expr::VarRef { name, .. } if name == "x"));
                 assert!(return_ann.is_none());
                 assert!(!desugared);
             }
@@ -4067,7 +4067,7 @@ mod tests {
         match &doc.expressions[0].node {
             Expr::DotAccess { expr, field } => {
                 match &expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
                 assert_eq!(field, "b");
@@ -4093,7 +4093,7 @@ mod tests {
                     } => {
                         assert_eq!(inner_field, "b");
                         match &inner_expr.node {
-                            Expr::VarRef(name) => assert_eq!(name, "a"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                             other => panic!("expected VarRef at base, got {other:?}"),
                         }
                     }
@@ -4117,7 +4117,7 @@ mod tests {
                 ..
             } => {
                 match &func.node {
-                    Expr::VarRef(name) => assert_eq!(name, "fn"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "fn"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 1);
@@ -4125,7 +4125,7 @@ mod tests {
                     Expr::DotAccess { expr, field } => {
                         assert_eq!(field, "b");
                         match &expr.node {
-                            Expr::VarRef(name) => assert_eq!(name, "a"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                             other => panic!("expected VarRef, got {other:?}"),
                         }
                     }
@@ -4154,7 +4154,7 @@ mod tests {
                     Expr::DotAccess { expr, field } => {
                         assert_eq!(field, "z");
                         match &expr.node {
-                            Expr::VarRef(name) => assert_eq!(name, "y"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "y"),
                             other => panic!("expected VarRef, got {other:?}"),
                         }
                     }
@@ -4172,7 +4172,7 @@ mod tests {
         match &doc.expressions[0].node {
             Expr::RangeAccess { expr, start, end } => {
                 match &expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
                 assert!(start.is_some());
@@ -4197,7 +4197,7 @@ mod tests {
         match &doc.expressions[0].node {
             Expr::RangeAccess { expr, start, end } => {
                 match &expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
                 assert!(start.is_none());
@@ -4214,7 +4214,7 @@ mod tests {
         match &doc.expressions[0].node {
             Expr::RangeAccess { expr, start, end } => {
                 match &expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
                 assert!(start.is_some());
@@ -4235,7 +4235,7 @@ mod tests {
         match &doc.expressions[0].node {
             Expr::RangeAccess { expr, start, end } => {
                 match &expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
                 assert!(start.is_none());
@@ -4372,7 +4372,7 @@ mod tests {
             Expr::DotAccess { expr: inner, field } => {
                 assert_eq!(field, "b");
                 match &inner.node {
-                    Expr::VarRef(name) => assert_eq!(name, "a"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef('a') inside DotAccess, got {other:?}"),
                 }
             }
@@ -4392,7 +4392,7 @@ mod tests {
             doc.expressions.len()
         );
         match &doc.expressions[0].node {
-            Expr::VarRef(name) => assert_eq!(name, "a"),
+            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
             other => panic!("expected VarRef('a') as first expr, got {other:?}"),
         }
         match &doc.expressions[1].node {
@@ -4429,7 +4429,7 @@ mod tests {
                 assert!(params[2].node.variadic);
                 assert!(params[2].node.annotation.is_none());
                 // body
-                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
+                assert!(matches!(&body.node, Expr::VarRef { name, .. } if name == "x"));
             }
             other => panic!("expected Fn, got {other:?}"),
         }
@@ -4463,7 +4463,7 @@ mod tests {
                 }
                 assert!(!params[0].node.variadic);
                 // Body
-                assert!(matches!(&body.node, Expr::VarRef(name) if name == "x"));
+                assert!(matches!(&body.node, Expr::VarRef { name, .. } if name == "x"));
             }
             other => panic!("expected Fn, got {other:?}"),
         }
@@ -4532,7 +4532,7 @@ mod tests {
                 match &entries[0].node.value.node {
                     Expr::RangeAccess { expr, start, end } => {
                         match &expr.node {
-                            Expr::VarRef(name) => assert_eq!(name, "y"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "y"),
                             other => panic!("expected VarRef('y'), got {other:?}"),
                         }
                         assert!(start.is_some());
@@ -4738,7 +4738,7 @@ mod tests {
                     other => panic!("expected key 'key', got {other:?}"),
                 }
                 match &entries[0].node.value.node {
-                    Expr::VarRef(name) => assert_eq!(name, "k"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "k"),
                     other => panic!("expected VarRef('k') as value, got {other:?}"),
                 }
                 // Second entry: value: $xs[$k]
@@ -4749,13 +4749,13 @@ mod tests {
                 match &entries[1].node.value.node {
                     Expr::BracketAccess { expr, key } => {
                         match &expr.node {
-                            Expr::VarRef(name) => assert_eq!(name, "xs"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "xs"),
                             other => {
                                 panic!("expected VarRef('xs') as bracket target, got {other:?}")
                             }
                         }
                         match &key.node {
-                            Expr::VarRef(name) => assert_eq!(name, "k"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "k"),
                             other => panic!("expected VarRef('k') as bracket key, got {other:?}"),
                         }
                     }
@@ -4779,7 +4779,7 @@ mod tests {
                 assert_eq!(entries.len(), 1);
                 // Key is VarRef("k")
                 match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::VarRef(name) => assert_eq!(name, "k"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "k"),
                     other => panic!("expected VarRef key 'k', got {other:?}"),
                 }
                 // Value is BracketAccess
@@ -5167,11 +5167,11 @@ mod tests {
         match &expr.node {
             Expr::BracketAccess { expr, key } => {
                 match &expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "dict"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "dict"),
                     other => panic!("expected VarRef for target, got {other:?}"),
                 }
                 match &key.node {
-                    Expr::VarRef(name) => {
+                    Expr::VarRef { name, .. } => {
                         assert_eq!(name, "_", "$_ in bracket key should be VarRef")
                     }
                     other => panic!("expected VarRef(_) for bracket key, got {other:?}"),
@@ -5185,7 +5185,7 @@ mod tests {
         match &expr2.node {
             Expr::RangeAccess { start, end, .. } => {
                 match start.as_ref().map(|s| &s.node) {
-                    Some(Expr::VarRef(name)) => {
+                    Some(Expr::VarRef { name, .. }) => {
                         assert_eq!(name, "_", "$_ in range start should be VarRef")
                     }
                     other => panic!("expected VarRef(_) for range start, got {other:?}"),
@@ -5205,7 +5205,9 @@ mod tests {
                 assert_eq!(entries.len(), 1);
                 let key_expr = entries[0].node.key.as_ref().expect("expected key");
                 match &key_expr.node {
-                    Expr::VarRef(name) => assert_eq!(name, "_", "$_ as dict key should be VarRef"),
+                    Expr::VarRef { name, .. } => {
+                        assert_eq!(name, "_", "$_ as dict key should be VarRef")
+                    }
                     other => panic!("expected VarRef(_) for dict key, got {other:?}"),
                 }
             }

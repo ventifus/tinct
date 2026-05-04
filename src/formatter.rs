@@ -196,7 +196,7 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(s);
                 }
             }
-            Expr::VarRef(name) => {
+            Expr::VarRef { name, .. } => {
                 // Source-sniff: emit `$` only if the original token started with `$`
                 // (i.e., it was an EscapedRef). Bare identifiers and `%`-prefixed refs
                 // do not get a `$` prepended — the `%` is already part of `name`.
@@ -380,7 +380,7 @@ impl<'a> Formatter<'a> {
                     s.len()
                 }
             }
-            Expr::VarRef(name) => {
+            Expr::VarRef { name, .. } => {
                 // Source-sniff: add 1 for `$` only if the original token was an EscapedRef.
                 // `%`-prefixed refs already include `%` in the stored name.
                 let is_escaped = self

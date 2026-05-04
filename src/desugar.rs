@@ -148,7 +148,7 @@ fn try_wrap(expr: &mut Spanned<Expr>) -> bool {
 /// access *target* triggers desugaring.
 fn is_direct_underscore(expr: &Expr) -> bool {
     match expr {
-        Expr::VarRef(name) => name == "_",
+        Expr::VarRef { name, .. } => name == "_",
         // Access chains on $_ count as DIRECT (e.g., $_.name)
         Expr::DotAccess { expr: inner, .. } => is_direct_underscore(&inner.node),
         Expr::BracketAccess { expr: inner, .. } => is_direct_underscore(&inner.node),
@@ -195,7 +195,7 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         | Expr::Float(_)
         | Expr::Bool(_)
         | Expr::Str(_)
-        | Expr::VarRef(_)
+        | Expr::VarRef { .. }
         | Expr::Rest(_)
         | Expr::Error(_) => {}
 
@@ -359,14 +359,14 @@ mod tests {
     /// Test the DIRECT predicate for VarRef("_")
     #[test]
     fn test_direct_underscore_var_ref() {
-        let expr = Expr::VarRef("_".into());
+        let expr = Expr::var_ref("_".into());
         assert!(is_direct_underscore(&expr));
     }
 
     /// Test DIRECT predicate for non-underscore VarRef
     #[test]
     fn test_direct_underscore_var_ref_other() {
-        let expr = Expr::VarRef("x".into());
+        let expr = Expr::var_ref("x".into());
         assert!(!is_direct_underscore(&expr));
     }
 
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn test_direct_underscore_dot_access() {
         let expr = Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("_".into()))),
             field: "age".into(),
         };
         assert!(is_direct_underscore(&expr));
@@ -385,7 +385,7 @@ mod tests {
     fn test_direct_underscore_nested_dot_access() {
         let expr = Expr::DotAccess {
             expr: Box::new(sp(Expr::DotAccess {
-                expr: Box::new(sp(Expr::VarRef("_".into()))),
+                expr: Box::new(sp(Expr::var_ref("_".into()))),
                 field: "user".into(),
             })),
             field: "name".into(),
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn test_direct_underscore_bracket_access() {
         let expr = Expr::BracketAccess {
-            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("_".into()))),
             key: Box::new(sp(Expr::Int(0))),
         };
         assert!(is_direct_underscore(&expr));
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn test_direct_underscore_range_access() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("_".into()))),
             start: Some(Box::new(sp(Expr::Int(2)))),
             end: Some(Box::new(sp(Expr::Int(5)))),
         };
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn test_direct_underscore_dot_access_non_underscore() {
         let expr = Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("data".into()))),
+            expr: Box::new(sp(Expr::var_ref("data".into()))),
             field: "age".into(),
         };
         assert!(!is_direct_underscore(&expr));
@@ -428,8 +428,8 @@ mod tests {
     #[test]
     fn test_wrap_call_with_direct_arg() {
         let mut expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
-            args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
+            func: Box::new(sp(Expr::var_ref("f".into()))),
+            args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
             named_args: vec![],
             implied: false,
         });
@@ -443,9 +443,9 @@ mod tests {
 
                 match &body.node {
                     Expr::Call { func, args, .. } => {
-                        assert!(matches!(func.node, Expr::VarRef(ref name) if name == "f"));
+                        assert!(matches!(&func.node, Expr::VarRef { name, .. } if name == "f"));
                         assert_eq!(args.len(), 1);
-                        assert!(matches!(args[0].node, Expr::VarRef(ref name) if name == "_"));
+                        assert!(matches!(&args[0].node, Expr::VarRef { name, .. } if name == "_"));
                     }
                     _ => panic!("Expected Call in lambda body, got {:?}", body.node),
                 }
@@ -458,7 +458,7 @@ mod tests {
     #[test]
     fn test_no_wrap_call_func_position() {
         let mut expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("_".into()))),
+            func: Box::new(sp(Expr::var_ref("_".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -469,7 +469,7 @@ mod tests {
         // Should remain a Call (no wrapping)
         match &expr.node {
             Expr::Call { func, args, .. } => {
-                assert!(matches!(func.node, Expr::VarRef(ref name) if name == "_"));
+                assert!(matches!(&func.node, Expr::VarRef { name, .. } if name == "_"));
                 assert_eq!(args.len(), 1);
             }
             _ => panic!("Expected Call, got {:?}", expr.node),
@@ -487,8 +487,8 @@ mod tests {
                 variadic: false,
             })],
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
+                func: Box::new(sp(Expr::var_ref("f".into()))),
+                args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
                 named_args: vec![],
                 implied: false,
             })),
@@ -506,7 +506,7 @@ mod tests {
                 // Body should still be a Call (not wrapped in another Fn)
                 match &body.node {
                     Expr::Call { func, args, .. } => {
-                        assert!(matches!(func.node, Expr::VarRef(ref name) if name == "f"));
+                        assert!(matches!(&func.node, Expr::VarRef { name, .. } if name == "f"));
                         assert_eq!(args.len(), 1);
                     }
                     _ => panic!("Expected Call in body, got {:?}", body.node),
@@ -521,7 +521,7 @@ mod tests {
     fn test_wrap_dict_value() {
         let mut expr = sp(Expr::Dict(vec![sp(Entry {
             key: Some(sp(Expr::Str("a".into()))),
-            value: Rc::new(sp(Expr::VarRef("_".into()))),
+            value: Rc::new(sp(Expr::var_ref("_".into()))),
         })]));
 
         desugar_expr(&mut expr, 0);
@@ -535,7 +535,7 @@ mod tests {
                     Expr::Dict(entries) => {
                         assert_eq!(entries.len(), 1);
                         match &entries[0].node.value.node {
-                            Expr::VarRef(name) => assert_eq!(name, "_"),
+                            Expr::VarRef { name, .. } => assert_eq!(name, "_"),
                             _ => panic!("Expected VarRef in dict value"),
                         }
                     }
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn test_no_wrap_dict_key() {
         let mut expr = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::VarRef("_".into()))),
+            key: Some(sp(Expr::var_ref("_".into()))),
             value: Rc::new(sp(Expr::Int(42))),
         })]));
 
@@ -563,8 +563,8 @@ mod tests {
             Expr::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 assert!(matches!(
-                    entries[0].node.key.as_ref().unwrap().node,
-                    Expr::VarRef(ref name) if name == "_"
+                    &entries[0].node.key.as_ref().unwrap().node,
+                    Expr::VarRef { name, .. } if name == "_"
                 ));
             }
             _ => panic!("Expected Dict, got {:?}", expr.node),
@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn test_wrap_dot_access() {
         let mut expr = sp(Expr::DotAccess {
-            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("_".into()))),
             field: "age".into(),
         });
 
@@ -591,7 +591,7 @@ mod tests {
                         expr: target,
                         field,
                     } => {
-                        assert!(matches!(target.node, Expr::VarRef(ref name) if name == "_"));
+                        assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "_"));
                         assert_eq!(field, "age");
                     }
                     _ => panic!("Expected DotAccess in lambda body"),
@@ -605,8 +605,8 @@ mod tests {
     #[test]
     fn test_no_wrap_bracket_key() {
         let mut expr = sp(Expr::BracketAccess {
-            expr: Box::new(sp(Expr::VarRef("data".into()))),
-            key: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("data".into()))),
+            key: Box::new(sp(Expr::var_ref("_".into()))),
         });
 
         desugar_expr(&mut expr, 0);
@@ -614,8 +614,8 @@ mod tests {
         // Should remain BracketAccess (target is not DIRECT)
         match &expr.node {
             Expr::BracketAccess { expr: target, key } => {
-                assert!(matches!(target.node, Expr::VarRef(ref name) if name == "data"));
-                assert!(matches!(key.node, Expr::VarRef(ref name) if name == "_"));
+                assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "data"));
+                assert!(matches!(&key.node, Expr::VarRef { name, .. } if name == "_"));
             }
             _ => panic!("Expected BracketAccess, got {:?}", expr.node),
         }
@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn test_wrap_bracket_target() {
         let mut expr = sp(Expr::BracketAccess {
-            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("_".into()))),
             key: Box::new(sp(Expr::Int(0))),
         });
 
@@ -638,7 +638,7 @@ mod tests {
 
                 match &body.node {
                     Expr::BracketAccess { expr: target, key } => {
-                        assert!(matches!(target.node, Expr::VarRef(ref name) if name == "_"));
+                        assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "_"));
                         assert!(matches!(key.node, Expr::Int(0)));
                     }
                     _ => panic!("Expected BracketAccess in lambda body"),
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn test_wrap_range_target() {
         let mut expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("_".into()))),
+            expr: Box::new(sp(Expr::var_ref("_".into()))),
             start: Some(Box::new(sp(Expr::Int(2)))),
             end: Some(Box::new(sp(Expr::Int(5)))),
         });
@@ -670,7 +670,7 @@ mod tests {
                         start,
                         end,
                     } => {
-                        assert!(matches!(target.node, Expr::VarRef(ref name) if name == "_"));
+                        assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "_"));
                         assert!(matches!(start.as_ref().unwrap().node, Expr::Int(2)));
                         assert!(matches!(end.as_ref().unwrap().node, Expr::Int(5)));
                     }
@@ -685,8 +685,8 @@ mod tests {
     #[test]
     fn test_no_wrap_range_bounds() {
         let mut expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("data".into()))),
-            start: Some(Box::new(sp(Expr::VarRef("_".into())))),
+            expr: Box::new(sp(Expr::var_ref("data".into()))),
+            start: Some(Box::new(sp(Expr::var_ref("_".into())))),
             end: Some(Box::new(sp(Expr::Int(5)))),
         });
 
@@ -699,11 +699,11 @@ mod tests {
                 start,
                 end,
             } => {
-                assert!(matches!(target.node, Expr::VarRef(ref name) if name == "data"));
+                assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "data"));
                 // Bounds are recursed into but don't trigger WRAP
                 assert!(matches!(
-                    start.as_ref().unwrap().node,
-                    Expr::VarRef(ref name) if name == "_"
+                    &start.as_ref().unwrap().node,
+                    Expr::VarRef { name, .. } if name == "_"
                 ));
                 assert!(matches!(end.as_ref().unwrap().node, Expr::Int(5)));
             }
@@ -715,11 +715,11 @@ mod tests {
     #[test]
     fn test_wrap_call_named_arg() {
         let mut expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![],
             named_args: vec![sp(NamedArg {
                 name: "x".into(),
-                value: Rc::new(sp(Expr::VarRef("_".into()))),
+                value: Rc::new(sp(Expr::var_ref("_".into()))),
             })],
             implied: false,
         });
@@ -738,13 +738,13 @@ mod tests {
                         named_args,
                         ..
                     } => {
-                        assert!(matches!(func.node, Expr::VarRef(ref name) if name == "f"));
+                        assert!(matches!(&func.node, Expr::VarRef { name, .. } if name == "f"));
                         assert_eq!(args.len(), 0);
                         assert_eq!(named_args.len(), 1);
                         assert_eq!(named_args[0].node.name, "x");
                         assert!(matches!(
-                            named_args[0].node.value.node,
-                            Expr::VarRef(ref name) if name == "_"
+                            &named_args[0].node.value.node,
+                            Expr::VarRef { name, .. } if name == "_"
                         ));
                     }
                     _ => panic!("Expected Call in lambda body"),
@@ -759,13 +759,13 @@ mod tests {
     #[test]
     fn test_nested_call_wrapping() {
         let mut expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("filter".into()))),
+            func: Box::new(sp(Expr::var_ref("filter".into()))),
             args: vec![
                 Rc::new(sp(Expr::Call {
-                    func: Box::new(sp(Expr::VarRef(">".into()))),
+                    func: Box::new(sp(Expr::var_ref(">".into()))),
                     args: vec![
                         Rc::new(sp(Expr::DotAccess {
-                            expr: Box::new(sp(Expr::VarRef("_".into()))),
+                            expr: Box::new(sp(Expr::var_ref("_".into()))),
                             field: "age".into(),
                         })),
                         Rc::new(sp(Expr::Int(30))),
@@ -773,7 +773,7 @@ mod tests {
                     named_args: vec![],
                     implied: false,
                 })),
-                Rc::new(sp(Expr::VarRef("users".into()))),
+                Rc::new(sp(Expr::var_ref("users".into()))),
             ],
             named_args: vec![],
             implied: false,
@@ -784,7 +784,7 @@ mod tests {
         // Outer call should remain a Call
         match &expr.node {
             Expr::Call { func, args, .. } => {
-                assert!(matches!(func.node, Expr::VarRef(ref name) if name == "filter"));
+                assert!(matches!(&func.node, Expr::VarRef { name, .. } if name == "filter"));
                 assert_eq!(args.len(), 2);
 
                 // First arg should be a wrapped lambda
@@ -801,8 +801,8 @@ mod tests {
                                 ..
                             } => {
                                 assert!(matches!(
-                                    inner_func.node,
-                                    Expr::VarRef(ref name) if name == ">"
+                                    &inner_func.node,
+                                    Expr::VarRef { name, .. } if name == ">"
                                 ));
                                 assert_eq!(inner_args.len(), 2);
                                 // First arg is $_.age
@@ -812,8 +812,8 @@ mod tests {
                                         field,
                                     } => {
                                         assert!(matches!(
-                                            target.node,
-                                            Expr::VarRef(ref name) if name == "_"
+                                            &target.node,
+                                            Expr::VarRef { name, .. } if name == "_"
                                         ));
                                         assert_eq!(field, "age");
                                     }
@@ -827,7 +827,7 @@ mod tests {
                 }
 
                 // Second arg should remain VarRef("users")
-                assert!(matches!(args[1].node, Expr::VarRef(ref name) if name == "users"));
+                assert!(matches!(&args[1].node, Expr::VarRef { name, .. } if name == "users"));
             }
             _ => panic!("Expected Call, got {:?}", expr.node),
         }
@@ -840,14 +840,14 @@ mod tests {
             documents: vec![sp(Document {
                 expressions: vec![
                     Rc::new(sp(Expr::Call {
-                        func: Box::new(sp(Expr::VarRef("f".into()))),
-                        args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
+                        func: Box::new(sp(Expr::var_ref("f".into()))),
+                        args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
                         named_args: vec![],
                         implied: false,
                     })),
                     Rc::new(sp(Expr::Dict(vec![sp(Entry {
                         key: Some(sp(Expr::Str("x".into()))),
-                        value: Rc::new(sp(Expr::VarRef("_".into()))),
+                        value: Rc::new(sp(Expr::var_ref("_".into()))),
                     })]))),
                 ],
                 name: None,
@@ -882,8 +882,8 @@ mod tests {
     fn test_desugared_origin_tag() {
         // Desugared lambda: [call $f $_] → [fn [_] [call $f $_]] with desugared=true
         let mut desugared_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
-            args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
+            func: Box::new(sp(Expr::var_ref("f".into()))),
+            args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
             named_args: vec![],
             implied: false,
         });
@@ -906,7 +906,7 @@ mod tests {
                 annotation: None,
                 variadic: false,
             })],
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             desugared: false,
         });
         desugar_expr(&mut user_fn, 0);
@@ -934,8 +934,8 @@ mod tests {
                 variadic: false,
             })],
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
+                func: Box::new(sp(Expr::var_ref("f".into()))),
+                args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
                 named_args: vec![],
                 implied: false,
             })),
@@ -980,8 +980,8 @@ mod tests {
     #[test]
     fn test_wrap_call_both_direct() {
         let mut expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("_".into()))),
-            args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
+            func: Box::new(sp(Expr::var_ref("_".into()))),
+            args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
             named_args: vec![],
             implied: false,
         });
@@ -997,9 +997,9 @@ mod tests {
                 // Body should be the original call with both positions referring to `$_`
                 match &body.node {
                     Expr::Call { func, args, .. } => {
-                        assert!(matches!(func.node, Expr::VarRef(ref name) if name == "_"));
+                        assert!(matches!(&func.node, Expr::VarRef { name, .. } if name == "_"));
                         assert_eq!(args.len(), 1);
-                        assert!(matches!(args[0].node, Expr::VarRef(ref name) if name == "_"));
+                        assert!(matches!(&args[0].node, Expr::VarRef { name, .. } if name == "_"));
                     }
                     _ => panic!("Expected Call in lambda body, got {:?}", body.node),
                 }
@@ -1023,8 +1023,8 @@ mod tests {
                 variadic: false,
             })],
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("f".into()))),
-                args: vec![Rc::new(sp(Expr::VarRef("_".into())))], // $_ in arg position
+                func: Box::new(sp(Expr::var_ref("f".into()))),
+                args: vec![Rc::new(sp(Expr::var_ref("_".into())))], // $_ in arg position
                 named_args: vec![],
                 implied: false,
             })),
@@ -1059,10 +1059,12 @@ mod tests {
 
                         match &inner_body.node {
                             Expr::Call { func, args, .. } => {
-                                assert!(matches!(func.node, Expr::VarRef(ref name) if name == "f"));
+                                assert!(
+                                    matches!(&func.node, Expr::VarRef { name, .. } if name == "f")
+                                );
                                 assert_eq!(args.len(), 1);
                                 assert!(
-                                    matches!(args[0].node, Expr::VarRef(ref name) if name == "_")
+                                    matches!(&args[0].node, Expr::VarRef { name, .. } if name == "_")
                                 );
                             }
                             _ => panic!("Expected Call in inner lambda body"),
@@ -1091,13 +1093,13 @@ mod tests {
         let mut expr = sp(Expr::Dict(vec![
             sp(Entry {
                 key: Some(sp(Expr::Str("a".into()))),
-                value: Rc::new(sp(Expr::VarRef("_".into()))), // DIRECT value → WRAP-DICT fires
+                value: Rc::new(sp(Expr::var_ref("_".into()))), // DIRECT value → WRAP-DICT fires
             }),
             sp(Entry {
                 key: Some(sp(Expr::Str("b".into()))),
                 value: Rc::new(sp(Expr::Call {
-                    func: Box::new(sp(Expr::VarRef("f".into()))),
-                    args: vec![Rc::new(sp(Expr::VarRef("_".into())))],
+                    func: Box::new(sp(Expr::var_ref("f".into()))),
+                    args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
                     named_args: vec![],
                     implied: false,
                 })),
@@ -1123,16 +1125,18 @@ mod tests {
                         assert_eq!(entries.len(), 2);
                         // Entry a: $_  (still VarRef at depth 1, not wrapped further)
                         assert!(
-                            matches!(entries[0].node.value.node, Expr::VarRef(ref name) if name == "_")
+                            matches!(&entries[0].node.value.node, Expr::VarRef { name, .. } if name == "_")
                         );
                         // Entry b: inner call at depth 1 — $_ is bound at depth 1,
                         // no further wrapping (WRAP-CALL only fires at depth 0)
                         match &entries[1].node.value.node {
                             Expr::Call { func, args, .. } => {
-                                assert!(matches!(func.node, Expr::VarRef(ref name) if name == "f"));
+                                assert!(
+                                    matches!(&func.node, Expr::VarRef { name, .. } if name == "f")
+                                );
                                 assert_eq!(args.len(), 1);
                                 assert!(
-                                    matches!(args[0].node, Expr::VarRef(ref name) if name == "_")
+                                    matches!(&args[0].node, Expr::VarRef { name, .. } if name == "_")
                                 );
                             }
                             _ => panic!(
@@ -1169,16 +1173,16 @@ mod tests {
                     annotation: Some(sp(Annotation::PropertyDict(vec![
                         sp(Entry {
                             key: Some(sp(Expr::Str("type".into()))),
-                            value: Rc::new(sp(Expr::VarRef("Number".into()))),
+                            value: Rc::new(sp(Expr::var_ref("Number".into()))),
                         }),
                         sp(Entry {
                             key: None,
-                            value: Rc::new(sp(Expr::VarRef("_".into()))),
+                            value: Rc::new(sp(Expr::var_ref("_".into()))),
                         }),
                     ]))),
                     variadic: false,
                 })],
-                body: Rc::new(sp(Expr::VarRef("x".into()))),
+                body: Rc::new(sp(Expr::var_ref("x".into()))),
                 desugared: false,
             })),
             desugared: false,
@@ -1210,8 +1214,8 @@ mod tests {
                                         assert_eq!(entries.len(), 2);
                                         // Second entry should have VarRef("_") unchanged
                                         assert!(matches!(
-                                            entries[1].node.value.node,
-                                            Expr::VarRef(ref name) if name == "_"
+                                            &entries[1].node.value.node,
+                                            Expr::VarRef { name, .. } if name == "_"
                                         ));
                                     }
                                     _ => panic!("Expected PropertyDict annotation"),
@@ -1221,7 +1225,9 @@ mod tests {
                         }
 
                         // Body should be VarRef("x")
-                        assert!(matches!(inner_body.node, Expr::VarRef(ref name) if name == "x"));
+                        assert!(
+                            matches!(&inner_body.node, Expr::VarRef { name, .. } if name == "x")
+                        );
                     }
                     _ => panic!("Expected inner Fn in body, got {:?}", body.node),
                 }

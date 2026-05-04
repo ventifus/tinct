@@ -74,7 +74,18 @@ enum Expr {
     Str(String),
 
     // References and access
-    VarRef(String),
+    //
+    // `VarRef(name)` shorthand used in doc examples represents:
+    //   `VarRef { name, resolved: RefCell::new(None) }`
+    // The `resolved` field is a three-state sentinel populated by the variable
+    // resolution pass (Phase 1 of arena allocation, src/resolve.rs):
+    //   - Outer None              = not yet processed (initial state)
+    //   - Outer Some(None)        = processed, unresolvable
+    //   - Outer Some(Some((l,s))) = resolved to (level, slot) de Bruijn coordinates
+    VarRef {
+        name: String,
+        resolved: RefCell<Option<Option<(u32, u32)>>>,
+    },
     DotAccess {
         expr: Box<Spanned<Expr>>,
         field: String,
@@ -176,7 +187,7 @@ enum Annotation {
 | `Float(3.14)` | `3.14` | Float literal |
 | `Bool(true)` | `true` | Boolean literal |
 | `Str("hello")` | `"hello"` | String literal (quoted) |
-| `VarRef("x")` | `x` or `$x` | Variable reference (bare identifier or escaped) |
+| `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by Phase 1 resolution pass |
 | `DotAccess` | `a.b` | Key access: `b` on `a` |
 | `BracketAccess` | `a[0]` | Key access: `0` on `a` |
 | `RangeAccess` | `a[2..5]` | Key-range slice |
@@ -291,13 +302,13 @@ Dot notation and bracket notation desugar to nested access nodes:
 
 | Surface syntax | AST |
 |---------------|-----|
-| `data.name` | `DotAccess(VarRef("data"), "name")` |
-| `data[5]` | `BracketAccess(VarRef("data"), Int(5))` |
-| `data[key]` | `BracketAccess(VarRef("data"), VarRef("key"))` |
-| `data[2..5]` | `RangeAccess(VarRef("data"), Some(Int(2)), Some(Int(5)))` |
-| `data[2..]` | `RangeAccess(VarRef("data"), Some(Int(2)), None)` |
-| `data[..3]` | `RangeAccess(VarRef("data"), None, Some(Int(3)))` |
-| `a.b[0].c` | `DotAccess(BracketAccess(DotAccess(VarRef("a"), "b"), Int(0)), "c")` |
+| `data.name` | `DotAccess(VarRef { name: "data", .. }, "name")` |
+| `data[5]` | `BracketAccess(VarRef { name: "data", .. }, Int(5))` |
+| `data[key]` | `BracketAccess(VarRef { name: "data", .. }, VarRef { name: "key", .. })` |
+| `data[2..5]` | `RangeAccess(VarRef { name: "data", .. }, Some(Int(2)), Some(Int(5)))` |
+| `data[2..]` | `RangeAccess(VarRef { name: "data", .. }, Some(Int(2)), None)` |
+| `data[..3]` | `RangeAccess(VarRef { name: "data", .. }, None, Some(Int(3)))` |
+| `a.b[0].c` | `DotAccess(BracketAccess(DotAccess(VarRef { name: "a", .. }, "b"), Int(0)), "c")` |
 
 ### Auto-Indexing
 

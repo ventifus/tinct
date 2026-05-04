@@ -596,8 +596,8 @@ mod tests {
                 variadic: false,
             }]),
             body: Rc::new(sp(Expr::Call {
-                func: Box::new(sp(Expr::VarRef("g".into()))),
-                args: vec![Rc::new(sp(Expr::VarRef("x".into())))],
+                func: Box::new(sp(Expr::var_ref("g".into()))),
+                args: vec![Rc::new(sp(Expr::var_ref("x".into())))],
                 named_args: vec![],
                 implied: false,
             })),
@@ -608,7 +608,7 @@ mod tests {
             Rc::new(Thunk::new_materialized(recursive_fn, test_span(1, 1, 1, 5))),
         );
         let call_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::VarRef("g".into()))),
+            func: Box::new(sp(Expr::var_ref("g".into()))),
             args: vec![Rc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
@@ -722,7 +722,7 @@ mod tests {
 
         // Create a thunk that will fail with a cacheable error (undefined variable)
         let env = Rc::new(RefCell::new(Environment::new()));
-        let error_expr = Rc::new(Spanned::new(Expr::VarRef("undefined".into()), span));
+        let error_expr = Rc::new(Spanned::new(Expr::var_ref("undefined".into()), span));
         let error_thunk = Rc::new(Thunk::new_unevaluated(
             error_expr,
             env,

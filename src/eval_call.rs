@@ -29,7 +29,7 @@ const DEFAULT_ANNOTATION_KEY: &str = "default";
 /// Phase 2 format: implied calls use `[name ...]` (no `call` keyword, no `$` sigil).
 pub(crate) fn func_label(expr: &Expr) -> Option<Rc<str>> {
     match expr {
-        Expr::VarRef(name) => Some(Rc::from(format!("[{name} ...]").as_str())),
+        Expr::VarRef { name, .. } => Some(Rc::from(format!("[{name} ...]").as_str())),
         Expr::DotAccess { .. } => Some(Rc::from("[<dot-access> ...]")),
         Expr::Fn {
             desugared: true, ..
@@ -41,7 +41,7 @@ pub(crate) fn func_label(expr: &Expr) -> Option<Rc<str>> {
 #[allow(dead_code)] // Used for detailed error diagnostics in future CEK migration
 pub(crate) fn func_path(expr: &Expr) -> String {
     match expr {
-        Expr::VarRef(name) => format!("{name}"),
+        Expr::VarRef { name, .. } => format!("{name}"),
         Expr::DotAccess { expr: inner, field } => format!("{}.{field}", func_path(&inner.node)),
         _ => "<anonymous>".to_string(),
     }
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn test_func_label_varref() {
         // Test func_label with a VarRef expression
-        let expr = Expr::VarRef("my_func".to_string());
+        let expr = Expr::var_ref("my_func".to_string());
         let label = func_label(&expr);
         assert_eq!(label.as_deref(), Some("[my_func ...]"));
     }

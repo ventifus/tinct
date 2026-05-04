@@ -92,7 +92,7 @@ fn reset_expr(expr: &Spanned<Expr>) {
         | Expr::Float(_)
         | Expr::Bool(_)
         | Expr::Str(_)
-        | Expr::VarRef(_)
+        | Expr::VarRef { .. }
         | Expr::Rest(_)
         | Expr::Error(_) => {}
 
@@ -608,7 +608,7 @@ fn infer_expr(
         Expr::Bool(_) => Ok(Type::Bool),
         Expr::Str(s) => Ok(Type::StringLiteral(s.clone())),
 
-        Expr::VarRef(name) => env
+        Expr::VarRef { name, .. } => env
             .get(name)
             .map(|scheme| instantiate_scheme(scheme, state.level, state))
             .ok_or_else(|| vec![TypeError::undefined_variable(name, expr.span)]),
@@ -641,7 +641,7 @@ fn infer_expr(
             // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
             // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
             // For monomorphic schemes, use the normal path which handles TypeVar during letrec.
-            if let Expr::VarRef(name) = &func.node {
+            if let Expr::VarRef { name, .. } = &func.node {
                 match env.get(name) {
                     Some(scheme) if !scheme.type_vars.is_empty() || !scheme.row_vars.is_empty() => {
                         // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
@@ -2372,7 +2372,7 @@ fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
         // Value must be a form that could be a type expression
         let value_is_type_shaped = matches!(
             &entry.node.value.node,
-            Expr::Str(_) | Expr::VarRef(_) | Expr::Dict(_) | Expr::Annotated { .. }
+            Expr::Str(_) | Expr::VarRef { .. } | Expr::Dict(_) | Expr::Annotated { .. }
         );
         has_str_key && value_is_type_shaped
     })
@@ -2463,7 +2463,7 @@ fn resolve_type_expr(
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match &expr.node {
-        Expr::Str(name) | Expr::VarRef(name) => {
+        Expr::Str(name) | Expr::VarRef { name, .. } => {
             // Pass row_ann_mapping as read-only reference for cross-kind collision detection.
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             resolve_type_name(name, env, expr.span, state, ann_mapping, &row_ref)
@@ -7765,7 +7765,7 @@ mod tests {
             },
             span,
         );
-        let body = Spanned::new(Expr::VarRef("x".to_string()), span);
+        let body = Spanned::new(Expr::var_ref("x".to_string()), span);
         let lambda = Spanned::new(
             Expr::Fn {
                 return_ann: None,

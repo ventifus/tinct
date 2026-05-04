@@ -84,7 +84,26 @@ pub enum Expr {
 
     /// Variable reference. In new syntax, bare identifiers (`x`) and escaped refs (`$x`)
     /// both produce `VarRef`. The `%` pipeline variable is stored as `VarRef("%")`.
-    VarRef(String),
+    ///
+    /// The `resolved` field is populated by the variable resolution pass (Phase 1 of arena
+    /// allocation strategy). It caches the (level, slot) de Bruijn coordinates for static
+    /// bindings.
+    ///
+    /// Three-state sentinel:
+    /// - Outer `None` — not yet processed by the resolution pass.
+    /// - Outer `Some(None)` — processed, but unresolvable (e.g. `$include`-introduced bindings).
+    /// - Outer `Some(Some((level, slot)))` — resolved to de Bruijn coordinates.
+    ///
+    /// This three-state representation allows the write-once invariant to catch
+    /// double-resolution even for unresolvable variables (which would otherwise
+    /// write `None` twice, indistinguishable from the initial unprocessed state).
+    VarRef {
+        name: String,
+        /// Resolved (level, slot) pair from variable resolution pass.
+        /// Uses RefCell for write-once resolution without cloning the entire AST.
+        /// The write-once invariant is enforced in resolve.rs.
+        resolved: RefCell<Option<Option<(u32, u32)>>>,
+    },
     /// Dot access on an expression, e.g. `$a.b`
     DotAccess {
         expr: Box<Spanned<Expr>>,
@@ -245,7 +264,7 @@ impl fmt::Display for Expr {
             // Emit name as-is. `%`-prefixed refs already include `%` in the name.
             // Plain identifiers and (indistinguishable) EscapedRefs both display without `$` —
             // Display is used for error messages, not source roundtripping.
-            Expr::VarRef(name) => write!(f, "{name}"),
+            Expr::VarRef { name, .. } => write!(f, "{name}"),
             Expr::DotAccess { expr, field } => write!(f, "{}.{field}", expr.node),
             Expr::BracketAccess { expr, key } => write!(f, "{}[{}]", expr.node, key.node),
             Expr::RangeAccess { expr, start, end } => {
@@ -365,6 +384,18 @@ impl fmt::Display for Span {
     }
 }
 
+impl Expr {
+    /// Helper constructor for VarRef with unresolved cache.
+    /// Used throughout the codebase to create variable references before the resolution pass runs.
+    pub fn var_ref(name: String) -> Self {
+        Expr::VarRef {
+            name,
+            // Outer None = not yet processed by the resolution pass.
+            resolved: RefCell::new(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,7 +404,7 @@ mod tests {
     #[test]
     fn test_display_range_access_full() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("list".into()))),
+            expr: Box::new(sp(Expr::var_ref("list".into()))),
             start: Some(Box::new(sp(Expr::Int(1)))),
             end: Some(Box::new(sp(Expr::Int(5)))),
         };
@@ -383,7 +414,7 @@ mod tests {
     #[test]
     fn test_display_range_access_start_only() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("list".into()))),
+            expr: Box::new(sp(Expr::var_ref("list".into()))),
             start: Some(Box::new(sp(Expr::Int(2)))),
             end: None,
         };
@@ -393,7 +424,7 @@ mod tests {
     #[test]
     fn test_display_range_access_end_only() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("list".into()))),
+            expr: Box::new(sp(Expr::var_ref("list".into()))),
             start: None,
             end: Some(Box::new(sp(Expr::Int(10)))),
         };
@@ -403,7 +434,7 @@ mod tests {
     #[test]
     fn test_display_range_access_unbounded() {
         let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::VarRef("list".into()))),
+            expr: Box::new(sp(Expr::var_ref("list".into()))),
             start: None,
             end: None,
         };
@@ -436,7 +467,7 @@ mod tests {
         ];
         let expr = Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
-            expr: Box::new(sp(Expr::VarRef("x".into()))),
+            expr: Box::new(sp(Expr::var_ref("x".into()))),
             resolved_type: RefCell::new(None),
         };
         assert_eq!(format!("{expr}"), "[@[\"type\": \"Number\"  \"min\": 0] x]");
@@ -454,7 +485,7 @@ mod tests {
     #[test]
     fn test_display_annotated_with_property_dict() {
         let entries = vec![sp(Entry {
-            key: Some(sp(Expr::VarRef("required".into()))),
+            key: Some(sp(Expr::var_ref("required".into()))),
             value: Rc::new(sp(Expr::Bool(true))),
         })];
         let expr = Expr::Annotated {
@@ -467,7 +498,7 @@ mod tests {
     #[test]
     fn test_display_call_no_args() {
         let expr = Expr::Call {
-            func: Box::new(sp(Expr::VarRef("f".into()))),
+            func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![],
             named_args: vec![],
             implied: false,
@@ -478,7 +509,7 @@ mod tests {
     #[test]
     fn test_display_call_with_args() {
         let expr = Expr::Call {
-            func: Box::new(sp(Expr::VarRef("add".into()))),
+            func: Box::new(sp(Expr::var_ref("add".into()))),
             args: vec![Rc::new(sp(Expr::Int(1))), Rc::new(sp(Expr::Int(2)))],
             named_args: vec![],
             implied: false,
@@ -489,7 +520,7 @@ mod tests {
     #[test]
     fn test_display_call_with_named_args() {
         let expr = Expr::Call {
-            func: Box::new(sp(Expr::VarRef("config".into()))),
+            func: Box::new(sp(Expr::var_ref("config".into()))),
             args: vec![],
             named_args: vec![sp(NamedArg {
                 name: "port".into(),
@@ -503,7 +534,7 @@ mod tests {
     #[test]
     fn test_display_call_with_both_arg_types() {
         let expr = Expr::Call {
-            func: Box::new(sp(Expr::VarRef("deploy".into()))),
+            func: Box::new(sp(Expr::var_ref("deploy".into()))),
             args: vec![Rc::new(sp(Expr::Str("prod".into())))],
             named_args: vec![sp(NamedArg {
                 name: "replicas".into(),
@@ -541,7 +572,7 @@ mod tests {
                     variadic: false,
                 }),
             ],
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [x y] x]");
@@ -567,7 +598,7 @@ mod tests {
                 annotation: Some(sp(Annotation::Simple("Int".into()))),
                 variadic: false,
             })],
-            body: Rc::new(sp(Expr::VarRef("x".into()))),
+            body: Rc::new(sp(Expr::var_ref("x".into()))),
             desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [x@Int] x]");
@@ -582,7 +613,7 @@ mod tests {
                 annotation: None,
                 variadic: true,
             })],
-            body: Rc::new(sp(Expr::VarRef("args".into()))),
+            body: Rc::new(sp(Expr::var_ref("args".into()))),
             desugared: false,
         };
         assert_eq!(format!("{expr}"), "[fn [...args] args]");
@@ -598,11 +629,11 @@ mod tests {
     fn test_display_dict_with_keyed_entries() {
         let expr = Expr::Dict(vec![
             sp(Entry {
-                key: Some(sp(Expr::VarRef("a".into()))),
+                key: Some(sp(Expr::var_ref("a".into()))),
                 value: Rc::new(sp(Expr::Int(1))),
             }),
             sp(Entry {
-                key: Some(sp(Expr::VarRef("b".into()))),
+                key: Some(sp(Expr::var_ref("b".into()))),
                 value: Rc::new(sp(Expr::Int(2))),
             }),
         ]);
@@ -668,7 +699,7 @@ mod tests {
     fn test_display_document_multiple_expressions() {
         let doc = Document {
             expressions: vec![
-                Rc::new(sp(Expr::VarRef("x".into()))),
+                Rc::new(sp(Expr::var_ref("x".into()))),
                 Rc::new(sp(Expr::Int(10))),
                 Rc::new(sp(Expr::Bool(true))),
             ],

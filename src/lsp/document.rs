@@ -66,6 +66,9 @@ impl DocumentState {
             // producing spurious "undefined variable _" errors for any $_ expression.
             crate::desugar::desugar_file(&mut file.node);
 
+            // Variable resolution pass (Phase 1 of arena allocation strategy).
+            crate::resolve::resolve_file(&file.node);
+
             // Run type checker (advisory), collecting the span-to-type map for hover.
             let (errs, map) = typecheck_file_with_types(&file.node);
             type_errors = errs;
