@@ -2403,4 +2403,201 @@ mod tests {
             eval_stack
         );
     }
+
+    #[test]
+    fn test_cont_memoize_caches_result() {
+        // Test that Cont::Memoize caches the materialization result into the parent thunk.
+        // Create an Unevaluated thunk, force it via the CEK machine (run), and verify
+        // it transitions to Materialized state with the correct cached value.
+        let span = test_span(1, 1, 1, 10);
+        let expr = Rc::new(sp(Expr::Int(42)));
+        let env = empty_env();
+        let ctx = test_ctx();
+
+        let thunk = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+
+        // Verify initial state is Unevaluated
+        {
+            let state = thunk.state();
+            assert!(
+                matches!(&*state, ThunkState::Unevaluated { .. }),
+                "Expected Unevaluated state before forcing"
+            );
+        }
+
+        // Force the thunk via the CEK machine
+        let result = run(
+            Action::Materialize {
+                thunk: Rc::clone(&thunk),
+                mat_span: None,
+                depth: 0,
+            },
+            &ctx,
+        );
+
+        // Verify the result is correct
+        assert!(result.is_ok(), "Expected successful materialization");
+        assert_eq!(result.unwrap(), Value::Int(42));
+
+        // Verify the thunk transitioned to Materialized state
+        {
+            let state = thunk.state();
+            match &*state {
+                ThunkState::Materialized(v) => {
+                    assert_eq!(*v, Value::Int(42), "Cached value should be Int(42)");
+                }
+                other => panic!("Expected Materialized state, got {:?}", other),
+            }
+        }
+
+        // Verify that a second materialization returns the cached value immediately
+        // (no re-evaluation)
+        let result2 = run(
+            Action::Materialize {
+                thunk: Rc::clone(&thunk),
+                mat_span: None,
+                depth: 0,
+            },
+            &ctx,
+        );
+        assert_eq!(result2.unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn test_cont_memoize_caches_error_in_failed_state() {
+        // Test that when a thunk errors during materialization, the error is cached
+        // in Failed state and subsequent materializations return the cached error.
+        let span = test_span(1, 1, 1, 10);
+        let ctx = test_ctx();
+        let env = empty_env();
+
+        // Create a thunk that will fail: reference an undefined variable
+        let expr = Rc::new(sp(Expr::VarRef("undefined_var".into())));
+        let thunk = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+
+        // Verify initial state is Unevaluated
+        {
+            let state = thunk.state();
+            assert!(
+                matches!(&*state, ThunkState::Unevaluated { .. }),
+                "Expected Unevaluated state before forcing"
+            );
+        }
+
+        // Force the thunk — should fail with undefined variable error
+        let result = run(
+            Action::Materialize {
+                thunk: Rc::clone(&thunk),
+                mat_span: None,
+                depth: 0,
+            },
+            &ctx,
+        );
+
+        // Verify the result is an error
+        assert!(result.is_err(), "Expected error for undefined variable");
+        let err = result.unwrap_err();
+        assert!(
+            err.message().contains("undefined_var"),
+            "Expected undefined variable error, got: {}",
+            err.message()
+        );
+
+        // Verify the thunk transitioned to Failed state
+        {
+            let state = thunk.state();
+            match &*state {
+                ThunkState::Failed(cached_err) => {
+                    assert!(
+                        cached_err.message().contains("undefined_var"),
+                        "Cached error should be undefined variable error, got: {}",
+                        cached_err.message()
+                    );
+                }
+                other => panic!("Expected Failed state, got {:?}", other),
+            }
+        }
+
+        // Verify that a second materialization returns the cached error
+        let result2 = run(
+            Action::Materialize {
+                thunk: Rc::clone(&thunk),
+                mat_span: None,
+                depth: 0,
+            },
+            &ctx,
+        );
+        assert!(
+            result2.is_err(),
+            "Expected cached error on second materialization"
+        );
+        let err2 = result2.unwrap_err();
+        assert!(
+            err2.message().contains("undefined_var"),
+            "Cached error should be returned, got: {}",
+            err2.message()
+        );
+    }
+
+    #[test]
+    fn test_error_propagation_through_continuation() {
+        // Test that errors propagate correctly through the continuation stack.
+        // Create a nested structure (dict access) where the inner thunk errors,
+        // and verify the error propagates through the DotAccessForce continuation.
+        let span = test_span(1, 1, 1, 10);
+        let ctx = test_ctx();
+        let env = empty_env();
+
+        // Create a dict with an entry that will error when materialized
+        let error_expr = Rc::new(sp(Expr::VarRef("undefined_var".into())));
+        let error_thunk = Rc::new(Thunk::new_unevaluated(
+            error_expr,
+            Rc::clone(&env),
+            Rc::clone(&ctx),
+            span,
+        ));
+
+        let mut dict_map = IndexMap::new();
+        dict_map.insert(Key::String("field".into()), error_thunk);
+        let dict_value = Value::Dict(dict_map);
+        let dict_thunk = Rc::new(Thunk::new_materialized(dict_value, span));
+
+        // Insert the dict into the environment
+        env.borrow_mut().insert("my_dict".into(), dict_thunk);
+
+        // Create a dot access expression: my_dict.field
+        let access_expr = Rc::new(sp(Expr::DotAccess {
+            expr: Box::new(sp(Expr::VarRef("my_dict".into()))),
+            field: "field".to_string(),
+        }));
+
+        let access_thunk = Rc::new(Thunk::new_unevaluated(
+            access_expr,
+            env,
+            Rc::clone(&ctx),
+            span,
+        ));
+
+        // Force the access thunk — should propagate the error from the field value
+        let result = run(
+            Action::Materialize {
+                thunk: access_thunk,
+                mat_span: None,
+                depth: 0,
+            },
+            &ctx,
+        );
+
+        // Verify the error propagated
+        assert!(
+            result.is_err(),
+            "Expected error to propagate through DotAccessForce"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.message().contains("undefined_var"),
+            "Expected undefined variable error, got: {}",
+            err.message()
+        );
+    }
 }

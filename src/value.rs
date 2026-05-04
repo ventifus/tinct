@@ -40,7 +40,7 @@ pub enum Strictness {
 }
 
 /// Builtin function definition with strictness metadata.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct BuiltinDef {
     pub func: BuiltinFn,
     pub name: &'static str,

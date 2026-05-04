@@ -104,7 +104,7 @@ The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the l
 - `$a[0]` — bracket access using escaped-ref form (no whitespace before `[`)
 - `$a [0]` — EscapedRef `$a` followed by nested expression `[0]`
 
-Bracket access (`[`) is whitespace-sensitive: a space before `[` switches from bracket-access to a new nested expression. Dot access (`.`) is not whitespace-sensitive: `.` always acts as a field-access operator regardless of preceding whitespace. This is handled by the hand-written lexer at `src/lexer.rs:120-129` using `last_significant_token` tracking for O(1) whitespace-sensitive access detection.
+Bracket access (`[`) is whitespace-sensitive: a space before `[` switches from bracket-access to a new nested expression. Dot access (`.`) is not whitespace-sensitive: `.` always acts as a field-access operator regardless of preceding whitespace. This is handled by the hand-written lexer at `src/lexer.rs:138-141` using `last_significant_token` tracking for O(1) whitespace-sensitive access detection.
 
 ### 2.2 Brackets and Punctuation
 
@@ -252,19 +252,19 @@ ident_start = _{
 
 ident_cont = _{
     !(" " | "\t" | "\r" | "\n"
-      | "[" | "]" | ":" | ";" | "#" | "\"" | "@")
+      | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".")
     ~ ident_char
 }
 
 ident_char = _{
-    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$")
+    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".")
     ~ ANY
 }
 ```
 
-`ident_char` uses a denylist — any character except structural delimiters and `$`. Both `@` and `$` are excluded, so they always end an identifier. The `"..."` exclusion is only needed at token start (variadic sigil context).
+`ident_char` uses a denylist — any character except structural delimiters and `.`. Both `@` and `.` are excluded, so they always end an identifier. The `"..."` exclusion is only needed at token start (variadic sigil context).
 
-**Valid characters (denylist approach):** Any character is valid *except* structural delimiters: whitespace, `[`, `]`, `:`, `;`, `#`, `"`, `@`, and `$`. This means `[a-zA-Z0-9_/.-]`, Unicode, `%`, and most other characters are all valid in identifiers. Identifiers are the default — anything that isn't a recognized special token is an identifier (a variable reference).
+**Valid characters (denylist approach):** Any character is valid *except* structural delimiters: whitespace, `[`, `]`, `:`, `;`, `#`, `"`, `@`, and `.`. This means `[a-zA-Z0-9_/-]`, Unicode, `%`, `$`, and most other characters are all valid in identifiers. Identifiers are the default — anything that isn't a recognized special token is an identifier (a variable reference).
 
 **Cannot start with:** `$`, `@`, `#`, `[`, `]`, `:`, `;`, `"`, or `...` (variadic sigil). These characters have special meaning at the start of a token.
 
@@ -280,6 +280,7 @@ ident_char = _{
 | `#` | Ends the identifier (starts comment) |
 | `@` | Ends the identifier (starts annotation) |
 | `$` | Ends the identifier (starts escaped reference) |
+| `.` | Ends the identifier (starts dot access) |
 
 ```tinct
 hello                    # Identifier: ref "hello"
@@ -821,7 +822,7 @@ keyword_type = "type" ~ !ident_char ~ !colon_ahead
 colon_ahead = ws_chars* ~ ":"
 ws_chars    = " " | "\t"
 
-ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") ~ ANY
+ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".") ~ ANY
 
 call_args = (named_arg | value)*
 

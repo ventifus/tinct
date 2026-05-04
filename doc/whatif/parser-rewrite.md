@@ -108,7 +108,7 @@ a [0]  → EscapedRef("a"), OpenBracket, Int(0), CloseBracket
 ```
 
 Detection uses the existing `last_significant_token` tracking already in
-`src/lexer.rs:120-129`. A `[` is `BracketAccess` when `last_significant_token`
+`src/lexer.rs:138-141`. A `[` is `BracketAccess` when `last_significant_token`
 is a value-ending token (CloseBracket, EscapedRef, BareWordAfterDot,
 QuotedString, Int, Float, BoolLit) and the `had_whitespace_before` flag is
 false. (Note: standalone `BareWord` is excluded — `call[0]` emits
