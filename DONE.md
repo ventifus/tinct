@@ -3754,3 +3754,8 @@ Fixes from the C141 health review.
 - [x] **[Minor]** Update `doc/10-errors.md` ErrorKind variant count from 31 to 34
 - [x] **[Minor]** Fix `access_field` grammar — `?` now allowed anywhere in continuation (`doc/02-syntax.md`)
 - [x] **[Minor]** FlatEnv placeholder monotonicity — `ThunkState::Placeholder` added (`src/value.rs`, `src/arena.rs`, `src/eval.rs`, `src/eval_materialize.rs`)
+
+### cycle-findings-c141-b: C141 Follow-Up
+
+- [x] Fix `test_ctx()` in `src/eval_deep.rs` — `create_root_env()` → `create_stdlib_env().expect("stdlib failed")`
+- [x] Add `#[should_panic(expected = "Placeholder")]` test for Placeholder forcing panic path (`src/arena.rs`)
