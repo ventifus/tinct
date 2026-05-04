@@ -3607,3 +3607,19 @@ Single atomic change. All internal `.llt` files migrated in the same commit. See
 - [x] **README.md** and **lib/yaml.llt**: Migrated to new syntax.
 - [x] **26/28 doc/whatif/*.md files**: Migrated to new syntax (algebraic-data-types, arena-patterns, call-aliases, circular-dep-error-paths, eval-builtins-boundary, eval-semantics-verification, float-dict-keys, gradual-typing, index, io, let-binding, lib-regex, lib-sql, lib-supplemental, lib-tls, macros, narrowing, nominal-variants, numeric-types, parameterized-type-aliases, parser-rewrite, pattern-matching, quasiquoting, string-interpolation, structural-contracts, TEMPLATE, templating, type-predicates, typeclasses, union-types).
 - [x] **Code files**: builtins.rs "call $apply"→"apply", formatter.rs $_ tests, repl.rs tests, typecheck.rs tests, error.rs $try refs, lib.rs doc comment.
+
+## Cycle Findings — C116
+
+### cycle-findings-c116: C116 Codebase Health
+
+- [x] **eval_stack push/pop asymmetry**: Fixed — push moved after depth check in Unevaluated and PendingBuiltin branches of force_step(). eval_materialize.rs:409,589.
+- [x] **9 error codes no corpus coverage**: E050-E057 not corpus-testable; E062 unreachable. Documented in corpus README.
+- [x] **Row.fields**: Already uses HashMap — pre-existing correct.
+- [x] **Resource limit tests**: parse_depth_exceeded.llt-eval exists; collect_size_exceeded not feasible.
+- [x] **doc/08 Cont variant names**: Updated to PendingCallDispatch, BuiltinForceArg, GuardedValidate.
+- [x] **Access chain span propagation**: TODO comments added; design-level fix deferred.
+- [x] **Span::origin() frame filtering**: Already exists in should_display_frame().
+- [x] **Stale builtin counts**: doc/11a Evaluation 5→4; `until` moved to General.
+- [x] **Corpus README**: Comprehensive rewrite.
+- [x] **Sequence constructor tests**: repeat_depth_limit, unfold_depth_limit added.
+- [x] **doc/12 ASPIRATIONAL**: Removed; implemented features enumerated.

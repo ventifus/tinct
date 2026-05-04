@@ -252,7 +252,8 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 - Dict primitives: 4
 - Strings: 6
 - Numeric: 4 (floor, round, to-int, to-float)
-- Evaluation: 5 (eval, error, try, apply, until)
+- Evaluation: 4 (eval, error, try, apply)
+- General: 1 (until)
 - Type introspection: 1 (type-of)
 - I/O: 2
 - Sequences: 17 (6 constructors, 3 destructors, 7 higher-order ops, 1 predicate)

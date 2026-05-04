@@ -58,9 +58,18 @@ No formatting options. The formatter defines the canonical Tinct style. The only
 
 ## Sandboxing & Security
 
-**ASPIRATIONAL — NOT YET IMPLEMENTED.** This section describes the complete sandboxing architecture as designed. Currently implemented: `--no-fs` flag (application-level filesystem blocking in `src/builtins.rs`) and `--timeout` flag (SIGALRM-based wall-clock limit in `src/main.rs`). Planned but not yet implemented: Landlock integration, import integrity hashes, `llt hash` subcommand, `--allow-path`, `--require-integrity`, seccomp-bpf network/process blocking, rlimit resource caps beyond timeout.
+Tinct provides multiple unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are scoped to the subcommands that use them — for example, `--no-fs` and `--timeout` are `eval` subcommand flags.
 
-Tinct uses four unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are scoped to the subcommands that use them — for example, `--no-fs` and `--timeout` are `eval` subcommand flags.
+**Implemented features:**
+- `--no-fs`: Application-level filesystem blocking (disables `$include` entirely)
+- `--timeout <duration>`: SIGALRM-based wall-clock limit (e.g., `--timeout 5s`)
+- `--allow-path <dir>`: Allowlist-based filesystem access with cap-std RESOLVE_BENEATH enforcement
+- `--require-integrity`: Require BLAKE3 hashes on all `$include` calls
+- **Landlock** (Linux 5.13+): Kernel-enforced filesystem ACLs as defense-in-depth
+- **seccomp-bpf** (Linux): Network/process syscall blocking
+- **rlimit caps**: `--max-memory`, `--max-cpu`, `--max-fds` resource limits
+
+The following sections describe the sandboxing layers in detail.
 
 ### Filesystem Sandbox (Application-Level + Landlock)
 

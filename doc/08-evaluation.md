@@ -1106,41 +1106,22 @@ enum Action {
 
 ```rust
 enum Cont {
+    // materialize() continuations
+    Memoize { thunk: Rc<Thunk>, mat_span: Option<Span>, origin: String },
+    PendingCallDispatch { thunk: Rc<Thunk>, args: Box<Vec<Rc<Thunk>>>, call_span: Span, ... },
+    GuardedValidate { thunk: Rc<Thunk>, annotation: ..., ... },
+    BuiltinForceArg { thunk: Rc<Thunk>, mat_span: Option<Span>, ... },
+
     // eval() continuations — access chains
     DotAccessForce { field: String, span: Span, depth: usize },
     BracketForceTarget { key_expr: Rc<Spanned<Expr>>, env: ..., span: Span, depth: usize },
-    BracketForceKey { target: Value, span: Span },  // not yet implemented; key eval is synchronous via eval_key()
-    RangeForceTarget { start_expr: ..., end_expr: ..., env: ..., span: Span, depth: usize },
-    RangeForceStart { target: Value, end_expr: ..., env: ..., span: Span, depth: usize },
-    RangeForceEnd { target: Value, start: Value, span: Span },
 
-    // eval() continuations — calls and type assertions
-    CallForceFunc { args: Box<Vec<Rc<Thunk>>>, named: Box<IndexMap<...>>, env: ..., span: Span, depth: usize, label: String },
+    // eval() continuations — type assertions
     TypeAssertCheck { annotation: ..., env: ..., span: Span, depth: usize },
-    TypeAssertForce { type_expr: ..., default_expr: Option<...>, env: ..., span: Span, depth: usize },
-
-    // eval() continuations — dict construction
-    DictBuildKey { value_expr: Rc<Spanned<Expr>>, remaining: ..., env: ..., span: Span, depth: usize },
-
-    // eval() continuations — function defaults
-    BindArgDefault { param: String, remaining_params: ..., env: ..., depth: usize },
-
-    // materialize() continuations
-    Memoize { thunk: Rc<Thunk>, mat_span: Option<Span>, origin: String },
-    PendingBuiltinForceResult { thunk: Rc<Thunk>, mat_span: Option<Span>, ... },
-    PendingCallForceFunc { thunk: Rc<Thunk>, args: Box<Vec<Rc<Thunk>>>, call_span: Span, ... },
-    PendingCallForceResult { thunk: Rc<Thunk>, mat_span: Option<Span>, ... },
-
-    // Document pipeline
-    DocumentScope { remaining: Vec<Spanned<Expr>>, env: ..., depth: usize },
-
-    // Deep materialization
-    DeepEntries { map: Rc<IndexMap<Key, Rc<Thunk>>>, idx: usize, ... },
-    DeepSeqTail { tail: Rc<Thunk>, ... },
 }
 ```
 
-Large fields in `CallForceFunc` and `PendingCallForceFunc` are boxed to keep the `Cont` enum ≤96 bytes. `DeepEntries` holds an `Rc` to the original map plus an index rather than cloning entries into a `Vec`.
+All `Cont` variant payloads are boxed to keep the `Cont` enum ≤96 bytes (one cache line).
 
 The main loop is a two-register machine — `action` (what's happening now) and `stack` (what's waiting):
 

@@ -389,12 +389,6 @@ pub(crate) fn force_step(
     let origin = thunk.origin.clone();
 
     if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
-        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
-        thunk_ctx
-            .state
-            .borrow_mut()
-            .eval_stack
-            .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
         if depth > MAX_EVAL_DEPTH {
             // All four deferred-state depth-exceeded paths (Unevaluated, PendingBuiltin,
             // PendingCall, Guarded) must call attach_materialization_context for uniform error reporting.
@@ -412,6 +406,12 @@ pub(crate) fn force_step(
             });
             return Action::Continue(Err(err));
         }
+        // Push to eval_stack after transitioning to InProgress and passing depth check (for cycle path reconstruction)
+        thunk_ctx
+            .state
+            .borrow_mut()
+            .eval_stack
+            .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
         let restore = RestoreState::Unevaluated {
             expr: expr.clone(),
@@ -567,13 +567,6 @@ pub(crate) fn force_step(
     } else if let Some((def, args, named, pending_depth, call_span, thunk_ctx)) =
         thunk.take_pending_builtin()
     {
-        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
-        thunk_ctx
-            .state
-            .borrow_mut()
-            .eval_stack
-            .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
-
         if depth > MAX_EVAL_DEPTH {
             let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
             let err = attach_materialization_context(
@@ -592,6 +585,13 @@ pub(crate) fn force_step(
             });
             return Action::Continue(Err(err));
         }
+
+        // Push to eval_stack after transitioning to InProgress and passing depth check (for cycle path reconstruction)
+        thunk_ctx
+            .state
+            .borrow_mut()
+            .eval_stack
+            .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
         let restore = RestoreState::PendingBuiltin {
             def,
@@ -702,7 +702,7 @@ pub(crate) fn force_step(
             .take_pending_call()
             .expect("PendingCall state confirmed above; single-threaded execution prevents TOCTOU");
 
-        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
+        // Push to eval_stack after transitioning to InProgress and passing depth check (for cycle path reconstruction)
         thunk_ctx
             .state
             .borrow_mut()
@@ -1326,6 +1326,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             match map.get(&crate::value::StrKey(&field)) {
                                 Some(thunk) => {
                                     // Field found - need to materialize it
+                                    // TODO: thread outer mat_span through DotAccessForceData to preserve
+                                    // materialization context across access chains. Currently uses access_span
+                                    // directly, which loses the outer context when a.b.c is forced from elsewhere.
+                                    // See test_access_chain_span_propagation in eval.rs and doc/10-errors.md Part 3 DECORATE.
                                     Action::Materialize {
                                         thunk: Rc::clone(thunk),
                                         mat_span: Some(access_span),
@@ -1356,11 +1360,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 &access_span,
                                 depth,
                             ) {
-                                Ok(thunk) => Action::Materialize {
-                                    thunk,
-                                    mat_span: Some(access_span),
-                                    depth,
-                                },
+                                Ok(thunk) => {
+                                    // TODO: thread outer mat_span through DotAccessForceData (same issue as Dict case above)
+                                    Action::Materialize {
+                                        thunk,
+                                        mat_span: Some(access_span),
+                                        depth,
+                                    }
+                                }
                                 Err(mut e) => {
                                     e.push_frame(format!("accessing .{field}"), access_span);
                                     Action::Continue(Err(e))
@@ -1427,6 +1434,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 Ok(key) => match map.get(&key) {
                                     Some(thunk) => {
                                         // Field found - return it to be forced
+                                        // TODO: thread outer mat_span through BracketForceTargetData (same issue as DotAccess)
                                         Action::Materialize {
                                             thunk: Rc::clone(thunk),
                                             mat_span: Some(access_span),
@@ -1468,11 +1476,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         &access_span,
                                         depth,
                                     ) {
-                                        Ok(thunk) => Action::Materialize {
-                                            thunk,
-                                            mat_span: Some(access_span),
-                                            depth,
-                                        },
+                                        Ok(thunk) => {
+                                            // TODO: thread outer mat_span through BracketForceTargetData (same issue as DotAccess)
+                                            Action::Materialize {
+                                                thunk,
+                                                mat_span: Some(access_span),
+                                                depth,
+                                            }
+                                        }
                                         Err(mut e) => {
                                             e.push_frame("accessing [..]".to_string(), access_span);
                                             Action::Continue(Err(e))
