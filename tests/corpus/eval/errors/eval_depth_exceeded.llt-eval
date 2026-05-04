@@ -1,0 +1,7 @@
+# E040: Maximum evaluation depth exceeded (depth > 256)
+# Create a deeply recursive function that exceeds MAX_EVAL_DEPTH.
+# The function f calls itself recursively without a base case.
+[f: [fn [n] [f [+ n 1]]]]
+[result: [f 0]]
+===
+[E040]
