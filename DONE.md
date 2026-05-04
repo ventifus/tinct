@@ -3720,3 +3720,15 @@ Pre-eval analysis pass assigns `(level, slot)` pairs to `VarRef` nodes. See doc/
 - [x] Update `eval` VarRef case — O(1) slot lookup deferred to Phase 2 (static level system doesn't align with runtime env chain until FlatEnv); cache populated but eval uses name-based lookup (`src/eval.rs`)
 - [x] Unit tests: 20+ tests covering scope shadowing, annotations, access chains, named args, multi-doc isolation, write-once invariant, empty scope (`src/resolve.rs`)
 - [x] Verify full corpus test suite passes unchanged (`tests/`)
+
+### arena-types: Arena Type Definitions
+
+Introduce `ThunkId`, `EnvId`, `ThunkArena`, `EnvArena`, `FlatEnv` types with letrec allocation pattern. See doc/whatif/arena-patterns.md §Design.
+
+**Depends on:** `arena-resolve`
+
+- [x] Add `ThunkId(u32)` newtype and `ThunkArena` struct (`Vec<Rc<Thunk>>`, `alloc() -> ThunkId`, `get(ThunkId) -> &Rc<Thunk>`) (`src/arena.rs`)
+- [x] Add `EnvId(u32)` newtype and `EnvArena` struct (`Vec<FlatEnv>`, `alloc() -> EnvId`, `get(EnvId) -> &FlatEnv`) (`src/arena.rs`)
+- [x] Add `FlatEnv` struct: `slots: Vec<Option<ThunkId>>`, `overflow: HashMap<String, ThunkId>`, `parent: Option<EnvId>` — all pub(crate) (`src/arena.rs`)
+- [x] Implement letrec allocation pattern: `alloc_placeholder()` returns `ThunkId` pointing at `Bool(false)` sentinel; fill via `Rc<Thunk>::set_state()` interior mutability (`src/arena.rs`)
+- [x] Unit tests: 18 tests — alloc/get, placeholder+fill lifecycle, FlatEnv slot/overflow/parent, overflow checks, Copy semantics (`src/arena.rs`)
