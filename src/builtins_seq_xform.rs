@@ -16,7 +16,7 @@ use indexmap::IndexMap;
 use crate::builtins::{builtin, flatten_overlay, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Key, Thunk, ThunkState, Value};
+use crate::value::{BuiltinArgs, Key, Thunk, ThunkId, ThunkState, Value};
 
 /// `map`: Apply a function to every element of a dict or sequence.
 ///
@@ -51,10 +51,11 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Dict(ref map) => {
             // Dict path: create PendingCall thunks for each value
             let mut new_map = IndexMap::with_capacity(map.len());
-            for (key, value_thunk) in map {
+            for (key, value_thunk_id) in map {
+                let value_thunk = ctx.get_thunk(*value_thunk_id);
                 let pending_call = Rc::new(Thunk::new_pending_call(
                     Rc::clone(&f_thunk),
-                    vec![Rc::clone(value_thunk)],
+                    vec![Rc::clone(&value_thunk)],
                     IndexMap::new(),
                     call_span,
                     Rc::clone(&ctx.config.stdlib_env),
@@ -62,23 +63,25 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     Some(Rc::from("map")),
                     Rc::clone(&ctx),
                 ));
-                new_map.insert(key.clone(), pending_call);
+                new_map.insert(key.clone(), ctx.alloc_thunk(pending_call));
             }
             ok_val(Value::Dict(new_map), call_span)
         }
         Value::Seq { head, tail } => {
             // Seq path: head = f(head), tail = map(f, tail)
+            let head_thunk = ctx.get_thunk(head);
+            let tail_thunk = ctx.get_thunk(tail);
             let new_head = Rc::new(Thunk::new_pending_call(
                 Rc::clone(&f_thunk),
-                vec![Rc::clone(&head)],
+                vec![Rc::clone(&head_thunk)],
                 IndexMap::new(),
                 call_span,
                 Rc::clone(&ctx.config.stdlib_env),
-                head.span,
+                head_thunk.span,
                 Some(Rc::from("map head")),
                 Rc::clone(&ctx),
             ));
-            let tail_args = vec![Rc::clone(&f_thunk), Rc::clone(&tail)];
+            let tail_args = vec![Rc::clone(&f_thunk), Rc::clone(&tail_thunk)];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
                 builtin!("map", builtin_map),
                 tail_args,
@@ -90,8 +93,8 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ));
             ok_val(
                 Value::Seq {
-                    head: new_head,
-                    tail: new_tail,
+                    head: ctx.alloc_thunk(new_head),
+                    tail: ctx.alloc_thunk(new_tail),
                 },
                 call_span,
             )
@@ -253,7 +256,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
 
         // Get the current entry by index (avoids secondary keys map)
         let value_thunk = match dict_map.get_index(idx_usize.unwrap()) {
-            Some((_k, v)) => Rc::clone(v),
+            Some((_k, v)) => ctx.get_thunk(*v),
             None => {
                 return Err(EvalError::internal(
                     format!("filter: entry at index {} not found", idx_int),
@@ -309,8 +312,8 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
 
             return ok_val(
                 Value::Seq {
-                    head: value_thunk,
-                    tail,
+                    head: ctx.alloc_thunk(value_thunk),
+                    tail: ctx.alloc_thunk(tail),
                 },
                 call_span,
             );
@@ -354,13 +357,15 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
             }
             Value::Seq { head, tail } => {
                 // Apply predicate to head
+                let head_thunk = ctx.get_thunk(head);
+                let tail_thunk = ctx.get_thunk(tail);
                 let pred_call = Rc::new(Thunk::new_pending_call(
                     Rc::clone(&pred_thunk),
-                    vec![Rc::clone(&head)],
+                    vec![Rc::clone(&head_thunk)],
                     IndexMap::new(),
                     call_span,
                     Rc::clone(&ctx.config.stdlib_env),
-                    head.span,
+                    head_thunk.span,
                     Some(Rc::from("filter-seq pred")),
                     Rc::clone(&ctx),
                 ));
@@ -381,7 +386,7 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
 
                 if passes {
                     // Include this element; defer the rest lazily
-                    let tail_args = vec![Rc::clone(&pred_thunk), tail];
+                    let tail_args = vec![Rc::clone(&pred_thunk), Rc::clone(&tail_thunk)];
                     let new_tail = Rc::new(Thunk::new_pending_builtin(
                         builtin!("filter", builtin_filter_seq_step),
                         tail_args,
@@ -394,13 +399,13 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                     return ok_val(
                         Value::Seq {
                             head,
-                            tail: new_tail,
+                            tail: ctx.alloc_thunk(new_tail),
                         },
                         call_span,
                     );
                 } else {
                     // Skip this element: advance the loop without extra depth
-                    current = materialize(&tail, None, &ctx, depth)?;
+                    current = materialize(&tail_thunk, None, &ctx, depth)?;
                 }
             }
             other => {
@@ -457,17 +462,20 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match xs {
         Value::Dict(ref map) => {
             // Dict: take first n entries by position
-            let taken: IndexMap<Key, Rc<Thunk>> = map
+            let taken: IndexMap<Key, ThunkId> = map
                 .iter()
                 .take(n_int as usize)
-                .map(|(k, v)| (k.clone(), Rc::clone(v)))
+                .map(|(k, v)| (k.clone(), *v))
                 .collect();
             ok_val(Value::Dict(taken), call_span)
         }
         Value::Seq { head, tail } => {
             // Seq: head = seq head, tail = take(n-1, seq tail)
-            let new_head = Rc::clone(&head);
-            let tail_args = vec![ok_val(Value::Int(n_int - 1), call_span)?, Rc::clone(&tail)];
+            let tail_thunk = ctx.get_thunk(tail);
+            let tail_args = vec![
+                ok_val(Value::Int(n_int - 1), call_span)?,
+                Rc::clone(&tail_thunk),
+            ];
             let new_tail = Rc::new(Thunk::new_pending_builtin(
                 builtin!("take", builtin_take),
                 tail_args,
@@ -479,8 +487,8 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ));
             ok_val(
                 Value::Seq {
-                    head: new_head,
-                    tail: new_tail,
+                    head,
+                    tail: ctx.alloc_thunk(new_tail),
                 },
                 call_span,
             )
@@ -537,17 +545,18 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match xs {
         Value::Dict(ref map) => {
             // Dict: skip first n entries by position
-            let dropped: IndexMap<Key, Rc<Thunk>> = map
+            let dropped: IndexMap<Key, ThunkId> = map
                 .iter()
                 .skip(n_int as usize)
-                .map(|(k, v)| (k.clone(), Rc::clone(v)))
+                .map(|(k, v)| (k.clone(), *v))
                 .collect();
             ok_val(Value::Dict(dropped), call_span)
         }
         Value::Seq { head: _, tail } => {
             // Seq: use lazy step function to drop remaining elements
             let n_minus_1 = Rc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
-            let step_args = vec![n_minus_1, tail];
+            let tail_thunk = ctx.get_thunk(tail);
+            let step_args = vec![n_minus_1, Rc::clone(&tail_thunk)];
             Ok(Rc::new(Thunk::new_pending_builtin(
                 builtin!("drop", builtin_drop_seq_step),
                 step_args,
@@ -608,7 +617,8 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
         Value::Seq { head: _, tail } => {
             // Drop this element, continue with tail
             let n_minus_1 = Rc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
-            let step_args = vec![n_minus_1, tail];
+            let tail_thunk = ctx.get_thunk(tail);
+            let step_args = vec![n_minus_1, Rc::clone(&tail_thunk)];
             Ok(Rc::new(Thunk::new_pending_builtin(
                 builtin!("drop", builtin_drop_seq_step),
                 step_args,

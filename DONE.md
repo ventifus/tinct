@@ -3760,6 +3760,13 @@ Fixes from the C141 health review.
 - [x] Fix `test_ctx()` in `src/eval_deep.rs` — `create_root_env()` → `create_stdlib_env().expect("stdlib failed")`
 - [x] Add `#[should_panic(expected = "Placeholder")]` test for Placeholder forcing panic path (`src/arena.rs`)
 
-### arena-eval: Evaluator Migration to Arena (Phase 2 Infrastructure)
+### arena-eval: Evaluator Migration to Arena
 
-- [x] Add `ThunkArena` + `EnvArena` to `EvalContext` as registry fields with `RefCell` interior mutability (`src/eval.rs`, `src/arena.rs`)
+Migrated Value variants from `Rc<Thunk>` to `ThunkId` handles. ~70-function refactor across all evaluator files.
+
+- [x] Add `ThunkArena` + `EnvArena` to `EvalContext` with `RefCell` interior mutability; `alloc_thunk()` and `get_thunk()` helpers (`src/eval.rs`, `src/arena.rs`)
+- [x] Change `Value` variants: `Dict(IndexMap<Key, ThunkId>)`, `Seq { head: ThunkId, tail: ThunkId }`, `Proxy { handler: ThunkId }`, `Overlay(ThunkId, ThunkId)`
+- [x] Update all ~51 builtins to use `ctx.alloc_thunk()` for construction and `ctx.get_thunk()` for access
+- [x] Update eval, materialize, deep_materialize, validate_and_wrap_record with ctx arena access
+- [x] Update public API (value_to_json, value_to_display_string), REPL, main.rs
+- [x] Verify corpus test suite passes unchanged

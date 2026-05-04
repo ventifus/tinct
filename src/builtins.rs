@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
+use crate::arena::ThunkId;
 use crate::ast::Span;
 use crate::error::{EvalError, EvalResult};
 use crate::value::Strictness;
@@ -155,14 +156,16 @@ pub(crate) fn stringify(value: &Value) -> String {
 /// `name` is the builtin name for error messages. `ctx` and `depth` are for
 /// materialization. `call_span` is used as the materialization span.
 pub(crate) fn flatten_overlay(
-    left: &Rc<Thunk>,
-    right: &Rc<Thunk>,
+    left: &ThunkId,
+    right: &ThunkId,
     name: &str,
     ctx: &Rc<crate::eval::EvalContext>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
-    // Work stack: each entry is a thunk to materialize and add as a layer.
+) -> EvalResult<IndexMap<Key, ThunkId>> {
+    use crate::arena::ThunkId;
+
+    // Work stack: each entry is a thunk ID to materialize and add as a layer.
     // We push L before R so that when we pop, R is processed first (override wins).
     // But to maintain correct left-to-right override order, we collect layers and reverse.
     //
@@ -182,15 +185,16 @@ pub(crate) fn flatten_overlay(
     // When we pop for processing: R is processed first → appended to layers first.
     // Then reverse layers to get [L_base, ..., R_override] order.
 
-    let mut work_stack: Vec<Rc<Thunk>> = Vec::new();
+    let mut work_stack: Vec<ThunkId> = Vec::new();
     // Push in reverse order: left first (processed last = base layer), right second (processed first = override).
-    work_stack.push(Rc::clone(left));
-    work_stack.push(Rc::clone(right));
+    work_stack.push(*left);
+    work_stack.push(*right);
 
     // Collect flat layers in processing order (right to left).
-    let mut layers: Vec<IndexMap<Key, Rc<Thunk>>> = Vec::new();
+    let mut layers: Vec<IndexMap<Key, ThunkId>> = Vec::new();
 
-    while let Some(thunk) = work_stack.pop() {
+    while let Some(thunk_id) = work_stack.pop() {
+        let thunk = ctx.thunk_arena.borrow().get(thunk_id).clone();
         let span = thunk.span;
         let val = materialize(&thunk, Some(&call_span), ctx, depth)?;
         match val {
@@ -219,7 +223,7 @@ pub(crate) fn flatten_overlay(
     layers.reverse();
 
     let total_cap = layers.iter().map(|m| m.len()).sum();
-    let mut result: IndexMap<Key, Rc<Thunk>> = IndexMap::with_capacity(total_cap);
+    let mut result: IndexMap<Key, ThunkId> = IndexMap::with_capacity(total_cap);
     for map in layers {
         for (key, thunk) in map {
             result.insert(key, thunk);
@@ -240,7 +244,7 @@ fn require_dict(
     ctx: &Rc<crate::eval::EvalContext>,
     depth: usize,
     call_span: Span,
-) -> EvalResult<IndexMap<Key, Rc<Thunk>>> {
+) -> EvalResult<IndexMap<Key, ThunkId>> {
     match value {
         Value::Dict(map) => Ok(map),
         Value::Overlay(l, r) => flatten_overlay(&l, &r, name, ctx, depth, call_span),
@@ -318,11 +322,13 @@ fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Key::Int(n) => Value::Int(*n),
             Key::String(s) => Value::String(s.clone()),
         };
+        let thunk = Rc::new(Thunk::new_materialized(key_value, origin));
+        let thunk_id = ctx.alloc_thunk(thunk);
         result.insert(
             Key::Int(i64::try_from(i).map_err(|_| {
                 EvalError::internal("collection index overflow".to_string(), call_span)
             })?),
-            Rc::new(Thunk::new_materialized(key_value, origin)),
+            thunk_id,
         );
     }
     ok_val(Value::Dict(result), call_span)
@@ -361,6 +367,7 @@ fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         args,
         named,
         call_span,
+        ctx,
         ..
     } = ctx_arg;
     reject_named("merge", named, call_span)?;
@@ -368,8 +375,10 @@ fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     // O(1): store thunk pointers without forcing either side.
+    let left_id = ctx.alloc_thunk(Rc::clone(&args[0]));
+    let right_id = ctx.alloc_thunk(Rc::clone(&args[1]));
     Ok(Rc::new(Thunk::new_materialized(
-        Value::Overlay(Rc::clone(&args[0]), Rc::clone(&args[1])),
+        Value::Overlay(left_id, right_id),
         call_span,
     )))
 }
@@ -414,7 +423,8 @@ fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .transpose()?
         .unwrap_or(0);
 
-    map.insert(Key::Int(next_key), Rc::clone(&args[1]));
+    let value_id = ctx.alloc_thunk(Rc::clone(&args[1]));
+    map.insert(Key::Int(next_key), value_id);
     ok_val(Value::Dict(map), call_span)
 }
 
@@ -659,10 +669,8 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match call_result {
         Ok(value) => {
             let mut result = IndexMap::with_capacity(1);
-            result.insert(
-                Key::String("ok".to_string()),
-                Rc::new(Thunk::new_materialized(value, call_span)),
-            );
+            let thunk_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(value, call_span)));
+            result.insert(Key::String("ok".to_string()), thunk_id);
             ok_val(Value::Dict(result), call_span)
         }
         Err(e) => {
@@ -672,13 +680,11 @@ fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 return Err(e);
             }
             let mut result = IndexMap::with_capacity(1);
-            result.insert(
-                Key::String("err".to_string()),
-                Rc::new(Thunk::new_materialized(
-                    Value::String(e.message()),
-                    call_span,
-                )),
-            );
+            let thunk_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                Value::String(e.message()),
+                call_span,
+            )));
+            result.insert(Key::String("err".to_string()), thunk_id);
             ok_val(Value::Dict(result), call_span)
         }
     }
@@ -791,11 +797,12 @@ fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Split dict entries: integer-keyed → positional, string-keyed → named
     let mut int_entries: Vec<(i64, Rc<Thunk>)> = Vec::with_capacity(arg_dict.len());
     let mut named_args: IndexMap<String, Rc<Thunk>> = IndexMap::with_capacity(arg_dict.len());
-    for (key, thunk) in &arg_dict {
+    for (key, thunk_id) in &arg_dict {
+        let thunk = ctx.get_thunk(*thunk_id);
         match key {
-            Key::Int(n) => int_entries.push((*n, Rc::clone(thunk))),
+            Key::Int(n) => int_entries.push((*n, thunk)),
             Key::String(s) => {
-                named_args.insert(s.clone(), Rc::clone(thunk));
+                named_args.insert(s.clone(), thunk);
             }
         }
     }
@@ -1025,7 +1032,12 @@ fn builtin_fn_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// JSON null maps to an empty dict, arrays map to integer-keyed dicts,
 /// and objects map to string-keyed dicts. Numbers are converted to `Int`
 /// when they fit in i64, otherwise `Float`.
-pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> EvalResult<Rc<Thunk>> {
+pub fn json_to_value(
+    json: &serde_json::Value,
+    depth: usize,
+    span: Span,
+    ctx: &Rc<crate::eval::EvalContext>,
+) -> EvalResult<Rc<Thunk>> {
     if depth > MAX_EVAL_DEPTH {
         return Err(EvalError::json_depth_exceeded(MAX_EVAL_DEPTH, span).into());
     }
@@ -1064,12 +1076,13 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
             }
             let mut map = IndexMap::with_capacity(arr.len());
             for (i, item) in arr.iter().enumerate() {
-                let thunk = json_to_value(item, depth + 1, span)?;
+                let thunk = json_to_value(item, depth + 1, span, ctx)?;
+                let thunk_id = ctx.alloc_thunk(thunk);
                 map.insert(
                     Key::Int(i64::try_from(i).map_err(|_| {
                         EvalError::internal("collection index overflow".to_string(), span)
                     })?),
-                    thunk,
+                    thunk_id,
                 );
             }
             ok_val(Value::Dict(map), span)
@@ -1087,8 +1100,9 @@ pub fn json_to_value(json: &serde_json::Value, depth: usize, span: Span) -> Eval
             }
             let mut map = IndexMap::with_capacity(obj.len());
             for (k, v) in obj {
-                let thunk = json_to_value(v, depth + 1, span)?;
-                map.insert(Key::String(k.clone()), thunk);
+                let thunk = json_to_value(v, depth + 1, span, ctx)?;
+                let thunk_id = ctx.alloc_thunk(thunk);
+                map.insert(Key::String(k.clone()), thunk_id);
             }
             ok_val(Value::Dict(map), span)
         }
@@ -1109,7 +1123,7 @@ fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let json_str = require_string("from-json", val, args[0].span)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| EvalError::json_parse(e.to_string(), call_span))?;
-    json_to_value(&parsed, depth, call_span)
+    json_to_value(&parsed, depth, call_span, &ctx)
 }
 
 /// Parse an integrity hash string of the form `"algo:hexdigest"`.
@@ -1584,13 +1598,14 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let mut result = IndexMap::with_capacity(map.len() + 1);
     // Insert the new element at key 0.
-    result.insert(Key::Int(0), Rc::clone(&args[0]));
+    let elem_id = ctx.alloc_thunk(Rc::clone(&args[0]));
+    result.insert(Key::Int(0), elem_id);
     // Insert existing entries reindexed as 1..n.
-    for (new_idx, (_old_key, thunk)) in map.into_iter().enumerate() {
+    for (new_idx, (_old_key, thunk_id)) in map.into_iter().enumerate() {
         let new_key = Key::Int(i64::try_from(new_idx + 1).map_err(|_| {
             EvalError::internal("collection index overflow".to_string(), call_span)
         })?);
-        result.insert(new_key, thunk);
+        result.insert(new_key, thunk_id);
     }
     ok_val(Value::Dict(result), call_span)
 }
@@ -1688,8 +1703,9 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Materialize all values so we can compare them.
     let mut pairs: Vec<(Value, Span)> = Vec::with_capacity(map.len());
-    for (_key, thunk) in &map {
-        let mat = materialize(thunk, Some(&call_span), &ctx, depth)?;
+    for (_key, thunk_id) in &map {
+        let thunk = ctx.get_thunk(*thunk_id);
+        let mat = materialize(&thunk, Some(&call_span), &ctx, depth)?;
         pairs.push((mat, thunk.span));
     }
 
@@ -1717,10 +1733,9 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
             EvalError::internal("collection index overflow".to_string(), call_span)
         })?);
-        result.insert(
-            new_key,
-            Rc::new(Thunk::new_materialized(mat_val, orig_span)),
-        );
+        let thunk = Rc::new(Thunk::new_materialized(mat_val, orig_span));
+        let thunk_id = ctx.alloc_thunk(thunk);
+        result.insert(new_key, thunk_id);
     }
     ok_val(Value::Dict(result), call_span)
 }
@@ -1730,15 +1745,17 @@ fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         args,
         named,
         call_span,
+        ctx,
         ..
     } = ctx_arg;
     reject_named("proxy", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
+    let handler_id = ctx.alloc_thunk(Rc::clone(&args[0]));
     Ok(Rc::new(Thunk::new_materialized(
         Value::Proxy {
-            handler: Rc::clone(&args[0]),
+            handler: handler_id,
         },
         call_span,
     )))
@@ -1958,8 +1975,8 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 
     let dict = match val {
         Value::Dict(map) => map,
-        Value::Overlay(l, r) => {
-            flatten_overlay(&l, &r, "prelude", &bootstrap_ctx, 0, Span::origin())?
+        Value::Overlay(l_id, r_id) => {
+            flatten_overlay(&l_id, &r_id, "prelude", &bootstrap_ctx, 0, Span::origin())?
         }
         other => {
             return Err(crate::error::EvalError::internal(
@@ -1972,11 +1989,12 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 
     // Create a child env with the prelude entries
     let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(root_env)));
-    for (key, thunk) in dict {
+    for (key, thunk_id) in dict {
         let name = match key {
             Key::String(s) => s,
             Key::Int(n) => n.to_string(),
         };
+        let thunk = bootstrap_ctx.get_thunk(thunk_id);
         stdlib_env.borrow_mut().insert(name, thunk);
     }
 
@@ -4233,7 +4251,8 @@ mod tests {
             val
         }
         let deep = build_deep(MAX_EVAL_DEPTH + 1);
-        let err = json_to_value(&deep, 0, call_span()).unwrap_err();
+        let ctx = test_ctx();
+        let err = json_to_value(&deep, 0, call_span(), &ctx).unwrap_err();
         assert!(
             err.message()
                 .contains("maximum JSON nesting depth exceeded"),
@@ -4249,10 +4268,12 @@ mod tests {
         // The is_finite() guard in json_to_value is defensive against
         // non-standard parsers or direct serde_json::Number construction.
         // Verify that a normal finite float passes through correctly.
+        let ctx = test_ctx();
         let result = mat(json_to_value(
             &serde_json::Value::Number(serde_json::Number::from_f64(3.14).expect("finite")),
             0,
             call_span(),
+            &ctx,
         ));
         assert_eq!(result, Value::Float(3.14));
     }

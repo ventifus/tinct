@@ -228,8 +228,9 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::Bool(b) => Ok(visitor.visit_bool(*b)),
         value::Value::Dict(map) => {
             let mut entries = Vec::with_capacity(map.len());
-            for (key, thunk) in map {
-                let v = eval::materialize(thunk, None, ctx, depth)?;
+            for (key, thunk_id) in map {
+                let thunk = ctx.get_thunk(*thunk_id);
+                let v = eval::materialize(&thunk, None, ctx, depth)?;
                 entries.push((key.clone(), visit_value(&v, ctx, depth + 1, visitor)?));
             }
             Ok(visitor.visit_dict(entries))
@@ -241,7 +242,8 @@ pub fn visit_value<V: ValueVisitor>(
             visit_value(&value::Value::Dict(map), ctx, depth, visitor)
         }
         value::Value::Seq { head, .. } => {
-            let head_val = eval::materialize(head, None, ctx, depth)?;
+            let head_thunk = ctx.get_thunk(*head);
+            let head_val = eval::materialize(&head_thunk, None, ctx, depth)?;
             let head_out = visit_value(&head_val, ctx, depth + 1, visitor)?;
             visitor.visit_seq_head(head_out)
         }
@@ -439,7 +441,10 @@ pub fn value_to_json(
 ) -> Result<serde_json::Value, Box<error::EvalError>> {
     // Seq has a span-bearing error; handle before the generic visitor.
     if let value::Value::Seq { head, .. } = val {
-        return Err(error::EvalError::value_not_serializable("Seq".to_string(), head.span).into());
+        let head_thunk = ctx.get_thunk(*head);
+        return Err(
+            error::EvalError::value_not_serializable("Seq".to_string(), head_thunk.span).into(),
+        );
     }
     visit_value(val, ctx, depth, &JsonVisitor)
 }

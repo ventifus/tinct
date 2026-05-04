@@ -16,7 +16,7 @@ use crate::builtins::{
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Key, Thunk, Value};
+use crate::value::{BuiltinArgs, Key, Thunk, ThunkId, Value};
 
 /// Maximum number of parts produced by `$split` (1,000,000 elements).
 /// Prevents heap exhaustion from splitting by empty separator or small patterns.
@@ -76,7 +76,7 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Bound allocation before the guard fires: take at most MAX_SPLIT_PARTS + 1 entries
     // so that adversarial input (e.g., splitting a large string by empty separator) cannot
     // heap-exhaust the process before the check.
-    let mut map = IndexMap::new();
+    let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
     for (i, part) in input
         .split(sep.as_str())
         .take(MAX_SPLIT_PARTS + 1)
@@ -89,6 +89,10 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )
             .into());
         }
+        let thunk = Rc::new(Thunk::new_materialized(
+            Value::String(part.to_string()),
+            call_span,
+        ));
         map.insert(
             Key::Int(i64::try_from(i).map_err(|_| {
                 EvalError::resource_limit_exceeded(
@@ -96,10 +100,7 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     call_span,
                 )
             })?),
-            Rc::new(Thunk::new_materialized(
-                Value::String(part.to_string()),
-                call_span,
-            )),
+            ctx.alloc_thunk(thunk),
         );
     }
     ok_val(Value::Dict(map), call_span)

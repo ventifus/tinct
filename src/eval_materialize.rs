@@ -1117,12 +1117,25 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     // For Record types, apply proxy contract wrapping
                     if let Type::Record(ref row) = expected {
                         if let Value::Dict(ref entries) = value {
+                            let ctx_ref = match guard_ctx.as_ref() {
+                                Some(ctx) => ctx,
+                                None => {
+                                    let err = EvalError::internal(
+                                        "validate_and_wrap_record requires ctx but guard_ctx is None".to_string(),
+                                        guard_span,
+                                    );
+                                    let err = decorate(Box::new(err));
+                                    thunk.cache_failure(&err);
+                                    return Action::Continue(Err(err));
+                                }
+                            };
                             match validate_and_wrap_record(
                                 entries,
                                 row,
                                 &mut *field_path,
                                 guard_span,
                                 inner_span,
+                                ctx_ref,
                             ) {
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict(new_entries);
@@ -1358,14 +1371,15 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         Value::Dict(map) => {
                             // Use StrKey wrapper to avoid allocating Key::String
                             match map.get(&crate::value::StrKey(&field)) {
-                                Some(thunk) => {
+                                Some(thunk_id) => {
                                     // Field found - need to materialize it
                                     // TODO: thread outer mat_span through DotAccessForceData to preserve
                                     // materialization context across access chains. Currently uses access_span
                                     // directly, which loses the outer context when a.b.c is forced from elsewhere.
                                     // See test_access_chain_span_propagation in eval.rs and doc/10-errors.md Part 3 DECORATE.
+                                    let thunk = ctx.get_thunk(*thunk_id);
                                     Action::Materialize {
-                                        thunk: Rc::clone(thunk),
+                                        thunk,
                                         mat_span: Some(access_span),
                                         depth,
                                     }
@@ -1387,8 +1401,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         }
                         Value::Proxy { handler } => {
                             // Proxy handler invocation
+                            let handler_thunk = ctx.get_thunk(handler);
                             match invoke_proxy_handler(
-                                &handler,
+                                &handler_thunk,
                                 Value::String(field.clone()),
                                 &ctx,
                                 &access_span,
@@ -1466,11 +1481,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // Evaluate the key expression (synchronous for now)
                             match eval_key(&key_expr, &env, &ctx, depth) {
                                 Ok(key) => match map.get(&key) {
-                                    Some(thunk) => {
+                                    Some(thunk_id) => {
                                         // Field found - return it to be forced
                                         // TODO: thread outer mat_span through BracketForceTargetData (same issue as DotAccess)
+                                        let thunk = ctx.get_thunk(*thunk_id);
                                         Action::Materialize {
-                                            thunk: Rc::clone(thunk),
+                                            thunk,
                                             mat_span: Some(access_span),
                                             depth,
                                         }
@@ -1503,8 +1519,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         Key::Int(n) => Value::Int(n),
                                         Key::String(s) => Value::String(s),
                                     };
+                                    let handler_thunk = ctx.get_thunk(handler);
                                     match invoke_proxy_handler(
-                                        &handler,
+                                        &handler_thunk,
                                         key_val,
                                         &ctx,
                                         &access_span,
@@ -1594,6 +1611,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     &mut vec![],
                                     expr_span,
                                     thunk_span,
+                                    &ctx,
                                 ) {
                                     Ok(new_entries) => {
                                         Action::Continue(Ok(Value::Dict(new_entries)))

@@ -19,19 +19,6 @@ Design decision (DONE.md): ship Phase 1+2 together as a single migration — var
 
 
 
-### arena-eval: Evaluator Migration to Arena
-
-Migrate Value, ThunkState, BuiltinFn, eval, and builtins from `Rc<Thunk>` to `ThunkId`/`EnvId`. See doc/08-evaluation.md §Allocation Strategy Phase 2.
-
-**Depends on:** `arena-types`
-
-- [x] Add `ThunkArena` + `EnvArena` to `EvalContext` as registry fields with `RefCell` interior mutability — Phase 2 infrastructure establishes arena pattern without changing Value variants (`src/eval.rs`, `src/arena.rs`)
-- [ ] Change `Value` variants to arena handles: `Dict(IndexMap<Key, ThunkId>)`, `Function { ..., env: EnvId }`, `Seq { head: ThunkId, tail: ThunkId }`, `Proxy { handler: ThunkId }` — **NOTE:** this is a ~70-function refactor that cascades across all evaluator files (`src/value.rs`)
-- [ ] Change `ThunkState` variants to use `ThunkId`/`EnvId` instead of `Rc<Thunk>`/`Rc<RefCell<Environment>>` (`src/value.rs`)
-- [ ] Change `BuiltinFn` signature to receive arena access; update all ~51 builtins (`src/builtins.rs`, `src/builtins_string.rs`)
-- [ ] Update `eval()`, `materialize()`, and `deep_materialize()` to allocate via arena (`src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] Update public API, REPL, LSP to manage arenas (`src/lib.rs`, `src/repl.rs`, `src/lsp/document.rs`)
-- [ ] Verify full test suite passes (`tests/`)
 
 ### arena-cek: CEK Machine Integration
 
