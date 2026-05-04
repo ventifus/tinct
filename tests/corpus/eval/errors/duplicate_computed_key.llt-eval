@@ -1,0 +1,8 @@
+# E030: Duplicate computed keys that resolve to the same value
+# Both $k1 and $k2 are computed keys ($ prefix) that resolve to "x" at runtime.
+# The parser cannot catch this because the keys are computed, not literal.
+# The evaluator must detect the duplicate when building the dict.
+[k1: "x"  k2: "x"]
+[result: [$k1: 1  $k2: 2]]
+===
+[E030] duplicate key: x

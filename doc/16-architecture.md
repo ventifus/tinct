@@ -49,7 +49,7 @@
 - AST coverage: every `Expr` variant requires both an `eval` handler (src/eval.rs) and a `typecheck` handler (src/typecheck.rs)
 - Builtin registration: all builtins must appear in `standard_builtins()` (src/builtins.rs) — this is the authoritative list
 - Environment chain: builtins → stdlib → user code (root env contains Rust-native builtins; stdlib env wraps root and loads prelude.llt; user code inherits from stdlib)
-- Desugar ordering: `desugar_file()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_file_with_input, CLI, REPL, stdlib loading)
+- Desugar ordering: `desugar_file()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_file_with_input, CLI, REPL, stdlib loading, lsp/document.rs::update_document)
 
 **Cross-module coupling:**
 - Circular dependency: builtins.rs calls `materialize`/`invoke_function` (eval.rs); eval.rs calls `standard_builtins()` (builtins.rs). Safe because dependency is at function-call level, not module init.

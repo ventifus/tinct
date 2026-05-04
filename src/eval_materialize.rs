@@ -468,6 +468,8 @@ pub(crate) fn force_step(
                         origin.as_deref(),
                         thunk_span,
                     );
+                    // Pop from eval_stack before early return
+                    thunk_ctx.state.borrow_mut().eval_stack.pop();
                     if decorated.kind.is_cacheable() {
                         thunk.cache_failure(&decorated);
                     } else {
@@ -523,6 +525,8 @@ pub(crate) fn force_step(
                         origin.as_deref(),
                         thunk_span,
                     );
+                    // Pop from eval_stack before early return
+                    thunk_ctx.state.borrow_mut().eval_stack.pop();
                     if decorated.kind.is_cacheable() {
                         thunk.cache_failure(&decorated);
                     } else {
@@ -556,6 +560,8 @@ pub(crate) fn force_step(
                     origin.as_deref(),
                     thunk_span,
                 );
+                // Pop from eval_stack before error return
+                thunk_ctx.state.borrow_mut().eval_stack.pop();
                 if decorated.kind.is_cacheable() {
                     thunk.cache_failure(&decorated);
                 } else {
@@ -647,6 +653,8 @@ pub(crate) fn force_step(
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion
                 if let Some(value) = result_thunk.try_get_materialized() {
+                    // Pop from eval_stack before fast-path return
+                    thunk_ctx.state.borrow_mut().eval_stack.pop();
                     thunk.set_state(ThunkState::Materialized(value.clone()));
                     Action::Continue(Ok(value))
                 } else {
@@ -673,6 +681,8 @@ pub(crate) fn force_step(
                     origin.as_deref(),
                     thunk_span,
                 );
+                // Pop from eval_stack before error return
+                thunk_ctx.state.borrow_mut().eval_stack.pop();
                 if decorated.kind.is_cacheable() {
                     thunk.cache_failure(&decorated);
                 } else {
@@ -914,6 +924,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     origin.as_deref().unwrap_or("call").to_string(),
                                     call_span,
                                 );
+                                // Pop from eval_stack before error return
+                                thunk_ctx.state.borrow_mut().eval_stack.pop();
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure(&e);
                                 } else {
@@ -950,6 +962,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 if let Some(value) = result_thunk.try_get_materialized() {
                                     // Fast path: builtin result is already materialized.
                                     // args/named are no longer needed; drop them implicitly.
+                                    // Pop from eval_stack before fast-path return
+                                    thunk_ctx.state.borrow_mut().eval_stack.pop();
                                     thunk.set_state(ThunkState::Materialized(value.clone()));
                                     Action::Continue(Ok(value))
                                 } else {
@@ -979,6 +993,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 }
                             }
                             Err(e) => {
+                                // Pop from eval_stack before error return
+                                thunk_ctx.state.borrow_mut().eval_stack.pop();
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure(&e);
                                 } else {
@@ -1003,6 +1019,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             call_span,
                         );
                         let decorated = decorate(Box::new(err));
+                        // Pop from eval_stack before error return
+                        thunk_ctx.state.borrow_mut().eval_stack.pop();
                         if decorated.kind.is_cacheable() {
                             thunk.cache_failure(&decorated);
                         } else {
@@ -1021,6 +1039,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 },
                 Err(e) => {
                     // Function materialization failed
+                    // Pop from eval_stack before error return
+                    thunk_ctx.state.borrow_mut().eval_stack.pop();
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else {
@@ -1250,6 +1270,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     match (def.func)(builtin_args).map_err(&decorate) {
                         Ok(result_thunk) => {
                             if let Some(value) = result_thunk.try_get_materialized() {
+                                // Pop from eval_stack before fast-path return
+                                thunk_ctx.state.borrow_mut().eval_stack.pop();
                                 thunk.set_state(ThunkState::Materialized(value.clone()));
                                 Action::Continue(Ok(value))
                             } else {
@@ -1269,6 +1291,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             }
                         }
                         Err(e) => {
+                            // Pop from eval_stack before error return
+                            thunk_ctx.state.borrow_mut().eval_stack.pop();
                             if e.kind.is_cacheable() {
                                 thunk.cache_failure(&e);
                             } else {
@@ -1280,6 +1304,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 }
                 Err(e) => {
                     let e = decorate(e);
+                    // Pop from eval_stack before error return
+                    thunk_ctx.state.borrow_mut().eval_stack.pop();
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else {
@@ -2326,6 +2352,55 @@ mod tests {
         assert!(
             err.secondary_span.is_none(),
             "Secondary span should be suppressed when same as definition span"
+        );
+    }
+
+    #[test]
+    fn test_eval_stack_cleaned_on_depth_exceeded_error() {
+        // Verify that eval_stack is properly cleaned up when a DepthExceeded error
+        // occurs, ensuring the push/pop imbalance fix is working correctly.
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 10);
+
+        // Create a deeply nested expression that will exceed MAX_EVAL_DEPTH
+        // We'll create a chain of function calls to trigger depth limit
+        let mut expr = sp(Expr::Int(42));
+        for _ in 0..MAX_EVAL_DEPTH + 10 {
+            expr = sp(Expr::Call {
+                func: Box::new(sp(Expr::Fn {
+                    return_ann: None,
+                    params: vec![],
+                    body: Rc::new(expr),
+                    desugared: false,
+                })),
+                args: vec![],
+                named_args: vec![],
+                implied: false,
+            });
+        }
+
+        // Create a thunk that will exceed depth
+        let env = empty_env();
+        let thunk = Thunk::new_unevaluated(Rc::new(expr), env, Rc::clone(&ctx), span);
+
+        // Attempt to materialize - should fail with DepthExceeded
+        let result = crate::eval::materialize(&thunk, None, &ctx, 0);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, crate::error::ErrorKind::DepthExceeded { .. }),
+            "Expected DepthExceeded error, got {:?}",
+            err.kind
+        );
+
+        // Verify eval_stack is empty after the error
+        let eval_stack = ctx.state.borrow().eval_stack.clone();
+        assert!(
+            eval_stack.is_empty(),
+            "eval_stack should be empty after DepthExceeded error, but contains {} entries: {:?}",
+            eval_stack.len(),
+            eval_stack
         );
     }
 }

@@ -1,0 +1,9 @@
+# Laziness proof: $map over dict preserves thunks in unused values
+# The mapped dict contains an error in y's value (division by zero),
+# but because we only access x, the error is never triggered.
+# This proves that $map does NOT eagerly materialize dict values.
+[map [fn [v] [+ v 10]] [x: 1  y: [/ 1 0]]]
+---
+%["x"]
+===
+Int(11)

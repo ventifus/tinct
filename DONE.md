@@ -3636,3 +3636,11 @@ Single atomic change. All internal `.llt` files migrated in the same commit. See
 - [x] doc/11a-builtins.md header: "46" → "51"
 - [x] special_form_arity.llt-eval corpus test created
 - [x] resource_limit_exceeded.llt-eval: moved from errors/ to regressions/ (placeholder, E043 not triggerable via corpus)
+
+### cycle-findings-c126: C126 Codebase Health
+
+- [x] eval_materialize.rs: 13 eval_stack.pop() calls on non-Memoize exit paths + unit test
+- [x] doc/10-errors.md: E055-E057 added to table; stale counts removed
+- [x] doc/06-type-inference.md: "Function variance fix" → "CALL-MONO/CALL-POLY divergence fix"
+- [x] doc/16-architecture.md: LSP entry point added to desugar list (update_document)
+- [x] 4 corpus tests: eval_depth_exceeded, map_dict_thunk_preservation, reduce_lazy_chain, duplicate_computed_key

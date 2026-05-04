@@ -370,14 +370,14 @@ This section specifies the structured representation that replaces the freeform 
 
 ### Motivation
 
-The `EvalError` struct uses a structured `ErrorKind` enum with 31 domain-specific variants (see Part 1: Variant Catalog above) instead of a freeform `message: String` field. This structured approach provides:
+The `EvalError` struct uses a structured `ErrorKind` enum with domain-specific variants (see Part 1: Variant Catalog above) instead of a freeform `message: String` field. This structured approach provides:
 
 1. **Programmatic error identity** — tests and tooling can branch on error kind via pattern matching.
 2. **Structured data extraction** — domain-specific fields (e.g., `key` in `KeyNotFound`, `available_keys` for suggestions) are directly accessible.
 3. **Error codes** — stable identifiers (E001–E099) enable `tinct explain` and documentation linking.
 4. **Multi-format rendering** — error data is separated from presentation, supporting JSON output, LSP diagnostics, and format-independent rendering.
 
-The structured error model is fully implemented. The 51 builtins in `standard_builtins()` and 61+ corpus error tests comprehensively exercise the error variants.
+The structured error model is fully implemented. The builtins in `standard_builtins()` and the corpus error tests comprehensively exercise the error variants.
 
 ### Design: `ErrorKind` Enum
 
@@ -532,6 +532,9 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E052 | `IncludeCycle` | Include |
 | E053 | `IncludeParseFailed` | Include |
 | E054 | `IncludeFileTooLarge` | Include |
+| E055 | `IncludeHashMismatch` | Include |
+| E056 | `IncludeHashRequired` | Include |
+| E057 | `IncludePathNotAllowed` | Include |
 | E060 | `ParseConversion` | Conversion |
 | E061 | `JsonParse` | Conversion |
 | E062 | `JsonRange` | Conversion |
@@ -912,6 +915,9 @@ All 31 `ErrorKind` variants map to stable error codes and human-readable message
 | **IncludeCycle** | E052 | `"circular include detected: \"{path}\""` | `include` call expression |
 | **IncludeParseFailed** | E053 | `"include: parse error in \"{path}\": {detail}"` | `include` call expression |
 | **IncludeFileTooLarge** | E054 | `"include: file \"{path}\" is {size} bytes, exceeds {limit} byte limit"` | `include` call expression |
+| **IncludeHashMismatch** | E055 | `"include: integrity check failed for \"{path}\": expected {expected}, got {actual}"` | `include` call expression |
+| **IncludeHashRequired** | E056 | `"include: integrity hash required for \"{path}\" (--require-integrity)"` | `include` call expression |
+| **IncludePathNotAllowed** | E057 | `"include: path \"{path}\" is not permitted by the --allow-path allowlist"` | `include` call expression |
 | **ParseConversion** | E060 | `"{builtin}: cannot parse {input:?} as {target}"` | Builtin call expression |
 | **JsonParse** | E061 | `"from-json: invalid JSON: {detail}"` | `from-json` call expression |
 | **JsonRange** | E062 | `"JSON number outside representable range"` | `from-json` call expression |
@@ -919,7 +925,7 @@ All 31 `ErrorKind` variants map to stable error codes and human-readable message
 | **UserError** | E080 | `"{message}"` (user-provided) | `error` call expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
-The 31 variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
+The variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
 
 ## Known Span Assignment Issues
 

@@ -1,0 +1,9 @@
+# Laziness proof: $reduce result remains lazy until forced
+# The reduce builds an accumulator that would error if fully materialized,
+# but we never access the error-producing key, so the error never fires.
+# This proves that $reduce returns a lazy dict, not an eagerly materialized one.
+[reduce [fn [acc x] [sum: [+ acc.sum x]  error_key: [/ 1 0]]] [sum: 0  error_key: 0] [1 2 3]]
+---
+%["sum"]
+===
+Int(6)
