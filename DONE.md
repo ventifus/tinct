@@ -3759,3 +3759,7 @@ Fixes from the C141 health review.
 
 - [x] Fix `test_ctx()` in `src/eval_deep.rs` — `create_root_env()` → `create_stdlib_env().expect("stdlib failed")`
 - [x] Add `#[should_panic(expected = "Placeholder")]` test for Placeholder forcing panic path (`src/arena.rs`)
+
+### arena-eval: Evaluator Migration to Arena (Phase 2 Infrastructure)
+
+- [x] Add `ThunkArena` + `EnvArena` to `EvalContext` as registry fields with `RefCell` interior mutability (`src/eval.rs`, `src/arena.rs`)

@@ -27,6 +27,7 @@ pub struct EnvId(u32);
 ///
 /// Phase 2 API: the arena wraps a `Vec<Rc<Thunk>>`. Phase 3 will migrate to `Vec<Thunk>`
 /// for direct ownership. All public methods remain the same across phases.
+#[derive(Debug)]
 pub(crate) struct ThunkArena {
     thunks: Vec<Rc<Thunk>>,
 }
@@ -83,6 +84,7 @@ impl Default for ThunkArena {
 }
 
 /// Arena for environment allocation. Stores `FlatEnv` indexed by `EnvId`.
+#[derive(Debug)]
 pub(crate) struct EnvArena {
     envs: Vec<FlatEnv>,
 }
@@ -130,6 +132,7 @@ impl Default for EnvArena {
 ///
 /// **Hybrid model:** Static keys (known at parse time) use `slots` for O(1) lookup.
 /// Computed keys (e.g., `[$expr: value]`) fall back to the `overflow` HashMap.
+#[derive(Debug)]
 pub(crate) struct FlatEnv {
     /// Static keys indexed by compile-time slot number from the resolver.
     pub(crate) slots: Vec<Option<ThunkId>>,

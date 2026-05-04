@@ -25,15 +25,13 @@ Migrate Value, ThunkState, BuiltinFn, eval, and builtins from `Rc<Thunk>` to `Th
 
 **Depends on:** `arena-types`
 
-- [ ] Change `Value` variants to arena handles: `Dict(IndexMap<Key, ThunkId>)`, `Function { ..., env: EnvId }`, `Seq { head: ThunkId, tail: ThunkId }`, `Proxy { handler: ThunkId }` (`src/value.rs`)
-- [ ] Change `ThunkState` variants (`Unevaluated`, `PendingCall`, `PendingBuiltin`, `Guarded`) to use `ThunkId`/`EnvId` instead of `Rc<Thunk>`/`Rc<RefCell<Environment>>` (`src/value.rs`)
-- [ ] Add `ThunkArena` + `EnvArena` to `EvalContext`; change `BuiltinFn` signature to receive arena access (`src/builtins.rs`, `src/eval.rs`)
-- [ ] Update `eval()`, `materialize()`, and `deep_materialize()` to allocate via arena and access thunks via `ThunkId` (`src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] Update all builtins to use `ThunkId`/`EnvId` — arithmetic, string ops, collection ops, control flow, I/O (`src/builtins.rs`, `src/builtins_string.rs`)
-- [ ] Update public API functions: `eval_source()`, `eval_file()`, `eval_file_with_input()`, `value_to_json()`, `value_to_display_string()` (`src/lib.rs`)
-- [ ] Update REPL to create arena per input evaluation (`src/repl.rs`)
-- [ ] Update LSP document evaluation to use arena per document (`src/lsp/document.rs`)
-- [ ] Verify full test suite passes — corpus tests, unit tests, CLI tests (`tests/`)
+- [x] Add `ThunkArena` + `EnvArena` to `EvalContext` as registry fields with `RefCell` interior mutability — Phase 2 infrastructure establishes arena pattern without changing Value variants (`src/eval.rs`, `src/arena.rs`)
+- [ ] Change `Value` variants to arena handles: `Dict(IndexMap<Key, ThunkId>)`, `Function { ..., env: EnvId }`, `Seq { head: ThunkId, tail: ThunkId }`, `Proxy { handler: ThunkId }` — **NOTE:** this is a ~70-function refactor that cascades across all evaluator files (`src/value.rs`)
+- [ ] Change `ThunkState` variants to use `ThunkId`/`EnvId` instead of `Rc<Thunk>`/`Rc<RefCell<Environment>>` (`src/value.rs`)
+- [ ] Change `BuiltinFn` signature to receive arena access; update all ~51 builtins (`src/builtins.rs`, `src/builtins_string.rs`)
+- [ ] Update `eval()`, `materialize()`, and `deep_materialize()` to allocate via arena (`src/eval.rs`, `src/eval_materialize.rs`)
+- [ ] Update public API, REPL, LSP to manage arenas (`src/lib.rs`, `src/repl.rs`, `src/lsp/document.rs`)
+- [ ] Verify full test suite passes (`tests/`)
 
 ### arena-cek: CEK Machine Integration
 
