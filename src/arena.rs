@@ -295,6 +295,29 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "Placeholder")]
+    fn test_placeholder_force_panics() {
+        use crate::eval::materialize;
+        use crate::eval::EvalContext;
+        use crate::value::Environment;
+        use std::cell::RefCell;
+
+        // Create a placeholder thunk (unfilled)
+        let mut arena = ThunkArena::new();
+        let id = arena.alloc_placeholder();
+        let thunk = arena.get(id);
+
+        // Create a minimal test context
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        let ctx = EvalContext::new(base_dir, env, false);
+
+        // Attempt to materialize the placeholder thunk - this should panic
+        let _result = materialize(&thunk, None, &ctx, 0);
+    }
+
+    #[test]
     fn test_env_arena_alloc_get() {
         let mut arena = EnvArena::new();
         let env = FlatEnv::empty();
