@@ -1,0 +1,17 @@
+# Regression test placeholder: E043 ResourceLimitExceeded is not yet triggerable
+# This test documents that E043 exists in the error taxonomy but cannot be triggered
+# via corpus tests because no resource limits are currently enforced beyond depth
+# limits (which use E040/E041).
+#
+# BACKGROUND: E043 was added in Cycle #40 (2026-04-27) for resource-guard errors,
+# but the triggering code paths (MAX_COLLECT_SIZE, MAX_STRING_SIZE) are enforced
+# only in unit tests where they can be set to small values. Corpus tests cannot
+# configure these limits, so E043 remains untestable here.
+#
+# NOTE: This is NOT an error test (expected output is successful evaluation).
+# It was moved from tests/corpus/eval/errors/ where it didn't belong.
+
+# Create a moderately large dict (does NOT trigger E043)
+[large: [range 100]]
+===
+Dict({"large": Seq(0..100)})
