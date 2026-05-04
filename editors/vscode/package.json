@@ -4,6 +4,10 @@
   "description": "Tinct language support — diagnostics and hover types",
   "version": "0.1.0",
   "publisher": "tinct",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ventifus/tinct"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -17,6 +21,21 @@
         "aliases": ["Tinct", "llt"],
         "extensions": [".llt", ".tinct"],
         "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "llt",
+        "scopeName": "source.llt",
+        "path": "./syntaxes/tinct.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.llt.codeblock",
+        "path": "./syntaxes/tinct.markdown-injection.json",
+        "injectTo": ["text.html.markdown"],
+        "embeddedLanguages": {
+          "meta.embedded.block.llt": "llt"
+        }
       }
     ],
     "configuration": {

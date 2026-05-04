@@ -10,7 +10,7 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 
 ## Syntax at a Glance
 
-```lisp
+```tinct
 [
     # Data -- just key-value pairs
     base: [timeout: 30  retries: 3]
@@ -35,7 +35,7 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 
 `[]` for everything: dicts, function calls, type annotations, and document separators. One rule, no special forms to memorize.
 
-```lisp
+```tinct
 [name: "alice"  active: true]         # dict
 [map [fn [u] u.name] users]           # function call
 [x@Int: 42]                           # annotated entry
@@ -45,7 +45,7 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 
 Dicts are the fundamental data structure. Lists are dicts with consecutive integer keys, so all operations work uniformly on both.
 
-```lisp
+```tinct
 [a: 1  b: 2]   # dict — string keys
 [10  20  30]   # list — integer keys 0, 1, 2
 ```
@@ -54,7 +54,7 @@ Dicts are the fundamental data structure. Lists are dicts with consecutive integ
 
 Quoted strings are literals; bare identifiers are variable references. The `$` prefix disambiguates data from calls.
 
-```lisp
+```tinct
 [env: "production"  tier: "api"]   # quoted strings are literals
 [base: [env: environment]]         # environment is a variable
 ```
@@ -63,7 +63,7 @@ Quoted strings are literals; bare identifiers are variable references. The `$` p
 
 Function application uses `[f args...]` where `f` is a bare identifier, making calls concise. The `$` prefix forces data interpretation.
 
-```lisp
+```tinct
 [+ x 1]
 [map [fn [u] u.name] users]
 ```
@@ -72,7 +72,7 @@ Function application uses `[f args...]` where `f` is a bare identifier, making c
 
 Everything is a thunk — computed only when forced. Unused branches cost nothing; large structures can be partially accessed without evaluating the whole.
 
-```lisp
+```tinct
 [
     all-records: [load "large-dataset.json"]
     first-name:  all-records.0.name   # forces only what's needed
@@ -83,7 +83,7 @@ Everything is a thunk — computed only when forced. Unused branches cost nothin
 
 Hindley-Milner inference with row polymorphism. Annotate where you want precision; the rest is inferred. Type errors are reported before evaluation runs.
 
-```lisp
+```tinct
 [
     double: [fn@Number [x@Number] [* x 2]]
     result: [double 21]   # inferred: Int
@@ -94,7 +94,7 @@ Hindley-Milner inference with row polymorphism. Annotate where you want precisio
 
 Call sites pass named arguments after positional ones. Functions declare named parameters with optional defaults.
 
-```lisp
+```tinct
 [fetch url timeout: 60  retries: 3]
 ```
 
@@ -102,7 +102,7 @@ Call sites pass named arguments after positional ones. Functions declare named p
 
 Missing keys are always errors. Use `get-or` for optional access, keeping the absence of a value explicit.
 
-```lisp
+```tinct
 data.missing                           # error: key not found
 [get-or data "missing" "fallback"]     # explicit optional access
 ```
@@ -111,7 +111,7 @@ data.missing                           # error: key not found
 
 Multi-document files pass the output of one document to the next as `%`. Transform data across stages without intermediate variables or a shell pipeline.
 
-```lisp
+```tinct
 [users: [...]]
 ---
 [active: [filter [fn [u] u.active] %.users]]
@@ -139,7 +139,7 @@ A standard library written in Tinct itself (`stdlib/prelude.llt`), covering coll
 
 ### Data Representation
 
-```lisp
+```tinct
 [
     database: [
         host: "localhost"
@@ -156,7 +156,7 @@ A standard library written in Tinct itself (`stdlib/prelude.llt`), covering coll
 
 ### With Transformations
 
-```lisp
+```tinct
 [
     # Base config -- shared settings
     base: [timeout: 30  retries: 3]
