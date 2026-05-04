@@ -12,19 +12,52 @@ Bare-word references, implied call, `$` as disambiguator, and `%`-named pipeline
 
 - [x] Design new-syntax — see doc/whatif/new-syntax.md §Design
 
-### new-syntax-c: Phase 2b — Polish and Completeness
-
-See `doc/whatif/new-syntax.md §Phased Adoption` and `doc/02-syntax.md §6 Complete Grammar`.
+### new-syntax-c: Phase 2b — Polish and Completeness (remaining)
 
 **Depends on:** `new-syntax-b`
 
-- [ ] **tree-sitter-llt** (`tree-sitter-llt/grammar.js`): Update grammar for `identifier` rule (bare word → reference), `escaped_ref` (`$word`), implied call in bracket forms, `%`/`%name` pipeline identifiers, `--- %name@Type expects: Type` section headers.
-- [ ] **Corpus tests — implied call**: Nested `[f [g x] y]`, zero-arg `[clock]`, single-arg `[negate n]`, `[f]` is call not data, `[$f]` is data not call.
-- [ ] **Corpus tests — EscapedRef data sequences**: `stages: [$parse transform format]` (only head needs `$`). Data sequences with `%` references.
-- [ ] **Corpus tests — named pipeline sections**: Multi-input `[merge %defaults %overrides]`, type-annotated outputs (`%config@Config`), `expects:` contract violations at section boundaries, forward reference to unnamed section → `UndefinedVariable`.
-- [ ] **Error message tests**: `UndefinedVariable` for unquoted string → "Did you mean to quote?" suggestion fires. No `$name` references remain in error output.
-- [ ] **Doc updates**: Verify `doc/02-syntax.md §6 Complete Grammar` ebnf rules match implementation. Add `call_implied` production to §6 `bracket_expr` rule (currently omits `[f x y]` implied-call form). Add Priority 2b (Identifier+ImmediateAt → Dict, fixes `[Foo@String]`) to §3.2 priority table. Fix `src/typecheck.rs:2495-2497` comment about `Fn@RetType` classification (Priority 2b routes it to Dict, not implied Call). Update `doc/09-documents.md` DOC-PIPELINE implementation correspondence table with exact `eval.rs` line numbers for named-section Σ accumulation. Update `$include` cross-references that still use old `$$` notation in formal spec section. Update `doc/02-syntax.md §2.5` to document that `%name` uses `lex_percent_word()` and gets dot-access treatment (`last_significant_token = VarRef`), unlike plain bare words where `a.b` tokenizes as a single `BareWord("a.b")`. Update `doc/09-documents.md` formal DOC-PIPELINE rule to note transitional `$` binding alongside `%`. Fix `output_type` annotation resolution to use `result_env` (post-body type aliases visible) instead of `env` in `src/typecheck.rs:529`.
-- [ ] **`$$` removal**: Remove `"$"` binding from pipeline env if still present after `new-syntax-b`. Confirm no corpus test or stdlib references remain. Also update `doc/whatif/structural-contracts.md` and `doc/whatif/index.md` which still use `$$` in proposal examples (lines ~25, 26, 39, 87, 120).
+- [ ] **Corpus tests — named pipeline sections** (remaining): type-annotated outputs (`%config@Config`) and `expects:` contract violations at section boundaries. Multi-input and forward-reference tests already added.
+
+### new-syntax-migrate: Final Syntax Migration
+
+Migrate remaining files to new syntax (bare-word references, implied call, `%` pipeline).
+
+- [ ] **Migrate `README.md` to new syntax**: ~25 old-syntax occurrences in code examples (`$var` references, `[call $f ...]`, `$$`). Update all examples to bare-word references, implied call, and `%` pipeline notation.
+- [ ] **Migrate `lib/yaml.llt` to new syntax**: ~49 old-syntax occurrences in implementation (`$var` references, `[call $f ...]`). Same migration as `stdlib/prelude.llt` in `new-syntax-b` — bare word refs, implied calls, quote any bare-word strings.
+- [ ] **Migrate `doc/whatif/algebraic-data-types.md` to new syntax**: ~42 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/arena-patterns.md` to new syntax**: ~4 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/call-aliases.md` to new syntax**: ~26 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/circular-dep-error-paths.md` to new syntax**: ~1 old-syntax occurrence.
+- [ ] **Migrate `doc/whatif/eval-builtins-boundary.md` to new syntax**: ~2 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/eval-semantics-verification.md` to new syntax**: ~5 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/float-dict-keys.md` to new syntax**: ~17 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/gradual-typing.md` to new syntax**: ~16 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/index.md` to new syntax**: ~25 old-syntax occurrences in code examples.
+- [ ] **Migrate `doc/whatif/io.md` to new syntax**: ~188 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/let-binding.md` to new syntax**: ~22 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/lib-regex.md` to new syntax**: ~57 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/lib-sql.md` to new syntax**: ~105 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/lib-supplemental.md` to new syntax**: ~105 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/lib-tls.md` to new syntax**: ~87 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/macros.md` to new syntax**: ~53 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/narrowing.md` to new syntax**: ~61 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/nominal-variants.md` to new syntax**: ~53 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/numeric-types.md` to new syntax**: ~13 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/parameterized-type-aliases.md` to new syntax**: ~1 old-syntax occurrence.
+- [ ] **Migrate `doc/whatif/parser-rewrite.md` to new syntax**: ~7 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/pattern-matching.md` to new syntax**: ~114 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/quasiquoting.md` to new syntax**: ~17 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/source-text-availability.md` to new syntax**: No code examples detected — verify clean.
+- [ ] **Migrate `doc/whatif/string-interning.md` to new syntax**: No code examples detected — verify clean.
+- [ ] **Migrate `doc/whatif/string-interpolation.md` to new syntax**: ~54 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/structural-contracts.md` to new syntax**: ~25 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/TEMPLATE.md` to new syntax**: No code examples detected — verify clean.
+- [ ] **Migrate `doc/whatif/templating.md` to new syntax**: ~107 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/type-predicates.md` to new syntax**: ~50 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/typeclasses.md` to new syntax**: ~39 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/union-find-substitution.md` to new syntax**: No code examples detected — verify clean.
+- [ ] **Migrate `doc/whatif/union-types.md` to new syntax**: ~11 old-syntax occurrences.
+- [ ] **Migrate `doc/whatif/value-serializer-visitor.md` to new syntax**: No code examples detected — verify clean.
 
 ## Cycle Findings — C116
 
@@ -34,13 +67,13 @@ Findings from 9-agent review after cycle #116 analysis phase.
 
 - [ ] **Major — eval_stack push/pop asymmetry on DepthExceeded** (`src/eval_materialize.rs:391-413, 567-593`): For Unevaluated and PendingBuiltin thunks, `eval_stack.push()` is called BEFORE the depth check. On the DepthExceeded path, the thunk state is restored (no InProgress sentinel left) but the `eval_stack` entry is never popped — the Memoize continuation that does the pop is never pushed. Fix: move `eval_stack.push()` to after the `depth > MAX_EVAL_DEPTH` check (matching the PendingCall pattern which checks depth before taking). Leaked entries cause misleading cycle-path chains in subsequent `CircularDependency` errors. [computer-scientist]
 - [ ] **Major — 9 error codes have zero corpus coverage** (`tests/corpus/eval/errors/`): E050 (IncludeNotAvailable), E051 (IncludeIoError), E052 (IncludeCycle), E053 (IncludeParseFailed), E054 (IncludeFileTooLarge), E055 (IncludeHashMismatch), E056 (IncludeHashRequired), E057 (IncludePathNotAllowed), E062 (JsonRange). All documented in doc/10-errors.md §9.2 but have no corpus regression tests. [test-crafter]
-- [ ] **Major — Row.fields uses IndexMap instead of HashMap** (`src/types.rs:38`): Row field order is semantically irrelevant at the type level (Rémy commutativity). Change `Row.fields: IndexMap<String, Type>` → `HashMap<String, Type>`. IndexMap is ~20% slower for lookup in the `unify_rows` hot path. (This is distinct from runtime `Value::Dict` which correctly uses IndexMap for ordered semantics.) [performance-expert]
+- [x] **Major — Row.fields uses IndexMap instead of HashMap** (`src/types.rs:38`): `Row.fields` already uses `HashMap<String, Type>` — finding resolved. [performance-expert]
 - [ ] **Major — No corpus tests for resource limits** (`tests/corpus/`): (a) No test for MAX_PARSE_DEPTH=256 — add `tests/corpus/invalid/syntax_errors/parse_depth_exceeded.llt-eval` with 257 nested brackets. (b) No test for MAX_COLLECT_SIZE=1M — add `tests/corpus/eval/errors/collect_size_exceeded.llt-eval` creating >1M element sequence and collecting it. [test-crafter]
 - [ ] **Minor — doc/08-evaluation.md Cont variant names diverge from implementation** (`doc/08-evaluation.md:1107-1141`): Spec lists `Cont::PendingCallForceFunc` and `Cont::PendingBuiltinForceResult` but implementation uses `Cont::PendingCallDispatch` and `Cont::BuiltinForceArg`. Update spec table to reflect implemented variant names. [computer-scientist]
 - [ ] **Minor — Access chain span propagation gap** (`src/eval.rs:5746`): Multi-step access chain errors (e.g., `a.b.c.d`) don't propagate `mat_span` through each step. The outer access expression span is lost when the chain descends. Per doc/10-errors.md Part 3 (DECORATE rule), each access step should attach its span as materialization context. Track as `access-chain-spans` fix-later. [integration-verifier]
 - [ ] **Minor — Span::origin() frame filtering missing from error display** (`src/error.rs`): The stdlib filter removes frames with `-impl`/`-step`/`-check` suffixes, but not frames with `Span::origin()` (0:0-0:0 synthetic spans from stdlib thunks). These synthetic frames can pollute user-facing stack traces. Add explicit filter for `Span::origin()` alongside the label suffix filter in `EvalError::Display`. [integration-verifier]
-- [ ] **Minor — Missing Seq guards in 4 stdlib functions** (`stdlib/prelude.llt:465,496,517,613`): `sort-by`, `take-while`, `drop-while`, `flatten` crash on Seq input instead of providing a clear error. Add `$seq?` guard with message "func: expected Dict, got Seq — collect the Seq first" following the pattern already used in `any?`/`all?`/`partition`. [stdlib-author]
+- [x] **Minor — Missing Seq guards in 4 stdlib functions** (`stdlib/prelude.llt:465,496,517,613`): `sort-by`, `take-while`, `drop-while`, `flatten` all have `$seq?` guards added with "expected Dict, got Seq — collect the Seq first" message. [stdlib-author]
 - [ ] **Minor — Stale builtin counts in docs** (`doc/11-stdlib.md:255`, `doc/11a-builtins.md:246,255`): doc/11-stdlib.md says "51 Rust-native builtins" (should be 46). doc/11a-builtins.md says "51 + 12 = 63 registered names" (should be 46 + 12 = 58). doc/11a-builtins.md "Evaluation: 5" (should be 4, `until` is general not evaluation-control). [stdlib-author]
-- [ ] **Minor — Corpus README severely outdated** (`tests/corpus/README.md`): Shows only 4 directories but 26 are enforced by `test_corpus_structure()`. Rewrite documenting all 26 directories, format conventions (`===` delimiter, `ERROR:` prefix, `# no_fs` directive), and test harness behavior. [test-crafter]
+- [ ] **Minor — Corpus README incomplete** (`tests/corpus/README.md`): Shows ~22 directories but is missing 5 enforced by `test_corpus_structure()`: `eval/cross_feature`, `eval/regressions`, `eval/pipeline`, `invalid/pipeline`, `valid/parser_mechanisms`. Also lists `eval/letrec` and `eval/documents` which are not in the enforced set. Add all 25 required dirs and document format conventions (`===` delimiter, `ERROR:` prefix, `# no_fs` directive). [test-crafter]
 - [ ] **Minor — Missing sequence constructor corpus tests** (`tests/corpus/eval/builtins/`): doc/08-evaluation.md §Testing Requirements mandates tests for: `repeat_depth_limit.llt-eval`, `iterate_malformed_tail.llt-eval`, `unfold_depth_limit.llt-eval`. Add these 3 tests. [test-crafter]
 - [ ] **Minor — doc/12-tooling.md §Sandboxing "ASPIRATIONAL" label stale** (`doc/12-tooling.md:60`): All sandbox features are now implemented (--no-fs, --timeout, --allow-path, --require-integrity, Landlock, seccomp-bpf, rlimit). Remove "ASPIRATIONAL — NOT YET IMPLEMENTED" label and update to enumerate implemented features. [security-expert]

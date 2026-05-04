@@ -26,9 +26,13 @@ module.exports = grammar({
     [$.call_form, $._atom],
     [$.fn_form, $._atom],
     [$.type_form, $._atom],
+    // `[f` is ambiguous: identifier as _atom (dict auto_entry) or as
+    // call_implied func head. GLR lets both paths proceed; the correct
+    // parse survives. (Covers zero-arg [f] and multi-arg [f x y] cases.)
+    [$.call_implied, $._atom],
   ],
 
-  word: ($) => $.bare_word,
+  word: ($) => $.identifier,
 
   rules: {
     // === File and Document Structure ===
@@ -36,7 +40,34 @@ module.exports = grammar({
     file: ($) =>
       seq(
         optional($.document),
-        repeat(seq($.doc_separator, optional($.document))),
+        repeat(seq($.section_header, optional($.document))),
+      ),
+
+    section_header: ($) =>
+      seq(
+        $.doc_separator,
+        optional($.section_name),
+        optional($.output_annotation),
+        optional($.expects_pragma),
+      ),
+
+    section_name: (_$) =>
+      token(seq(
+        "%",
+        repeat1(/[^\s\[\]:;#"@$.]/),
+      )),
+
+    output_annotation: ($) =>
+      seq(
+        "@",
+        $._annotation_value,
+      ),
+
+    expects_pragma: ($) =>
+      seq(
+        "expects",
+        ":",
+        $._annotation_value,
       ),
 
     document: ($) => repeat1($.expression),
@@ -58,19 +89,19 @@ module.exports = grammar({
         $.int_lit,
         $.bool_lit,
         $.quoted_string,
-        $.var_ref,
+        $.escaped_ref,
         $.annotated_bare,
-        $.bare_word,
-        alias($.keyword_call, $.bare_word),
-        alias($.keyword_fn, $.bare_word),
-        alias($.keyword_type, $.bare_word),
+        $.identifier,
+        alias($.keyword_call, $.identifier),
+        alias($.keyword_fn, $.identifier),
+        alias($.keyword_type, $.identifier),
       ),
 
-    // === Annotated bare words: name@Type ===
+    // === Annotated identifiers: name@Type ===
 
     annotated_bare: ($) =>
       prec(2, seq(
-        field("name", $.bare_word),
+        field("name", $.identifier),
         token.immediate("@"),
         field("annotation", $._annotation_value),
       )),
@@ -84,6 +115,7 @@ module.exports = grammar({
         $.call_form,
         $.fn_form,
         $.type_form,
+        $.call_implied,
         $.dict,
       ),
 
@@ -111,6 +143,16 @@ module.exports = grammar({
         "]",
       ),
 
+    // Implied call: [identifier arg1 arg2 ...]
+    // Priority 5 in doc/02-syntax.md §3.2 Bracket Expressions.
+    call_implied: ($) =>
+      seq(
+        "[",
+        field("func", $.identifier),
+        optional($.call_args),
+        "]",
+      ),
+
     call_args: ($) =>
       repeat1(
         choice(
@@ -128,8 +170,8 @@ module.exports = grammar({
 
     named_arg_key: ($) =>
       choice(
-        $.var_ref,
-        $.bare_word,
+        $.escaped_ref,
+        $.identifier,
       ),
 
     fn_form: ($) =>
@@ -194,8 +236,8 @@ module.exports = grammar({
       ),
 
     // Keywords: matched as plain strings. tree-sitter's `word` rule
-    // handles the word-boundary check — bare_word is the word rule, so
-    // "call" will be recognized as a keyword rather than bare_word when
+    // handles the word-boundary check — identifier is the word rule, so
+    // "call" will be recognized as a keyword rather than identifier when
     // used in keyword position. The colon-ahead check (call: x is a dict
     // entry, not a keyword) is handled structurally: keyed_entry has
     // higher precedence than special forms.
@@ -265,7 +307,7 @@ module.exports = grammar({
     _key: ($) =>
       choice(
         $.bracket_expr,
-        $.var_ref,
+        $.escaped_ref,
         $.quoted_string,
         $._bare_token,
       ),
@@ -275,17 +317,20 @@ module.exports = grammar({
         $.float_lit,
         $.int_lit,
         $.bool_lit,
-        $.bare_word,
-        alias($.keyword_call, $.bare_word),
-        alias($.keyword_fn, $.bare_word),
-        alias($.keyword_type, $.bare_word),
+        $.identifier,
+        alias($.keyword_call, $.identifier),
+        alias($.keyword_fn, $.identifier),
+        alias($.keyword_type, $.identifier),
       ),
 
     // === Access chains ===
 
     access_expr: ($) =>
       prec(10, seq(
-        $.var_ref,
+        choice(
+          $.escaped_ref,
+          $.identifier,
+        ),
         repeat1($._access_chain),
       )),
 
@@ -332,12 +377,13 @@ module.exports = grammar({
       choice(
         $.float_lit,
         $.int_lit,
-        $.var_ref,
+        $.escaped_ref,
       ),
 
     // === Literals ===
 
-    var_ref: (_$) =>
+    // Escaped reference: $word (disambiguator — prevents call in head position, computes key in key position)
+    escaped_ref: (_$) =>
       token(seq(
         "$",
         repeat1(VAR_IDENT_CHAR),
@@ -372,13 +418,15 @@ module.exports = grammar({
     string_content: (_$) =>
       token.immediate(/[^"\\]+/),
 
-    // === Bare words ===
+    // === Identifiers (variable references) ===
 
-    bare_word: (_$) =>
+    // Identifiers are the fallback — any word that isn't a keyword.
+    // `%` and `%name` are ordinary identifiers — pipeline references are a naming convention.
+    identifier: (_$) =>
       token(seq(
         // Excludes `-` from starter (unlike pest's bare_word_start) to
         // prevent ambiguity with negative numeric literals (-42, -3.14).
-        // Pest uses ordered choice (int_lit before bare_word in atom rule)
+        // Pest uses ordered choice (int_lit before identifier in atom rule)
         // to resolve this; tree-sitter's GLR model requires lexer-level
         // exclusion.
         /[^\s\[\]:;#"@$.\-]/,

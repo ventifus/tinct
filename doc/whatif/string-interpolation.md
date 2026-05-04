@@ -252,6 +252,48 @@ lexer.
 - If Phase 2 is included: compound-atomic access chain parsing must
   be solid (already implemented per commit 5f8856f).
 
+### Alternative Implementation: Macro-Based
+
+If `doc/whatif/macros.md` ships before this feature, implement
+Phases 1–2 via `[defmacro tmpl ...]` rather than as a parser
+feature. The Rust change shrinks to two steps: the lexer recognizes
+the `i"` prefix and emits the raw string content as an opaque
+`IString` token (no scanning of `$` patterns); the parser wraps it
+as `[call $tmpl "raw content"]`. All `$identifier` and
+`$identifier.field.path` parsing then happens in a tinct stdlib
+macro:
+
+```tinct
+[defmacro tmpl [template-ast]
+  # template-ast is {type: "str" value: "Hello $name, count: $count"}
+  segments: [call $parse-template $template-ast.value]
+  # → [{type: "str" value: "Hello "} {type: "var" name: "name"} ...]
+  [call $build-str-call $segments]]
+```
+
+`$parse-template` is an ordinary tinct stdlib function that walks
+the string character by character, collecting literal text until `$`
+and then identifier characters, emitting a sequence of `{type: "str"
+...}` and `{type: "var" ...}` AST dicts. `$build-str-call`
+assembles these into the `[call $str ...]` AST dict. Both are
+inspectable tinct code, testable via corpus tests, and modifiable
+without touching the Rust compiler.
+
+**Phase 3 does not fit this model.** The macro cannot parse
+arbitrary tinct expressions from within a string — doing so would
+require calling the tinct parser from tinct code. If expression
+interpolation (`${expr}`) is ever needed, the lexer must still
+detect `${...}` boundaries and pass the inner expression as a
+pre-parsed AST argument. Consider enforcing the "extract first"
+discipline instead: bind computed values to names before the
+template string, keeping the macro model clean.
+
+**Span tracking.** The macro must attach source spans to generated
+`Var` AST nodes, computed as character offsets from the `IString`
+token span, so that "variable not found" errors point into the
+template string rather than to the `[call $tmpl ...]` call site.
+This requires the dual-span infrastructure from `macros.md` Phase 3.
+
 ### Trigger
 
 - When formatter work (templating.md Phase 2) begins and `$str`
@@ -281,3 +323,12 @@ lexer.
   *POPL '93*, pp. 144–154. — Desugaring to `$str` preserves
   Launchbury's sharing semantics: each interpolated segment is a
   thunk, forced at most once.
+- doc/whatif/macros.md — If the macro system ships first, Phases 1–2
+  of this feature can be implemented as `[defmacro tmpl ...]` in
+  tinct stdlib with a minimal opaque `IString` lexer token; see
+  §Alternative Implementation: Macro-Based above.
+- Pombrio, J. & Krishnamurthi, S. (2014). "Resugaring: lifting
+  evaluation sequences through syntactic sugar." *PLDI '14*, pp.
+  361–371. — Span tracking for macro-generated AST nodes; needed to
+  report errors inside template strings at the correct source
+  location rather than at the macro call site.

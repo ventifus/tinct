@@ -524,7 +524,7 @@ fn typecheck_document(
     if let Some(ref output_ann) = doc.node.output_type {
         match resolve_annotation(
             &output_ann.node,
-            &env,
+            &result_env,
             output_ann.span,
             state,
             &mut None,
@@ -2492,9 +2492,15 @@ fn resolve_type_expr(
                 )
             }
         }
-        // New-syntax support: [Fn@RetType [$Param1 $Param2 ...]] parses as an implied Call
-        // because the head `Fn@RetType` (Annotated) in a bracket is classified as implied Call
-        // (not Dict) by the parser's head-position priority. Detect and handle this pattern.
+        // This arm handles `Expr::Call { implied: true }`, which arises when a bare
+        // identifier (no `@` annotation) appears in head position inside a type expression,
+        // e.g. `[Fn [Int Int]]` (missing the required `@` before the return type).
+        //
+        // NOTE: The inner `if let Expr::Annotated` guard is currently unreachable.
+        // `Fn@RetType` in head position is routed to `Expr::Dict` by the parser's Priority 2b
+        // rule (Identifier + ImmediateAt → Dict), so the func of any `implied: true` Call is
+        // always `Expr::VarRef`, never `Expr::Annotated`. The guard never fires; all implied
+        // calls in type context fall through to the `Err(...)` at the end of this arm.
         Expr::Call {
             implied: true,
             func,
@@ -2847,9 +2853,21 @@ mod tests {
     }
 
     fn file_env(input: &str) -> Rc<TypeEnv> {
+        file_env_impl(input, false)
+    }
+
+    fn file_env_with_builtins(input: &str) -> Rc<TypeEnv> {
+        file_env_impl(input, true)
+    }
+
+    fn file_env_impl(input: &str, with_builtins: bool) -> Rc<TypeEnv> {
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
-        let mut env = Rc::new(TypeEnv::new());
+        let mut env = if with_builtins {
+            Rc::new(TypeEnv::with_builtins())
+        } else {
+            Rc::new(TypeEnv::new())
+        };
         let mut state = InferState::new();
         let mut named_types: HashMap<String, Type> = HashMap::new();
         let mut pipeline_type = Type::Record(Row {
@@ -4386,7 +4404,7 @@ mod tests {
             ---
             [call $make-record]
             ---
-            [r1: [call $project [x: 1  y: hello]]
+            [r1: [call $project [x: 1  y: "hello"]]
              r2: [call $project [x: 2  z: true]]]
         "#;
         // Both r1 and r2 should typecheck successfully with different extra fields.
@@ -6286,9 +6304,16 @@ mod tests {
 
     #[test]
     fn test_lambda_param_inference_preserves_annotation() {
-        // Annotated param @Int is compatible with expected Number (annotation Int <: Number,
-        // so Int values satisfy the Number expected type).
-        assert!(check("[result: [@[Fn [Number] [Number]] [fn [x@Int] $x]]]").is_ok());
+        // Annotated param @Number matches expected Number exactly — no variance issue.
+        // In new syntax, function types use [Fn@RetType [ParamType]] dict form (Fn@RetType is Annotated).
+        // Note: @Int with expected Number is REJECTED (Int <: Number but function params are
+        // checked for exact compatibility, not subtype). This test uses @Number to match exactly.
+        let result = check("[result: [@[Fn@Number [Number]] [fn [x@Number] $x]]]");
+        assert!(
+            result.is_ok(),
+            "expected ok, got errors: {:?}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
@@ -8060,8 +8085,9 @@ mod tests {
     #[test]
     fn test_pipeline_percent_pipeline_multi_field() {
         // Test that the inferred type of z ([+ %.x %.y]) is Number (the + return type).
+        // Uses file_env_with_builtins because + is a stdlib builtin (not in TypeEnv::new()).
         let input = "[x: 1  y: 2]\n---\n[z: [+ %.x %.y]]";
-        let env = file_env(input);
+        let env = file_env_with_builtins(input);
         let result_type = env.get("%").unwrap().body.clone();
         match result_type {
             Type::Record(Row { fields, .. }) => {

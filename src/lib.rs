@@ -5,16 +5,16 @@
 //! [`eval_source`] parses and evaluates LLT source with the standard library environment.
 //!
 //! Additional public API:
-//! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input (requires EvalContext; `$include` uses context base_dir for resolution)
+//! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input (requires EvalContext; `include` uses context base_dir for resolution)
 //! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
-//! - [`EvalContext`] -- evaluation context with base directory and stdlib environment; include_cache memoizes `$include` results (same file = same cached thunk)
+//! - [`EvalContext`] -- evaluation context with base directory and stdlib environment; include_cache memoizes `include` results (same file = same cached thunk)
 //! - [`json_to_value`] -- convert `serde_json::Value` to LLT `Value`
 //! - [`value_to_json`] -- convert LLT `Value` to `serde_json::Value`
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
 //! - [`MAX_EVAL_DEPTH`] -- recursion limit for evaluation (256)
-//! - [`MAX_FILE_SIZE`] -- file size limit for `$include` and stdin (10 MB)
+//! - [`MAX_FILE_SIZE`] -- file size limit for `include` and stdin (10 MB)
 
 pub mod ast;
 pub(crate) mod error;
@@ -111,7 +111,7 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 /// Parse and evaluate LLT source with configurable filesystem access.
 ///
 /// This is a variant of [`eval_source`] that allows control over the `no_fs` flag.
-/// When `no_fs` is `true`, filesystem operations (like `$include`) are disabled.
+/// When `no_fs` is `true`, filesystem operations (like `include`) are disabled.
 /// Primarily used for corpus tests that verify the `IncludeForbidden` error path.
 pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
     let mut file = parse(input).map_err(|e| format!("{e}"))?;
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_simple_dict() {
-        let result = eval_to_json("[x: 1 y: hello]");
+        let result = eval_to_json("[x: 1 y: \"hello\"]");
         assert_eq!(result, serde_json::json!({"x": 1, "y": "hello"}));
     }
 
@@ -946,7 +946,7 @@ mod tests {
     fn test_typecheck_advisory_eval_proceeds() {
         // Type annotation on param (x@Int) is advisory only.
         // Passing "hello" (String) should still evaluate successfully.
-        let result = eval_source("[f: [fn [x@Int] $x]  result: [call $f \"hello\"]]");
+        let result = eval_source("[f: [fn [x@Int] x]  result: [f \"hello\"]]");
         assert!(
             result.is_ok(),
             "expected eval to succeed despite type mismatch, got: {:?}",
@@ -972,7 +972,7 @@ mod tests {
         // The type checker is advisory — eval always proceeds regardless of type errors.
         // Use a source that evaluates successfully; typecheck may or may not catch
         // the annotation mismatch (param annotations are not fully checked in calls yet).
-        let source = "[f: [fn [x@Int] $x]  result: [call $f \"hello\"]]";
+        let source = "[f: [fn [x@Int] x]  result: [f \"hello\"]]";
         // eval_source should succeed regardless of typecheck result
         let eval_result = eval_source(source);
         assert!(
@@ -989,7 +989,7 @@ mod tests {
     #[test]
     fn test_typeassert_default_fallback_end_to_end() {
         // "hello" is a String, not a Number — default 42 should be returned.
-        let result = eval_source("[@[type: Number  default: 42] hello]");
+        let result = eval_source("[@[type: Number  default: 42] \"hello\"]");
         assert!(
             result.is_ok(),
             "expected eval to succeed with default fallback, got: {:?}",

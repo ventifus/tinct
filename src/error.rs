@@ -410,6 +410,7 @@ impl fmt::Display for ErrorKind {
                 // Phase 2: bare identifiers are references, no $ prefix in display.
                 // Check if this looks like an intended string literal (heuristic).
                 let looks_like_string = !name.starts_with('%')
+                    // name never starts with '$' (EscapedRef stores bare name without sigil)
                     && !name.starts_with('$')
                     && name
                         .chars()

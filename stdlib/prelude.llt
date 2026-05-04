@@ -604,7 +604,7 @@ zip-impl: [fn [xs ys xks yks i acc]
 
 zip-step: [fn [xs ys xks yks i acc xk yk]
     [zip-impl xs ys xks yks [builtin-add i 1]
-        [append acc [xs[xk] ys[yk]]]]]
+        [append acc [$xs[xk] ys[yk]]]]]
 
 # Flatten nested lists one level deep.
 # Inherently materializing: must inspect each value to check if it is a list.

@@ -4332,10 +4332,14 @@ mod tests {
     fn test_range_outside_bracket_access() {
         // .. outside brackets emits two consecutive Dot tokens (Range is only emitted inside brackets).
         // `1..5` lexes as Int(1), Dot, Dot, Int(5). The first Dot triggers dot-access on Int(1)
-        // but the next token is another Dot (not an identifier) → parse error/recovery.
-        let output = parse2("1..5").expect("should parse with recovery");
-        let doc = &output.file.node.documents[0].node;
-        assert_eq!(doc.expressions.len(), 2); // Int(1) and recovered expression from ..5
+        // but the next token is another Dot (not an identifier) → parse error at top level.
+        // At top level (stack empty), the parser returns Err rather than recovering.
+        let err = parse2("1..5").unwrap_err();
+        assert!(
+            err.message.contains("expected field name") || err.message.contains("found Dot"),
+            "expected a dot-access parse error, got: {}",
+            err.message
+        );
     }
 
     #[test]

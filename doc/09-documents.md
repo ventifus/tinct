@@ -227,7 +227,7 @@ d = depth                                    (evaluation depth; 0 at top-level)
 eval_file(documents, ρ_base, input_thunk, d) ⇒ θₘ
 ```
 
-The anonymous pipeline variable is `%` — the binding name is `"%"`, and `%` in source resolves to `VarRef("%")`. Named sections bind as `%name` (binding name `"%name"`). At top-level invocation `d = 0`; when called from `include` (`builtins.rs:1126`), `d = depth + 1`.
+The anonymous pipeline variable is `%` — the binding name is `"%"`, and `%` in source resolves to `VarRef("%")`. Named sections bind as `%name` (binding name `"%name"`). Note: the earlier syntax included a `$` binding for the previous document's output; this was removed in the new-syntax-a sprint — only `%` and `%name` bindings exist now. At top-level invocation `d = 0`; when called from `include` (`builtins.rs:1126`), `d = depth + 1`.
 
 Documents are totally isolated — `ρ_docⱼ` inherits only from `ρ_base` (builtins), not from prior documents' scope chains. Data flows exclusively through pipeline bindings (`%` and `%name`). Named section bindings accumulate strictly in order — a section cannot reference its own name or a later section's name (both produce `UndefinedVariable`). Duplicate section names within a file are a parse error. A bare `%` with no following identifier on a section header (`--- %` followed by whitespace or end-of-line) is also a parse error.
 
@@ -296,7 +296,8 @@ The formal rules map directly to the implementation:
 |------------|----------------|--------|
 | DICT-SCOPE | `eval_dict()` | `eval.rs:309-352` |
 | SEQ-SCOPE | `eval_document()` | `eval.rs:199-249` |
-| DOC-PIPELINE | `eval_file_with_input()` (binds `%` + `%name`) | `eval.rs:281-307` |
+| DOC-PIPELINE | `eval_file_with_input()` (binds `%` + `%name`) | `eval.rs:820-859` |
+| DOC-PIPELINE Σ accumulation | Named-section map `named: IndexMap<String, Rc<Thunk>>` | `eval.rs:830, 842-846, 851-853` |
 | LOOKUP | `Environment::get()` | `value.rs:445-460` |
 | Key isolation | `eval_key(key_expr, parent_env, d)` | `eval.rs:327` |
 | String-key filter | `if let Key::String(name) = key` | `eval.rs:234, 347` |
@@ -674,7 +675,7 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | Guard push | `builtins.rs:1300-1303` (`include_guard.insert`) |
 | Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
 | Cache store | `builtins.rs:1345-1348` |
-| DOC-PIPELINE (cross-ref) | `eval_file_with_input` (`eval.rs:281-307`) |
+| DOC-PIPELINE (cross-ref) | `eval_file_with_input` (`eval.rs:820-859`) |
 | SEQ-SCOPE (cross-ref) | `eval_document` (`eval.rs:199-249`) |
 
 ## Pure Language, CLI Handles I/O

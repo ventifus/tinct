@@ -15,7 +15,7 @@ Type assert
           expr: (int_lit))))))
 
 ===================
-Annotated bare word
+Annotated identifier
 ===================
 
 x@Number
@@ -26,7 +26,7 @@ x@Number
   (document
     (expression
       (annotated_bare
-        name: (bare_word)
+        name: (identifier)
         annotation: (annotation_word)))))
 
 ================
@@ -48,7 +48,7 @@ Param annotation
               (param_name)
               (param_annotation
                 (annotation_word))))
-          body: (var_ref))))))
+          body: (escaped_ref))))))
 
 ===============================
 Type assert with dict annotation
@@ -66,12 +66,12 @@ Type assert with dict annotation
           annotation: (bracket_expr
             (dict
               (keyed_entry
-                key: (bare_word)
-                value: (bare_word))
+                key: (identifier)
+                value: (identifier))
               (keyed_entry
-                key: (bare_word)
+                key: (identifier)
                 value: (int_lit))))
-          expr: (var_ref))))))
+          expr: (escaped_ref))))))
 
 =============================
 Param with dict annotation
@@ -94,9 +94,9 @@ Param with dict annotation
                 (bracket_expr
                   (dict
                     (keyed_entry
-                      key: (bare_word)
-                      value: (bare_word))
+                      key: (identifier)
+                      value: (identifier))
                     (keyed_entry
-                      key: (bare_word)
+                      key: (identifier)
                       value: (int_lit)))))))
-          body: (var_ref))))))
+          body: (escaped_ref))))))

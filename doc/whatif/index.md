@@ -15,7 +15,7 @@ makes the best case for its feature: "What would it take to do this well?"
 | [Union Types and Algebraic Subtyping](union-types.md) | `Int \| Str` annotations (Phase 2) → Simple-sub inferred unions/intersections (Phase 3) |
 | [Type Classes](typeclasses.md) | `Eq a => a → a → Bool` — constrained polymorphism for `$=`, `$+`, `$map` |
 | [Formal Gradual Typing](gradual-typing.md) | Formalize `Any` semantics; split into `Unknown` / `Top`; add consistency relation |
-| [Structural Contracts](structural-contracts.md) | `$$@Type` pipeline boundary checking + `$validate` schema-as-dict runtime constraints |
+| [Structural Contracts](structural-contracts.md) | `%@Type` pipeline boundary checking + `$validate` schema-as-dict runtime constraints |
 
 ## Data Types
 
@@ -117,7 +117,7 @@ These proposals have no gating conditions and deliver standalone value at low co
 
 **[Pure-Tinct Regex Engine](lib-regex.md) Phase 1** — Thompson NFA in `stdlib/regex.llt`. No Rust builtins, no crates. Requires lib-supplemental Phases 1 + 3.
 
-**[Structural Contracts](structural-contracts.md) Phase 1** — `$$@Type` pipeline boundary annotation. Standalone, no gating.
+**[Structural Contracts](structural-contracts.md) Phase 1** — `%@Type` pipeline boundary annotation. Standalone, no gating.
 
 **[Algebraic Data Types](algebraic-data-types.md) Phase 1** — Convention documentation only. Zero-cost, immediate value.
 

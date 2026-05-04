@@ -22,8 +22,8 @@ unified contract system:
   named types for documentation and reuse. No runtime effect beyond
   TypeAssert.
 
-- **`$$` pipeline threading** — each document's output becomes `$$`
-  for the next. `$$` has no declared type — it's whatever the previous
+- **`%` pipeline threading** — each document's output becomes `%`
+  for the next. `%` has no declared type — it's whatever the previous
   stage produced.
 
 ### What's Missing
@@ -36,7 +36,7 @@ unified contract system:
 
 2. **No pipeline boundary type checking.** The type checker operates
    within a single document. It doesn't verify that document N's
-   output matches document N+1's expected `$$` type.
+   output matches document N+1's expected `%` type.
 
 3. **No constraint validation beyond types.** Types express structure
    (`port: Int`) but not constraints (`port > 0 && port < 65536`).
@@ -84,7 +84,7 @@ Neither subsumes the other.
 
 ```lisp
 # fmt/nginx.llt — typed interface + runtime schema
-$$@NginxConfig
+%@NginxConfig
 
 NginxConfig: [type [port: Int  hostname: String  locations: [path: String  upstream: String]]]
 
@@ -93,21 +93,21 @@ nginx-schema: [
   hostname: [pattern: "^[a-z0-9.-]+$"]
 ]
 
-[call $validate $nginx-schema $$]
+[call $validate $nginx-schema %]
 
 ---
 
-[call $emit [call $to-nginx $$]]
+[call $emit [call $to-nginx %]]
 ```
 
 ### Syntax
 
 **Pipeline input types** use the existing `@` annotation syntax on
-`$$`:
+`%`:
 
 ```lisp
-$$@[port: Int  hostname: String]       # inline record type
-$$@NginxConfig                          # named type alias
+%@[port: Int  hostname: String]       # inline record type
+%@NginxConfig                          # named type alias
 ```
 
 This extends a syntax users already know from parameter annotations
@@ -129,10 +129,10 @@ Schema keys: `type`, `min`, `max`, `min-length`, `max-length`,
 
 ### Semantics
 
-**`$$@Type` binding.** When the type checker encounters `$$@T` as the
-first expression in a document, it binds `$$` to type `T` within that
+**`%@Type` binding.** When the type checker encounters `%@T` as the
+first expression in a document, it binds `%` to type `T` within that
 document's scope. Within a single file, cross-document checking
-ensures document N's output type unifies with document N+1's `$$@T`.
+ensures document N's output type unifies with document N+1's `%@T`.
 In multi-file pipelines, the same checking applies across files.
 
 **`$validate` evaluation.** `$validate` walks a schema dict and a data
@@ -141,8 +141,8 @@ returns the data value on success (pass-through for pipeline use) or
 throws a structured error listing violations with field paths:
 
 ```lisp
-[call $validate $nginx-schema $$]
-# On success: returns $$ unchanged
+[call $validate $nginx-schema %]
+# On success: returns % unchanged
 # On failure: error with [violations: [{field: "port"  message: "must be >= 1"} ...]]
 ```
 
@@ -156,22 +156,22 @@ nginx-schema: [call $merge $base-schema [port: [min: 1  max: 65535]]]
 
 ### Interaction with Type Inference
 
-`$$@Type` annotations create a unification constraint: the inferred
-type of `$$` (from the previous pipeline stage) must unify with the
+`%@Type` annotations create a unification constraint: the inferred
+type of `%` (from the previous pipeline stage) must unify with the
 declared type. This interacts with row polymorphism — an open record
 type `[port: Int ...r]` accepts dicts with additional fields, while a
 closed record type `[port: Int  hostname: String]` requires an exact
 match.
 
 For cross-document checking, the type checker must propagate the
-output type of each document to the next document's `$$` binding.
+output type of each document to the next document's `%` binding.
 This requires extending the current single-document inference to a
 pipeline-level inference pass.
 
 ### Interaction with Lazy Evaluation
 
 TypeAssert already validates records lazily (proxy contracts check
-fields when accessed, not upfront). `$$@Type` follows the same
+fields when accessed, not upfront). `%@Type` follows the same
 semantics — type checking is static, but any runtime enforcement
 uses proxy contracts. `$validate` is eager: it forces all fields
 named in the schema and reports all violations at once.
@@ -179,14 +179,14 @@ named in the schema and reports all violations at once.
 This creates a design tension: lazy proxy contracts are efficient
 (only check what's used) but can miss errors silently; eager
 `$validate` catches everything but forces evaluation. The two-layer
-design lets users choose: `$$@Type` for lightweight structural
+design lets users choose: `%@Type` for lightweight structural
 checking, `$validate` for exhaustive domain validation.
 
 ### Blame Assignment
 
 When a contract violation occurs in a pipeline, the error must
 identify which stage produced invalid data and which contract it
-violated. The pipeline runner tags each `$$` value with its source
+violated. The pipeline runner tags each `%` value with its source
 stage. Contract violations include source-stage attribution:
 
 ```
@@ -195,7 +195,7 @@ Error: contract violation at pipeline boundary (data.llt -> fmt/nginx.llt)
   Got: "8080" (String)
   Produced by: data.llt, line 3
 
-  Hint: use [@Int $$.port] to convert, or fix the producing stage
+  Hint: use [@Int %.port] to convert, or fix the producing stage
 ```
 
 This follows Findler and Felleisen's (2002) positive/negative party
@@ -207,8 +207,8 @@ contract boundary.
 
 ### Rationale
 
-1. **`$$@Type` extends existing syntax.** tinct already has `@`
-   annotations on parameters and expressions. Extending to `$$` is a
+1. **`%@Type` extends existing syntax.** tinct already has `@`
+   annotations on parameters and expressions. Extending to `%` is a
    natural generalization, not a new concept.
 
 2. **Schema-as-dict is tinct-native.** Schemas are dicts — they can
@@ -216,11 +216,11 @@ contract boundary.
    loaded via `$include`. No new data model needed.
 
 3. **Pipeline blame comes naturally.** The pipeline runner already
-   knows which stage produced each `$$` value. Enriching contract
+   knows which stage produced each `%` value. Enriching contract
    violation errors with blame context is a reporting improvement,
    not an architectural change.
 
-4. **Tooling synergy.** `$$@Type` enables LSP auto-complete for
+4. **Tooling synergy.** `%@Type` enables LSP auto-complete for
    pipeline inputs. `$validate` schemas enable `tinct describe` for
    human documentation.
 
@@ -237,25 +237,25 @@ contract boundary.
 
 ### Parser
 
-**Current:** `$$` is parsed as a variable reference. `@` annotations
+**Current:** `%` is parsed as a variable reference. `@` annotations
 are parsed on parameters (`x@Type`) and expressions (`[@Type expr]`).
 
-**Proposed:** Parse `$$@Type` as a document-level annotation. The
+**Proposed:** Parse `%@Type` as a document-level annotation. The
 parser recognizes this as the first expression in a document and
-treats it as a type binding for `$$`.
+treats it as a type binding for `%`.
 
 **Impact:** Minor. The `@` annotation syntax already exists; extending
-it to `$$` requires a new parse rule but no new syntax primitives.
+it to `%` requires a new parse rule but no new syntax primitives.
 
 ### Type Checker
 
-**Current:** Type inference operates within a single document. `$$` is
+**Current:** Type inference operates within a single document. `%` is
 bound to `Any` (or the output type of the previous document within a
 single file's `---` pipeline).
 
-**Proposed:** (1) Resolve `$$@Type` annotations and bind `$$` to that
+**Proposed:** (1) Resolve `%@Type` annotations and bind `%` to that
 type within the document. (2) Cross-document type checking: document
-N's output type must unify with document N+1's `$$@Type`. (3)
+N's output type must unify with document N+1's `%@Type`. (3)
 Multi-file pipeline checking across files passed to `tinct eval`.
 
 **Impact:** Moderate. Single-document type annotation is
@@ -270,7 +270,7 @@ type-level checks via proxy contracts.
 
 **Proposed:** Add `$validate` builtin that walks schema dicts and data
 in parallel, collecting violations. Add `$describe` builtin that
-introspects `$$@Type` annotations and schema dicts.
+introspects `%@Type` annotations and schema dicts.
 
 **Impact:** Minor. `$validate` is a pure function over dicts — it
 uses existing dict traversal and type-checking primitives. `$describe`
@@ -297,31 +297,31 @@ document. No cross-document attribution.
 producing stage, the consuming stage's contract, and suggest fixes
 based on the mismatch type.
 
-**Impact:** Moderate. Requires tagging `$$` values with source-stage
+**Impact:** Moderate. Requires tagging `%` values with source-stage
 metadata and threading that metadata through error construction.
 
 ## Phased Adoption
 
-### Phase 1: `$$@Type` — Pipeline Input Types
+### Phase 1: `%@Type` — Pipeline Input Types
 
-Declare the expected type of `$$` at the document level:
+Declare the expected type of `%` at the document level:
 
 ```lisp
 # fmt/nginx.llt
-$$@[port: Int  hostname: String]
+%@[port: Int  hostname: String]
 
-[call $emit [call $to-nginx $$]]
+[call $emit [call $to-nginx %]]
 ```
 
 Implementation:
-- Parse `$$@Type` as first expression in a document
-- Type checker resolves the annotation and binds `$$` to that type
+- Parse `%@Type` as first expression in a document
+- Type checker resolves the annotation and binds `%` to that type
   within the document
 - Within a single file, cross-document checking: doc N's output type
-  must unify with doc N+1's `$$@Type`
+  must unify with doc N+1's `%@Type`
 - Multi-file pipeline: same checking across files passed to
   `tinct eval`
-- LSP: auto-complete `$$` fields based on declared type
+- LSP: auto-complete `%` fields based on declared type
 
 This phase enables the core use case: formatters declare their
 expected input, and the type checker validates it.
@@ -337,7 +337,7 @@ nginx-schema: [
   locations: [min-length: 1]
 ]
 
-[call $validate $nginx-schema $$]
+[call $validate $nginx-schema %]
 ```
 
 Implementation:
@@ -354,14 +354,14 @@ Add CLI command to inspect a program's contract without running it:
 
 ```bash
 $ tinct describe fmt/nginx.llt
-Input ($$):
+Input (%):
   port: Int (1..65535)
   hostname: String (pattern: ^[a-z0-9.-]+$)
   locations: [{path: String, upstream: String}] (min-length: 1)
 ```
 
 Implementation:
-- Parse `$$@Type` annotation and schema dicts
+- Parse `%@Type` annotation and schema dicts
 - Merge type information with schema constraints
 - Output as human-readable description or as JSON/YAML for tooling
 
@@ -375,11 +375,11 @@ Error: contract violation at pipeline boundary (data.llt -> fmt/nginx.llt)
   Got: "8080" (String)
   Produced by: data.llt, line 3
 
-  Hint: use [@Int $$.port] to convert, or fix the producing stage
+  Hint: use [@Int %.port] to convert, or fix the producing stage
 ```
 
 Implementation:
-- Pipeline runner tags each `$$` value with its source stage
+- Pipeline runner tags each `%` value with its source stage
 - Contract violations include source-stage attribution
 - Hints suggest fixes based on the mismatch type
 
@@ -396,11 +396,11 @@ Implementation:
 
 ### Trigger
 
-Phase 1 (`$$@Type`): adopt when:
+Phase 1 (`%@Type`): adopt when:
 - Multi-file pipeline is implemented (templating.md Phase 1)
 - Formatters exist in `stdlib/fmt/` and users need to discover their
   expected input shapes
-- LSP auto-complete for `$$` becomes a requested feature
+- LSP auto-complete for `%` becomes a requested feature
 
 Phase 2 (`$validate`): adopt when:
 - Type annotations alone are insufficient — users need range checks,
