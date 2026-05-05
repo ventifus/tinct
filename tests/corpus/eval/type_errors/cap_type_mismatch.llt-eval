@@ -1,0 +1,6 @@
+# Type error: passing wrong capability type
+# open expects DirCap, but we pass a NetCap
+
+[call $open [call $net-cap "*.example.com"] "test.llt" "r"]
+===
+cannot unify DirCap with NetCap

@@ -70,6 +70,15 @@ pub enum Type {
     /// absorption), so parent expressions can continue inference without spurious downstream
     /// errors. `is_subtype(Error, _)` returns false; Error is not a subtype of anything.
     Error,
+    /// Directory capability — wraps cap_std::fs::Dir. Created by `dir-cap` builtin or
+    /// injected via CLI --cap-fs. Represents authority to access a specific directory tree.
+    DirCap,
+    /// Network capability — wraps host allowlist. Created by `net-cap` builtin or injected
+    /// via CLI --cap-net. Represents authority to connect to specific network hosts.
+    NetCap,
+    /// File/stream handle — wraps Box<dyn BufRead>. Created by `open` or `connect`.
+    /// Represents authority to read/write a specific open resource.
+    Handle,
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -101,6 +110,9 @@ impl PartialEq for Type {
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             (Type::Any, Type::Any) => true,
             (Type::Error, Type::Error) => true,
+            (Type::DirCap, Type::DirCap) => true,
+            (Type::NetCap, Type::NetCap) => true,
+            (Type::Handle, Type::Handle) => true,
             _ => false,
         }
     }
@@ -132,6 +144,9 @@ impl Type {
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
+            // Capability types: reflexive only (DirCap <: DirCap, etc.)
+            // The equality check at the top of the match handles this, but we document it here.
+            // All capability types are subtypes of Any (handled by Any short-circuit above).
             (Type::Record(sub_row), Type::Record(sup_row)) => {
                 // All fields in sup must be present in sub with subtype field types
                 let fields_ok = sup_row.fields.iter().all(|(k, sup_ty)| {
@@ -1511,6 +1526,11 @@ pub fn unify(
 
         (Type::Proxy, Type::Proxy) => Ok(()),
 
+        // Capability types: reflexive unification only
+        (Type::DirCap, Type::DirCap) => Ok(()),
+        (Type::NetCap, Type::NetCap) => Ok(()),
+        (Type::Handle, Type::Handle) => Ok(()),
+
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
 
@@ -1849,6 +1869,9 @@ impl fmt::Display for Type {
             Type::Seq(elem) => write!(f, "Seq[{elem}]"),
             Type::Proxy => write!(f, "Proxy"),
             Type::Error => write!(f, "<error>"),
+            Type::DirCap => write!(f, "DirCap"),
+            Type::NetCap => write!(f, "NetCap"),
+            Type::Handle => write!(f, "Handle"),
         }
     }
 }
@@ -2274,31 +2297,87 @@ impl TypeEnv {
             "dir-cap".to_string(),
             Type::Function {
                 params: vec![Type::Str],
-                ret: Box::new(Type::Any), // returns DirCap (no type distinction in Phase 1)
+                ret: Box::new(Type::DirCap),
                 variadic: false,
             },
         );
         env.insert(
             "open".to_string(),
             Type::Function {
-                params: vec![Type::Any, Type::Str, Type::Str], // DirCap, path, mode
-                ret: Box::new(Type::Any),                      // returns Handle
+                params: vec![Type::DirCap, Type::Str, Type::Str],
+                ret: Box::new(Type::Handle),
                 variadic: false,
             },
         );
         env.insert(
             "slurp".to_string(),
             Type::Function {
-                params: vec![Type::Any], // Handle
+                params: vec![Type::Handle],
                 ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "lines".to_string(),
+            Type::Function {
+                params: vec![Type::Handle],
+                ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
             },
         );
         env.insert(
             "narrow".to_string(),
             Type::Function {
-                params: vec![Type::Any, Type::Str], // DirCap, subpath
-                ret: Box::new(Type::Any),           // returns DirCap
+                params: vec![Type::DirCap, Type::Str],
+                ret: Box::new(Type::DirCap),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "write".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str, Type::Str],
+                ret: Box::new(Type::Any), // returns Null (empty dict)
+                variadic: false,
+            },
+        );
+        env.insert(
+            "write-atomic".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str, Type::Str],
+                ret: Box::new(Type::Any), // returns Null (empty dict)
+                variadic: false,
+            },
+        );
+        env.insert(
+            "revocable".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap],
+                ret: Box::new(Type::Any), // returns dict with cap and revoke fields
+                variadic: false,
+            },
+        );
+        env.insert(
+            "revoke-cap".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap],
+                ret: Box::new(Type::Any), // returns Null (empty dict)
+                variadic: false,
+            },
+        );
+        env.insert(
+            "net-cap".to_string(),
+            Type::Function {
+                params: vec![Type::Any], // accepts Seq/Dict/Str of allowlist entries
+                ret: Box::new(Type::NetCap),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "connect".to_string(),
+            Type::Function {
+                params: vec![Type::NetCap, Type::Str, Type::Int],
+                ret: Box::new(Type::Handle),
                 variadic: false,
             },
         );

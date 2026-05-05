@@ -3831,3 +3831,10 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 - [x] Streaming fetch via lines over socket Handle already works (Phase 1 lines + Phase 2 connect)
 - [x] --no-pwd/--no-stdin/--no-libdir enforcement verified with comments
 - [x] CLI tests: write_basic, write_atomic_basic, write_roundtrip
+
+### io-phase4: Cap Types in Type Checker
+
+- [x] Type::DirCap, Type::NetCap, Type::Handle variants added to types.rs
+- [x] 11 I/O builtin signatures updated with cap types (dir-cap→DirCap, open→Handle, etc.)
+- [x] is_subtype + unify handle cap types; value_matches_type extended for TypeAssert
+- [x] 3 type error corpus tests (cap_type_mismatch, handle_not_dircap, string_not_handle)

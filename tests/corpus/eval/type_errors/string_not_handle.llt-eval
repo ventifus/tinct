@@ -1,0 +1,6 @@
+# Type error: passing String where Handle is expected
+# slurp expects Handle, but we pass a String
+
+[call $slurp "not a handle"]
+===
+cannot unify Handle with
