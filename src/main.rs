@@ -88,6 +88,27 @@ enum Commands {
         #[arg(long, value_name = "NAME")]
         allow_env: Vec<String>,
 
+        /// Do not inject `pwd` DirCap into the root environment.
+        /// When set, [open pwd ...] and [include pwd ...] fail with undefined variable.
+        #[arg(long)]
+        no_pwd: bool,
+
+        /// Do not inject `stdin` Handle into the root environment.
+        /// When set, [slurp stdin] fails with undefined variable.
+        #[arg(long)]
+        no_stdin: bool,
+
+        /// Do not inject `libdir` DirCap into the root environment.
+        /// When set, [include libdir ...] fails with undefined variable.
+        #[arg(long)]
+        no_libdir: bool,
+
+        /// Inject a named DirCap into the root environment (may be repeated).
+        /// Format: NAME=PATH — binds $NAME to a DirCap for PATH.
+        /// Example: --cap-fs data=/var/data injects $data as a DirCap for /var/data.
+        #[arg(long, value_name = "NAME=PATH")]
+        cap_fs: Vec<String>,
+
         /// Input LLT file. Use `-` to read LLT source from stdin.
         file: String,
     },
@@ -149,6 +170,10 @@ fn main() {
             max_fds,
             no_env,
             allow_env,
+            no_pwd,
+            no_stdin,
+            no_libdir,
+            cap_fs,
             file,
         } => run_eval(
             &file,
@@ -164,6 +189,10 @@ fn main() {
             max_fds,
             no_env,
             allow_env,
+            no_pwd,
+            no_stdin,
+            no_libdir,
+            cap_fs,
         ),
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
@@ -514,6 +543,10 @@ fn run_eval(
     max_fds: Option<u64>,
     no_env: bool,
     allow_env: Vec<String>,
+    no_pwd: bool,
+    no_stdin: bool,
+    no_libdir: bool,
+    cap_fs: Vec<String>,
 ) -> Result<(), String> {
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
@@ -624,22 +657,109 @@ fn run_eval(
     }
 
     // Inject `pwd` DirCap into the root environment (unless --no-pwd is set)
-    // TODO: Add --no-pwd flag and gate this injection
-    {
+    if !no_pwd {
         use tinct::Value;
-        // Open pwd as a DirCap for the current working directory
         let pwd_path = std::env::current_dir()
             .map_err(|e| format!("cannot determine working directory for pwd: {e}"))?;
         let pwd_dir = cap_std::fs::Dir::open_ambient_dir(&pwd_path, cap_std::ambient_authority())
             .map_err(|e| format!("cannot open pwd directory: {e}"))?;
         let pwd_value = Value::DirCap(Rc::new(pwd_dir));
-
-        // Wrap in a materialized thunk
         let pwd_thunk = tinct::Thunk::new_materialized(pwd_value, tinct::Span::origin());
-
-        // Insert into environment
         env.borrow_mut()
             .insert("pwd".to_string(), Rc::new(pwd_thunk));
+    }
+
+    // Inject `stdin` Handle for fd 0 into the root environment (unless --no-stdin is set)
+    if !no_stdin {
+        use std::cell::RefCell;
+        use std::io::BufReader;
+        use tinct::Value;
+        let stdin_handle = Value::Handle(Rc::new(RefCell::new(Box::new(BufReader::new(
+            std::io::stdin(),
+        ))
+            as Box<dyn std::io::BufRead>)));
+        let stdin_thunk = tinct::Thunk::new_materialized(stdin_handle, tinct::Span::origin());
+        env.borrow_mut()
+            .insert("stdin".to_string(), Rc::new(stdin_thunk));
+    }
+
+    // Inject `libdir` DirCap for the stdlib directory (unless --no-libdir is set)
+    // Phase 1: resolve libdir from the binary's location or a well-known relative path.
+    // If resolution fails, libdir is not injected (stdlib is embedded at compile time anyway).
+    if !no_libdir {
+        use tinct::Value;
+        // Attempt to find the stdlib directory relative to the binary.
+        // Typical installation layout: <prefix>/bin/tinct, <prefix>/share/tinct/stdlib/
+        // Development layout: target/debug/tinct, stdlib/ (in project root)
+        let libdir_path: Option<std::path::PathBuf> = std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                // Try development layout: exe's grandparent + "stdlib"
+                // e.g. /project/target/debug/tinct -> /project/stdlib
+                exe.parent() // target/debug
+                    .and_then(|p| p.parent()) // target
+                    .and_then(|p| p.parent()) // project root
+                    .map(|root| root.join("stdlib"))
+            })
+            .filter(|p| p.is_dir())
+            .or_else(|| {
+                // Try installation layout: exe's parent/../share/tinct/stdlib
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| {
+                        exe.parent() // bin/
+                        .and_then(|p| p.parent()) // <prefix>/
+                        .map(|prefix| prefix.join("share").join("tinct").join("stdlib"))
+                    })
+                    .filter(|p| p.is_dir())
+            });
+
+        if let Some(path) = libdir_path {
+            if let Ok(libdir_std) =
+                cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+            {
+                let libdir_value = Value::DirCap(Rc::new(libdir_std));
+                let libdir_thunk =
+                    tinct::Thunk::new_materialized(libdir_value, tinct::Span::origin());
+                env.borrow_mut()
+                    .insert("libdir".to_string(), Rc::new(libdir_thunk));
+            }
+            // If the dir can't be opened, silently skip — stdlib is embedded anyway.
+        }
+        // TODO(io-phase2): --libdir-path PATH override for custom installations
+    }
+
+    // Inject --cap-fs NAME=PATH entries into the root environment
+    {
+        use tinct::Value;
+        for cap_fs_entry in &cap_fs {
+            let (name, path_str) = cap_fs_entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "--cap-fs: expected NAME=PATH format, got {:?}",
+                    cap_fs_entry
+                )
+            })?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(format!(
+                    "--cap-fs: NAME must not be empty in {:?}",
+                    cap_fs_entry
+                ));
+            }
+            let cap_path = std::path::Path::new(path_str.trim());
+            let cap_dir =
+                cap_std::fs::Dir::open_ambient_dir(cap_path, cap_std::ambient_authority())
+                    .map_err(|e| {
+                        format!(
+                            "--cap-fs: cannot open directory {:?}: {e}",
+                            cap_path.display()
+                        )
+                    })?;
+            let cap_value = Value::DirCap(Rc::new(cap_dir));
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            env.borrow_mut()
+                .insert(name.to_string(), Rc::new(cap_thunk));
+        }
     }
 
     // Determine env_allowed based on CLI flags
