@@ -1,5 +1,7 @@
 # What If: tinct as a Templating Language
 
+**State:** Accepted — 2026-05-04
+
 What would it take to use tinct for generating text output — config
 files, documents, serialized formats — beyond its current JSON output?
 
