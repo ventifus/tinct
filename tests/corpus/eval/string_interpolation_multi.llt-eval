@@ -1,0 +1,8 @@
+# String interpolation with multiple variables
+[
+  name: "Bob"
+  count: 5
+  message: i"Hello $name, you have $count items"
+]
+===
+Dict({"name": String("Bob"), "count": Int(5), "message": String("Hello Bob, you have 5 items")})

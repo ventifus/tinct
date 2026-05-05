@@ -236,7 +236,37 @@ The parser handles quoted strings as atomic units — no implicit whitespace ski
 
 Quoting forces string interpretation: `"true"` is the string `"true"`, `"42"` is the string `"42"`.
 
-#### 2.3.5 Identifiers (Variable References)
+#### 2.3.5 Interpolated Strings
+
+Interpolated strings allow embedding variable references directly in string literals using the `i"..."` prefix syntax. They desugar to `str` calls at parse time.
+
+```tinct
+i"Hello $name"                    # Desugars to: [str "Hello " name]
+i"Count: $count items"            # Desugars to: [str "Count: " count " items"]
+i"Price: $$$amount"               # $$ escapes to literal $ → "Price: $42"
+```
+
+**Syntax:**
+- Prefix: `i"..."` signals an interpolated string
+- Variable references: `$identifier` embeds the value of a variable
+- Escape: `$$` produces a literal `$` character
+- Regular escape sequences (`\"`, `\\`, `\n`, `\t`, `\r`) work as in regular strings
+
+**Variable name boundaries:** In interpolated strings, variable names stop at common punctuation (`,`, `.`, `!`, `?`) in addition to the usual delimiters. This allows natural text like `i"Hello $name, welcome!"` where the comma is not part of the variable name.
+
+**Desugaring:** Interpolated strings are pure syntactic sugar. The parser converts them to `[str ...]` calls with the literal and variable segments as arguments. This preserves lazy evaluation — each interpolated segment is a thunk.
+
+```tinct
+# Source
+i"Hello $name, you are $age years old"
+
+# Desugars to
+[str "Hello " name ", you are " age " years old"]
+```
+
+**Type coercion:** The `str` builtin coerces all argument types to strings, so you can interpolate any value: `i"Count: $num"` works whether `num` is an integer, float, or string.
+
+#### 2.3.6 Identifiers (Variable References)
 
 Identifiers are the fallback — any token that doesn't match a prior rule. They are variable references, not string literals. Strings require quotes.
 

@@ -1,0 +1,20 @@
+# Interpolated string with escaped dollar sign
+i"Price: $$$amount"
+===
+{
+  "type": "file",
+  "documents": [
+    {
+      "expressions": [
+        {
+          "type": "call",
+          "func": {"type": "var_ref", "name": "str"},
+          "args": [
+            {"type": "str", "value": "Price: $"},
+            {"type": "var_ref", "name": "amount"}
+          ]
+        }
+      ]
+    }
+  ]
+}
