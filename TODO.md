@@ -16,16 +16,6 @@ See doc/whatif/io.md.
 
 
 
-### io-phase4: Cap Types in Type Checker
-
-**Depends on:** `io-phase3`
-
-See doc/whatif/io.md §Phase 4.
-
-- [ ] Add `Type::DirCap`, `Type::NetCap`, `Type::Handle` variants (`src/types.rs`)
-- [ ] Infer cap types in `infer_expr` for builtin calls (`src/typecheck.rs`)
-- [ ] Update builtin signatures with cap types (`src/builtins.rs`)
-- [ ] Corpus tests for cap type inference and errors (`tests/corpus/typecheck/`)
 
 ## Templating: Text Output and Formatters
 
