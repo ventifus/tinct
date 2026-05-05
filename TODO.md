@@ -12,23 +12,18 @@ See doc/whatif/io.md.
 
 - [x] Accept io — see doc/whatif/io.md (State: Accepted — 2026-05-04)
 
-### io-phase1: File Caps, emit, stdin, env
 
-See doc/whatif/io.md §Phase 1.
+### io-include-cap: Cap-Qualified Include
 
-- [x] Add `Value::DirCap`, `Value::Handle`, `Value::RevocableDirCap` variants (`src/value.rs`)
-- [x] Add `emitted: Cell<bool>` and `env_allowed: Option<HashSet<String>>` to `EvalContext` (`src/eval.rs`)
-- [x] Implement `emit`, `env`, `dir-cap`, `open`, `slurp`, `narrow` builtins with type signatures (`src/builtins.rs`, `src/types.rs`)
-- [x] Suppress default JSON output when `emitted == true` (`src/main.rs`)
-- [x] Inject `pwd` DirCap into root env at startup (`src/main.rs`)
-- [x] Add `--no-env` and `--allow-env NAME` CLI flags (`src/main.rs`)
-- [x] Implement `revocable`, `revoke-cap`, `lines` builtins; Handle upgraded to BufRead (`src/builtins.rs`, `src/value.rs`)
-- [x] CLI integration tests: emit_basic, env_missing, env_no_env_flag, revocable_and_revoke, lines_basic (`tests/cli_tests.rs`)
-- [x] Inject `libdir`, `stdin` into root env; add `--no-pwd`, `--no-libdir`, `--no-stdin`, `--cap-fs NAME=PATH` CLI flags (`src/main.rs`)
-- [x] Create `stdlib/io.llt` with `read-file`, `read-lines`, `println`, `println-val` (`stdlib/io.llt`)
-- [x] Update sandbox docs with cap model flags and examples (`doc/12-tooling.md`)
-- [x] Corpus test: emit_returns_null.llt-eval (`tests/corpus/eval/builtins/`)
-- [ ] Modify `include` to take optional `DirCap` first arg; cache by `(st_dev, st_ino)` — deferred (breaking change to include signature) (`src/builtins.rs`, `src/eval.rs`)
+Deferred from io-phase1 — breaking change to `$include` builtin signature.
+
+**Depends on:** `io-phase1`
+
+- [ ] Modify `$include` to optionally take a `DirCap` as first arg: `[include pwd "config.llt"]` (`src/builtins.rs`)
+- [ ] Cache included files by `(st_dev, st_ino)` pair instead of path string to avoid duplicate loading under different path spellings (`src/builtins.rs`, `src/eval.rs`)
+- [ ] Keep backward compat: `[include "path"]` still works using `pwd` implicitly when no DirCap given (`src/builtins.rs`)
+- [ ] Update doc/11a-builtins.md to document new include signature (`doc/11a-builtins.md`)
+- [ ] Update `include` corpus tests for new signature patterns (`tests/corpus/`)
 
 ### io-phase2: Network Caps, stdlib/net.llt
 

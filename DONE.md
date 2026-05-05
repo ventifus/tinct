@@ -3789,3 +3789,21 @@ Migration NOT needed for Phase 2 — append-only Rc<Thunk> arena means ThunkIds 
 - [x] `$include` cache interaction verified: standalone Rc<Thunk>, arena-independent
 - [x] Multi-document corpus tests: `cross_boundary_thunk_access.llt-eval` and `three_section_lazy_chain.llt-eval`
 - [x] Phase 3 migration stub documented in `src/arena.rs` with full algorithm description
+
+## I/O and Capabilities
+
+See doc/whatif/io.md (State: Accepted — 2026-05-04).
+
+- [x] Accept io — see doc/whatif/io.md (State: Accepted — 2026-05-04)
+
+### io-phase1: File Caps, emit, stdin, env (11/12 tasks complete)
+
+- [x] Value::DirCap, Value::Handle (BufRead), Value::RevocableDirCap variants
+- [x] EvalContext: emitted Cell<bool>, env_allowed Option<HashSet<String>>
+- [x] Builtins: emit, env, dir-cap, open, slurp, narrow, revocable, revoke-cap, lines
+- [x] Suppress JSON output on emit; pwd DirCap + stdin Handle + libdir DirCap injected at startup
+- [x] CLI: --no-env, --allow-env NAME, --no-pwd, --no-stdin, --no-libdir, --cap-fs NAME=PATH
+- [x] stdlib/io.llt: read-file, read-lines, println, println-val
+- [x] doc/12-tooling.md: Object Capability Model section
+- [x] Corpus/CLI tests: emit_returns_null, emit_basic, env_missing, env_no_env_flag, revocable_and_revoke, lines_basic
+- [ ] include cap-qualification: deferred to io-include-cap sprint
