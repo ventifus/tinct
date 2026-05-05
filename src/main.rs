@@ -7,7 +7,7 @@ use std::process;
 use std::rc::Rc;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_source, json_to_value,
-    materialize, parse, value_to_display_string, value_to_json, EvalContext, Span, Thunk,
+    literate, materialize, parse, value_to_display_string, value_to_json, EvalContext, Span, Thunk,
     MAX_FILE_SIZE,
 };
 
@@ -149,6 +149,27 @@ enum Commands {
         /// Error code to explain (e.g. E001, E010, E070).
         code: String,
     },
+    /// Extract and evaluate tinct code blocks embedded in a Markdown file.
+    ///
+    /// Treats each ```tinct or ```llt fenced code block as a pipeline stage.
+    /// Blocks are connected with --- separators: % threads between them in order.
+    Literate {
+        /// Processing mode.
+        mode: LiterateMode,
+        /// Markdown file to process.
+        file: String,
+    },
+}
+
+/// Processing mode for `tinct literate`.
+#[derive(Clone, ValueEnum)]
+enum LiterateMode {
+    /// Extract tinct code blocks and print as a ---‑separated pipeline source.
+    Tangle,
+    /// Extract blocks, evaluate the pipeline, and print the result as JSON.
+    Eval,
+    /// Evaluate blocks and output the Markdown with JSON results as comments after each block.
+    Weave,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -215,6 +236,7 @@ fn main() {
         #[cfg(feature = "lsp")]
         Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
         Commands::Explain { code } => run_explain(&code),
+        Commands::Literate { mode, file } => run_literate(&file, &mode),
     };
 
     match result {
@@ -1145,6 +1167,225 @@ fn read_stdin_json() -> Result<Option<Rc<Thunk>>, String> {
     let ctx = EvalContext::new(base_dir, env, true); // no_fs=true since we're just converting JSON
     let val = json_to_value(&json, 0, Span::origin(), &ctx).map_err(|e| format!("{e}"))?;
     Ok(Some(val))
+}
+
+/// Process a Markdown file in literate mode.
+///
+/// Extracts ```` ```tinct ```` and ```` ```llt ```` fenced code blocks and
+/// handles them according to `mode`:
+///
+/// - **`tangle`** — print the extracted blocks joined with `\n---\n`.
+/// - **`eval`** — join the blocks, evaluate the resulting pipeline, print JSON.
+/// - **`weave`** — evaluate each block in pipeline order; output the original
+///   Markdown with the JSON result appended as a comment after each tinct block.
+fn run_literate(file_path: &str, mode: &LiterateMode) -> Result<(), String> {
+    let markdown = read_source(file_path)?;
+    let blocks = literate::extract_code_blocks(&markdown);
+
+    if blocks.is_empty() {
+        match mode {
+            LiterateMode::Tangle => {
+                // Nothing to print — output empty string (no trailing newline).
+                return Ok(());
+            }
+            LiterateMode::Eval => {
+                return Err("no tinct code blocks found in the Markdown file".to_string());
+            }
+            LiterateMode::Weave => {
+                // Nothing to annotate — print the Markdown unchanged.
+                print!("{markdown}");
+                return Ok(());
+            }
+        }
+    }
+
+    match mode {
+        LiterateMode::Tangle => {
+            let tangled = literate::tangle(blocks);
+            println!("{tangled}");
+            Ok(())
+        }
+
+        LiterateMode::Eval => {
+            let tangled = literate::tangle(blocks);
+            run_literate_eval(&tangled, file_path)
+        }
+
+        LiterateMode::Weave => run_literate_weave(&markdown, &blocks, file_path),
+    }
+}
+
+/// Evaluate a tangled tinct source string and print the result as JSON.
+///
+/// Reuses the same pipeline as `run_eval` (parse → desugar → resolve →
+/// typecheck → eval → materialize → JSON), with no sandbox flags applied.
+/// The base directory is derived from the Markdown file's parent directory.
+fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
+    // Parse the tangled source.
+    let mut ast =
+        parse(tangled).map_err(|e| format!("parse error in tangled tinct source: {e}"))?;
+
+    tinct::desugar::desugar_file(&mut ast.node);
+    tinct::resolve::resolve_file(&ast.node);
+    let _ = tinct::typecheck::typecheck_file(&ast.node);
+
+    // Determine base directory from the Markdown file's location.
+    let base_dir_path = if markdown_path == "-" {
+        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
+    } else {
+        let p = std::path::Path::new(markdown_path);
+        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            Some(dir) => dir
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve directory for \"{markdown_path}\": {e}"))?,
+            None => std::env::current_dir()
+                .map_err(|e| format!("cannot determine working directory: {e}"))?,
+        }
+    };
+
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open base directory: {e}"))?;
+
+    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+
+    let eval_ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
+
+    let thunk =
+        eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, None, 0).map_err(|e| {
+            let mut msg = format!("{e}");
+            if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
+                msg.push('\n');
+                msg.push_str(&snippet);
+            }
+            msg
+        })?;
+
+    let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| {
+        let mut msg = format!("{e}");
+        if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
+            msg.push('\n');
+            msg.push_str(&snippet);
+        }
+        msg
+    })?;
+
+    // Respect emit: if any emit call fired during eval, suppress JSON output.
+    if !eval_ctx.emitted.get() {
+        let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+        let output = serde_json::to_string_pretty(&json)
+            .map_err(|e| format!("JSON serialization error: {e}"))?;
+        println!("{output}");
+    }
+
+    Ok(())
+}
+
+/// Weave mode: output the Markdown with JSON results appended after each tinct block.
+///
+/// For Phase 4, weave is a simplified implementation: it evaluates the tinct pipeline
+/// formed by all blocks in order and appends the final JSON result as a comment
+/// (`` <!-- tinct-result: ... --> ``) immediately after each closing `` ``` `` fence.
+/// Each block is evaluated in pipeline order — `%` from block N becomes the input
+/// to block N+1 — matching the tangle/eval semantics exactly.
+///
+/// Full result substitution (replacing inline markers like `<!-- tinct: expr -->`)
+/// is a future refinement.
+fn run_literate_weave(
+    markdown: &str,
+    blocks: &[String],
+    markdown_path: &str,
+) -> Result<(), String> {
+    // Evaluate the pipeline incrementally: process one block at a time, threading
+    // % between them. This lets us annotate each block with the result at that point.
+    let base_dir_path = if markdown_path == "-" {
+        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
+    } else {
+        let p = std::path::Path::new(markdown_path);
+        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            Some(dir) => dir
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve directory for \"{markdown_path}\": {e}"))?,
+            None => std::env::current_dir()
+                .map_err(|e| format!("cannot determine working directory: {e}"))?,
+        }
+    };
+
+    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+
+    // Evaluate each block in turn, passing the previous result as pipeline input.
+    // Collect (block_index -> JSON result) for annotation.
+    let mut pipeline_input: Option<Rc<Thunk>> = None;
+    let mut block_results: Vec<String> = Vec::with_capacity(blocks.len());
+
+    for (i, block) in blocks.iter().enumerate() {
+        let mut ast =
+            parse(block).map_err(|e| format!("parse error in code block {}: {e}", i + 1))?;
+        tinct::desugar::desugar_file(&mut ast.node);
+        tinct::resolve::resolve_file(&ast.node);
+        let _ = tinct::typecheck::typecheck_file(&ast.node);
+
+        let base_dir =
+            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+                .map_err(|e| format!("cannot open base directory: {e}"))?;
+
+        let eval_ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
+
+        let thunk = eval_file_with_input(
+            &ast.node,
+            Rc::clone(&env),
+            &eval_ctx,
+            pipeline_input.clone(),
+            0,
+        )
+        .map_err(|e| format!("error in code block {}: {e}", i + 1))?;
+
+        let val = materialize(&thunk, None, &eval_ctx, 0)
+            .map_err(|e| format!("error materializing code block {}: {e}", i + 1))?;
+
+        let json_str = if eval_ctx.emitted.get() {
+            // Block called emit — note this in the annotation.
+            "(emit)".to_string()
+        } else {
+            let json = value_to_json(&val, &eval_ctx, 0)
+                .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
+            serde_json::to_string(&json)
+                .map_err(|e| format!("JSON serialization error in block {}: {e}", i + 1))?
+        };
+
+        block_results.push(json_str);
+        // Thread the result as pipeline input to the next block.
+        pipeline_input = Some(Rc::clone(&thunk));
+    }
+
+    // Now walk the Markdown and insert result comments after each tinct/llt block.
+    let mut block_idx = 0;
+    let mut in_tinct_block = false;
+    let mut output = String::with_capacity(markdown.len() + block_results.len() * 80);
+
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        output.push_str(line);
+        output.push('\n');
+
+        if !in_tinct_block {
+            if trimmed == "```tinct" || trimmed == "```llt" {
+                in_tinct_block = true;
+            }
+        } else if trimmed == "```" {
+            // Closing fence: append the result comment for this block.
+            in_tinct_block = false;
+            if block_idx < block_results.len() {
+                output.push_str(&format!(
+                    "<!-- tinct-result: {} -->\n",
+                    block_results[block_idx]
+                ));
+                block_idx += 1;
+            }
+        }
+    }
+
+    print!("{output}");
+    Ok(())
 }
 
 /// Print a detailed explanation for the given error code string (e.g. "E001").

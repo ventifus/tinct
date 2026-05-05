@@ -49,13 +49,9 @@ See doc/whatif/templating.md §Phase 3 and doc/whatif/string-interpolation.md.
 
 See doc/whatif/templating.md §Phase 4.
 
-- [ ] Add `tinct literate` subcommand to CLI (`src/main.rs`)
-- [ ] Implement `tinct literate tangle` — extract ` ```tinct ` code blocks as `---`-separated pipeline (`src/literate.rs`)
-- [ ] Implement `tinct literate eval` — tangle + evaluate + print result (`src/literate.rs`)
-- [ ] Implement `tinct literate weave` — evaluate blocks, render results inline via markers (`src/literate.rs`)
-- [ ] Thread `%` between code blocks in document order
-- [ ] Corpus tests for tangle and eval modes (`tests/corpus/`)
-- [ ] Document literate mode semantics (`doc/09-documents.md`)
+- [x] `tinct literate tangle|eval|weave <file>` subcommand (`src/main.rs`, `src/literate.rs`)
+- [x] tangle: extract ```tinct/```llt blocks, join with `---`; eval: tangle + evaluate; weave: annotate results inline
+- [x] 10 CLI integration tests; doc/09-documents.md §Literate Mode
 
 ## Template-Polarity Research
 

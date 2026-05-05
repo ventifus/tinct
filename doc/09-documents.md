@@ -773,3 +773,114 @@ This is the Jsonnet/Nix model: the language produces data, an external tool hand
 **Why pure?** In-language I/O in a lazy language creates a forcing problem: side-effecting expressions buried in lazy dict entries may never execute, and execution order becomes unpredictable. By making the language pure, lazy evaluation is semantically transparent — the result is the same regardless of evaluation order. The CLI is the only I/O boundary, and it forces exactly what it needs to serialize the output.
 
 **Security:** External input (stdin, files) is parsed by the CLI and injected as structured data (`%`). The language never evaluates untrusted input as code. `$from-json` is a pure function that converts a JSON string to a dict — safe on untrusted input.
+
+## Literate Mode
+
+`tinct literate` processes Markdown files containing embedded tinct code blocks. This enables executable documentation: prose and code co-located in a single Markdown file, where the code blocks form a pipeline that can be extracted and evaluated.
+
+### Usage
+
+```bash
+tinct literate tangle file.md   # extract code blocks, print as ---‑separated pipeline
+tinct literate eval   file.md   # extract blocks, evaluate pipeline, print JSON
+tinct literate weave  file.md   # evaluate blocks, annotate Markdown with results
+```
+
+### Code Block Recognition
+
+Fenced code blocks tagged with `tinct` or `llt` are recognized as tinct code:
+
+````markdown
+```tinct
+[port: 8080  workers: 4]
+```
+````
+
+````markdown
+```llt
+[port: 8080  workers: 4]
+```
+````
+
+Other fenced blocks (`` ```rust ``, `` ```yaml ``, etc.) are ignored.
+
+### Pipeline Semantics
+
+Each code block is a pipeline stage, equivalent to one document in a `---`-separated `.llt` file. `%` threads between blocks in document order — the output of block N becomes `%` for block N+1.
+
+**Example:**
+
+````markdown
+# Server Configuration
+
+Base configuration:
+
+```tinct
+[port: 8080  workers: 4]
+```
+
+Scale workers to 2x for production:
+
+```tinct
+[port: %.port  workers: [* %.workers 2]]
+```
+````
+
+```bash
+tinct literate eval config.md
+# Output: {"port": 8080, "workers": 8}
+```
+
+### Tangle Mode
+
+`tangle` extracts code blocks and prints them joined with `\n---\n` separators. The output is valid tinct source that can be piped into `tinct eval -` or redirected to a `.llt` file:
+
+```bash
+tinct literate tangle config.md
+# Output:
+# [port: 8080  workers: 4]
+#
+# ---
+# [port: %.port  workers: [* %.workers 2]]
+```
+
+### Eval Mode
+
+`eval` is equivalent to `tangle` followed by `tinct eval`. Extracts blocks, joins them, evaluates the resulting pipeline, and prints JSON.
+
+If no tinct code blocks are found in the Markdown file, `eval` exits with an error.
+
+### Weave Mode
+
+`weave` evaluates each block in pipeline order and outputs the original Markdown with the JSON result appended as an HTML comment immediately after each closing fence:
+
+```markdown
+# Config
+
+```tinct
+[port: 8080]
+```
+<!-- tinct-result: {"port": 8080} -->
+```
+
+The result at each block is the intermediate pipeline value at that point — the output of that block after receiving `%` from all preceding blocks. Full result substitution (replacing inline markers in prose) is a future refinement.
+
+If the Markdown file contains no tinct blocks, `weave` outputs the file unchanged.
+
+### Interaction with `emit`
+
+Literate mode composes with the `emit` builtin. If a code block calls `emit`, the string is written to stdout and the default JSON serialization is suppressed for that block. In `weave` mode, an `emit`-calling block is annotated with `<!-- tinct-result: (emit) -->` to indicate that its result was emitted rather than serialized.
+
+### Base Directory
+
+For `$include` resolution within literate code blocks, the base directory is the directory containing the Markdown file (not the current working directory). This matches the behavior of `tinct eval file.llt`.
+
+### Formal Relationship to `---` Pipeline
+
+`tinct literate eval file.md` is semantically equivalent to:
+
+```bash
+tinct literate tangle file.md | tinct eval -
+```
+
+The Markdown extraction is a preprocessing pass that produces a tinct source string with `---` separators. The existing parser and evaluator handle the rest unchanged. No new evaluation semantics are introduced — literate mode is purely a source-level transformation.
