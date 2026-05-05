@@ -61,6 +61,11 @@ pub enum InterpolatedPart {
     Literal(String),
     /// Variable reference `$name`
     VarRef(String),
+    /// Expression interpolation `${expr}` — raw source text of the inner expression.
+    ///
+    /// The lexer records the raw text; the parser re-parses it as a tinct expression
+    /// and includes it as an arg in the desugared `[str ...]` call.
+    Expr(String),
 }
 
 impl fmt::Display for Token {
@@ -91,6 +96,7 @@ impl fmt::Display for Token {
                     match part {
                         InterpolatedPart::Literal(s) => write!(f, "{s}")?,
                         InterpolatedPart::VarRef(name) => write!(f, "${name}")?,
+                        InterpolatedPart::Expr(raw) => write!(f, "${{{raw}}}")?,
                     }
                 }
                 write!(f, "\"")
@@ -623,14 +629,68 @@ impl<'a> Lexer<'a> {
                     return Ok(());
                 }
                 '$' => {
-                    // Check for $$
+                    // Check for $$ (escaped literal $)
                     if self.peek_ahead(1) == Some('$') {
-                        // $$ escapes to a literal $
                         literal.push('$');
                         self.advance();
                         self.advance();
+                    } else if self.peek_ahead(1) == Some('{') {
+                        // ${expr} expression interpolation — read until matching '}'
+                        // Save current literal part if non-empty
+                        if !literal.is_empty() {
+                            parts.push(InterpolatedPart::Literal(literal.clone()));
+                            literal.clear();
+                        }
+                        self.advance(); // skip '$'
+                        self.advance(); // skip '{'
+
+                        // Collect the inner expression, tracking brace depth.
+                        // We stop at the matching '}' (depth 0 after opening brace).
+                        let expr_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+                        let mut depth: usize = 1;
+                        let mut found_close = false;
+                        while let Some(c) = self.peek_char() {
+                            match c {
+                                '{' => {
+                                    depth += 1;
+                                    self.advance();
+                                }
+                                '}' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        found_close = true;
+                                        break;
+                                    }
+                                    self.advance();
+                                }
+                                _ => {
+                                    self.advance();
+                                }
+                            }
+                        }
+                        let expr_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+
+                        if !found_close {
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "unterminated ${...} in interpolated string",
+                                Span::new(start, end),
+                            ));
+                        }
+
+                        self.advance(); // skip closing '}'
+
+                        let raw = self.input[expr_start..expr_end].trim().to_string();
+                        if raw.is_empty() {
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "empty ${} expression in interpolated string",
+                                Span::new(start, end),
+                            ));
+                        }
+                        parts.push(InterpolatedPart::Expr(raw));
                     } else {
-                        // Variable reference
+                        // Variable reference $name
                         // Save current literal part if non-empty
                         if !literal.is_empty() {
                             parts.push(InterpolatedPart::Literal(literal.clone()));
@@ -1550,5 +1610,88 @@ mod tests {
             err.span.start, err.span.end,
             "error span must not be zero-width"
         );
+    }
+
+    #[test]
+    fn test_interpolated_string_expr_basic() {
+        // ${expr} produces InterpolatedPart::Expr with the inner raw text
+        let tokens = tok(r#"i"result: ${[+ $x 1]}""#);
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0] {
+            Token::InterpolatedString(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert_eq!(parts[0], InterpolatedPart::Literal("result: ".into()));
+                assert_eq!(parts[1], InterpolatedPart::Expr("[+ $x 1]".into()));
+            }
+            other => panic!("expected InterpolatedString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_interpolated_string_expr_nested_braces() {
+        // Nested braces inside ${...} are tracked correctly
+        let tokens = tok(r#"i"${nested {brace}}""#);
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0] {
+            Token::InterpolatedString(parts) => {
+                assert_eq!(parts.len(), 1);
+                assert_eq!(parts[0], InterpolatedPart::Expr("nested {brace}".into()));
+            }
+            other => panic!("expected InterpolatedString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_interpolated_string_expr_with_varref() {
+        // Mix of $name and ${expr} parts
+        let tokens = tok(r#"i"$name is ${[+ $x 1]}""#);
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0] {
+            Token::InterpolatedString(parts) => {
+                assert_eq!(parts.len(), 3);
+                assert_eq!(parts[0], InterpolatedPart::VarRef("name".into()));
+                assert_eq!(parts[1], InterpolatedPart::Literal(" is ".into()));
+                assert_eq!(parts[2], InterpolatedPart::Expr("[+ $x 1]".into()));
+            }
+            other => panic!("expected InterpolatedString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_interpolated_string_expr_unterminated() {
+        // Unterminated ${...} is a lex error
+        let err = tok_err(r#"i"${unclosed""#);
+        assert!(
+            err.contains("unterminated ${...}"),
+            "expected unterminated error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_interpolated_string_expr_empty() {
+        // Empty ${} is a lex error
+        let err = tok_err(r#"i"${}""#);
+        assert!(
+            err.contains("empty ${}"),
+            "expected empty expr error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_interpolated_string_dollar_dollar_unchanged() {
+        // $$ consumes two chars and emits literal "$"; the following {foo} is plain text
+        // because `{` is not a special char in interpolated strings (only `${` is special).
+        // So i"$${foo}" → Literal("${foo}") — one part.
+        let tokens = tok(r#"i"$${foo}""#);
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0] {
+            Token::InterpolatedString(parts) => {
+                assert_eq!(parts.len(), 1, "expected exactly one part");
+                assert_eq!(parts[0], InterpolatedPart::Literal("${foo}".into()));
+            }
+            other => panic!("expected InterpolatedString, got {:?}", other),
+        }
     }
 }

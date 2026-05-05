@@ -473,6 +473,113 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `assert` | `[fn [cond msg] ...]` | Assert condition; error with message if false |
 
+## Standard Formatters
+
+Tinct ships a set of ready-made formatters in `stdlib/fmt/`. They are not bundled with the prelude — each must be loaded explicitly with `include`. The public API of each formatter is a single function that accepts a value and returns a string.
+
+### Loading pattern
+
+```tinct
+[include libdir "fmt/yaml.llt"]
+---
+[emit [yaml %]]
+```
+
+`libdir` is the built-in reference to the directory that contains `stdlib/`. The `emit` builtin writes the string to stdout and exits. `%` is the pipeline variable holding the document value.
+
+### Available formatters
+
+| File | Function | Input | Output |
+|------|----------|-------|--------|
+| `fmt/yaml.llt` | `yaml` | any value | YAML 1.2 string |
+| `fmt/json-pretty.llt` | `json-pretty` | any value | indented JSON string |
+| `fmt/toml.llt` | `toml` | flat or nested dict | TOML string |
+| `fmt/env.llt` | `env` | flat string-keyed dict | `KEY=VALUE` lines (`.env` format) |
+| `fmt/csv.llt` | `csv` | list of dicts (same keys) | CSV string with header row |
+
+### `fmt/yaml.llt` — YAML serializer
+
+Converts any tinct value to a YAML 1.2 string. Dicts with integer keys are emitted as YAML sequences; string-keyed dicts become YAML mappings. Nested dicts recurse. Scalar values render as their YAML equivalents (`null`, `true`/`false`, bare numbers, quoted strings). Strings that collide with YAML keywords (`true`, `false`, `null`, `yes`, `~`, empty string) are double-quoted automatically.
+
+```tinct
+[include libdir "fmt/yaml.llt"]
+---
+[yaml [name: "Alice" age: 30 tags: ["admin" "editor"]]]
+# =>
+# name: Alice
+# age: 30
+# tags:
+# - admin
+# - editor
+```
+
+### `fmt/json-pretty.llt` — indented JSON
+
+Converts any tinct value to indented JSON. Dicts with integer keys become JSON arrays; string-keyed dicts become JSON objects. Indentation uses 2-space steps.
+
+```tinct
+[include libdir "fmt/json-pretty.llt"]
+---
+[json-pretty [x: 1 y: [2 3]]]
+# =>
+# {
+#   "x": 1,
+#   "y": [
+#     2,
+#     3
+#   ]
+# }
+```
+
+### `fmt/toml.llt` — TOML
+
+Converts a tinct dict to TOML format. Flat scalar keys are emitted as top-level `key = value` pairs. Nested dict values become `[section]` tables. Integer-keyed dicts (lists) are emitted as inline TOML arrays. Nested dict values containing further nesting are emitted as inline `{}` (TOML does not support arbitrarily deep `[[array of tables]]` from this formatter).
+
+```tinct
+[include libdir "fmt/toml.llt"]
+---
+[toml [host: "localhost" port: 5432 db: [name: "prod" pool: 10]]]
+# =>
+# host = "localhost"
+# port = 5432
+#
+# [db]
+# name = "prod"
+# pool = 10
+```
+
+### `fmt/env.llt` — KEY=VALUE
+
+Converts a flat string-keyed dict to `.env`-style `KEY=VALUE` lines. Each entry becomes one line. Values are coerced to strings with `str`. Nested dicts are not supported — pass a flat dict.
+
+```tinct
+[include libdir "fmt/env.llt"]
+---
+[env [DATABASE_URL: "postgres://localhost/mydb" PORT: 3000]]
+# =>
+# DATABASE_URL=postgres://localhost/mydb
+# PORT=3000
+```
+
+### `fmt/csv.llt` — CSV from list of dicts
+
+Converts a list of dicts (all sharing the same keys) to CSV format. The header row is derived from the keys of the first row. Each dict in the list becomes a data row; missing keys default to the empty string. All fields are double-quoted; literal `"` characters are escaped as `""` (RFC 4180).
+
+```tinct
+[include libdir "fmt/csv.llt"]
+---
+[csv [
+  [name: "Alice" score: 95]
+  [name: "Bob" score: 87]
+]]
+# =>
+# "name","score"
+# "Alice","95"
+# "Bob","87"
+```
+
+**Note:** All formatters are implemented entirely in LLT (no Rust native code). They use recursion and will hit `MAX_EVAL_DEPTH` (~256) on very deeply nested inputs. For production use with large datasets, prefer streaming or chunked approaches.
+
 ## Known Limitations
 
 **Stdlib error message spans:** Error messages from stdlib functions that call `$error` internally (such as `$flatten`, `$take-while`, `$drop-while`) point to the stdlib implementation source location, not the user's call site. This is inherent to stdlib-authored error messages — the `$error` builtin correctly reports the span of the `[call $error ...]` expression, which happens to be inside `stdlib/prelude.llt`. User call sites will appear in the error's stack trace, but not as the primary error location. This will be addressed when file-path-based stack frame filtering is implemented to suppress stdlib internal frames and promote user frames.
