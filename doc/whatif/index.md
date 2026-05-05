@@ -3,6 +3,8 @@
 Design proposals for tinct features not yet in the language. Each document
 makes the best case for its feature: "What would it take to do this well?"
 
+Completed proposals are archived in [doc/whatif/completed/](completed/).
+
 ---
 
 ## Type System
@@ -27,32 +29,21 @@ makes the best case for its feature: "What would it take to do this well?"
 
 | Proposal | Summary |
 |----------|---------|
-| [String Interpolation](string-interpolation.md) | `i"Hello $name"` — desugars to `[str ...]`; formatter ergonomics |
 | [`let` Binding Form](let-binding.md) | Sequential expressions inside `[fn ...]` bodies — no new keywords |
 | [Pattern Matching](pattern-matching.md) | `[match x ...]` — type dispatch + structural destructuring; 5-phase adoption |
 | [Quasiquoting](quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros |
 | [Desugaring as Macros](macros.md) | Procedural AST macros for user-defined syntactic transformations |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
-| [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with iterative parser; `ParseOutput` comment map; AST-based formatter (**Accepted**) |
-| [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections |
 | [Unified Access and Generator Pipeline](access-pipeline.md) | Replace bracket access with `\|` reverse-apply infix; dot access extended to integer keys; generator semantics via `each`/`each-key`/`each-kv` |
 
 ## Runtime and Performance
 
 | Proposal | Summary |
 |----------|---------|
-| [Arena Patterns + Flat Environments](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; flat `FlatEnv` with de Bruijn slot indices; variable resolution pass replacing O(depth) environment chain walks |
 | [String Interning for Dict Keys](string-interning.md) | `Key::String(Spur)` via `string-interner` crate; O(1) comparison; profile-gated |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Path-compressed union-find for `Substitution::apply()`; worthwhile only if chain depth ≥4; profile-gated |
 | [Numeric Types](numeric-types.md) | Range-constrained numerics; `@[min: 0 max: 65535]` → auto `u16` internally |
 | [Float Dict Keys](float-dict-keys.md) | Decimal (exact base-10) keys alongside a `Decimal` type |
-
-## Error Diagnostics
-
-| Proposal | Summary |
-|----------|---------|
-| [Source Text Availability](source-text-availability.md) | `render_span_snippet(source, span)` helper; caller-pairs-with-source model; REPL and CLI source snippet display |
-| [Circular Dependency Error Paths](circular-dep-error-paths.md) | `eval_stack: Vec<(String, Span)>` in EvalState to reconstruct full A→B→A cycle chain in error messages |
 
 ## Architecture and Refactoring
 
@@ -88,26 +79,29 @@ makes the best case for its feature: "What would it take to do this well?"
 
 Cross-reference of each proposal against open TODO items and gating conditions.
 
+### Completed
+
+These proposals are fully implemented. Source documents are archived in [doc/whatif/completed/](completed/).
+
+| Proposal | Summary | Completed |
+|----------|---------|-----------|
+| [Iterative Parser + AST Formatter](completed/parser-rewrite.md) | Replace pest with `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; AST-based formatter rewrite | 2026-05-05 — `parser-lexer`, `parser-core`, `formatter-ast` |
+| [Unified Syntax Reform](completed/new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections | 2026-05-05 — `new-syntax-docs` through `new-syntax-migrate` |
+| [Circular Dependency Error Paths](completed/circular-dep-error-paths.md) | `eval_stack` in EvalState for full A→B→A cycle chain in error display | 2026-05-05 — `error-context` sprint |
+| [Source Text Availability](completed/source-text-availability.md) | `render_span_snippet` helper; caller-pairs-with-source; REPL + CLI + LSP wiring | 2026-05-05 — all phases including LSP `related_information` |
+| [Arena Patterns + Flat Environments](completed/arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; `FlatEnv` with de Bruijn slot indices; variable resolution pass | 2026-05-05 — `arena-resolve`, `arena-types`, `arena-eval`, `arena-cek`, `arena-migrate` |
+| [Type Predicates](completed/type-predicates.md) | `int?`, `str?`, `dict?`, `fn?` — one predicate per Value variant | 2026-05-05 — `type-predicates` sprint |
+| [General I/O](completed/io.md) | Capability-based I/O: `DirCap`, `NetCap`, `Handle`; `open`, `slurp`, `write`, `lines` | 2026-05-05 — all phases done: `io-phase1` through `io-phase4` + `io-include-cap` |
+| [tinct as a Templating Language](completed/templating.md) | `emit`, multi-file pipelines, formatters, string interpolation, literate mode | 2026-05-05 — all phases done: `templating-phase1` through `templating-phase4` |
+| [String Interpolation](completed/string-interpolation.md) | `i"Hello $name"` — desugars to `[str ...]`; formatter ergonomics | 2026-05-05 — implemented as `templating-phase3`: `i"..."` + `${expr}` + formatter roundtrip |
+
 ### Accepted
 
-These proposals have been formally accepted: `State: Accepted` marked, spec integrated, implementation sprints created in TODO.md.
-
-| Proposal | Summary | Accepted | Implemented |
-|----------|---------|---------|-------------|
-| [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with `Vec<StackFrame>` iterative parser; `ParseOutput` comment map; AST-based formatter rewrite | 2026-04-28 | Complete — `parser-lexer`, `parser-core`, `formatter-ast` |
-| [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections; three-sprint implementation plan | 2026-05-01 | Complete — `new-syntax-docs` through `new-syntax-migrate` |
-| [Circular Dependency Error Paths](circular-dep-error-paths.md) | `eval_stack` in EvalState for full A→B→A cycle chain in error display | 2026-05-04 | Phase 1 complete — `error-context` sprint |
-| [Source Text Availability](source-text-availability.md) | `render_span_snippet` helper; caller-pairs-with-source; REPL + CLI wiring | 2026-05-04 | Phase 1 partial — REPL/CLI done; LSP snippet display is Phase 3 |
-| [Arena Patterns + Flat Environments](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; `FlatEnv` with de Bruijn slot indices; variable resolution pass | 2026-05-04 | Complete — `arena-resolve`, `arena-types`, `arena-eval`, `arena-cek`, `arena-migrate` |
-| [Type Predicates](type-predicates.md) | `int?`, `str?`, `dict?`, `fn?` — one predicate per Value variant | 2026-05-04 | Complete — `type-predicates` sprint |
-| [General I/O](io.md) | Capability-based I/O: `DirCap`, `NetCap`, `Handle`; `open`, `slurp`, `write`, `lines` | 2026-05-04 | Not started — 4 sprints: `io-phase1` through `io-phase4` |
-| [tinct as a Templating Language](templating.md) | `emit`, multi-file pipelines, formatters, string interpolation, literate mode | 2026-05-04 | Not started — 4 sprints: `templating-phase1` through `templating-phase4` |
+These proposals have been formally accepted: `State: Accepted` marked, spec integrated, implementation sprints created in TODO.md. Not yet fully implemented.
 
 ### Adopt Now
 
 These proposals have no gating conditions and deliver standalone value at low cost.
-
-**[String Interpolation](string-interpolation.md) Phase 1** — High ergonomic ROI. Phase 1 (`i"..."` → desugar to `str`) is a standalone parser + desugar change. No dependencies.
 
 **[`let` Binding Form](let-binding.md)** — Removes structural friction in every multi-step function. No new keywords; extends existing sequential scoping model to `[fn ...]` bodies. No dependencies.
 
@@ -138,7 +132,7 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [Quasiquoting](quasiquoting.md) | Macro system adoption |
 | [Custom Call Aliases](call-aliases.md) | Macro system adoption |
 | [Parameterized Type Aliases](parameterized-type-aliases.md) | Name collision becomes a real type error, or recursive ADTs needed (Phase 4) |
-| [Pattern Matching](pattern-matching.md) Phase 2+ | Phase 1 (type predicates) complete |
+| [Pattern Matching](pattern-matching.md) Phase 2+ | Phase 1 gate met (type-predicates complete); Phase 2+ gated on let-binding and union types |
 | [String Interning](string-interning.md) | Profiling confirms `String` allocation/comparison is top-5 hotspot on real workloads |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
 | [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |
@@ -155,7 +149,7 @@ These proposals open new ground rather than closing existing work. All have acce
 | [SQL Data Sources](lib-sql.md) | Lazy DB reads via `filter`/`map` predicate pushdown |
 | [Numeric Types](numeric-types.md) | Range annotations + Decimal type |
 | [Float Dict Keys](float-dict-keys.md) | Decimal keys; gated on Decimal type adoption |
-| [Pattern Matching](pattern-matching.md) | Full match expression; Phase 1 = type predicates (adopt that first) |
+| [Pattern Matching](pattern-matching.md) | Full match expression; Phase 1 gate met (type predicates complete); Phase 2+ next |
 | [Nominal Variants](nominal-variants.md) Phase 1 | `tag-of` + unit constructors; independently useful as enum-like values |
 
 ---
@@ -165,7 +159,7 @@ These proposals open new ground rather than closing existing work. All have acce
 Reading order: each row depends on those above it in the same chain.
 
 ```
-type-predicates ─────────────────────────────────────────── pattern-matching (Ph 1)
+type-predicates ✓ Complete ──────────────────────────────── pattern-matching (Ph 1: unblocked)
                                                                       │
 let-binding ──────────────────────────────────────────────── pattern-matching (Ph 2+)
                                                                       │
@@ -181,19 +175,16 @@ type-classes (Ph 1: deep-eq/shallow-eq) ── type-classes (Ph 2: constrained v
 
 quasiquoting ─── macros ─── call-aliases
 
-io (Ph 1) ─── templating
-           └── tls (Ph 2)
+io ✓ Complete ─── templating ✓ Complete
+io ✓ Complete ─── tls (Ph 2)
 
-string-interpolation ─── new-syntax (accepted; $ as interpolation marker inside i"..." is compatible)
+string-interpolation ✓ Complete (templating-phase3)
+new-syntax ✓ Complete
 
 structural-contracts ─── numeric-types (Ph 1)
 parameterized-type-aliases ─── algebraic-data-types (Ph 4, recursive ADTs)
 
-arena-patterns (Ph 1: variable-resolution-pass) ✓ Complete
-    └── arena-patterns (Ph 2: ThunkArena + FlatEnv + ThunkId migration) ✓ Complete
-            └── arena-patterns (Ph 3: CEK machine completion) ✓ Complete
-                    └── arena-patterns (Ph 4: --- boundary migration) ✓ Complete (N/A Phase 2)
-                    └── arena-patterns (Ph 4: --- boundary migration)
+arena-patterns ✓ Complete (all phases: variable-resolution-pass, ThunkArena + FlatEnv, CEK machine, --- boundary migration)
 
 eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
 ```
@@ -229,7 +220,7 @@ Nominal `[Ok 42]` → `{"Ok": 42}`. `from-json` always produces structural dicts
 
 ### The One-Way Migration Door
 
-**[Unified Syntax Reform](new-syntax.md)** — Accepted 2026-05-01. Implementation is a clean internal cutover (no user code) in three sprints: `new-syntax-a` (% pipeline), `new-syntax-b` (core migration), `new-syntax-c` (polish). After Phase 2 commits, all existing tinct examples and other whatif docs need syntax updates.
+**[Unified Syntax Reform](completed/new-syntax.md)** — Complete 2026-05-05. Implemented in sprints `new-syntax-docs` through `new-syntax-migrate`. All existing tinct examples and other whatif docs have been updated to the new syntax.
 
 ### No Conflict (Apparent but Not Real)
 
@@ -241,6 +232,6 @@ The same `[union ...]` form hosts both structural and nominal declarations, dist
 
 Structural contracts are for boundary validation (JSON input, pipeline boundaries); type classes are for type-level protocols. Both can coexist; adopt structural contracts first for the immediate use case.
 
-**[String Interning](string-interning.md) vs [Arena Patterns](arena-patterns.md)**
+**[String Interning](string-interning.md) vs [Arena Patterns](completed/arena-patterns.md)**
 
-String interning replaces `Key::String(String)` with `Key::String(Spur)`. Arena patterns replace `Rc<Thunk>` with `ThunkId`. Both are perf migrations that change the representation of different types — they don't conflict and could be done in either order. Arena migration is higher-leverage and already planned; string interning should be profiled before committing.
+String interning replaces `Key::String(String)` with `Key::String(Spur)`. Arena patterns replaced `Rc<Thunk>` with `ThunkId` (complete). Both are perf migrations that change the representation of different types — they don't conflict. Arena migration is done; string interning should be profiled before committing.
