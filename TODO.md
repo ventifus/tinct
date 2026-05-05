@@ -16,16 +16,16 @@ See doc/whatif/io.md.
 
 See doc/whatif/io.md §Phase 1.
 
-- [ ] Add `Value::DirCap` wrapping `cap_std::fs::Dir` (`src/value.rs`)
-- [ ] Add `Value::Handle` wrapping `Rc<RefCell<Box<dyn io::Read + io::Write>>>` (`src/value.rs`)
-- [ ] Add `Value::RevocableDirCap` with `inner: DirCap` and `revoked: Rc<Cell<bool>>` (`src/value.rs`)
-- [ ] Add `emitted: bool` and `env_allowlist: Option<HashSet<String>>` to `EvalContext` (`src/eval.rs`)
-- [ ] Implement `dir-cap`, `open`, `narrow`, `revocable`, `slurp`, `write`, `lines`, `emit`, `env` builtins (`src/builtins.rs`)
+- [x] Add `Value::DirCap`, `Value::Handle`, `Value::RevocableDirCap` variants (`src/value.rs`)
+- [x] Add `emitted: Cell<bool>` and `env_allowed: Option<HashSet<String>>` to `EvalContext` (`src/eval.rs`)
+- [x] Implement `emit`, `env`, `dir-cap`, `open`, `slurp`, `narrow` builtins with type signatures (`src/builtins.rs`, `src/types.rs`)
+- [x] Suppress default JSON output when `emitted == true` (`src/main.rs`)
+- [x] Inject `pwd` DirCap into root env at startup (`src/main.rs`)
+- [x] Add `--no-env` and `--allow-env NAME` CLI flags (`src/main.rs`)
+- [ ] Implement `revocable`, `write`, `lines` builtins (`src/builtins.rs`)
 - [ ] Modify `include` to take `DirCap` first arg; cache by `(st_dev, st_ino)` (`src/builtins.rs`, `src/eval.rs`)
-- [ ] Inject `pwd`, `libdir`, `stdin` into root env at startup (`src/eval.rs`, `src/main.rs`)
-- [ ] Add `--cap-fs`, `--no-pwd`, `--no-libdir`, `--no-stdin`, `--no-env`, `--allow-env`, `--libdir-path` CLI flags (`src/main.rs`)
-- [ ] Create `stdlib/io.llt` with `read-file`, `write-file`, `append-file`, `read-lines`, `println` (`stdlib/io.llt`)
-- [ ] Suppress default JSON output when `emitted == true` (`src/main.rs`)
+- [ ] Inject `libdir` DirCap and `stdin` Handle into root env; add `--no-pwd`, `--no-libdir`, `--no-stdin`, `--cap-fs`, `--libdir-path` CLI flags (`src/main.rs`)
+- [ ] Create `stdlib/io.llt` with `read-file`, `write-file`, `read-lines`, `println` (`stdlib/io.llt`)
 - [ ] Update sandbox documentation for cap model flags (`doc/12-tooling.md`)
 - [ ] Corpus tests for file I/O, emit, stdin, env, revocable caps (`tests/corpus/io/`)
 
@@ -37,13 +37,11 @@ See doc/whatif/io.md §Phase 2.
 
 - [ ] Add `Value::NetCap` wrapping `Vec<NetCapEntry>` (`src/value.rs`)
 - [ ] Define `NetCapEntry` enum with hostname, host:port, IPv4/IPv6 CIDR variants (`src/value.rs`)
-- [ ] Implement `net-cap`, `connect`, `tls` builtins (`src/builtins.rs`)
-- [ ] Add `rustls = "0.23"` dependency to `Cargo.toml` (`Cargo.toml`)
+- [ ] Implement `net-cap`, `connect` builtins (`src/builtins.rs`)
 - [ ] Implement hostname and CIDR matching logic for NetCap allowlist (`src/builtins.rs`)
 - [ ] Add `--cap-net` CLI flag with accumulation for same name (`src/main.rs`)
-- [ ] Create `stdlib/net.llt` with `fetch`, `fetch-opts`, `http-parse-response`, `parse-url`, `http-format-request` (`stdlib/net.llt`)
-- [ ] TLS: rustls integration with system CA store, hostname verification (`src/builtins.rs`)
-- [ ] Corpus tests for TCP connect, TLS connections, NetCap allowlist matching (`tests/corpus/io/`)
+- [ ] Create `stdlib/net.llt` with `fetch` (HTTP only), `http-parse-response`, `parse-url`, `http-format-request` (`stdlib/net.llt`)
+- [ ] Corpus tests for TCP connect, NetCap allowlist matching (`tests/corpus/io/`)
 - [ ] Error tests for connection denials, revoked caps (`tests/corpus/io/`)
 
 ### io-phase3: Atomic Writes, Streaming Fetch, Sandbox Hardening
@@ -130,3 +128,26 @@ See doc/whatif/templating.md §Phase 4.
 ## Template-Polarity Research
 
 - [ ] Research template-polarity embedding — evaluate after Phases 1-3 adoption whether `emit` + `i"..."` + formatters cover use cases or whether `tinct template` with `{{ expr }}` delimiters is needed. See doc/whatif/templating.md §Part 3.
+
+## Error Diagnostics: Source Snippets
+
+Deferred phases from the accepted `source-text-availability` proposal. Phase 1 (REPL + CLI snippet rendering) is complete. See `doc/whatif/source-text-availability.md`.
+
+### source-text-multiline: Multi-Line Span Rendering
+
+Extends `render_span_snippet` to show all lines of a multi-line span. Currently only the first line + `...` is shown. See doc/whatif/source-text-availability.md §Phase 2.
+
+- [ ] Extend `render_span_snippet` to render all lines of a multi-line span: first line from start_col to EOL, middle lines at full width, last line from col 0 to end_col (`src/error.rs`)
+- [ ] Update `test_render_span_snippet_multiline` to assert full multi-line output — all lines shown, not just `...` marker (`src/error.rs`)
+- [ ] Add integration test: error spanning multiple lines shows all span lines in output (`src/lib.rs`)
+
+### source-text-lsp: LSP DiagnosticRelatedInformation
+
+**Depends on:** `source-text-multiline`
+
+Populates `related_information` on LSP diagnostics with a source snippet. All three diagnostic constructors in `src/lsp/analysis.rs` currently have `related_information: None`; the source string is already in scope at each call site. See doc/whatif/source-text-availability.md §Phase 3.
+
+- [ ] Populate `related_information` in `eval_error_to_diagnostic`: add definition span snippet as first entry; add materialization span as second entry when present (`src/lsp/analysis.rs`)
+- [ ] Assess whether parse and type errors also benefit from `related_information`; add if so (`src/lsp/analysis.rs`)
+- [ ] Evaluate `codespan-reporting` crate vs. hand-rolled rendering; adopt only if it reduces code (`Cargo.toml`)
+- [ ] Unit test: `eval_error_to_diagnostic` with a real span produces non-None `related_information` (`src/lsp/analysis.rs`)

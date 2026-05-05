@@ -1761,6 +1761,269 @@ fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     )))
 }
 
+/// `emit`: Write a string to stdout and suppress JSON output.
+/// Takes a String argument, writes it to stdout, sets ctx.emitted flag, returns null (empty dict).
+fn builtin_emit(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("emit", args, named, &ctx, depth, call_span)?;
+    let s = require_string("emit", val, args[0].span)?;
+
+    // Write to stdout
+    use std::io::Write;
+    std::io::stdout()
+        .write_all(s.as_bytes())
+        .map_err(|e| EvalError::user_error(format!("emit failed: {e}"), call_span))?;
+
+    // Set emitted flag to suppress JSON output
+    ctx.emitted.set(true);
+
+    // Return null (empty dict)
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `env`: Read an environment variable by name.
+/// Returns the value as a String, or Null if not set or not allowed.
+/// Gated by ctx.env_allowed: None = all denied, Some(set) = only those allowed.
+fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("env", args, named, &ctx, depth, call_span)?;
+    let name = require_string("env", val, args[0].span)?;
+
+    // Check env_allowed
+    // None = unrestricted (all allowed), Some(set) = only those in the set
+    let allowed = match &ctx.env_allowed {
+        None => true, // None means unrestricted access
+        Some(set) => set.contains(&name),
+    };
+
+    if !allowed {
+        // Return Null if not allowed
+        return ok_val(Value::Dict(IndexMap::new()), call_span);
+    }
+
+    // Read env var
+    match std::env::var(name) {
+        Ok(value) => ok_val(Value::String(value), call_span),
+        Err(_) => ok_val(Value::Dict(IndexMap::new()), call_span), // Not set -> Null
+    }
+}
+
+/// `dir-cap`: Create a DirCap from a path string.
+/// Opens the path as a cap_std::fs::Dir (RESOLVE_BENEATH sandbox at OS level).
+/// Returns Value::DirCap.
+fn builtin_dir_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("dir-cap", args, named, &ctx, depth, call_span)?;
+    let path = require_string("dir-cap", val, args[0].span)?;
+
+    // Open the directory using cap-std
+    use cap_std::ambient_authority;
+    let dir = cap_std::fs::Dir::open_ambient_dir(&path, ambient_authority()).map_err(|e| {
+        EvalError::user_error(
+            format!("dir-cap: failed to open directory '{}': {}", path, e),
+            call_span,
+        )
+    })?;
+
+    ok_val(Value::DirCap(Rc::new(dir)), call_span)
+}
+
+/// `open`: Open a file within a DirCap.
+/// Takes a DirCap, String filename, and String mode ("r", "w", "a").
+/// Returns Value::Handle.
+fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 3 args: DirCap, String path, String mode
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+    reject_named("open", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let mode_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "open: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "open".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let path = require_string("open", path_val, args[1].span)?;
+    let mode = require_string("open", mode_val, args[2].span)?;
+
+    // Open the file based on mode
+    use std::io::BufReader;
+    let handle: Box<dyn std::io::Read> = match mode.as_str() {
+        "r" => {
+            let file = dir.open(&path).map_err(|e| {
+                EvalError::user_error(
+                    format!("open: failed to open file '{}': {}", path, e),
+                    call_span,
+                )
+            })?;
+            Box::new(BufReader::new(file))
+        }
+        "w" | "a" => {
+            return Err(EvalError::user_error(
+                "open: write and append modes not yet implemented (Phase 1 is read-only)"
+                    .to_string(),
+                call_span,
+            )
+            .into());
+        }
+        _ => {
+            return Err(EvalError::user_error(
+                format!("open: invalid mode '{}' (expected 'r', 'w', or 'a')", mode),
+                call_span,
+            )
+            .into());
+        }
+    };
+
+    ok_val(
+        Value::Handle(Rc::new(std::cell::RefCell::new(handle))),
+        call_span,
+    )
+}
+
+/// `slurp`: Read all bytes from a Handle to a String.
+/// Takes a Handle, reads to EOF, returns String.
+fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("slurp", args, named, &ctx, depth, call_span)?;
+
+    // Extract Handle
+    let handle = match val {
+        Value::Handle(h) => h,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "slurp".to_string(),
+                "Handle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Read to string
+    use std::io::Read;
+    let mut contents = String::new();
+    handle
+        .borrow_mut()
+        .read_to_string(&mut contents)
+        .map_err(|e| EvalError::user_error(format!("slurp: read failed: {}", e), call_span))?;
+
+    ok_val(Value::String(contents), call_span)
+}
+
+/// `narrow`: Attenuate a DirCap to a subdirectory.
+/// Takes a DirCap and a String subpath, returns a new DirCap for the subdirectory.
+fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 2 args: DirCap, String subpath
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("narrow", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let subpath_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "narrow: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "narrow".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let subpath = require_string("narrow", subpath_val, args[1].span)?;
+
+    // Open subdirectory (RESOLVE_BENEATH applies to subpath)
+    let narrowed = dir.open_dir(&subpath).map_err(|e| {
+        EvalError::user_error(
+            format!("narrow: failed to open subdirectory '{}': {}", subpath, e),
+            call_span,
+        )
+    })?;
+
+    ok_val(Value::DirCap(Rc::new(narrowed)), call_span)
+}
+
 /// Returns all builtin definitions with strictness metadata.
 ///
 /// All builtins conform to the standard `BuiltinFn` signature, including `if`
@@ -1822,6 +2085,16 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("fn?", builtin_fn_check, [Strictness::Seq]),
         builtin!("seq?", builtin_seq_check, [Strictness::Seq]),
         // I/O
+        builtin!("emit", builtin_emit, [Strictness::Seq]),
+        builtin!("env", builtin_env, [Strictness::Seq]),
+        builtin!("dir-cap", builtin_dir_cap, [Strictness::Seq]),
+        builtin!(
+            "open",
+            builtin_open,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("slurp", builtin_slurp, [Strictness::Seq]),
+        builtin!("narrow", builtin_narrow, [Strictness::Seq, Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
         // Sequences
@@ -6677,6 +6950,12 @@ mod tests {
         assert!(names.contains(&"fn?"), "missing fn?");
         assert!(names.contains(&"seq?"), "missing seq?");
         // I/O
+        assert!(names.contains(&"emit"), "missing emit");
+        assert!(names.contains(&"env"), "missing env");
+        assert!(names.contains(&"dir-cap"), "missing dir-cap");
+        assert!(names.contains(&"open"), "missing open");
+        assert!(names.contains(&"slurp"), "missing slurp");
+        assert!(names.contains(&"narrow"), "missing narrow");
         assert!(names.contains(&"from-json"), "missing from-json");
         assert!(names.contains(&"include"), "missing include");
         // Sequences
@@ -6703,8 +6982,8 @@ mod tests {
         assert!(names.contains(&"sort"), "missing sort");
         // Also assert proxy is present
         assert!(names.contains(&"proxy"), "missing proxy");
-        // Total count: 47 original (incl. proxy) + 4 new list ops + 8 type predicates = 59
-        assert_eq!(names.len(), 59, "expected 59 builtins, got {}", names.len());
+        // Total count: 47 original (incl. proxy) + 4 new list ops + 8 type predicates + 6 I/O (emit, env, dir-cap, open, slurp, narrow) = 65
+        assert_eq!(names.len(), 65, "expected 65 builtins, got {}", names.len());
     }
 
     #[test]

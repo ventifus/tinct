@@ -7,8 +7,8 @@ use std::process;
 use std::rc::Rc;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_source, json_to_value,
-    materialize, parse, value_to_display_string, value_to_json, EvalContext, Span,
-    Thunk, MAX_FILE_SIZE,
+    materialize, parse, value_to_display_string, value_to_json, EvalContext, Span, Thunk,
+    MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -79,6 +79,15 @@ enum Commands {
         #[arg(long, value_name = "COUNT")]
         max_fds: Option<u64>,
 
+        /// Disable environment variable access. $env returns Null for all names.
+        #[arg(long)]
+        no_env: bool,
+
+        /// Allow $env to read specific environment variable(s) by name (may be repeated).
+        /// When any --allow-env flag is present, $env returns Null for unlisted names.
+        #[arg(long, value_name = "NAME")]
+        allow_env: Vec<String>,
+
         /// Input LLT file. Use `-` to read LLT source from stdin.
         file: String,
     },
@@ -138,6 +147,8 @@ fn main() {
             max_memory,
             max_cpu,
             max_fds,
+            no_env,
+            allow_env,
             file,
         } => run_eval(
             &file,
@@ -151,6 +162,8 @@ fn main() {
             max_memory,
             max_cpu,
             max_fds,
+            no_env,
+            allow_env,
         ),
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
@@ -499,6 +512,8 @@ fn run_eval(
     max_memory: Option<u64>,
     max_cpu: Option<u64>,
     max_fds: Option<u64>,
+    no_env: bool,
+    allow_env: Vec<String>,
 ) -> Result<(), String> {
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
@@ -608,6 +623,35 @@ fn run_eval(
         eprintln!("warning: seccomp sandbox not active: {e}");
     }
 
+    // Inject `pwd` DirCap into the root environment (unless --no-pwd is set)
+    // TODO: Add --no-pwd flag and gate this injection
+    {
+        use tinct::Value;
+        // Open pwd as a DirCap for the current working directory
+        let pwd_path = std::env::current_dir()
+            .map_err(|e| format!("cannot determine working directory for pwd: {e}"))?;
+        let pwd_dir = cap_std::fs::Dir::open_ambient_dir(&pwd_path, cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open pwd directory: {e}"))?;
+        let pwd_value = Value::DirCap(Rc::new(pwd_dir));
+
+        // Wrap in a materialized thunk
+        let pwd_thunk = tinct::Thunk::new_materialized(pwd_value, tinct::Span::origin());
+
+        // Insert into environment
+        env.borrow_mut()
+            .insert("pwd".to_string(), Rc::new(pwd_thunk));
+    }
+
+    // Determine env_allowed based on CLI flags
+    // None = unrestricted, Some(empty) = all denied (--no-env), Some(set) = only those allowed
+    let env_allowed = if no_env {
+        Some(std::collections::HashSet::new()) // empty set = all denied
+    } else if !allow_env.is_empty() {
+        Some(allow_env.into_iter().collect()) // specific allowlist
+    } else {
+        None // unrestricted
+    };
+
     // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
     let eval_ctx = EvalContext::new_with_all_options(
         base_dir,
@@ -615,6 +659,7 @@ fn run_eval(
         no_fs,
         require_integrity,
         canonical_allowed_paths,
+        env_allowed,
     );
 
     let initial_input = stdin_input;
@@ -654,45 +699,49 @@ fn run_eval(
         val
     };
 
-    // Serialize and output
-    match format {
-        OutputFormat::Json => {
-            let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
-                let mut error_str = format!("{e}");
-                if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
-                    error_str.push('\n');
-                    error_str.push_str(&snippet);
-                }
-                error_str
-            })?;
-            let output = serde_json::to_string_pretty(&json)
-                .map_err(|e| format!("JSON serialization error: {e}"))?;
-            println!("{output}");
-        }
-        OutputFormat::Llt => {
-            // Deep-materialize for display (value_to_display_string needs it).
-            // Skip if --eval already deep-materialized above.
-            let display_val = if force_eval {
-                &val
-            } else {
-                &deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
+    // Serialize and output (skip if emit was called)
+    if !eval_ctx.emitted.get() {
+        match format {
+            OutputFormat::Json => {
+                let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
                     let mut error_str = format!("{e}");
                     if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
                         error_str.push('\n');
                         error_str.push_str(&snippet);
                     }
                     error_str
-                })?
-            };
-            let output = value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| {
-                let mut error_str = format!("{e}");
-                if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
-                    error_str.push('\n');
-                    error_str.push_str(&snippet);
-                }
-                error_str
-            })?;
-            println!("{output}");
+                })?;
+                let output = serde_json::to_string_pretty(&json)
+                    .map_err(|e| format!("JSON serialization error: {e}"))?;
+                println!("{output}");
+            }
+            OutputFormat::Llt => {
+                // Deep-materialize for display (value_to_display_string needs it).
+                // Skip if --eval already deep-materialized above.
+                let display_val = if force_eval {
+                    &val
+                } else {
+                    &deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
+                        let mut error_str = format!("{e}");
+                        if let Some(snippet) =
+                            tinct::render_span_snippet(&source, e.definition_span)
+                        {
+                            error_str.push('\n');
+                            error_str.push_str(&snippet);
+                        }
+                        error_str
+                    })?
+                };
+                let output = value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| {
+                    let mut error_str = format!("{e}");
+                    if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                        error_str.push('\n');
+                        error_str.push_str(&snippet);
+                    }
+                    error_str
+                })?;
+                println!("{output}");
+            }
         }
     }
 

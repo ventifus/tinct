@@ -250,6 +250,17 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::Function { params, .. } => visitor.visit_function(&**params),
         value::Value::Builtin(def) => visitor.visit_builtin(def.name),
         value::Value::Proxy { .. } => visitor.visit_proxy(),
+        value::Value::DirCap(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "DirCap".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::Handle(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Handle".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::RevocableDirCap { .. } => Err(Box::new(
+            error::EvalError::value_not_serializable("DirCap".to_string(), ast::Span::origin()),
+        )),
     }
 }
 

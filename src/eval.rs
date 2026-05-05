@@ -154,6 +154,11 @@ pub struct EvalContext {
     /// Reserved for Phase 3 flat environment migration.
     #[allow(dead_code)]
     pub(crate) env_arena: RefCell<EnvArena>,
+    /// Set to true when `emit` builtin is called. Signals CLI to suppress JSON output.
+    pub emitted: std::cell::Cell<bool>,
+    /// Environment variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
+    /// Some(empty) means all denied (--no-env mode).
+    pub env_allowed: Option<HashSet<String>>,
 }
 
 impl EvalContext {
@@ -171,7 +176,14 @@ impl EvalContext {
         no_fs: bool,
         require_integrity: bool,
     ) -> Rc<Self> {
-        Self::new_with_all_options(base_dir, stdlib_env, no_fs, require_integrity, Vec::new())
+        Self::new_with_all_options(
+            base_dir,
+            stdlib_env,
+            no_fs,
+            require_integrity,
+            Vec::new(),
+            None,
+        )
     }
 
     pub fn new_with_all_options(
@@ -180,6 +192,7 @@ impl EvalContext {
         no_fs: bool,
         require_integrity: bool,
         allowed_paths: Vec<std::path::PathBuf>,
+        env_allowed: Option<HashSet<String>>,
     ) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
@@ -197,6 +210,8 @@ impl EvalContext {
             })),
             thunk_arena: RefCell::new(ThunkArena::new()),
             env_arena: RefCell::new(EnvArena::new()),
+            emitted: std::cell::Cell::new(false),
+            env_allowed,
         })
     }
 
@@ -222,6 +237,8 @@ impl EvalContext {
             state: Rc::clone(&self.state),
             thunk_arena: RefCell::new(ThunkArena::new()),
             env_arena: RefCell::new(EnvArena::new()),
+            emitted: std::cell::Cell::new(false),
+            env_allowed: self.env_allowed.clone(),
         })
     }
 

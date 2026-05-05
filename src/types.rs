@@ -1939,7 +1939,7 @@ impl TypeEnv {
     /// - `Any → T`: unary operator returning type `T`
     /// - `Fn@Any [Any]`: higher-order function (e.g. map, filter) with `Any` for callbacks
     ///
-    /// **Coverage:** All 51 builtins from `standard_builtins()` (src/builtins.rs)
+    /// **Coverage:** All 57 builtins from `standard_builtins()` (src/builtins.rs)
     pub fn with_builtins() -> Self {
         let mut env = Self::new();
 
@@ -2254,6 +2254,54 @@ impl TypeEnv {
         );
 
         // I/O
+        env.insert(
+            "emit".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Any), // returns Null (empty dict)
+                variadic: false,
+            },
+        );
+        env.insert(
+            "env".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Any), // returns Str or Null
+                variadic: false,
+            },
+        );
+        env.insert(
+            "dir-cap".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Any), // returns DirCap (no type distinction in Phase 1)
+                variadic: false,
+            },
+        );
+        env.insert(
+            "open".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Str, Type::Str], // DirCap, path, mode
+                ret: Box::new(Type::Any),                      // returns Handle
+                variadic: false,
+            },
+        );
+        env.insert(
+            "slurp".to_string(),
+            Type::Function {
+                params: vec![Type::Any], // Handle
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "narrow".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Str], // DirCap, subpath
+                ret: Box::new(Type::Any),           // returns DirCap
+                variadic: false,
+            },
+        );
         env.insert(
             "from-json".to_string(),
             Type::Function {
