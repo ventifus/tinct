@@ -2472,6 +2472,190 @@ fn builtin_lines_step(
     }
 }
 
+/// `write`: Write a String to a file.
+/// Takes a DirCap, String path, and String content.
+/// Writes content to the file at path (creating or truncating), then returns null.
+fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 3 args: DirCap, String path, String content
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+    reject_named("write", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let content_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "write: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "write".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let path = require_string("write", path_val, args[1].span)?;
+    let content = require_string("write", content_val, args[2].span)?;
+
+    // Open file for writing (create or truncate)
+    use std::io::Write;
+    let mut file = dir.create(&path).map_err(|e| {
+        EvalError::user_error(
+            format!("write: failed to create file '{}': {}", path, e),
+            call_span,
+        )
+    })?;
+
+    // Write content
+    file.write_all(content.as_bytes()).map_err(|e| {
+        EvalError::user_error(
+            format!("write: failed to write to '{}': {}", path, e),
+            call_span,
+        )
+    })?;
+
+    // Return null (empty dict)
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `write-atomic`: Atomically write a String to a file.
+/// Takes a DirCap, String path, and String content.
+/// Writes to a temp file in the same directory, then renames to the target path.
+/// This ensures the target file is never partially written.
+fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 3 args: DirCap, String path, String content
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+    reject_named("write-atomic", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let content_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "write-atomic: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "write-atomic".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let path = require_string("write-atomic", path_val, args[1].span)?;
+    let content = require_string("write-atomic", content_val, args[2].span)?;
+
+    // Generate a unique temp filename in the same directory as the target
+    // Use process ID and a random suffix to avoid collisions
+    use std::io::Write;
+    let temp_name = format!(
+        ".tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+
+    // Write to temp file
+    let mut temp_file = dir.create(&temp_name).map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "write-atomic: failed to create temp file '{}': {}",
+                temp_name, e
+            ),
+            call_span,
+        )
+    })?;
+
+    temp_file.write_all(content.as_bytes()).map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "write-atomic: failed to write to temp file '{}': {}",
+                temp_name, e
+            ),
+            call_span,
+        )
+    })?;
+
+    // Ensure data is flushed before rename
+    temp_file.sync_all().map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "write-atomic: failed to sync temp file '{}': {}",
+                temp_name, e
+            ),
+            call_span,
+        )
+    })?;
+
+    // Drop the file handle before rename (required on Windows)
+    drop(temp_file);
+
+    // Atomically rename temp file to target path
+    dir.rename(&temp_name, &dir, &path).map_err(|e| {
+        // Clean up temp file on rename failure
+        let _ = dir.remove_file(&temp_name);
+        EvalError::user_error(
+            format!(
+                "write-atomic: failed to rename temp file to '{}': {}",
+                path, e
+            ),
+            call_span,
+        )
+    })?;
+
+    // Return null (empty dict)
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
 /// Returns all builtin definitions with strictness metadata.
 ///
 /// All builtins conform to the standard `BuiltinFn` signature, including `if`
@@ -2552,6 +2736,16 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
         builtin!("lines", builtin_lines, [Strictness::Seq]),
+        builtin!(
+            "write",
+            builtin_write,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "write-atomic",
+            builtin_write_atomic,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
         // Sequences
@@ -7413,6 +7607,13 @@ mod tests {
         assert!(names.contains(&"open"), "missing open");
         assert!(names.contains(&"slurp"), "missing slurp");
         assert!(names.contains(&"narrow"), "missing narrow");
+        assert!(names.contains(&"revocable"), "missing revocable");
+        assert!(names.contains(&"revoke-cap"), "missing revoke-cap");
+        assert!(names.contains(&"net-cap"), "missing net-cap");
+        assert!(names.contains(&"connect"), "missing connect");
+        assert!(names.contains(&"lines"), "missing lines");
+        assert!(names.contains(&"write"), "missing write");
+        assert!(names.contains(&"write-atomic"), "missing write-atomic");
         assert!(names.contains(&"from-json"), "missing from-json");
         assert!(names.contains(&"include"), "missing include");
         // Sequences
@@ -7439,8 +7640,8 @@ mod tests {
         assert!(names.contains(&"sort"), "missing sort");
         // Also assert proxy is present
         assert!(names.contains(&"proxy"), "missing proxy");
-        // Total count: 47 original (incl. proxy) + 4 new list ops + 8 type predicates + 6 I/O (emit, env, dir-cap, open, slurp, narrow) = 65
-        assert_eq!(names.len(), 65, "expected 65 builtins, got {}", names.len());
+        // Total count: 47 original (incl. proxy) + 4 new list ops + 8 type predicates + 13 I/O (emit, env, dir-cap, open, slurp, narrow, revocable, revoke-cap, net-cap, connect, lines, write, write-atomic) + from-json + include = 74
+        assert_eq!(names.len(), 74, "expected 74 builtins, got {}", names.len());
     }
 
     #[test]

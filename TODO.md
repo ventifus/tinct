@@ -15,18 +15,6 @@ See doc/whatif/io.md.
 
 
 
-### io-phase3: Atomic Writes, Streaming Fetch, Sandbox Hardening
-
-**Depends on:** `io-phase2`
-
-See doc/whatif/io.md §Phase 3.
-
-- [ ] Implement atomic file writes via temp file + rename (`src/builtins.rs`)
-- [ ] Add `write-atomic` stdlib function using temp + rename pattern (`stdlib/io.llt`)
-- [ ] Enable streaming fetch response body via `lines` over socket handle (`stdlib/net.llt`)
-- [ ] Harden `--no-pwd --no-stdin --no-env` enforcement (`src/eval.rs`, `src/main.rs`)
-- [ ] Add error messages for missing caps (e.g., `open pwd ...` when `--no-pwd`) (`src/builtins.rs`)
-- [ ] Corpus tests for fully sandboxed invocations and handle lifecycle (`tests/corpus/io/`)
 
 ### io-phase4: Cap Types in Type Checker
 
