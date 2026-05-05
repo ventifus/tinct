@@ -1,0 +1,7 @@
+# String interpolation with escaped dollar sign
+[
+  amount: 42
+  price: i"Price: $$$amount"
+]
+===
+Dict({"amount": Int(42), "price": String("Price: $42")})

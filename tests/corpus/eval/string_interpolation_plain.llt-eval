@@ -1,0 +1,6 @@
+# Interpolated string with no variables (plain text)
+[
+  message: i"This is a plain message"
+]
+===
+Dict({"message": String("This is a plain message")})

@@ -50,6 +50,17 @@ pub enum Token {
     EscapedRef(String),
     /// Boolean literal (`true` or `false`)
     BoolLit(bool),
+    /// Interpolated string `i"..."` with parts: literals and variable references
+    InterpolatedString(Vec<InterpolatedPart>),
+}
+
+/// Parts of an interpolated string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpolatedPart {
+    /// Literal text segment
+    Literal(String),
+    /// Variable reference `$name`
+    VarRef(String),
 }
 
 impl fmt::Display for Token {
@@ -74,6 +85,16 @@ impl fmt::Display for Token {
             Token::QuotedString(s) => write!(f, "\"{s}\""),
             Token::EscapedRef(name) => write!(f, "${name}"),
             Token::BoolLit(b) => write!(f, "{b}"),
+            Token::InterpolatedString(parts) => {
+                write!(f, "i\"")?;
+                for part in parts {
+                    match part {
+                        InterpolatedPart::Literal(s) => write!(f, "{s}")?,
+                        InterpolatedPart::VarRef(name) => write!(f, "${name}")?,
+                    }
+                }
+                write!(f, "\"")
+            }
         }
     }
 }
@@ -354,6 +375,10 @@ impl<'a> Lexer<'a> {
                 self.after_access_dot = false;
                 self.lex_quoted_string()
             }
+            'i' if self.peek_ahead(1) == Some('"') => {
+                self.after_access_dot = false;
+                self.lex_interpolated_string()
+            }
             '$' => {
                 self.after_access_dot = false;
                 self.lex_var_ref()
@@ -571,6 +596,140 @@ impl<'a> Lexer<'a> {
 
         let end = self.current_position();
         Err(LexError::new("unterminated string", Span::new(start, end)))
+    }
+
+    fn lex_interpolated_string(&mut self) -> Result<(), LexError> {
+        let start = self.current_position();
+        self.advance(); // skip 'i'
+        self.advance(); // skip opening '"'
+
+        let mut parts = Vec::new();
+        let mut literal = String::new();
+
+        while let Some(c) = self.peek_char() {
+            match c {
+                '"' => {
+                    // End of interpolated string
+                    if !literal.is_empty() {
+                        parts.push(InterpolatedPart::Literal(literal));
+                    }
+                    self.advance();
+                    let end = self.current_position();
+                    self.tokens.push(Spanned::new(
+                        Token::InterpolatedString(parts),
+                        Span::new(start, end),
+                    ));
+                    self.last_significant_token = Some(LastSignificantToken::QuotedString);
+                    return Ok(());
+                }
+                '$' => {
+                    // Check for $$
+                    if self.peek_ahead(1) == Some('$') {
+                        // $$ escapes to a literal $
+                        literal.push('$');
+                        self.advance();
+                        self.advance();
+                    } else {
+                        // Variable reference
+                        // Save current literal part if non-empty
+                        if !literal.is_empty() {
+                            parts.push(InterpolatedPart::Literal(literal.clone()));
+                            literal.clear();
+                        }
+                        self.advance(); // skip '$'
+
+                        // Collect identifier characters
+                        // In interpolated strings, stop at punctuation that commonly appears in natural text
+                        let ident_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+                        while let Some(c) = self.peek_char() {
+                            // Allow same chars as var_ident, but also stop at common punctuation (comma, etc)
+                            if matches!(
+                                c,
+                                ' ' | '\t'
+                                    | '\r'
+                                    | '\n'
+                                    | '['
+                                    | ']'
+                                    | ':'
+                                    | ';'
+                                    | '#'
+                                    | '"'
+                                    | '@'
+                                    | '.'
+                                    | ','
+                                    | '!'
+                                    | '?'
+                            ) {
+                                break;
+                            }
+                            self.advance();
+                        }
+                        let ident_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+
+                        if ident_start == ident_end {
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "bare $ without identifier in interpolated string",
+                                Span::new(start, end),
+                            ));
+                        }
+
+                        let name = self.input[ident_start..ident_end].to_string();
+                        parts.push(InterpolatedPart::VarRef(name));
+                    }
+                }
+                '\\' => {
+                    // Handle escape sequences same as regular strings
+                    self.advance();
+                    match self.peek_char() {
+                        Some('"') => {
+                            literal.push('"');
+                            self.advance();
+                        }
+                        Some('\\') => {
+                            literal.push('\\');
+                            self.advance();
+                        }
+                        Some('n') => {
+                            literal.push('\n');
+                            self.advance();
+                        }
+                        Some('t') => {
+                            literal.push('\t');
+                            self.advance();
+                        }
+                        Some('r') => {
+                            literal.push('\r');
+                            self.advance();
+                        }
+                        Some(c) => {
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                format!("invalid escape sequence: \\{c}"),
+                                Span::new(start, end),
+                            ));
+                        }
+                        None => {
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "unterminated escape sequence",
+                                Span::new(start, end),
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    literal.push(c);
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.current_position();
+        Err(LexError::new(
+            "unterminated interpolated string",
+            Span::new(start, end),
+        ))
     }
 
     fn lex_var_ref(&mut self) -> Result<(), LexError> {

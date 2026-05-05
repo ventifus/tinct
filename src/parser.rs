@@ -96,6 +96,55 @@ fn key_to_string(expr: &Expr) -> Option<String> {
     }
 }
 
+/// Desugar an interpolated string into a str call.
+///
+/// Converts `i"Hello $name"` (represented as InterpolatedString parts) into
+/// `[str "Hello " name]` (a Call expression).
+fn desugar_interpolated_string(
+    parts: &[lexer::InterpolatedPart],
+    span: Span,
+) -> Result<Spanned<Expr>, ParseError> {
+    use std::cell::RefCell;
+
+    let mut args = Vec::new();
+
+    for part in parts {
+        match part {
+            lexer::InterpolatedPart::Literal(s) => {
+                args.push(Rc::new(Spanned::new(Expr::Str(s.clone()), span)));
+            }
+            lexer::InterpolatedPart::VarRef(name) => {
+                args.push(Rc::new(Spanned::new(
+                    Expr::VarRef {
+                        name: name.clone(),
+                        resolved: RefCell::new(None),
+                    },
+                    span,
+                )));
+            }
+        }
+    }
+
+    // Build the [str ...] call
+    let str_fn = Box::new(Spanned::new(
+        Expr::VarRef {
+            name: "str".to_string(),
+            resolved: RefCell::new(None),
+        },
+        span,
+    ));
+
+    Ok(Spanned::new(
+        Expr::Call {
+            func: str_fn,
+            args,
+            named_args: Vec::new(),
+            implied: false,
+        },
+        span,
+    ))
+}
+
 /// Helper: count how many whitespace/newline/semicolon tokens to skip from the current position.
 /// Also collects comment tokens into the leading_comments map (keyed by the next non-whitespace token's offset).
 fn skip_whitespace_tokens(
@@ -1937,6 +1986,31 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         continue;
                     }
                 }
+                if let Err(push_err) =
+                    push_value(&mut stack, &mut current_document_expressions, expr)
+                {
+                    if !stack.is_empty() {
+                        i = recover_from_bracket_error(
+                            push_err,
+                            span,
+                            &token_vec,
+                            i + 1,
+                            &mut stack,
+                            &mut current_document_expressions,
+                            &mut recovered_errors,
+                        );
+                        continue;
+                    }
+                    return Err(push_err);
+                }
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
+            Token::InterpolatedString(parts) => {
+                // Desugar i"Hello $name" to [str "Hello " name]
+                let expr = desugar_interpolated_string(parts, span)?;
                 if let Err(push_err) =
                     push_value(&mut stack, &mut current_document_expressions, expr)
                 {

@@ -39,13 +39,11 @@ See doc/whatif/templating.md §Phase 2.
 
 See doc/whatif/templating.md §Phase 3 and doc/whatif/string-interpolation.md.
 
-- [ ] Add `i"..."` token to lexer — detect `i` prefix before `"` (`src/lexer.rs`)
-- [ ] Parse `i"..."` as `InterpolatedString` AST node (`src/parser.rs`, `src/ast.rs`)
-- [ ] Desugar `InterpolatedString` to `[str ...]` call in desugar pass (`src/desugar.rs`)
-- [ ] Handle `$ident` simple interpolation and `${expr}` expression interpolation in parser
-- [ ] Update formatter to preserve `i"..."` strings (idempotency) (`src/formatter.rs`)
-- [ ] Corpus tests for string interpolation (`tests/corpus/`)
-- [ ] Document string interpolation syntax (`doc/02-syntax.md`)
+- [x] `i"..."` lexer token with InterpolatedPart (Literal, VarRef); parser desugars to `[str ...]` at parse time (`src/lexer.rs`, `src/parser.rs`)
+- [x] `$ident` interpolation supported; `${expr}` deferred; `$$` escape for literal `$`
+- [x] 8 corpus tests (4 valid syntax + 4 eval); doc/02-syntax.md §2.3.5 documented
+- [ ] Formatter: preserve `i"..."` round-trip (currently formats as `[str ...]`) (`src/formatter.rs`)
+- [ ] `${expr}` expression interpolation — Phase 2 of string interpolation (`src/lexer.rs`)
 
 ### templating-phase4: Literate Mode
 

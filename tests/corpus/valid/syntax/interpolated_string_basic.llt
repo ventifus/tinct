@@ -1,0 +1,19 @@
+# Basic interpolated string syntax
+i"plain string"
+===
+{
+  "type": "file",
+  "documents": [
+    {
+      "expressions": [
+        {
+          "type": "call",
+          "func": {"type": "var_ref", "name": "str"},
+          "args": [
+            {"type": "str", "value": "plain string"}
+          ]
+        }
+      ]
+    }
+  ]
+}
