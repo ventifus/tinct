@@ -60,9 +60,8 @@ Deferred phases from the accepted `source-text-availability` proposal. Phase 1 (
 
 Extends `render_span_snippet` to show all lines of a multi-line span. Currently only the first line + `...` is shown. See doc/whatif/source-text-availability.md §Phase 2.
 
-- [ ] Extend `render_span_snippet` to render all lines of a multi-line span: first line from start_col to EOL, middle lines at full width, last line from col 0 to end_col (`src/error.rs`)
-- [ ] Update `test_render_span_snippet_multiline` to assert full multi-line output — all lines shown, not just `...` marker (`src/error.rs`)
-- [ ] Add integration test: error spanning multiple lines shows all span lines in output (`src/lib.rs`)
+- [x] render_span_snippet: shows all lines (start→EOL, middles, col0→end); consistent gutter width
+- [x] test_render_span_snippet_multiline updated; integration test added (`src/error.rs`, `src/lib.rs`)
 
 ### source-text-lsp: LSP DiagnosticRelatedInformation
 
@@ -70,7 +69,7 @@ Extends `render_span_snippet` to show all lines of a multi-line span. Currently 
 
 Populates `related_information` on LSP diagnostics with a source snippet. All three diagnostic constructors in `src/lsp/analysis.rs` currently have `related_information: None`; the source string is already in scope at each call site. See doc/whatif/source-text-availability.md §Phase 3.
 
-- [ ] Populate `related_information` in `eval_error_to_diagnostic`: add definition span snippet as first entry; add materialization span as second entry when present (`src/lsp/analysis.rs`)
-- [ ] Assess whether parse and type errors also benefit from `related_information`; add if so (`src/lsp/analysis.rs`)
-- [ ] Evaluate `codespan-reporting` crate vs. hand-rolled rendering; adopt only if it reduces code (`Cargo.toml`)
-- [ ] Unit test: `eval_error_to_diagnostic` with a real span produces non-None `related_information` (`src/lsp/analysis.rs`)
+- [x] eval_error_to_diagnostic populates related_information (mat-span + stack frames)
+- [x] parse/type errors: correctly leave related_information None (no multi-span)
+- [x] codespan-reporting: assessed, not adopted (requires Files registry + ANSI output)
+- [x] 2 unit tests for eval_error_to_diagnostic related_information (`src/lsp/analysis.rs`)

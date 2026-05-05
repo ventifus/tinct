@@ -268,7 +268,10 @@ fn publish_diagnostics(
     store: &DocumentStore,
     uri: &Url,
 ) -> Result<(), Box<dyn Error>> {
-    let diagnostics = store.get(uri).map(diagnostics_for).unwrap_or_default();
+    let diagnostics = store
+        .get(uri)
+        .map(|doc| diagnostics_for(doc, uri))
+        .unwrap_or_default();
 
     let params = PublishDiagnosticsParams {
         uri: uri.clone(),
@@ -393,7 +396,7 @@ mod tests {
         let uri = Url::parse("file:///test.llt").unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
-        let diags = diagnostics_for(doc);
+        let diags = diagnostics_for(doc, &uri);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
     }
@@ -404,7 +407,7 @@ mod tests {
         let uri = Url::parse("file:///test.llt").unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
-        let diags = diagnostics_for(doc);
+        let diags = diagnostics_for(doc, &uri);
         assert!(diags.is_empty());
     }
 

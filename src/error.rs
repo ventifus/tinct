@@ -1375,16 +1375,35 @@ impl std::error::Error for EvalError {}
 /// Returns `None` for synthetic spans (`Span::origin()` at 0:0-0:0), which have no source line.
 /// Returns `None` if the span is out of bounds for the source.
 ///
+/// # Design note: hand-rolled vs `codespan-reporting`
+///
+/// The `codespan-reporting` crate (0.11.x) provides a more featureful renderer but requires
+/// a `Files` registry of byte-indexed source strings, a `FileId` handle type, and ANSI color
+/// support. For tinct's use case the overhead is not justified:
+///
+/// - Tinct operates on a **single source string** per error (REPL input, CLI file, LSP document).
+///   There is no multi-file context to register.
+/// - The output needs to be embeddable as a `String` inside `DiagnosticRelatedInformation.message`
+///   (LSP path) and REPL error strings — raw ANSI codes in those contexts are noise.
+/// - The hand-rolled approach is ~90 lines and covers both single-line and multi-line spans with
+///   the format tinct already uses (`N | line` gutter).
+///
+/// Revisit if tinct adds multi-file include error rendering (e.g., showing both the include
+/// call site and the error inside the included file), where `codespan-reporting`'s multi-file
+/// support would provide real value.
+///
 /// For single-line spans (most common), shows:
 /// ```text
 ///    {line_num} | {source_line}
 ///               | {carets}
 /// ```
 ///
-/// For multi-line spans, shows the first line with `...` indicating continuation:
+/// For multi-line spans, shows all lines with carets:
 /// ```text
-///    {line_num} | {first_line}
-///               | {carets}...
+///    {first_line_num} | {first_line_from_start_col}
+///    {mid_line_num}   | {middle_line}
+///    {last_line_num}  | {last_line_to_end_col}
+///                     | {carets}
 /// ```
 ///
 /// This is a rustc-style snippet renderer. Callers hold the source text (REPL has `input: &str`,
@@ -1403,45 +1422,78 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
         return None; // Span out of bounds
     }
 
-    let line_idx = span.start.line - 1;
-    let line_text = lines[line_idx];
-
-    // Calculate column positions (1-based in Span)
-    let start_col = span.start.column.saturating_sub(1);
-    let end_col = if span.start.line == span.end.line {
-        // Single-line span: use end column
-        span.end.column.saturating_sub(1).min(line_text.len())
-    } else {
-        // Multi-line span: underline to end of first line
-        line_text.len()
-    };
-
-    // Ensure start_col doesn't exceed line length
-    let start_col = start_col.min(line_text.len());
-    let caret_length = if end_col > start_col {
-        end_col - start_col
-    } else {
-        1 // At least one caret for zero-width or collapsed spans
-    };
-
-    // Build the snippet:
-    //    N | source line
-    //      | ^^^^...
-    let line_num_width = span.start.line.to_string().len();
+    // Width of the largest line number shown, for consistent gutter alignment.
+    let end_line = span.end.line.min(lines.len());
+    let line_num_width = end_line.to_string().len();
     let padding = " ".repeat(line_num_width);
 
     let mut snippet = String::new();
-    snippet.push_str(&format!("  {} | {}\n", span.start.line, line_text));
 
-    // Caret line: padding, " | ", spaces to start_col, carets
-    snippet.push_str(&padding);
-    snippet.push_str(" | ");
-    snippet.push_str(&" ".repeat(start_col));
-    snippet.push_str(&"^".repeat(caret_length));
+    if span.start.line == end_line {
+        // ── Single-line span ──────────────────────────────────────────────
+        let line_text = lines[span.start.line - 1];
+        let start_col = span.start.column.saturating_sub(1).min(line_text.len());
+        let end_col = span.end.column.saturating_sub(1).min(line_text.len());
+        let caret_length = if end_col > start_col {
+            end_col - start_col
+        } else {
+            1
+        };
 
-    // For multi-line spans, append "..." to indicate continuation
-    if span.start.line != span.end.line {
-        snippet.push_str("...");
+        snippet.push_str(&format!(
+            "  {:>width$} | {}\n",
+            span.start.line,
+            line_text,
+            width = line_num_width
+        ));
+        snippet.push_str(&format!("  {} | ", padding));
+        snippet.push_str(&" ".repeat(start_col));
+        snippet.push_str(&"^".repeat(caret_length));
+    } else {
+        // ── Multi-line span ───────────────────────────────────────────────
+        // First line: show from start_col to end of line, highlight from start_col.
+        let first_line = lines[span.start.line - 1];
+        let start_col = span.start.column.saturating_sub(1).min(first_line.len());
+        snippet.push_str(&format!(
+            "  {:>width$} | {}\n",
+            span.start.line,
+            first_line,
+            width = line_num_width
+        ));
+
+        // Middle lines: show full line content (no caret yet).
+        for line_num in (span.start.line + 1)..end_line {
+            let line_text = lines[line_num - 1];
+            snippet.push_str(&format!(
+                "  {:>width$} | {}\n",
+                line_num,
+                line_text,
+                width = line_num_width
+            ));
+        }
+
+        // Last line: show from col 0 to end_col, with caret under it.
+        let last_line = lines[end_line - 1];
+        let end_col = span.end.column.saturating_sub(1).min(last_line.len());
+        snippet.push_str(&format!(
+            "  {:>width$} | {}\n",
+            end_line,
+            last_line,
+            width = line_num_width
+        ));
+
+        // Caret line: highlight from start_col on the first line to end_col on the last.
+        // We produce a single caret run starting at start_col and spanning to the last
+        // column of the last line, since the lines may have different lengths.
+        // Convention: start carets at start_col (aligned to first line's gutter).
+        let caret_end = if end_col > start_col {
+            end_col
+        } else {
+            start_col + 1
+        };
+        snippet.push_str(&format!("  {} | ", padding));
+        snippet.push_str(&" ".repeat(start_col));
+        snippet.push_str(&"^".repeat(caret_end - start_col));
     }
 
     Some(snippet)
@@ -3704,6 +3756,14 @@ mod tests {
 
     #[test]
     fn test_render_span_snippet_multiline() {
+        // source:
+        //   line 1: "line1"
+        //   line 2: "let x = ["
+        //   line 3: "  42"
+        //   line 4: "]"
+        //   line 5: "line5"
+        //
+        // Span covers lines 2-4, col 1 to col 2 (i.e., "let x = [\n  42\n]")
         let source = "line1\nlet x = [\n  42\n]\nline5";
         let span = Span {
             start: crate::ast::Position {
@@ -3719,9 +3779,25 @@ mod tests {
         };
         let snippet = render_span_snippet(source, span).unwrap();
 
-        // Should show first line with carets to end + "..." continuation marker
-        assert!(snippet.contains("2 | let x = ["));
-        assert!(snippet.contains("..."));
+        // All three lines must appear in the snippet.
+        assert!(
+            snippet.contains("2 | let x = ["),
+            "missing first line: {snippet}"
+        );
+        assert!(
+            snippet.contains("3 |   42"),
+            "missing middle line: {snippet}"
+        );
+        assert!(snippet.contains("4 | ]"), "missing last line: {snippet}");
+
+        // Caret line must appear (at least one "^").
+        assert!(snippet.contains('^'), "missing caret: {snippet}");
+
+        // Old "..." marker must NOT appear — we now show all lines.
+        assert!(
+            !snippet.contains("..."),
+            "unexpected '...' in snippet: {snippet}"
+        );
     }
 
     #[test]
