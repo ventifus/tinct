@@ -2148,6 +2148,240 @@ fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
+/// `net-cap`: Create a NetCap from an allowlist of host patterns.
+/// Takes a Dict or Seq of strings (hostnames, host:port pairs, or CIDR ranges).
+/// Returns Value::NetCap.
+fn builtin_net_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("net-cap", args, named, &ctx, depth, call_span)?;
+
+    // Parse allowlist entries from a sequence or dict
+    let mut entries = Vec::new();
+
+    match val {
+        Value::Seq { .. } => {
+            // Collect all elements from the sequence
+            let mut current = val;
+            loop {
+                match current {
+                    Value::Seq { head, tail } => {
+                        let head_thunk = ctx.get_thunk(head);
+                        let head_val = materialize(&head_thunk, Some(&call_span), &ctx, depth)?;
+                        let entry_str = require_string("net-cap", head_val, call_span)?;
+                        entries.push(parse_net_cap_entry(&entry_str, call_span)?);
+
+                        // Move to tail
+                        let tail_thunk = ctx.get_thunk(tail);
+                        current = materialize(&tail_thunk, Some(&call_span), &ctx, depth)?;
+                    }
+                    Value::Dict(map) if map.is_empty() => break, // End of sequence
+                    _ => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "net-cap".to_string(),
+                            "Seq of Str",
+                            current.type_name(),
+                            call_span,
+                        )
+                        .into())
+                    }
+                }
+            }
+        }
+        Value::Dict(map) => {
+            // Dict: iterate over values (keys ignored, just like $collect)
+            for (_key, thunk_id) in map.iter() {
+                let thunk = ctx.get_thunk(*thunk_id);
+                let entry_val = materialize(&thunk, Some(&call_span), &ctx, depth)?;
+                let entry_str = require_string("net-cap", entry_val, call_span)?;
+                entries.push(parse_net_cap_entry(&entry_str, call_span)?);
+            }
+        }
+        Value::String(s) => {
+            // Single string — wrap in vec
+            entries.push(parse_net_cap_entry(&s, call_span)?);
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "net-cap".to_string(),
+                "Seq or Dict",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    }
+
+    ok_val(Value::NetCap(Rc::new(entries)), call_span)
+}
+
+/// Parse a single NetCapEntry from a string.
+fn parse_net_cap_entry(s: &str, span: Span) -> EvalResult<crate::value::NetCapEntry> {
+    use crate::value::NetCapEntry;
+
+    if let Some((host, port_str)) = s.split_once(':') {
+        // host:port format
+        let port: u16 = port_str.parse().map_err(|_| {
+            EvalError::user_error(
+                format!("net-cap: invalid port number '{}' in '{}'", port_str, s),
+                span,
+            )
+        })?;
+        Ok(NetCapEntry::HostPort(host.to_string(), port))
+    } else if s.contains('*') {
+        // Glob pattern (prefix wildcard only)
+        if !s.starts_with("*.") {
+            return Err(EvalError::user_error(
+                format!(
+                    "net-cap: only prefix wildcards are supported (e.g., '*.internal'), got '{}'",
+                    s
+                ),
+                span,
+            )
+            .into());
+        }
+        Ok(NetCapEntry::HostnameGlob(s.to_string()))
+    } else if s.contains('/') {
+        // CIDR range — deferred to Phase 3
+        Err(EvalError::user_error(
+            format!("net-cap: CIDR ranges are not yet implemented (got '{}')", s),
+            span,
+        )
+        .into())
+    } else {
+        // Plain hostname
+        Ok(NetCapEntry::Hostname(s.to_string()))
+    }
+}
+
+/// `connect`: Open a TCP connection within a NetCap.
+/// Takes a NetCap, hostname String, and port Int.
+/// Returns Value::Handle wrapping a BufReader<TcpStream>.
+fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 3 args: NetCap, String host, Int port
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+    reject_named("connect", named, call_span)?;
+
+    let cap_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let host_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let port_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Extract NetCap
+    let entries = match cap_val {
+        Value::NetCap(e) => e,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "connect".to_string(),
+                "NetCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let host = require_string("connect", host_val, args[1].span)?;
+    let port = match port_val {
+        Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
+        Value::Int(_) => {
+            return Err(EvalError::user_error(
+                "connect: port must be 1-65535".to_string(),
+                args[2].span,
+            )
+            .into())
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "connect".to_string(),
+                "Int",
+                other.type_name(),
+                args[2].span,
+            )
+            .into())
+        }
+    };
+
+    // Check allowlist before connecting
+    check_net_cap_allowlist(&entries, &host, port, call_span)?;
+
+    // Open TCP connection
+    let addr = format!("{}:{}", host, port);
+    let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
+        EvalError::user_error(
+            format!("connect: failed to connect to {}: {}", addr, e),
+            call_span,
+        )
+    })?;
+
+    // Wrap in BufReader for Handle
+    let buf_reader = std::io::BufReader::new(stream);
+    let handle = Rc::new(RefCell::new(
+        Box::new(buf_reader) as Box<dyn std::io::BufRead>
+    ));
+
+    ok_val(Value::Handle(handle), call_span)
+}
+
+/// Check if a connection to host:port is allowed by the NetCap allowlist.
+fn check_net_cap_allowlist(
+    entries: &[crate::value::NetCapEntry],
+    host: &str,
+    port: u16,
+    span: Span,
+) -> EvalResult<()> {
+    use crate::value::NetCapEntry;
+
+    // Check hostname-based entries first (pre-DNS)
+    for entry in entries {
+        match entry {
+            NetCapEntry::Hostname(allowed_host) => {
+                if host.eq_ignore_ascii_case(allowed_host) {
+                    return Ok(());
+                }
+            }
+            NetCapEntry::HostPort(allowed_host, allowed_port) => {
+                if host.eq_ignore_ascii_case(allowed_host) && port == *allowed_port {
+                    return Ok(());
+                }
+            }
+            NetCapEntry::HostnameGlob(pattern) => {
+                // Pattern: "*.suffix"
+                if let Some(suffix) = pattern.strip_prefix("*.") {
+                    if host.eq_ignore_ascii_case(suffix) || host.ends_with(&format!(".{}", suffix))
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    // No match — deny connection
+    Err(EvalError::user_error(
+        format!(
+            "connect: connection to {}:{} denied by NetCap allowlist",
+            host, port
+        ),
+        span,
+    )
+    .into())
+}
+
 /// `lines`: Read lines from a Handle lazily.
 /// Takes a Handle, returns a lazy Seq where each element is a line (without newline).
 /// This is a coinductive lazy sequence — each tail force reads the next line.
@@ -2311,6 +2545,12 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("narrow", builtin_narrow, [Strictness::Seq, Strictness::Seq]),
         builtin!("revocable", builtin_revocable, [Strictness::Seq]),
         builtin!("revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
+        builtin!("net-cap", builtin_net_cap, [Strictness::Seq]),
+        builtin!(
+            "connect",
+            builtin_connect,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("lines", builtin_lines, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),

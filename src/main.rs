@@ -109,6 +109,13 @@ enum Commands {
         #[arg(long, value_name = "NAME=PATH")]
         cap_fs: Vec<String>,
 
+        /// Inject a named NetCap into the root environment (may be repeated).
+        /// Format: NAME=ENTRY — binds $NAME to a NetCap.
+        /// Multiple uses of the same NAME accumulate into one NetCap allowlist.
+        /// Example: --cap-net api=api.internal --cap-net api=10.42.0.0/16
+        #[arg(long, value_name = "NAME=ENTRY")]
+        cap_net: Vec<String>,
+
         /// Input LLT file. Use `-` to read LLT source from stdin.
         file: String,
     },
@@ -174,6 +181,7 @@ fn main() {
             no_stdin,
             no_libdir,
             cap_fs,
+            cap_net,
             file,
         } => run_eval(
             &file,
@@ -193,6 +201,7 @@ fn main() {
             no_stdin,
             no_libdir,
             cap_fs,
+            cap_net,
         ),
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
@@ -529,6 +538,37 @@ fn setup_landlock(allowed_paths: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
+/// Parse a CLI NetCap entry (from --cap-net NAME=ENTRY).
+fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
+    use tinct::NetCapEntry;
+
+    if let Some((host, port_str)) = s.split_once(':') {
+        // host:port format
+        let port: u16 = port_str
+            .parse()
+            .map_err(|_| format!("--cap-net: invalid port number '{}' in '{}'", port_str, s))?;
+        Ok(NetCapEntry::HostPort(host.to_string(), port))
+    } else if s.contains('*') {
+        // Glob pattern (prefix wildcard only)
+        if !s.starts_with("*.") {
+            return Err(format!(
+                "--cap-net: only prefix wildcards are supported (e.g., '*.internal'), got '{}'",
+                s
+            ));
+        }
+        Ok(NetCapEntry::HostnameGlob(s.to_string()))
+    } else if s.contains('/') {
+        // CIDR range — deferred to Phase 3
+        Err(format!(
+            "--cap-net: CIDR ranges are not yet implemented (got '{}')",
+            s
+        ))
+    } else {
+        // Plain hostname
+        Ok(NetCapEntry::Hostname(s.to_string()))
+    }
+}
+
 fn run_eval(
     file_path: &str,
     format: &OutputFormat,
@@ -547,6 +587,7 @@ fn run_eval(
     no_stdin: bool,
     no_libdir: bool,
     cap_fs: Vec<String>,
+    cap_net: Vec<String>,
 ) -> Result<(), String> {
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
@@ -759,6 +800,44 @@ fn run_eval(
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
             env.borrow_mut()
                 .insert(name.to_string(), Rc::new(cap_thunk));
+        }
+    }
+
+    // Inject --cap-net NAME=ENTRY entries into the root environment
+    // Multiple uses of the same NAME accumulate into one NetCap allowlist
+    {
+        use std::collections::HashMap;
+        use tinct::NetCapEntry;
+        use tinct::Value;
+
+        let mut net_caps: HashMap<String, Vec<NetCapEntry>> = HashMap::new();
+
+        for cap_net_entry in &cap_net {
+            let (name, entry_str) = cap_net_entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "--cap-net: expected NAME=ENTRY format, got {:?}",
+                    cap_net_entry
+                )
+            })?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(format!(
+                    "--cap-net: NAME must not be empty in {:?}",
+                    cap_net_entry
+                ));
+            }
+            let entry_str = entry_str.trim();
+
+            // Parse the entry using the same logic as builtin_net_cap
+            let entry = parse_cli_net_cap_entry(entry_str)?;
+            net_caps.entry(name.to_string()).or_default().push(entry);
+        }
+
+        // Create NetCap values and inject them
+        for (name, entries) in net_caps {
+            let cap_value = Value::NetCap(Rc::new(entries));
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            env.borrow_mut().insert(name, Rc::new(cap_thunk));
         }
     }
 

@@ -14,20 +14,6 @@ See doc/whatif/io.md.
 
 
 
-### io-phase2: Network Caps, stdlib/net.llt
-
-**Depends on:** `io-phase1`
-
-See doc/whatif/io.md §Phase 2.
-
-- [ ] Add `Value::NetCap` wrapping `Vec<NetCapEntry>` (`src/value.rs`)
-- [ ] Define `NetCapEntry` enum with hostname, host:port, IPv4/IPv6 CIDR variants (`src/value.rs`)
-- [ ] Implement `net-cap`, `connect` builtins (`src/builtins.rs`)
-- [ ] Implement hostname and CIDR matching logic for NetCap allowlist (`src/builtins.rs`)
-- [ ] Add `--cap-net` CLI flag with accumulation for same name (`src/main.rs`)
-- [ ] Create `stdlib/net.llt` with `fetch` (HTTP only), `http-parse-response`, `parse-url`, `http-format-request` (`stdlib/net.llt`)
-- [ ] Corpus tests for TCP connect, NetCap allowlist matching (`tests/corpus/io/`)
-- [ ] Error tests for connection denials, revoked caps (`tests/corpus/io/`)
 
 ### io-phase3: Atomic Writes, Streaming Fetch, Sandbox Hardening
 

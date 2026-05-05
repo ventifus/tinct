@@ -3815,3 +3815,11 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 - [x] Backward compat: `[include "path"]` still works using base_dir
 - [x] doc/11a-builtins.md: updated include arity 1→1-3, documented all call patterns
 - [x] CLI tests: include_with_dircap, include_with_dircap_and_hash
+
+### io-phase2: Network Caps, stdlib/net.llt
+
+- [x] Value::NetCap + NetCapEntry enum (Hostname, HostPort, HostnameGlob)
+- [x] net-cap + connect builtins with allowlist enforcement
+- [x] --cap-net NAME=ENTRY CLI flag with accumulation
+- [x] stdlib/net.llt placeholder (fetch deferred until $write builtin exists)
+- [x] TLS deferred to lib-tls.md; CIDR deferred to Phase 3
