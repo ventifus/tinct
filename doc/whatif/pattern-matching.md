@@ -181,9 +181,26 @@ In tinct, `x` is a variable reference (lookup). In patterns, `x` means
 precedent (variables in patterns bind, not match). The alternative --- a new
 sigil for pattern bindings --- adds complexity without proportional benefit.
 
-**Pin operator:** Elixir's `^` pin operator (match against existing
-variable's value instead of rebinding) would be useful:
-`[match x  ^expected result  _ other]`. Defer to Phase 4+.
+**Pin operator:** Use `$name` to match against the existing value of a
+variable (pin), rather than binding a new variable named `name`. This
+is consistent with tinct's existing `$` semantics — `$` already marks a
+reference to something already named, in both expression and pattern context:
+
+```tinct
+[match result
+    $expected  "matched!"   # pin: result must equal current value of `expected`
+    other      "no match"]  # bind: `other` is bound to result's value
+
+[match event
+    $start-event  [handle-start]
+    $end-event    [handle-end]
+    other         [handle-other other]]
+```
+
+Bare `name` in a pattern = new binding. `$name` in a pattern = match against
+the existing value. `$name` requires `name` to be in scope at the match site —
+an undefined `$name` is a compile-time or runtime error, same as `$name` in
+an expression. Ships with Phase 2 at no extra syntactic cost.
 
 ### Open vs Closed Dict Matching
 
