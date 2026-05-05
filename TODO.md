@@ -48,6 +48,25 @@ See doc/whatif/templating.md §Phase 4.
 - [x] tangle: extract ```tinct/```llt blocks, join with `---`; eval: tangle + evaluate; weave: annotate results inline
 - [x] 10 CLI integration tests; doc/09-documents.md §Literate Mode
 
+### default-emit: Default Emit Program
+
+When `tinct eval` finishes and `emit` was never called, run the result through
+a pure-tinct JSON formatter instead of the current hardcoded Rust `value_to_json()`.
+This makes the default output behavior user-observable and replaceable.
+
+- [ ] Implement `stdlib/fmt/json.llt` — pure-tinct compact JSON serializer using
+  type predicates (`int?`, `str?`, `dict?`, `seq?`, `null?`, `bool?`, `float?`)
+  and `str` concatenation; handles nested dicts/seqs, string escaping, null (`[]`) (`stdlib/fmt/json.llt`)
+- [ ] Wire in CLI: when `emitted == false` after evaluation, run the result through
+  `stdlib/fmt/json.llt` as an implicit final pipeline stage (same mechanism as
+  multi-file pipeline) rather than calling `value_to_json()` directly (`src/main.rs`)
+- [ ] Keep `value_to_json()` for LSP, tests, and the REPL — only the CLI default
+  output path switches to the tinct formatter (`src/main.rs`)
+- [ ] Corpus/CLI tests: verify default output of `tinct eval simple.llt` matches
+  previous JSON output for Int, Float, String, Bool, Dict, Seq, Null (`tests/cli_tests.rs`)
+- [ ] Update `doc/09-documents.md` and `doc/12-tooling.md` to document that the
+  default output is produced by `stdlib/fmt/json.llt`
+
 ## Template-Polarity Research
 
 - [ ] Research template-polarity embedding — evaluate after Phases 1-3 adoption whether `emit` + `i"..."` + formatters cover use cases or whether `tinct template` with `{{ expr }}` delimiters is needed. See doc/whatif/templating.md §Part 3.
