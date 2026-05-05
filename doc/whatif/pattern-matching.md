@@ -570,7 +570,79 @@ This enables matching on lists (integer-keyed dicts) by position:
 `Key::Int` dot lookup to the evaluator), then extend the pattern parser to
 accept `Token::Int` in the `key:` position of a dict pattern.
 
-#### 4. Bracket removal has no impact on pattern syntax
+#### 4. Path-key patterns — DRY deep structure matching
+
+Dict patterns for deeply nested data quickly become repetitive. Path-key
+syntax lets the key position in a dict pattern use a dotted path, desugaring
+to an equivalent nested dict:
+
+```
+[a.b.c: v]  →  [a: [b: [c: v]]]
+```
+
+The value `v` on the right-hand side is any valid pattern — a binding, a
+literal, a wildcard, or another nested dict pattern. This gives three
+levels of granularity that are all equivalent:
+
+| Style | When to use |
+|-------|-------------|
+| `cluster.primary.tls.cert: cert` | single deep leaf binding |
+| `cluster.primary.tls: [cert: cert  key: key]` | multiple leaves at the same node — DRY |
+| `cluster: [primary: [tls: [cert: cert  key: key]]]` | when you also want to bind or match at intermediate levels |
+
+```tinct
+# Fully spelled out — all three levels of nesting explicit
+[match config
+    [cluster: [primary: [tls: [cert: cert  key: key]]]]
+    [connect-tls cert key]
+    _ [error "no tls"]]
+
+# Path-key to the subtree node — DRY when the subtree has multiple fields
+[match config
+    [cluster.primary.tls: [cert: cert  key: key]]
+    [connect-tls cert key]
+    _ [error "no tls"]]
+
+# Mixed: path-to-node + path-to-leaf in the same pattern arm
+[match config
+    [cluster.primary.tls: [cert: cert  key: key]
+     cluster.primary.host: h]
+    [connect-tls cert key h]
+    _ [error "no tls"]]
+```
+
+**Shared-prefix merging:** When two path-keys share a prefix, they merge
+into a single intermediate dict. The mixed example above desugars to:
+
+```tinct
+[cluster: [primary: [tls: [cert: cert  key: key]  host: h]]]
+```
+
+**Desugar rules:**
+- `[a.b.c: v]` → `[a: [b: [c: v]]]` — path on the left, any pattern on the right
+- `[a.b.c: v  a.b.d: w]` → `[a: [b: [c: v  d: w]]]` — shared prefix merged
+- `[a.0.name: n]` → `[a: [0: [name: n]]]` — integer segments → `Key::Int` (after `access-pipeline` lands)
+
+**Intermediate nodes are always open.** `[cluster.primary.tls: [cert: c]]`
+matches any config that *has* `cluster.primary.tls.cert` — extra keys at
+any intermediate level are allowed. This is consistent with row
+polymorphism. Closed matching at an intermediate level requires spelling
+that level out explicitly and applying the closed-match syntax there.
+
+**Relation to `access-pipeline`'s `[path]`:** `[path data "cluster" "primary" "tls" "cert"]`
+navigates to a single deep value at runtime. Path-key patterns give the
+compile-time structural complement — branching on shape and binding multiple
+values simultaneously. They are complementary:
+
+- Use `[path]` when you want **one value** from a known path
+- Use a path-key pattern when you want to **branch on shape** and bind **multiple values** at different depths
+
+**Implementation:** Path-key patterns are a pure parser-level desugaring.
+The evaluator sees only the expanded nested `Pattern::Dict` form. Wait for
+`access-pipeline` to land before supporting integer segments (needs
+`Key::Int` in the evaluator).
+
+#### 5. Bracket removal has no impact on pattern syntax
 
 Removing `Token::BracketAccess` and `Token::Range` affects only access
 expressions, not pattern expressions. `[key: v]` in a pattern is parsed in
@@ -583,8 +655,10 @@ pattern parsing are needed when bracket access is removed.
 - **Phase 2:** Lexer/parser infrastructure for keywords (already exists
   for `call`, `fn`, `type`). `match` added to keyword denylist.
 - **Phase 3:** Phase 2 complete. Seq type stable (`Value::Seq` in
-  evaluator). Integer-key dict patterns: wait for `access-pipeline` (adds
-  integer dot access to the evaluator).
+  evaluator). Integer-key dict patterns and path-key integer segments:
+  wait for `access-pipeline` (adds integer dot access to the evaluator).
+  Path-key pattern desugaring (string paths): can land with Phase 3 —
+  it is a pure parser-level transformation with no evaluator dependency.
 - **Phase 4:** Phase 3 complete.
 - **Phase 5:** Type system maturity — union types or type classes for
   exhaustiveness analysis.
