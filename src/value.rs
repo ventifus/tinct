@@ -117,6 +117,22 @@ impl Equivalent<Key> for StrKey<'_> {
     }
 }
 
+/// Network capability allowlist entry (Miller 2006 object capability model).
+/// Matches hostnames, ports, and IP ranges at connect time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetCapEntry {
+    /// Exact hostname match (case-insensitive), any port.
+    /// Example: "api.example.com"
+    Hostname(String),
+    /// Exact hostname and port match.
+    /// Example: "api.example.com:443"
+    HostPort(String, u16),
+    /// Hostname glob with prefix wildcard only.
+    /// Example: "*.internal"
+    HostnameGlob(String),
+    // Future: IPv4/IPv6 CIDR ranges deferred to Phase 3
+}
+
 /// A materialized runtime value.
 #[derive(Clone)]
 pub enum Value {
@@ -147,6 +163,8 @@ pub enum Value {
     Overlay(ThunkId, ThunkId),
     /// Capability-bound directory handle (object capability model)
     DirCap(Rc<cap_std::fs::Dir>),
+    /// Network capability — authority to connect to specified hosts/subnets
+    NetCap(Rc<Vec<NetCapEntry>>),
     /// Open file/stream handle (Read-only for Phase 1)
     Handle(Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>),
     /// Revocable directory capability
@@ -171,6 +189,7 @@ impl Value {
             Value::Proxy { .. } => "Proxy",
             Value::Overlay(..) => "Dict",
             Value::DirCap(_) => "DirCap",
+            Value::NetCap(_) => "NetCap",
             Value::Handle(_) => "Handle",
             Value::RevocableDirCap { .. } => "DirCap",
         }
@@ -197,6 +216,7 @@ impl fmt::Debug for Value {
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::Overlay(..) => write!(f, "Overlay(...)"),
             Value::DirCap(_) => write!(f, "DirCap"),
+            Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
             Value::Handle(_) => write!(f, "Handle"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
@@ -241,6 +261,7 @@ impl fmt::Display for Value {
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::Overlay(..) => write!(f, "[<overlay>]"),
             Value::DirCap(_) => write!(f, "<DirCap>"),
+            Value::NetCap(_) => write!(f, "<NetCap>"),
             Value::Handle(_) => write!(f, "<Handle>"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {

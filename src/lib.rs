@@ -97,7 +97,7 @@ pub use repl::run_repl;
 pub use lsp::run_lsp;
 
 /// Runtime value types: values, thunks, environments, and dict keys.
-pub use value::{Environment, Key, Thunk, Value};
+pub use value::{Environment, Key, NetCapEntry, Thunk, Value};
 
 /// Parse and evaluate LLT source, returning the result in **LLT display format**
 /// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) -- not JSON.
@@ -252,6 +252,10 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::Proxy { .. } => visitor.visit_proxy(),
         value::Value::DirCap(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "DirCap".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::NetCap(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "NetCap".to_string(),
             ast::Span::origin(),
         ))),
         value::Value::Handle(_) => Err(Box::new(error::EvalError::value_not_serializable(

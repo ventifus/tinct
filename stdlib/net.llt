@@ -1,0 +1,67 @@
+# Network utilities — depends on io-phase2 builtins
+# Requires: net-cap, connect (io-phase2) and write, slurp (io-phase1)
+#
+# Note: This module provides the foundation for HTTP client code.
+# Full HTTP fetch requires the `write` builtin from io-phase1, which
+# writes data to a Handle and returns the Handle for sequencing.
+#
+# Phase 2 provides: net-cap (create NetCap), connect (TCP connection)
+# Deferred to io-phase1 completion: write builtin, working fetch
+
+# Placeholder fetch — will work once $write builtin is implemented (io-phase1)
+# For now, demonstrates the pattern:
+#   1. Parse URL to extract host, port, path
+#   2. Open TCP connection via $connect
+#   3. Send HTTP request via $write (NOT YET AVAILABLE)
+#   4. Read response via $slurp
+#   5. Parse response to extract body
+
+fetch: [fn [cap url]
+  # TODO(io-phase1): requires $write builtin to send HTTP request
+  [error "fetch: requires $write builtin from io-phase1 (not yet implemented)"]
+]
+
+# When io-phase1 is complete, fetch will be implemented as:
+#
+# fetch: [fn [cap url]
+#   # Parse URL (assume http://host:port/path format)
+#   # For Phase 2, this is a simplified parser
+#   [parts: [split url "://"]]
+#   [scheme: [head parts]]
+#   [rest: [head [tail parts]]]
+#
+#   [if [not [= scheme "http"]]
+#     [error "fetch: only HTTP is supported (HTTPS requires lib-tls.md)"]
+#     [
+#       # Split host:port from path
+#       [host-path: [split rest "/"]]
+#       [host-port: [head host-path]]
+#       [path: [str "/" [join "/" [tail host-path]]]]
+#
+#       # Split host from port (default 80)
+#       [host-parts: [split host-port ":"]]
+#       [host: [head host-parts]]
+#       [port: [if [= [length host-parts] 1] 80 [to-int [head [tail host-parts]]]]]
+#
+#       # Open connection
+#       [conn: [connect cap host port]]
+#
+#       # Build HTTP/1.0 request
+#       [request: [str
+#         "GET " path " HTTP/1.0\r\n"
+#         "Host: " host "\r\n"
+#         "Connection: close\r\n"
+#         "\r\n"]]
+#
+#       # Send request (write returns handle for sequencing)
+#       # Read response
+#       [response: [slurp [write conn request]]]
+#
+#       # Parse response (extract body after blank line)
+#       # Simplified: split on \r\n\r\n and return second part
+#       [parts: [split response "\r\n\r\n"]]
+#       [if [= [length parts] 1]
+#         response  # No body separator — return whole response
+#         [head [tail parts]]]  # Return body
+#     ]]
+# ]
