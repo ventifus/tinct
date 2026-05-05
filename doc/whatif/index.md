@@ -71,7 +71,6 @@ makes the best case for its feature: "What would it take to do this well?"
 
 | Proposal | Summary |
 |----------|---------|
-| [General I/O](io.md) | Capability-based I/O: `DirCap`, `NetCap`, `Handle`; `open`, `slurp`, `write`, `lines` |
 | [TLS, PKI, and HTTP](lib-tls.md) | mTLS, custom CA bundles, certificate pinning, ALPN, HTTP/2 via `fetch` |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
@@ -82,11 +81,6 @@ makes the best case for its feature: "What would it take to do this well?"
 | [Supplemental Stdlib Modules](lib-supplemental.md) | Extended strings, math builtins, bitwise primitives, base64/hex encoding — 3-phase plan |
 | [Pure-Tinct Regex Engine](lib-regex.md) | Thompson NFA simulation entirely in pure-tinct; depends on lib-supplemental Phases 1 + 3 |
 
-## Language Capability
-
-| Proposal | Summary |
-|----------|---------|
-| [tinct as a Templating Language](templating.md) | `emit`, multi-file pipelines, literate tinct, template-polarity embedding |
 
 ---
 
@@ -106,6 +100,8 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 | [Source Text Availability](source-text-availability.md) | `render_span_snippet` helper; caller-pairs-with-source; REPL + CLI wiring | 2026-05-04 | Phase 1 partial — REPL/CLI done; LSP snippet display is Phase 3 |
 | [Arena Patterns + Flat Environments](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; `FlatEnv` with de Bruijn slot indices; variable resolution pass | 2026-05-04 | Complete — `arena-resolve`, `arena-types`, `arena-eval`, `arena-cek`, `arena-migrate` |
 | [Type Predicates](type-predicates.md) | `int?`, `str?`, `dict?`, `fn?` — one predicate per Value variant | 2026-05-04 | Complete — `type-predicates` sprint |
+| [General I/O](io.md) | Capability-based I/O: `DirCap`, `NetCap`, `Handle`; `open`, `slurp`, `write`, `lines` | 2026-05-04 | Not started — 4 sprints: `io-phase1` through `io-phase4` |
+| [tinct as a Templating Language](templating.md) | `emit`, multi-file pipelines, formatters, string interpolation, literate mode | 2026-05-04 | Not started — 4 sprints: `templating-phase1` through `templating-phase4` |
 
 ### Adopt Now
 
@@ -155,13 +151,11 @@ These proposals open new ground rather than closing existing work. All have acce
 
 | Proposal | Key Unlock |
 |----------|-----------|
-| [General I/O](io.md) Phase 1 | `emit` — required for all formatter/templating work |
 | [TLS, PKI, and HTTP](lib-tls.md) | mTLS and custom CA for internal-service tinct programs |
 | [SQL Data Sources](lib-sql.md) | Lazy DB reads via `filter`/`map` predicate pushdown |
 | [Numeric Types](numeric-types.md) | Range annotations + Decimal type |
 | [Float Dict Keys](float-dict-keys.md) | Decimal keys; gated on Decimal type adoption |
 | [Pattern Matching](pattern-matching.md) | Full match expression; Phase 1 = type predicates (adopt that first) |
-| [tinct as a Templating Language](templating.md) | `emit` + formatters + literate mode; Phase 5 (template-polarity) deferred |
 | [Nominal Variants](nominal-variants.md) Phase 1 | `tag-of` + unit constructors; independently useful as enum-like values |
 
 ---

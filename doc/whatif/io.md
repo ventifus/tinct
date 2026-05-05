@@ -1,5 +1,7 @@
 # What If: General I/O for tinct
 
+**State:** Accepted — 2026-05-04
+
 What would it take to add a principled general I/O model — file reads and writes, network requests, environment variables, stdin — to tinct, consistent with its lazy call-by-need semantics and the object capability model (Miller 2006)?
 
 ## Current State
