@@ -9,7 +9,6 @@ makes the best case for its feature: "What would it take to do this well?"
 
 | Proposal | Summary |
 |----------|---------|
-| [Type Predicates](type-predicates.md) | `int?`, `str?`, `dict?` — one predicate per Value variant |
 | [Path-Sensitive Narrowing](narrowing.md) | Refine variable types inside `if` branches from equality/type guards |
 | [Parameterized Type Aliases](parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site, fixing name-collision bugs |
 | [Union Types and Algebraic Subtyping](union-types.md) | `Int \| Str` annotations (Phase 2) → Simple-sub inferred unions/intersections (Phase 3) |
@@ -36,6 +35,7 @@ makes the best case for its feature: "What would it take to do this well?"
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 | [Iterative Parser + AST Formatter](parser-rewrite.md) | Replace pest with iterative parser; `ParseOutput` comment map; AST-based formatter (**Accepted**) |
 | [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections |
+| [Unified Access and Generator Pipeline](access-pipeline.md) | Replace bracket access with `\|` reverse-apply infix; dot access extended to integer keys; generator semantics via `each`/`each-key`/`each-kv` |
 
 ## Runtime and Performance
 
@@ -104,7 +104,7 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 | [Unified Syntax Reform](new-syntax.md) | Bare-word references + implied call + `%`-named pipeline sections; three-sprint implementation plan | 2026-05-01 | Complete — `new-syntax-docs` through `new-syntax-migrate` |
 | [Circular Dependency Error Paths](circular-dep-error-paths.md) | `eval_stack` in EvalState for full A→B→A cycle chain in error display | 2026-05-04 | Phase 1 complete — `error-context` sprint |
 | [Source Text Availability](source-text-availability.md) | `render_span_snippet` helper; caller-pairs-with-source; REPL + CLI wiring | 2026-05-04 | Phase 1 partial — REPL/CLI done; LSP snippet display is Phase 3 |
-| [Arena Patterns + Flat Environments](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; `FlatEnv` with de Bruijn slot indices; variable resolution pass | 2026-05-04 | Not started — 5 sprints created: `arena-resolve` through `arena-migrate` |
+| [Arena Patterns + Flat Environments](arena-patterns.md) | `Vec<Thunk>` + `ThunkId(u32)` arena; `FlatEnv` with de Bruijn slot indices; variable resolution pass | 2026-05-04 | Complete — `arena-resolve`, `arena-types`, `arena-eval`, `arena-cek`, `arena-migrate` |
 | [Type Predicates](type-predicates.md) | `int?`, `str?`, `dict?`, `fn?` — one predicate per Value variant | 2026-05-04 | Complete — `type-predicates` sprint |
 
 ### Adopt Now
@@ -195,9 +195,10 @@ string-interpolation ─── new-syntax (accepted; $ as interpolation marker i
 structural-contracts ─── numeric-types (Ph 1)
 parameterized-type-aliases ─── algebraic-data-types (Ph 4, recursive ADTs)
 
-arena-patterns (Ph 1: variable-resolution-pass)
-    └── arena-patterns (Ph 2: ThunkArena + FlatEnv)
-            └── arena-patterns (Ph 3: CEK machine)
+arena-patterns (Ph 1: variable-resolution-pass) ✓ Complete
+    └── arena-patterns (Ph 2: ThunkArena + FlatEnv + ThunkId migration) ✓ Complete
+            └── arena-patterns (Ph 3: CEK machine completion) ✓ Complete
+                    └── arena-patterns (Ph 4: --- boundary migration) ✓ Complete (N/A Phase 2)
                     └── arena-patterns (Ph 4: --- boundary migration)
 
 eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
