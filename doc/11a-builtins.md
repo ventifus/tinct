@@ -152,12 +152,13 @@ Each predicate materializes its argument (forcing the thunk) and checks the `Val
 
 ## I/O
 
-File loading and JSON parsing.
+File loading, JSON parsing, and text output.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
 | `from-json` | 1 | `S → D` | Dict | Parse JSON string to dict; numbers become Int or Float, arrays become dicts with 0-indexed keys |
 | `include` | 1-3 | `S (× S)? → D` or `S × S (× S)? → D` | Dict | Load and evaluate an LLT file; returns the file's final value |
+| `emit` | 1 | `S → D` | Dict (Null) | Write string to stdout; suppresses default JSON output; returns empty dict |
 
 **`include` call patterns:**
 
@@ -171,9 +172,14 @@ File loading and JSON parsing.
 
 **Caching:** Files are cached by `(st_dev, st_ino)` inode identity on Unix systems (by path hash on non-Unix). The same physical file accessed via different caps or paths is evaluated only once.
 
+**`emit` behavior:**
+
+`emit` writes UTF-8 text directly to stdout, bypassing the default JSON serialization. When `emit` is called during evaluation, the CLI suppresses the automatic JSON output at the end. Multiple `emit` calls append sequentially. This enables text-based formatters and templating workflows (see [Documents & Pipelines](09-documents.md) §Multi-File Pipeline).
+
 **Error cases:**
 - `from-json`: Type mismatch if arg is not String; parse error if JSON is invalid
 - `include`: Type mismatch if first arg is not DirCap or String; arity mismatch if DirCap is provided but path is missing; file not found; parse/eval errors from included file; revoked capability error if using a revoked `RevocableDirCap`
+- `emit`: Type mismatch if arg is not String; I/O error if stdout write fails
 
 ## Sequences
 
@@ -265,7 +271,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 
 ## Summary
 
-**Total:** 59 Rust-native builtins + 12 stable aliases = 71 registered names.
+**Total:** 60 Rust-native builtins + 12 stable aliases = 72 registered names.
 
 **By category:**
 - Arithmetic: 4
@@ -277,7 +283,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 - Evaluation: 4 (eval, error, try, apply)
 - General: 1 (until)
 - Type introspection: 10 (type-of, int?, float?, num?, str?, bool?, null?, dict?, fn?, seq?)
-- I/O: 2
+- I/O: 3 (from-json, include, emit)
 - Sequences: 16 (6 constructors, 3 destructors, 7 higher-order ops)
 - List operations: 4 (rest, cons, reverse, sort)
 - Proxy: 1

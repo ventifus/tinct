@@ -116,8 +116,9 @@ enum Commands {
         #[arg(long, value_name = "NAME=ENTRY")]
         cap_net: Vec<String>,
 
-        /// Input LLT file. Use `-` to read LLT source from stdin.
-        file: String,
+        /// Input LLT files. Use `-` to read LLT source from stdin.
+        /// Multiple files form a pipeline: each file's output becomes % for the next.
+        files: Vec<String>,
     },
     /// Format LLT source code to canonical style.
     Fmt {
@@ -182,9 +183,9 @@ fn main() {
             no_libdir,
             cap_fs,
             cap_net,
-            file,
+            files,
         } => run_eval(
-            &file,
+            &files,
             &format,
             eval,
             no_fs,
@@ -570,7 +571,7 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
 }
 
 fn run_eval(
-    file_path: &str,
+    file_paths: &[String],
     format: &OutputFormat,
     force_eval: bool,
     no_fs: bool,
@@ -589,6 +590,9 @@ fn run_eval(
     cap_fs: Vec<String>,
     cap_net: Vec<String>,
 ) -> Result<(), String> {
+    if file_paths.is_empty() {
+        return Err("no input files specified".to_string());
+    }
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
         #[cfg(unix)]
@@ -615,52 +619,15 @@ fn run_eval(
         let _ = max_fds;
     }
 
-    // Read the LLT source
-    let source = read_source(file_path)?;
-
-    // Check for piped stdin JSON (only when file is not stdin itself)
-    let stdin_input = if file_path != "-" {
+    // Check for piped stdin JSON (only when first file is not stdin itself)
+    let stdin_input = if file_paths[0] != "-" {
         read_stdin_json()?
     } else {
         None
     };
 
-    // Parse
-    let mut ast = parse(&source).map_err(|e| format!("{e}"))?;
-
-    // PIPELINE INVARIANT: Desugar must run after parse and before typecheck.
-    // See also: src/lib.rs:87-91 (eval_source_with_config pipeline)
-    // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
-    tinct::desugar::desugar_file(&mut ast.node);
-
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    tinct::resolve::resolve_file(&ast.node);
-
-    // Type errors are advisory; evaluation proceeds regardless.
-    let _ = tinct::typecheck::typecheck_file(&ast.node);
-
     // Create stdlib environment
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
-
-    // Determine base directory for $include resolution
-    let base_dir_path = if file_path == "-" {
-        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
-    } else {
-        let p = std::path::Path::new(file_path);
-        // Use the file's parent directory; fall back to cwd if the path has no parent
-        // (e.g., a bare filename like "test.llt").
-        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
-            Some(dir) => dir
-                .canonicalize()
-                .map_err(|e| format!("cannot resolve directory for \"{file_path}\": {e}"))?,
-            None => std::env::current_dir()
-                .map_err(|e| format!("cannot determine working directory: {e}"))?,
-        }
-    };
-
-    // Open base_dir as a cap-std Dir
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open base directory: {e}"))?;
 
     // Canonicalize --allow-path entries at startup so comparisons are stable.
     // Non-existent paths are rejected immediately with a clear error message.
@@ -860,7 +827,102 @@ fn run_eval(
         None // unrestricted
     };
 
-    // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
+    // Multi-file pipeline: process each file in sequence, passing output as input to the next
+    let mut pipeline_input = stdin_input;
+
+    let mut thunk = None;
+    let mut last_source = String::new();
+
+    for file_path in file_paths {
+        // Read the LLT source
+        let source = read_source(file_path)?;
+
+        // Parse
+        let mut ast = parse(&source).map_err(|e| format!("{e}"))?;
+
+        // PIPELINE INVARIANT: Desugar must run after parse and before typecheck.
+        // See also: src/lib.rs:87-91 (eval_source_with_config pipeline)
+        // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
+        tinct::desugar::desugar_file(&mut ast.node);
+
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        tinct::resolve::resolve_file(&ast.node);
+
+        // Type errors are advisory; evaluation proceeds regardless.
+        let _ = tinct::typecheck::typecheck_file(&ast.node);
+
+        // Determine base directory for $include resolution
+        let base_dir_path = if file_path == "-" {
+            std::env::current_dir()
+                .map_err(|e| format!("cannot determine working directory: {e}"))?
+        } else {
+            let p = std::path::Path::new(file_path);
+            // Use the file's parent directory; fall back to cwd if the path has no parent
+            // (e.g., a bare filename like "test.llt").
+            match p.parent().filter(|d| !d.as_os_str().is_empty()) {
+                Some(dir) => dir
+                    .canonicalize()
+                    .map_err(|e| format!("cannot resolve directory for \"{file_path}\": {e}"))?,
+                None => std::env::current_dir()
+                    .map_err(|e| format!("cannot determine working directory: {e}"))?,
+            }
+        };
+
+        // Open base_dir as a cap-std Dir
+        let base_dir =
+            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+                .map_err(|e| format!("cannot open base directory: {e}"))?;
+
+        // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
+        // Note: Each file gets its own context so base_dir is correct for $include resolution
+        let eval_ctx = EvalContext::new_with_all_options(
+            base_dir,
+            Rc::clone(&env),
+            no_fs,
+            require_integrity,
+            canonical_allowed_paths.clone(),
+            env_allowed.clone(),
+        );
+
+        // Evaluate file with pipeline input
+        let file_result =
+            eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, pipeline_input, 0)
+                .map_err(|e| {
+                    let mut error_str = format!("{e}");
+                    if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                        error_str.push('\n');
+                        error_str.push_str(&snippet);
+                    }
+                    error_str
+                })?;
+
+        // Pass the result as lazy thunk to next file (matching --- boundary semantics)
+        pipeline_input = Some(file_result.clone());
+
+        // Keep track of the last file's result and source for final output
+        thunk = Some(file_result);
+        last_source = source;
+    }
+
+    let thunk = thunk.ok_or_else(|| "internal error: no files processed".to_string())?;
+
+    // Use the last eval context for final output (we need to get it again since it was created in the loop)
+    // For simplicity, recreate it here
+    let file_path = &file_paths[file_paths.len() - 1];
+    let base_dir_path = if file_path == "-" {
+        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
+    } else {
+        let p = std::path::Path::new(file_path);
+        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            Some(dir) => dir
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve directory for \"{file_path}\": {e}"))?,
+            None => std::env::current_dir()
+                .map_err(|e| format!("cannot determine working directory: {e}"))?,
+        }
+    };
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open base directory: {e}"))?;
     let eval_ctx = EvalContext::new_with_all_options(
         base_dir,
         Rc::clone(&env),
@@ -870,23 +932,10 @@ fn run_eval(
         env_allowed,
     );
 
-    let initial_input = stdin_input;
-
-    // Evaluate
-    let thunk = eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, initial_input, 0)
-        .map_err(|e| {
-            let mut error_str = format!("{e}");
-            if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
-                error_str.push('\n');
-                error_str.push_str(&snippet);
-            }
-            error_str
-        })?;
-
-    // Materialize the result
+    // Materialize the final result
     let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| {
         let mut error_str = format!("{e}");
-        if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+        if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
             error_str.push('\n');
             error_str.push_str(&snippet);
         }
@@ -897,7 +946,7 @@ fn run_eval(
     let val = if force_eval {
         deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
             let mut error_str = format!("{e}");
-            if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+            if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
                 error_str.push('\n');
                 error_str.push_str(&snippet);
             }
@@ -913,7 +962,9 @@ fn run_eval(
             OutputFormat::Json => {
                 let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
                     let mut error_str = format!("{e}");
-                    if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                    if let Some(snippet) =
+                        tinct::render_span_snippet(&last_source, e.definition_span)
+                    {
                         error_str.push('\n');
                         error_str.push_str(&snippet);
                     }
@@ -932,7 +983,7 @@ fn run_eval(
                     &deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
                         let mut error_str = format!("{e}");
                         if let Some(snippet) =
-                            tinct::render_span_snippet(&source, e.definition_span)
+                            tinct::render_span_snippet(&last_source, e.definition_span)
                         {
                             error_str.push('\n');
                             error_str.push_str(&snippet);
@@ -942,7 +993,9 @@ fn run_eval(
                 };
                 let output = value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| {
                     let mut error_str = format!("{e}");
-                    if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                    if let Some(snippet) =
+                        tinct::render_span_snippet(&last_source, e.definition_span)
+                    {
                         error_str.push('\n');
                         error_str.push_str(&snippet);
                     }

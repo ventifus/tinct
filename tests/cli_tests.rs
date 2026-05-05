@@ -2117,3 +2117,69 @@ fn write_and_slurp_roundtrip() {
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
     assert_eq!(json, serde_json::json!("roundtrip data"));
 }
+
+// ---------------------------------------------------------------------------
+// Multi-file pipeline
+// ---------------------------------------------------------------------------
+
+#[test]
+fn multi_file_pipeline() {
+    // Test multi-file pipeline: data.llt → transform.llt
+    let dir = TempDir::new("multi_file_pipeline");
+
+    let data_path = dir.path().join("data.llt");
+    fs::write(&data_path, "[x: 10  y: 20]").expect("failed to write data file");
+
+    let transform_path = dir.path().join("transform.llt");
+    fs::write(&transform_path, "[sum: [+ %.x %.y]]").expect("failed to write transform file");
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "eval",
+            data_path.to_str().unwrap(),
+            transform_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"sum": 30}));
+}
+
+#[test]
+fn multi_file_pipeline_with_emit() {
+    // Test multi-file pipeline with emit (text output instead of JSON)
+    let dir = TempDir::new("multi_file_emit");
+
+    let data_path = dir.path().join("data.llt");
+    fs::write(&data_path, "[name: \"Alice\"  greeting: \"Hello\"]")
+        .expect("failed to write data file");
+
+    let format_path = dir.path().join("format.llt");
+    fs::write(&format_path, "[emit [str %.greeting \", \" %.name \"!\"]]")
+        .expect("failed to write format file");
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "eval",
+            data_path.to_str().unwrap(),
+            format_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // emit writes to stdout directly without JSON serialization
+    assert_eq!(stdout, "Hello, Alice!");
+}

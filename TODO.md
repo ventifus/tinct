@@ -23,17 +23,6 @@ See doc/whatif/templating.md.
 
 - [x] Accept templating — see doc/whatif/templating.md (State: Accepted — 2026-05-04)
 
-### templating-phase1: emit and Multi-File Pipeline
-
-**Depends on:** `io-phase1`
-
-See doc/whatif/templating.md §Phase 1.
-
-- [ ] Accept multiple `.llt` files in `tinct eval` CLI argument parser (`src/main.rs`)
-- [ ] Thread `%` across file boundaries — each file's output becomes `%` for next (`src/eval.rs`)
-- [ ] Document `emit` semantics and lazy evaluation interaction (`doc/11a-builtins.md`)
-- [ ] Document multi-file pipeline CLI behavior (`doc/09-documents.md`)
-- [ ] Corpus tests for `emit` builtin and multi-file pipeline (`tests/corpus/`)
 
 ### templating-phase2: Standard Formatters
 

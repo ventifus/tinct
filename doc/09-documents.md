@@ -14,6 +14,72 @@ Data flows through stages. Within a file, `---` separates independent documents.
 
 Within a document, sequential expressions form a scope chain — each expression's bindings are visible to the next.
 
+## Multi-File Pipeline
+
+The CLI accepts multiple `.llt` files as a pipeline. Each file's output becomes `%` for the next file:
+
+```bash
+# Single file (existing behavior)
+tinct eval config.llt
+
+# Two-stage pipeline: data → formatter
+tinct eval data.llt formatter.llt
+
+# Three-stage pipeline: data → transform → format
+tinct eval raw.llt transform.llt format.llt
+```
+
+This is equivalent to concatenating files with `---` separators, but allows separate files to be composed at the CLI level.
+
+**Example:**
+
+```tinct
+# data.llt
+[
+  users: [
+    [name: "Alice"  age: 30]
+    [name: "Bob"    age: 25]
+  ]
+]
+```
+
+```tinct
+# filter.llt
+[
+  adults: [filter [fn [u] [>= u.age 18]] %.users]
+]
+```
+
+```bash
+tinct eval data.llt filter.llt
+# Output: {"adults": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}
+```
+
+**Interaction with `emit`:**
+
+When any file in the pipeline calls `emit`, the string is written directly to stdout and the default JSON output is suppressed. This enables text-based formatters:
+
+```tinct
+# to-yaml.llt (simplified example)
+[emit [str "users:\n" [join "\n" [map [fn [u] [str "  - " u.name]] %.users]]]]
+```
+
+```bash
+tinct eval data.llt to-yaml.llt
+# Output:
+# users:
+#   - Alice
+#   - Bob
+```
+
+**Pipeline semantics:**
+
+- Each file evaluates with `%` initialized to the previous file's output
+- The first file receives `%` from stdin JSON if piped, or empty dict `[]` otherwise
+- Files share the same include cache — if both files include the same library, it's evaluated only once
+- Each file's `$include` calls resolve relative to that file's directory
+- The final file's output is JSON-serialized unless `emit` was called
+
 ## Document Structure
 
 A Tinct **file** contains one or more **documents** separated by `---`. Each document contains one or more **expressions**. This three-level hierarchy governs scoping, isolation, and data flow.
