@@ -3838,3 +3838,14 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 - [x] 11 I/O builtin signatures updated with cap types (dir-cap→DirCap, open→Handle, etc.)
 - [x] is_subtype + unify handle cap types; value_matches_type extended for TypeAssert
 - [x] 3 type error corpus tests (cap_type_mismatch, handle_not_dircap, string_not_handle)
+
+## Templating: Text Output and Formatters
+
+See doc/whatif/templating.md (State: Accepted — 2026-05-04).
+
+### templating-phase1: emit and Multi-File Pipeline
+
+- [x] Multi-file pipeline: `tinct eval file1.llt file2.llt ...` threads `%` across files
+- [x] doc/11a-builtins.md: emit builtin documented
+- [x] doc/09-documents.md: §Multi-File Pipeline section added
+- [x] CLI tests: multi_file_pipeline, multi_file_pipeline_with_emit
