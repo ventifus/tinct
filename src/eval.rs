@@ -148,12 +148,15 @@ pub struct EvalContext {
     pub state: Rc<RefCell<EvalState>>,
     /// Thunk arena registry. Phase 2: stores Vec<Rc<Thunk>> and provides bulk deallocation.
     /// Thunks are allocated here but Value variants still use Rc<Thunk> directly.
+    /// **Shared ownership:** Rc<RefCell<>> allows child contexts (created via with_base_dir)
+    /// to share the parent's arena, preventing ThunkId index-out-of-bounds panics.
     #[allow(dead_code)]
-    pub(crate) thunk_arena: RefCell<ThunkArena>,
+    pub(crate) thunk_arena: Rc<RefCell<ThunkArena>>,
     /// Environment arena registry. Phase 2: not actively used (chain-based environments remain).
     /// Reserved for Phase 3 flat environment migration.
+    /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
     #[allow(dead_code)]
-    pub(crate) env_arena: RefCell<EnvArena>,
+    pub(crate) env_arena: Rc<RefCell<EnvArena>>,
     /// Set to true when `emit` builtin is called. Signals CLI to suppress JSON output.
     pub emitted: std::cell::Cell<bool>,
     /// Environment variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
@@ -208,8 +211,8 @@ impl EvalContext {
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
             })),
-            thunk_arena: RefCell::new(ThunkArena::new()),
-            env_arena: RefCell::new(EnvArena::new()),
+            thunk_arena: Rc::new(RefCell::new(ThunkArena::new())),
+            env_arena: Rc::new(RefCell::new(EnvArena::new())),
             emitted: std::cell::Cell::new(false),
             env_allowed,
         })
@@ -223,8 +226,10 @@ impl EvalContext {
     /// Inherits `no_fs`, `require_integrity`, and `allowed_paths` from the parent
     /// config so that sandbox restrictions are preserved across directory changes.
     ///
-    /// **Phase 2 Arena Migration (Registry):** Creates NEW arenas for the child context.
-    /// Each included file gets its own arena for potential bulk deallocation.
+    /// **Phase 2 Arena Migration (Registry):** SHARES the parent's arenas (Rc::clone).
+    /// This fixes the ThunkId index-out-of-bounds bug: values from the parent context
+    /// (including stdlib) carry ThunkIds that index into the parent's arena. The child
+    /// context must use the SAME arena to resolve those ThunkIds.
     pub fn with_base_dir(&self, base_dir: cap_std::fs::Dir) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
@@ -235,8 +240,8 @@ impl EvalContext {
                 allowed_paths: self.config.allowed_paths.clone(),
             }),
             state: Rc::clone(&self.state),
-            thunk_arena: RefCell::new(ThunkArena::new()),
-            env_arena: RefCell::new(EnvArena::new()),
+            thunk_arena: Rc::clone(&self.thunk_arena),
+            env_arena: Rc::clone(&self.env_arena),
             emitted: std::cell::Cell::new(false),
             env_allowed: self.env_allowed.clone(),
         })

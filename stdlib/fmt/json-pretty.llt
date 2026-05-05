@@ -1,0 +1,88 @@
+# JSON Pretty Formatter
+# Convert a tinct value to indented JSON string
+
+[
+# Internal: quote and escape a string for JSON
+json-quote: [fn [s]
+  [str "\"" s "\""]]
+
+# Internal: format a single value to JSON
+json-value: [fn [val indent]
+  [cond [
+    [[null? val] "null"]
+    [[bool? val] [if val "true" "false"]]
+    [[int? val] [str val]]
+    [[float? val] [str val]]
+    [[str? val] [json-quote val]]
+    [[dict? val] [json-object val indent]]
+    [true "null"]
+  ]]]
+
+# Internal: check if dict is list-shaped (integer keys only)
+is-list?: [fn [d]
+  [if [empty? d]
+    true
+    [all? [fn [k] [int? k]] [keys d]]]]
+
+# Internal: format dict as JSON object or array
+json-object: [fn [d indent]
+  [if [is-list? d]
+    [json-array d indent]
+    [json-dict d indent]]]
+
+# Internal: format dict as JSON array
+json-array: [fn [d indent]
+  [if [empty? d]
+    "[]"
+    [json-array-body d indent]]]
+
+json-array-body: [fn [d indent]
+  [str
+    "[\n"
+    [json-array-items d [+ indent 2] 0]
+    [repeat indent " "]
+    "]"]]
+
+json-array-items: [fn [d indent i]
+  [if [>= i [length d]]
+    ""
+    [json-array-item d indent i]]]
+
+json-array-item: [fn [d indent i]
+  [str
+    [repeat indent " "]
+    [json-value d[i] indent]
+    [if [< [+ i 1] [length d]] ",\n" "\n"]
+    [json-array-items d indent [+ i 1]]]]
+
+# Internal: format dict as JSON object
+json-dict: [fn [d indent]
+  [if [empty? d]
+    "{}"
+    [json-dict-body d indent]]]
+
+json-dict-body: [fn [d indent]
+  [str
+    "{\n"
+    [json-dict-entries d [+ indent 2] [keys d] 0]
+    [repeat indent " "]
+    "}"]]
+
+json-dict-entries: [fn [d indent ks i]
+  [if [>= i [length ks]]
+    ""
+    [json-dict-entry d indent ks i]]]
+
+json-dict-entry: [fn [d indent ks i]
+  [str
+    [repeat indent " "]
+    [json-quote ks[i]]
+    ": "
+    [json-value d[ks[i]] indent]
+    [if [< [+ i 1] [length ks]] ",\n" "\n"]
+    [json-dict-entries d indent ks [+ i 1]]]]
+
+# Public API: format value to pretty JSON
+json-pretty: [fn [val]
+  [json-value val 0]]
+]

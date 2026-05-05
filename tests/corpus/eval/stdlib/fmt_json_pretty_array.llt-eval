@@ -1,0 +1,6 @@
+# json-pretty: format array
+[include "stdlib/fmt/json-pretty.llt"]
+---
+[call %.json-pretty [1 2 3]]
+===
+String("[\n  1,\n  2,\n  3\n]")

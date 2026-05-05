@@ -1,0 +1,10 @@
+# yaml: format simple dict
+[include "stdlib/fmt/yaml.llt"]
+---
+[call %.yaml [
+  name: "Alice"
+  age: 30
+  active: true
+]]
+===
+String("\nname: Alice\nage: 30\nactive: true\n")
