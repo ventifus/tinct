@@ -2009,3 +2009,111 @@ fn lines_basic() {
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
     assert_eq!(json, serde_json::json!(["line1", "line2"]));
 }
+
+#[test]
+fn write_basic() {
+    // Test basic write functionality
+    let dir = TempDir::new("write_test");
+    let test_file_path = dir.path().join("output.txt");
+
+    let llt_content = format!(
+        r#"
+[cap: [dir-cap "{}"]]
+[_ : [write cap "output.txt" "hello world"]]
+[fh: [open cap "output.txt" "r"]]
+[slurp fh]
+"#,
+        dir.path().display()
+    );
+    let (path, _llt_dir) = write_temp_llt("write_basic", &llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    assert_eq!(json, serde_json::json!("hello world"));
+
+    // Also verify the file was written to disk
+    let file_content = fs::read_to_string(&test_file_path).expect("failed to read output file");
+    assert_eq!(file_content, "hello world");
+}
+
+#[test]
+fn write_atomic_basic() {
+    // Test atomic write functionality
+    let dir = TempDir::new("write_atomic_test");
+    let test_file_path = dir.path().join("output.txt");
+
+    let llt_content = format!(
+        r#"
+[cap: [dir-cap "{}"]]
+[_ : [write-atomic cap "output.txt" "atomic content"]]
+[fh: [open cap "output.txt" "r"]]
+[slurp fh]
+"#,
+        dir.path().display()
+    );
+    let (path, _llt_dir) = write_temp_llt("write_atomic_basic", &llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    assert_eq!(json, serde_json::json!("atomic content"));
+
+    // Also verify the file was written to disk
+    let file_content = fs::read_to_string(&test_file_path).expect("failed to read output file");
+    assert_eq!(file_content, "atomic content");
+
+    // Verify no temp files left behind
+    let entries: Vec<_> = fs::read_dir(dir.path())
+        .expect("failed to read dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp."))
+        .collect();
+    assert_eq!(entries.len(), 0, "temp files should be cleaned up");
+}
+
+#[test]
+fn write_and_slurp_roundtrip() {
+    // Test write + slurp roundtrip via stdlib/io.llt wrappers
+    let dir = TempDir::new("write_roundtrip_test");
+
+    let llt_content = format!(
+        r#"
+[include libdir "io.llt"]
+[cap: [dir-cap "{}"]]
+[_ : [write-file cap "test.txt" "roundtrip data"]]
+[read-file cap "test.txt"]
+"#,
+        dir.path().display()
+    );
+    let (path, _llt_dir) = write_temp_llt("write_roundtrip", &llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    assert_eq!(json, serde_json::json!("roundtrip data"));
+}

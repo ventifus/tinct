@@ -697,7 +697,10 @@ fn run_eval(
         eprintln!("warning: seccomp sandbox not active: {e}");
     }
 
-    // Inject `pwd` DirCap into the root environment (unless --no-pwd is set)
+    // Inject `pwd` DirCap into the root environment (unless --no-pwd is set).
+    // --no-pwd enforcement: when the flag is set, `pwd` is NOT injected, so
+    // any reference to `pwd` in the program will fail with "undefined variable".
+    // This is the correct enforcement mechanism — no special runtime checks needed.
     if !no_pwd {
         use tinct::Value;
         let pwd_path = std::env::current_dir()
@@ -710,7 +713,9 @@ fn run_eval(
             .insert("pwd".to_string(), Rc::new(pwd_thunk));
     }
 
-    // Inject `stdin` Handle for fd 0 into the root environment (unless --no-stdin is set)
+    // Inject `stdin` Handle for fd 0 into the root environment (unless --no-stdin is set).
+    // --no-stdin enforcement: when the flag is set, `stdin` is NOT injected, so
+    // any reference to `stdin` in the program will fail with "undefined variable".
     if !no_stdin {
         use std::cell::RefCell;
         use std::io::BufReader;
@@ -724,7 +729,9 @@ fn run_eval(
             .insert("stdin".to_string(), Rc::new(stdin_thunk));
     }
 
-    // Inject `libdir` DirCap for the stdlib directory (unless --no-libdir is set)
+    // Inject `libdir` DirCap for the stdlib directory (unless --no-libdir is set).
+    // --no-libdir enforcement: when the flag is set, `libdir` is NOT injected, so
+    // any reference to `libdir` in the program will fail with "undefined variable".
     // Phase 1: resolve libdir from the binary's location or a well-known relative path.
     // If resolution fails, libdir is not injected (stdlib is embedded at compile time anyway).
     if !no_libdir {
@@ -841,7 +848,9 @@ fn run_eval(
         }
     }
 
-    // Determine env_allowed based on CLI flags
+    // Determine env_allowed based on CLI flags.
+    // --no-env and --allow-env enforcement: the `env` builtin checks this field
+    // at runtime (see builtin_env in builtins.rs). Returns Null for disallowed vars.
     // None = unrestricted, Some(empty) = all denied (--no-env), Some(set) = only those allowed
     let env_allowed = if no_env {
         Some(std::collections::HashSet::new()) // empty set = all denied

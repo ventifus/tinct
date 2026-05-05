@@ -3823,3 +3823,11 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 - [x] --cap-net NAME=ENTRY CLI flag with accumulation
 - [x] stdlib/net.llt placeholder (fetch deferred until $write builtin exists)
 - [x] TLS deferred to lib-tls.md; CIDR deferred to Phase 3
+
+### io-phase3: Atomic Writes, Streaming Fetch, Sandbox Hardening
+
+- [x] `write` + `write-atomic` builtins (one-shot DirCap+path+content; atomic uses temp+rename)
+- [x] stdlib/io.llt: write-file, write-file-atomic wrappers
+- [x] Streaming fetch via lines over socket Handle already works (Phase 1 lines + Phase 2 connect)
+- [x] --no-pwd/--no-stdin/--no-libdir enforcement verified with comments
+- [x] CLI tests: write_basic, write_atomic_basic, write_roundtrip

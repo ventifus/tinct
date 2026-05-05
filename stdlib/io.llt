@@ -19,5 +19,12 @@ println: [fn [s]
 println-val: [fn [v]
   [emit [str v "\n"]]]
 
-# write-file: [fn [cap path s] [write [open cap path "w"] s]]
-# TODO(io-phase2): requires $write builtin (not yet implemented)
+# Write a string to a file (creates or truncates).
+# cap: DirCap, path: String, content: String
+write-file: [fn [cap path content]
+  [write cap path content]]
+
+# Atomically write a string to a file (write-to-temp + rename).
+# cap: DirCap, path: String, content: String
+write-file-atomic: [fn [cap path content]
+  [write-atomic cap path content]]
