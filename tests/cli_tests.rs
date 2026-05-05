@@ -1812,3 +1812,128 @@ fn seccomp_degradation_warning_does_not_corrupt_stdout() {
         .expect("stdout must be valid JSON even when seccomp warning is printed to stderr");
     assert_eq!(json, serde_json::json!({"y": true}));
 }
+
+// ---------------------------------------------------------------------------
+// I/O builtins: emit, env, file operations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn emit_basic() {
+    let (path, _dir) = write_temp_llt("emit_basic", "[emit \"hello world\\n\"]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // emit suppresses JSON output, so stdout should just be "hello world\n"
+    assert_eq!(stdout, "hello world\n");
+}
+
+#[test]
+fn env_missing() {
+    let (path, _dir) = write_temp_llt("env_missing", "[env \"NONEXISTENT_VAR_12345\"]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    // env returns null (empty dict) for missing vars
+    assert_eq!(json, serde_json::json!({}));
+}
+
+#[test]
+fn env_no_env_flag() {
+    let (path, _dir) = write_temp_llt("env_no_env", "[env \"PATH\"]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", "--no-env", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    // --no-env makes env return null for all vars
+    assert_eq!(json, serde_json::json!({}));
+}
+
+#[test]
+fn revocable_and_revoke() {
+    // Test revocable DirCap creation and revocation
+    let dir = TempDir::new("revocable_test");
+    let test_file = dir.path().join("data.txt");
+    fs::write(&test_file, "test content").expect("failed to write test file");
+
+    let llt_content = format!(
+        r#"
+[cap: [dir-cap "{}"]]
+[revocable-cap: [revocable cap]]
+[fh: [open revocable-cap "data.txt" "r"]]
+[content: [slurp fh]]
+[_ : [revoke-cap revocable-cap]]
+content
+"#,
+        dir.path().display()
+    );
+    let (path, _llt_dir) = write_temp_llt("revocable_revoke", &llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    assert_eq!(json, serde_json::json!("test content"));
+}
+
+#[test]
+fn lines_basic() {
+    // Test lazy line reading from a file
+    let dir = TempDir::new("lines_test");
+    let test_file = dir.path().join("lines.txt");
+    fs::write(&test_file, "line1\nline2\nline3\n").expect("failed to write test file");
+
+    let llt_content = format!(
+        r#"
+[cap: [dir-cap "{}"]]
+[fh: [open cap "lines.txt" "r"]]
+[collect [take 2 [lines fh]]]
+"#,
+        dir.path().display()
+    );
+    let (path, _llt_dir) = write_temp_llt("lines_basic", &llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    assert_eq!(json, serde_json::json!(["line1", "line2"]));
+}

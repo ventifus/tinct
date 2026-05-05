@@ -1897,7 +1897,7 @@ fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Open the file based on mode
     use std::io::BufReader;
-    let handle: Box<dyn std::io::Read> = match mode.as_str() {
+    let handle: Box<dyn std::io::BufRead> = match mode.as_str() {
         "r" => {
             let file = dir.open(&path).map_err(|e| {
                 EvalError::user_error(
@@ -2024,6 +2024,169 @@ fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(Value::DirCap(Rc::new(narrowed)), call_span)
 }
 
+/// `revocable`: Wrap a DirCap in a RevocableDirCap.
+/// Takes a DirCap, returns a RevocableDirCap.
+/// The RevocableDirCap can be revoked later via `revoke-cap`.
+fn builtin_revocable(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("revocable", args, named, &ctx, depth, call_span)?;
+
+    // Extract DirCap
+    let dir = match val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked: _ } => {
+            // Already revocable — return a new revocable wrapper with a new flag
+            // (allows independent revocation)
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "revocable".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Create a new revoked flag
+    let revoked = Rc::new(std::cell::Cell::new(false));
+
+    ok_val(
+        Value::RevocableDirCap {
+            inner: dir,
+            revoked,
+        },
+        call_span,
+    )
+}
+
+/// `revoke-cap`: Revoke a RevocableDirCap.
+/// Takes a RevocableDirCap, sets its revoked flag to true, returns null.
+/// Future operations on the cap will fail.
+fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("revoke-cap", args, named, &ctx, depth, call_span)?;
+
+    // Extract RevocableDirCap
+    match val {
+        Value::RevocableDirCap { revoked, .. } => {
+            revoked.set(true);
+            ok_val(Value::Dict(IndexMap::new()), call_span)
+        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "revoke-cap".to_string(),
+            "RevocableDirCap",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// `lines`: Read lines from a Handle lazily.
+/// Takes a Handle, returns a lazy Seq where each element is a line (without newline).
+/// This is a coinductive lazy sequence — each tail force reads the next line.
+fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("lines", args, named, &ctx, depth, call_span)?;
+
+    // Extract Handle
+    let handle = match val {
+        Value::Handle(h) => h,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "lines".to_string(),
+                "Handle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Wrap the Handle in a new Handle that the step function can use
+    // The step function will read one line, then return a Seq with the line as head
+    // and a PendingBuiltin thunk for the next line as tail
+    builtin_lines_step(handle, depth, call_span, ctx)
+}
+
+/// Helper for `lines`: reads one line and returns Seq or null.
+fn builtin_lines_step(
+    handle: Rc<RefCell<Box<dyn std::io::BufRead>>>,
+    depth: usize,
+    call_span: Span,
+    ctx: Rc<crate::eval::EvalContext>,
+) -> EvalResult<Rc<Thunk>> {
+    use std::io::BufRead;
+
+    let mut line = String::new();
+
+    match handle.borrow_mut().read_line(&mut line) {
+        Ok(0) => {
+            // EOF — return null (empty dict)
+            ok_val(Value::Dict(IndexMap::new()), call_span)
+        }
+        Ok(_) => {
+            // Got a line — strip trailing newline if present
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+
+            // Create head thunk
+            let head = ok_val(Value::String(line), call_span)?;
+            let head_id = ctx.alloc_thunk(head);
+
+            // Create tail as PendingBuiltin that will read the next line
+            // We need to pass the Handle through to the next step
+            let tail_args = vec![ok_val(Value::Handle(Rc::clone(&handle)), call_span)?];
+            let tail = Rc::new(Thunk::new_pending_builtin(
+                builtin!("lines", builtin_lines),
+                tail_args,
+                None,
+                depth + 1,
+                call_span,
+                Some(Rc::from("call $lines")),
+                Rc::clone(&ctx),
+            ));
+            let tail_id = ctx.alloc_thunk(tail);
+
+            ok_val(
+                Value::Seq {
+                    head: head_id,
+                    tail: tail_id,
+                },
+                call_span,
+            )
+        }
+        Err(e) => {
+            Err(EvalError::user_error(format!("lines: read failed: {}", e), call_span).into())
+        }
+    }
+}
+
 /// Returns all builtin definitions with strictness metadata.
 ///
 /// All builtins conform to the standard `BuiltinFn` signature, including `if`
@@ -2095,6 +2258,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("slurp", builtin_slurp, [Strictness::Seq]),
         builtin!("narrow", builtin_narrow, [Strictness::Seq, Strictness::Seq]),
+        builtin!("revocable", builtin_revocable, [Strictness::Seq]),
+        builtin!("revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
+        builtin!("lines", builtin_lines, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
         // Sequences
