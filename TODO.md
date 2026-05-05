@@ -30,14 +30,10 @@ See doc/whatif/templating.md.
 
 See doc/whatif/templating.md §Phase 2.
 
-- [ ] Create `stdlib/fmt/` directory with base formatter pattern
-- [ ] Implement `stdlib/fmt/yaml.llt` — YAML 1.2 serializer using type predicates + recursion
-- [ ] Implement `stdlib/fmt/toml.llt` — TOML serializer
-- [ ] Implement `stdlib/fmt/json-pretty.llt` — indented JSON alternative to compact default
-- [ ] Implement `stdlib/fmt/env.llt` — `KEY=VALUE` for `.env` files
-- [ ] Implement `stdlib/fmt/csv.llt` — CSV from list-of-dicts
+- [x] Create `stdlib/fmt/` with yaml.llt, toml.llt, json-pretty.llt, env.llt, csv.llt — all pure tinct
+- [x] 8 corpus tests for formatters
+- [x] Fix arena ThunkId cross-context bug: arenas now shared via Rc<RefCell<ThunkArena>>
 - [ ] Document standard formatters in `doc/11-stdlib.md`
-- [ ] Integration tests: data program | formatter produces expected output (`tests/corpus/`)
 
 ### templating-phase3: String Interpolation
 

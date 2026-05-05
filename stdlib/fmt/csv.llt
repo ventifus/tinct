@@ -1,0 +1,42 @@
+# CSV Formatter
+# Convert a list-of-dicts to CSV format
+# First row defines headers (keys), subsequent rows extract values by key
+
+[
+# Internal: quote and escape a CSV field
+# Always quote to avoid checking for special characters
+csv-quote: [fn [s]
+  [str "\"" [replace "\"" "\"\"" s] "\""]]
+
+# Internal: format header row
+csv-header: [fn [ks i acc]
+  [if [>= i [length ks]]
+    [str acc "\n"]
+    [csv-header ks [+ i 1]
+      [str acc [if [> i 0] "," ""] [csv-quote ks[i]]]]]]
+
+# Internal: format a single data row
+csv-row: [fn [row ks i acc]
+  [if [>= i [length ks]]
+    [str acc "\n"]
+    [csv-row row ks [+ i 1]
+      [str acc [if [> i 0] "," ""] [csv-quote [str [get-or row ks[i] ""]]]]]]
+
+# Internal: format all data rows
+csv-rows: [fn [rows ks i acc]
+  [if [>= i [length rows]]
+    acc
+    [csv-rows rows ks [+ i 1]
+      [str acc [csv-row rows[i] ks 0 ""]]]]]
+
+# Public API: format list-of-dicts to CSV
+csv: [fn [rows]
+  [if [empty? rows]
+    ""
+    [csv-impl rows [keys rows[0]]]]]
+
+csv-impl: [fn [rows ks]
+  [str
+    [csv-header ks 0 ""]
+    [csv-rows rows ks 0 ""]]]
+]

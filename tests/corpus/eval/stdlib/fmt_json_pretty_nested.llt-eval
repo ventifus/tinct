@@ -1,0 +1,11 @@
+# json-pretty: format nested structure
+[include "stdlib/fmt/json-pretty.llt"]
+---
+[call %.json-pretty [
+  user: [
+    name: "Bob"
+    scores: [95 87 92]
+  ]
+]]
+===
+String("{\n  \"user\": {\n    \"name\": \"Bob\",\n    \"scores\": [\n      95,\n      87,\n      92\n    ]\n  }\n}")

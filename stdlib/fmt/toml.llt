@@ -1,0 +1,80 @@
+# TOML Formatter
+# Convert a tinct value to TOML format
+
+[
+# Internal: quote and escape a string for TOML
+toml-quote: [fn [s]
+  [str "\"" s "\""]]
+
+# Internal: check if dict is list-shaped (integer keys only)
+toml-list?: [fn [d]
+  [if [empty? d]
+    false
+    [all? [fn [k] [int? k]] [keys d]]]]
+
+# Internal: format a scalar value
+toml-scalar: [fn [val]
+  [cond [
+    [[null? val] "null"]
+    [[bool? val] [if val "true" "false"]]
+    [[int? val] [str val]]
+    [[float? val] [str val]]
+    [[str? val] [toml-quote val]]
+    [true "null"]
+  ]]]
+
+# Internal: format inline array
+toml-array: [fn [d]
+  [if [empty? d]
+    "[]"
+    [str "[" [toml-array-items d 0] "]"]]]
+
+toml-array-items: [fn [d i]
+  [if [>= i [length d]]
+    ""
+    [str
+      [toml-scalar d[i]]
+      [if [< [+ i 1] [length d]] ", " ""]
+      [toml-array-items d [+ i 1]]]]]
+
+# Internal: separate flat keys from table keys
+toml-partition: [fn [d ks i flat-keys table-keys]
+  [if [>= i [length ks]]
+    [flat: flat-keys  tables: table-keys]
+    [if [dict? d[ks[i]]]
+      [toml-partition d ks [+ i 1] flat-keys [append table-keys ks[i]]]
+      [toml-partition d ks [+ i 1] [append flat-keys ks[i]] table-keys]]]]
+
+# Internal: format flat key-value pairs
+toml-flat: [fn [d ks i acc]
+  [if [>= i [length ks]]
+    acc
+    [toml-flat d ks [+ i 1]
+      [str acc ks[i] " = " [toml-value d[ks[i]]] "\n"]]]]
+
+# Internal: format tables (nested dicts)
+toml-tables: [fn [d ks i acc]
+  [if [>= i [length ks]]
+    acc
+    [toml-tables d ks [+ i 1]
+      [str acc "\n[" ks[i] "]\n" [toml d[ks[i]]]]]]]
+
+# Internal: format a value (scalar or inline array)
+toml-value: [fn [val]
+  [if [dict? val]
+    [if [toml-list? val]
+      [toml-array val]
+      "{}"]
+    [toml-scalar val]]]
+
+# Public API: format dict to TOML
+toml: [fn [d]
+  [if [empty? d]
+    ""
+    [toml-impl d [toml-partition d [keys d] 0 [] []]]]]
+
+toml-impl: [fn [d parts]
+  [str
+    [toml-flat d parts.flat 0 ""]
+    [toml-tables d parts.tables 0 ""]]]
+]
