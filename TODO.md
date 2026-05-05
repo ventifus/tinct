@@ -13,17 +13,6 @@ See doc/whatif/io.md.
 - [x] Accept io — see doc/whatif/io.md (State: Accepted — 2026-05-04)
 
 
-### io-include-cap: Cap-Qualified Include
-
-Deferred from io-phase1 — breaking change to `$include` builtin signature.
-
-**Depends on:** `io-phase1`
-
-- [ ] Modify `$include` to optionally take a `DirCap` as first arg: `[include pwd "config.llt"]` (`src/builtins.rs`)
-- [ ] Cache included files by `(st_dev, st_ino)` pair instead of path string to avoid duplicate loading under different path spellings (`src/builtins.rs`, `src/eval.rs`)
-- [ ] Keep backward compat: `[include "path"]` still works using `pwd` implicitly when no DirCap given (`src/builtins.rs`)
-- [ ] Update doc/11a-builtins.md to document new include signature (`doc/11a-builtins.md`)
-- [ ] Update `include` corpus tests for new signature patterns (`tests/corpus/`)
 
 ### io-phase2: Network Caps, stdlib/net.llt
 

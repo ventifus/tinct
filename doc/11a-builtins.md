@@ -157,11 +157,23 @@ File loading and JSON parsing.
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
 | `from-json` | 1 | `S → D` | Dict | Parse JSON string to dict; numbers become Int or Float, arrays become dicts with 0-indexed keys |
-| `include` | 1 | `S → D` | Dict | Load and evaluate an LLT file; returns the file's final value |
+| `include` | 1-3 | `S (× S)? → D` or `S × S (× S)? → D` | Dict | Load and evaluate an LLT file; returns the file's final value |
+
+**`include` call patterns:**
+
+1. **`[include "path"]`** — Backward compatible: load file from current working directory (via `ctx.config.base_dir`). Path is relative to the directory containing the evaluating file.
+
+2. **`[include "path" "hash"]`** — Backward compatible with integrity check: same as (1) but with a required integrity hash in `"algo:hexdigest"` format (e.g., `"blake3:abc123..."`).
+
+3. **`[include $cap "path"]`** — Cap-qualified: load file from the given `DirCap`. Path is relative to the cap's root directory. The cap can be a user-provided capability (e.g., `pwd`, `libdir`) or an attenuated cap created via `narrow`.
+
+4. **`[include $cap "path" "hash"]`** — Cap-qualified with integrity check: same as (3) but with a required integrity hash.
+
+**Caching:** Files are cached by `(st_dev, st_ino)` inode identity on Unix systems (by path hash on non-Unix). The same physical file accessed via different caps or paths is evaluated only once.
 
 **Error cases:**
 - `from-json`: Type mismatch if arg is not String; parse error if JSON is invalid
-- `include`: Type mismatch if arg is not String; file not found; parse/eval errors from included file
+- `include`: Type mismatch if first arg is not DirCap or String; arity mismatch if DirCap is provided but path is missing; file not found; parse/eval errors from included file; revoked capability error if using a revoked `RevocableDirCap`
 
 ## Sequences
 
