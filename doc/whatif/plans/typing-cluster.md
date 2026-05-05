@@ -276,7 +276,7 @@ Type and literal patterns, wildcard, variable binding:
 
 **A3. Pattern Matching Phase 3 --- Structural Destructuring**
 
-Dict patterns, seq patterns, nested patterns:
+Dict patterns, seq patterns, nested patterns, and path-key patterns:
 
 ```tinct
 [match [try risky]
@@ -286,21 +286,38 @@ Dict patterns, seq patterns, nested patterns:
 [match xs
     [seq h t]  [process h t]
     _          "empty"]
+
+# Path-key: DRY deep structure matching (pure parser desugaring)
+[match config
+    [cluster.primary.tls: [cert: c  key: k]
+     cluster.primary.host: h]
+    [connect-tls c k h]
+    _ [error "no tls"]]
+# desugars to:
+# [cluster: [primary: [tls: [cert: c  key: k]  host: h]]]
 ```
 
-- **Scope:** `Pattern::Dict` and `Pattern::Seq` variants. Evaluator:
-  recursive pattern matching with environment extension. Lazy dict
-  matching --- only matched keys forced.
+Path-key desugar rules:
+- `[a.b.c: v]` → `[a: [b: [c: v]]]` — works for any value `v` (leaf or subtree)
+- `[a.b.c: v  a.b.d: w]` → `[a: [b: [c: v  d: w]]]` — shared prefix merged
+- Three granularities: `[a.b.c: v]`, `[a.b: [c: v]]`, `[a: [b: [c: v]]]` all equivalent
+- Intermediate nodes always open (consistent with row polymorphism)
+- Integer path segments (`a.0.name`) wait for `access-pipeline` to land
+
+- **Scope:** `Pattern::Dict` and `Pattern::Seq` variants. Path-key
+  desugaring in the parser (pure transformation, no evaluator change).
+  Evaluator: recursive pattern matching with environment extension.
+  Lazy dict matching --- only matched keys forced.
 - **Formal model:** Maranget (2008) decision trees for nested patterns.
   Lazy forcing semantics follow Wadler (1987) views.
 - **Risk:** Moderate. Recursive pattern matching interacts with lazy
-  evaluation --- the evaluator must force exactly the matched keys and
-  nothing else.
+  evaluation. Path-key desugaring is low risk (parser-only).
 - **Unlocks:** Self-hosting dual-dispatch builtins. `try` result
-  handling. ADT consumption. This is the phase that makes pattern
-  matching *useful*.
+  handling. ADT consumption. Readable deep config matching. This is
+  the phase that makes pattern matching *useful*.
 - **Depends on:** Phase A2 (basic match). Let binding (A1) for
-  multi-expression arm bodies.
+  multi-expression arm bodies. `access-pipeline` for integer path
+  segments (string-only path-key lands with A3).
 
 ### Phase B: Type System Primitives (enable type-level reasoning)
 
