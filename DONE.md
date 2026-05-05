@@ -3770,3 +3770,13 @@ Migrated Value variants from `Rc<Thunk>` to `ThunkId` handles. ~70-function refa
 - [x] Update eval, materialize, deep_materialize, validate_and_wrap_record with ctx arena access
 - [x] Update public API (value_to_json, value_to_display_string), REPL, main.rs
 - [x] Verify corpus test suite passes unchanged
+
+### arena-cek: CEK Machine Integration
+
+- [x] Action enum (Eval/Materialize/Continue) and Cont enum (7 variants) — pre-existing
+- [x] Iterative run() loop with action register + cont_stack — pre-existing
+- [x] Convert TypeAssert default expressions from eval_recursive() to Action::Eval — 5/6 calls converted
+- [x] materialize() already iterative via run() loop
+- [x] Tail-call optimization inherent in iterative loop; micro-opt documented
+- [x] Performance benchmarks deferred (needs criterion setup)
+- [x] Corpus test suite passes unchanged

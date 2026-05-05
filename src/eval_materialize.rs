@@ -282,9 +282,9 @@ pub(crate) enum Action {
         mat_span: Option<Span>,
         depth: usize,
     },
-    /// Evaluate an expression to a thunk (wrapping, not forcing)
-    // Infrastructure for CEK loop entry — will be constructed when eval() becomes run(Action::Eval) wrapper
-    #[allow(dead_code)]
+    /// Evaluate an expression to a thunk (wrapping, not forcing).
+    /// Used by TypeAssert default expression evaluation and other iterative eval paths.
+    /// Eventually eval() will become a run(Action::Eval) wrapper when fully iterative.
     Eval {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
@@ -1618,13 +1618,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     }
                                     Err(err) => {
                                         if let Some((default, env)) = default_opt {
-                                            match eval_recursive(default, env, &ctx, depth + 1) {
-                                                Ok(t) => Action::Materialize {
-                                                    thunk: t,
-                                                    mat_span: None,
-                                                    depth,
-                                                },
-                                                Err(e) => Action::Continue(Err(e)),
+                                            // Evaluate default expression iteratively.
+                                            // The result will flow to the next continuation on the stack.
+                                            Action::Eval {
+                                                expr: default,
+                                                env,
+                                                ctx: Rc::clone(&ctx),
+                                                depth: depth + 1,
                                             }
                                         } else {
                                             Action::Continue(Err(err))
@@ -1635,18 +1635,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 if let Some(default_expr) =
                                     annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                                 {
-                                    match eval_recursive(
-                                        Rc::new(default_expr.clone()),
+                                    // Evaluate default expression iteratively.
+                                    // The result will flow to the next continuation on the stack.
+                                    Action::Eval {
+                                        expr: Rc::new(default_expr.clone()),
                                         env,
-                                        &ctx,
-                                        depth + 1,
-                                    ) {
-                                        Ok(t) => Action::Materialize {
-                                            thunk: t,
-                                            mat_span: None,
-                                            depth,
-                                        },
-                                        Err(e) => Action::Continue(Err(e)),
+                                        ctx: Rc::clone(&ctx),
+                                        depth: depth + 1,
                                     }
                                 } else {
                                     Action::Continue(Err(EvalError::type_assert_failed(
@@ -1665,18 +1660,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             } else if let Some(default_expr) =
                                 annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                             {
-                                match eval_recursive(
-                                    Rc::new(default_expr.clone()),
+                                // Evaluate default expression iteratively.
+                                // The result will flow to the next continuation on the stack.
+                                Action::Eval {
+                                    expr: Rc::new(default_expr.clone()),
                                     env,
-                                    &ctx,
-                                    depth + 1,
-                                ) {
-                                    Ok(t) => Action::Materialize {
-                                        thunk: t,
-                                        mat_span: None,
-                                        depth,
-                                    },
-                                    Err(e) => Action::Continue(Err(e)),
+                                    ctx: Rc::clone(&ctx),
+                                    depth: depth + 1,
                                 }
                             } else {
                                 Action::Continue(Err(EvalError::type_assert_failed(
@@ -1715,18 +1705,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 if let Some(default_expr) =
                                     annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                                 {
-                                    return match eval_recursive(
-                                        Rc::new(default_expr.clone()),
+                                    // Evaluate default expression iteratively.
+                                    // The result will flow to the next continuation on the stack.
+                                    return Action::Eval {
+                                        expr: Rc::new(default_expr.clone()),
                                         env,
-                                        &ctx,
-                                        depth + 1,
-                                    ) {
-                                        Ok(t) => Action::Materialize {
-                                            thunk: t,
-                                            mat_span: None,
-                                            depth,
-                                        },
-                                        Err(e) => Action::Continue(Err(e)),
+                                        ctx: Rc::clone(&ctx),
+                                        depth: depth + 1,
                                     };
                                 }
                                 return Action::Continue(Err(EvalError::type_assert_failed(
@@ -1746,18 +1731,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 if let Some(default_expr) =
                                     annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                                 {
-                                    return match eval_recursive(
-                                        Rc::new(default_expr.clone()),
+                                    // Evaluate default expression iteratively.
+                                    // The result will flow to the next continuation on the stack.
+                                    return Action::Eval {
+                                        expr: Rc::new(default_expr.clone()),
                                         env,
-                                        &ctx,
-                                        depth + 1,
-                                    ) {
-                                        Ok(t) => Action::Materialize {
-                                            thunk: t,
-                                            mat_span: None,
-                                            depth,
-                                        },
-                                        Err(e) => Action::Continue(Err(e)),
+                                        ctx: Rc::clone(&ctx),
+                                        depth: depth + 1,
                                     };
                                 }
                                 return Action::Continue(Err(EvalError::type_assert_failed(
@@ -1866,6 +1846,11 @@ pub(crate) fn eval_step(
             annotation,
             resolved_type,
         } => {
+            // TODO(cek-eval): This eval_recursive call remains because we need a thunk
+            // (not a materialized value). To make this fully iterative, we'd need:
+            // 1. A way to eval to thunk without forcing (can't use Action::Eval which goes through wrap_thunk)
+            // 2. Or: restructure to push TypeAssertCheck before eval, then use Action::Eval for inner expr
+            // For now, this single recursive call is acceptable - it just wraps without forcing.
             let inner_thunk =
                 match eval_recursive(Rc::new((**inner).clone()), Rc::clone(&env), ctx, depth + 1) {
                     Ok(t) => t,
@@ -1960,6 +1945,16 @@ pub(crate) fn eval_step(
 ///
 /// # Returns
 /// The final materialized value or error after all continuations have been applied.
+///
+/// # Tail-Call Optimization
+/// The loop reuses the Rust stack frame on each iteration, so Rust stack depth is O(1).
+/// The continuation stack is explicit (`stack`), preventing Rust stack overflow.
+///
+/// **Potential micro-optimization**: When eval_step/force_step return Action::Continue(result)
+/// and stack.is_empty(), we could return directly instead of looping to line 1970.
+/// This would save 1 branch misprediction per tail-call. However, it adds complexity
+/// (need to check stack.is_empty() after each step or pass it in).
+/// DECISION: Defer until profiling shows this is a bottleneck (likely negligible).
 pub(crate) fn run(initial: Action, ctx: &Rc<EvalContext>) -> EvalResult<Value> {
     let mut stack: Vec<Cont> = Vec::new();
     let mut action = initial;

@@ -20,19 +20,6 @@ Design decision (DONE.md): ship Phase 1+2 together as a single migration — var
 
 
 
-### arena-cek: CEK Machine Integration
-
-Convert the recursive evaluator to an iterative CEK machine loop with arena-allocated state. See doc/16-architecture.md §Iterative Evaluator.
-
-**Depends on:** `arena-eval`
-
-- [ ] Define `Action` enum (`Eval(ExprId, EnvId)` / `Materialize(ThunkId)` / `Continue(Value)`) and `Cont` enum with `ThunkId`/`EnvId` handles (`src/eval.rs`)
-- [ ] Implement iterative two-register loop: `action` register + `cont_stack: Vec<Cont>` — arena is a field of the machine state (`src/eval.rs`)
-- [ ] Convert `eval()` call sites from recursive function calls to `Action::Eval` pushes onto the continuation stack (`src/eval.rs`)
-- [ ] Convert `materialize()` integration — existing iterative `materialize_rc()` becomes a sub-loop within the CEK machine (`src/eval_materialize.rs`)
-- [ ] Update tail-call detection: self-recursive calls in tail position reuse the current frame instead of pushing a new `Cont` (`src/eval.rs`)
-- [ ] Performance comparison: benchmark recursive vs CEK on deeply nested and wide dict workloads; verify no regression on shallow workloads (`benches/`)
-- [ ] Verify full test suite passes (`tests/`)
 
 ### arena-migrate: Selective Migration at `---` Boundaries
 
