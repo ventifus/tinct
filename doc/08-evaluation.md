@@ -1028,13 +1028,24 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 - **SmallVec**: `SmallVec<[Rc<Thunk>; 4]>` for call args (most calls have ≤4 args), `SmallVec<[StackFrame; 8]>` for error stacks.
 - **Origin optimization**: `origin: String` → `Rc<str>` via string interner, with static empty sentinel for the common case.
 
-**Phase 2:** Arena allocation + flat environments, bundled with the recursive-to-iterative evaluator conversion.
+**Phase 2:** Arena infrastructure (registry pattern) — **Status: COMPLETED 2026-05-04**.
 
-- **Arena allocator**: Replace `Rc<Thunk>` with arena-allocated thunks. Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB). Alternatives (typed-arena, bumpalo) require unsafe and don't offer clear wins for Tinct's use case.
+Phase 2 establishes the arena types and handles without changing allocation paths. This is the "registry/GC-root" approach:
+- `ThunkArena` and `EnvArena` exist in `EvalContext` but are unused (`#[allow(dead_code)]`)
+- `Value` variants use `ThunkId` / `EnvId` handles (completed)
+- Allocation still goes through `Rc::new(Thunk)` directly (not `arena.alloc()`)
+- Arena stores `Vec<Rc<Thunk>>` (Rc-wrapped, not direct ownership)
+- Arena persists across `---` boundaries (append-only, no per-section deallocation)
+- **No migration needed**: ThunkIds are stable indices that never invalidate
+
+**Phase 3:** Arena evaluation (arena-eval sprint) — **NOT YET STARTED**.
+
+Phase 3 wires up arena-based allocation and enables per-section lifetimes:
+- **Arena allocator**: Replace `Rc::new(Thunk)` call sites with `arena.alloc(Thunk)`. Arena stores `Vec<Thunk>` (direct ownership, not Rc-wrapped). Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB).
 - **Flat environments with slot indices**: Replace `IndexMap<String, Rc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe (each call writes to its own activation frame).
 - **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection.
 
-**Arena lifetime and persistent values:** The arena lifetime is **one document section** — the text between `---` boundaries (or the entire file for single-section documents). At each `---` boundary, values reachable from the section result are **selectively migrated** from the arena to `Rc`-backed persistent storage, bound as `%` for the next section, and the section's arena is dropped.
+**Arena lifetime and persistent values (Phase 3):** The arena lifetime is **one document section** — the text between `---` boundaries (or the entire file for single-section documents). At each `---` boundary, values reachable from the section result are **selectively migrated** from the arena to `Rc`-backed persistent storage, bound as `%` for the next section, and the section's arena is dropped.
 
 **Selective migration** is a scoped copying pass that preserves thunk state — it translates storage, not evaluation state. Unevaluated thunks stay unevaluated (lazy), Materialized thunks keep their cached values, closures retain their environment chains. The `---` boundary is **not** a strictness point. This preserves the existing lazy pipeline semantics (§Scope Chain Semantics, DOC-PIPELINE): the `---` boundary does not force evaluation.
 

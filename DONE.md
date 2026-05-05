@@ -3780,3 +3780,12 @@ Migrated Value variants from `Rc<Thunk>` to `ThunkId` handles. ~70-function refa
 - [x] Tail-call optimization inherent in iterative loop; micro-opt documented
 - [x] Performance benchmarks deferred (needs criterion setup)
 - [x] Corpus test suite passes unchanged
+
+### arena-migrate: Selective Migration at `---` Boundaries
+
+Migration NOT needed for Phase 2 — append-only Rc<Thunk> arena means ThunkIds never invalidate across `---` boundaries.
+
+- [x] Migration assessment: append-only arena with Rc<Thunk> storage; ThunkIds stable across all boundaries
+- [x] `$include` cache interaction verified: standalone Rc<Thunk>, arena-independent
+- [x] Multi-document corpus tests: `cross_boundary_thunk_access.llt-eval` and `three_section_lazy_chain.llt-eval`
+- [x] Phase 3 migration stub documented in `src/arena.rs` with full algorithm description
