@@ -145,6 +145,15 @@ pub enum Value {
     /// Lazy overlay: R overrides L (right-biased merge). Flattened to Dict on demand.
     /// Construction is O(1) — neither L nor R is materialized at merge time.
     Overlay(ThunkId, ThunkId),
+    /// Capability-bound directory handle (object capability model)
+    DirCap(Rc<cap_std::fs::Dir>),
+    /// Open file/stream handle (Read-only for Phase 1)
+    Handle(Rc<std::cell::RefCell<Box<dyn std::io::Read>>>),
+    /// Revocable directory capability
+    RevocableDirCap {
+        inner: Rc<cap_std::fs::Dir>,
+        revoked: Rc<std::cell::Cell<bool>>,
+    },
 }
 
 impl Value {
@@ -161,6 +170,9 @@ impl Value {
             Value::Seq { .. } => "Seq",
             Value::Proxy { .. } => "Proxy",
             Value::Overlay(..) => "Dict",
+            Value::DirCap(_) => "DirCap",
+            Value::Handle(_) => "Handle",
+            Value::RevocableDirCap { .. } => "DirCap",
         }
     }
 }
@@ -184,6 +196,15 @@ impl fmt::Debug for Value {
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::Overlay(..) => write!(f, "Overlay(...)"),
+            Value::DirCap(_) => write!(f, "DirCap"),
+            Value::Handle(_) => write!(f, "Handle"),
+            Value::RevocableDirCap { revoked, .. } => {
+                if revoked.get() {
+                    write!(f, "DirCap(revoked)")
+                } else {
+                    write!(f, "DirCap(revocable)")
+                }
+            }
         }
     }
 }
@@ -219,6 +240,15 @@ impl fmt::Display for Value {
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::Overlay(..) => write!(f, "[<overlay>]"),
+            Value::DirCap(_) => write!(f, "<DirCap>"),
+            Value::Handle(_) => write!(f, "<Handle>"),
+            Value::RevocableDirCap { revoked, .. } => {
+                if revoked.get() {
+                    write!(f, "<DirCap (revoked)>")
+                } else {
+                    write!(f, "<DirCap (revocable)>")
+                }
+            }
         }
     }
 }
