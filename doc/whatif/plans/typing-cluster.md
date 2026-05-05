@@ -252,7 +252,7 @@ process: [fn [data]
 
 **A2. Pattern Matching Phase 2 --- Basic Match**
 
-Type and literal patterns, wildcard, variable binding:
+Type and literal patterns, wildcard, variable binding, and `$name` pin:
 
 ```tinct
 [match x
@@ -260,16 +260,23 @@ Type and literal patterns, wildcard, variable binding:
     Str   [str "got: " x]
     42    "the answer"
     _     x]
+
+# $name pin: match against existing variable value (no new sigil needed)
+[match result
+    $expected  "matched!"   # pin: result must equal current value of `expected`
+    other      "no match"]  # bind: `other` gets result's value
 ```
 
 - **Scope:** `match` keyword + `Expr::Match` AST node. Evaluator:
   materialize scrutinee, try arms top-to-bottom. Type checker: initially
-  typed as `Any`.
+  typed as `Any`. `$name` in pattern position resolves via normal variable
+  lookup and compares by equality — no new evaluator mechanism.
 - **Formal model:** Augustsson (1985) pattern compilation. Sequential
   arm testing is the simplest compilation strategy (no decision trees
   needed at this phase).
 - **Risk:** Low. One new keyword, one new AST variant. Every exhaustive
-  `match` on `Expr` gains one arm.
+  `match` on `Expr` gains one arm. `$name` pin reuses existing `$` sigil
+  semantics — bare name = bind, `$name` = reference existing value.
 - **Unlocks:** Type dispatch without `type-of` string comparisons.
   Foundation for all subsequent pattern matching phases.
 - **Depends on:** Type predicates (DONE).
