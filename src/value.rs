@@ -148,7 +148,7 @@ pub enum Value {
     /// Capability-bound directory handle (object capability model)
     DirCap(Rc<cap_std::fs::Dir>),
     /// Open file/stream handle (Read-only for Phase 1)
-    Handle(Rc<std::cell::RefCell<Box<dyn std::io::Read>>>),
+    Handle(Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>),
     /// Revocable directory capability
     RevocableDirCap {
         inner: Rc<cap_std::fs::Dir>,
