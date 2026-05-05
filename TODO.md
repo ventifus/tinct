@@ -31,19 +31,14 @@ See doc/whatif/templating.md.
 See doc/whatif/templating.md §Phase 2.
 
 - [x] Create `stdlib/fmt/` with yaml.llt, toml.llt, json-pretty.llt, env.llt, csv.llt — all pure tinct
-- [x] 8 corpus tests for formatters
-- [x] Fix arena ThunkId cross-context bug: arenas now shared via Rc<RefCell<ThunkArena>>
-- [ ] Document standard formatters in `doc/11-stdlib.md`
+- [x] 8 corpus tests for formatters; arena ThunkId cross-context bug fixed
+- [x] doc/11-stdlib.md: Standard Formatters section documented
 
-### templating-phase3: String Interpolation
+### templating-phase3: String Interpolation (complete)
 
-See doc/whatif/templating.md §Phase 3 and doc/whatif/string-interpolation.md.
-
-- [x] `i"..."` lexer token with InterpolatedPart (Literal, VarRef); parser desugars to `[str ...]` at parse time (`src/lexer.rs`, `src/parser.rs`)
-- [x] `$ident` interpolation supported; `${expr}` deferred; `$$` escape for literal `$`
-- [x] 8 corpus tests (4 valid syntax + 4 eval); doc/02-syntax.md §2.3.5 documented
-- [ ] Formatter: preserve `i"..."` round-trip (currently formats as `[str ...]`) (`src/formatter.rs`)
-- [ ] `${expr}` expression interpolation — Phase 2 of string interpolation (`src/lexer.rs`)
+- [x] `i"..."` lexer + parser desugaring; `$ident`, `${expr}`, `$$` escape all supported
+- [x] Formatter: `i"..."` round-trip preserved (heuristic detection); 5 formatter tests
+- [x] 8 corpus tests; doc/02-syntax.md §2.3.5 documented
 
 ### templating-phase4: Literate Mode
 

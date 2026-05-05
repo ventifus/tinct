@@ -411,6 +411,22 @@ impl<'a> Formatter<'a> {
                 named_args,
                 implied,
             } => {
+                // Mirror format_call: if this would be formatted as i"...", measure that width.
+                if !*implied
+                    && named_args.is_empty()
+                    && self.is_interpolated_string_call(func, args)
+                {
+                    // i" + content + "
+                    let mut w = 3; // i""
+                    for arg in args {
+                        match &arg.node {
+                            Expr::Str(s) => w += s.len(), // approximate (escaping may expand)
+                            Expr::VarRef { name, .. } => w += 1 + name.len(), // $name
+                            _ => {}
+                        }
+                    }
+                    return w;
+                }
                 let mut w = 1; // [
                 if !*implied {
                     w += 4 + 1; // call
@@ -542,6 +558,15 @@ impl<'a> Formatter<'a> {
         named_args: &[Spanned<NamedArg>],
         implied: bool,
     ) {
+        // If this looks like a desugared i"..." call (head is "str", no named args,
+        // all args are Str literals or VarRef nodes), format as i"..." instead of [str ...].
+        // This is heuristic: user-written [str ...] calls matching the pattern will also
+        // round-trip as i"..." syntax, which is acceptable for a pre-1.0 formatter.
+        if !implied && named_args.is_empty() && self.is_interpolated_string_call(func, args) {
+            self.format_as_interpolated_string(args);
+            return;
+        }
+
         self.output.push('[');
         if !implied {
             self.output.push_str("call ");
@@ -558,6 +583,65 @@ impl<'a> Formatter<'a> {
             self.format_expr(&named_arg.node.value, true);
         }
         self.output.push(']');
+    }
+
+    /// Return true if this Call node matches the pattern produced by desugaring i"...".
+    ///
+    /// Pattern: func is a VarRef named "str", no named args, and every positional arg is
+    /// either an Expr::Str (literal segment) or an Expr::VarRef (interpolated variable).
+    fn is_interpolated_string_call(
+        &self,
+        func: &Spanned<Expr>,
+        args: &[Rc<Spanned<Expr>>],
+    ) -> bool {
+        // Head must be exactly VarRef("str")
+        let Expr::VarRef { name, .. } = &func.node else {
+            return false;
+        };
+        if name != "str" {
+            return false;
+        }
+        // Must have at least one arg (empty [str] is not an interpolated string)
+        if args.is_empty() {
+            return false;
+        }
+        // Every arg must be Str or VarRef
+        args.iter()
+            .all(|arg| matches!(&arg.node, Expr::Str(_) | Expr::VarRef { .. }))
+    }
+
+    /// Format a desugared interpolated string call as i"..." syntax.
+    ///
+    /// Each Str arg is emitted as literal text (with `"` and `\` escaped, and `$` escaped as `$$`).
+    /// Each VarRef arg is emitted as `$name`.
+    fn format_as_interpolated_string(&mut self, args: &[Rc<Spanned<Expr>>]) {
+        self.output.push_str("i\"");
+        for arg in args {
+            match &arg.node {
+                Expr::Str(s) => {
+                    for ch in s.chars() {
+                        match ch {
+                            '"' => self.output.push_str("\\\""),
+                            '\\' => self.output.push_str("\\\\"),
+                            '\n' => self.output.push_str("\\n"),
+                            '\t' => self.output.push_str("\\t"),
+                            '\r' => self.output.push_str("\\r"),
+                            '$' => self.output.push_str("$$"),
+                            _ => self.output.push(ch),
+                        }
+                    }
+                }
+                Expr::VarRef { name, .. } => {
+                    self.output.push('$');
+                    self.output.push_str(name);
+                }
+                _ => {
+                    // Should never be reached given is_interpolated_string_call guard,
+                    // but emit a safe fallback rather than panicking.
+                }
+            }
+        }
+        self.output.push('"');
     }
 
     fn format_fn(
@@ -968,6 +1052,57 @@ mod tests {
         assert!(
             result.is_err(),
             "invalid escape sequence \\q should produce a lex error"
+        );
+    }
+
+    // --- Interpolated string round-trip tests ---
+
+    /// i"Hello $name" should round-trip back to i"Hello $name" (not [str "Hello " name]).
+    #[test]
+    fn test_interpolated_string_roundtrip_simple() {
+        let input = r#"i"Hello $name""#;
+        let formatted = format_source(input).unwrap();
+        assert_eq!(
+            formatted.trim(),
+            r#"i"Hello $name""#,
+            "i\"...\" with single variable should round-trip as i\"...\""
+        );
+    }
+
+    /// i"$a and $b" (multiple variables) should round-trip.
+    #[test]
+    fn test_interpolated_string_roundtrip_multi_var() {
+        let input = r#"i"$a and $b""#;
+        let formatted = format_source(input).unwrap();
+        assert_eq!(formatted.trim(), r#"i"$a and $b""#);
+    }
+
+    /// Plain i"text" (no variables) should round-trip.
+    #[test]
+    fn test_interpolated_string_roundtrip_plain() {
+        let input = r#"i"plain text""#;
+        let formatted = format_source(input).unwrap();
+        assert_eq!(formatted.trim(), r#"i"plain text""#);
+    }
+
+    /// Formatter idempotency: formatting i"..." twice gives the same result.
+    #[test]
+    fn test_interpolated_string_format_idempotency() {
+        let input = r#"i"Hello $name, you are $age years old""#;
+        let once = format_source(input).unwrap();
+        let twice = format_source(&once).unwrap();
+        assert_eq!(once, twice, "i\"...\" formatting must be idempotent");
+    }
+
+    /// Literal $ chars (desugared from $$) are escaped back to $$ in i"..." output.
+    #[test]
+    fn test_interpolated_string_roundtrip_dollar_escape() {
+        let input = r#"i"cost: $$10""#;
+        let formatted = format_source(input).unwrap();
+        assert_eq!(
+            formatted.trim(),
+            r#"i"cost: $$10""#,
+            "literal $ inside i\"...\" should be emitted as $$"
         );
     }
 

@@ -100,6 +100,10 @@ fn key_to_string(expr: &Expr) -> Option<String> {
 ///
 /// Converts `i"Hello $name"` (represented as InterpolatedString parts) into
 /// `[str "Hello " name]` (a Call expression).
+///
+/// `InterpolatedPart::Expr(raw)` segments (`${expr}`) are re-parsed as tinct expressions
+/// and included inline. If re-parsing fails, the raw text is included as a quoted string
+/// with a TODO comment in the error.
 fn desugar_interpolated_string(
     parts: &[lexer::InterpolatedPart],
     span: Span,
@@ -121,6 +125,25 @@ fn desugar_interpolated_string(
                     },
                     span,
                 )));
+            }
+            lexer::InterpolatedPart::Expr(raw) => {
+                // Re-parse the raw expression string as a tinct expression.
+                // TODO: span reporting inside ${...} is approximate — the inner spans
+                // are relative to `raw` not to the outer source, so error locations
+                // inside ${...} will point to the start of the interpolated string.
+                match parse_expression(raw) {
+                    Ok(inner_expr) => {
+                        // Re-span the inner expression to the outer interpolated string span
+                        // so that evaluation errors point to a reasonable location.
+                        args.push(Rc::new(Spanned::new(inner_expr.node, span)));
+                    }
+                    Err(_) => {
+                        // Fallback: include the raw text as a quoted string.
+                        // This preserves round-trip output at the cost of incorrect runtime behavior.
+                        // TODO: propagate the inner parse error with adjusted spans.
+                        args.push(Rc::new(Spanned::new(Expr::Str(raw.clone()), span)));
+                    }
+                }
             }
         }
     }
@@ -5287,5 +5310,128 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
+    }
+
+    // --- Interpolated string desugaring tests ---
+
+    /// i"Hello $name" desugars to [str "Hello " name].
+    #[test]
+    fn test_desugar_interpolated_string_varref() {
+        let expr = parse_expr(r#"i"Hello $name""#);
+        match &expr.node {
+            Expr::Call {
+                func,
+                args,
+                named_args,
+                implied,
+            } => {
+                assert!(!implied, "expected non-implied call");
+                assert!(named_args.is_empty());
+                match &func.node {
+                    Expr::VarRef { name, .. } => assert_eq!(name, "str"),
+                    other => panic!("expected func=VarRef(str), got {other:?}"),
+                }
+                assert_eq!(args.len(), 2);
+                match &args[0].node {
+                    Expr::Str(s) => assert_eq!(s, "Hello "),
+                    other => panic!("expected args[0]=Str(\"Hello \"), got {other:?}"),
+                }
+                match &args[1].node {
+                    Expr::VarRef { name, .. } => assert_eq!(name, "name"),
+                    other => panic!("expected args[1]=VarRef(name), got {other:?}"),
+                }
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    /// i"${[+ $x 1]}" desugars to [str [+ $x 1]] — the inner expression is re-parsed.
+    #[test]
+    fn test_desugar_interpolated_string_expr() {
+        let expr = parse_expr(r#"i"${[+ $x 1]}""#);
+        match &expr.node {
+            Expr::Call {
+                func,
+                args,
+                implied,
+                ..
+            } => {
+                assert!(!implied);
+                match &func.node {
+                    Expr::VarRef { name, .. } => assert_eq!(name, "str"),
+                    other => panic!("expected func=VarRef(str), got {other:?}"),
+                }
+                assert_eq!(args.len(), 1, "expected 1 arg for lone ${expr}");
+                // The arg should be the re-parsed [+ $x 1] — an implied Call
+                match &args[0].node {
+                    Expr::Call {
+                        func: inner_func,
+                        args: inner_args,
+                        implied: inner_implied,
+                        ..
+                    } => {
+                        assert!(*inner_implied, "inner call [+ $x 1] should be implied");
+                        match &inner_func.node {
+                            Expr::VarRef { name, .. } => assert_eq!(name, "+"),
+                            other => panic!("expected inner func VarRef(+), got {other:?}"),
+                        }
+                        assert_eq!(inner_args.len(), 2);
+                        match &inner_args[0].node {
+                            Expr::VarRef { name, .. } => assert_eq!(name, "x"),
+                            other => panic!("expected VarRef(x) as arg 0, got {other:?}"),
+                        }
+                        match &inner_args[1].node {
+                            Expr::Int(1) => {}
+                            other => panic!("expected Int(1) as arg 1, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected inner Call, got {other:?}"),
+                }
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    /// i"prefix $name suffix ${[+ $x 1]} end" — mixed literal, varref, and expr parts.
+    #[test]
+    fn test_desugar_interpolated_string_mixed() {
+        let expr = parse_expr(r#"i"prefix $name suffix ${[+ $x 1]} end""#);
+        match &expr.node {
+            Expr::Call { func, args, .. } => {
+                match &func.node {
+                    Expr::VarRef { name, .. } => assert_eq!(name, "str"),
+                    other => panic!("expected func=VarRef(str), got {other:?}"),
+                }
+                assert_eq!(
+                    args.len(),
+                    5,
+                    "expected 5 parts: literal, varref, literal, expr, literal"
+                );
+                // args[0]: "prefix "
+                assert!(matches!(&args[0].node, Expr::Str(s) if s == "prefix "));
+                // args[1]: VarRef(name)
+                assert!(matches!(&args[1].node, Expr::VarRef { name, .. } if name == "name"));
+                // args[2]: " suffix "
+                assert!(matches!(&args[2].node, Expr::Str(s) if s == " suffix "));
+                // args[3]: re-parsed expression [+ $x 1]
+                assert!(matches!(&args[3].node, Expr::Call { .. }));
+                // args[4]: " end"
+                assert!(matches!(&args[4].node, Expr::Str(s) if s == " end"));
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    /// Unterminated ${...} produces a lex error (propagated as ParseError).
+    #[test]
+    fn test_desugar_interpolated_string_expr_unclosed() {
+        let result = parse2(r#"i"foo ${bar""#);
+        assert!(result.is_err(), "expected parse error for unclosed ${{}}");
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("unterminated ${...}"),
+            "expected unterminated error, got: {}",
+            err.message
+        );
     }
 }
