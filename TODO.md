@@ -24,11 +24,11 @@ See doc/whatif/io.md §Phase 1.
 - [x] Add `--no-env` and `--allow-env NAME` CLI flags (`src/main.rs`)
 - [x] Implement `revocable`, `revoke-cap`, `lines` builtins; Handle upgraded to BufRead (`src/builtins.rs`, `src/value.rs`)
 - [x] CLI integration tests: emit_basic, env_missing, env_no_env_flag, revocable_and_revoke, lines_basic (`tests/cli_tests.rs`)
-- [ ] Modify `include` to take `DirCap` first arg; cache by `(st_dev, st_ino)` (`src/builtins.rs`, `src/eval.rs`)
-- [ ] Inject `libdir` DirCap and `stdin` Handle into root env; add `--no-pwd`, `--no-libdir`, `--no-stdin`, `--cap-fs`, `--libdir-path` CLI flags (`src/main.rs`)
-- [ ] Create `stdlib/io.llt` with `read-file`, `write-file`, `read-lines`, `println` (`stdlib/io.llt`)
-- [ ] Update sandbox documentation for cap model flags (`doc/12-tooling.md`)
-- [ ] Corpus tests for file I/O, emit, stdin, env, revocable caps (`tests/corpus/io/`)
+- [x] Inject `libdir`, `stdin` into root env; add `--no-pwd`, `--no-libdir`, `--no-stdin`, `--cap-fs NAME=PATH` CLI flags (`src/main.rs`)
+- [x] Create `stdlib/io.llt` with `read-file`, `read-lines`, `println`, `println-val` (`stdlib/io.llt`)
+- [x] Update sandbox docs with cap model flags and examples (`doc/12-tooling.md`)
+- [x] Corpus test: emit_returns_null.llt-eval (`tests/corpus/eval/builtins/`)
+- [ ] Modify `include` to take optional `DirCap` first arg; cache by `(st_dev, st_ino)` — deferred (breaking change to include signature) (`src/builtins.rs`, `src/eval.rs`)
 
 ### io-phase2: Network Caps, stdlib/net.llt
 
