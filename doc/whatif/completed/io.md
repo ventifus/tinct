@@ -142,9 +142,9 @@ Important: `revocable` does not revoke handles already opened through the cap. I
 [third-party-plugin pair.cap %]
 [pair.revoke null]   # future opens via pair.cap fail
 
-# TCP and TLS connections (see doc/whatif/lib-tls.md for TLS configuration)
+# TCP connection
 [conn:    [connect net "db.internal" 5432]]
-[secure:  [tls net "api.example.com" 443]]
+# TLS connections: see doc/whatif/lib-tls.md
 ```
 
 ### `include` Is Always Cap-Qualified
@@ -260,9 +260,7 @@ llt eval --cap-net net=api.internal --cap-net net=10.42.0.0/16 script.llt
 
 ### TLS Configuration
 
-`tls net-cap host port` opens a TLS connection. Certificate validation, CA root selection, client certificates, mutual TLS, and HTTP/3 (QUIC) are a substantial design space addressed separately. See `doc/whatif/lib-tls.md` for the full proposal.
-
-For Phase 2 implementation: `tls` uses `rustls` with the system CA store. Full chain validation and hostname verification are always enabled with no skip-verify option.
+TLS connections are designed separately. See `doc/whatif/lib-tls.md` for the full proposal, including CA root selection, mutual TLS, certificate pinning, and ALPN. The `tls` builtin and its option dict are not part of this proposal.
 
 ### `stdin` and `emit`
 
@@ -349,19 +347,16 @@ println:    [fn [s]           [emit [str s "\n"]]]
 ```tinct
 # stdlib/net.llt
 # Note: multi-expression fn bodies require doc/whatif/let-binding.md Phase 1
+# fetch supports HTTP only; HTTPS requires doc/whatif/lib-tls.md (tls builtin)
 fetch: [fn [net-cap url]
   [parsed: [parse-url url]]
-  [conn: [if [= parsed.scheme "https"]
-    [tls     net-cap parsed.host parsed.port]
-    [connect net-cap parsed.host parsed.port]]]
+  [conn: [connect net-cap parsed.host parsed.port]]
   [req: [str
     "GET " parsed.path " HTTP/1.0\r\n"
     "Host: " parsed.host "\r\n"
     "Connection: close\r\n\r\n"]]
   [http-parse-response
     [slurp [write conn req]]]]
-
-fetch-opts: [fn [net-cap url opts] ...]
 ```
 
 ### Streaming I/O: Coinductive Line Streams
@@ -413,7 +408,6 @@ I/O builtins documented with Mycroft (1981) strictness annotations in `doc/08-ev
 | `net-cap` | S | `NetCap` | Creates network capability; requires `--allow-network` |
 | `open` | S, S, S | `Handle` | Opens file within DirCap (RESOLVE_BENEATH) |
 | `connect` | S, S, S | `Handle` | Opens TCP socket within NetCap |
-| `tls` | S, S, S | `Handle` | Opens TLS socket within NetCap |
 | `narrow` | S, S | `DirCap` | Attenuates DirCap to subdirectory via `Dir::open(subpath)` |
 | `revocable` | S | `Dict` | Wraps DirCap in revocable proxy; returns `[cap: RevocableDirCap  revoke: fn]` |
 | `slurp` | S | `Str` | Reads Handle to EOF |
@@ -448,8 +442,6 @@ Phase 3 (future, no commitment): if type classes arrive, `IO` becomes an enforce
 
 **`connect net-cap host port`:** Resolve hostname, check against NetCap allowlist (hostname entries pre-DNS, CIDR entries post-DNS), open TCP socket. Returns `Value::Handle`.
 
-**`tls net-cap host port`:** Same allowlist check as `connect`. Opens TLS socket using `rustls`. Full chain and hostname verification always enabled. Returns `Value::Handle`. See `doc/whatif/lib-tls.md` for CA root configuration and client certificates.
-
 **`narrow dir-cap subpath`:** Calls `cap_std::fs::Dir::open(subpath)` — RESOLVE_BENEATH applies to `subpath`, so `"../../etc"` fails at narrow time. Returns attenuated `Value::DirCap`.
 
 **`revocable dir-cap`:** Wraps `DirCap` in `Value::RevocableDirCap { inner: DirCap, revoked: Rc<Cell<bool>> }`. Returns `[cap: Value::RevocableDirCap  revoke: Value::Builtin(set-flag)]`. The revoke builtin takes one argument (ignored; pass `null`) and sets the flag. Subsequent `open` on the RevocableDirCap returns an error.
@@ -468,12 +460,12 @@ Phase 3 (future, no commitment): if type classes arrive, `IO` becomes an enforce
 
 **`libdir`:** `Value::DirCap` for the system library directory, injected into the root environment at startup. Suppressed by `--no-libdir`. The backing directory is resolved from `--libdir-path` if provided, otherwise from the default installation path.
 
-**Impact:** Significant — thirteen modified or new builtins plus three runtime-injected values (`stdin`, `pwd`, `libdir`), four new value variants (`Value::DirCap`, `Value::NetCap`, `Value::RevocableDirCap`, `Value::Handle`), `EvalContext` gains `emitted: bool`.
+**Impact:** Significant — twelve modified or new builtins plus three runtime-injected values (`stdin`, `pwd`, `libdir`), four new value variants (`Value::DirCap`, `Value::NetCap`, `Value::RevocableDirCap`, `Value::Handle`), `EvalContext` gains `emitted: bool`.
 
 ### New Stdlib (`stdlib/io.llt`, `stdlib/net.llt`)
 
 `stdlib/io.llt`: `read-file`, `write-file`, `append-file`, `read-lines`, `println`.
-`stdlib/net.llt`: `fetch`, `fetch-opts`, `http-parse-response`, `parse-url`, `http-format-request`.
+`stdlib/net.llt`: `fetch` (HTTP only), `http-parse-response`, `parse-url`, `http-format-request`.
 
 **Impact:** Moderate — two new stdlib files; no changes to `stdlib/prelude.llt`.
 
@@ -546,7 +538,7 @@ Phase 2 (future): distinct `Type::DirCap`, `Type::NetCap`, `Type::Handle`.
 
 ### Phase 2: Network Caps, `stdlib/net.llt`
 
-`net-cap`, `connect`, `tls` (basic), CLI `--cap-net` injection, `stdlib/net.llt`. Enables HTTP and arbitrary TCP protocol implementations in tinct.
+`net-cap`, `connect`, CLI `--cap-net` injection, `stdlib/net.llt`. Enables HTTP over plain TCP and arbitrary TCP protocol implementations. HTTPS requires `doc/whatif/lib-tls.md` to be accepted first.
 
 ```tinct
 [include libdir "io.llt"]
@@ -554,14 +546,14 @@ Phase 2 (future): distinct `Type::DirCap`, `Type::NetCap`, `Type::Handle`.
 
 # llt eval --cap-fs data=/var/data --cap-net api=schema.internal script.llt
 
-[schema: [fetch api "https://schema.internal/v2/deployment"]]
+[schema: [fetch api "http://schema.internal/v2/deployment"]]
 ---
 [validate [parse-json schema] %]
 ---
 [emit [to-yaml %]]
 ```
 
-**Prerequisites:** Phase 1 complete; `rustls = "0.23"` in `Cargo.toml`; see `doc/whatif/lib-tls.md` for full TLS configuration design.
+**Prerequisites:** Phase 1 complete.
 
 ### Phase 3: Atomic Writes, Streaming Fetch, Sandbox Hardening
 
@@ -578,7 +570,7 @@ Atomic file writes (write-to-temp + rename). Streaming fetch response body via `
 ### Prerequisites
 
 - Phase 1: `eval-sandbox-flags` sprint, `include-fd-hardening` sprint
-- Phase 2: Phase 1 complete; `rustls = "0.23"` added; `doc/whatif/lib-tls.md` design accepted
+- Phase 2: Phase 1 complete
 - Phase 3: Phase 2 complete
 - Phase 4: Phase 3 complete
 
