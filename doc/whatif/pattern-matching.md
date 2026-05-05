@@ -509,13 +509,82 @@ This phase depends on the type system being expressive enough to represent
 gradual typing, exhaustiveness checking is limited to cases where the
 scrutinee has a known concrete type.
 
+### Interaction with `access-pipeline` (`|` operator)
+
+`access-pipeline` (see `doc/whatif/access-pipeline.md`) lands **before** pattern matching.
+It adds `|` as an infix reverse-apply operator and generator-aware flatMap. This
+shapes four aspects of pattern matching design:
+
+#### 1. `| [match _]` — idiomatic per-element dispatch
+
+With `|` and generators in place, matching over a collection becomes a first-class
+pipeline idiom. The `_` scrutinee triggers WRAP-CALL desugaring → the `[match _]`
+form becomes a single-argument function that `|` flatMaps over a Seq:
+
+```tinct
+$events | [each] | [match _
+    [type: "click"  target: t]  [handle-click t]
+    [type: "hover"  target: t]  [handle-hover t]
+    _                            "ignored"]
+| [collect]
+```
+
+This falls out naturally from both designs — no new mechanism needed. The `_` scrutinee
+rule (documented in §Interaction with `_` Desugaring above) already covers it.
+
+#### 2. Guards compose better with `|`
+
+Guards are full expressions, so once `|` is available they become more readable:
+
+```tinct
+[match user
+    [role: r] when [r | "admin"]  [admin-panel user]
+    [role: r]                      [user-panel user]]
+```
+
+No design change needed; this is a documentation and example concern.
+
+#### 3. Integer-key dict patterns
+
+`access-pipeline` extends dot access to integer keys (`$a.0`). For consistency,
+dict patterns should also support integer-key fields. The current `Dict` pattern
+uses `String` for field names; after `access-pipeline` lands, this becomes `Key`:
+
+```rust
+// Before: only string keys in patterns
+Dict { fields: Vec<(String, Spanned<Pattern>)>, rest: bool }
+
+// After: string or integer keys
+Dict { fields: Vec<(Key, Spanned<Pattern>)>, rest: bool }
+```
+
+This enables matching on lists (integer-keyed dicts) by position:
+
+```tinct
+[match pair
+    [0: a  1: b]  [use a b]
+    _              [error "expected pair"]]
+```
+
+**Implementation note:** wait for `access-pipeline` to land first (it adds
+`Key::Int` dot lookup to the evaluator), then extend the pattern parser to
+accept `Token::Int` in the `key:` position of a dict pattern.
+
+#### 4. Bracket removal has no impact on pattern syntax
+
+Removing `Token::BracketAccess` and `Token::Range` affects only access
+expressions, not pattern expressions. `[key: v]` in a pattern is parsed in
+pattern mode — the lexer never confuses it with `$a[key]`. No changes to
+pattern parsing are needed when bracket access is removed.
+
 ### Prerequisites
 
 - **Phase 1:** None — type predicates are standalone builtins
 - **Phase 2:** Lexer/parser infrastructure for keywords (already exists
   for `call`, `fn`, `type`). `match` added to keyword denylist.
 - **Phase 3:** Phase 2 complete. Seq type stable (`Value::Seq` in
-  evaluator).
+  evaluator). Integer-key dict patterns: wait for `access-pipeline` (adds
+  integer dot access to the evaluator).
 - **Phase 4:** Phase 3 complete.
 - **Phase 5:** Type system maturity — union types or type classes for
   exhaustiveness analysis.
