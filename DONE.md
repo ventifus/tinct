@@ -3806,4 +3806,12 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 - [x] stdlib/io.llt: read-file, read-lines, println, println-val
 - [x] doc/12-tooling.md: Object Capability Model section
 - [x] Corpus/CLI tests: emit_returns_null, emit_basic, env_missing, env_no_env_flag, revocable_and_revoke, lines_basic
-- [ ] include cap-qualification: deferred to io-include-cap sprint
+- [x] include cap-qualification: completed in io-include-cap sprint
+
+### io-include-cap: Cap-Qualified Include
+
+- [x] Modify `$include` to optionally take DirCap first arg: `[include pwd "config.llt"]`
+- [x] Cache by `(st_dev, st_ino)` (already implemented)
+- [x] Backward compat: `[include "path"]` still works using base_dir
+- [x] doc/11a-builtins.md: updated include arity 1→1-3, documented all call patterns
+- [x] CLI tests: include_with_dircap, include_with_dircap_and_hash

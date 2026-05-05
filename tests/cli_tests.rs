@@ -1154,6 +1154,78 @@ fn include_underscore_desugar() {
     assert_eq!(json, serde_json::json!({"result": "Alice"}));
 }
 
+#[test]
+fn include_with_dircap() {
+    // Test the new cap-qualified include pattern: [include $cap "path"]
+    let dir = make_include_dir("dircap_include");
+
+    // Create a helper file in the test directory
+    fs::write(dir.path().join("data.llt"), "[value: 42]").unwrap();
+
+    // Main file uses dir-cap to create a capability, then includes via that cap.
+    // Use a scope chain to avoid serializing the DirCap itself.
+    let main_src = format!(
+        r#"[dir-cap "{}"]
+---
+[include % "data.llt"]"#,
+        dir.path().display()
+    );
+    fs::write(dir.path().join("main.llt"), &main_src).unwrap();
+
+    let output = Command::new(tinct_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"value": 42}));
+}
+
+#[test]
+fn include_with_dircap_and_hash() {
+    // Test cap-qualified include with integrity hash: [include $cap "path" "hash"]
+    let dir = make_include_dir("dircap_hash");
+
+    // Create a helper file
+    let content = "[value: 99]";
+    fs::write(dir.path().join("data.llt"), content).unwrap();
+
+    // Compute the blake3 hash of the content
+    let hash = blake3::hash(content.as_bytes());
+    let hash_hex = hash.to_hex();
+
+    // Main file uses dir-cap and includes with hash verification.
+    // Use a scope chain to avoid serializing the DirCap itself.
+    let main_src = format!(
+        r#"[dir-cap "{}"]
+---
+[include % "data.llt" "blake3:{}"]"#,
+        dir.path().display(),
+        hash_hex
+    );
+    fs::write(dir.path().join("main.llt"), &main_src).unwrap();
+
+    let output = Command::new(tinct_bin())
+        .args(["eval", dir.path().join("main.llt").to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"value": 99}));
+}
+
 // ---------------------------------------------------------------------------
 // --no-fs flag (sandbox filesystem access)
 // ---------------------------------------------------------------------------

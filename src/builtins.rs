@@ -1209,20 +1209,71 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::include_forbidden(call_span).into());
     }
 
-    // Accept 1 or 2 positional args; reject named args.
-    if args.is_empty() || args.len() > 2 {
+    // Accept 1, 2, or 3 positional args; reject named args.
+    // Patterns:
+    //   [include "path"]                    — backward compat, uses ctx.config.base_dir
+    //   [include "path" "hash"]             — backward compat with integrity hash
+    //   [include $cap "path"]               — cap-qualified, no hash
+    //   [include $cap "path" "hash"]        — cap-qualified with integrity hash
+    if args.is_empty() || args.len() > 3 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     reject_named("include", named, call_span)?;
 
-    let path_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let file_path_str = require_string("include", path_val, args[0].span)?;
+    // Determine if the first arg is a DirCap or a path string.
+    let first_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let (dir_cap, path_arg_idx, hash_arg_idx) = match &first_val {
+        Value::DirCap(dir) => {
+            // New pattern: [include $cap "path"] or [include $cap "path" "hash"]
+            if args.len() == 1 {
+                return Err(EvalError::arity_mismatch(2, 1, call_span).into());
+            }
+            (Rc::clone(dir), 1, 2)
+        }
+        Value::RevocableDirCap { inner, revoked } => {
+            // Check if the cap has been revoked
+            if revoked.get() {
+                return Err(
+                    EvalError::new("capability has been revoked".to_string(), call_span).into(),
+                );
+            }
+            if args.len() == 1 {
+                return Err(EvalError::arity_mismatch(2, 1, call_span).into());
+            }
+            (Rc::clone(inner), 1, 2)
+        }
+        Value::String(_) => {
+            // Old pattern: [include "path"] or [include "path" "hash"]
+            // Use the context's base_dir - need to wrap it in Rc
+            // We'll open "." to get a handle we can pass around
+            let base_dir_handle = ctx.config.base_dir.open_dir(".").map_err(|e| {
+                EvalError::include_io_error("(base_dir)".to_string(), e.to_string(), call_span)
+            })?;
+            (Rc::new(base_dir_handle), 0, 1)
+        }
+        _ => {
+            return Err(EvalError::type_mismatch(
+                "DirCap or String",
+                first_val.type_name(),
+                args[0].span,
+            )
+            .into());
+        }
+    };
 
-    // Parse optional integrity hash from the second argument.
+    // Extract the path from the appropriate argument
+    let path_val = if path_arg_idx == 0 {
+        first_val
+    } else {
+        materialize(&args[path_arg_idx], Some(&call_span), &ctx, depth)?
+    };
+    let file_path_str = require_string("include", path_val, args[path_arg_idx].span)?;
+
+    // Parse optional integrity hash from the hash argument position.
     // owned_hash = Some((algo, hexdigest)) when a hash was provided.
-    let owned_hash: Option<(String, String)> = if args.len() == 2 {
-        let hash_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-        let hash_str = require_string("include", hash_val, args[1].span)?;
+    let owned_hash: Option<(String, String)> = if hash_arg_idx < args.len() {
+        let hash_val = materialize(&args[hash_arg_idx], Some(&call_span), &ctx, depth)?;
+        let hash_str = require_string("include", hash_val, args[hash_arg_idx].span)?;
         parse_integrity_hash(&hash_str, call_span)?; // validates format
         let colon_pos = hash_str.find(':').unwrap(); // safe: validated above
         Some((
@@ -1239,7 +1290,7 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     // Open the file using cap-std. Absolute paths are rejected by cap-std (RESOLVE_BENEATH).
-    let base_dir = &ctx.config.base_dir;
+    let base_dir = &dir_cap;
     let fd = base_dir.open(&file_path_str).map_err(|e| {
         EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
     })?;
@@ -1379,8 +1430,8 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // no cleanup is needed.
     let parent_path = std::path::Path::new(&file_path_str).parent();
     let included_dir = if let Some(pp) = parent_path.filter(|p| !p.as_os_str().is_empty()) {
-        // Open a subdirectory relative to base_dir
-        base_dir.open_dir(pp).map_err(|e| {
+        // Open a subdirectory relative to dir_cap
+        dir_cap.open_dir(pp).map_err(|e| {
             EvalError::include_io_error(
                 format!("{} (parent directory)", file_path_str),
                 e.to_string(),
@@ -1388,10 +1439,10 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )
         })?
     } else {
-        // No parent directory means the file is in base_dir itself
+        // No parent directory means the file is in dir_cap itself
         // We need to clone the Dir handle. cap-std Dir doesn't implement Clone,
-        // so we reopen it using try_clone() or by opening "." relative to base_dir.
-        base_dir.open_dir(".").map_err(|e| {
+        // so we reopen it using try_clone() or by opening "." relative to dir_cap.
+        dir_cap.open_dir(".").map_err(|e| {
             EvalError::include_io_error(
                 format!("{} (reopen base_dir)", file_path_str),
                 e.to_string(),
