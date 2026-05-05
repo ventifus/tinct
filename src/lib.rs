@@ -1120,4 +1120,66 @@ mod tests {
             "snippet should include line number format 'N | ...', got: {snippet_text}"
         );
     }
+
+    /// Integration test: an error whose `definition_span` covers multiple lines renders
+    /// ALL spanned lines in the snippet (no truncation with "...").
+    ///
+    /// We construct a `Span` directly over a known multi-line source string and call
+    /// `render_span_snippet` — the same call that `main.rs` and the REPL make. This
+    /// verifies the full pipeline from span → snippet without needing an eval error
+    /// that naturally produces a multi-line span (which requires syntactic constructs
+    /// the evaluator doesn't currently tag that way).
+    #[test]
+    fn test_multiline_span_snippet_shows_all_lines() {
+        use crate::ast::{Position, Span};
+
+        // A three-line expression:
+        //   line 1: "let x = ["
+        //   line 2: "  missing_key"
+        //   line 3: "]"
+        let source = "let x = [\n  missing_key\n]";
+
+        // Span covering the entire expression: line 1 col 1 → line 3 col 2.
+        let span = Span {
+            start: Position {
+                offset: 0,
+                line: 1,
+                column: 1,
+            },
+            end: Position {
+                offset: 23,
+                line: 3,
+                column: 2,
+            },
+        };
+
+        let snippet = error::render_span_snippet(source, span)
+            .expect("render_span_snippet should return Some for a real multi-line span");
+
+        // All three lines must appear.
+        assert!(
+            snippet.contains("let x = ["),
+            "snippet must contain first line, got:\n{snippet}"
+        );
+        assert!(
+            snippet.contains("missing_key"),
+            "snippet must contain middle line, got:\n{snippet}"
+        );
+        assert!(
+            snippet.contains(']'),
+            "snippet must contain last line, got:\n{snippet}"
+        );
+
+        // Caret underline must be present.
+        assert!(
+            snippet.contains('^'),
+            "snippet must contain caret, got:\n{snippet}"
+        );
+
+        // The old "..." truncation marker must NOT appear.
+        assert!(
+            !snippet.contains("..."),
+            "snippet must NOT contain '...' truncation; all lines should be shown, got:\n{snippet}"
+        );
+    }
 }
