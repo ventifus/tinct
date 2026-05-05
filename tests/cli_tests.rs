@@ -2183,3 +2183,259 @@ fn multi_file_pipeline_with_emit() {
     // emit writes to stdout directly without JSON serialization
     assert_eq!(stdout, "Hello, Alice!");
 }
+
+// ---------------------------------------------------------------------------
+// Literate mode: tinct literate tangle / eval / weave
+// ---------------------------------------------------------------------------
+
+/// Helper: write a temporary Markdown file and return its path + guard.
+fn write_temp_md(label: &str, content: &str) -> (PathBuf, TempDir) {
+    let dir = TempDir::new(label);
+    let path = dir.path().join(format!("{label}.md"));
+    fs::write(&path, content).expect("failed to write temp markdown file");
+    (path, dir)
+}
+
+#[test]
+fn literate_tangle_single_block() {
+    let md = "# Docs\n\n```tinct\n[x: 1]\n```\n";
+    let (path, _dir) = write_temp_md("literate_tangle_single", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "tangle", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[x: 1]"),
+        "expected block content in output, got: {stdout}"
+    );
+}
+
+#[test]
+fn literate_tangle_two_blocks_joined_with_separator() {
+    let md = concat!(
+        "# Config\n\n",
+        "Base config:\n\n",
+        "```tinct\n",
+        "[\n",
+        "    base-url: \"https://api.example.com\"\n",
+        "    timeout: 30\n",
+        "]\n",
+        "```\n\n",
+        "Filter step:\n\n",
+        "```tinct\n",
+        "[filter [fn [u] u.active] %.users]\n",
+        "```\n",
+    );
+    let (path, _dir) = write_temp_md("literate_tangle_two", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "tangle", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Both blocks should be present separated by ---
+    assert!(stdout.contains("base-url"), "expected base-url in output");
+    assert!(stdout.contains("---"), "expected --- separator in output");
+    assert!(
+        stdout.contains("[filter"),
+        "expected filter block in output"
+    );
+}
+
+#[test]
+fn literate_tangle_llt_language_tag() {
+    // ```llt is also recognized as a tinct block
+    let md = "# Docs\n\n```llt\n[y: 42]\n```\n";
+    let (path, _dir) = write_temp_md("literate_tangle_llt", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "tangle", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[y: 42]"),
+        "expected [y: 42] in output, got: {stdout}"
+    );
+}
+
+#[test]
+fn literate_tangle_no_blocks_produces_empty_output() {
+    // A Markdown file with no tinct blocks produces empty tangle output.
+    let md = "# Title\n\nJust prose, no code.\n\n```rust\nfn main() {}\n```\n";
+    let (path, _dir) = write_temp_md("literate_tangle_empty", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "tangle", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // tangle of empty block list should produce no meaningful content
+    assert!(
+        stdout.trim().is_empty(),
+        "expected empty output for no-block markdown, got: {stdout}"
+    );
+}
+
+#[test]
+fn literate_eval_single_block() {
+    // A single tinct block with a simple dict expression.
+    let md = "# Config\n\n```tinct\n[x: 1  y: 2]\n```\n";
+    let (path, _dir) = write_temp_md("literate_eval_single", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected JSON output");
+    assert_eq!(json, serde_json::json!({"x": 1, "y": 2}));
+}
+
+#[test]
+fn literate_eval_two_blocks_pipeline() {
+    // Second block receives first block's output as %.
+    let md = concat!(
+        "```tinct\n[port: 8080  workers: 4]\n```\n\n",
+        "Double the workers:\n\n",
+        "```tinct\n[port: %.port  double-workers: [* %.workers 2]]\n```\n",
+    );
+    let (path, _dir) = write_temp_md("literate_eval_pipeline", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected JSON output");
+    assert_eq!(json, serde_json::json!({"port": 8080, "double-workers": 8}));
+}
+
+#[test]
+fn literate_eval_no_blocks_is_error() {
+    // eval on a file with no tinct blocks should fail with a clear error.
+    let md = "# No code here\n\nJust prose.\n";
+    let (path, _dir) = write_temp_md("literate_eval_empty", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when no tinct blocks present"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no tinct code blocks"),
+        "expected error about missing blocks, got: {stderr}"
+    );
+}
+
+#[test]
+fn literate_weave_outputs_markdown_with_comments() {
+    // weave should output the original Markdown with result comments after each block.
+    let md = "# Config\n\n```tinct\n[x: 10]\n```\n";
+    let (path, _dir) = write_temp_md("literate_weave_basic", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Original Markdown content preserved
+    assert!(stdout.contains("# Config"), "expected original heading");
+    assert!(
+        stdout.contains("[x: 10]"),
+        "expected original block content"
+    );
+    // Result comment appended after the closing fence
+    assert!(
+        stdout.contains("tinct-result:"),
+        "expected tinct-result comment in weave output, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("10"),
+        "expected value 10 in weave result comment, got: {stdout}"
+    );
+}
+
+#[test]
+fn literate_weave_no_blocks_outputs_markdown_unchanged() {
+    // weave on a file with no tinct blocks should pass through the Markdown unchanged.
+    let md = "# Just prose\n\nNo code blocks here.\n";
+    let (path, _dir) = write_temp_md("literate_weave_empty", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("# Just prose"), "expected original content");
+    assert!(
+        stdout.contains("No code blocks here."),
+        "expected original prose"
+    );
+}
+
+#[test]
+fn literate_missing_file_is_error() {
+    let output = Command::new(tinct_bin())
+        .args(["literate", "tangle", "/tmp/nonexistent_literate_test.md"])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected failure for missing file"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error reading file") || stderr.contains("No such file"),
+        "expected file-not-found error, got: {stderr}"
+    );
+}

@@ -3849,3 +3849,10 @@ See doc/whatif/templating.md (State: Accepted — 2026-05-04).
 - [x] doc/11a-builtins.md: emit builtin documented
 - [x] doc/09-documents.md: §Multi-File Pipeline section added
 - [x] CLI tests: multi_file_pipeline, multi_file_pipeline_with_emit
+
+### templating-phase4: Literate Mode
+
+- [x] src/literate.rs: extract_code_blocks + tangle (with 20 unit tests)
+- [x] tinct literate tangle|eval|weave <file> subcommand; LiterateMode enum
+- [x] 10 CLI integration tests covering all 3 modes
+- [x] doc/09-documents.md: §Literate Mode documentation

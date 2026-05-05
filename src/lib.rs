@@ -49,6 +49,8 @@ pub(crate) mod builtins_string;
 pub(crate) mod builtins_math;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
+// Literate tinct: extract and evaluate tinct code blocks from Markdown files.
+pub mod literate;
 // REPL (Read-Eval-Print Loop).
 #[cfg(feature = "repl")]
 pub mod repl;
