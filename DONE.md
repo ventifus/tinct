@@ -3119,6 +3119,13 @@ Core error model improvements. Foundation for all later error work.
 - [x] Add dual-span pattern to access chain errors — fixed eval_dot_access, eval_bracket_access, eval_range_access (`src/eval.rs`) [Major, span-integrity-checker]
 - [x] Fix builtin errors using call_span for definition-site — fixed 6 builtins ($to-int, $to-float, $error, $from-json, $include, $join) to use args[i].span as definition_span (`src/builtins.rs`) [Major, span-integrity-checker]
 - [x] Fix builtin helper functions materializing with `None` mat_span instead of operand span — `expect_one_arg`, `extract_num_pair`, `require_dict`, `require_string` now pass `Some(&call_span)` to materialize. (`src/builtins.rs`) [Major, span-integrity-checker]
+
+### quote: [quote expr] Special Form
+
+- [x] Expr::Quote variant + quote keyword denylist + parser special form handling
+- [x] Evaluator: Quote → ast_to_dict_expr with minimal opts, returns dict
+- [x] All exhaustive matches updated (typecheck, formatter, desugar, resolve, eval_materialize, lsp)
+- [x] Corpus tests: quote_literal, quote_dot_access, quote_type_of
 - [x] Fix `TypeMismatch::context` field always `None` — added context strings to 8 call sites: $try, $apply (builtins.rs), dot access, bracket access, range access (eval.rs) [Major, span-integrity-checker]
 
 ### error-typeassert: TypeAssert Error Reporting (Post typeassert-structural Sprint) — Final Items

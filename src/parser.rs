@@ -342,6 +342,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
                 node: adjust_annotation(annotation.node, base),
             },
         },
+        Expr::Quote(inner) => Expr::Quote(Box::new(adjust_spanned_expr(*inner, base))),
     }
 }
 
@@ -819,6 +820,11 @@ enum StackFrame {
     /// Type assertion: `[@Annotation expr]`
     TypeAssert {
         annotation: Option<Spanned<Annotation>>,
+        expr: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Quote special form: `[quote expr]`
+    Quote {
         expr: Option<Spanned<Expr>>,
         span_start: Position,
     },
@@ -1360,6 +1366,26 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1;
                         continue;
                     }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "quote"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Quote form: [quote expr]
+                        // (Not a quote form if the keyword is followed by colon: [quote: x] is a dict.)
+                        // (depth already checked above)
+                        stack.push(StackFrame::Quote {
+                            expr: None,
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "quote" token
+                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += 1;
+                        continue;
+                    }
                     Some((Token::At, _)) | Some((Token::ImmediateAt, _)) => {
                         // Type-assert form: [@Annotation expr]
                         // (depth already checked above)
@@ -1709,6 +1735,26 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 &mut stack,
                                 &mut current_document_expressions,
                                 spanned_type_assert,
+                            ) {
+                                close_bracket_recover!(push_err);
+                            }
+                        }
+                    },
+
+                    StackFrame::Quote { expr, span_start } => match expr {
+                        None => {
+                            close_bracket_recover!(ParseError {
+                                message: "quote form requires an expression".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        Some(expr) => {
+                            let quote_expr = Expr::Quote(Box::new(expr));
+                            let spanned_quote = Spanned::new(quote_expr, dict_span(span_start));
+                            if let Err(push_err) = push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_quote,
                             ) {
                                 close_bracket_recover!(push_err);
                             }
@@ -2201,14 +2247,14 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     doc_span,
                 ));
 
-                // Parse section header (Phase 1): consume tokens until Newline
+                // Parse section header (Phase 1): consume tokens until Newline or Semicolon
                 // Format: --- %name@Type expects: Type
                 // This header applies to the NEXT document
                 i += 1;
 
                 while i < token_vec.len() {
                     match &token_vec[i].node {
-                        Token::Newline => {
+                        Token::Newline | Token::Semicolon => {
                             // End of header
                             i += 1;
                             break;
@@ -2693,6 +2739,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::Fn { span_start, .. } => *span_start,
             StackFrame::TypeAlias { span_start, .. } => *span_start,
             StackFrame::TypeAssert { span_start, .. } => *span_start,
+            StackFrame::Quote { span_start, .. } => *span_start,
             StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
@@ -2881,6 +2928,16 @@ fn pop_last_value_from_frame(
                 })
             }
         }
+        Some(StackFrame::Quote { ref mut expr, .. }) => {
+            if let Some(e) = expr.take() {
+                Ok(e)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
             message: "pipe operator '|' requires a right-hand expression".to_string(),
             span: Some(span),
@@ -2949,6 +3006,19 @@ fn push_expr_to_parent(
                     });
                 }
                 *type_assert_expr = Some(expr);
+                Ok(())
+            }
+            Some(StackFrame::Quote {
+                expr: ref mut quote_expr,
+                ..
+            }) => {
+                if quote_expr.is_some() {
+                    return Err(ParseError {
+                        message: "quote form can only have one expression".to_string(),
+                        span: Some(expr.span),
+                    });
+                }
+                *quote_expr = Some(expr);
                 Ok(())
             }
             Some(StackFrame::Pipe { lhs, span_start }) => {

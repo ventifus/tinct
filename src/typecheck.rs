@@ -18,6 +18,10 @@ use crate::types::{
 /// are sufficient as keys; the full `Span` source text is not needed.
 pub type TypeMap = HashMap<(usize, usize), Type>;
 
+/// Map from variable/parameter name to its documentation string.
+/// Populated during type checking by extracting `doc:` properties from annotations.
+pub type DocMap = HashMap<String, String>;
+
 /// Type-check a parsed [`File`].
 ///
 /// Returns `Ok(())` if no type errors are found, or `Err(errors)` with the list of
@@ -163,11 +167,16 @@ fn reset_expr(expr: &Spanned<Expr>) {
 
         // Annotated: annotations don't contain TypeAssert nodes, so nothing to reset
         Expr::Annotated { .. } => {}
+
+        // Quote: recurse into the inner expression
+        Expr::Quote(inner) => {
+            reset_expr(inner);
+        }
     }
 }
 
-/// Type-check a file, returning both errors and a map from expression spans to
-/// inferred types. The type map is populated even when errors occur, covering
+/// Type-check a file, returning errors, a type map, and a doc map for LSP features.
+/// The type map and doc map are populated even when errors occur, covering
 /// every expression that was successfully inferred.
 ///
 /// Automatically resets elaboration state before typechecking, allowing
@@ -178,7 +187,7 @@ fn reset_expr(expr: &Spanned<Expr>) {
 ///
 /// **`desugar::desugar_file` must be called on the [`File`] before passing it here.**
 /// See [`typecheck_file`] for details.
-pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
+pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap, DocMap) {
     typecheck_file_with_types_and_env(file, Rc::new(TypeEnv::with_builtins()))
 }
 
@@ -190,7 +199,7 @@ pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
 pub fn typecheck_file_with_types_and_env(
     file: &File,
     initial_env: Rc<TypeEnv>,
-) -> (Vec<TypeError>, TypeMap) {
+) -> (Vec<TypeError>, TypeMap, DocMap) {
     // Reset elaboration state to allow re-typechecking cached ASTs
     reset_elaboration(file);
 
@@ -198,6 +207,7 @@ pub fn typecheck_file_with_types_and_env(
     let mut env = initial_env;
     let mut state = InferState::new();
     let mut type_map = TypeMap::new();
+    let mut doc_map = DocMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
@@ -228,7 +238,76 @@ pub fn typecheck_file_with_types_and_env(
         }
     }
 
-    (errors, type_map)
+    // Extract doc strings from all documents
+    extract_doc_strings(file, &mut doc_map);
+
+    (errors, type_map, doc_map)
+}
+
+/// Extract documentation strings from parameter and function annotations.
+///
+/// Walks the AST looking for `doc:` properties in `@[...]` annotations.
+/// Populates the doc_map with entries like `param_name -> "doc string"`.
+fn extract_doc_strings(file: &File, doc_map: &mut DocMap) {
+    for document in &file.documents {
+        for expr in &document.node.expressions {
+            extract_doc_from_expr(&expr.node, doc_map);
+        }
+    }
+}
+
+/// Recursively extract doc strings from an expression tree.
+fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap) {
+    match expr {
+        Expr::Fn { params, body, .. } => {
+            // Extract doc strings from parameter annotations
+            for param in params {
+                if let Some(ref ann) = param.node.annotation {
+                    if let Some(doc_value) = ann.node.get_property("doc") {
+                        if let Expr::Str(doc_string) = &doc_value.node {
+                            doc_map.insert(param.node.name.clone(), doc_string.clone());
+                        }
+                    }
+                }
+            }
+            // Recurse into function body
+            extract_doc_from_expr(&body.node, doc_map);
+        }
+        Expr::Dict(entries) => {
+            for entry in entries {
+                extract_doc_from_expr(&entry.node.value.node, doc_map);
+            }
+        }
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            extract_doc_from_expr(&func.node, doc_map);
+            for arg in args {
+                extract_doc_from_expr(&arg.node, doc_map);
+            }
+            for named_arg in named_args {
+                extract_doc_from_expr(&named_arg.node.value.node, doc_map);
+            }
+        }
+        Expr::DotAccess { expr: target, .. } => {
+            extract_doc_from_expr(&target.node, doc_map);
+        }
+        Expr::TypeAssert { expr: inner, .. } => {
+            extract_doc_from_expr(&inner.node, doc_map);
+        }
+        Expr::TypeAlias(inner) => {
+            extract_doc_from_expr(&inner.node, doc_map);
+        }
+        Expr::Pipe { lhs, rhs } => {
+            extract_doc_from_expr(&lhs.node, doc_map);
+            extract_doc_from_expr(&rhs.node, doc_map);
+        }
+        // Literals and VarRef have no children to recurse into
+        _ => {}
+    }
 }
 
 /// Helper for tests that don't need pipeline/named types.
@@ -707,6 +786,16 @@ fn infer_expr(
                 &mut row_ann_mapping_opt,
             )
             .map_err(|e| vec![e])
+        }
+
+        Expr::Quote(_inner) => {
+            // [quote expr] produces a dict representing the AST.
+            // Type: Dict (open record with fresh row variable, like @Dict).
+            let (rho_name, rho_level) = state.fresh_row_var_name();
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+                tail: RowTail::RowVar(rho_name, rho_level),
+            }))
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(
@@ -7622,7 +7711,7 @@ mod tests {
         crate::desugar::desugar_file(&mut file.node);
 
         // First typecheck: should succeed
-        let (errors1, type_map1) = typecheck_file_with_types(&file.node);
+        let (errors1, type_map1, _doc_map1) = typecheck_file_with_types(&file.node);
         assert!(
             errors1.is_empty() || errors1.iter().all(|e| !e.message.contains("panic")),
             "First typecheck should not panic"
@@ -7633,7 +7722,7 @@ mod tests {
         );
 
         // Second typecheck on the same AST: should not panic due to reset_elaboration
-        let (errors2, type_map2) = typecheck_file_with_types(&file.node);
+        let (errors2, type_map2, _doc_map2) = typecheck_file_with_types(&file.node);
         assert!(
             errors2.is_empty() || errors2.iter().all(|e| !e.message.contains("panic")),
             "Second typecheck should not panic"
@@ -7644,7 +7733,7 @@ mod tests {
         );
 
         // Third typecheck to be extra sure
-        let (errors3, _type_map3) = typecheck_file_with_types(&file.node);
+        let (errors3, _type_map3, _doc_map3) = typecheck_file_with_types(&file.node);
         assert!(
             errors3.is_empty() || errors3.iter().all(|e| !e.message.contains("panic")),
             "Third typecheck should not panic"
@@ -7663,7 +7752,7 @@ mod tests {
         let input = "$undefined";
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
-        let (errors, type_map) = typecheck_file_with_types(&file.node);
+        let (errors, type_map, _doc_map) = typecheck_file_with_types(&file.node);
 
         // Must have an error (undefined variable)
         assert!(!errors.is_empty(), "expected type error for $undefined");

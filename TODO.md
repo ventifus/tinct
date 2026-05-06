@@ -92,15 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### quote: `[quote expr]` Special Form
-
-See doc/02-syntax.md §Quasiquoting, doc/08-evaluation.md §Quote Semantics. **Depends on:** `ast-dict-core`.
-
-- [ ] `quote` added to keyword denylist; `Expr::Quote(Box<Spanned<Expr>>)` AST variant (`src/lexer.rs`, `src/parser.rs`, `src/ast.rs`)
-- [ ] Evaluator: `Expr::Quote` → `ast_to_dict_expr(inner, AstToDictOpts::minimal())` → return `Value::Dict`; no `unquote` handling yet (opaque Phase 2) (`src/eval.rs`)
-- [ ] Type checker: `Quote → Dict`; formatter: `[quote ...]` round-trip; handle new variant in `eval_deep.rs`, `eval_materialize.rs`, `lsp/analysis.rs`, `lsp/document.rs` (`src/typecheck.rs`, `src/formatter.rs`, etc.)
-- [ ] Tests: `[quote 42]` → literal dict; `[quote config.host]` → dot-access dict; `[type-of [quote x]]` → `"dict"` (`tests/corpus/eval/`)
-
 ### ast-dict-source: AST Dict Source Info + Comments
 
 See doc/15-ast.md §AST Dict Schema. No blocking dependencies (extends `ast-dict-core`).
@@ -184,7 +175,7 @@ Gaps between the macros-cluster plan (`doc/whatif/plans/macros-cluster.md`) and 
 Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and the theoretical requirements established by the cited papers. Track here; resolve during the relevant sprint.
 
 - [x] C5 divergent values in coverage analysis: the C5 exhaustiveness sprint now implements the full Maranget (2007) usefulness algorithm with lazy ⊥-as-constructor extension, yielding the Karachalias et al. (2015) three-way partition (Covered/Divergent/Uncovered). Coverage algorithm in Rust (`src/coverage.rs`), exposed as `check-coverage` builtin. Inaccessible-RHS warnings from divergent-useful detection. (`doc/whatif/plans/typing-cluster.md` C5) [Minor, computer-scientist train]
-- [ ] D2 Marques et al. soundness unproven: the D2 algebraic subtyping sprint cites Marques et al. (2024) as a "direct implementation template" for row variables under algebraic subtyping. However, the paper explicitly states soundness and completeness proofs "do not have yet done" (§1). Decision: proceed with Marques et al. (Path A), accepting the risk. Risk is documented in typing-cluster.md D2 §Formal model and §Risk. Alternative identified for future research: Chau & Parreaux (POPL 2026) BAS — see §Language Design Research. (`doc/whatif/plans/typing-cluster.md` D2) [Major, computer-scientist train]
+- [x] D2 Marques et al. soundness unproven: the D2 algebraic subtyping sprint cites Marques et al. (2024) as a "direct implementation template" for row variables under algebraic subtyping. However, the paper explicitly states soundness and completeness proofs "do not have yet done" (§1). Decision: proceed with Marques et al. (Path A), accepting the risk. Risk is documented in typing-cluster.md D2 §Formal model and §Risk. Alternative identified for future research: Chau & Parreaux (POPL 2026) BAS — see §Language Design Research. (`doc/whatif/plans/typing-cluster.md` D2) [Major, computer-scientist train]
 - [x] D4 Greenman et al. venue correction: the §References section lists "ICFP '19" for Greenman, Felleisen & Dimoulas (2019). The correct venue is OOPSLA '19 (Proc. ACM Program. Lang. 3, OOPSLA, Article 122, doi:10.1145/3360548). Fixed in typing-cluster.md, gradual-typing.md, and doc/17-references.md. (`doc/whatif/plans/typing-cluster.md` §References) [Nit, computer-scientist train]
 - [x] Occurrence typing tasks missing: narrowing added as proposal #12 to typing-cluster plan with two sprints: B5a `narrowing-basic` (8 tasks: `if` as type-level special form, `Narrowing` enum, `extract_narrowings`, environment forking, branch type join, conjunction, type map, tests) and B5b `narrowing-predicates` (5 tasks: `int?`/`str?`/etc. direct narrowing, `num?` supertype, `cond` narrowing, tests). Wired into dependency graph, implementation calendar (weeks 7-8), and cross-cutting concerns (§5 items 6-7). (`doc/whatif/plans/typing-cluster.md` B5a, B5b) [Minor, computer-scientist train]
 - [x] B4 constraint duplication during instantiation: proof obligation now stated in typing-cluster.md §5 Cross-Cutting Concerns item 4 — each fresh variable carries exactly the constraints from the generalized scheme (Jones 1995, §8.3), not accumulated constraints from the current inference state. (`doc/whatif/plans/typing-cluster.md` B4) [Minor, computer-scientist train]

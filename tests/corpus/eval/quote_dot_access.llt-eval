@@ -1,0 +1,3 @@
+[quote config.host]
+===
+Dict({"type": String("dot-access"), "target": Dict({"type": String("var"), "name": String("config"), "span": Dict({"start": ..., "end": ...})}), "field": String("host"), "span": Dict({"start": Dict({"line": ..., "col": ..., "offset": ...}), "end": Dict({"line": ..., "col": ..., "offset": ...})})})

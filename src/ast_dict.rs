@@ -542,6 +542,20 @@ fn expr_to_thunk_id(
             );
         }
 
+        Expr::Quote(inner) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("quote".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("expr".into()),
+                expr_to_thunk_id(&inner.node, inner.span, opts, ctx)?,
+            );
+        }
+
         Expr::Error(error_span) => {
             dict.insert(
                 Key::String("type".into()),
