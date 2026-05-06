@@ -1134,13 +1134,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 }
                 Err(e) => {
                     // Inner materialization error propagates
+                    let e = decorate(e);
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else {
                         thunk.set_state(ThunkState::Guarded {
                             inner,
                             expected,
-                            field_path: Box::new((*field_path).clone()),
+                            field_path,
                             guard_span,
                         });
                     }

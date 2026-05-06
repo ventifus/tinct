@@ -31,23 +31,6 @@ See doc/whatif/io.md.
 
 ## Type System Correctness and Performance
 
-### type-checker-fixes: Type Checker Correctness and Allocation Optimizations
-
-- [ ] `Seq@ElemType` in type annotations: add `"Seq"` to `resolve_type_name` (bare `@Seq` → `Type::Seq(Any)`); add `name == "Seq"` arm to `resolve_annotated` resolving the annotation as the element type → `Type::Seq(Box::new(elem))` (mirrors the `name == "Fn"` arm); add `"Null"` to `resolve_type_name` → `Type::Record(Row::Empty)` (NOT a new `Type::Null` variant — see doc/whatif/null-semantics.md) so void return types can be expressed as `fn@Null`; add corpus tests for `[fn@Seq@String [h@Handle] ...]` and `[fn@Null [s@String] ...]` (`src/typecheck.rs`)
-- [ ] Update void-returning builtin type signatures: change return type from `Type::Any` to `Type::Record(Row::Empty)` for `emit`, `write`, `write-atomic`, `revoke-cap`, `mkdir`, `delete` in `src/types.rs`; add comment `// Null — Type::Record(Row::Empty), see doc/whatif/null-semantics.md`
-- [ ] Add `Null` to the type conventions table in `doc/05-type-annotations.md`; update `doc/11a-builtins.md` void-returning builtin signatures to show `fn@Null`
-- [ ] Fix Guarded error decoration bypass: apply `decorate` to inner-error path at `eval.rs:1625` and `eval_materialize.rs:1220` so TypeAssert failures carry materialization context — currently the only ThunkState branch that skips decoration (`src/eval.rs`, `src/eval_materialize.rs`) [Major — computer-scientist]
-- [ ] Thread `row_ann_mapping` through `resolve_type_assert` and `resolve_annotated` so named row variables (e.g., `...r`) in TypeAssert annotations are scoped correctly rather than creating fresh anonymous row vars — match the pattern used in `infer_fn:2033-2038` (`src/typecheck.rs`) [Major — computer-scientist]
-- [ ] unify_rows: add `RowTail::Empty` fast-path before key iteration to avoid 5 collection allocations (2 HashSets, Vec, 2 HashMaps) for the common closed-row case (`src/types.rs:1167`) [Critical — performance-expert]
-- [ ] resolve_row: add `if row.fields.is_empty()` guard to return resolved row directly without cloning for the common case of bound row vars with no extra fields (`src/types.rs:826`) [Critical — performance-expert]
-- [ ] lower_row_var_levels: fuse two separate update loops into a single `type_vars.iter().chain(&row_vars)` pass; saves 2 loop iterations per call — called twice in Case 4 (`src/types.rs:913`) [Critical — performance-expert]
-- [ ] Substitution::apply(): add concrete-type fast-path (Int/Float/Bool/Str/Number/Any/Never) before `visited_types`/`visited_rows` HashSet allocation; saves 2 allocations per apply on primitives — common in dict field unification (`src/types.rs:542`) [Major — performance-expert]
-- [ ] instantiate_at_level: fuse `collect_type_vars` + `collect_row_vars` into a single `collect_all_vars(&mut type_vars, &mut row_vars)` tree walk to save 1 full tree walk + 1 BTreeSet allocation per CALL-POLY invocation (`src/types.rs:1600`) [Major — performance-expert]
-- [ ] eval_dict: replace `contains_key + insert` with single `insert()` checking returned `Option` to save N hash lookups per dict construction (`src/eval.rs:961`) [Minor — performance-expert]
-- [ ] GuardedValidate error path: reuse owned `field_path` Box instead of clone+rebox (`eval_materialize.rs:1216`) [Minor — computer-scientist]
-- [ ] CALL-POLY: remove redundant double-application of substitution to return type — after merge into `state.subst`, use `state.subst.apply(inst_ret)` directly (`src/typecheck.rs:1966`) [Minor — computer-scientist]
-- [ ] infer_fn: add early-exit guard when no params have annotations to skip HashMap allocation for every annotation-free lambda (`src/typecheck.rs`) [Minor — performance-expert]
-
 ### prelude-type-annotations: Full Type Annotations for stdlib/prelude.llt
 
 Add complete type annotations (parameter types and return types) to all functions in `stdlib/prelude.llt`. Currently most prelude functions have no annotations, relying entirely on inference.

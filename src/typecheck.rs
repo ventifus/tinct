@@ -680,8 +680,21 @@ fn infer_expr(
         ),
 
         Expr::Annotated { name, annotation } => {
-            resolve_annotated(name, annotation, env, expr.span, state, &mut None)
-                .map_err(|e| vec![e])
+            // Create per-annotation-scope mappings for type and row variables.
+            let mut ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
+            let mut row_ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
+            let mut ann_mapping_opt = ann_mapping.as_mut();
+            let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
+            resolve_annotated(
+                name,
+                annotation,
+                env,
+                expr.span,
+                state,
+                &mut ann_mapping_opt,
+                &mut row_ann_mapping_opt,
+            )
+            .map_err(|e| vec![e])
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(
@@ -1595,12 +1608,11 @@ fn check_call_with_scheme(
                     state.subst.row_map.insert(k.clone(), row.clone());
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
-                // Apply state.subst only if non-empty (performance optimization)
-                if state.subst.is_empty() {
-                    Ok(subst.apply(ret))
-                } else {
-                    Ok(state.subst.apply(&subst.apply(ret)))
-                }
+                // After merging local subst into state.subst, state.subst is a superset of subst.
+                // Applying state.subst directly is sufficient — a prior double-application
+                // (subst.apply then state.subst.apply) was redundant because state.subst already
+                // contains everything subst mapped.
+                Ok(state.subst.apply(ret))
             } else {
                 // Zero-param: no arguments to unify, return type needs no substitution applied
                 // from local argument unification (there are no arguments). Apply state.subst
@@ -1856,12 +1868,11 @@ fn check_call(
                     state.subst.row_map.insert(k.clone(), row.clone());
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
-                // Apply state.subst only if non-empty (performance optimization)
-                if state.subst.is_empty() {
-                    Ok(subst.apply(inst_ret))
-                } else {
-                    Ok(state.subst.apply(&subst.apply(inst_ret)))
-                }
+                // After merging local subst into state.subst, state.subst is a superset of subst.
+                // Applying state.subst directly is sufficient — a prior double-application
+                // (subst.apply then state.subst.apply) was redundant because state.subst already
+                // contains everything subst mapped.
+                Ok(state.subst.apply(inst_ret))
             } else {
                 // Zero-param polymorphic function: return the instantiated return type
                 // (not the original `ret` which contains the scheme-internal variable names)
@@ -2042,13 +2053,21 @@ fn resolve_type_assert(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
+    // Create per-annotation-scope mappings for type and row variables.
+    // Named row variables (e.g., ...r) in TypeAssert annotations are tracked correctly
+    // instead of creating fresh anonymous row vars.
+    let mut ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
+    let mut row_ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
+    let mut ann_mapping_opt = ann_mapping.as_mut();
+    let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
+
     let expected = resolve_annotation(
         &annotation.node,
         env,
         annotation.span,
         state,
-        &mut None,
-        &mut None,
+        &mut ann_mapping_opt,
+        &mut row_ann_mapping_opt,
     )
     .map_err(|e| vec![e])?;
 
@@ -2122,6 +2141,9 @@ fn resolve_type_assert(
 /// If `name == "Fn"`, interprets `$annotation` as a function type specification:
 /// - `[@Fn@RetType [Param1 Param2 ...]]` → function type with params and return type
 /// - `[@Fn@RetType]` (no param list) → zero-parameter function returning RetType
+/// If `name == "Seq"`, interprets `$annotation` as the element type:
+/// - `Seq@ElemType` (bare Annotated form) → `Type::Seq(ElemType)`
+/// - `[@Seq expr]` (TypeAssert) → checks `expr` against `Type::Seq(Any)` (element type is Any; `@ElemType` suffix is a parse error in TypeAssert position)
 /// Otherwise, resolves `$annotation` as a regular type annotation.
 fn resolve_annotated(
     name: &str,
@@ -2130,6 +2152,7 @@ fn resolve_annotated(
     span: Span,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     if name == "Fn" {
         resolve_fn_type(
@@ -2138,10 +2161,27 @@ fn resolve_annotated(
             annotation.span,
             state,
             ann_mapping,
-            &mut None,
+            row_ann_mapping,
         )
+    } else if name == "Seq" {
+        let elem = resolve_annotation(
+            &annotation.node,
+            env,
+            span,
+            state,
+            ann_mapping,
+            row_ann_mapping,
+        )?;
+        Ok(Type::Seq(Box::new(elem)))
     } else {
-        resolve_annotation(&annotation.node, env, span, state, ann_mapping, &mut None)
+        resolve_annotation(
+            &annotation.node,
+            env,
+            span,
+            state,
+            ann_mapping,
+            row_ann_mapping,
+        )
     }
 }
 
@@ -2288,6 +2328,11 @@ fn resolve_type_name(
         "Bool" => Ok(Type::Bool),
         "Number" => Ok(Type::Number),
         "Any" => Ok(Type::Any),
+        "Seq" => Ok(Type::Seq(Box::new(Type::Any))),
+        "Null" => Ok(Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::Empty,
+        })),
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Cross-kind collision check (row→type direction): if the name was already
@@ -3527,6 +3572,104 @@ mod tests {
             !matches!(result_ty, Type::Seq(_)),
             "+ should not return a Seq type"
         );
+    }
+
+    // -- Seq and Null type annotations (Task 1) --
+
+    #[test]
+    fn test_seq_annotation_bare() {
+        // Bare @Seq resolves to Type::Seq(Type::Any) in resolve_type_name
+        // Test via parameter annotation which uses resolve_annotation
+        let ty = infer("[fn [xs@Seq] $xs]");
+        match ty {
+            Type::Function { params, .. } => {
+                assert_eq!(params[0], Type::Seq(Box::new(Type::Any)));
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_seq_annotation_with_element_type() {
+        // Seq@String in a standalone Annotated expression.
+        // The syntax `Seq@String` (bare identifier with ImmediateAt) parses as
+        // Annotated{name:"Seq", annotation:Simple("String")}, which calls
+        // resolve_annotated(name="Seq", annotation=Simple("String")).
+        // Note: `@Seq@String` (with leading @) is NOT valid standalone LLT syntax —
+        // bare `@` at top level is only valid inside TypeAssert brackets `[@...]`.
+        // The correct bare form is `Seq@String` (identifier followed by ImmediateAt).
+        let ty = infer("Seq@String");
+        assert_eq!(ty, Type::Seq(Box::new(Type::Str)));
+    }
+
+    #[test]
+    fn test_null_annotation_bare() {
+        // Bare @Null resolves to Type::Record(Row::Empty) in resolve_type_name
+        let ty = infer("[fn [x@Null] $x]");
+        match ty {
+            Type::Function { params, .. } => match &params[0] {
+                Type::Record(Row { fields, tail }) => {
+                    assert!(fields.is_empty());
+                    assert_eq!(*tail, RowTail::Empty);
+                }
+                other => panic!("expected Record(Row::Empty), got {other}"),
+            },
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_null_annotation_in_type_assert() {
+        // [@Null []] should succeed (empty dict matches Null)
+        let ty = infer("[@Null []]");
+        match ty {
+            Type::Record(Row { fields, tail }) => {
+                assert!(fields.is_empty());
+                assert_eq!(tail, RowTail::Empty);
+            }
+            other => panic!("expected Record(Row::Empty), got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_null_return_annotation() {
+        // [fn@Null [s@String] []] exercises the resolve_annotation(Simple("Null")) path
+        // in infer_fn (typecheck.rs:1978) for the return annotation.
+        // Null resolves to Type::Record(Row { fields: {}, tail: RowTail::Empty }),
+        // so check_expr checks that the body [] (empty dict) satisfies that type.
+        // The function return type should be the declared Null type (empty closed record).
+        let ty = result_field("[f: [fn@Null [s@String] []]]", "f");
+        match ty {
+            Type::Function { params, ret, .. } => {
+                // Parameter should be String
+                assert_eq!(
+                    params[0],
+                    Type::Str,
+                    "param @String should resolve to Type::Str, got {:?}",
+                    params[0]
+                );
+                // Return type should be Null = empty closed record
+                match *ret {
+                    Type::Record(Row { ref fields, ref tail }) => {
+                        assert!(
+                            fields.is_empty(),
+                            "fn@Null return type should have no fields, got {:?}",
+                            fields
+                        );
+                        assert_eq!(
+                            *tail,
+                            RowTail::Empty,
+                            "fn@Null return type should be closed (RowTail::Empty), got {:?}",
+                            tail
+                        );
+                    }
+                    other => panic!(
+                        "fn@Null return type should be Record(Row::Empty), got {other}"
+                    ),
+                }
+            }
+            other => panic!("expected Function type for [fn@Null [s@String] []], got {other}"),
+        }
     }
 
     #[test]
@@ -7721,6 +7864,95 @@ mod tests {
             result.is_ok(),
             "named section binding should work, got error: {:?}",
             result.unwrap_err()
+        );
+    }
+
+    // -- row_ann_mapping threading in resolve_type_assert (Task 5) --
+
+    #[test]
+    fn test_type_assert_named_row_var_shared_within_annotation() {
+        // Exercises resolve_type_assert's row_ann_mapping (typecheck.rs:2059-2062).
+        //
+        // A TypeAssert with a Fn-type annotation where the named row variable `...r`
+        // appears in BOTH the return type and the parameter type:
+        //   [@[Fn@[result: Int ...r] [[input: String ...r]]] expr]
+        //
+        // row_ann_mapping in resolve_type_assert ensures both `...r` occurrences within
+        // this single TypeAssert annotation map to the SAME fresh row variable name.
+        // If row_ann_mapping were not threaded (the bug state), each `...r` would receive
+        // an independent anonymous row var, and the two positions would be unrelated.
+        //
+        // We verify that both positions produce the same row var name by extracting the
+        // Function type from the type_map and checking that the RowVar names match between
+        // the parameter record type and the return record type.
+        //
+        // The expression: [fn [x@[input: String ...r]] [result: 42]]
+        // satisfies the annotation [@[Fn@[result: Int ...r] [[input: String ...r]]]] because:
+        //   - param type [input: String ...r] matches the annotation's param type [input: String ...r]
+        //   - return type [result: IntLiteral(42)] <: [result: Int ...r] (subsumption, open row)
+        //
+        // If ...r is the SAME row var in both positions, unification constrains r consistently.
+        let result = check(
+            "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [x@[input: String ...r]] [result: 42]]]]"
+        );
+        assert!(
+            result.is_ok(),
+            "TypeAssert with shared named row variable in Fn annotation should type-check: {:?}",
+            result.err()
+        );
+
+        // Verify the resulting function type has matching row var names in param and return.
+        // Both the parameter open-record type and the return open-record type should have
+        // the same row variable name (because both map to the same ...r in row_ann_mapping).
+        let ty = result_field(
+            "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [x@[input: String ...r]] [result: 42]]]]",
+            "f"
+        );
+        match ty {
+            Type::Function { params, ret, .. } => {
+                let param_row_var = match &params[0] {
+                    Type::Record(Row { tail: RowTail::RowVar(name, _), .. }) => name.clone(),
+                    other => panic!(
+                        "expected param to be open record with RowVar tail, got {other}"
+                    ),
+                };
+                let ret_row_var = match ret.as_ref() {
+                    Type::Record(Row { tail: RowTail::RowVar(name, _), .. }) => name.clone(),
+                    other => panic!(
+                        "expected return to be open record with RowVar tail, got {other}"
+                    ),
+                };
+                // Both ...r occurrences in the annotation should produce the same fresh name.
+                // If row_ann_mapping were None (un-threaded), each would get an independent
+                // anonymous row var and the names would differ.
+                assert_eq!(
+                    param_row_var, ret_row_var,
+                    "named row variable ...r in param and return of the same TypeAssert annotation \
+                     should resolve to the same row variable (row_ann_mapping threading); \
+                     param row var: {param_row_var}, ret row var: {ret_row_var}"
+                );
+            }
+            other => panic!("expected Function type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_type_assert_named_row_var_independent_across_annotations() {
+        // Companion to test_type_assert_named_row_var_shared_within_annotation.
+        // Exercises that each TypeAssert gets its OWN independent row_ann_mapping scope:
+        // two sibling TypeAsserts both using `...r` should NOT share the same row variable
+        // (they are independent annotation scopes, just like outer-scope type annotation
+        // independence tested in test_fix1_outer_scope_annotations_are_independent).
+        //
+        // Both TypeAsserts should succeed independently.
+        let result = check(
+            "[x: [@[a: Int ...r] [a: 1  extra: true]]\
+             \n y: [@[a: String ...r] [a: \"hello\"  other: 42]]]"
+        );
+        assert!(
+            result.is_ok(),
+            "two independent TypeAsserts with ...r should both succeed independently: {:?}",
+            result.err()
         );
     }
 }

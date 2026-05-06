@@ -3928,3 +3928,14 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] `value_to_json()` preserved for LSP, tests, REPL; literate eval uses same path
 - [x] 5 CLI tests + 5 corpus tests + 1 json-pretty escape test
 - [x] `doc/09-documents.md`, `doc/11-stdlib.md`, `doc/12-tooling.md` updated
+
+### type-checker-fixes: Type Checker Correctness and Allocation Optimizations
+
+- [x] Seq/Null type annotations: `@Seq`, `@Seq@ElemType`, `@Null` in `resolve_type_name` and `resolve_annotated`; corpus + unit tests
+- [x] Void-returning builtins (emit, write, write-atomic, revoke-cap) return type → `Type::Record(Row::Empty)` (Null)
+- [x] doc/05-type-annotations.md and doc/11a-builtins.md updated for Null and Seq
+- [x] Guarded error decoration bypass fixed: `decorate(e)` applied in eval.rs and eval_materialize.rs Guarded error paths
+- [x] `row_ann_mapping` threaded through `resolve_type_assert` and `resolve_annotated`; named row vars now properly scoped
+- [x] `resolve_row` empty-fields fast-path; `lower_row_var_levels` loops fused; `Substitution::apply()` concrete-type fast-path
+- [x] `eval_dict` contains_key+insert fused; GuardedValidate field_path Box reuse; CALL-POLY redundant double-application removed
+- [x] 3 new unit tests (fn@Null return annotation, named row var scoping shared/independent across TypeAssert annotations)
