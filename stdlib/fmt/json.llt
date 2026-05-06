@@ -1,0 +1,83 @@
+# JSON Compact Formatter
+# Convert a tinct value to compact JSON string
+
+[
+# Internal: escape a string for JSON
+# Escapes: " \ newline tab carriage-return
+json-escape: [fn [s]
+  [replace "\r" "\\r"
+    [replace "\t" "\\t"
+      [replace "\n" "\\n"
+        [replace "\"" "\\\""
+          [replace "\\" "\\\\" s]]]]]]
+
+# Internal: quote and escape a string for JSON
+json-quote: [fn [s]
+  [str "\"" [json-escape s] "\""]]
+
+# Internal: check if dict is list-shaped (sequential integer keys 0..n-1)
+is-list?: [fn [d]
+  [if [empty? d]
+    true
+    [is-list-impl? d [keys d] 0]]]
+
+is-list-impl?: [fn [d ks i]
+  [if [>= i [length ks]]
+    true
+    [if [and [int? [get i ks]] [= [get i ks] i]]
+      [is-list-impl? d ks [+ i 1]]
+      false]]]
+
+# Internal: format a single value to JSON
+json-value: [fn [val]
+  [cond [
+    [[null? val] "null"]
+    [[bool? val] [if val "true" "false"]]
+    [[int? val] [str val]]
+    [[float? val] [str val]]
+    [[str? val] [json-quote val]]
+    [[seq? val] [error "cannot serialize Seq to JSON — use | collect for JSON array output"]]
+    [[dict? val]
+      [if [is-list? val]
+        [json-array-body val]
+        [json-dict-body val]]]
+    [true [error [str "cannot serialize " [type-of val] " to JSON"]]]
+  ]]]
+
+# Internal: format dict as JSON array
+json-array-body: [fn [d]
+  [if [empty? d]
+    "[]"
+    [str "[" [json-array-items d 0] "]"]]]
+
+json-array-items: [fn [d i]
+  [if [>= i [length d]]
+    ""
+    [str
+      [json-value [get i d]]
+      [if [< [+ i 1] [length d]] "," ""]
+      [json-array-items d [+ i 1]]]]]
+
+# Internal: format dict as JSON object
+json-dict-body: [fn [d]
+  [if [empty? d]
+    "{}"
+    [str "{" [json-dict-entries d [keys d] 0] "}"]]]
+
+json-dict-entries: [fn [d ks i]
+  [if [>= i [length ks]]
+    ""
+    [str
+      [json-quote [str [get i ks]]]
+      ":"
+      [json-value [get [get i ks] d]]
+      [if [< [+ i 1] [length ks]] "," ""]
+      [json-dict-entries d ks [+ i 1]]]]]
+
+# Public API: format value to compact JSON (returns String)
+json: [fn [val]
+  [json-value val]]
+
+# When used as a formatter pipeline stage: emit the result
+[emit [json %]]
+]

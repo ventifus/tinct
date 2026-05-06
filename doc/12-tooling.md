@@ -81,6 +81,30 @@ Layout uses speculative rendering (Oppen 1980 line-breaking, Wadler 2003 group s
 
 **Prerequisites:** `str-length: Str -> Int` Rust builtin (for width measurement) and `str-repeat: Str -> Int -> Str` in `stdlib/prelude.llt` (for indentation).
 
+## Default Output Format (`tinct eval`)
+
+When `tinct eval` finishes and no `emit` call was made, the final value is serialized to stdout as JSON. This serialization is performed by `stdlib/fmt/json.llt` — a pure-tinct JSON serializer that ships with the standard library.
+
+**Key properties:**
+
+- The formatter is user-visible and lives at `stdlib/fmt/json.llt`. You can inspect it or use it directly in programs: `[include libdir "fmt/json.llt"]`.
+- If `stdlib/fmt/json.llt` is not found (e.g. running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. Note: the fallback serializes empty dicts as `{}` (JSON empty object) rather than `null`.
+- The output is indented (2-space pretty-printed) by default.
+
+**Using the formatters directly:**
+
+```bash
+tinct eval config.llt                  # indented JSON via stdlib/fmt/json.llt (2-space pretty-printed)
+```
+
+```tinct
+# Load and call the JSON formatter explicitly in a pipeline
+[
+  json: [include libdir "fmt/json.llt"]
+  output: [json.json my-value]
+]
+```
+
 ## VS Code Extension (`just ext`)
 
 A VS Code extension that provides Tinct language support: live diagnostics and hover types via the `tinct lsp` language server.

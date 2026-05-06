@@ -3900,3 +3900,31 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] Migrate `stdlib/fmt/json-pretty.llt` — 3 bracket-access occurrences
 - [x] Migrate `stdlib/fmt/env.llt` — 1 bracket-access occurrence
 - [x] Verify all stdlib corpus tests pass with new syntax (`tests/corpus/`)
+
+## Templating: Text Output and Formatters
+
+### templating-phase2: Standard Formatters
+
+- [x] Create `stdlib/fmt/` with yaml.llt, toml.llt, json-pretty.llt, env.llt, csv.llt — all pure tinct
+- [x] 8 corpus tests for formatters; arena ThunkId cross-context bug fixed
+- [x] doc/11-stdlib.md: Standard Formatters section documented
+
+### templating-phase3: String Interpolation
+
+- [x] `i"..."` lexer + parser desugaring; `$ident`, `${expr}`, `$$` escape all supported
+- [x] Formatter: `i"..."` round-trip preserved (heuristic detection); 5 formatter tests
+- [x] 8 corpus tests; doc/02-syntax.md §2.3.5 documented
+
+### templating-phase4: Literate Mode
+
+- [x] `tinct literate tangle|eval|weave <file>` subcommand (`src/main.rs`, `src/literate.rs`)
+- [x] tangle: extract code blocks, join with `---`; eval: tangle + evaluate; weave: annotate results inline
+- [x] 10 CLI integration tests; doc/09-documents.md §Literate Mode
+
+### default-emit: Default Emit Program
+
+- [x] `stdlib/fmt/json.llt` — pure-tinct compact JSON serializer with string escaping and null semantics
+- [x] `format_with_json_llt()` in `src/lib.rs` — evaluates json.llt in shared eval context, calls `json` function, falls back to `value_to_json()` if stdlib unavailable
+- [x] `value_to_json()` preserved for LSP, tests, REPL; literate eval uses same path
+- [x] 5 CLI tests + 5 corpus tests + 1 json-pretty escape test
+- [x] `doc/09-documents.md`, `doc/11-stdlib.md`, `doc/12-tooling.md` updated

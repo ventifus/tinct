@@ -1,0 +1,10 @@
+# json: format simple dict
+[include "stdlib/fmt/json.llt"]
+---
+[call %.json [
+  name: "Alice"
+  age: 30
+  active: true
+]]
+===
+String("{\"name\":\"Alice\",\"age\":30,\"active\":true}")

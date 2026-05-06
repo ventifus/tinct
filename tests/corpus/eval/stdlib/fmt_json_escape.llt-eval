@@ -1,0 +1,9 @@
+# json: string escaping
+[include "stdlib/fmt/json.llt"]
+---
+[call %.json [
+  text: "Hello \"world\"\nNew line\tTab"
+  backslash: "C:\\path\\to\\file"
+]]
+===
+String("{\"text\":\"Hello \\\"world\\\"\\nNew line\\tTab\",\"backslash\":\"C:\\\\path\\\\to\\\\file\"}")

@@ -1,0 +1,9 @@
+# json: null handling (empty dict)
+[include "stdlib/fmt/json.llt"]
+---
+[call %.json [
+  value: []
+  items: [[]]
+]]
+===
+String("{\"value\":null,\"items\":[null]}")

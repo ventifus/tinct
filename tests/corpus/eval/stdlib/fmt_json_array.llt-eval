@@ -1,0 +1,6 @@
+# json: format array (list-shaped dict)
+[include "stdlib/fmt/json.llt"]
+---
+[call %.json [1 2 3]]
+===
+String("[1,2,3]")

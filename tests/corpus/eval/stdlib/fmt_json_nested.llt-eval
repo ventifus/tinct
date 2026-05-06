@@ -1,0 +1,12 @@
+# json: format nested structures
+[include "stdlib/fmt/json.llt"]
+---
+[call %.json [
+  users: [
+    [name: "Alice" active: true]
+    [name: "Bob" active: false]
+  ]
+  count: 2
+]]
+===
+String("{\"users\":[{\"name\":\"Alice\",\"active\":true},{\"name\":\"Bob\",\"active\":false}],\"count\":2}")
