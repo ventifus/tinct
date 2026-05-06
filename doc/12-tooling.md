@@ -127,6 +127,7 @@ The extension spawns `tinct lsp` as a child process and communicates via stdio (
 
 - **Diagnostics** — parse errors and type errors appear as squiggly underlines in real time
 - **Hover** — hovering over an expression shows its inferred type
+- **Go To Definition** — F12 on a variable reference jumps to the dict entry key that defines it (intra-document only; cross-file resolution for `$include` and prelude names is planned in `lsp-include-prelude` sprint)
 
 ### Configuration
 

@@ -86,21 +86,6 @@ Populates `related_information` on LSP diagnostics with a source snippet. All th
 - [x] codespan-reporting: assessed, not adopted (requires Files registry + ANSI output)
 - [x] 2 unit tests for eval_error_to_diagnostic related_information (`src/lsp/analysis.rs`)
 
-### lsp-include-prelude: Prelude Awareness in LSP
-
-**Depends on:** `lsp-goto-definition`
-
-Eliminates false "undefined variable" diagnostics and missing hover types for all prelude-defined functions (`map`, `filter`, `identity`, etc.). At LSP startup, parse the embedded prelude source, type-check it to extract a `TypeMap`, and build a `name → key-span` index. Hover gains accurate types for prelude names; go-to-definition navigates to the on-disk `stdlib/prelude.llt`.
-
-- [ ] `fn find_stdlib_prelude_path() -> Option<PathBuf>`: tries (1) `current_exe()` grandparent + `stdlib/prelude.llt` (dev layout: `target/debug/tinct` → project root), then (2) `current_exe()` parent + `../share/tinct/stdlib/prelude.llt` (install layout); mirrors `libdir_path` resolution in `src/main.rs` (`src/lsp/document.rs`)
-- [ ] `pub struct PreludeIndex`: `path: Option<PathBuf>`, `name_to_key_span: HashMap<String, Span>`, `type_map: TypeMap`; constructed once in `DocumentStore::new()` (`src/lsp/document.rs`)
-- [ ] `fn build_prelude_index() -> PreludeIndex`: parses `include_str!("../../stdlib/prelude.llt")`, runs `desugar_file` + `resolve_file`, calls `typecheck_file_with_types` for `TypeMap`, walks top-level `Expr::Dict` entries collecting `Expr::Str(s)` key names → spans; logs warning but returns empty index on parse failure (`src/lsp/document.rs`)
-- [ ] Add `prelude_index: PreludeIndex` to `DocumentStore`; initialize in `DocumentStore::new()` (`src/lsp/document.rs`)
-- [ ] Seed `TypeEnv` with `Type::Any` for each prelude name before per-document type inference, suppressing false "undefined variable" errors; expose as `TypeEnv::with_builtins_and_prelude(names: &[&str])` or thread `PreludeIndex` into `DocumentState::new()` (`src/typecheck.rs`, `src/lsp/document.rs`)
-- [ ] Extend `hover_at` to fall back to `prelude_index.type_map` when the document `type_map` has no entry: look up name in `prelude_index.name_to_key_span`, retrieve type from `prelude_index.type_map`; signature gains `prelude_index: &PreludeIndex` param; update call site in `server.rs` (`src/lsp/analysis.rs`, `src/lsp/server.rs`)
-- [ ] Extend `definition_at` to accept `store: &DocumentStore`: after `find_key_definition` returns `None`, look up name in `prelude_index.name_to_key_span`; if found, return `Some((Url::from_file_path(path)?, span))`; update return type to `Option<(Url, Span)>`; update `GotoDefinition` handler in `server.rs` (`src/lsp/analysis.rs`, `src/lsp/server.rs`)
-- [ ] Unit tests: `test_prelude_index_non_empty` (index contains `"map"`, `"filter"`, `"identity"`); `test_hover_prelude_name` (hover on `$map` returns non-empty string without `<error>`); `test_definition_at_prelude_name` (definition on `$identity` returns `Some` when prelude path resolves); `test_no_false_undefined_for_prelude` (`[call $map [fn [x] x] [1 2 3]]` → zero type errors) (`src/lsp/analysis.rs`, `src/lsp/document.rs`)
-
 ### lsp-workspace-index: Cross-File Include Resolution
 
 **Depends on:** `lsp-include-prelude`

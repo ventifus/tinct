@@ -2732,6 +2732,19 @@ impl TypeEnv {
 
         env
     }
+
+    /// Extend a TypeEnv with prelude names, binding each to Type::Any.
+    ///
+    /// This suppresses "undefined variable" type errors for prelude functions
+    /// in LSP contexts where the prelude AST is not in scope but the prelude
+    /// environment is loaded at runtime.
+    pub fn with_prelude_names(&self, names: &[&str]) -> Self {
+        let mut env = self.clone();
+        for name in names {
+            env.insert(name.to_string(), Type::Any);
+        }
+        env
+    }
 }
 
 impl Default for TypeEnv {

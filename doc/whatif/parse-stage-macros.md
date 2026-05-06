@@ -11,7 +11,8 @@ context-sensitive key identity for match arms — is no longer applicable.
 Match is implemented as `Expr::Match` (a Rust special form) with dedicated
 parser support for arm syntax. See `doc/whatif/pattern-matching.md` §Why a
 Special Form. This proposal remains valid for future macros that need
-context-sensitive parsing, but its trigger and urgency are reduced.
+context-sensitive parsing, though its original trigger (match arm syntax) 
+has been resolved via the special-form approach.
 
 ## Current State
 
