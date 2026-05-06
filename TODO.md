@@ -86,18 +86,6 @@ Populates `related_information` on LSP diagnostics with a source snippet. All th
 - [x] codespan-reporting: assessed, not adopted (requires Files registry + ANSI output)
 - [x] 2 unit tests for eval_error_to_diagnostic related_information (`src/lsp/analysis.rs`)
 
-### lsp-goto-definition: Go To Definition
-
-Intra-document "go to definition" — F12 in VS Code and equivalents. Given a cursor on a variable reference, returns the span of the dict entry key that defines that name in the current file. Builtins and `$include`-introduced names return no result (cross-file resolution is a future concern; `no_fs=true` makes it non-trivial).
-
-- [ ] `fn key_name(key_expr: &Expr) -> Option<&str>`: `Expr::Str(s)` → `s.as_str()`, `Expr::Annotated { name, .. }` → `name.as_str()`, all other key forms → `None` (computed/int keys are not static definition targets) (`src/lsp/analysis.rs`)
-- [ ] `fn name_at_offset(expr: &Expr, span: Span, offset: usize) -> Option<String>`: recursive span-containment walk returning `VarRef.name.clone()` for the innermost `Expr::VarRef` at `offset`; recurses into Dict entries, Call func+args+named_args, Fn body, DotAccess, Pipe, TypeAlias, TypeAssert; returns `None` for literals, Error, Rest, Annotated, Fn params (`src/lsp/analysis.rs`)
-- [ ] `fn find_key_definition(expr: &Expr, span: Span, name: &str) -> Option<Span>`: recursive walk; on `Expr::Dict(entries)` matches `key_name(key) == name` and returns key span; recurses into entry values, call args, fn bodies, access targets to find definitions in nested dicts; depth-first, first match wins (`src/lsp/analysis.rs`)
-- [ ] `pub fn definition_at(doc: &DocumentState, offset: usize) -> Option<Span>`: requires `doc.ast.is_ok()`; walks documents → expressions with `name_at_offset` to find the name at cursor; then walks documents → expressions with `find_key_definition`; returns definition span or `None` (`src/lsp/analysis.rs`)
-- [ ] Add `definition_provider: Some(lsp_types::OneOf::Left(true))` to `ServerCapabilities` in `run_lsp()` (`src/lsp/server.rs`)
-- [ ] `GotoDefinition::METHOD` handler in `handle_request`: deserialize `GotoDefinitionParams`, convert position to offset, call `definition_at`, respond with `GotoDefinitionResponse::Scalar(Location { uri, range })` or serialized `null`; error handling mirrors `HoverRequest` arm (`src/lsp/server.rs`)
-- [ ] Unit tests: `test_definition_at_simple` (`[x: 42  y: $x]`, cursor on `$x` → key `x` span); `test_definition_at_mutually_recursive` (`[a: $b  b: $a]`); `test_definition_at_annotated_key` (`[x@Int: 1  y: $x]` → `x@Int` key span); `test_definition_at_no_match` (`$undefined` → `None`); `test_definition_at_nested_dict` (cursor on name defined in inner dict); `test_definition_at_parse_error` (parse failure → `None`) (`src/lsp/analysis.rs`)
-
 ### lsp-include-prelude: Prelude Awareness in LSP
 
 **Depends on:** `lsp-goto-definition`
