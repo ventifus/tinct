@@ -86,22 +86,6 @@ Populates `related_information` on LSP diagnostics with a source snippet. All th
 - [x] codespan-reporting: assessed, not adopted (requires Files registry + ANSI output)
 - [x] 2 unit tests for eval_error_to_diagnostic related_information (`src/lsp/analysis.rs`)
 
-### lsp-workspace-index: Cross-File Include Resolution
-
-**Depends on:** `lsp-include-prelude`
-
-Teaches the LSP to resolve `$include "path"` at the document level using plain filesystem reads (bypassing `no_fs=true` eval-time blocking). When a document's AST contains `Call { func: VarRef("include"), args: [Str(path)] }`, the LSP reads and parses that file independently, maintaining a `DocumentState` for it in an include graph. Cross-file names become available to `definition_at` and hover.
-
-- [ ] `fn collect_include_paths(file: &File) -> Vec<(String, Span)>`: walks all `Expr::Call` nodes; matches `func` as `VarRef { name: "include" }` and first positional arg as `Expr::Str(path)`; returns `(path.clone(), call_span)` pairs; ignores non-literal paths (`src/lsp/analysis.rs`)
-- [ ] `pub struct IncludeGraph`: `HashMap<Url, IncludeNode>` where `IncludeNode` holds `state: DocumentState`, `includes: Vec<Url>`, `included_by: Vec<Url>`; stored on `DocumentStore` (`src/lsp/document.rs`)
-- [ ] `fn resolve_include_url(base_url: &Url, path: &str) -> Option<Url>`: resolves `path` relative to `base_url`'s parent directory via `PathBuf::join`; returns `None` for non-`file://` base URLs or resolution failures (`src/lsp/document.rs`)
-- [ ] `fn index_file(url: Url, graph: &mut IncludeGraph, stdlib_env, eval_ctx, depth: usize)`: reads file with `std::fs::read_to_string` (plain OS read, not eval); creates `DocumentState::new`; calls `collect_include_paths`; adds forward/reverse edges; recurses for unseen URLs; depth cap at 16 to handle circular includes (`src/lsp/document.rs`)
-- [ ] `fn invalidate_dependents(changed_url: &Url, graph, stdlib_env, eval_ctx)`: follows `included_by` reverse edges breadth-first; re-runs `index_file` for each dependent; stops at already-reindexed URLs (handles diamond deps) (`src/lsp/document.rs`)
-- [ ] Extend `DocumentStore::update_document`: call `collect_include_paths` on fresh AST, call `index_file` for new include URLs, remove stale edges, call `invalidate_dependents` (`src/lsp/document.rs`)
-- [ ] Extend `definition_at` to search direct includes after prelude lookup fails: for each URL in the document's `IncludeNode::includes`, call `find_key_definition` on its `DocumentState`; return `Some((included_url, span))` on first match (`src/lsp/analysis.rs`)
-- [ ] Extend `hover_at` to fall back to direct includes' `type_map` after prelude miss (`src/lsp/analysis.rs`)
-- [ ] Unit tests: `test_collect_include_paths_literal` (`[call $include "foo.llt"]` → `[("foo.llt", _)]`); `test_collect_include_paths_non_literal` (`[call $include $path]` → `[]`); `test_resolve_include_url`; `test_circular_include_depth_cap` (A includes B includes A — no stack overflow); `test_definition_at_cross_file` (name defined in included file returns included file URL + key span) (`src/lsp/document.rs`, `src/lsp/analysis.rs`)
-
 ### lsp-doc-annotations: `doc:` Annotation Hover
 
 **Depends on:** `lsp-include-prelude`
