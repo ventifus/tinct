@@ -2188,7 +2188,7 @@ Deferred features moved from DESIGN.md. Evaluate when triggered.
 - [x] Research algebraic data types (ADTs) — see doc/whatif/algebraic-data-types.md. Structural tagged records: ADTs are unions of closed record types discriminated by key set, using `[union ...]` special form. Dicts-are-fundamental means no new Value variant; $try already implements the pattern. Tag-only variants are StringLiteral types (bare words). Recursive ADTs deferred to Phase 4 (requires parameterized-type-aliases + equi-recursive unfolding). Builds on union-types.md (Type::Union prerequisite), pattern-matching.md (Phase 3 destructuring + Phase 5 exhaustiveness), algebraic-subtypes.md (Simple-sub makes unions inferred in Phase 3)
 - [x] Research algebraic subtyping — see doc/whatif/algebraic-subtypes.md. Simple-sub (Parreaux 2020) replacement for [U-SUBSUME] + Robinson. 4-step migration path. Gated on union types being insufficient without inferred unions or Any-as-top-and-bottom causing soundness problems
 - [x] Research macros — see doc/whatif/macros.md. Recommends procedural AST macros (Approach B). Laziness reduces need; gated on second syntactic desugaring or user-requested domain-specific syntax
-- [x] Research templating — see doc/whatif/templating.md. Three-part design: (1) data-first formatters (`$emit`, multi-file pipeline, stdlib/fmt/), (2) literate tinct (code blocks in Markdown, tangle/weave/eval), (3) template-polarity embedding (Jinja-style, deferred Phase 5). tinct's bracket syntax creates friction in template delimiters; `i"..."` + formatters + literate mode cover the design space without template embedding
+- [x] Research templating — see doc/whatif/templating.md. Three-part design: (1) data-first formatters (`$emit`, multi-file pipeline, stdlib/out/), (2) literate tinct (code blocks in Markdown, tangle/weave/eval), (3) template-polarity embedding (Jinja-style, deferred Phase 5). tinct's bracket syntax creates friction in template delimiters; `i"..."` + formatters + literate mode cover the design space without template embedding
 - [x] Research structural contracts — see doc/whatif/structural-contracts.md. Hybrid: `$$@Type` for static pipeline boundary checking + `$validate` schema-as-dict for runtime constraints. 4-phase: $$@Type → $validate → tinct describe → pipeline blame
 - [x] Research implied `call` — see doc/whatif/implied-call.md. Head-position `$` heuristic: if first unkeyed element is a `$`-reference, treat `[]` as a call. `call` remains valid (backwards compatible). Requires `seq` keyword for list-of-references. Critically depends on `$` sigil — incompatible with bare-word references in simplest form
 - [x] Research bare-word references — see doc/whatif/bare-word-references.md. Nix/Jsonnet model: bare words in value position are references, keys stay as strings, strings must be quoted. Removes `$` sigil. Significant config ergonomic regression (must quote all strings). 4-phase adoption with dual-mode parser. Must be coordinated with implied call
@@ -3894,18 +3894,18 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 
 ### access-pipeline-stdlib: Migrate Existing Stdlib Files
 
-- [x] Migrate `stdlib/fmt/toml.llt` — 6 bracket-access occurrences
-- [x] Migrate `stdlib/fmt/csv.llt` — 4 bracket-access occurrences
-- [x] Migrate `stdlib/fmt/yaml.llt` — 3 bracket-access occurrences
-- [x] Migrate `stdlib/fmt/json-pretty.llt` — 3 bracket-access occurrences
-- [x] Migrate `stdlib/fmt/env.llt` — 1 bracket-access occurrence
+- [x] Migrate `stdlib/out/toml.llt` — 6 bracket-access occurrences
+- [x] Migrate `stdlib/out/csv.llt` — 4 bracket-access occurrences
+- [x] Migrate `stdlib/out/yaml.llt` — 3 bracket-access occurrences
+- [x] Migrate `stdlib/out/json-pretty.llt` — 3 bracket-access occurrences
+- [x] Migrate `stdlib/out/env.llt` — 1 bracket-access occurrence
 - [x] Verify all stdlib corpus tests pass with new syntax (`tests/corpus/`)
 
 ## Templating: Text Output and Formatters
 
 ### templating-phase2: Standard Formatters
 
-- [x] Create `stdlib/fmt/` with yaml.llt, toml.llt, json-pretty.llt, env.llt, csv.llt — all pure tinct
+- [x] Create `stdlib/out/` with yaml.llt, toml.llt, json-pretty.llt, env.llt, csv.llt — all pure tinct
 - [x] 8 corpus tests for formatters; arena ThunkId cross-context bug fixed
 - [x] doc/11-stdlib.md: Standard Formatters section documented
 
@@ -3923,7 +3923,7 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 
 ### default-emit: Default Emit Program
 
-- [x] `stdlib/fmt/json.llt` — pure-tinct compact JSON serializer with string escaping and null semantics
+- [x] `stdlib/out/json.llt` — pure-tinct compact JSON serializer with string escaping and null semantics
 - [x] `format_with_json_llt()` in `src/lib.rs` — evaluates json.llt in shared eval context, calls `json` function, falls back to `value_to_json()` if stdlib unavailable
 - [x] `value_to_json()` preserved for LSP, tests, REPL; literate eval uses same path
 - [x] 5 CLI tests + 5 corpus tests + 1 json-pretty escape test
@@ -4007,3 +4007,16 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] DocMap type + extraction from @[doc: "..."] annotations in typecheck.rs
 - [x] hover_at appends doc string as second paragraph in hover tooltip
 - [x] 4 unit tests: hover_shows_doc, hover_no_doc, hover_doc_and_default, hover_param_with_doc
+
+## CLI: Inline Expressions and JSON Streaming
+
+### eval-cli: Inline Expressions, Input/Output Formatters
+
+- [x] Token::Semicolon as break in section header parsing
+- [x] Renamed stdlib/fmt/ → stdlib/out/ (28 files updated)
+- [x] -e/--expr flag for inline tinct expressions as pipeline stages
+- [x] -i/--input flag: resolves stdlib/in/<format>.llt as input stage
+- [x] -o/--output flag: resolves stdlib/out/<format>.llt as output stage
+- [x] stdlib/in/json.llt and stdlib/out/raw.llt implemented
+- [x] 8 CLI integration tests covering all new flags
+- [x] doc/12-tooling.md documented with examples

@@ -88,34 +88,6 @@ Populates `related_information` on LSP diagnostics with a source snippet. All th
 
 ## CLI: Inline Expressions and JSON Streaming
 
-### eval-cli: Inline Expressions, Input/Output Formatters
-
-Enable `tinct eval -i json -e 'expr' -o raw < input.json` as a jq-style
-JSON processor. `-e` evaluates an inline expression; `-i <name>` prepends
-`stdlib/in/<name>.llt` as an input stage (suppressing auto JSON detection);
-`-o <name>` appends `stdlib/fmt/<name>.llt` as an output stage. Together
-these form a symmetric pipeline: input formatter → expression → output formatter.
-See `doc/12-tooling.md`.
-
-Stdin auto-detection (`read_stdin_json()`) is preserved when `-i` is absent
-for backward compatibility. When `-i` is present, auto-detection is suppressed
-and the input program reads from the `stdin` Handle directly.
-
-No hard dependency on `access-pipeline` — dot access works today. Pipe
-expressions (`|`) work automatically in `-e` strings once `access-pipeline-phase1`
-lands.
-
-- [ ] Default subcommand: if `argv[1]` is not a known subcommand (`eval`, `fmt`, `literate`, `hash`) and does not start with `-`, treat it as `tinct eval <argv[1]> [remaining args]`; enables `#!/usr/bin/env tinct` shebangs and `tinct my-script.llt` shorthand; `#!` shebang lines are already valid tinct (parsed as comments, ignored); no file-existence probing — pass the argument through to `tinct eval` which will produce a normal "file not found" error if needed (`src/main.rs`)
-- [ ] Section header loop: add `Token::Semicolon` as a break condition alongside `Token::Newline` at `src/parser.rs:2350` — currently `;` hits the catch-all "unexpected token in section header" error, making `--- %name@Type; [expr]` fail; every other Newline-break in the parser already includes Semicolon (`peek_next_significant_token`, `skip_whitespace_tokens`, main loop all use `Newline | Semicolon`) (`src/parser.rs`)
-- [ ] Rename `stdlib/fmt/` → `stdlib/out/` via `git mv stdlib/fmt stdlib/out`; update all references in `doc/`, `TODO.md`, and `doc/whatif/` from `stdlib/fmt/` to `stdlib/out/` (`stdlib/`, `doc/`, `TODO.md`)
-- [ ] Add `-e <expr>` / `--expr <expr>` flag to `tinct eval`: repeatable — each occurrence inserts an inline tinct expression as a pipeline stage at that position in the command line, interleaved with file arguments in order; `tinct eval -i json -e '%.x' transform.llt -e '[+ % 1]' -o raw` runs four stages in sequence; each `-e` expression receives `%` from the previous stage exactly as a file would; `---` is valid inside a single `-e` string to create multiple stages within it (the lexer already recognizes `---` anywhere, not just at line start); `;` is whitespace-equivalent and compresses multi-line syntax but does not create pipeline stages (`src/main.rs`)
-- [ ] Add `-i <format>` / `--input <format>` flag: resolves `<format>` to `stdlib/in/<format>.llt` via `libdir_path`; prepends that file as the first pipeline stage; suppresses `read_stdin_json()` auto-detection so the input program reads from the `stdin` Handle directly; error if named file does not exist (`src/main.rs`)
-- [ ] Add `-o <format>` / `--output <format>` flag: resolves `<format>` to `stdlib/out/<format>.llt` via `libdir_path`; appends that file as the final pipeline stage — exactly equivalent to appending the file to the CLI file list; error if named file does not exist (`src/main.rs`)
-- [ ] Implement `stdlib/in/json.llt`: reads `[slurp stdin]` and passes through `[from-json]`; produces the parsed tinct value as `%` for the next stage (`stdlib/in/json.llt`)
-- [ ] Implement `stdlib/out/raw.llt`: if `%` is a String emit it unquoted; if `%` is a Seq emit each element on its own line via `each` + `emit`; otherwise `[error "raw formatter: expected String or Seq, got " [type-of %]]` (`stdlib/out/raw.llt`)
-- [ ] CLI tests: `tinct eval -e '%.x' <<< '{"x":42}'` → `42` (auto-detect); `tinct eval -i json -e '%.x' <<< '{"x":42}'` → `42` (explicit); `tinct eval -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'` → `hello` (no quotes); `tinct eval -e '[x: 1]' -e '[merge % [y: 2]]'` → `{"x":1,"y":2}` (chained `-e`); `-i` + `-o` together; unknown format name errors clearly; `-e` parse error reports inline source and stage index (`tests/cli_tests.rs`)
-- [ ] Update `doc/12-tooling.md`: document `-e`, `-i`/`--input` and `stdlib/in/` convention, `-o`/`--output` and `stdlib/out/` convention, stdin dual-use (auto-detect vs Handle), and the symmetric pipeline model; add jq-comparison example: `tinct eval -i json -o raw -e '%.response' < mcp.json`
-
 ### fmt-oneline: Single-Line Formatter Mode
 
 **Depends on:** `eval-cli` (the `Token::Semicolon` header-break fix must land first so `--oneline` output is re-parseable)
