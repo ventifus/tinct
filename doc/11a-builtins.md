@@ -175,7 +175,10 @@ File loading, JSON parsing, and text output.
 |---------|-------|-----------|--------|-------------|
 | `from-json` | 1 | `S → D` | Dict | Parse JSON string to dict; numbers become Int or Float, arrays become dicts with 0-indexed keys |
 | `include` | 1-3 | `S (× S)? → D` or `S × S (× S)? → D` | Dict | Load and evaluate an LLT file; returns the file's final value |
-| `emit` | 1 | `S → D` | Dict (Null) | Write string to stdout; suppresses default JSON output; returns empty dict |
+| `emit` | 1 | `S → Null` | Null | Write string to stdout; suppresses default JSON output; returns empty dict (Null) |
+| `write` | 3 | `DirCap × S × S → Null` | Null | Write content to file; takes DirCap, path (String), content (String); returns empty dict (Null) |
+| `write-atomic` | 3 | `DirCap × S × S → Null` | Null | Atomically write content to file via temp+rename; takes DirCap, path, content; returns empty dict (Null) |
+| `revoke-cap` | 1 | `RevocableDirCap → Null` | Null | Revoke a RevocableDirCap; subsequent uses will error; returns empty dict (Null) |
 
 **`include` call patterns:**
 
@@ -197,6 +200,9 @@ File loading, JSON parsing, and text output.
 - `from-json`: Type mismatch if arg is not String; parse error if JSON is invalid
 - `include`: Type mismatch if first arg is not DirCap or String; arity mismatch if DirCap is provided but path is missing; file not found; parse/eval errors from included file; revoked capability error if using a revoked `RevocableDirCap`
 - `emit`: Type mismatch if arg is not String; I/O error if stdout write fails
+- `write`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on file creation or write failure; revoked capability error if using a revoked `RevocableDirCap`
+- `write-atomic`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on temp file creation, write, sync, or rename failure; revoked capability error if using a revoked `RevocableDirCap`
+- `revoke-cap`: Type mismatch if arg is not RevocableDirCap
 
 ## Sequences
 

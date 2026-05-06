@@ -395,7 +395,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `zip` | `[fn [xs ys] ...]` | Pair entries from two collections by position |
 | `unzip` | `[fn [pairs] ...]` | Unzip a list of pairs into a pair of lists |
 | `flatten` | `[fn [xs] ...]` | Flatten nested lists one level deep |
-| `find-deep` | `[fn [xs target] ...]` | Recursively search for a key in nested dicts |
+| `find-deep` | `[fn [xs@Dict target] ...]` | Recursively search for a key in nested dicts |
 
 **Higher-Order Dict/List Utilities:**
 
@@ -990,3 +990,166 @@ Result: {timeout↦θ(60), retries↦θ(3), env↦θ("prod")}
 ```
 
 Note: `timeout` stays at position 0 (its position in L), not position 1 (its position in R). `retries` stays at position 1. No new keys from R, so nothing appended. Values `θ(60)`, `θ(3)`, `θ("prod")` are thunk pointers — the integers and string are not materialized by `$merge`.
+
+## Prelude Type Signatures
+
+Type signatures for LLT-implemented prelude functions, as declared by `@`-annotations on `fn` forms in `stdlib/prelude.llt`. Return types come from the `fn@T` annotation; parameter types come from `param@T` annotations. Functions without annotations are intentionally polymorphic (noted below).
+
+Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and returning `C`. `a` and `b` are type variables (polymorphic). `Comparable` means any type accepted by `<`: `Number`, `String`, or `Bool`.
+
+### Identity
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `identity` | `(a -> a)` | Polymorphic — no annotation; passes through any value unchanged |
+| `const` | `(a -> b -> a)` | Polymorphic — no annotation; classic K combinator |
+
+### Logic
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `not` | `(Any -> Bool)` | `fn@Bool [x]` — materializes x |
+| `and` | `(Any -> Any -> Any)` | No annotation — short-circuit; returns `b` or `false` |
+| `or` | `(Any -> Any -> Any)` | No annotation — short-circuit; returns `a` or `b` |
+| `any?` | `((a -> Bool) -> Dict a -> Bool)` | `fn@Bool [pred@Fn xs@Dict]` |
+| `all?` | `((a -> Bool) -> Dict a -> Bool)` | `fn@Bool [pred@Fn xs@Dict]` |
+
+### Comparison
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `<` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` — shadowable wrapper over `builtin-lt` |
+| `=` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` — shadowable wrapper over `builtin-eq` |
+| `>` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` |
+| `<=` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` |
+| `>=` | `(Comparable -> Comparable -> Bool)` | `fn@Bool [a b]` |
+
+### Arithmetic
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `+` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` — shadowable |
+| `-` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` — shadowable |
+| `*` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` — shadowable |
+| `/` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` — shadowable; always returns Float at runtime |
+| `quot` | `(Number -> Number -> Int)` | `fn@Int [a@Number b@Number]` |
+| `mod` | `(Number -> Number -> Number)` | `fn@Number [a@Number b@Number]` |
+| `abs` | `(Number -> Number)` | `fn@Number [x@Number]` |
+| `sign` | `(Number -> Int)` | `fn@Int [x@Number]` |
+| `ceil` | `(Number -> Int)` | `fn@Int [x@Number]` |
+| `trunc` | `(Number -> Int)` | `fn@Int [x@Number]` |
+| `clamp` | `(Number -> Number -> Number -> Number)` | `fn@Number [lo@Number hi@Number x@Number]` |
+
+### String
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `words` | `(String -> Seq)` | `fn@Seq [s@String]` — annotation enforces `Seq(Any)`; element type is `String` at runtime but not constrained by the annotation |
+
+### Control Flow
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `if` | `(Any -> a -> a -> a)` | No annotation — shadowable; returns chosen branch |
+| `when` | `(Any -> a -> a)` | No annotation — returns body or `[]` |
+| `unless` | `(Any -> a -> a)` | No annotation — returns body or `[]` |
+| `cond` | `(Dict [Dict, Any] -> Any)` | `fn [pairs@Dict]` — no return annotation; polymorphic result |
+
+### Dict Operations
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `get` | `(a -> Dict b -> b)` | No return annotation — polymorphic value type |
+| `has?` | `(Dict a -> b -> Bool)` | `fn@Bool [xs@Dict k]` |
+| `get-or` | `(Dict a -> b -> a -> a)` | No return annotation — polymorphic; result is value type or default |
+| `get-in` | `(Dict a -> Dict -> a)` | No return annotation — polymorphic; errors on missing key |
+| `get-in-or` | `(Dict a -> Dict -> a -> a)` | No return annotation — polymorphic; returns default on missing key |
+| `empty?` | `(Any -> Bool)` | `fn@Bool [xs]` — false for Seq (never empty by definition) |
+| `set` | `(Dict a -> b -> a -> Dict a)` | `fn@Dict [xs@Dict k v]` |
+| `remove` | `(Dict a -> b -> Dict a)` | `fn@Dict [xs@Dict k]` |
+| `update` | `(Dict a -> b -> (a -> a) -> Dict a)` | `fn@Dict [xs@Dict k f@Fn]` |
+| `values` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` — integer-indexed list of values |
+| `entries` | `(Dict a -> Dict [key: b  value: a])` | `fn@Dict [xs@Dict]` |
+| `from-entries` | `(Dict [key: a  value: b] -> Dict b)` | `fn@Dict [pairs]` — return annotation `@Dict`; parameter unannotated (accepts any collection with `.key`/`.value` entries) |
+
+### List Operations
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `first` | `(Dict a -> a)` | `fn [xs@Dict]` — no return annotation; polymorphic element type |
+| `nth` | `(Dict a -> Int -> a)` | `fn [xs@Dict n@Int]` — no return annotation |
+| `last` | `(Dict a -> a)` | `fn [xs@Dict]` — no return annotation |
+| `conj` | `(Dict a -> a -> Dict a)` | `fn@Dict [xs@Dict x]` |
+| `reindex` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` |
+
+### Collection Operations
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `take-while` | `((a -> Bool) -> Dict a -> Dict a)` | `fn@Dict [pred@Fn xs@Dict]` |
+| `drop-while` | `((a -> Bool) -> Dict a -> Dict a)` | `fn@Dict [pred@Fn xs@Dict]` |
+| `map-entries` | `(([key: k  value: a] -> b) -> Dict a -> Dict b)` | `fn@Dict [f@Fn xs@Dict]` |
+| `fold` | `((b -> a -> b) -> b -> c -> b)` | `fn [f@Fn init xs]` — no return annotation; delegates to `builtin-reduce` |
+| `foldr` | `((b -> a -> b) -> b -> c -> b)` | `fn [f@Fn acc xs]` — no return annotation |
+| `slice` | `(Dict a -> Int -> Int -> Dict a)` | `fn@Dict [xs@Dict start@Int end@Int]` |
+| `zip` | `(a -> b -> Dict [Dict, Dict])` | No return annotation — polymorphic; lazy for Seq+Seq, eager for Dict |
+| `flatten` | `(Dict a -> Dict b)` | `fn@Dict [xs@Dict]` — one level deep |
+| `find-deep` | `(Dict a -> b -> a)` | `fn [xs@Dict target]` — no return annotation; searches recursively for key; errors with E000 if key not found |
+| `sort-by` | `((a -> a -> Bool) -> Dict a -> Dict a)` | `fn@Dict [cmp@Fn xs@Dict]` |
+| `filter` | `((a -> Bool) -> b -> Seq a)` | `fn [pred@Fn xs]` — no return annotation; shadowable; returns Seq |
+| `map` | `((a -> b) -> c -> d)` | `fn [f@Fn xs]` — no return annotation; shadowable |
+| `reduce` | `((b -> a -> b) -> b -> c -> b)` | `fn [f@Fn init xs]` — no return annotation; shadowable |
+| `take` | `(Int -> a -> a)` | `fn [n@Int xs]` — no return annotation; shadowable |
+| `drop` | `(Int -> a -> a)` | `fn [n@Int xs]` — no return annotation; shadowable |
+| `collect-kv` | `(Seq [key: a  value: b] -> Dict b)` | `fn@Dict [xs]` — reconstructs Dict from `each-kv` output |
+
+### Higher-Order
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `with-entries` | `(Dict a -> ([key: k  value: a] -> b) -> Dict b)` | `fn@Dict [xs@Dict f@Fn]` |
+| `partition` | `((a -> Bool) -> b -> [pass: Dict a  fail: Dict a])` | `fn@Dict [pred@Fn xs]` |
+| `flat-map` | `((a -> Dict b) -> c -> Dict b)` | `fn@Dict [f@Fn xs]` |
+| `find-first` | `((a -> Bool) -> b -> a)` | `fn [pred@Fn xs]` — no return annotation; errors if none found |
+| `find-first-or` | `((a -> Bool) -> b -> c -> b)` | `fn [pred@Fn default xs]` — no return annotation |
+| `group-by` | `((a -> k) -> b -> Dict (Dict a))` | `fn@Dict [f@Fn xs]` |
+| `deep-merge` | `(Dict a -> Dict a -> Dict a)` | `fn@Dict [a@Dict b@Dict]` |
+| `walk` | `((a -> b) -> c -> b)` | `fn [f@Fn xs]` — no return annotation; bottom-up tree transform |
+| `unzip` | `(Dict [a, b] -> [a: Dict a  b: Dict b])` | `fn@Dict [pairs]` |
+| `transpose` | `(Dict (Dict a) -> Dict (Dict a))` | `fn@Dict [rows@Dict]` |
+| `compose` | `((b -> c) -> (a -> b) -> (a -> c))` | `fn@Fn [f@Fn g@Fn]` |
+| `->` | `(a -> Fn... -> b)` | `fn [x ...stages]` — no return annotation; variadic |
+
+### Aggregates
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `sum` | `(c -> Number)` | `fn@Number [xs]` — no collection type constraint in annotation |
+| `product` | `(c -> Number)` | `fn@Number [xs]` |
+| `min` | `(c -> a)` | `fn [xs]` — no annotation; polymorphic; errors on empty |
+| `max` | `(c -> a)` | `fn [xs]` — no annotation; polymorphic; errors on empty |
+| `count` | `((a -> Bool) -> c -> Int)` | `fn@Int [pred@Fn xs]` |
+| `contains?` | `(c -> a -> Bool)` | `fn@Bool [xs val]` |
+| `uniq` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` |
+
+### Type Predicates
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `int?` | `(Any -> Bool)` | Rust builtin |
+| `float?` | `(Any -> Bool)` | Rust builtin |
+| `num?` | `(Any -> Bool)` | Rust builtin |
+| `str?` | `(Any -> Bool)` | Rust builtin |
+| `bool?` | `(Any -> Bool)` | Rust builtin |
+| `null?` | `(Any -> Bool)` | Rust builtin |
+| `dict?` | `(Any -> Bool)` | Rust builtin |
+| `fn?` | `(Any -> Bool)` | Rust builtin |
+| `seq?` | `(Any -> Bool)` | Rust builtin |
+| `list?` | `(Any -> Bool)` | `fn@Bool [xs]` — LLT stdlib; checks all keys are integers |
+
+### Error Handling and Assertions
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `try-or` | `(Fn -> a -> a)` | `fn [f@Fn default]` — no return annotation; returns default on error |
+| `assert` | `(Any -> String -> Bool)` | `fn@Bool [cond msg@String]` |

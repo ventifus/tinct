@@ -1,6 +1,6 @@
 # Typing Cluster: Implementation Plan
 
-Comprehensive plan for the 11 typing-related whatif proposals and their
+Comprehensive plan for the 12 typing-related whatif proposals and their
 phased implementation. Each proposal is a separate whatif document; this
 plan connects them into a coherent dependency graph, identifies the
 critical path, and groups work into independently shippable phases.
@@ -21,6 +21,7 @@ critical path, and groups work into independently shippable phases.
 | 9 | Structural Contracts | `structural-contracts.md` |
 | 10 | Numeric Types | `numeric-types.md` |
 | 11 | Parameterized Type Aliases | `parameterized-type-aliases.md` |
+| 12 | Path-Sensitive Narrowing | `narrowing.md` |
 
 **Proposal 0 note:** Null Semantics (`@Null` = `Type::Record(Row::Empty)`) is
 a prerequisite to B1. It does not need a dedicated cluster sprint — the full
@@ -68,7 +69,7 @@ procedure; it is handled there.
 
 ## 1. Why These Features Form a Cluster
 
-These 11 proposals are not independent feature requests. They form a
+These 12 proposals are not independent feature requests. They form a
 cluster because they collectively answer a single question: **how
 expressive should tinct's type system be?** Each proposal extends the
 type system's ability to describe data shapes, and each extension creates
@@ -90,16 +91,18 @@ evaluator *dispatches*. These are the tools that make type-level
 features usable in practice --- without pattern matching, union types
 and ADTs are declarations with no ergonomic consumption mechanism.
 
-**Group II: Type Representation Extensions** (proposals 4, 5, 6, 7, 8, 11)
+**Group II: Type Representation Extensions** (proposals 4, 5, 6, 7, 8, 11, 12)
 
-Union types, ADTs, nominal variants, type classes, gradual typing, and
-parameterized type aliases all extend the `Type` enum, the subtyping
-relation, or the inference algorithm. They answer: "what types can tinct
-describe?" These are the core of the cluster. They interact heavily ---
-ADTs require union types, nominal variants require ADTs, exhaustiveness
-requires both union types and pattern matching, type classes require
-parameterized aliases for higher-kinded types, and gradual typing's
-`Any` split is a prerequisite for sound union subtyping.
+Union types, ADTs, nominal variants, type classes, gradual typing,
+parameterized type aliases, and path-sensitive narrowing all extend the
+`Type` enum, the subtyping relation, or the inference algorithm. They
+answer: "what types can tinct describe?" These are the core of the
+cluster. They interact heavily --- ADTs require union types, nominal
+variants require ADTs, exhaustiveness requires both union types and
+pattern matching, type classes require parameterized aliases for
+higher-kinded types, gradual typing's `Any` split is a prerequisite
+for sound union subtyping, and narrowing makes union types and pattern
+matching *useful* by refining variable types inside match arms.
 
 **Group III: Validation and Constraints** (proposals 9, 10)
 
@@ -141,6 +144,9 @@ These proposals cannot be implemented without their prerequisites:
 | Gradual typing Phase 2 | Union types Phase 2 (forces the `Any` split) |
 | Type classes Phase 2 | `Any` split from gradual typing Phase 2 |
 | Recursive ADTs (Phase 4) | Parameterized type aliases Phase 2 |
+| Narrowing Phase 1-2 | Pattern matching Phase 2 (`if` as special form) |
+| Narrowing Phase 3 | Type predicates (DONE) + Narrowing Phase 1-2 |
+| Narrowing Phase 4 | Algebraic subtyping (D2) for negation types |
 
 ### Which Are Alternatives
 
@@ -202,6 +208,26 @@ Reading order: an arrow `A --> B` means A must be implemented before B.
                     |   structural-contracts -----+--> numeric-types Ph1   |
                     |   (%@Type, validate)         |   (range annotations) |
                     |                             +------------------------+
+                    |
+                    |       PHASE B5 (narrowing)
+                    |   +-----------------------------+
+                    |   |                             |
+                    |   |  narrowing Ph1-2 (B5a)      |
+                    |   |  (if special form,          |
+                    |   |   env forking,              |
+                    |   |   eq + type-of guards)      |
+                    |   |        |                    |
+                    |   |  type-predicates (DONE) -+  |
+                    |   |        |                 |  |
+                    |   |        v                 |  |
+                    |   |  narrowing Ph3 (B5b) <---+  |
+                    |   |  (int?/str? direct          |
+                    |   |   narrowing)                |
+                    |   |        |                    |
+                    |   +--------+--------------------+
+                    |            |
+                    |  union-types Ph2 -----> result type = τ₁ | τ₂
+                    |                        (without B1: LUB or Any)
                     +-----------------+
 
   INDEPENDENT TRACKS (no cross-deps within cluster):
@@ -247,20 +273,28 @@ A valid total order respecting all dependencies:
 2. Let binding
 3. Pattern matching Phase 2
 4. Pattern matching Phase 3
-5. Union types Phase 2
-6. Gradual typing Phase 2
-7. ADTs Phase 2
-8. Parameterized type aliases Phase 2
-9. Type classes Phase 2
-10. Nominal variants Phase 2
-11. Pattern matching Phase 4 (guards, or-patterns)
-12. Pattern matching Phase 5 + ADTs Phase 3 (exhaustiveness)
-13. Recursive ADTs (Phase 4)
-14. Type classes Phase 3
-15. Union types Phase 3 (full algebraic subtyping)
+5. Narrowing Phase 1-2 (if special form, eq + type-of narrowing)
+6. Narrowing Phase 3 (type predicate integration)
+7. Union types Phase 2
+8. Gradual typing Phase 2
+9. ADTs Phase 2
+10. Parameterized type aliases Phase 2
+11. Type classes Phase 2
+12. Nominal variants Phase 2
+13. Pattern matching Phase 4 (guards, or-patterns)
+14. Pattern matching Phase 5 + ADTs Phase 3 (exhaustiveness)
+15. Recursive ADTs (Phase 4)
+16. Type classes Phase 3
+17. Union types Phase 3 (full algebraic subtyping)
 
-Items 1-4 can proceed without any type representation changes. Items
-5-9 are the heart of the cluster. Items 10-15 are long-term.
+Items 1-6 can proceed without any type representation changes. Items
+7-11 are the heart of the cluster. Items 12-17 are long-term.
+
+Note: Narrowing Phases 1-3 can ship before union types (B1). Without
+B1, the join of branch types uses `Any` or the existing LUB instead of
+`τ₁ | τ₂`. Full result type precision comes when B1 lands. Narrowing
+Phase 4 (false-branch narrowing via negation types) requires algebraic
+subtyping (D2) and is deferred to Phase D.
 
 ---
 
@@ -502,6 +536,43 @@ map : Functor f => (a -> b) -> f a -> f b
 - **Key files:** `src/types.rs` (`TypeScheme`), `src/typecheck.rs`
   (inference engine), `src/builtins.rs` (builtin signatures).
 
+**B5. Path-Sensitive Narrowing --- `if` as Type-Level Special Form**
+
+Refine variable types inside conditional branches based on the
+condition expression. After `[int? x]`, the true branch knows
+`x : Int`:
+
+```tinct
+[if [int? x]
+    [+ x 1]         # x narrowed to Int
+    [str-length x]]  # x still original type (no false-branch narrowing)
+```
+
+This is the mechanism that makes union types and pattern matching
+useful at the type level. Without narrowing, match arm bodies are
+typed against the full union or `Any`. With narrowing, each arm
+gets the refined variant type.
+
+- **Scope:** `if` becomes a type-level special form with environment
+  forking. Three phases: (1) equality + type-of guards, (2) key
+  presence + conjunction, (3) type predicate integration. The
+  evaluator is unchanged — narrowing is purely static.
+- **Formal model:** Tobin-Hochstadt & Felleisen (2010) occurrence typing.
+  Dunfield & Pfenning (2004) datasort refinements for singleton literal
+  narrowing. Key property: the condition is forced before both branches
+  (selective materialization), so narrowing is sound — the type fact is
+  established before either branch is entered.
+- **Risk:** Moderate. `if` moves from the generic builtin call path to a
+  dedicated `infer_if()` function. Environment cloning doubles allocation
+  per conditional. For tinct's target domain (config files with few
+  conditionals) this is acceptable.
+- **Unlocks:** Precise types in match arm bodies (via the desugared
+  `if`/`type-of` chains), reduced annotation burden (implicit narrowing
+  replaces explicit `[@Type expr]`), LSP hover precision.
+- **Depends on:** Pattern matching Phase 2 (A2) for desugared `if` chains
+  to narrow. Type predicates (DONE) for Phase 3 integration. Union types
+  (B1) for `τ₁ | τ₂` result type precision (without B1: LUB or `Any`).
+
 ### Phase C: Algebraic Types (ADTs, variants, pattern matching)
 
 These build the user-facing type declaration and consumption story.
@@ -607,15 +678,20 @@ res: [@Result [try risky]]
 # Warning: non-exhaustive match on Result --- missing [err: Str]
 ```
 
-- **Scope:** Variant coverage analysis in `[match]` when scrutinee has
-  a declared union type. Wildcard covers all remaining variants.
-  Unreachable arm warnings.
-- **Formal model:** Maranget (2008) for exhaustiveness and redundancy
-  analysis via pattern matrices. Karachalias et al. (2015) for guard
-  opacity — guards (`is:` predicates) do not contribute to coverage
-  analysis — and as the theoretical ceiling for GADT-aware exhaustiveness.
-- **Risk:** Moderate. Requires tracking the variant set from the
-  scrutinee type, then checking coverage against the arm patterns.
+- **Scope:** Full coverage analysis in `[match]` when scrutinee has
+  a declared union type. Handles nested patterns, not just variant
+  tags. Wildcard covers all remaining variants. Unreachable arm
+  and inaccessible RHS warnings.
+- **Formal model:** Maranget (2007) usefulness algorithm for
+  exhaustiveness, redundancy, and lazy ⊥-as-constructor extension.
+  Maranget (2008) for decision tree compilation. Karachalias et al.
+  (2015) for the three-way partition (Covered/Divergent/Uncovered),
+  guard opacity — guards (`is:` predicates) do not contribute to
+  coverage analysis — and as the theoretical ceiling for GADT-aware
+  exhaustiveness.
+- **Risk:** Moderate. Coverage algorithm implemented in Rust
+  (`src/coverage.rs`) for testability and correctness; exposed to
+  the match macro as a builtin.
 - **Depends on:** Union types Phase 2 (B1) + ADTs Phase 2 (C1) +
   Pattern matching Phase 3 (A3). Nominal variant exhaustiveness
   additionally depends on C3.
@@ -883,6 +959,66 @@ Price: [type Decimal@[precision: 2]]
 - **Unlocks:** Static rejection of invalid operations, precise builtin
   typing
 
+#### B5a. `narrowing-basic`
+
+- **Sprint slug:** `narrowing-basic`
+- **Estimated tasks:** 8
+  1. `if` special form: detect `if` calls in `infer_expr` and dispatch
+     to dedicated `infer_if(cond, then_expr, else_expr, env, state)`
+     instead of generic `check_call` (`src/typecheck.rs`)
+  2. `Narrowing` enum: `EqLiteral { var, ty }`, `TypeOf { var, ty }`,
+     `HasKey { var, key }` (`src/typecheck.rs`)
+  3. `extract_narrowings(cond: &Expr) -> Vec<Narrowing>`: pattern match
+     on condition AST shape; recognize `[= x lit]`, `[= [type-of x] "Int"]`,
+     `[has? x "key"]` (`src/typecheck.rs`)
+  4. Environment forking: clone `env` into `env_true`, apply narrowings;
+     `env_false` = clone `env` unmodified (`src/typecheck.rs`)
+  5. Branch type join: infer `then_expr` in `env_true`, `else_expr` in
+     `env_false`; result type is LUB (without B1) or `Union(τ₁, τ₂)`
+     (with B1) (`src/typecheck.rs`)
+  6. Conjunction support: `[and cond1 cond2]` applies both narrowings
+     to `env_true` (`src/typecheck.rs`)
+  7. Update type map with narrowed types for LSP hover precision
+     (`src/typecheck.rs`)
+  8. Tests: 10+ (equality narrowing, type-of guard, has? key narrowing,
+     conjunction, both operand orderings for `=`, no false-branch
+     narrowing, nested if chains, narrowing not leaking across branches,
+     type map has narrowed type for LSP hover)
+- **Dependencies:** None technically — can ship before B1. Result type
+  precision improves when B1 (unions) lands.
+- **Key files:** `src/typecheck.rs`
+- **Spec chapters:** `doc/06-type-inference.md` (§Path-Sensitive Narrowing — `if` as type-level special form, `narrow()` function, environment forking), `doc/17-references.md` (Tobin-Hochstadt & Felleisen 2010, Dunfield & Pfenning 2004)
+- **Unlocks:** Narrowing Phase 3 (type predicates), precise match arm
+  body types
+
+#### B5b. `narrowing-predicates`
+
+- **Sprint slug:** `narrowing-predicates`
+- **Estimated tasks:** 5
+  1. Extend `extract_narrowings` to recognize `[int? x]`, `[str? x]`,
+     `[dict? x]`, `[bool? x]`, `[float? x]`, `[fn? x]`, `[null? x]`,
+     `[seq? x]` as direct narrowing triggers — map each predicate to its
+     corresponding `Type` (`src/typecheck.rs`)
+  2. Predicate-to-type mapping: `int?` → `Type::Int`, `str?` → `Type::Str`,
+     `dict?` → `Type::Record(Row::Open)`, `seq?` → `Type::Seq(Any)`,
+     `fn?` → `Type::Any`, `null?` → `Type::Record(Row::Empty)`,
+     `float?` → `Type::Float`, `bool?` → `Type::Bool` (`src/typecheck.rs`)
+  3. `num?` narrowing: `num?` → `Type::Number` (supertype of Int | Float)
+     (`src/typecheck.rs`)
+  4. `cond` narrowing: extend narrowing to `cond` — each condition-body
+     pair narrows independently (optional — can defer to `if`-only)
+     (`src/typecheck.rs`)
+  5. Tests: 8+ (each predicate narrows correctly, num? supertype narrowing,
+     predicate inside `and`, predicate with variable binding, match
+     desugared to if/int?/str? chain has correct arm body types, LSP
+     hover shows narrowed type in match arm)
+- **Dependencies:** Narrowing Phase 1-2 (B5a). Type predicates (DONE).
+- **Key files:** `src/typecheck.rs`
+- **Spec chapters:** `doc/06-type-inference.md` (§Type Predicate Narrowing — `int?` as direct narrowing trigger)
+- **Unlocks:** Match arm bodies get refined types from the desugared
+  `if [int? x] ...` chains. This is the connection point between
+  pattern matching and the type system.
+
 ### Phase C: Algebraic Types
 
 #### C1. `adts`
@@ -974,8 +1110,24 @@ AST variant is introduced.
 When `[defmacro match]` detects a TypeAssert scrutinee `[@Type expr]`, it:
 1. Looks up `Type` in the type alias registry (accessible at expansion time)
 2. Extracts the `Type::Union` variant set from the registered alias
-3. Performs Maranget-style coverage analysis on the arm keys against that variant set
+3. Calls the `check-coverage` Rust builtin with the arm pattern matrix and constructor signature
 4. Emits an expansion-time error if any variant is uncovered
+
+**Coverage algorithm:** Full Maranget (2007) usefulness algorithm over
+the complete pattern matrix, including nested sub-patterns — not just
+variant-tag-level checking. The algorithm is implemented in Rust
+(`src/coverage.rs`) and exposed as a builtin, because: (a) the match
+macro cannot use its own destructuring to implement itself (chicken-and-
+egg), (b) the algorithm is stable (20+ years, well-proven) and benefits
+from Rust unit testing, (c) the same code works whether match remains a
+macro or migrates to `Expr::Match` in the future.
+
+**Lazy extension:** ⊥ is treated as an additional constructor in the
+signature (Maranget 2007, §4). Wildcards match ⊥; constructor patterns
+do not. This yields the three-way partition (Covered/Divergent/Uncovered)
+from Karachalias et al. (2015, §3.1): an arm with Divergent non-empty
+but Covered empty has an inaccessible RHS (dead code warning). The lazy
+extension adds ~10 lines to the core algorithm.
 
 Without TypeAssert, match expands normally without coverage analysis — same as
 today. This makes exhaustiveness opt-in but honest: coverage can only be verified
@@ -987,18 +1139,21 @@ The macro expander must have read access to the type alias registry at expansion
 time — a new requirement for the expansion infrastructure.
 
 - **Sprint slug:** `exhaustiveness`
-- **Estimated tasks:** 7
+- **Estimated tasks:** 10
   1. Expose type alias registry to macro expander at expansion time (`src/typecheck.rs` or a shared registry module)
   2. `[defmacro match]` extension: detect TypeAssert scrutinee `[@Type expr]`; look up `Type` alias; extract `Type::Union` variant set (`stdlib/macros.llt`)
-  3. Maranget-style coverage matrix: arm keys vs variant set; wildcard/variable arms cover all remaining variants; or-pattern arms (`Pipe` key) cover both sub-patterns (`stdlib/macros.llt`)
-  4. Non-exhaustive error: expansion-time error listing uncovered variants when scrutinee has TypeAssert
-  5. Unreachable arm warning: arm after wildcard `_:` is unreachable
-  6. Nominal variant coverage: constructor set from `Type::Union` containing `Type::NominalVariant` entries (depends on C3)
-  7. Tests: 10+ (complete coverage passes; missing variant fails; wildcard covers; or-pattern coverage; unreachable arm; `is:` guard arms treated as opaque/not covering; nominal exhaustiveness; no TypeAssert → no check)
+  3. `Pattern` enum in Rust: `Constructor { tag, sub_patterns }`, `Wildcard`, `Or(Box<Pattern>, Box<Pattern>)` (`src/coverage.rs`)
+  4. Extract patterns from match arm keys: arm-key AST → `Pattern` representation (`src/coverage.rs`)
+  5. Core usefulness algorithm: `specialize(c, matrix)`, `default_matrix(matrix)`, `useful(matrix, pattern_vector, sig)` — full Maranget recursive descent over nested patterns (`src/coverage.rs`)
+  6. Lazy extension: add ⊥ to constructor signature; wildcards match ⊥, constructors don't; `divergent_useful()` for inaccessible RHS detection (`src/coverage.rs`)
+  7. `check-coverage` builtin: accepts arm patterns + constructor signature, returns `{ exhaustive, uncovered, redundant, inaccessible }` (`src/builtins.rs`, `src/coverage.rs`)
+  8. Non-exhaustive error: expansion-time error listing uncovered pattern witnesses when scrutinee has TypeAssert
+  9. Nominal variant coverage: constructor set from `Type::Union` containing `Type::NominalVariant` entries (depends on C3)
+  10. Tests: 15+ — Rust unit tests for coverage algorithm (complete coverage, missing variant, wildcard, or-pattern, nested pattern exhaustiveness, nested pattern redundancy, inaccessible RHS with lazy ⊥, guard opacity); corpus tests for macro integration (TypeAssert triggers check, no TypeAssert skips, error messages show uncovered witnesses)
 - **Dependencies:** Union types (B1) + ADTs (C1) + Pattern matching Phase 3 (A3) + type alias registry accessible at expansion time. Nominal exhaustiveness additionally depends on C3.
-- **Key files:** `stdlib/macros.llt` (coverage check in `[defmacro match]`), `src/typecheck.rs` (registry exposure)
-- **Spec chapters:** `doc/06-type-inference.md` (§Exhaustiveness Checking — variant coverage analysis, non-exhaustive warnings, unreachable arm warnings), `doc/07-type-extensions.md` (§Pattern Matrix — Maranget 2008 reference)
-- **Unlocks:** Compiler-verified case coverage
+- **Key files:** `src/coverage.rs` (new — Maranget algorithm), `src/builtins.rs` (`check-coverage` builtin), `stdlib/macros.llt` (macro calls builtin), `src/typecheck.rs` (registry exposure)
+- **Spec chapters:** `doc/06-type-inference.md` (§Exhaustiveness Checking — Maranget usefulness algorithm, lazy ⊥ extension, coverage witnesses), `doc/07-type-extensions.md` (§Pattern Matrix — Maranget 2007/2008 reference, Karachalias et al. 2015 three-way partition)
+- **Unlocks:** Compiler-verified case coverage, correct nested pattern exhaustiveness, inaccessible RHS warnings
 
 ### Phase D: Advanced Typing
 
@@ -1055,6 +1210,22 @@ that require special care:
    type (`[Extensible Int]`) produces an ill-formed type. The type
    checker should report this at the alias application site, not deep
    inside unification.
+
+6. **Narrowing + match desugaring.** When match is a macro that desugars
+   to `if [int? x] ... [if [str? x] ...]` chains, narrowing (B5b) must
+   recognize these predicates as narrowing triggers. The narrowing works
+   on the desugared code — the type checker never sees the original match
+   structure. This is correct but indirect: if the macro's expansion
+   pattern changes, the narrowing patterns must be updated to match.
+   If match later migrates to `Expr::Match`, narrowing moves into a
+   dedicated `infer_match()` function that narrows directly per-arm.
+
+7. **Narrowing + union result types.** Without B1 (union types), the
+   result type of `[if cond then else]` with narrowed branches is the
+   LUB of `τ₁` and `τ₂`, which is often `Any`. With B1, the result is
+   `τ₁ | τ₂`, which is precise. Narrowing delivers maximum value when
+   B1 is also present, but provides correct (if imprecise) results
+   without it.
 
 ### Runtime Overhead Considerations
 
@@ -1225,18 +1396,26 @@ dependencies allow:
 Week 1-2:  A1 (let-binding) + B1 (union-types)         [parallel]
 Week 3-4:  A2 (pattern-matching-basic)                  [needs A1 done]
 Week 5-6:  A3 (pattern-matching-destructure)            [needs A2]
-Week 7-8:  B2 (gradual-typing-split) + B3 (param-aliases) [parallel]
-Week 9:    C1 (adts)                                    [needs B1]
-Week 10:   C2 (nominal-variants-unit)                   [needs C1]
-Week 11-12: B4 (type-classes-constrained)               [needs B2]
-Week 13:   C3 (nominal-variants-full)                   [needs C2, A2]
-Week 14:   C4 (pattern-matching-guards)                 [needs A3]
-Week 15-16: C5 (exhaustiveness)                         [needs B1, C1, A3]
+Week 7:    B5a (narrowing-basic)                        [no hard deps]
+Week 8:    B5b (narrowing-predicates)                   [needs B5a]
+Week 9-10: B2 (gradual-typing-split) + B3 (param-aliases) [parallel]
+Week 11:   C1 (adts)                                    [needs B1]
+Week 12:   C2 (nominal-variants-unit)                   [needs C1]
+Week 13-14: B4 (type-classes-constrained)               [needs B2]
+Week 15:   C3 (nominal-variants-full)                   [needs C2, A2]
+Week 16:   C4 (pattern-matching-guards)                 [needs A3]
+Week 17-18: C5 (exhaustiveness)                         [needs B1, C1, A3]
 
 --- DECISION GATES evaluate here ---
 
-Week 17+:  D1-D5 as gated by adoption feedback
+Week 19+:  D1-D5 as gated by adoption feedback
 ```
+
+Note: Narrowing (B5a-b) is scheduled after A3 so that the desugared
+`if [int? x] ...` chains from match are available to narrow. However,
+B5a has no hard technical dependency on A2/A3 — `if` narrowing works
+independently. The scheduling reflects the practical value: narrowing
+becomes most useful once match arms desugar to narrowable `if` chains.
 
 Structural contracts and numeric types run on their own track and can
 be interleaved with any of the above:
@@ -1255,9 +1434,9 @@ After SC:  Numeric types Ph2+ (Decimal, BigInt)
 | Phase | What Ships | What Users Get |
 |-------|-----------|----------------|
 | **A** (foundations) | `let-binding`, `match` with type/literal/dict/seq patterns | Multi-step functions, `try` result destructuring, type dispatch without string comparison |
-| **B** (type primitives) | `Type::Union`, `Any` split, parameterized aliases, constrained vars | Nullable types (`x@[Int Null]`), precise builtin types, `[= fn fn]` rejected statically, generic type aliases |
-| **C** (algebraic types) | Multi-entry `[type ...]` ADT declarations, `Value::Variant`, exhaustiveness | Named sum types (`Result`, `Option`), first-class constructors (`[map Some items]`), compiler-verified case coverage |
-| **D** (advanced) | Full type classes, algebraic subtyping, recursive ADTs, blame | User-extensible protocols, inferred union types, `Tree a`, actionable type error provenance |
+| **B** (type primitives) | `Type::Union`, `Any` split, parameterized aliases, constrained vars, path-sensitive narrowing | Nullable types (`x@[Int Null]`), precise builtin types, `[= fn fn]` rejected statically, generic type aliases, automatic type refinement in `if`/`match` branches |
+| **C** (algebraic types) | Multi-entry `[type ...]` ADT declarations, `Value::Variant`, exhaustiveness | Named sum types (`Result`, `Option`), first-class constructors (`[map Some items]`), compiler-verified case coverage with nested pattern support |
+| **D** (advanced) | Full type classes, algebraic subtyping, recursive ADTs, blame, false-branch narrowing | User-extensible protocols, inferred union types, `Tree a`, actionable type error provenance, negation-type narrowing |
 
 Each phase is independently shippable. Phase A delivers immediate
 ergonomic value. Phase B delivers type safety. Phase C delivers
@@ -1273,6 +1452,7 @@ for this plan:
 - Amadio, R.M. & Cardelli, L. (1993). Subtyping recursive types. *ACM TOPLAS*, 15(4), 575-631. — Decidability of equi-recursive type equality with depth guard. Foundation for D3 recursive ADTs.
 - Ariola, Z.M. & Felleisen, M. (1997). The call-by-need lambda calculus. *J. Functional Programming*, 7(3), 265-301. — `let*` semantics for sequential binding (A1).
 - Augustsson, L. (1985). Compiling pattern matching. *FPCA '85*, LNCS 201, pp. 368-381. — Sequential arm testing (A2).
+- Dunfield, J. & Pfenning, F. (2004). Tridirectional typechecking. *POPL '04*, pp. 281-292. — Datasort refinements, singleton literal narrowing (B5).
 - Dolan, S. & Mycroft, A. (2017). Polymorphism, subtyping, and type inference in MLsub. *POPL '17*, pp. 228-242. — Algebraic subtyping (D2).
 - Findler, R.B. & Felleisen, M. (2002). Contracts for higher-order functions. *ICFP '02*, pp. 48-59. — Proxy contracts and blame (D4).
 - Garcia, R., Clark, A.M. & Tanter, E. (2016). Abstracting gradual typing. *POPL '16*, pp. 429-442. — AGT framework for `Any` split (B2).
@@ -1282,13 +1462,14 @@ for this plan:
 - Jones, M.P. (1995). *Qualified types: Theory and practice.* Cambridge University Press. — Constraint propagation through let-generalization (B4).
 - Karachalias, G., Schrijvers, T., Vytiniotis, D. & Peyton Jones, S. (2015). GADTs meet their match. *ICFP '15*, pp. 424-436. — Guards treated as opaque for exhaustiveness (C5).
 - Launchbury, J. (1993). A natural semantics for lazy evaluation. *POPL '93*, pp. 144-154. — Sharing preservation for let binding (A1).
-- Maranget, L. (2008). Compiling pattern matching to good decision trees. *ML '08*, pp. 35-46. — Exhaustiveness and redundancy analysis (C5).
+- Maranget, L. (2007). Warnings for pattern matching. *J. Functional Programming*, 17(3), 387-421. — Usefulness algorithm for exhaustiveness and redundancy; lazy extension treating ⊥ as constructor (C5).
+- Maranget, L. (2008). Compiling pattern matching to good decision trees. *ML '08*, pp. 35-46. — Decision tree compilation for pattern matching (C5).
 - Marques, R., Florido, M. & Vasconcelos, P. (2024). Towards algebraic subtyping for extensible records. arXiv:2407.06747. — Row variables under algebraic subtyping (D2).
 - Parreaux, L. (2020). The simple essence of algebraic subtyping. *ICFP '20*, Article 124. — Simple-sub algorithm (D2).
 - Pierce, B.C. (2002). *Types and Programming Languages.* MIT Press. — Union subtyping rules §15.7 (B1), labeled variants §11 (C1, C3).
 - Pierce, B.C. & Turner, D.N. (2000). Local type inference. *ACM TOPLAS*, 22(1), 1-44. — Checking mode for union annotations (B1).
 - Robinson, J.A. (1965). A machine-oriented logic based on the resolution principle. *JACM*, 12(1), 23-41. — MGU guarantee preserved by annotation-only unions (B1).
 - Siek, J.G. & Taha, W. (2006). Gradual typing for functional languages. *Scheme Workshop*, pp. 81-92. — Consistency relation (B2).
-- Tobin-Hochstadt, S. & Felleisen, M. (2010). Logical types for untyped languages. *ICFP '10*, pp. 117-128. — Occurrence typing for arm narrowing (C1).
+- Tobin-Hochstadt, S. & Felleisen, M. (2010). Logical types for untyped languages. *ICFP '10*, pp. 117-128. — Occurrence typing: path-sensitive narrowing in conditionals (B5), arm narrowing for pattern matching (C1).
 - Wadler, P. & Blott, S. (1989). How to make ad-hoc polymorphism less ad hoc. *POPL '89*, pp. 60-76. — Type classes (B4, D1).
 - Wadler, P. & Findler, R.B. (2009). Well-typed programs can't be blamed. *ESOP '09*, LNCS 5502, pp. 1-16. — Blame theorem (D4).

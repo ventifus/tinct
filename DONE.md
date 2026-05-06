@@ -3939,3 +3939,10 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] `resolve_row` empty-fields fast-path; `lower_row_var_levels` loops fused; `Substitution::apply()` concrete-type fast-path
 - [x] `eval_dict` contains_key+insert fused; GuardedValidate field_path Box reuse; CALL-POLY redundant double-application removed
 - [x] 3 new unit tests (fn@Null return annotation, named row var scoping shared/independent across TypeAssert annotations)
+
+### prelude-type-annotations: Full Type Annotations for stdlib/prelude.llt
+
+- [x] 80+ prelude functions annotated with @Bool, @Int, @Number, @Dict, @Fn, @Seq, @String parameter and return types; polymorphic functions (identity, map, filter, etc.) correctly left unannotated
+- [x] Added "Dict" (open record + fresh RowVar) and "Fn" (variadic + Any return) arms to resolve_type_name — all annotations now operative
+- [x] All 1701 tests pass — no inference regressions
+- [x] doc/11-stdlib.md §Prelude Type Signatures reference section added (lines 994-1155); find-deep included; stale row updated
